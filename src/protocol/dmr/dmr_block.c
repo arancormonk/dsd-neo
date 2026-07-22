@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
@@ -958,23 +959,9 @@ dmr_udt_decode_format(dmr_udt_ctx* ctx) {
 static void DSD_ATTR_USED
 dmr_udt_finalize(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "%s", KNRM);
-    if (ctx->slot == 0) {
-        ctx->state->lastsrc = ctx->udt_source;
-        ctx->state->lasttg = ctx->udt_target;
-    } else {
-        ctx->state->lastsrcR = ctx->udt_source;
-        ctx->state->lasttgR = ctx->udt_target;
-    }
-    dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
-    watchdog_event_datacall(ctx->opts, ctx->state, ctx->udt_source, ctx->udt_target, ctx->udt_string, ctx->slot);
-    if (ctx->slot == 0) {
-        ctx->state->lastsrc = 0;
-        ctx->state->lasttg = 0;
-    } else {
-        ctx->state->lastsrcR = 0;
-        ctx->state->lasttgR = 0;
-    }
-    dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+    const dsd_call_observation observation =
+        dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, ctx->udt_source, ctx->udt_target);
+    (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
 }
 
 static void DSD_ATTR_USED
@@ -1154,8 +1141,10 @@ dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
     DSD_SNPRINTF(enc_str, sizeof(enc_str), "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
                  ctx->state->dmr_lrrp_source[ctx->slot], ctx->state->dmr_lrrp_target[ctx->slot], alg, kid);
     DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]), "%s", enc_str);
-    watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
-                            ctx->state->dmr_lrrp_target[ctx->slot], enc_str, ctx->slot);
+    const dsd_call_observation observation =
+        dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
+                                  (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
+    (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, enc_str);
 }
 
 static uint8_t DSD_ATTR_USED
@@ -1220,11 +1209,16 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         DSD_MEMSET(mnis_str, 200, sizeof(mnis_str));
         DSD_SNPRINTF(mnis_str, sizeof(mnis_str), "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_source[ctx->slot],
                      ctx->state->dmr_lrrp_target[ctx->slot]);
-        watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
-                                ctx->state->dmr_lrrp_target[ctx->slot], mnis_str, ctx->slot);
+        const dsd_call_observation observation = dsd_call_observation_data(
+            ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
+            (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
+        (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, mnis_str);
     } else if (mnis_type == 0x11 || mnis_type == 0x01) {
-        watchdog_event_datacall(ctx->opts, ctx->state, ctx->state->dmr_lrrp_source[ctx->slot],
-                                ctx->state->dmr_lrrp_target[ctx->slot], ctx->state->dmr_lrrp_gps[ctx->slot], ctx->slot);
+        const dsd_call_observation observation = dsd_call_observation_data(
+            ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
+            (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
+        (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation,
+                                         ctx->state->dmr_lrrp_gps[ctx->slot]);
     }
 }
 
@@ -1263,7 +1257,9 @@ dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
     }
     DSD_MEMSET(unk_str, 200, sizeof(unk_str));
     DSD_SNPRINTF(unk_str, sizeof(unk_str), "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", source, target);
-    watchdog_event_datacall(ctx->opts, ctx->state, source, target, unk_str, safe_slot);
+    const dsd_call_observation observation =
+        dsd_call_observation_data(ctx->state->lastsynctype, (uint8_t)safe_slot, source, target);
+    (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, (uint8_t)safe_slot, &observation, unk_str);
 }
 
 static void
@@ -1593,7 +1589,6 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
 void
 dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     UNUSED(opts);
-    DSD_MEMSET(state->gi, -1, sizeof(state->gi));
     DSD_MEMSET(state->data_p_head, 0, sizeof(state->data_p_head));
     DSD_MEMSET(state->data_conf_data, 0, sizeof(state->data_conf_data));
     DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));
@@ -1619,8 +1614,6 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->data_dbsn_expected, 0, sizeof(state->data_dbsn_expected));
     DSD_MEMSET(state->data_dbsn_have, 0, sizeof(state->data_dbsn_have));
     //reset some strings -- resetting call string here causes random blink on ncurses terminal (cap+)
-    // DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     "); //21 spaces
-    // DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     "); //21 spaces
     DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "%s", "");
     DSD_SNPRINTF(state->dmr_lrrp_gps[1], sizeof(state->dmr_lrrp_gps[1]), "%s", "");
 }

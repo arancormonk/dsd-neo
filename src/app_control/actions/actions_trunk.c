@@ -5,6 +5,7 @@
 
 /* UI command actions — trunking domain */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stddef.h>
@@ -48,34 +49,23 @@ ui_handle_trunk_group_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_
 
 static int
 ui_handle_tg_hold_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)opts;
     uint8_t slot = 0;
     if (c->n >= 1) {
         slot = c->data[0] & 1;
     }
-    if (slot == 0) {
-        if (state->tg_hold == 0) {
-            state->tg_hold = state->lasttg;
-        } else {
-            state->tg_hold = 0;
-        }
-        if ((opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) && (state->tg_hold == 0)) {
-            state->tg_hold = state->nxdn_last_tg;
-        } else if (opts->frame_provoice == 1 && state->ea_mode == 0) {
-            state->tg_hold = state->lastsrc;
-        }
-    } else {
-        if (state->tg_hold == 0) {
-            state->tg_hold = state->lasttgR;
-        } else {
-            state->tg_hold = 0;
-        }
-        if ((opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) && (state->tg_hold == 0)) {
-            state->tg_hold = state->nxdn_last_tg;
-        } else if (opts->frame_provoice == 1 && state->ea_mode == 0) {
-            state->tg_hold = state->lastsrcR;
+    if (state->tg_hold != 0) {
+        state->tg_hold = 0;
+        return 1;
+    }
+
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) && call.phase != DSD_CALL_PHASE_ENDED) {
+        uint64_t target = call.policy_target_id != 0 ? call.policy_target_id : call.ota_target_id;
+        if (target != 0 && target <= UINT32_MAX) {
+            state->tg_hold = (uint32_t)target;
         }
     }
+    (void)opts;
     return 1;
 }
 

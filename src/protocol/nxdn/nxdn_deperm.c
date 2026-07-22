@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -721,10 +722,16 @@ nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fie
         return;
     }
 
-    state->gi[0] = 0;
     state->nxdn_last_ran = 7;
-    state->nxdn_last_tg = 777;
-    state->nxdn_last_rid = 777;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 777U,
+        .policy_target_id = 777U,
+        .ota_source_id = 777U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "JPN DCR");
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                  sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", "JPN DCR");
@@ -1041,7 +1048,7 @@ nxdn_message_type_label(uint8_t message_type) {
 
 static int
 nxdn_message_type_resets_call(uint8_t message_type) {
-    return message_type == 0x08U || message_type == 0x11U || message_type == 0xE8U;
+    return message_type == 0x08U || message_type == 0x10U || message_type == 0x11U || message_type == 0xE8U;
 }
 
 static int
@@ -1176,18 +1183,18 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    //Zero out stale values on DISC or TX_REL only (IDLE messaages occur often on NXDN96 VCH, and randomly on Type-C FACCH1 steals for some reason)
+    //End the canonical call on explicit release, disconnect, or idle signaling.
     if (nxdn_message_type_resets_call(MessageType)) {
+        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        }
         nxdn_alias_reset(state);
-        state->nxdn_last_rid = 0;
-        state->nxdn_last_tg = 0;
         state->nxdn_cipher_type = 0; // Force will reactivate it if needed during voice tx
         if (state->keyloader == 1) {
             state->R = 0;
         }
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     }
 
     if (nxdn_message_type_resets_gain(MessageType)) {

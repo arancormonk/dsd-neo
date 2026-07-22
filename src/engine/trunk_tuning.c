@@ -110,19 +110,11 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
         }
     }
     (void)dsd_recent_activity_clear_all(state);
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
-    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
 
     dmr_reset_blocks(opts, state);
 
-    state->lasttg = 0;
-    state->lasttgR = 0;
-    state->lastsrc = 0;
-    state->lastsrcR = 0;
-    state->gi[0] = -1;
-    state->gi[1] = -1;
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
@@ -141,8 +133,6 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
-    state->p25_call_is_packet[0] = 0;
-    state->p25_call_is_packet[1] = 0;
     state->p25_p2_active_slot = -1;
     state->last_vc_sync_time = 0;
     state->last_vc_sync_time_m = 0.0;

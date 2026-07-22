@@ -6,23 +6,16 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-/*
- * P25 LCW source-zero guard tests.
- *
- * Bug condition: p25_lcw() unconditionally writes state->lastsrc = source
- * for formats 0x00 (Group Voice), 0x03 (Unit-to-Unit), and MFID90 0x00
- * (Motorola Group Regroup).  When the decoded source field is zero, this
- * destroys a previously stored non-zero source ID.
- *
- * Each test case sets state->lastsrc to a known non-zero value, feeds an
- * LCW with source=0, and asserts that lastsrc is preserved.
- */
+/* P25 LCW canonical call attribution and metadata regression tests. */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -217,6 +210,43 @@ static void
 reset_lcw_state(dsd_state* state) {
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), NULL, state);
+}
+
+static int
+seed_call(dsd_state* state, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+}
+
+static int
+get_active_call(const dsd_state* state, dsd_call_snapshot* call) {
+    return dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+static int
+active_call_is(const dsd_state* state, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    dsd_call_snapshot call;
+    return get_active_call(state, &call) && call.protocol == DSD_SYNC_P25P1_POS && call.kind == kind
+           && call.ota_target_id == target && call.policy_target_id == target && call.ota_source_id == source;
+}
+
+static int
+same_call_identity(const dsd_call_snapshot* before, const dsd_call_snapshot* after) {
+    return before->epoch == after->epoch && before->phase == after->phase && before->protocol == after->protocol
+           && before->slot == after->slot && before->kind == after->kind
+           && before->ota_target_id == after->ota_target_id && before->policy_target_id == after->policy_target_id
+           && before->ota_source_id == after->ota_source_id && before->crypto == after->crypto
+           && before->algid == after->algid && before->kid == after->kid && before->mi == after->mi;
 }
 
 /* ── Test cases ───────────────────────────────────────────────────────── */
@@ -234,7 +264,10 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 0x13579B;
+        rc |= expect_true("NullGuards_seed_call", seed_call(&st, DSD_CALL_KIND_PRIVATE_VOICE, 0x2468, 0x13579B));
+        dsd_call_snapshot before;
+        dsd_call_snapshot after;
+        rc |= expect_true("NullGuards_get_before", get_active_call(&st, &before));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -243,22 +276,20 @@ main(void) {
         p25_lcw(&opts, NULL, lcw, /*irrecoverable_errors*/ 0);
         p25_lcw(&opts, &st, NULL, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("NullGuards_preserve_state", st.lastsrc == 0x13579B);
+        rc |= expect_true("NullGuards_get_after", get_active_call(&st, &after));
+        rc |= expect_true("NullGuards_preserve_state", same_call_identity(&before, &after));
     }
 
     /*
      * Test case 1 — Format 0x00 (Group Voice Channel User)
-     * Pre-condition: state->lastsrc = 1234567 (known-good source ID)
+     * Pre-condition: the canonical call has source 1234567.
      * Input:         LCW with format=0x00, group=100, source=0
-     * Expected:      state->lastsrc remains 1234567
-     *
-     * Without the guard, the unconditional `state->lastsrc = source`
-     * would write zero.
+     * Expected:      the canonical source remains 1234567.
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 1234567;
+        rc |= expect_true("Fmt0x00_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 100, 1234567));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -270,25 +301,20 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x00_src0_preserves_lastsrc: lastsrc was 1234567, source=0 should NOT overwrite",
-                          st.lastsrc == 1234567);
-        if (st.lastsrc != 1234567) {
-            DSD_FPRINTF(stderr,
-                        "  counterexample: Format 0x00: lastsrc was 1234567, after LCW with source=0 it became %ld\n",
-                        (long)st.lastsrc);
-        }
+        rc |= expect_true("Fmt0x00_src0_preserves_canonical_source",
+                          active_call_is(&st, DSD_CALL_KIND_GROUP_VOICE, 100, 1234567));
     }
 
     /*
      * Test case 2 — Format 0x03 (Unit-to-Unit Voice Channel User)
-     * Pre-condition: state->lastsrc = 102
+     * Pre-condition: the canonical call has source 102.
      * Input:         LCW with format=0x03, target=200, source=0
-     * Expected:      state->lastsrc remains 102
+     * Expected:      the canonical source remains 102.
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 102;
+        rc |= expect_true("Fmt0x03_seed_call", seed_call(&st, DSD_CALL_KIND_PRIVATE_VOICE, 200, 102));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -300,20 +326,15 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x03_src0_preserves_lastsrc: lastsrc was 102, source=0 should NOT overwrite",
-                          st.lastsrc == 102);
-        if (st.lastsrc != 102) {
-            DSD_FPRINTF(stderr,
-                        "  counterexample: Format 0x03: lastsrc was 102, after LCW with source=0 it became %ld\n",
-                        (long)st.lastsrc);
-        }
+        rc |= expect_true("Fmt0x03_src0_preserves_canonical_source",
+                          active_call_is(&st, DSD_CALL_KIND_PRIVATE_VOICE, 200, 102));
     }
 
     /*
      * Test case 3 — MFID90 format 0x00 (Motorola Group Regroup Channel User)
-     * Pre-condition: state->lastsrc = 54321
+     * Pre-condition: the canonical call has source 54321.
      * Input:         LCW with format=0x00, MFID=0x90, sg=300, src=0
-     * Expected:      state->lastsrc remains 54321
+     * Expected:      the canonical source remains 54321.
      *
      * Note: MFID90 0x00 means lc_format byte = 0x00 with SF=0, so
      * lc_mfid = 0x90 and lc_opcode = 0x00.  The is_standard_mfid check
@@ -322,7 +343,7 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 54321;
+        rc |= expect_true("MFID90_Fmt0x00_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 300, 54321));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -334,28 +355,18 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("MFID90_Fmt0x00_src0_preserves_lastsrc: lastsrc was 54321, src=0 should NOT overwrite",
-                          st.lastsrc == 54321);
-        if (st.lastsrc != 54321) {
-            DSD_FPRINTF(stderr,
-                        "  counterexample: MFID90 0x00: lastsrc was 54321, after LCW with src=0 it became %ld\n",
-                        (long)st.lastsrc);
-        }
+        rc |= expect_true("MFID90_Fmt0x00_src0_preserves_canonical_source",
+                          active_call_is(&st, DSD_CALL_KIND_GROUP_VOICE, 300, 54321));
     }
 
     /*
-     * Edge case — source=0 when lastsrc is already 0
-     * Pre-condition: state->lastsrc = 0
+     * Edge case — source=0 with no prior call.
      * Input:         LCW with format=0x00, group=100, source=0
-     * Expected:      state->lastsrc remains 0
-     *
-     * This is NOT a bug condition — no non-zero value is destroyed.
-     * Should PASS — lastsrc is already 0, so the guard is a no-op.
+     * Expected:      an anonymous canonical group call is created.
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 0;
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -367,7 +378,8 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("EdgeCase_src0_lastsrc0_stays_zero: no non-zero value destroyed", st.lastsrc == 0);
+        rc |=
+            expect_true("EdgeCase_src0_starts_anonymous_call", active_call_is(&st, DSD_CALL_KIND_GROUP_VOICE, 100, 0));
     }
 
     /*
@@ -378,7 +390,7 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 111;
+        rc |= expect_true("SrcIdExtension_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 0x1111, 111));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -391,7 +403,8 @@ main(void) {
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
         rc |= expect_true("SrcIdExtension_WACN_20bit", st.p25_src_nid == 0xABCDE);
-        rc |= expect_true("SrcIdExtension_radio_24bit_at_bit48", st.lastsrc == 0x456789);
+        rc |= expect_true("SrcIdExtension_radio_24bit_at_bit48",
+                          active_call_is(&st, DSD_CALL_KIND_GROUP_VOICE, 0x1111, 0x456789));
     }
 
     /*
@@ -401,7 +414,7 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 222;
+        rc |= expect_true("TaitD8Fmt01_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 0x2222, 222));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -414,13 +427,11 @@ main(void) {
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
         rc |= expect_true("TaitD8Fmt01_WACN_20bit", st.p25_src_nid == 0x54321);
-        rc |= expect_true("TaitD8Fmt01_radio_24bit_at_bit48", st.lastsrc == 0x2468AC);
+        rc |= expect_true("TaitD8Fmt01_radio_24bit_at_bit48",
+                          active_call_is(&st, DSD_CALL_KIND_GROUP_VOICE, 0x2222, 0x2468AC));
     }
 
-    /*
-     * Format 0x00 service options drive the user-visible call string prefix.
-     * Emergency takes priority over the encrypted bit when both are present.
-     */
+    /* Format 0x00 service options are retained on the canonical call. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
@@ -436,14 +447,15 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x00_emergency_prefix", strstr(st.call_string[0], "Emergency") != NULL);
-        rc |= expect_true("Fmt0x00_emergency_group_state", st.gi[0] == 0 && st.lasttg == 0x1234);
+        dsd_call_snapshot call;
+        rc |= expect_true("Fmt0x00_canonical_call", get_active_call(&st, &call));
+        rc |= expect_true("Fmt0x00_emergency_metadata",
+                          call.kind == DSD_CALL_KIND_GROUP_VOICE && call.ota_target_id == 0x1234
+                              && call.ota_source_id == 0x456789 && call.service_options == 0xFF && call.emergency == 1
+                              && call.priority == 7 && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     }
 
-    /*
-     * Format 0x03 should mark an individual/private call and preserve the encrypted
-     * service option in the call string.
-     */
+    /* Format 0x03 publishes an encrypted individual/private canonical call. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
@@ -458,13 +470,17 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x03_encrypted_private_prefix", strstr(st.call_string[0], "Encrypted") != NULL);
-        rc |= expect_true("Fmt0x03_private_state", st.gi[0] == 1 && st.lasttg == 0x010203 && st.lastsrc == 0x040506);
+        dsd_call_snapshot call;
+        rc |= expect_true("Fmt0x03_canonical_call", get_active_call(&st, &call));
+        rc |= expect_true("Fmt0x03_private_state", call.kind == DSD_CALL_KIND_PRIVATE_VOICE
+                                                       && call.ota_target_id == 0x010203
+                                                       && call.ota_source_id == 0x040506 && call.service_options == 0x40
+                                                       && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     }
 
     /*
      * Format 0x42 carries two implicit group voice channel updates. When the two
-     * groups differ, both active-channel slots should be refreshed.
+     * groups differ, both structured recent-activity entries should be refreshed.
      */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
@@ -480,8 +496,21 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x42_first_active_channel", strstr(st.active_channel[0], "1111") != NULL);
-        rc |= expect_true("Fmt0x42_second_active_channel", strstr(st.active_channel[1], "3333") != NULL);
+        dsd_recent_activity_snapshot activity;
+        rc |= expect_true("Fmt0x42_activity_snapshot", dsd_recent_activity_copy_snapshot(&st, &activity) > 0);
+        rc |= expect_true("Fmt0x42_first_activity",
+                          activity.entries[0].updated_m_ms != 0U
+                              && activity.entries[0].observation.kind == DSD_CALL_KIND_GROUP_VOICE
+                              && activity.entries[0].observation.channel == 0x1111
+                              && activity.entries[0].observation.ota_target_id == 0x2222);
+        rc |= expect_true("Fmt0x42_second_activity",
+                          activity.entries[1].updated_m_ms != 0U
+                              && activity.entries[1].observation.kind == DSD_CALL_KIND_GROUP_VOICE
+                              && activity.entries[1].observation.channel == 0x3333
+                              && activity.entries[1].observation.ota_target_id == 0x4444);
+        dsd_call_snapshot call;
+        rc |= expect_true("Fmt0x42_does_not_start_call",
+                          dsd_call_state_get(&st, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
     }
 
     /* Format 0x4A is an extended unit-to-unit voice channel user. */
@@ -500,16 +529,26 @@ main(void) {
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
         rc |= expect_true("Fmt0x4A_sets_private_identity",
-                          st.gi[0] == 1 && st.lasttg == 0x101112 && st.lastsrc == 0x202122);
+                          active_call_is(&st, DSD_CALL_KIND_PRIVATE_VOICE, 0x101112, 0x202122));
     }
 
     /* Format 0x50 updates affiliation only; it is not a voice identity. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lasttg = 0x1111;
-        st.lastsrc = 0x222222;
-        st.gi[0] = 1;
+        rc |= expect_true("Fmt0x50_seed_call", seed_call(&st, DSD_CALL_KIND_PRIVATE_VOICE, 0x1111, 0x222222));
+        const dsd_call_crypto_update crypto = {
+            .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+            .algid = 0x84,
+            .kid = 0x1234,
+            .mi = UINT64_C(0x1122334455667788),
+            .audio_permitted = 0U,
+            .observed_m = 2.0,
+        };
+        rc |= expect_true("Fmt0x50_seed_crypto", dsd_call_state_update_crypto(&st, 0U, &crypto) > 0);
+        dsd_call_snapshot before;
+        dsd_call_snapshot after;
+        rc |= expect_true("Fmt0x50_get_before", get_active_call(&st, &before));
         st.payload_algid = 0x84;
         st.payload_keyid = 0x1234;
         st.payload_miP = UINT64_C(0x1122334455667788);
@@ -523,11 +562,10 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("Fmt0x50_preserves_call_target", st.lasttg == 0x1111);
-        rc |= expect_true("Fmt0x50_preserves_call_source", st.lastsrc == 0x222222);
-        rc |= expect_true("Fmt0x50_preserves_call_kind", st.gi[0] == 1);
-        rc |= expect_true("Fmt0x50_preserves_call_crypto", st.payload_algid == 0x84 && st.payload_keyid == 0x1234
-                                                               && st.payload_miP == UINT64_C(0x1122334455667788));
+        rc |= expect_true("Fmt0x50_get_after", get_active_call(&st, &after));
+        rc |= expect_true("Fmt0x50_preserves_canonical_call", same_call_identity(&before, &after));
+        rc |= expect_true("Fmt0x50_preserves_decoder_crypto", st.payload_algid == 0x84 && st.payload_keyid == 0x1234
+                                                                  && st.payload_miP == UINT64_C(0x1122334455667788));
         rc |= expect_true("Fmt0x50_updates_affiliation",
                           st.p25_ga_count == 1 && st.p25_ga_rid[0] == 0x654321 && st.p25_ga_tg[0] == 0x3456);
     }
@@ -582,11 +620,7 @@ main(void) {
         rc |= expect_true("Fmt0x65_unknown_algid_kid", st.p25_prot_kid == 0xBEEF);
     }
 
-    /*
-     * MFID90 regroup channel users update both current call state and the
-     * patch table. Set the rendering flag bits too so the parser keeps their
-     * positions distinct from SG/SRC fields.
-     */
+    /* MFID90 regroup channel users update the canonical call and patch table. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
@@ -603,22 +637,17 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("MFID90_regroup_lasttg", st.lasttg == 0x345);
-        rc |= expect_true("MFID90_regroup_lastsrc", st.lastsrc == 0x6789AB);
-        rc |= expect_true("MFID90_regroup_group_call", st.gi[0] == 0);
+        rc |= expect_true("MFID90_regroup_canonical_call",
+                          active_call_is(&st, DSD_CALL_KIND_GROUP_VOICE, 0x345, 0x6789AB));
         rc |= expect_true("MFID90_regroup_patch_count", st.p25_patch_count == 1);
         rc |= expect_true("MFID90_regroup_patch_sgid", st.p25_patch_sgid[0] == 0x345);
         rc |= expect_true("MFID90_regroup_patch_active", st.p25_patch_is_patch[0] == 1 && st.p25_patch_active[0] == 1);
     }
 
-    /*
-     * MFID90 regroup channel updates do not currently retain SG/channel state,
-     * but they must continue to mark the call as a group call.
-     */
+    /* MFID90 regroup channel updates are recent activity, not active calls. */
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.gi[0] = 1;
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -631,7 +660,17 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-        rc |= expect_true("MFID90_regroup_update_group_call", st.gi[0] == 0);
+        dsd_recent_activity_snapshot activity;
+        rc |= expect_true("MFID90_regroup_update_activity_snapshot",
+                          dsd_recent_activity_copy_snapshot(&st, &activity) > 0);
+        rc |= expect_true("MFID90_regroup_update_activity",
+                          activity.entries[0].updated_m_ms != 0U
+                              && activity.entries[0].observation.kind == DSD_CALL_KIND_GROUP_VOICE
+                              && activity.entries[0].observation.ota_target_id == 0x456
+                              && activity.entries[0].observation.channel == 0x1234);
+        dsd_call_snapshot call;
+        rc |= expect_true("MFID90_regroup_update_no_active_call",
+                          dsd_call_state_get(&st, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
     }
 
     /*
@@ -678,8 +717,10 @@ main(void) {
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lasttg = 0xAAAA;
-        st.lastsrc = 0xBBBBCC;
+        rc |= expect_true("MFID90_metadata_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 0xAAAA, 0xBBBBCC));
+        dsd_call_snapshot before;
+        dsd_call_snapshot after;
+        rc |= expect_true("MFID90_metadata_get_before", get_active_call(&st, &before));
         char out[2048];
 
         uint8_t lcw[96];
@@ -691,7 +732,8 @@ main(void) {
             return 1;
         }
         rc |= expect_contains("MFID90_failsoft_label", out, "MFID90 (Moto) Failsoft");
-        rc |= expect_true("MFID90_failsoft_no_state", st.lasttg == 0xAAAA && st.lastsrc == 0xBBBBCC);
+        rc |= expect_true("MFID90_failsoft_get_after", get_active_call(&st, &after));
+        rc |= expect_true("MFID90_failsoft_no_call_mutation", same_call_identity(&before, &after));
 
         DSD_MEMSET(lcw, 0, sizeof lcw);
         set_bits_msb(lcw, 0, 8, 0x0A);
@@ -705,6 +747,8 @@ main(void) {
         rc |= expect_contains("MFID90_emergency_group", out, "Group: 4660");
         rc |= expect_contains("MFID90_emergency_source", out, "Source: 4548489");
         rc |= expect_true("MFID90_emergency_no_patch", st.p25_patch_count == 0);
+        rc |= expect_true("MFID90_emergency_get_after", get_active_call(&st, &after));
+        rc |= expect_true("MFID90_emergency_no_call_mutation", same_call_identity(&before, &after));
     }
 
     /*
@@ -718,7 +762,7 @@ main(void) {
         g_nmea_harris_calls = 0;
         g_nmea_harris_src = 0;
         g_nmea_harris_prefix = 0;
-        st.lastsrc = 0x123456;
+        rc |= expect_true("HarrisGPS_seed_call", seed_call(&st, DSD_CALL_KIND_GROUP_VOICE, 0x3456, 0x123456));
 
         uint8_t lcw[96];
         DSD_MEMSET(lcw, 0, sizeof lcw);
@@ -860,9 +904,10 @@ main(void) {
         for (size_t i = 0; i < sizeof(unknown_cases) / sizeof(unknown_cases[0]); i++) {
             DSD_MEMSET(&opts, 0, sizeof opts);
             reset_lcw_state(&st);
-            st.lastsrc = 0x123456;
-            st.lasttg = 0x3456;
-            st.gi[0] = 1;
+            rc |= expect_true("UnknownLCW_seed_call", seed_call(&st, DSD_CALL_KIND_PRIVATE_VOICE, 0x3456, 0x123456));
+            dsd_call_snapshot before;
+            dsd_call_snapshot after;
+            rc |= expect_true("UnknownLCW_get_before", get_active_call(&st, &before));
             st.p25_prot_valid = 1;
             st.p25_prot_algid = 0x84;
             st.p25_prot_kid = 0x4321;
@@ -881,20 +926,22 @@ main(void) {
 
             p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
-            rc |= expect_true(unknown_cases[i].name,
-                              st.lastsrc == 0x123456 && st.lasttg == 0x3456 && st.gi[0] == 1 && st.p25_prot_valid == 1
-                                  && st.p25_prot_algid == 0x84 && st.p25_prot_kid == 0x4321 && g_apx_gps_calls == 0
-                                  && g_apx_alias_header_calls == 0 && g_apx_alias_block_calls == 0
-                                  && g_l3h_alias_block_calls == 0 && g_tait_alias_calls == 0);
+            rc |= expect_true("UnknownLCW_get_after", get_active_call(&st, &after));
+            rc |= expect_true(unknown_cases[i].name, same_call_identity(&before, &after) && st.p25_prot_valid == 1
+                                                         && st.p25_prot_algid == 0x84 && st.p25_prot_kid == 0x4321
+                                                         && g_apx_gps_calls == 0 && g_apx_alias_header_calls == 0
+                                                         && g_apx_alias_block_calls == 0 && g_l3h_alias_block_calls == 0
+                                                         && g_tait_alias_calls == 0);
         }
     }
 
     {
         DSD_MEMSET(&opts, 0, sizeof opts);
         reset_lcw_state(&st);
-        st.lastsrc = 0x234567;
-        st.lasttg = 0x4567;
-        st.gi[0] = 1;
+        rc |= expect_true("ProtectedLCW_seed_call", seed_call(&st, DSD_CALL_KIND_PRIVATE_VOICE, 0x4567, 0x234567));
+        dsd_call_snapshot before;
+        dsd_call_snapshot after;
+        rc |= expect_true("ProtectedLCW_get_before", get_active_call(&st, &before));
         st.p25_prot_valid = 0;
 
         uint8_t lcw[96];
@@ -907,8 +954,9 @@ main(void) {
 
         p25_lcw(&opts, &st, lcw, /*irrecoverable_errors*/ 0);
 
+        rc |= expect_true("ProtectedLCW_get_after", get_active_call(&st, &after));
         rc |= expect_true("ProtectedLCW_no_state_mutation",
-                          st.lastsrc == 0x234567 && st.lasttg == 0x4567 && st.gi[0] == 1 && st.p25_prot_valid == 0);
+                          same_call_identity(&before, &after) && st.p25_prot_valid == 0);
     }
 
     dsd_state_ext_free_all(&st);

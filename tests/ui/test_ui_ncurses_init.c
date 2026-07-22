@@ -225,7 +225,6 @@ reset_stubs(void) {
     g_fopen_private_path = NULL;
     g_fopen_private_mode = NULL;
     g_unicode_init_calls = 0;
-    DSD_MEMSET(edacs_channel_tree, 0x5A, sizeof(edacs_channel_tree));
 }
 
 static void
@@ -242,7 +241,6 @@ test_non_tty_stderr_is_not_suppressed(void) {
     assert(g_use_default_colors_calls == 1);
     assert(g_assume_default_colors_calls == 1);
     assert(g_init_pair_calls > 0);
-    assert(edacs_channel_tree[0][0] == 0ULL);
     assert(g_isatty_calls == 1);
     assert(g_dup_calls == 0);
     assert(g_fopen_private_calls == 0);

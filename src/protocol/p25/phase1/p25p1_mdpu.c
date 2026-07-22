@@ -122,8 +122,6 @@ p25_mpdu_prepare_state(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
 
     p25_status_accum_ensure_started(state);
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
-    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
 
     (void)dsd_recent_activity_expire(state, 0U, DSD_RECENT_ACTIVITY_TTL_MS);
 }
@@ -597,13 +595,6 @@ p25_mpdu_print_rate34_payload(const dsd_opts* opts, const P25MpduContext* ctx, i
 }
 
 static void
-p25_mpdu_clear_last_call(dsd_state* state) {
-    state->lasttg = 0;
-    state->lastsrc = 0;
-    state->p25_policy_tg[0] = 0;
-}
-
-static void
 p25_mpdu_handle_rate34(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
     uint32_t crc_extracted = 0;
     uint32_t crc_computed = 0;
@@ -624,7 +615,6 @@ p25_mpdu_handle_rate34(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
     p25_mpdu_print_rate34_payload(opts, ctx, mpdu_idx, dbsn, crc9_ext, crc9_cmp, crc_extracted, crc_computed);
     DSD_FPRINTF(stderr, "%s ", KNRM);
     DSD_FPRINTF(stderr, "\n");
-    p25_mpdu_clear_last_call(state);
 }
 
 static void
@@ -676,7 +666,6 @@ p25_mpdu_handle_rate12(dsd_opts* opts, dsd_state* state, P25MpduContext* ctx) {
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");
-    p25_mpdu_clear_last_call(state);
 }
 
 static void

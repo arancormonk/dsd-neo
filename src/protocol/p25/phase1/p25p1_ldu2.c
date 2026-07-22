@@ -22,8 +22,10 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -39,6 +41,7 @@
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -413,7 +416,9 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     }
 
     char str[16];
-    int tsrc = state->lastsrc;
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     int str_pos = 0;
     DSD_MEMSET(str, 0, sizeof(str));
 
@@ -427,6 +432,7 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
                 str[str_pos++] = ch;
             }
         }
+        (void)dsd_event_enrich_alias(state, 0U, call.epoch, str);
     }
 
     if (tsrc != 0) {
@@ -463,7 +469,10 @@ ldu2_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, const Ldu2Frame* frame)
     if (frame->irrecoverable_errors != 0) {
         return;
     }
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, state->lasttg);
+    dsd_call_snapshot call;
+    const int target =
+        dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, frame->algidhex, frame->kidhex, mi, target);
 }
 
 void

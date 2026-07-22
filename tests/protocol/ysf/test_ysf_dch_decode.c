@@ -9,6 +9,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -42,6 +43,24 @@ static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
 static int g_process_mbe_ambe_nonnull[5];
 static int g_mbe_inbound_errs2[5];
+
+static void
+begin_test_ysf_call(dsd_state* state) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_YSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
+static dsd_call_snapshot
+get_test_ysf_call(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    return call;
+}
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -378,13 +397,15 @@ test_dch_csd1_tracks_destination_and_source(void) {
     const char payload[] = "DESTCALL01SRCCALL02";
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, 20U, bits);
 
     ysf_dch_decode(&state, 0, 0, 0, 0, 0, bits);
 
-    assert(strcmp(state.ysf_tgt, "DESTCALL01") == 0);
-    assert(strcmp(state.ysf_src, "SRCCALL02") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DESTCALL01") == 0);
+    assert(strcmp(call.source_text, "SRCCALL02") == 0);
 }
 
 static void
@@ -393,21 +414,26 @@ test_dch_rid_mode_preserves_target_and_source_state(void) {
     uint8_t bits[160];
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits("DSTR1SRCR2FULLSRC003", 20U, bits);
 
     ysf_dch_decode(&state, 0, 0, 0, 0, 1, bits);
 
-    assert(strcmp(state.ysf_tgt, "DSTR1SRCR2") == 0);
-    assert(strcmp(state.ysf_src, "FULLSRC003") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DSTR1SRCR2") == 0);
+    assert(strcmp(call.source_text, "FULLSRC003") == 0);
+    const uint64_t first_epoch = call.epoch;
 
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits("RID01RID02", 10U, bits);
 
     ysf_dch_decode2(&state, 0, 0, 0, 5, 1, bits);
 
-    assert(strcmp(state.ysf_tgt, "RID01RID02") == 0);
-    assert(strcmp(state.ysf_src, "FULLSRC003") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "RID01RID02") == 0);
+    assert(call.source_text[0] == '\0');
+    assert(call.epoch != first_epoch);
 }
 
 static void
@@ -417,13 +443,15 @@ test_dch_csd2_tracks_uplink_and_downlink(void) {
     const char payload[] = "UPLINK0001DOWNLINK02";
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, 20U, bits);
 
     ysf_dch_decode(&state, 1, 0, 0, 0, 0, bits);
 
-    assert(strcmp(state.ysf_upl, "UPLINK0001") == 0);
-    assert(strcmp(state.ysf_dnl, "DOWNLINK02") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.route_text[0], "UPLINK0001") == 0);
+    assert(strcmp(call.route_text[1], "DOWNLINK02") == 0);
 }
 
 static void
@@ -455,22 +483,27 @@ test_dch2_tracks_destination_source_links_and_remarks(void) {
     uint8_t bits[80];
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
 
     pack_bytes_to_bits("DEST2CALL3", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 0, 5, 0, bits);
-    assert(strcmp(state.ysf_tgt, "DEST2CALL3") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DEST2CALL3") == 0);
 
     pack_bytes_to_bits("SRC2CALL45", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 1, 5, 0, bits);
-    assert(strcmp(state.ysf_src, "SRC2CALL45") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "SRC2CALL45") == 0);
 
     pack_bytes_to_bits("UP2CALL678", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 2, 5, 0, bits);
-    assert(strcmp(state.ysf_upl, "UP2CALL678") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.route_text[0], "UP2CALL678") == 0);
 
     pack_bytes_to_bits("DN2CALL901", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 3, 5, 0, bits);
-    assert(strcmp(state.ysf_dnl, "DN2CALL901") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.route_text[1], "DN2CALL901") == 0);
 
     pack_bytes_to_bits("RM1AARM2BB", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 4, 5, 0, bits);
@@ -572,19 +605,20 @@ test_ysf_conv_dch_decodes_valid_csd1_and_rejects_crc_error(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     encode_dch_payload_to_input("DCHDST0001DCHSRC0002", 20U, input, 176U, 9U, 0);
 
     assert(ysf_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == 0);
-    assert(strcmp(state.ysf_tgt, "DCHDST0001") == 0);
-    assert(strcmp(state.ysf_src, "DCHSRC0002") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DCHDST0001") == 0);
+    assert(strcmp(call.source_text, "DCHSRC0002") == 0);
 
-    DSD_SNPRINTF(state.ysf_tgt, sizeof(state.ysf_tgt), "%s", "UNCHANGED");
-    DSD_SNPRINTF(state.ysf_src, sizeof(state.ysf_src), "%s", "UNCHANGED");
     encode_dch_payload_to_input("BADDST0001BADSRC0002", 20U, input, 176U, 9U, 1);
 
     assert(ysf_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == -2);
-    assert(strcmp(state.ysf_tgt, "UNCHANGED") == 0);
-    assert(strcmp(state.ysf_src, "UNCHANGED") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DCHDST0001") == 0);
+    assert(strcmp(call.source_text, "DCHSRC0002") == 0);
 }
 
 static void
@@ -595,16 +629,18 @@ test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     encode_dch_payload_to_input("DCH2SRC789", 10U, input, 96U, 5U, 0);
 
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
-    assert(strcmp(state.ysf_src, "DCH2SRC789") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "DCH2SRC789") == 0);
 
-    DSD_SNPRINTF(state.ysf_src, sizeof(state.ysf_src), "%s", "UNCHANGED");
     encode_dch_payload_to_input("DCH2BAD789", 10U, input, 96U, 5U, 1);
 
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
-    assert(strcmp(state.ysf_src, "UNCHANGED") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "DCH2SRC789") == 0);
 }
 
 static void
@@ -637,10 +673,9 @@ test_process_ysf_full_rate_data_routes_fich_and_dch_state(void) {
     assert(state.ysf_fi == 0U);
     assert(state.ysf_dt == 1U);
     assert(state.ysf_cm == 0U);
-    assert(strcmp(state.ysf_tgt, "PYSFDST001") == 0);
-    assert(strcmp(state.ysf_src, "PYSFSRC002") == 0);
-    assert(strcmp(state.ysf_upl, "PYSFUPL003") == 0);
-    assert(strcmp(state.ysf_dnl, "PYSFDNL004") == 0);
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    assert(dsd_call_state_get(&state, 0U, &call) == 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
 }
 
 static void
@@ -680,8 +715,9 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 0U);
     assert(state.ysf_cm == 0U);
-    assert(strcmp(state.ysf_tgt, "VD1DST0001") == 0);
-    assert(strcmp(state.ysf_src, "VD1SRC0002") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "VD1DST0001") == 0);
+    assert(strcmp(call.source_text, "VD1SRC0002") == 0);
 }
 
 static void
@@ -724,7 +760,8 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.debug_audio_errors == 3);
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 2U);
-    assert(strcmp(state.ysf_src, "VD2SRC4444") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "VD2SRC4444") == 0);
     assert(strcmp(state.err_str, "========") == 0);
     assert(state.f_l[0] == 5.0F);
     assert(state.f_l[159] == 5.0F);

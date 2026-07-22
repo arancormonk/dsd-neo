@@ -4,10 +4,12 @@
  * flushes only the encrypted slot, and preserves the clear slot.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
@@ -118,6 +120,19 @@ seed_policy_group(dsd_state* st, uint32_t id, const char* mode, const char* name
         return 1;
     }
     return dsd_tg_policy_append_exact(st, &row);
+}
+
+static int
+seed_group_call(dsd_state* state, uint8_t slot, uint64_t target) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }
 
 int
@@ -247,8 +262,7 @@ main(void) {
     opts.slot1_on = 1;
     opts.slot2_on = 1;
     st.currentslot = 0;
-    st.lasttg = 0x2222;
-    st.lasttgR = 0;
+    rc |= expect_eq("MAC Release seed active call", seed_group_call(&st, 0U, 0x2222), 1);
     st.dmrburstL = 21;
     st.dmrburstR = 21;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;

@@ -18,11 +18,14 @@
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
 #include <stdint.h>
@@ -188,6 +191,27 @@ x2tdma_update_mute_and_lights(x2tdma_voice_ctx* ctx, dsd_state* state) {
             DSD_SNPRINTF(state->slot0light, sizeof state->slot0light, "%s", "[SLOT0]");
         } else {
             DSD_SNPRINTF(state->slot1light, sizeof state->slot1light, "%s", "[SLOT1]");
+        }
+    }
+}
+
+static void
+x2tdma_update_call_transition(dsd_opts* opts, const x2tdma_voice_ctx* ctx, dsd_state* state) {
+    const uint8_t slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);
+    if (dsd_x2tdma_sync_is_data(ctx->sync)) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_X2TDMA(call.protocol) && dsd_call_state_end(state, slot, 0.0) > 0) {
+            dsd_event_sync_slot(opts, state, slot);
+        }
+    } else if (dsd_x2tdma_sync_is_voice(ctx->sync)) {
+        const dsd_call_observation observation = {
+            .protocol = state->synctype,
+            .slot = slot,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+            dsd_event_sync_slot(opts, state, slot);
         }
     }
 }
@@ -464,6 +488,7 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
 
     x2tdma_read_sync_from_slot(opts, state, j, dibit_p, ctx->sync, ctx->syncdata);
     x2tdma_update_mute_and_lights(ctx, state);
+    x2tdma_update_call_transition(opts, ctx, state);
     x2tdma_update_ms_mode(ctx);
 
     if ((j == 0) && (opts->errorbars == 1)) {
@@ -483,6 +508,51 @@ x2tdma_process_slot_iteration(dsd_opts* opts, dsd_state* state, x2tdma_voice_ctx
         skipDibit(opts, state, 12);
         skipDibit(opts, state, 54);
     }
+}
+
+static void
+x2tdma_update_call_crypto(dsd_opts* opts, dsd_state* state, const x2tdma_voice_ctx* ctx) {
+    const uint8_t slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_X2TDMA(call.protocol)) {
+        return;
+    }
+
+    dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1U,
+    };
+    if (ctx->eeei != 0 || ctx->aiei != 0) {
+        uint32_t algid = 0U;
+        uint32_t kid = 0U;
+        uint64_t mi = 0U;
+        if (dsd_parse_binary_u32_n(state->algid, 8U, &algid) == 0
+            && dsd_parse_binary_u32_n(state->keyid, 16U, &kid) == 0 && dsd_parse_binary_u64_n(ctx->mi, 64U, &mi) == 0) {
+            crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+            crypto.algid = (uint8_t)algid;
+            crypto.kid = (uint16_t)kid;
+            crypto.mi = mi;
+        } else {
+            crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+        }
+        crypto.audio_permitted = 0U;
+    }
+    (void)dsd_call_state_update_crypto(state, slot, &crypto);
+    dsd_event_sync_slot(opts, state, slot);
+}
+
+static void
+x2tdma_print_call_crypto(const dsd_opts* opts, const dsd_state* state, const x2tdma_voice_ctx* ctx) {
+    if (ctx->mutecurrentslot != 0 || opts->p25enc != 1) {
+        return;
+    }
+
+    uint32_t algidbits = 0;
+    uint32_t kidbits = 0;
+    int algidhex = (dsd_parse_binary_u32_n(state->algid, 8, &algidbits) == 0) ? (int)algidbits : 0;
+    int kidhex = (dsd_parse_binary_u32_n(state->keyid, 16, &kidbits) == 0) ? (int)kidbits : 0;
+    DSD_FPRINTF(stderr, "mi: %s algid: $%x kid: $%x\n", ctx->mi, algidhex, kidhex);
 }
 
 void
@@ -507,17 +577,10 @@ processX2TDMAvoice(dsd_opts* opts, dsd_state* state) {
         x2tdma_process_slot_iteration(opts, state, &ctx, j, &dibit_p);
     }
 
+    x2tdma_update_call_crypto(opts, state, &ctx);
+
     if (opts->errorbars == 1) {
         DSD_FPRINTF(stderr, "\n");
     }
-
-    if (ctx.mutecurrentslot == 0) {
-        if (opts->p25enc == 1) {
-            uint32_t algidbits = 0;
-            uint32_t kidbits = 0;
-            int algidhex = (dsd_parse_binary_u32_n(state->algid, 8, &algidbits) == 0) ? (int)algidbits : 0;
-            int kidhex = (dsd_parse_binary_u32_n(state->keyid, 16, &kidbits) == 0) ? (int)kidbits : 0;
-            DSD_FPRINTF(stderr, "mi: %s algid: $%x kid: $%x\n", ctx.mi, algidhex, kidhex);
-        }
-    }
+    x2tdma_print_call_crypto(opts, state, &ctx);
 }

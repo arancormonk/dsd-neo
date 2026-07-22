@@ -96,8 +96,11 @@ int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* s
                                               const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]);
 int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]);
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
-void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,
-                             uint8_t slot);
+int dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                               const char* notice);
+int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
+int dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps);
+int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text);
 
 #ifdef __cplusplus
 }

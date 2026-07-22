@@ -12,8 +12,10 @@
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -33,8 +35,35 @@
 #include "ysf_internal.h"
 
 static void
+ysf_enrich_identity(dsd_state* state, uint8_t cm, const char* source, const char* target, const char* uplink,
+                    const char* downlink) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_YSF(call.protocol)) {
+        return;
+    }
+    const dsd_call_observation observation = {
+        .protocol = call.protocol,
+        .slot = 0U,
+        .kind = cm == 3U   ? DSD_CALL_KIND_PRIVATE_VOICE
+                : cm == 0U ? DSD_CALL_KIND_GROUP_VOICE
+                           : DSD_CALL_KIND_VOICE,
+    };
+    dsd_call_observation enriched = observation;
+    DSD_SNPRINTF(enriched.source_text, sizeof(enriched.source_text), "%s", source ? source : "");
+    DSD_SNPRINTF(enriched.target_text, sizeof(enriched.target_text), "%s", target ? target : "");
+    DSD_SNPRINTF(enriched.route_text[0], sizeof(enriched.route_text[0]), "%s", uplink ? uplink : "");
+    DSD_SNPRINTF(enriched.route_text[1], sizeof(enriched.route_text[1]), "%s", downlink ? downlink : "");
+    (void)dsd_call_state_observe(state, &enriched, DSD_CALL_BOUNDARY_CONTINUE);
+}
+
+static void
 ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
+    char target[11];
     char string2[11];
+
+    DSD_MEMCPY(target, dch_bytes, 10);
+    target[10] = '\0';
 
     if (cm != 1) {
         char string1[11];
@@ -61,13 +90,7 @@ ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
     DSD_FPRINTF(stderr, "SRC: ");
     DSD_FPRINTF(stderr, "%s ", string2);
 
-    DSD_MEMSET(state->ysf_tgt, 0, sizeof(state->ysf_tgt));
-    DSD_MEMCPY(state->ysf_tgt, dch_bytes, 10);
-    state->ysf_tgt[10] = '\0';
-
-    DSD_MEMSET(state->ysf_src, 0, sizeof(state->ysf_src));
-    DSD_MEMCPY(state->ysf_src, dch_bytes + 10, 10);
-    state->ysf_src[10] = '\0';
+    ysf_enrich_identity(state, cm, string2, target, NULL, NULL);
 }
 
 static void
@@ -85,11 +108,7 @@ ysf_dch_decode_csd2(dsd_state* state, const char dch_bytes[20]) {
     DSD_FPRINTF(stderr, "D/L: ");
     DSD_FPRINTF(stderr, "%s ", string2);
 
-    DSD_MEMCPY(state->ysf_upl, dch_bytes, 10);
-    state->ysf_upl[10] = '\0';
-
-    state->ysf_dnl[10] = '\0';
-    DSD_MEMCPY(state->ysf_dnl, dch_bytes + 10, 10);
+    ysf_enrich_identity(state, state->ysf_cm, NULL, NULL, string1, string2);
 }
 
 static void
@@ -146,26 +165,24 @@ ysf_print_text_field(const char* label, const char* src, size_t len, const char*
 }
 
 static void
-ysf_store_text_field(const char* label, const char* src, size_t len, char* dst, const char* suffix) {
-    ysf_print_text_field(label, src, len, suffix);
-    ysf_copy_text_field(dst, src, len);
-}
-
-static void
 ysf_dch_decode2_destination(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
+    char target[11];
     if (cm != 1) {
         ysf_print_text_field("DST: ", dch_bytes, 10, " ");
     } else {
         ysf_print_text_field("DST RID: ", dch_bytes, 5, " ");
         ysf_print_text_field("SRC RID: ", dch_bytes + 5, 5, " ");
     }
-    ysf_copy_text_field(state->ysf_tgt, dch_bytes, 10);
+    ysf_copy_text_field(target, dch_bytes, 10);
+    ysf_enrich_identity(state, cm, NULL, target, NULL, NULL);
 }
 
 static void
 ysf_dch_decode2_remarks(const char* label1, char* dst1, const char* label2, char* dst2, const char dch_bytes[20]) {
-    ysf_store_text_field(label1, dch_bytes, 5, dst1, " ");
-    ysf_store_text_field(label2, dch_bytes + 5, 5, dst2, " ");
+    ysf_print_text_field(label1, dch_bytes, 5, " ");
+    ysf_copy_text_field(dst1, dch_bytes, 5);
+    ysf_print_text_field(label2, dch_bytes + 5, 5, " ");
+    ysf_copy_text_field(dst2, dch_bytes + 5, 5);
 }
 
 void
@@ -181,9 +198,27 @@ ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft
 
     switch (fn) {
         case 0: ysf_dch_decode2_destination(state, dch_bytes, cm); break;
-        case 1: ysf_store_text_field("SRC: ", dch_bytes, 10, state->ysf_src, ""); break;
-        case 2: ysf_store_text_field("U/L: ", dch_bytes, 10, state->ysf_upl, ""); break;
-        case 3: ysf_store_text_field("D/L: ", dch_bytes, 10, state->ysf_dnl, ""); break;
+        case 1: {
+            char source_text[11];
+            ysf_print_text_field("SRC: ", dch_bytes, 10, "");
+            ysf_copy_text_field(source_text, dch_bytes, 10);
+            ysf_enrich_identity(state, cm, source_text, NULL, NULL, NULL);
+            break;
+        }
+        case 2: {
+            char uplink[11];
+            ysf_print_text_field("U/L: ", dch_bytes, 10, "");
+            ysf_copy_text_field(uplink, dch_bytes, 10);
+            ysf_enrich_identity(state, cm, NULL, NULL, uplink, NULL);
+            break;
+        }
+        case 3: {
+            char downlink[11];
+            ysf_print_text_field("D/L: ", dch_bytes, 10, "");
+            ysf_copy_text_field(downlink, dch_bytes, 10);
+            ysf_enrich_identity(state, cm, NULL, NULL, NULL, downlink);
+            break;
+        }
         case 4: ysf_dch_decode2_remarks("RM1: ", state->ysf_rm1, "RM2: ", state->ysf_rm2, dch_bytes); break;
         case 5: ysf_dch_decode2_remarks("RM3: ", state->ysf_rm3, "RM4: ", state->ysf_rm4, dch_bytes); break;
         default: break;
@@ -709,6 +744,7 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         state->errs2 = vech_bits[103];
         state->debug_audio_errors += state->errs2;
 
+        (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
         mbe_process_result result;
         mbe_initProcessResult(&result);
         result.total_errors = state->errs2;
@@ -826,6 +862,54 @@ ysf_handle_full_rate_data(dsd_opts* opts, dsd_state* state, const ysf_fich_info*
     }
 }
 
+static dsd_call_kind
+ysf_call_kind(uint8_t call_mode) {
+    if (call_mode == 3U) {
+        return DSD_CALL_KIND_PRIVATE_VOICE;
+    }
+    if (call_mode == 0U) {
+        return DSD_CALL_KIND_GROUP_VOICE;
+    }
+    return DSD_CALL_KIND_VOICE;
+}
+
+static void
+ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
+    const int voice_mode = info->dt == 0U || info->dt == 2U || info->dt == 3U;
+    if (info->err == 0 && voice_mode && (info->fi == 0U || info->fi == 1U)) {
+        const int protocol = DSD_SYNC_IS_YSF(state->synctype) ? state->synctype : DSD_SYNC_YSF_POS;
+        const dsd_call_observation observation = {
+            .protocol = protocol,
+            .slot = 0U,
+            .kind = ysf_call_kind(info->cm),
+        };
+        const dsd_call_boundary boundary = info->fi == 0U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
+        if (dsd_call_state_observe(state, &observation, boundary) > 0) {
+            dsd_event_sync_slot(opts, state, 0U);
+        }
+    }
+
+    if (info->err == 0 && info->fi == 2U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
+static void
+ysf_dispatch_payload(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
+    if (info->fi == 1U && info->dt == 0U) {
+        ysf_handle_vd_type1(opts, state, info);
+    }
+    if (info->fi == 1U && info->dt == 2U) {
+        ysf_handle_vd_type2(opts, state, info);
+    }
+    if (info->fi == 1U && info->dt == 3U) {
+        ysf_handle_full_rate_voice(opts, state, info);
+    }
+    if (info->dt == 1U || info->fi == 0U || info->fi == 2U) {
+        ysf_handle_full_rate_data(opts, state, info);
+    }
+}
+
 void
 processYSF(dsd_opts* opts, dsd_state* state) {
     static uint8_t last_dt;
@@ -835,21 +919,8 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
     ysf_print_fich_summary(opts, &info);
 
-    if (info.fi == 1 && info.dt == 0) {
-        ysf_handle_vd_type1(opts, state, &info);
-    }
-
-    if (info.fi == 1 && info.dt == 2) {
-        ysf_handle_vd_type2(opts, state, &info);
-    }
-
-    if (info.fi == 1 && info.dt == 3) {
-        ysf_handle_full_rate_voice(opts, state, &info);
-    }
-
-    if (info.dt == 1 || info.fi == 0 || info.fi == 2) {
-        ysf_handle_full_rate_data(opts, state, &info);
-    }
+    ysf_update_call_lifecycle(opts, state, &info);
+    ysf_dispatch_payload(opts, state, &info);
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");

@@ -17,6 +17,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -30,22 +31,25 @@
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_cc_update.h"
 
-static inline void
-dsd_append(char* dst, size_t dstsz, const char* src) {
-    if (!dst || !src || dstsz == 0) {
-        return;
-    }
-    size_t len = strlen(dst);
-    if (len >= dstsz) {
-        return;
-    }
-    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
+static void
+p25_lcw_publish_activity(dsd_state* state, uint8_t index, dsd_call_kind kind, uint64_t target, uint64_t source,
+                         uint16_t channel, const char* notice) {
+    dsd_call_observation observation = {
+        .protocol = state->lastsynctype,
+        .slot = index & 1U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .channel = channel,
+        .frequency_hz = dsd_state_trunk_chan_valid(channel) ? state->trunk_chan_map[channel] : 0,
+    };
+    (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
 }
 
 static inline int
@@ -99,18 +103,6 @@ typedef struct p25_lcw_handler_entry {
     uint8_t key;
     p25_lcw_handler_fn fn;
 } p25_lcw_handler_entry;
-
-static void
-p25_lcw_set_call_string_prefix(dsd_state* state, const char* prefix, uint8_t svcopt) {
-    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", prefix);
-    if (svcopt & 0x80) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency  ");
-    } else if (svcopt & 0x40) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Encrypted  ");
-    } else {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], "            ");
-    }
-}
 
 static int
 p25_lcw_format_has_service_options(uint8_t lc_format) {
@@ -168,17 +160,8 @@ p25_lcw_mark_encrypted_voice_pending(p25_lcw_ctx* ctx, int talkgroup, int allow_
 
 static int
 p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source) {
-    if (target != 0) {
-        ctx->state->lasttg = target;
-    }
-    if (source != 0) {
-        ctx->state->lastsrc = source;
-    }
     ctx->state->generic_talker_alias[0][0] = '\0';
-    ctx->state->generic_talker_alias_src[0] = 0;
-    ctx->state->gi[0] = 1;
     ctx->state->dmr_so = ctx->lc_svcopt;
-    ctx->state->p25_service_options_valid[0] = 1;
 
     if (!ctx->allow_voice_start) {
         return 0;
@@ -187,7 +170,6 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
-    p25_lcw_set_call_string_prefix(ctx->state, " Private ", ctx->lc_svcopt);
     return 1;
 }
 
@@ -201,17 +183,8 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
     UNUSED2(res, explicit_src);
 
-    ctx->state->gi[0] = 0;
     ctx->state->dmr_so = ctx->lc_svcopt;
-    ctx->state->p25_service_options_valid[0] = 1;
-    if (group != 0) {
-        ctx->state->lasttg = group;
-    }
-    if (source != 0) {
-        ctx->state->lastsrc = source;
-    }
     ctx->state->generic_talker_alias[0][0] = '\0';
-    ctx->state->generic_talker_alias_src[0] = 0;
 
     if (source != 0 && group != 0) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
@@ -224,7 +197,6 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
         return;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
-    p25_lcw_set_call_string_prefix(ctx->state, "   Group ", ctx->lc_svcopt);
 }
 
 static void
@@ -249,8 +221,9 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
         DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channel1, group1);
         char suf[32];
         p25_format_chan_suffix(ctx->state, channel1, -1, suf, sizeof suf);
-        DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
-                     channel1, suf, group1);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channel1, suf, group1);
+        p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, group1, 0U, channel1, notice);
     } else {
         (void)dsd_recent_activity_clear(ctx->state, 0U);
     }
@@ -259,13 +232,12 @@ p25_lcw_handle_format_42(p25_lcw_ctx* ctx) {
         DSD_FPRINTF(stderr, "Ch: %04X TG: %d; ", channel2, group2);
         char suf[32];
         p25_format_chan_suffix(ctx->state, channel2, -1, suf, sizeof suf);
-        DSD_SNPRINTF(ctx->state->active_channel[1], sizeof ctx->state->active_channel[1], "Active Ch: %04X%s TG: %d; ",
-                     channel2, suf, group2);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channel2, suf, group2);
+        p25_lcw_publish_activity(ctx->state, 1U, DSD_CALL_KIND_GROUP_VOICE, group2, 0U, channel2, notice);
     } else {
         (void)dsd_recent_activity_clear(ctx->state, 1U);
     }
-    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 0U);
-    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 1U);
 }
 
 static int
@@ -351,7 +323,7 @@ p25_lcw_handle_format_44_trunking(p25_lcw_ctx* ctx, uint16_t channel, uint16_t g
     }
     if (ctx->opts->p25_lcw_retune == 1 && ctx->opts->trunk_tune_group_calls == 1
         && !p25_lcw_format_44_hold_blocks_grant(ctx, group)) {
-        p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, (int)ctx->state->lastsrc, ctx->lc_svcopt);
+        p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, group, 0, ctx->lc_svcopt);
         p25_sm_event(p25_sm_get_ctx(), ctx->opts, ctx->state, &ev);
     }
 }
@@ -369,9 +341,9 @@ p25_lcw_handle_format_44(p25_lcw_ctx* ctx) {
 
     char suf[32];
     p25_format_chan_suffix(ctx->state, channelt, -1, suf, sizeof suf);
-    DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "Active Ch: %04X%s TG: %d; ",
-                 channelt, suf, group1);
-    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 0U);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channelt, suf, group1);
+    p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, group1, 0U, channelt, notice);
 }
 
 static void
@@ -391,12 +363,9 @@ p25_lcw_handle_format_46(p25_lcw_ctx* ctx) {
     if (ctx->allow_voice_start && !identity_accepted) {
         return;
     }
-    if (identity_accepted) {
-        p25_lcw_set_call_string_prefix(ctx->state, "Telephone ", ctx->lc_svcopt);
-    }
-    DSD_SNPRINTF(ctx->state->active_channel[0], sizeof ctx->state->active_channel[0], "TELE Target: %d Timer: %.1fs; ",
-                 target, (double)timer / 10.0);
-    (void)dsd_recent_activity_sync_legacy_entry(ctx->state, 0U);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "TELE Target: %d Timer: %.1fs; ", target, (double)timer / 10.0);
+    p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, target, 0U, 0U, notice);
 }
 
 static void
@@ -416,7 +385,24 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
         ctx->state->p25_src_nid = wacn;
     }
     if (src != 0) {
-        ctx->state->lastsrc = (int)src;
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            const dsd_call_observation observation = {
+                .protocol = call.protocol,
+                .slot = 0U,
+                .kind = call.kind,
+                .ota_target_id = call.ota_target_id,
+                .policy_target_id = call.policy_target_id,
+                .ota_source_id = src,
+                .channel = call.channel,
+                .frequency_hz = call.frequency_hz,
+                .service_options = call.service_options,
+                .emergency = call.emergency,
+                .priority = call.priority,
+            };
+            (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+            dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+        }
     }
 }
 
@@ -772,11 +758,6 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     if (ctx->bits[31] == 1) {
         DSD_FPRINTF(stderr, " EXT;");
     }
-    ctx->state->lasttg = sg;
-    if (src != 0) {
-        ctx->state->lastsrc = src;
-    }
-    ctx->state->gi[0] = 0;
     p25_patch_update(ctx->state, (int)sg, 1, 1);
     if (ctx->allow_voice_start) {
         (void)p25_sm_emit_active_call(ctx->opts, ctx->state, 0, (int)sg, 0, (int)src, 1, ctx->lc_svcopt);
@@ -795,7 +776,14 @@ p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
     if (ctx->bits[17] == 1) {
         DSD_FPRINTF(stderr, " ENC;");
     }
-    ctx->state->gi[0] = 0;
+
+    if (sg != 0U && ch != 0U) {
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Regroup Ch: %04X SG: %u; ", (unsigned)ch, (unsigned)sg);
+        p25_lcw_publish_activity(ctx->state, 0U, DSD_CALL_KIND_GROUP_VOICE, sg, 0U, (uint16_t)ch, notice);
+    } else {
+        (void)dsd_recent_activity_clear(ctx->state, 0U);
+    }
 }
 
 static void
@@ -863,7 +851,9 @@ p25_lcw_handle_mfid90_opcode_0f(p25_lcw_ctx* ctx) {
     uint32_t src = (uint32_t)convert_bits_into_output(&ctx->bits[48], 24);
     DSD_FPRINTF(stderr, " MFID90 (Moto) Talker EOT; SRC: %d;", src);
     DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, ctx->state->lasttg, (int)src, dsd_time_now_monotonic_s());
+    dsd_call_snapshot call;
+    const int target = dsd_call_state_get(ctx->state, 0U, &call) > 0 ? (int)call.ota_target_id : 0;
+    p25_sm_emit_end_call_at(ctx->opts, ctx->state, 0, target, (int)src, dsd_time_now_monotonic_s());
 }
 
 static void
@@ -928,7 +918,9 @@ p25_lcw_dispatch_mfid_a4(p25_lcw_ctx* ctx) {
         DSD_MEMCPY(ctx->state->dmr_pdu_sf[0] + 40 + 56, ctx->bits + 16, 56 * sizeof(uint8_t));
         uint16_t check = (uint16_t)convert_bits_into_output(&ctx->state->dmr_pdu_sf[0][0], 16);
         if (check == 0x2AA4) {
-            nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], (uint32_t)ctx->state->lastsrc, 0);
+            dsd_call_snapshot call;
+            const uint32_t source = dsd_call_state_get(ctx->state, 0U, &call) > 0 ? (uint32_t)call.ota_source_id : 0U;
+            nmea_harris(ctx->opts, ctx->state, ctx->state->dmr_pdu_sf[0], source, 0);
         } else {
             DSD_FPRINTF(stderr, " Missing GPS Block 1");
         }
@@ -964,7 +956,24 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
             ctx->state->p25_src_nid = wacn;
         }
         if (src != 0) {
-            ctx->state->lastsrc = (int)src;
+            dsd_call_snapshot call;
+            if (dsd_call_state_get(ctx->state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+                const dsd_call_observation observation = {
+                    .protocol = call.protocol,
+                    .slot = 0U,
+                    .kind = call.kind,
+                    .ota_target_id = call.ota_target_id,
+                    .policy_target_id = call.policy_target_id,
+                    .ota_source_id = src,
+                    .channel = call.channel,
+                    .frequency_hz = call.frequency_hz,
+                    .service_options = call.service_options,
+                    .emergency = call.emergency,
+                    .priority = call.priority,
+                };
+                (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+                dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+            }
         }
         return 1;
     }

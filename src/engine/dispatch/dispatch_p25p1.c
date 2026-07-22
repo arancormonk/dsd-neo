@@ -333,8 +333,6 @@ p25p1_handle_tdu(dsd_opts* opts, dsd_state* state) {
     }
 
     mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
-    state->lasttg = 0;
-    state->lastsrc = 0;
     state->lastp25type = 0;
     state->err_str[0] = 0;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TDU          ");
@@ -356,8 +354,6 @@ p25p1_handle_tsbk(dsd_opts* opts, dsd_state* state) {
         resumeScan(opts, state);
     }
 
-    state->lasttg = 0;
-    state->lastsrc = 0;
     state->lastp25type = 3;
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " TSBK         ");
     processTSBK(opts, state);

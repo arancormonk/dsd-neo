@@ -21,6 +21,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -35,6 +36,7 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
 #include <dsd-neo/runtime/colors.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -305,7 +307,10 @@ hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, ui
     // Set this before resolution because an encrypted-call lockout can
     // synchronously release the carrier and clear all Phase 1 crypto state.
     state->p25_p1_hdu_crypto_fresh = algid != 0;
-    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, state->lasttg);
+    dsd_call_snapshot call;
+    const int target =
+        dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= INT_MAX ? (int)call.ota_target_id : 0;
+    (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, target);
 }
 
 static void

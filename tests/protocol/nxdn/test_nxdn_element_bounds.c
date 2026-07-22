@@ -7,6 +7,8 @@
  * Regression checks for NXDN element length guards on short payloads.
  */
 
+#include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -217,15 +219,17 @@ reset_assignment_capture(void) {
     g_mapped_channel_freq = 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    g_datacall_src = src;
-    g_datacall_dst = dst;
+    g_datacall_src = observation->ota_source_id;
+    g_datacall_dst = observation->ota_target_id;
     g_datacall_slot = slot;
-    DSD_SNPRINTF(g_datacall_event, sizeof(g_datacall_event), "%s", data_string ? data_string : "");
+    DSD_SNPRINTF(g_datacall_event, sizeof(g_datacall_event), "%s", notice ? notice : "");
+    return 0;
 }
 
 void
@@ -456,16 +460,6 @@ all_sacch_segments_are(uint8_t value, const dsd_state* state) {
     return 1;
 }
 
-static int
-active_channels_are_zero(const dsd_state* state) {
-    for (size_t i = 0U; i < 31U; i++) {
-        if (state->active_channel[i][0] != '\0') {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static void
 load_sacch_segments_from_bits(dsd_state* state, const uint8_t* bits) {
     for (size_t frame = 0U; frame < 4U; frame++) {
@@ -589,8 +583,15 @@ test_disc_trunk_return_clears_call_state(void) {
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
     state->p25_cc_freq = 851012500L;
-    state->nxdn_last_rid = 0x1234;
-    state->nxdn_last_tg = 0x4567;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .policy_target_id = 0x4567U,
+        .ota_source_id = 0x1234U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     state->nxdn_cipher_type = 2;
     state->data_header_valid[0] = 1;
     state->data_header_blocks[0] = 7;
@@ -599,9 +600,14 @@ test_disc_trunk_return_clears_call_state(void) {
     state->payload_mi = 0x1122334455667788ULL;
     state->dmr_lrrp_source[0] = 99;
     state->dmr_lrrp_target[0] = 100;
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "active");
-    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "Group");
-    DSD_SNPRINTF(state->active_channel[3], sizeof(state->active_channel[3]), "%s", "busy");
+    const dsd_call_observation activity = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .channel = 3U,
+    };
+    assert(dsd_recent_activity_publish(state, 3U, &activity, "busy", 1U) == 1);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 0, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 0, sizeof(state->nxdn_sacch_frame_segcrc));
     g_alias_prop_calls = 0;
@@ -616,11 +622,13 @@ test_disc_trunk_return_clears_call_state(void) {
     rc |= expect_int("disc-tune-cc-freq", (int)g_tune_cc_freq, (int)851012500L);
     rc |= expect_int("disc-tune-cc-sps", g_tune_cc_ted_sps, 0);
     rc |= expect_int("disc-trunk-cleared", opts->trunk_is_tuned, 0);
-    rc |= expect_int("disc-rid-reset", state->nxdn_last_rid, 0);
-    rc |= expect_int("disc-tg-reset", state->nxdn_last_tg, 0);
+    dsd_call_snapshot call;
+    rc |= expect_int("disc-call-present", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("disc-call-ended", call.phase, DSD_CALL_PHASE_ENDED);
     rc |= expect_int("disc-cipher-reset", state->nxdn_cipher_type, 0);
-    rc |= expect_int("disc-call-string-cleared", state->call_string[0][0], '\0');
-    rc |= expect_int("disc-call-type-cleared", state->nxdn_call_type[0], '\0');
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("disc-recent-activity-snapshot", dsd_recent_activity_copy_snapshot(state, &recent), 1);
+    rc |= expect_int("disc-recent-activity-cleared", recent.entries[3].notice[0], '\0');
     rc |= expect_int("disc-data-valid-reset", state->data_header_valid[0], 0);
     rc |= expect_int("disc-data-blocks-reset", state->data_header_blocks[0], 1);
     rc |= expect_int("disc-payload-alg-reset", state->payload_algid, 0);
@@ -629,7 +637,6 @@ test_disc_trunk_return_clears_call_state(void) {
     rc |= expect_int("disc-lrrp-src-reset", state->dmr_lrrp_source[0], 0);
     rc |= expect_int("disc-lrrp-tgt-reset", state->dmr_lrrp_target[0], 0);
     rc |= expect_int("disc-sacch-reset", all_sacch_segments_are(1U, state), 1);
-    rc |= expect_int("disc-active-channels-reset", active_channels_are_zero(state), 1);
 
     dsd_state_ext_free_all(state);
     free(state);
@@ -836,26 +843,19 @@ test_srv_info_anchors_control_channel_from_rigctl(void) {
     opts->use_rigctl = 1;
     state->p25_cc_freq = 851012500L;
     state->trunk_cc_freq = 851012500L;
-    state->nxdn_last_rid = 0x1111U;
-    state->nxdn_last_tg = 0x2222U;
     state->nxdn_grant_chan = 77U;
-    DSD_SNPRINTF(state->active_channel[3], sizeof(state->active_channel[3]), "%s", "stale");
     g_current_rigctl_freq = 855262500L;
 
     NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
     int rc = 0;
     rc |= expect_int("srv-info-message-type", state->NxdnElementsContent.MessageType, 0x19);
-    rc |= expect_int("srv-info-last-rid-reset", state->nxdn_last_rid, 0);
-    rc |= expect_int("srv-info-last-tg-reset", state->nxdn_last_tg, 0);
     rc |= expect_int("srv-info-ran", state->nxdn_last_ran, 0x34);
     rc |= expect_int("srv-info-site-code", state->nxdn_location_site_code, 0x234);
     rc |= expect_int("srv-info-sys-code", state->nxdn_location_sys_code, 1);
     rc |= expect_string("srv-info-category", state->nxdn_location_category, "Global");
     rc |= expect_int("srv-info-cc-freq", (int)state->p25_cc_freq, (int)855262500L);
     rc |= expect_int("srv-info-trunk-cc-freq", (int)state->trunk_cc_freq, (int)855262500L);
-    rc |= expect_int("srv-info-active-channels-reset", active_channels_are_zero(state), 1);
-    rc |= expect_int("srv-info-grant-chan-reset", state->nxdn_grant_chan, 0);
 
     g_current_rigctl_freq = 0;
     free(state);
@@ -1225,11 +1225,14 @@ test_arib_vcall_uses_shifted_fields(void) {
     rc |= expect_int("arib-vcall-dst", state->NxdnElementsContent.DestinationID, 0x4567);
     rc |= expect_int("arib-vcall-cipher", state->NxdnElementsContent.CipherType, 1);
     rc |= expect_int("arib-vcall-key", state->NxdnElementsContent.KeyID, 0x2A);
-    rc |= expect_int("arib-vcall-last-rid", state->nxdn_last_rid, 0x1234);
-    rc |= expect_int("arib-vcall-last-tg", state->nxdn_last_tg, 0x4567);
+    dsd_call_snapshot call;
+    rc |= expect_int("arib-vcall-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("arib-vcall-source", call.ota_source_id, 0x1234U);
+    rc |= expect_u64("arib-vcall-target", call.ota_target_id, 0x4567U);
+    rc |= expect_int("arib-vcall-kind", call.kind, DSD_CALL_KIND_GROUP_VOICE);
     rc |= expect_int("arib-vcall-key-state", state->nxdn_key, 0x2A);
-    rc |= expect_int("arib-vcall-gi", state->gi[0], 0);
     rc |= expect_int("arib-vcall-encrypted", state->dmr_encL, 1);
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1258,8 +1261,8 @@ test_bad_crc_encrypted_vcall_records_metadata(void) {
     rc |= expect_int("bad-crc-vcall-dst", state->NxdnElementsContent.DestinationID, 0x2468);
     rc |= expect_int("bad-crc-vcall-cipher", state->NxdnElementsContent.CipherType, 3);
     rc |= expect_int("bad-crc-vcall-key", state->NxdnElementsContent.KeyID, 0x09);
-    rc |= expect_int("bad-crc-vcall-last-rid", state->nxdn_last_rid, 0x1357);
-    rc |= expect_int("bad-crc-vcall-last-tg", state->nxdn_last_tg, 0x2468);
+    dsd_call_snapshot call;
+    rc |= expect_int("bad-crc-vcall-no-canonical-call", dsd_call_state_get(state, 0U, &call), 0);
     rc |= expect_int("bad-crc-vcall-cipher-state", state->nxdn_cipher_type, 3);
     rc |= expect_int("bad-crc-vcall-lockout", state->dmr_encL, 1);
     free(state);
@@ -1303,6 +1306,7 @@ test_vcall_des_keyloader_and_iv_signal(void) {
     rc |= expect_u64("vcall-des-iv", (uint64_t)state->payload_miN, iv);
     rc |= expect_int("vcall-des-new-iv", state->nxdn_new_iv, 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1338,6 +1342,7 @@ test_vcall_scrambler_keyloader_uses_active_nxdn48_profile(void) {
     rc |= expect_u64("vcall-scrambler-key", (uint64_t)state->R, scrambler_key);
     rc |= expect_int("vcall-scrambler-unmutes-loaded-key", state->dmr_encL, 0);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1390,6 +1395,7 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
     rc |= expect_u64("vcall-aes-iv", (uint64_t)state->payload_miN, iv);
     rc |= expect_int("vcall-aes-new-iv", state->nxdn_new_iv, 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1409,9 +1415,15 @@ test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
 
     write_arib_vcall_fields(bits, 0xE8U, 0xABU, 0x40U, 4U, 0U, 0x2222U, 0x3333U, 0U, 0x05U);
-    state->nxdn_last_rid = 0x7777U;
-    state->nxdn_last_tg = 0x8888U;
-    state->gi[0] = 1;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x8888U,
+        .policy_target_id = 0x8888U,
+        .ota_source_id = 0x7777U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "stale");
 
     NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
@@ -1422,10 +1434,11 @@ test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
     rc |= expect_int("arib-release-src", state->NxdnElementsContent.SourceUnitID, 0x2222);
     rc |= expect_int("arib-release-dst", state->NxdnElementsContent.DestinationID, 0x3333);
     rc |= expect_int("arib-release-key", state->NxdnElementsContent.KeyID, 0x05);
-    rc |= expect_int("arib-release-last-rid", state->nxdn_last_rid, 0);
-    rc |= expect_int("arib-release-last-tg", state->nxdn_last_tg, 0);
-    rc |= expect_int("arib-release-gi", state->gi[0], -1);
+    dsd_call_snapshot call;
+    rc |= expect_int("arib-release-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("arib-release-ended", call.phase, DSD_CALL_PHASE_ENDED);
     rc |= expect_int("arib-release-alias", state->generic_talker_alias[0][0], '\0');
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1474,10 +1487,13 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     rc |= expect_int("assignment-group-trunk-cc-freq", (int)state->trunk_cc_freq, (int)control_freq);
     rc |= expect_int("assignment-group-grant-channel", state->nxdn_grant_chan, channel);
     rc |= expect_int("assignment-group-grant-freq", (int)state->nxdn_grant_freq, (int)grant_freq);
-    rc |= expect_contains("assignment-group-active", state->active_channel[0], "Active Ch: 298");
-    rc |= expect_contains("assignment-group-active-tg", state->active_channel[0], "TG: 1110 SRC: 291");
-    rc |= expect_string("assignment-group-call-type", state->nxdn_call_type, "Group Call");
-    rc |= expect_string("assignment-group-call-string", state->call_string[0], "Group Call Emergency");
+    dsd_call_snapshot call;
+    rc |= expect_int("assignment-group-no-voice-call", dsd_call_state_get(state, 0U, &call), 0);
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("assignment-group-activity-snapshot", dsd_recent_activity_copy_snapshot(state, &recent), 1);
+    rc |= expect_int("assignment-group-activity-kind", recent.entries[0].observation.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_int("assignment-group-activity-emergency", recent.entries[0].observation.emergency, 1);
+    rc |= expect_int("assignment-group-activity-channel", recent.entries[0].observation.channel, channel);
     rc |= expect_u64("assignment-group-key", (uint64_t)state->R, (uint64_t)scrambler_key);
     rc |= expect_u64("assignment-group-mi", (uint64_t)state->payload_miN, (uint64_t)scrambler_key);
     rc |= expect_int("assignment-group-m-cipher", state->nxdn_cipher_type, 1);
@@ -1525,7 +1541,6 @@ test_assignment_data_gate_and_duplicate_release(void) {
     rc |= expect_int("assignment-data-grant-channel", state->nxdn_grant_chan, data_channel);
     rc |= expect_int("assignment-data-grant-freq", (int)state->nxdn_grant_freq, (int)data_freq);
     rc |= expect_int("assignment-data-no-tune", g_tune_freq_calls, 0);
-    rc |= expect_contains("assignment-data-active", state->active_channel[0], "TG: 770 SRC: 513");
 
     reset_assignment_capture();
     opts->trunk_tune_data_calls = 1;
@@ -1543,8 +1558,11 @@ test_assignment_data_gate_and_duplicate_release(void) {
     rc |= expect_int("assignment-dup-tune-calls", g_tune_freq_calls, 1);
     rc |= expect_int("assignment-dup-tune-freq", (int)g_tune_freq_freq, (int)voice_freq);
     rc |= expect_int("assignment-dup-sync-reset", state->lastsynctype, DSD_SYNC_NONE);
-    rc |= expect_string("assignment-dup-call-string", state->call_string[0], "Group Call");
-    rc |= expect_contains("assignment-dup-active", state->active_channel[0], "TG: 1282 SRC: 1025");
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("assignment-dup-activity-snapshot", dsd_recent_activity_copy_snapshot(state, &recent), 1);
+    rc |= expect_int("assignment-dup-activity-kind", recent.entries[0].observation.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_int("assignment-dup-activity-target", (int)recent.entries[0].observation.ota_target_id, 0x0502);
+    rc |= expect_int("assignment-dup-activity-channel", recent.entries[0].observation.channel, voice_channel);
 
     dsd_state_ext_free_all(state);
     free(state);

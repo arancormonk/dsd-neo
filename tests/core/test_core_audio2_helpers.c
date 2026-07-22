@@ -628,8 +628,6 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     rc |= expect_int("ss3 forced privacy unmutes right", encR, 0);
 
     state.baofeng_ap = 0;
-    state.lasttg = 111;
-    state.lasttgR = 222;
     state.tg_hold = 999;
     encL = 0;
     encR = 0;

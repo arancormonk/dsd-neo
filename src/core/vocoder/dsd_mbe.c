@@ -21,6 +21,8 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -791,7 +793,6 @@ static void
 mbe_slot_apply_straight_ks_left(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_so = 0;
-        state->p25_service_options_valid[0] = 0;
         state->payload_algid = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
     }
@@ -801,7 +802,6 @@ static void
 mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
     if (state->straight_ks == 1 && state->straight_mod > 0) {
         state->dmr_soR = 0;
-        state->p25_service_options_valid[1] = 0;
         state->payload_algidR = 0;
         straight_mod_xor_apply_frame49(state, state->currentslot, ambe_d);
     }
@@ -882,7 +882,11 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
 static void
 mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
     if (state->M == 0 && state->payload_algid == 0) {
-        uint32_t hash = mbe_hash_tg_for_key((uint32_t)state->lasttg);
+        dsd_call_snapshot call;
+        uint32_t target = dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id <= UINT32_MAX
+                              ? (uint32_t)call.ota_target_id
+                              : 0U;
+        uint32_t hash = mbe_hash_tg_for_key(target);
         if (state->rkey_array[hash] != 0) {
             state->K = state->rkey_array[hash] & 0xFF;                     //doesn't exceed 255
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF; //doesn't exceed 40-bit limit
@@ -896,7 +900,11 @@ mbeslot_left_autoload_keys(dsd_opts* opts, dsd_state* state) {
 static void
 mbeslot_right_autoload_keys(dsd_opts* opts, dsd_state* state) {
     if (state->M == 0 && state->payload_algidR == 0) {
-        uint32_t hash = mbe_hash_tg_for_key((uint32_t)state->lasttgR);
+        dsd_call_snapshot call;
+        uint32_t target = dsd_call_state_get(state, 1U, &call) > 0 && call.ota_target_id <= UINT32_MAX
+                              ? (uint32_t)call.ota_target_id
+                              : 0U;
+        uint32_t hash = mbe_hash_tg_for_key(target);
         if (state->rkey_array[hash] != 0) {
             state->K = state->rkey_array[hash] & 0xFF;
             state->K1 = state->H = state->rkey_array[hash] & 0xFFFFFFFFFF;
@@ -1726,12 +1734,45 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     }
 }
 
+static int
+mark_vocoder_call_media_sync_supported(int protocol) {
+    return DSD_SYNC_IS_P25P1(protocol) || protocol == DSD_SYNC_X2TDMA_VOICE_POS || protocol == DSD_SYNC_X2TDMA_VOICE_NEG
+           || protocol == DSD_SYNC_DSTAR_VOICE_POS || protocol == DSD_SYNC_DSTAR_VOICE_NEG
+           || protocol == DSD_SYNC_DMR_BS_VOICE_POS || protocol == DSD_SYNC_DMR_BS_VOICE_NEG
+           || protocol == DSD_SYNC_DMR_MS_VOICE || DSD_SYNC_IS_PROVOICE(protocol) || DSD_SYNC_IS_NXDN(protocol)
+           || DSD_SYNC_IS_YSF(protocol);
+}
+
+static void
+mark_vocoder_call_media(dsd_opts* opts, dsd_state* state) {
+    int protocol = state->synctype;
+    const int voice_sync = mark_vocoder_call_media_sync_supported(protocol);
+    if (!voice_sync) {
+        return;
+    }
+    const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
+    dsd_call_snapshot call;
+    const int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (!has_active) {
+        const dsd_call_observation observation = {
+            .protocol = protocol,
+            .slot = slot,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0) {
+            dsd_event_sync_slot(opts, state, slot);
+        }
+    }
+    (void)dsd_call_state_update_media(state, slot, 1, 0.0);
+}
+
 static void
 processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], char ambe_fr[4][24],
                         char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                         dsd_vocoder_soft_bit ambe_soft_fr[4][24], dsd_vocoder_soft_bit imbe7100_soft_fr[7][24]) {
     mbe_frame_ctx_t frame_ctx;
 
+    mark_vocoder_call_media(opts, state);
     mbe_prepare_frame_state(opts, state, &frame_ctx, imbe7100_soft_fr);
 
     if (DSD_SYNC_IS_P25P1(state->synctype)) {

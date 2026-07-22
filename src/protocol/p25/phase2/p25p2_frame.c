@@ -36,6 +36,7 @@
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -113,24 +114,14 @@ p25p2_teardown_call(dsd_opts* opts, dsd_state* state) {
     state->p25_p2_last_mac_active[1] = 0;
     state->p25_p2_last_end_ptt[0] = 0;
     state->p25_p2_last_end_ptt[1] = 0;
-    state->p25_call_is_packet[0] = 0;
-    state->p25_call_is_packet[1] = 0;
-    state->p25_call_emergency[0] = 0;
-    state->p25_call_emergency[1] = 0;
-    state->p25_call_priority[0] = 0;
-    state->p25_call_priority[1] = 0;
     state->dmr_so = 0;
     state->dmr_soR = 0;
-    state->p25_service_options_valid[0] = 0;
-    state->p25_service_options_valid[1] = 0;
     state->payload_algid = 0;
     state->payload_keyid = 0;
     state->payload_miP = 0ULL;
     state->payload_algidR = 0;
     state->payload_keyidR = 0;
     state->payload_miN = 0ULL;
-    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     ");
-    DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "                     ");
 }
 
 //DUID Look Up Table from OP25
@@ -519,10 +510,8 @@ p25p2_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
 
     if (state->currentslot == 0) {
         state->dmr_so = opcode;
-        state->p25_service_options_valid[0] = 0;
     } else {
         state->dmr_soR = opcode;
-        state->p25_service_options_valid[1] = 0;
     }
 
     if (ec >= 0) {
@@ -581,10 +570,8 @@ process_FACCHs(dsd_opts* opts, dsd_state* state) {
 
     if (state->currentslot == 0) {
         state->dmr_so = opcode;
-        state->p25_service_options_valid[0] = 0;
     } else {
         state->dmr_soR = opcode;
-        state->p25_service_options_valid[1] = 0;
     }
 
     if (ec >= 0) {
@@ -641,10 +628,8 @@ p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index) {
     //set inverse true for SACCH
     if (state->currentslot == 0) {
         state->dmr_soR = opcode;
-        state->p25_service_options_valid[1] = 0;
     } else {
         state->dmr_so = opcode;
-        state->p25_service_options_valid[0] = 0;
     }
 
     if (ec >= 0) {
@@ -700,10 +685,8 @@ process_SACCHs(dsd_opts* opts, dsd_state* state) {
     //set inverse true for SACCH
     if (state->currentslot == 0) {
         state->dmr_soR = opcode;
-        state->p25_service_options_valid[1] = 0;
     } else {
         state->dmr_so = opcode;
-        state->p25_service_options_valid[0] = 0;
     }
 
     if (ec >= 0) {
@@ -791,11 +774,23 @@ p25p2_voice_crypto_is_authoritatively_clear(const dsd_state* state, int slot) {
         return 1;
     }
 
-    if (state->gi[slot] == 1) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.kind == DSD_CALL_KIND_PRIVATE_VOICE || call.ota_target_id > INT_MAX) {
         return 0;
     }
-    const int talkgroup = (slot == 0) ? state->lasttg : state->lasttgR;
+    const int talkgroup = (int)call.ota_target_id;
     return p25_patch_tg_key_is_clear(state, talkgroup) || p25_patch_sg_key_is_clear(state, talkgroup);
+}
+
+static int
+p25p2_active_target(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_target_id > INT_MAX) {
+        return 0;
+    }
+    return (int)call.ota_target_id;
 }
 
 static void
@@ -1134,7 +1129,7 @@ p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int sl
 static void
 p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
-                             state->lasttg);
+                             p25p2_active_target(state, 0U));
     p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid, state->dmrburstL);
 
     if (state->payload_algid == 0x80 || state->payload_algid == 0x0) {
@@ -1175,7 +1170,7 @@ p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
 static void
 p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
-                             state->lasttgR);
+                             p25p2_active_target(state, 1U));
     p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR, state->dmrburstR);
 
     if (state->payload_algidR == 0x80 || state->payload_algidR == 0x0) {

@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -31,6 +32,14 @@ gmsk_soft_symbol_to_viterbi_cost(float symbol, const dsd_state* state) {
 static void pack_slow_data_bytes(const uint8_t bytes[60], uint8_t bits[480]);
 static void build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]);
 static void set_compacted_slow_data_bytes(uint8_t bytes[60], const uint8_t compact[51]);
+
+static dsd_call_snapshot
+get_dstar_call(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    return call;
+}
 
 static void
 convolution_encode(const int* bits, size_t bit_count, int* symbols) {
@@ -101,11 +110,14 @@ build_encoded_header_fixture(float soft_rx[DSD_DSTAR_HEADER_CODED_BITS]) {
     uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
 
     DSD_MEMSET(header, 0, sizeof header);
-    header[0] = 0xF8U;
+    header[0] = 0x78U;
     DSD_MEMCPY(header + 3, "RPT2TST ", 8);
     DSD_MEMCPY(header + 11, "RPT1TST ", 8);
     DSD_MEMCPY(header + 19, "CQCQCQ  ", 8);
     DSD_MEMCPY(header + 27, "N0CALL  /TST", 12);
+    const uint16_t crc = dstar_crc16(header, 39U);
+    header[39] = (uint8_t)(crc >> 8U);
+    header[40] = (uint8_t)crc;
 
     DSD_MEMSET(info_bits, 0, sizeof info_bits);
     for (int byte_idx = 0; byte_idx < 41; byte_idx++) {
@@ -139,10 +151,11 @@ test_soft_header_decode_extracts_callsigns(void) {
 
     dstar_header_decode_soft(&state, soft_rx);
 
-    assert(strcmp(state.dstar_rpt2, "RPT2TST ") == 0);
-    assert(strcmp(state.dstar_rpt1, "RPT1TST ") == 0);
-    assert(strcmp(state.dstar_dst, "CQCQCQ  ") == 0);
-    assert(strcmp(state.dstar_src, "N0CALL  /TST") == 0);
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+    assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
 }
 
 static void
@@ -180,10 +193,11 @@ test_slow_data_header_accepts_wire_crc_order(void) {
     pack_slow_data_bytes(bytes, bits);
     processDSTAR_SD(&opts, &state, bits);
 
-    assert(strcmp(state.dstar_rpt2, "RPT2TST ") == 0);
-    assert(strcmp(state.dstar_rpt1, "RPT1TST ") == 0);
-    assert(strcmp(state.dstar_dst, "CQCQCQ  ") == 0);
-    assert(strcmp(state.dstar_src, "N0CALL  /TST") == 0);
+    const dsd_call_snapshot call = get_dstar_call(&state);
+    assert(strcmp(call.route_text[1], "RPT2TST") == 0);
+    assert(strcmp(call.route_text[0], "RPT1TST") == 0);
+    assert(strcmp(call.target_text, "CQCQCQ") == 0);
+    assert(strcmp(call.source_text, "N0CALL /TST") == 0);
 }
 
 static void

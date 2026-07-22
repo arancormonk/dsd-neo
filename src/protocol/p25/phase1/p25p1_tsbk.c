@@ -49,6 +49,22 @@ enum {
     TSBK_BITS_PER_BLOCK = 96
 };
 
+static void
+tsbk_publish_activity(dsd_state* state, dsd_call_kind kind, uint64_t target, uint64_t source, uint16_t channel,
+                      long int frequency, const char* notice) {
+    const dsd_call_observation observation = {
+        .protocol = state->lastsynctype,
+        .slot = 0U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .channel = channel,
+        .frequency_hz = frequency,
+    };
+    (void)dsd_recent_activity_publish(state, 0U, &observation, notice, 0U);
+}
+
 typedef struct {
     uint8_t tsbk_dibit[TSBK_DIBITS_PER_REP];
     int16_t tsbk_llr[TSBK_SOFT_BITS_PER_REP];
@@ -70,7 +86,6 @@ tsbk_prepare_frame_state(dsd_opts* opts, dsd_state* state) {
     // Ensure slot index is sane when swapping protocols.
     state->currentslot = 0;
     state->dmr_so = 0;
-    state->p25_service_options_valid[0] = 0;
 
     p25_status_accum_ensure_started(state);
 
@@ -231,9 +246,10 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     long int freq = process_channel_to_freq(opts, state, channel);
     char suf[32];
     p25_format_chan_suffix(state, (uint16_t)channel, -1, suf, sizeof suf);
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 GRG Grant: %04X%s SG: %d; ",
-                 channel, suf, sg);
-    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "MFID90 GRG Grant: %04X%s SG: %d; ", channel, suf, sg);
+    tsbk_publish_activity(state, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)sg, (uint64_t)source_address, (uint16_t)channel,
+                          freq, notice);
     DSD_FPRINTF(stderr, "\n");
     if (opts->trunk_enable == 1 && freq != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -255,9 +271,9 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     char suf1[32], suf2[32];
     p25_format_chan_suffix(state, (uint16_t)ch1, -1, suf1, sizeof suf1);
     p25_format_chan_suffix(state, (uint16_t)ch2, -1, suf2, sizeof suf2);
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 GRG Upd: %04X%s SG: %d; ", ch1,
-                 suf1, sg1);
-    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "MFID90 GRG Upd: %04X%s SG: %d; ", ch1, suf1, sg1);
+    tsbk_publish_activity(state, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)sg1, 0U, (uint16_t)ch1, freq1, notice);
     DSD_FPRINTF(stderr, "\n");
     if (opts->trunk_enable == 1 && ch1 != 0 && freq1 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
@@ -443,15 +459,17 @@ tsbk_handle_mfid90_queued_deny(dsd_opts* opts, dsd_state* state, const uint8_t t
     DSD_FPRINTF(stderr, "  SVC [%02X] Reason [%s]", svc_type, reason_str);
     if (has_additional) {
         DSD_FPRINTF(stderr, " Addl [%06X]", addl_info);
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
-                     "MOT %s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED", target_addr, reason_str,
-                     addl_info);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "MOT %s Target: %d Reason: %s Info: %06X; ", is_deny ? "DENY" : "QUEUED",
+                     target_addr, reason_str, addl_info);
+        tsbk_publish_activity(state, DSD_CALL_KIND_DATA, (uint64_t)target_addr, 0U, 0U, 0, notice);
     } else {
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT %s Target: %d Reason: %s; ",
-                     is_deny ? "DENY" : "QUEUED", target_addr, reason_str);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "MOT %s Target: %d Reason: %s; ", is_deny ? "DENY" : "QUEUED", target_addr,
+                     reason_str);
+        tsbk_publish_activity(state, DSD_CALL_KIND_DATA, (uint64_t)target_addr, 0U, 0U, 0, notice);
     }
     DSD_FPRINTF(stderr, " Target [%d]\n", target_addr);
-    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
 
     if (opts) {
         if (is_deny) {
@@ -472,9 +490,9 @@ tsbk_handle_mfid90_ack(dsd_state* state, const uint8_t tsbk_byte[TSBK_BYTES_PER_
 
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) Acknowledge Response\n");
     DSD_FPRINTF(stderr, "  Service [%02X] Source [%d] Target [%d]\n", svc_type, source, target);
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]),
-                 "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
-    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "MOT ACK Target: %d Source: %d Service: %02X; ", target, source, svc_type);
+    tsbk_publish_activity(state, DSD_CALL_KIND_DATA, (uint64_t)target, (uint64_t)source, 0U, 0, notice);
 }
 
 static void
@@ -538,6 +556,40 @@ tsbk_mfid90_data_channel_valid(uint16_t channel) {
 }
 
 static void
+tsbk_mfid90_print_data_channel(const dsd_state* state, const char* label, uint16_t channel, long int frequency,
+                               const char* prefix) {
+    char suffix[32];
+    p25_format_chan_suffix(state, channel, -1, suffix, sizeof suffix);
+    DSD_FPRINTF(stderr, "%s%s [%04X]%s", prefix, label, channel, suffix);
+    if (frequency > 0) {
+        DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)frequency / 1000000.0);
+    }
+}
+
+static void
+tsbk_mfid90_build_data_notice(const dsd_state* state, uint16_t downlink, int downlink_valid, uint16_t uplink,
+                              int uplink_valid, char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE]) {
+    if (!downlink_valid && !uplink_valid) {
+        DSD_SNPRINTF(notice, DSD_RECENT_ACTIVITY_TEXT_SIZE, "MOT TDMA Data: Not Active; ");
+        return;
+    }
+    if (downlink_valid && uplink_valid) {
+        char downlink_suffix[32];
+        char uplink_suffix[32];
+        p25_format_chan_suffix(state, downlink, -1, downlink_suffix, sizeof downlink_suffix);
+        p25_format_chan_suffix(state, uplink, -1, uplink_suffix, sizeof uplink_suffix);
+        DSD_SNPRINTF(notice, DSD_RECENT_ACTIVITY_TEXT_SIZE, "MOT TDMA Data: DL %04X%s UL %04X%s; ", downlink,
+                     downlink_suffix, uplink, uplink_suffix);
+        return;
+    }
+
+    const uint16_t channel = downlink_valid ? downlink : uplink;
+    char suffix[32];
+    p25_format_chan_suffix(state, channel, -1, suffix, sizeof suffix);
+    DSD_SNPRINTF(notice, DSD_RECENT_ACTIVITY_TEXT_SIZE, "MOT TDMA Data: %04X%s; ", channel, suffix);
+}
+
+static void
 tsbk_handle_mfid90_tdma_data_channel(const dsd_opts* opts, dsd_state* state,
                                      const uint8_t tsbk_byte[TSBK_BYTES_PER_BLOCK]) {
     uint16_t downlink = tsbk_u16(tsbk_byte, 4);
@@ -549,38 +601,19 @@ tsbk_handle_mfid90_tdma_data_channel(const dsd_opts* opts, dsd_state* state,
 
     DSD_FPRINTF(stderr, "\n MFID90 (Moto) TDMA Data Channel\n");
     if (downlink_valid) {
-        char suffix[32];
-        p25_format_chan_suffix(state, downlink, -1, suffix, sizeof suffix);
-        DSD_FPRINTF(stderr, "  DL [%04X]%s", downlink, suffix);
-        if (downlink_freq > 0) {
-            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)downlink_freq / 1000000.0);
-        }
+        tsbk_mfid90_print_data_channel(state, "DL", downlink, downlink_freq, "  ");
     }
     if (uplink_valid) {
-        char suffix[32];
-        p25_format_chan_suffix(state, uplink, -1, suffix, sizeof suffix);
-        DSD_FPRINTF(stderr, "%sUL [%04X]%s", downlink_valid ? " " : "  ", uplink, suffix);
-        if (uplink_freq > 0) {
-            DSD_FPRINTF(stderr, " Freq: %.6lf MHz", (double)uplink_freq / 1000000.0);
-        }
+        tsbk_mfid90_print_data_channel(state, "UL", uplink, uplink_freq, downlink_valid ? " " : "  ");
     }
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     if (!downlink_valid && !uplink_valid) {
         DSD_FPRINTF(stderr, "  Not Active");
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: Not Active; ");
-    } else if (downlink_valid && uplink_valid) {
-        char downlink_suffix[32], uplink_suffix[32];
-        p25_format_chan_suffix(state, downlink, -1, downlink_suffix, sizeof downlink_suffix);
-        p25_format_chan_suffix(state, uplink, -1, uplink_suffix, sizeof uplink_suffix);
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: DL %04X%s UL %04X%s; ",
-                     downlink, downlink_suffix, uplink, uplink_suffix);
-    } else {
-        uint16_t channel = downlink_valid ? downlink : uplink;
-        char suffix[32];
-        p25_format_chan_suffix(state, channel, -1, suffix, sizeof suffix);
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MOT TDMA Data: %04X%s; ", channel,
-                     suffix);
     }
-    (void)dsd_recent_activity_sync_legacy_entry(state, 0U);
+    tsbk_mfid90_build_data_notice(state, downlink, downlink_valid, uplink, uplink_valid, notice);
+    const uint16_t activity_channel = downlink_valid ? downlink : (uplink_valid ? uplink : 0U);
+    const long int activity_freq = downlink_valid ? downlink_freq : uplink_freq;
+    tsbk_publish_activity(state, DSD_CALL_KIND_DATA, 0U, 0U, activity_channel, activity_freq, notice);
     DSD_FPRINTF(stderr, "\n");
 }
 

@@ -165,8 +165,10 @@ test_capture_blocks_through_live_decoder(void) {
     }
 
     assert(strcmp(history[0].Event_History_Items[0].text_message, "helo i am junior, its a text message.") == 0);
-    assert(strstr(history[0].Event_History_Items[0].event_string, "declared UTF-32; decoded UTF-16BE compatibility")
+    assert(strstr(history[0].Event_History_Items[1].event_string, "declared UTF-32; decoded UTF-16BE compatibility")
            != NULL);
+    assert(history[0].Event_History_Items[1].source_id == 31U);
+    assert(history[0].Event_History_Items[1].target_id == 2515U);
     assert(state.data_header_valid[0] == 0U);
     assert(state.data_header_dd_format[0] == 0U);
     assert(state.data_header_bit_padding[0] == 0U);

@@ -3,12 +3,15 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frame.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -41,4 +44,10 @@ dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
     }
     state->err_str[0] = 0;
     processX2TDMAdata(opts, state);
+    const uint8_t slot = (uint8_t)(state->currentslot == 1 ? 1 : 0);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_X2TDMA(call.protocol) && dsd_call_state_end(state, slot, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, slot);
+    }
 }

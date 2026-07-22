@@ -8,6 +8,7 @@
  * SACCH, FACCH, CAC, FACCH2, and FACCH3 soft-decision paths.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -500,8 +501,10 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-single-copy-cipher-lsb", 1U, state.dmr_pdu_sf[0][1], 1U);
     rc |= expect_int("sacch2-single-payload-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-single-last-ran", (int)state.nxdn_last_ran, 7);
-    rc |= expect_int("sacch2-single-last-tg", state.nxdn_last_tg, 777);
-    rc |= expect_int("sacch2-single-last-rid", state.nxdn_last_rid, 777);
+    dsd_call_snapshot call;
+    rc |= expect_int("sacch2-single-canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 777);
+    rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 777);
     rc |= expect_str("sacch2-single-alias", state.generic_talker_alias[0], "JPN DCR");
     rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR; ");
     rc |= expect_int("sacch2-single-event-revision", (int)histories[0].revision, 1);
@@ -531,7 +534,7 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-bad-crc-message-type", 0U, state.nxdn_dcr_sf_message_type, 0xFFU);
     rc |= expect_u8_at("sacch2-bad-crc-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 1U);
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
-    rc |= expect_int("sacch2-bad-crc-no-tg", state.nxdn_last_tg, 0);
+    rc |= expect_int("sacch2-bad-crc-no-call", dsd_call_state_get(&state, 0U, &call), 0);
     rc |= expect_str("sacch2-bad-crc-no-alias", state.generic_talker_alias[0], "");
     return rc;
 }

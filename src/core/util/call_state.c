@@ -4,14 +4,13 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
-#include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -134,32 +133,84 @@ call_state_next_nonzero(uint64_t value) {
     return value == 0U ? 1U : value;
 }
 
-static uint32_t
+static uint64_t
 call_state_effective_target_observation(const dsd_call_observation* observation) {
-    if (observation->ota_target_id != 0U) {
-        return observation->ota_target_id;
-    }
-    if (observation->kind == DSD_CALL_KIND_GROUP_VOICE) {
-        return observation->group_id;
-    }
-    if (observation->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        return observation->private_id;
-    }
-    return observation->policy_target_id;
+    return observation->ota_target_id != 0U ? observation->ota_target_id : observation->policy_target_id;
 }
 
-static uint32_t
+static uint64_t
 call_state_effective_target_snapshot(const dsd_call_snapshot* snapshot) {
-    if (snapshot->ota_target_id != 0U) {
-        return snapshot->ota_target_id;
+    return snapshot->ota_target_id != 0U ? snapshot->ota_target_id : snapshot->policy_target_id;
+}
+
+static int
+call_state_protocol_family(int protocol) {
+    if (DSD_SYNC_IS_P25P1(protocol)) {
+        return 1;
     }
-    if (snapshot->kind == DSD_CALL_KIND_GROUP_VOICE) {
-        return snapshot->group_id;
+    if (DSD_SYNC_IS_P25P2(protocol)) {
+        return 2;
     }
-    if (snapshot->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        return snapshot->private_id;
+    if (DSD_SYNC_IS_X2TDMA(protocol)) {
+        return 3;
     }
-    return snapshot->policy_target_id;
+    if (DSD_SYNC_IS_DSTAR(protocol)) {
+        return 4;
+    }
+    if (DSD_SYNC_IS_M17(protocol)) {
+        return 5;
+    }
+    if (DSD_SYNC_IS_DMR(protocol)) {
+        return 6;
+    }
+    if (DSD_SYNC_IS_EDACS(protocol)) {
+        return 7;
+    }
+    if (DSD_SYNC_IS_DPMR(protocol)) {
+        return 8;
+    }
+    if (DSD_SYNC_IS_NXDN(protocol)) {
+        return 9;
+    }
+    if (DSD_SYNC_IS_YSF(protocol)) {
+        return 10;
+    }
+    return protocol == DSD_SYNC_NONE ? 0 : 1000 + protocol;
+}
+
+static void
+call_state_normalize_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src) {
+    size_t out = 0U;
+    int pending_space = 0;
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    while (*src != '\0' && isspace((unsigned char)*src)) {
+        src++;
+    }
+    for (; *src != '\0'; src++) {
+        unsigned char ch = (unsigned char)*src;
+        if (isspace(ch)) {
+            pending_space = out != 0U;
+            continue;
+        }
+        if (pending_space && out + 1U < DSD_CALL_IDENTITY_TEXT_SIZE) {
+            dst[out++] = ' ';
+        }
+        pending_space = 0;
+        if (out + 1U < DSD_CALL_IDENTITY_TEXT_SIZE) {
+            dst[out++] = (ch < 0x20U || ch == 0x7FU) ? '_' : (char)ch;
+        }
+    }
+    dst[out] = '\0';
+}
+
+static int
+call_state_known_text_changed(const char* current, const char* incoming) {
+    char normalized[DSD_CALL_IDENTITY_TEXT_SIZE];
+    call_state_normalize_text(normalized, incoming);
+    return current[0] != '\0' && normalized[0] != '\0' && strcmp(current, normalized) != 0;
 }
 
 static int
@@ -177,18 +228,32 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
         return 1;
     }
     if (current->protocol != DSD_SYNC_NONE && observation->protocol != DSD_SYNC_NONE
-        && current->protocol != observation->protocol) {
+        && call_state_protocol_family(current->protocol) != call_state_protocol_family(observation->protocol)) {
         return 1;
     }
-    const uint32_t old_target = call_state_effective_target_snapshot(current);
-    const uint32_t new_target = call_state_effective_target_observation(observation);
+    const uint64_t old_target = call_state_effective_target_snapshot(current);
+    const uint64_t new_target = call_state_effective_target_observation(observation);
     if (old_target != 0U && new_target != 0U && old_target != new_target) {
         return 1;
     }
     if (call_state_kind_changed(current->kind, observation->kind)) {
         return 1;
     }
-    return current->source_id != 0U && observation->source_id != 0U && current->source_id != observation->source_id;
+    if (current->ota_source_id != 0U && observation->ota_source_id != 0U
+        && current->ota_source_id != observation->ota_source_id) {
+        return 1;
+    }
+    return call_state_known_text_changed(current->source_text, observation->source_text)
+           || call_state_known_text_changed(current->target_text, observation->target_text);
+}
+
+static void
+call_state_apply_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src) {
+    char normalized[DSD_CALL_IDENTITY_TEXT_SIZE];
+    call_state_normalize_text(normalized, src);
+    if (normalized[0] != '\0') {
+        DSD_MEMCPY(dst, normalized, sizeof(normalized));
+    }
 }
 
 static void
@@ -205,15 +270,13 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     if (observation->policy_target_id != 0U) {
         snapshot->policy_target_id = observation->policy_target_id;
     }
-    if (observation->source_id != 0U) {
-        snapshot->source_id = observation->source_id;
+    if (observation->ota_source_id != 0U) {
+        snapshot->ota_source_id = observation->ota_source_id;
     }
-    if (observation->group_id != 0U) {
-        snapshot->group_id = observation->group_id;
-    }
-    if (observation->private_id != 0U) {
-        snapshot->private_id = observation->private_id;
-    }
+    call_state_apply_text(snapshot->source_text, observation->source_text);
+    call_state_apply_text(snapshot->target_text, observation->target_text);
+    call_state_apply_text(snapshot->route_text[0], observation->route_text[0]);
+    call_state_apply_text(snapshot->route_text[1], observation->route_text[1]);
     if (observation->channel != 0U) {
         snapshot->channel = observation->channel;
     }
@@ -369,6 +432,49 @@ dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* ou
     return 1;
 }
 
+int
+dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot) {
+    if (!state || !snapshot) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    ext->calls = *snapshot;
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
+                           const char* target_text, const char* route0_text, const char* route1_text,
+                           double observed_m) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->epoch != epoch) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    call_state_apply_text(snapshot->source_text, source_text);
+    call_state_apply_text(snapshot->target_text, target_text);
+    call_state_apply_text(snapshot->route_text[0], route0_text);
+    call_state_apply_text(snapshot->route_text[1], route1_text);
+    snapshot->updated_m = call_state_observed_m(observed_m);
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
 static int
 recent_activity_index_valid(uint8_t index) {
     return index < DSD_RECENT_ACTIVITY_COUNT;
@@ -383,73 +489,48 @@ recent_activity_copy_text(char* dst, size_t dst_size, const char* text) {
     DSD_SNPRINTF(dst, dst_size, "%s", text);
 }
 
-static void
-recent_activity_append_text(char* dst, size_t dst_size, const char* text) {
-    const size_t length = strnlen(dst, dst_size);
-    if (length >= dst_size) {
-        return;
-    }
-    (void)dsd_strncat_s(dst, dst_size, text, dst_size - length - 1U);
-}
-
 int
-dsd_recent_activity_set_at(dsd_state* state, uint8_t index, const char* text, uint64_t observed_m_ms) {
-    if (!state || !recent_activity_index_valid(index)) {
+dsd_recent_activity_publish(dsd_state* state, uint8_t index, const dsd_call_observation* observation,
+                            const char* notice, uint64_t observed_m_ms) {
+    if (!state || !recent_activity_index_valid(index) || (!observation && (!notice || notice[0] == '\0'))) {
         return -1;
     }
     const uint64_t now_ms = observed_m_ms != 0U ? observed_m_ms : dsd_time_monotonic_ms();
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
-    if (ext) {
-        dsd_call_state_ext_lock(ext);
-        recent_activity_copy_text(ext->recent.entries[index].text, sizeof(ext->recent.entries[index].text), text);
-        ext->recent.entries[index].updated_m_ms = ext->recent.entries[index].text[0] != '\0' ? now_ms : 0U;
-        ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
-        recent_activity_copy_text(state->active_channel[index], sizeof(state->active_channel[index]), text);
-        state->last_active_time = time(NULL);
-        dsd_call_state_ext_unlock(ext);
-        return 1;
-    }
-    recent_activity_copy_text(state->active_channel[index], sizeof(state->active_channel[index]), text);
-    state->last_active_time = time(NULL);
-    return 0;
-}
-
-int
-dsd_recent_activity_set(dsd_state* state, uint8_t index, const char* text) {
-    return dsd_recent_activity_set_at(state, index, text, 0U);
-}
-
-int
-dsd_recent_activity_append_at(dsd_state* state, uint8_t index, const char* text, uint64_t observed_m_ms) {
-    if (!state || !text || !recent_activity_index_valid(index)) {
+    if (!ext) {
         return -1;
     }
-    const uint64_t now_ms = observed_m_ms != 0U ? observed_m_ms : dsd_time_monotonic_ms();
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
-    if (ext) {
-        dsd_call_state_ext_lock(ext);
-        recent_activity_append_text(ext->recent.entries[index].text, sizeof(ext->recent.entries[index].text), text);
-        ext->recent.entries[index].updated_m_ms = now_ms;
-        ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
-        DSD_SNPRINTF(state->active_channel[index], sizeof(state->active_channel[index]), "%s",
-                     ext->recent.entries[index].text);
-        state->last_active_time = time(NULL);
-        dsd_call_state_ext_unlock(ext);
-        return 1;
+    dsd_call_state_ext_lock(ext);
+    dsd_recent_activity_entry* entry = &ext->recent.entries[index];
+    DSD_MEMSET(entry, 0, sizeof(*entry));
+    if (observation) {
+        entry->observation = *observation;
+        call_state_normalize_text(entry->observation.source_text, observation->source_text);
+        call_state_normalize_text(entry->observation.target_text, observation->target_text);
+        call_state_normalize_text(entry->observation.route_text[0], observation->route_text[0]);
+        call_state_normalize_text(entry->observation.route_text[1], observation->route_text[1]);
     }
-    recent_activity_append_text(state->active_channel[index], sizeof(state->active_channel[index]), text);
-    state->last_active_time = time(NULL);
-    return 0;
-}
-
-int
-dsd_recent_activity_append(dsd_state* state, uint8_t index, const char* text) {
-    return dsd_recent_activity_append_at(state, index, text, 0U);
+    recent_activity_copy_text(entry->notice, sizeof(entry->notice), notice);
+    entry->updated_m_ms = now_ms;
+    ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
 }
 
 int
 dsd_recent_activity_clear(dsd_state* state, uint8_t index) {
-    return dsd_recent_activity_set_at(state, index, "", 0U);
+    if (!state || !recent_activity_index_valid(index)) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    DSD_MEMSET(&ext->recent.entries[index], 0, sizeof(ext->recent.entries[index]));
+    ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
 }
 
 int
@@ -462,13 +543,9 @@ dsd_recent_activity_clear_all(dsd_state* state) {
         dsd_call_state_ext_lock(ext);
         DSD_MEMSET(&ext->recent.entries, 0, sizeof(ext->recent.entries));
         ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-        state->last_active_time = time(NULL);
         dsd_call_state_ext_unlock(ext);
         return 1;
     }
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-    state->last_active_time = time(NULL);
     return 0;
 }
 
@@ -489,49 +566,16 @@ dsd_recent_activity_copy_snapshot(const dsd_state* state, dsd_recent_activity_sn
 }
 
 int
-dsd_recent_activity_sync_legacy(dsd_state* state) {
-    if (!state) {
+dsd_recent_activity_restore_snapshot(dsd_state* state, const dsd_recent_activity_snapshot* snapshot) {
+    if (!state || !snapshot) {
         return -1;
     }
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
-    state->last_active_time = time(NULL);
-    if (!ext) {
-        return 0;
-    }
-    const uint64_t now_ms = dsd_time_monotonic_ms();
-    int changed = 0;
-    dsd_call_state_ext_lock(ext);
-    for (int i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
-        if (strncmp(ext->recent.entries[i].text, state->active_channel[i], DSD_RECENT_ACTIVITY_TEXT_SIZE) == 0) {
-            continue;
-        }
-        DSD_SNPRINTF(ext->recent.entries[i].text, sizeof(ext->recent.entries[i].text), "%s", state->active_channel[i]);
-        ext->recent.entries[i].updated_m_ms = state->active_channel[i][0] != '\0' ? now_ms : 0U;
-        changed = 1;
-    }
-    if (changed) {
-        ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
-    }
-    dsd_call_state_ext_unlock(ext);
-    return changed;
-}
-
-int
-dsd_recent_activity_sync_legacy_entry(dsd_state* state, uint8_t index) {
-    if (!state || !recent_activity_index_valid(index)) {
-        return -1;
-    }
-    const uint64_t now_ms = dsd_time_monotonic_ms();
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
-    state->last_active_time = time(NULL);
     if (!ext) {
         return 0;
     }
     dsd_call_state_ext_lock(ext);
-    DSD_SNPRINTF(ext->recent.entries[index].text, sizeof(ext->recent.entries[index].text), "%s",
-                 state->active_channel[index]);
-    ext->recent.entries[index].updated_m_ms = state->active_channel[index][0] != '\0' ? now_ms : 0U;
-    ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
+    ext->recent = *snapshot;
     dsd_call_state_ext_unlock(ext);
     return 1;
 }
@@ -545,22 +589,16 @@ dsd_recent_activity_expire(dsd_state* state, uint64_t now_m_ms, uint64_t ttl_ms)
     const uint64_t max_age_ms = ttl_ms != 0U ? ttl_ms : DSD_RECENT_ACTIVITY_TTL_MS;
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     if (!ext) {
-        if ((time(NULL) - state->last_active_time) > (time_t)(max_age_ms / 1000U)) {
-            DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
-            return 1;
-        }
         return 0;
     }
     int expired = 0;
     dsd_call_state_ext_lock(ext);
     for (int i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
         dsd_recent_activity_entry* entry = &ext->recent.entries[i];
-        if (entry->text[0] == '\0' || entry->updated_m_ms == 0U || now_ms < entry->updated_m_ms
-            || now_ms - entry->updated_m_ms <= max_age_ms) {
+        if (entry->updated_m_ms == 0U || now_ms < entry->updated_m_ms || now_ms - entry->updated_m_ms <= max_age_ms) {
             continue;
         }
         DSD_MEMSET(entry, 0, sizeof(*entry));
-        state->active_channel[i][0] = '\0';
         expired++;
     }
     if (expired > 0) {
@@ -578,8 +616,6 @@ dsd_recent_activity_save(const dsd_state* state, uint8_t index, dsd_recent_activ
     DSD_MEMSET(transaction, 0, sizeof(*transaction));
     transaction->valid = 1U;
     transaction->index = index;
-    transaction->last_active_time = state->last_active_time;
-    DSD_SNPRINTF(transaction->legacy_text, sizeof(transaction->legacy_text), "%s", state->active_channel[index]);
     const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
     if (!ext) {
         return 0;
@@ -600,15 +636,9 @@ dsd_recent_activity_restore(dsd_state* state, const dsd_recent_activity_transact
         dsd_call_state_ext_lock(ext);
         ext->recent.entries[transaction->index] = transaction->entry;
         ext->recent.revision = call_state_next_nonzero(ext->recent.revision);
-        DSD_SNPRINTF(state->active_channel[transaction->index], sizeof(state->active_channel[transaction->index]), "%s",
-                     transaction->legacy_text);
-        state->last_active_time = transaction->last_active_time;
         dsd_call_state_ext_unlock(ext);
         return 1;
     }
-    DSD_SNPRINTF(state->active_channel[transaction->index], sizeof(state->active_channel[transaction->index]), "%s",
-                 transaction->legacy_text);
-    state->last_active_time = transaction->last_active_time;
     return 0;
 }
 

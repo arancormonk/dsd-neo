@@ -19,6 +19,7 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
@@ -173,11 +174,16 @@ print_datascope(const dsd_opts* opts, dsd_state* state, const float* sbuf2, int 
     const float scale = 32.0f / span;
     build_datascope_spectrum(sbuf2, count, scale, spectrum);
     if (state->symbolcnt > (4800 / opts->scoperate)) {
+        dsd_call_snapshot call;
+        DSD_MEMSET(&call, 0, sizeof(call));
+        (void)dsd_call_state_get(state, 0U, &call);
         state->symbolcnt = 0;
         DSD_FPRINTF(stderr, "\n");
         DSD_FPRINTF(stderr, "Demod mode:     %s                Nac:                     %4X\n", modulation, state->nac);
-        DSD_FPRINTF(stderr, "Frame Type:    %s        Talkgroup:            %7i\n", state->ftype, state->lasttg);
-        DSD_FPRINTF(stderr, "Frame Subtype: %s       Source:          %12i\n", state->fsubtype, state->lastsrc);
+        DSD_FPRINTF(stderr, "Frame Type:    %s        Talkgroup:      %13llu\n", state->ftype,
+                    (unsigned long long)call.ota_target_id);
+        DSD_FPRINTF(stderr, "Frame Subtype: %s       Source:          %12llu\n", state->fsubtype,
+                    (unsigned long long)call.ota_source_id);
         DSD_FPRINTF(stderr, "TDMA activity:  %s %s     Voice errors: %s\n", state->slot0light, state->slot1light,
                     state->err_str);
         DSD_FPRINTF(stderr, "+----------------------------------------------------------------+\n");

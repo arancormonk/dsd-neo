@@ -5,9 +5,11 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <stdint.h>
@@ -184,10 +186,19 @@ dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
         DSD_FPRINTF(stderr, " DST: %s", ctx->str3);
         DSD_FPRINTF(stderr, " SRC: %s", ctx->str4);
         dstar_sd_print_header_flags(ctx->sd_bytes[1]);
-        DSD_MEMCPY(state->dstar_rpt2, ctx->str1, sizeof(ctx->str1));
-        DSD_MEMCPY(state->dstar_rpt1, ctx->str2, sizeof(ctx->str2));
-        DSD_MEMCPY(state->dstar_dst, ctx->str3, sizeof(ctx->str3));
-        DSD_MEMCPY(state->dstar_src, ctx->str4, sizeof(ctx->str4));
+        if ((ctx->sd_bytes[1] & 0x80U) == 0U) {
+            int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
+            dsd_call_observation observation = {
+                .protocol = protocol,
+                .slot = 0U,
+                .kind = DSD_CALL_KIND_VOICE,
+            };
+            DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", ctx->str4);
+            DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", ctx->str3);
+            DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", ctx->str2);
+            DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", ctx->str1);
+            (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        }
         return;
     }
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");

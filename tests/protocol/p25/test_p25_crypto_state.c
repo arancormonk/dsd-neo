@@ -5,9 +5,12 @@
 
 /* Shared Phase 1/Phase 2 crypto resolution and slot-isolation regressions. */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -49,11 +52,37 @@ bytes_are_zero(const void* ptr, size_t size) {
 
 static void
 reset_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_tune_enc_calls = 1;
     opts->dmr_mute_encL = 1;
     opts->dmr_mute_encR = 1;
+}
+
+static int
+begin_p1_call(dsd_state* state, uint16_t service_options) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = service_options,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
+expect_p1_service(const char* tag, const dsd_state* state, uint16_t service_options) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.protocol != DSD_SYNC_P25P1_POS) {
+        DSD_FPRINTF(stderr, "%s: missing active canonical P25 Phase 1 call\n", tag);
+        return 1;
+    }
+    return expect_int(tag, call.service_options, service_options);
 }
 
 static int
@@ -175,9 +204,10 @@ test_phase1_clear_conflict_requires_corroboration(void) {
     opts.unmute_encrypted_p25 = 1;
 
     int rc = 0;
+    rc |= expect_int("seed canonical P1 call", begin_p1_call(&state, 0x04U), 1);
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
     rc |= expect_int("P1 begin stores clear grant service", state.dmr_so, 0x04);
-    rc |= expect_int("P1 begin marks grant service valid", state.p25_service_options_valid[0], 1);
+    rc |= expect_p1_service("P1 begin preserves canonical grant service", &state, 0x04U);
 
     rc |= expect_int(
         "first clear-conflict tuple stays pending",
@@ -232,8 +262,6 @@ test_phase1_clear_conflict_requires_corroboration(void) {
 
     p25_crypto_reset_slot(&state, 0);
     rc |= expect_int("slot reset clears conflict", state.p25_p1_crypto_conflict.active, 0);
-    state.dmr_so = 0x04;
-    state.p25_service_options_valid[0] = 1;
     rc |= expect_int(
         "Phase 2 bypasses Phase 1 conflict policy",
         p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0xA0, 0x0064, UINT64_C(0x6162636465666768), 3069),
@@ -268,7 +296,8 @@ test_phase1_clear_conflict_requires_corroboration(void) {
 
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, -1, 0);
     rc |= expect_int("unknown P1 service clears stale grant bits", state.dmr_so, 0);
-    rc |= expect_int("unknown P1 service clears validity", state.p25_service_options_valid[0], 0);
+    rc |= expect_p1_service("unknown crypto hint does not erase canonical service", &state, 0x04U);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

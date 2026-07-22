@@ -30,6 +30,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1564,7 +1565,6 @@ p25_grant_clear_policy_slot(dsd_state* state, int slot) {
         return;
     }
     (void)dsd_tg_policy_clear_active_call(state, slot);
-    state->p25_policy_tg[slot] = 0;
 }
 
 static int
@@ -2034,36 +2034,6 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 }
 
 static void
-p25_grant_store_policy_tg(dsd_state* state, const p25_sm_event_t* ev, int slot,
-                          const dsd_tg_policy_decision* decision) {
-    if (!state || !ev || !decision || !ev->is_group) {
-        return;
-    }
-
-    uint32_t policy_tg =
-        (decision->target_id > 0U && decision->target_id != (uint32_t)ev->tg) ? decision->target_id : 0U;
-    if (slot >= 0 && slot <= 1) {
-        state->p25_policy_tg[slot] = policy_tg;
-        return;
-    }
-    state->p25_policy_tg[0] = policy_tg;
-    state->p25_policy_tg[1] = 0;
-}
-
-static void
-p25_grant_clear_replaced_policy_tg(dsd_state* state, int slot, int slot_only) {
-    if (!state) {
-        return;
-    }
-    if (slot_only && slot >= 0 && slot <= 1) {
-        state->p25_policy_tg[slot] = 0;
-        return;
-    }
-    state->p25_policy_tg[0] = 0;
-    state->p25_policy_tg[1] = 0;
-}
-
-static void
 p25_grant_seed_cc_before_vc_tune(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m) {
     if (!ctx || !state) {
         return;
@@ -2271,7 +2241,6 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     // still need normal grant handling so the slot context is replaced.
     if (p25_grant_handle_duplicate(ctx, opts, state, ev, &grant.route, &decision, grant.freq, grant.target_id,
                                    &eval_ctx, grant.now_m)) {
-        p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
         return;
     }
 
@@ -2294,11 +2263,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     } else {
         p25_grant_clear_slot_state(ctx);
     }
-    p25_grant_clear_replaced_policy_tg(state, grant.logical_slot, grant.clear_policy_slot_only);
     p25_grant_store_vc_context(ctx, state, ev, grant.freq, grant.target_id, &eval_ctx, grant.now_m, grant.slot,
                                grant.reused_carrier);
     p25_grant_start_stale_regrant_probe(ctx, &grant);
-    p25_grant_store_policy_tg(state, ev, grant.slot, &decision);
     if (!grant.reused_carrier) {
         ctx->tune_count++;
         state->p25_sm_tune_count++;
@@ -2336,7 +2303,12 @@ p25_voice_state_slot_tg(const dsd_state* state, int slot) {
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    return slot == 0 ? (int)state->lasttg : (int)state->lasttgR;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_target_id > (uint64_t)INT_MAX) {
+        return 0;
+    }
+    return (int)call.ota_target_id;
 }
 
 static int
@@ -2344,7 +2316,12 @@ p25_voice_state_slot_src(const dsd_state* state, int slot) {
     if (!state || slot < 0 || slot > 1) {
         return 0;
     }
-    return slot == 0 ? state->lastsrc : state->lastsrcR;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_source_id > (uint64_t)INT_MAX) {
+        return 0;
+    }
+    return (int)call.ota_source_id;
 }
 
 static int
@@ -2385,18 +2362,11 @@ p25_voice_set_state_identity(dsd_state* state, int slot, const p25_sm_event_t* e
     if (!state || !ev || slot < 0 || slot > 1) {
         return;
     }
-    const int target = ev->is_group ? ev->tg : ev->dst;
     if (slot == 0) {
-        state->lasttg = target;
-        state->lastsrc = ev->src;
         state->dmr_so = p25_sm_svc_bits_valid(ev->svc_bits) ? (unsigned int)ev->svc_bits : 0U;
     } else {
-        state->lasttgR = target;
-        state->lastsrcR = ev->src;
         state->dmr_soR = p25_sm_svc_bits_valid(ev->svc_bits) ? (unsigned int)ev->svc_bits : 0U;
     }
-    state->gi[slot] = ev->is_group ? 0 : 1;
-    state->p25_service_options_valid[slot] = p25_sm_svc_bits_valid(ev->svc_bits) ? 1 : 0;
 }
 
 static int
@@ -2468,9 +2438,7 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         .kind = p25_call_kind_from_slot(slot_ctx),
         .ota_target_id = ota_target,
         .policy_target_id = p25_call_positive_id(slot_ctx->target_id),
-        .source_id = p25_call_positive_id(slot_ctx->src),
-        .group_id = slot_ctx->is_group ? ota_target : 0U,
-        .private_id = slot_ctx->is_group ? 0U : ota_target,
+        .ota_source_id = p25_call_positive_id(slot_ctx->src),
         .channel = p25_call_positive_id(slot_ctx->channel),
         .frequency_hz = slot_ctx->freq_hz,
         .service_options = (uint16_t)service_options,
@@ -2500,26 +2468,18 @@ p25_voice_clear_state_source(dsd_state* state, int slot) {
         return;
     }
     if (slot == 0) {
-        state->lastsrc = 0;
         state->payload_miP = 0;
         state->payload_algid = 0;
         state->payload_keyid = 0;
         state->dmr_so = 0;
     } else {
-        state->lastsrcR = 0;
         state->payload_miN = 0;
         state->payload_algidR = 0;
         state->payload_keyidR = 0;
         state->dmr_soR = 0;
     }
     state->generic_talker_alias[slot][0] = '\0';
-    state->generic_talker_alias_src[slot] = 0;
     state->p25_p2_audio_allowed[slot] = 0;
-    state->p25_call_emergency[slot] = 0;
-    state->p25_call_priority[slot] = 0;
-    state->p25_call_is_packet[slot] = 0;
-    state->p25_service_options_valid[slot] = 0;
-    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), "%s", "                     ");
 }
 
 static void
@@ -2922,7 +2882,6 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     ctx->vc_tg = target_id;
     ctx->vc_src = call_ev->src;
     p25_voice_set_state_identity(state, slot, call_ev);
-    p25_grant_store_policy_tg(state, call_ev, logical_slot, decision);
     (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
     p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
     p25_call_publish_observation(ctx, opts, state, slot, changes->new_epoch, now_m);
@@ -3497,7 +3456,6 @@ p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
     ctx->slots[slot].grant_active = 0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
-    state->p25_policy_tg[slot] = 0;
 }
 
 static int
@@ -3807,12 +3765,8 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->payload_miN = 0;
         state->dmr_so = 0;
         state->dmr_soR = 0;
-        state->p25_service_options_valid[0] = 0;
-        state->p25_service_options_valid[1] = 0;
         p25_crypto_reset_slot(state, 0);
         p25_crypto_reset_slot(state, 1);
-        state->p25_policy_tg[0] = 0;
-        state->p25_policy_tg[1] = 0;
         state->p25_sm_release_count++;
     }
     if (opts) {
@@ -5178,7 +5132,11 @@ p25_sm_conventional_is_group(const dsd_state* state, const p25_sm_event_t* ev, i
     if (ev->identity_valid) {
         return ev->is_group ? 1 : 0;
     }
-    return state->gi[slot] == 0 ? 1 : 0;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        return call.kind != DSD_CALL_KIND_PRIVATE_VOICE;
+    }
+    return 1;
 }
 
 static uint32_t
@@ -5186,7 +5144,12 @@ p25_sm_conventional_target(const dsd_state* state, const p25_sm_event_t* ev, int
     if (ev->identity_valid) {
         return p25_call_positive_id(is_group ? ev->tg : ev->dst);
     }
-    return slot == 0 ? state->lasttg : state->lasttgR;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_target_id > UINT32_MAX) {
+        return 0U;
+    }
+    return (uint32_t)call.ota_target_id;
 }
 
 static int
@@ -5194,7 +5157,12 @@ p25_sm_conventional_source(const dsd_state* state, const p25_sm_event_t* ev, int
     if (ev->identity_valid) {
         return ev->src;
     }
-    return slot == 0 ? state->lastsrc : state->lastsrcR;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_source_id > (uint64_t)INT_MAX) {
+        return 0;
+    }
+    return (int)call.ota_source_id;
 }
 
 static int
@@ -5202,7 +5170,11 @@ p25_sm_conventional_service_options(const dsd_state* state, const p25_sm_event_t
     if (p25_sm_svc_bits_valid(ev->svc_bits)) {
         return ev->svc_bits;
     }
-    return (int)(slot == 0 ? state->dmr_so : state->dmr_soR);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        return call.service_options;
+    }
+    return 0;
 }
 
 static int
@@ -5225,15 +5197,9 @@ p25_sm_conventional_active_voice(const dsd_state* state, int slot, dsd_call_snap
 static uint32_t
 p25_sm_conventional_snapshot_target(const dsd_call_snapshot* call) {
     if (call->ota_target_id != 0U) {
-        return call->ota_target_id;
+        return (uint32_t)call->ota_target_id;
     }
-    if (call->kind == DSD_CALL_KIND_GROUP_VOICE && call->group_id != 0U) {
-        return call->group_id;
-    }
-    if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE && call->private_id != 0U) {
-        return call->private_id;
-    }
-    return call->policy_target_id;
+    return (uint32_t)call->policy_target_id;
 }
 
 typedef struct {
@@ -5285,7 +5251,7 @@ p25_sm_conventional_anonymous_call(const dsd_state* state, int slot, p25_sm_conv
         return 0;
     }
     call->is_group = active_call.kind == DSD_CALL_KIND_GROUP_VOICE;
-    call->source = active_call.source_id;
+    call->source = active_call.ota_source_id <= UINT32_MAX ? (uint32_t)active_call.ota_source_id : 0U;
     call->protocol = active_call.protocol;
     call->frequency_hz = p25_sm_conventional_frequency(state, slot, active_call.frequency_hz);
     if (call->is_group) {
@@ -5322,9 +5288,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .kind = call.is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
         .ota_target_id = call.target,
         .policy_target_id = call.target,
-        .source_id = call.source,
-        .group_id = call.group_id,
-        .private_id = call.private_id,
+        .ota_source_id = call.source,
         .frequency_hz = call.frequency_hz,
         .service_options = (uint16_t)service_options,
         .emergency = (uint8_t)((service_options & 0x80) != 0),
@@ -5497,13 +5461,13 @@ p25_sm_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* 
 
 static uint32_t
 p25_lockout_call_target(const dsd_call_snapshot* call) {
-    if (call->ota_target_id != 0U) {
-        return call->ota_target_id;
+    if (call->ota_target_id != 0U && call->ota_target_id <= UINT32_MAX) {
+        return (uint32_t)call->ota_target_id;
     }
-    if (call->policy_target_id != 0U) {
-        return call->policy_target_id;
+    if (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX) {
+        return (uint32_t)call->policy_target_id;
     }
-    return call->kind == DSD_CALL_KIND_GROUP_VOICE ? call->group_id : call->private_id;
+    return 0U;
 }
 
 static uint64_t
@@ -5513,47 +5477,19 @@ p25_lockout_next_epoch(uint64_t epoch) {
 }
 
 static void
-p25_lockout_snapshot_from_legacy(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
-                                 uint64_t epoch, dsd_call_snapshot* call) {
-    int source;
-    uint8_t algid;
-    uint16_t kid;
-    uint64_t mi;
-    int legacy_target;
-    int fallback_protocol;
-    if (slot == 0U) {
-        source = state->lastsrc;
-        algid = state->payload_algid;
-        kid = state->payload_keyid;
-        mi = state->payload_miP;
-        legacy_target = state->lasttg;
-        fallback_protocol = DSD_SYNC_P25P1_POS;
-    } else {
-        source = state->lastsrcR;
-        algid = state->payload_algidR;
-        kid = state->payload_keyidR;
-        mi = state->payload_miN;
-        legacy_target = state->lasttgR;
-        fallback_protocol = DSD_SYNC_P25P2_POS;
-    }
-    const int legacy_matches = legacy_target == target && state->gi[slot] == (is_group ? 0 : 1);
-
+p25_lockout_snapshot_from_observation(const dsd_state* state, uint8_t slot, int target, int svc_bits, int is_group,
+                                      uint64_t epoch, dsd_call_snapshot* call) {
     DSD_MEMSET(call, 0, sizeof(*call));
     call->epoch = epoch;
     call->phase = DSD_CALL_PHASE_ACTIVE;
-    call->protocol = DSD_SYNC_IS_P25(state->lastsynctype) ? state->lastsynctype : fallback_protocol;
+    call->protocol = DSD_SYNC_IS_P25(state->lastsynctype) ? state->lastsynctype
+                                                          : (slot == 0U ? DSD_SYNC_P25P1_POS : DSD_SYNC_P25P2_POS);
     call->slot = slot;
     call->kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
     call->ota_target_id = (uint32_t)target;
     call->policy_target_id = (uint32_t)target;
-    call->group_id = is_group ? (uint32_t)target : 0U;
-    call->private_id = is_group ? 0U : (uint32_t)target;
-    call->source_id = legacy_matches ? p25_call_positive_id(source) : 0U;
     call->service_options = (uint16_t)svc_bits;
     call->crypto = DSD_CALL_CRYPTO_ENCRYPTED;
-    call->algid = legacy_matches ? algid : 0U;
-    call->kid = legacy_matches ? kid : 0U;
-    call->mi = legacy_matches ? mi : 0U;
 }
 
 static int
@@ -5568,7 +5504,7 @@ p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, i
         }
         epoch = p25_lockout_next_epoch(call->epoch);
     }
-    p25_lockout_snapshot_from_legacy(state, slot, target, svc_bits, is_group, epoch, call);
+    p25_lockout_snapshot_from_observation(state, slot, target, svc_bits, is_group, epoch, call);
     return 0;
 }
 

@@ -11,8 +11,10 @@
  * decrypt-key gating, and soft-decision RS reliability ordering.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
@@ -33,6 +35,19 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+static void
+seed_p25_call(dsd_state* state, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -701,7 +716,7 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     state.aes_key_segments[0] = 4U;
     state.dmr_alias_format[0] = 0x02;
     state.dmr_alias_block_len[0] = 2;
-    state.lastsrc = 77;
+    seed_p25_call(&state, 0U, 77U);
 
     ldu2_decode_post_fec_fields(&state, &frame);
     ldu2_print_decode_result(&frame);
@@ -884,7 +899,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     state.event_history_s = g_event_history;
     state.payload_algid = 0xAA;
     state.payload_keyid = 0x2A2A;
-    state.lasttg = 2468;
+    seed_p25_call(&state, 2468U, 0U);
     frame.algidhex = 0xAA;
     frame.kidhex = 0x2A2A;
 

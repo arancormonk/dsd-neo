@@ -280,8 +280,7 @@ main(void) {
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 5001U;
     observation.policy_target_id = 5001U;
-    observation.group_id = 5001U;
-    observation.source_id = 6001U;
+    observation.ota_source_id = 6001U;
     observation.observed_m = 1.0;
     rc |= expect_true("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_event_sync_slot(opts, state, 0U);
@@ -457,7 +456,17 @@ main(void) {
     state->trunk_vc_freq[0] = 851012500;
     state->trunk_vc_freq[1] = 851012500;
     state->p25_p2_active_slot = 0;
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: stale");
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 7001U;
+    observation.policy_target_id = 7001U;
+    observation.ota_source_id = 8001U;
+    observation.channel = 1U;
+    observation.frequency_hz = 851012500;
+    observation.observed_m = 0.0;
+    rc |= expect_true("p25-no-cc-hangtime-seeds-call",
+                      dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     noCarrier(opts, state);
 
@@ -466,7 +475,9 @@ main(void) {
                                                           && state->trunk_vc_freq[0] == 0
                                                           && state->trunk_vc_freq[1] == 0);
     rc |= expect_true("p25-no-cc-hangtime-clears-active-slot", state->p25_p2_active_slot == -1);
-    rc |= expect_true("p25-no-cc-hangtime-clears-active", state->active_channel[0][0] == '\0');
+    dsd_call_snapshot stale_call = {0};
+    rc |= expect_true("p25-no-cc-hangtime-retains-call-snapshot", dsd_call_state_get(state, 0U, &stale_call) > 0);
+    rc |= expect_true("p25-no-cc-hangtime-ends-active", stale_call.phase == DSD_CALL_PHASE_ENDED);
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {

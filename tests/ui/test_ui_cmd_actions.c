@@ -9,8 +9,10 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -251,6 +253,17 @@ test_audio_actions(void) {
 }
 
 static int
+seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
+    dsd_call_observation observation = {0};
+    observation.protocol = protocol;
+    observation.slot = slot;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = target;
+    observation.policy_target_id = target;
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
 test_trunk_actions(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -274,7 +287,7 @@ test_trunk_actions(void) {
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("group toggle works only while trunking", opts.trunk_tune_group_calls, 0);
 
-    state.lasttg = 1234;
+    rc |= !seed_voice_call(&state, 0, DSD_SYNC_DMR_BS_VOICE_POS, 1234);
     cmd = cmd_slot(DSD_APP_CMD_TG_HOLD_TOGGLE, 0);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("tg hold slot 0 uses lasttg", (int)state.tg_hold, 1234);
@@ -282,9 +295,8 @@ test_trunk_actions(void) {
     rc |= expect_int("tg hold slot 0 clears", (int)state.tg_hold, 0);
 
     opts.frame_nxdn48 = 1;
-    state.lasttg = 0;
     state.tg_hold = 0;
-    state.nxdn_last_tg = 2345;
+    rc |= !seed_voice_call(&state, 0, DSD_SYNC_NXDN_POS, 2345);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("tg hold nxdn fallback", (int)state.tg_hold, 2345);
 
@@ -292,20 +304,20 @@ test_trunk_actions(void) {
     opts.frame_provoice = 1;
     state.ea_mode = 0;
     state.tg_hold = 0;
-    state.lastsrc = 2346;
+    rc |= !seed_voice_call(&state, 0, DSD_SYNC_PROVOICE_POS, 2346);
     cmd = cmd_slot(DSD_APP_CMD_TG_HOLD_TOGGLE, 0);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("tg hold provoice slot 0 fallback", (int)state.tg_hold, 2346);
 
     state.tg_hold = 0;
-    state.lastsrcR = 3456;
+    rc |= !seed_voice_call(&state, 1, DSD_SYNC_PROVOICE_POS, 3456);
     cmd = cmd_slot(DSD_APP_CMD_TG_HOLD_TOGGLE, 1);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("tg hold provoice slot 1 fallback", (int)state.tg_hold, 3456);
 
-    state.lasttgR = 4567;
     state.tg_hold = 0;
     opts.frame_provoice = 0;
+    rc |= !seed_voice_call(&state, 1, DSD_SYNC_DMR_BS_VOICE_POS, 4567);
     cmd = cmd_slot(DSD_APP_CMD_TG_HOLD_TOGGLE, 3);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("tg hold slot 1 uses lasttgR", (int)state.tg_hold, 4567);
@@ -313,9 +325,8 @@ test_trunk_actions(void) {
     rc |= expect_int("tg hold slot 1 clears", (int)state.tg_hold, 0);
 
     opts.frame_nxdn96 = 1;
-    state.lasttgR = 0;
     state.tg_hold = 0;
-    state.nxdn_last_tg = 5678;
+    rc |= !seed_voice_call(&state, 1, DSD_SYNC_NXDN_POS, 5678);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
     rc |= expect_int("tg hold slot 1 nxdn fallback", (int)state.tg_hold, 5678);
     opts.frame_nxdn96 = 0;

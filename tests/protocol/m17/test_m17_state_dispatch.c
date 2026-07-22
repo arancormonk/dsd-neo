@@ -9,10 +9,12 @@
 #include "fixtures/m17_reference_vectors.h"
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/m17/m17.h>
@@ -248,6 +250,12 @@ expect_u64(const char* label, unsigned long long got, unsigned long long want) {
 }
 
 static int
+get_m17_call(const dsd_state* state, dsd_call_snapshot* call) {
+    DSD_MEMSET(call, 0, sizeof(*call));
+    return dsd_call_state_get(state, 0U, call);
+}
+
+static int
 expect_u8(const char* label, uint8_t got, uint8_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %u want %u\n", label, (unsigned)got, (unsigned)want);
@@ -428,13 +436,16 @@ test_embedded_lich_chunks_store_and_finalize_lsf_state(void) {
             err |= expect_u8("LICH chunk stored", state->m17_lsf[((size_t)chunk * M17_LICH_CHUNK_BITS) + bit],
                              lsf_bits[((size_t)chunk * M17_LICH_CHUNK_BITS) + bit]);
         }
-        err |= expect_u64("LICH does not decode before final chunk", state->m17_dst, 0ULL);
+        dsd_call_snapshot call;
+        err |= expect_int("LICH does not decode before final chunk", get_m17_call(state, &call), 0);
     }
 
     build_encoded_lich_chunk(lsf_bits, (uint8_t)(M17_LICH_CHUNKS - 1U), encoded);
     err |= expect_int("final LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
-    err |= expect_u64("final LICH decodes dst", state->m17_dst, dst);
-    err |= expect_u64("final LICH decodes src", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("final LICH publishes call", get_m17_call(state, &call), 1);
+    err |= expect_u64("final LICH decodes dst", call.ota_target_id, dst);
+    err |= expect_u64("final LICH decodes src", call.ota_source_id, src);
     err |= expect_u8("final LICH decodes data type", state->m17_str_dt, 2U);
     err |= expect_u8("final LICH decodes CAN", state->m17_can, 6U);
     err |= expect_u8("final LICH clear encryption", state->m17_enc, 0U);
@@ -442,10 +453,11 @@ test_embedded_lich_chunks_store_and_finalize_lsf_state(void) {
     for (size_t bit = 0U; bit < TEST_M17_LSF_BITS; bit++) {
         err |= expect_u8("final LICH clears staged LSF", state->m17_lsf[bit], 0U);
     }
-    if (strcmp(state->m17_dst_str, M17_REF_LSF_DST_CSD) != 0 || strcmp(state->m17_src_str, M17_REF_LSF_SRC_CSD) != 0) {
-        DSD_FPRINTF(stderr, "final LICH callsigns: dst='%s' src='%s'\n", state->m17_dst_str, state->m17_src_str);
+    if (strcmp(call.target_text, M17_REF_LSF_DST_CSD) != 0 || strcmp(call.source_text, M17_REF_LSF_SRC_CSD) != 0) {
+        DSD_FPRINTF(stderr, "final LICH callsigns: dst='%s' src='%s'\n", call.target_text, call.source_text);
         err |= 1;
     }
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -483,15 +495,13 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
 
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->aggressive_framesync = 1;
-    state->m17_dst = 0x111122223333ULL;
-    state->m17_src = 0x444455556666ULL;
     lsf_bits[M17_LSF_LSD_BITS + 3U] ^= 1U;
     for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
         build_encoded_lich_chunk(lsf_bits, chunk, encoded);
         err |= expect_int("bad CRC LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
     }
-    err |= expect_u64("bad LSF CRC preserves dst under aggressive sync", state->m17_dst, 0x111122223333ULL);
-    err |= expect_u64("bad LSF CRC preserves src under aggressive sync", state->m17_src, 0x444455556666ULL);
+    dsd_call_snapshot call;
+    err |= expect_int("bad LSF CRC does not publish call", get_m17_call(state, &call), 0);
     for (size_t bit = 0U; bit < TEST_M17_LSF_BITS; bit++) {
         err |= expect_u8("bad LSF CRC clears staged LSF", state->m17_lsf[bit], 0U);
     }
@@ -502,8 +512,6 @@ static int
 test_lsf_application_resets_and_stores_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
-    state->m17_dst = 0x1111ULL;
-    state->m17_src = 0x2222ULL;
     state->m17_can = 3U;
     state->m17_enc = 1U;
     state->m17_payload_decrypted = 1U;
@@ -517,8 +525,6 @@ test_lsf_application_resets_and_stores_state(void) {
     struct m17_lsf_result res = valid_lsf_result();
     int err = 0;
     err |= expect_int("valid LSF applied", m17_apply_lsf_result(state, &res), 1);
-    err |= expect_u64("LSF dst", state->m17_dst, res.dst);
-    err |= expect_u64("LSF src", state->m17_src, res.src);
     err |= expect_u8("LSF CAN", state->m17_can, res.cn);
     err |= expect_u8("LSF dt", state->m17_str_dt, res.dt);
     err |= expect_u8("LSF enc", state->m17_enc, res.et);
@@ -536,10 +542,6 @@ test_lsf_application_resets_and_stores_state(void) {
     for (size_t i = 0U; i < sizeof(state->m17_signature); i++) {
         err |= expect_u8("LSF signature buffer reset", state->m17_signature[i], 0U);
     }
-    if (strcmp(state->m17_dst_str, "AB1CD") != 0 || strcmp(state->m17_src_str, "AB1CD") != 0) {
-        DSD_FPRINTF(stderr, "LSF callsigns: dst='%s' src='%s'\n", state->m17_dst_str, state->m17_src_str);
-        err |= 1;
-    }
     return err;
 }
 
@@ -547,8 +549,6 @@ static int
 test_lsf_rejects_reserved_type_without_replacing_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
-    state->m17_dst = 0x1111ULL;
-    state->m17_src = 0x2222ULL;
     state->m17_can = 4U;
     state->m17_enc = 1U;
 
@@ -557,8 +557,6 @@ test_lsf_rejects_reserved_type_without_replacing_state(void) {
 
     int err = 0;
     err |= expect_int("reserved LSF rejected", m17_apply_lsf_result(state, &res), 0);
-    err |= expect_u64("reserved LSF dst preserved", state->m17_dst, 0x1111ULL);
-    err |= expect_u64("reserved LSF src preserved", state->m17_src, 0x2222ULL);
     err |= expect_u8("reserved LSF CAN preserved", state->m17_can, 4U);
     err |= expect_u8("reserved LSF enc preserved", state->m17_enc, 1U);
     return err;
@@ -568,8 +566,6 @@ static int
 test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
-    state->m17_dst = 0x1234ULL;
-    state->m17_src = 0x5678ULL;
     state->m17_can = 6U;
     state->m17_str_dt = 3U;
 
@@ -578,16 +574,12 @@ test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
 
     int err = 0;
     err |= expect_int("invalid destination rejected", m17_apply_lsf_result(state, &res), 0);
-    err |= expect_u64("invalid destination preserves dst", state->m17_dst, 0x1234ULL);
-    err |= expect_u64("invalid destination preserves src", state->m17_src, 0x5678ULL);
     err |= expect_u8("invalid destination preserves CAN", state->m17_can, 6U);
     err |= expect_u8("invalid destination preserves data type", state->m17_str_dt, 3U);
 
     res = valid_lsf_result();
     res.src_is_valid = 0U;
     err |= expect_int("invalid source rejected", m17_apply_lsf_result(state, &res), 0);
-    err |= expect_u64("invalid source preserves dst", state->m17_dst, 0x1234ULL);
-    err |= expect_u64("invalid source preserves src", state->m17_src, 0x5678ULL);
     err |= expect_u8("invalid source preserves CAN", state->m17_can, 6U);
     err |= expect_u8("invalid source preserves data type", state->m17_str_dt, 3U);
     return err;
@@ -890,6 +882,7 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     err |= expect_int("3200 voice UDP opts", g_udp_audio_last_opts == opts, 1);
     err |= expect_int("3200 voice UDP state", g_udp_audio_last_state == state, 1);
     reset_audio_fakes();
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -923,6 +916,7 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     err |= expect_int("1600 voice UDP bytes", (int)g_udp_audio_last_nsam, (int)(320U * sizeof(short)));
     err |= expect_int("1600 voice UDP first sample", (int)g_udp_audio_last_first_sample, 1001);
     reset_audio_fakes();
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -953,6 +947,7 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     err |= expect_int("slot-disabled voice suppresses UDP", g_udp_audio_calls, 0);
     err |= expect_int("slot-disabled voice leaves UDP byte count clear", (int)g_udp_audio_last_nsam, 0);
     reset_audio_fakes();
+    dsd_state_ext_free_all(state);
     return err;
 }
 #endif
@@ -1135,11 +1130,9 @@ test_frame_info_packet_and_ip_helpers(void) {
     err |= expect_int("PONG keeps synctype", state->synctype, DSD_SYNC_M17_STR_POS);
 
     uint8_t short_mpkt[12] = {'M', 'P', 'K', 'T', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x55, 0xAA};
-    state->m17_dst = 0x111122223333ULL;
-    state->m17_src = 0x444455556666ULL;
     m17_ip_dispatch_frame(opts, state, short_mpkt, sizeof(short_mpkt));
-    err |= expect_u64("short MPKT preserves dst", state->m17_dst, 0x111122223333ULL);
-    err |= expect_u64("short MPKT preserves src", state->m17_src, 0x444455556666ULL);
+    dsd_call_snapshot call;
+    err |= expect_int("short MPKT does not publish call", get_m17_call(state, &call), 0);
 
     uint8_t unknown[10] = {'N', 'O', 'P', 'E', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
     state->carrier = 1;
@@ -1176,8 +1169,8 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     int err = 0;
     err |= expect_int("valid IP stream sets carrier", state->carrier, 1);
     err |= expect_int("valid IP stream sets synctype", state->synctype, DSD_SYNC_M17_STR_POS);
-    err |= expect_u64("valid IP stream dst", state->m17_dst, dst);
-    err |= expect_u64("valid IP stream src", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("data IP stream does not publish call", get_m17_call(state, &call), 0);
     err |= expect_u8("valid IP stream data type", state->m17_str_dt, 1U);
     err |= expect_u8("valid IP stream CAN", state->m17_can, 5U);
     err |= expect_u8("valid IP stream AES mode", state->m17_enc, 2U);
@@ -1191,8 +1184,6 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
     state->m17_str_dt = 1U;
-    state->m17_dst = 0x111122223333ULL;
-    state->m17_src = 0x444455556666ULL;
     state->m17_enc = 0U;
     DSD_MEMSET(state->m17_meta, 0x5A, sizeof(state->m17_meta));
     m17_aes_build_counter(state->m17_meta, (uint16_t)(M17_STREAM_FRAME_END_MASK | M17_REF_STREAM_FN), counter);
@@ -1202,8 +1193,7 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
     err |= expect_int("bad IP stream CRC sets carrier", state->carrier, 1);
     err |= expect_int("bad IP stream CRC sets synctype", state->synctype, DSD_SYNC_M17_STR_POS);
-    err |= expect_u64("bad IP stream CRC preserves dst", state->m17_dst, 0x111122223333ULL);
-    err |= expect_u64("bad IP stream CRC preserves src", state->m17_src, 0x444455556666ULL);
+    err |= expect_int("bad data IP stream CRC does not publish call", get_m17_call(state, &call), 0);
     err |= expect_u8("bad IP stream CRC preserves enc", state->m17_enc, 0U);
     err |= expect_u8("bad IP stream CRC stores counter high", state->m17_meta[14], counter[14]);
     err |= expect_u8("bad IP stream CRC stores counter low", state->m17_meta[15], counter[15]);
@@ -1239,8 +1229,8 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
 
     int err = 0;
-    err |= expect_u64("valid MPKT dst", state->m17_dst, dst);
-    err |= expect_u64("valid MPKT src", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("valid MPKT does not publish call", get_m17_call(state, &call), 0);
     err |= expect_u8("valid MPKT packet mode data type", state->m17_str_dt, 20U);
     err |= expect_u8("valid MPKT CAN", state->m17_can, 5U);
     err |= expect_u8("valid MPKT clear encryption", state->m17_enc, 0U);
@@ -1251,8 +1241,6 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
 
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
-    state->m17_dst = 0xAAAABBBBCCCCULL;
-    state->m17_src = 0x111122223333ULL;
     state->m17_text_meta_expected_bitmap = 0x0FU;
     state->m17_text_meta_received_bitmap = 0x02U;
     state->m17_text_meta_control_or = 0xF2U;
@@ -1261,8 +1249,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     mpkt_frame[mpkt_len - 1U] ^= 0x01U;
 
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
-    err |= expect_u64("bad MPKT CRC preserves dst", state->m17_dst, 0xAAAABBBBCCCCULL);
-    err |= expect_u64("bad MPKT CRC preserves src", state->m17_src, 0x111122223333ULL);
+    err |= expect_int("bad MPKT CRC does not publish call", get_m17_call(state, &call), 0);
     err |= expect_u8("bad MPKT CRC preserves text expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("bad MPKT CRC preserves text received", state->m17_text_meta_received_bitmap, 0x02U);
     err |= expect_u8("bad MPKT CRC preserves text control", state->m17_text_meta_control_or, 0xF2U);
@@ -1637,8 +1624,8 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     err |= expect_int("packet LSF monitor bypasses NXDN decoder symbols", g_conv_decode_calls, 0);
     err |= expect_int("packet LSF monitor bypasses NXDN decoder chainback", g_conv_chainback_calls, 0);
     err |= expect_bytes("packet LSF monitor exact roundtrip", state->m17_lsf, expected_lsf, sizeof(expected_lsf));
-    err |= expect_u64("packet LSF monitor destination", state->m17_dst, dst);
-    err |= expect_u64("packet LSF monitor source", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("packet LSF monitor does not publish voice call", get_m17_call(state, &call), 0);
     err |= expect_u8("packet LSF monitor CAN", state->m17_can, 7U);
     return err;
 }

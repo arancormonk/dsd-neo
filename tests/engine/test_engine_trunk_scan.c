@@ -3,11 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -25,6 +27,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -695,11 +698,6 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].wacn = 0xABCDE;
     state->p25_pending_announcements[0].last_seen = 445;
     state->p25_src_nid = 0xABCDE;
-    state->p25_call_emergency[0] = 1;
-    state->p25_call_priority[0] = 7;
-    state->p25_call_is_packet[0] = 1;
-    state->p25_policy_tg[0] = 200;
-    state->p25_policy_tg[1] = 201;
 }
 
 static void
@@ -767,11 +765,6 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].channel = 0x400B;
     state->p25_pending_announcements[0].last_seen = 909;
     state->p25_src_nid = 0x77777;
-    state->p25_call_emergency[0] = 0;
-    state->p25_call_priority[0] = 2;
-    state->p25_call_is_packet[0] = 0;
-    state->p25_policy_tg[0] = 901;
-    state->p25_policy_tg[1] = 902;
 }
 
 static int
@@ -780,9 +773,7 @@ expect_empty_target_p25_state(const dsd_state* state) {
         || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
-        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_call_emergency[0] != 0
-        || state->p25_call_priority[0] != 0 || state->p25_call_is_packet[0] != 0 || state->p25_policy_tg[0] != 0
-        || state->p25_policy_tg[1] != 0) {
+        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
     }
@@ -823,9 +814,8 @@ expect_target0_p25_state(const dsd_state* state) {
         || state->p25_nb_entries[0].site != 2 || state->p25_nb_entries[0].cfva != 3
         || state->p25_nb_entries[0].lra != 0x55 || state->p25_nb_entries[0].lra_valid != 1
         || state->p25_nb_entries[0].cfva_valid != 1 || state->p25_nb_entries[0].last_seen != 444
-        || state->p25_src_nid != 0xABCDE || state->p25_call_emergency[0] != 1 || state->p25_call_priority[0] != 7
-        || state->p25_call_is_packet[0] != 1 || state->p25_policy_tg[0] != 200 || state->p25_policy_tg[1] != 201) {
-        DSD_FPRINTF(stderr, "P25 neighbor/current-call state leaked across scan targets\n");
+        || state->p25_src_nid != 0xABCDE) {
+        DSD_FPRINTF(stderr, "P25 neighbor state leaked across scan targets\n");
         test_rc = 1;
     }
     if (state->p25_secondary_cc_count != 1 || state->p25_secondary_cc_entries[0].freq != 851625000
@@ -921,22 +911,48 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 }
 
 static void
-seed_call_identity(dsd_state* state, int lasttg, int lastsrc, int lasttgR, int lastsrcR, int gi0, int gi1) {
-    state->lasttg = lasttg;
-    state->lastsrc = lastsrc;
-    state->lasttgR = lasttgR;
-    state->lastsrcR = lastsrcR;
-    state->gi[0] = (int8_t)gi0;
-    state->gi[1] = (int8_t)gi1;
+seed_call_identity(dsd_state* state, int target0, int source0, int target1, int source1, int private0, int private1) {
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .kind = private0 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = (uint64_t)target0,
+        .policy_target_id = (uint64_t)target0,
+        .ota_source_id = (uint64_t)source0,
+    };
+    observation.slot = 0U;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
+    observation.slot = 1U;
+    observation.kind = private1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = (uint64_t)target1;
+    observation.policy_target_id = (uint64_t)target1;
+    observation.ota_source_id = (uint64_t)source1;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
 }
 
 static int
-expect_call_identity(const char* label, const dsd_state* state, int lasttg, int lastsrc, int lasttgR, int lastsrcR,
-                     int gi0, int gi1) {
-    if (state->lasttg != lasttg || state->lastsrc != lastsrc || state->lasttgR != lasttgR || state->lastsrcR != lastsrcR
-        || state->gi[0] != gi0 || state->gi[1] != gi1) {
-        DSD_FPRINTF(stderr, "%s call identity mismatch tg=%d src=%d tgR=%d srcR=%d gi=%d/%d\n", label, state->lasttg,
-                    state->lastsrc, state->lasttgR, state->lastsrcR, state->gi[0], state->gi[1]);
+expect_call_identity(const char* label, const dsd_state* state, int target0, int source0, int target1, int source1,
+                     int private0, int private1) {
+    dsd_call_snapshot calls[2];
+    const int have0 = dsd_call_state_get(state, 0U, &calls[0]);
+    const int have1 = dsd_call_state_get(state, 1U, &calls[1]);
+    if (private0 < 0 && private1 < 0) {
+        if (have0 > 0 || have1 > 0) {
+            DSD_FPRINTF(stderr, "%s unexpectedly restored canonical calls\n", label);
+            return 1;
+        }
+        return 0;
+    }
+    const dsd_call_kind kind0 = private0 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    const dsd_call_kind kind1 = private1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    if (have0 <= 0 || have1 <= 0 || calls[0].phase != DSD_CALL_PHASE_ACTIVE || calls[1].phase != DSD_CALL_PHASE_ACTIVE
+        || calls[0].ota_target_id != (uint64_t)target0 || calls[0].ota_source_id != (uint64_t)source0
+        || calls[1].ota_target_id != (uint64_t)target1 || calls[1].ota_source_id != (uint64_t)source1
+        || calls[0].kind != kind0 || calls[1].kind != kind1) {
+        DSD_FPRINTF(stderr, "%s canonical call identity mismatch\n", label);
         return 1;
     }
     return 0;

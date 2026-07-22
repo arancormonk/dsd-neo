@@ -25,6 +25,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h> // IWYU pragma: keep - private-source tests need the enrichment declaration
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -403,7 +404,9 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
     }
 
     char str[16];
-    int tsrc = state->lastsrc;
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    int tsrc = has_call && call.ota_source_id <= UINT32_MAX ? (int)call.ota_source_id : 0;
     k = 0;
     for (int i = 0; i < 16; i++) {
         str[i] = 0;
@@ -431,6 +434,7 @@ p25p1_ldu1_softid_finalize_alias(const dsd_opts* opts, dsd_state* state, int k) 
             (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_REPLACE_LEARNED_ONLY);
             (void)dsd_tg_policy_upsert_exact(state, &alias_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
         }
+        (void)dsd_event_enrich_alias(state, 0U, call.epoch, str);
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

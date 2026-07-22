@@ -3,8 +3,10 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -68,6 +70,9 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
     str3[8] = '\0';
     str4[12] = '\0';
 
+    const uint16_t crc_ext = (uint16_t)(((uint8_t)radioheader[39] << 8U) | (uint8_t)radioheader[40]);
+    const uint16_t crc_cmp = dstar_crc16((const uint8_t*)radioheader, 39U);
+
     DSD_FPRINTF(stderr, " RPT 2: %s", str1);
     DSD_FPRINTF(stderr, " RPT 1: %s", str2);
     DSD_FPRINTF(stderr, " DST: %s", str3);
@@ -90,8 +95,17 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
         DSD_FPRINTF(stderr, " URGENT");
     }
 
-    DSD_MEMCPY(state->dstar_rpt2, str1, sizeof(str1));
-    DSD_MEMCPY(state->dstar_rpt1, str2, sizeof(str2));
-    DSD_MEMCPY(state->dstar_dst, str3, sizeof(str3));
-    DSD_MEMCPY(state->dstar_src, str4, sizeof(str4));
+    if (crc_cmp == crc_ext && (((uint8_t)radioheader[0] & 0x80U) == 0U)) {
+        int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
+        dsd_call_observation observation = {
+            .protocol = protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", str4);
+        DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", str3);
+        DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", str2);
+        DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", str1);
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    }
 }

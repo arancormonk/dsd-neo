@@ -6,6 +6,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -191,7 +192,9 @@ p25_crypto_p1_clear_conflict(dsd_state* state) {
 
 static int
 p25_crypto_p1_has_explicit_clear_service(const dsd_state* state) {
-    return state && state->p25_service_options_valid[0] != 0 && (state->dmr_so & 0x40U) == 0;
+    dsd_call_snapshot call;
+    return state && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.protocol == DSD_SYNC_P25P1_POS && (call.service_options & 0x40U) == 0;
 }
 
 static int
@@ -281,7 +284,6 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
         slot = 0;
         state->p25_p1_hdu_crypto_fresh = 0;
         state->dmr_so = svc_bits >= 0 ? (unsigned int)svc_bits : 0U;
-        state->p25_service_options_valid[0] = svc_bits >= 0 ? 1U : 0U;
     }
 
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));

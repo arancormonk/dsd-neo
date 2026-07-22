@@ -8,6 +8,7 @@
  * updates CC frequency and system identifiers using pre-seeded IDEN tables.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -127,6 +128,22 @@ expect_not_contains_text(const char* tag, const char* text, const char* needle) 
         return 1;
     }
     return 0;
+}
+
+static int
+copy_recent_activity(const dsd_state* state, uint8_t index, dsd_recent_activity_entry* entry) {
+    dsd_recent_activity_snapshot recent = {0};
+    if (!entry || index >= DSD_RECENT_ACTIVITY_COUNT || dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        return 0;
+    }
+    *entry = recent.entries[index];
+    return entry->updated_m_ms != 0U || entry->notice[0] != '\0';
+}
+
+static int
+has_active_call(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call = {0};
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
 }
 
 static void
@@ -496,9 +513,15 @@ main(void) {
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
         rc |= expect_eq_int("mbt group unresolved enc no grant", (int)p25_sm_get_ctx()->grant_count, 0);
-        rc |= expect_eq_long("mbt group unresolved enc lasttg unchanged", (long)state.lasttg, 0);
-        rc |= expect_eq_int("mbt group unresolved enc svc recorded", state.p25_service_options_valid[0], 1);
-        rc |= expect_eq_int("mbt group unresolved enc svc stored", state.dmr_so, 0x40);
+        rc |= expect_eq_int("mbt group unresolved enc no active voice", has_active_call(&state, 0U), 0);
+        dsd_recent_activity_entry recent = {0};
+        rc |= expect_eq_int("mbt group unresolved enc recent activity", copy_recent_activity(&state, 0U, &recent), 1);
+        rc |= expect_eq_int("mbt group unresolved enc recent kind", (int)recent.observation.kind,
+                            DSD_CALL_KIND_GROUP_VOICE);
+        rc |= expect_eq_long("mbt group unresolved enc recent target", (long)recent.observation.ota_target_id, 0x2345);
+        rc |=
+            expect_eq_long("mbt group unresolved enc recent source", (long)recent.observation.ota_source_id, 0x010205);
+        rc |= expect_eq_int("mbt group unresolved enc recent service", recent.observation.service_options, 0x40);
     }
 
     // A missing control-channel return target likewise prevents a classification
@@ -515,9 +538,12 @@ main(void) {
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
         rc |= expect_eq_int("mbt mfid90 no cc enc no grant", (int)p25_sm_get_ctx()->grant_count, 0);
-        rc |= expect_eq_long("mbt mfid90 no cc enc lasttg unchanged", (long)state.lasttg, 0);
-        rc |= expect_eq_int("mbt mfid90 no cc enc svc remains invalid", state.p25_service_options_valid[0], 0);
-        rc |= expect_eq_int("mbt mfid90 no cc enc svc remains empty", state.dmr_so, 0);
+        rc |= expect_eq_int("mbt mfid90 no cc enc no active voice", has_active_call(&state, 0U), 0);
+        dsd_recent_activity_entry recent = {0};
+        rc |= expect_eq_int("mbt mfid90 no cc recent activity", copy_recent_activity(&state, 0U, &recent), 1);
+        rc |= expect_eq_long("mbt mfid90 no cc recent target", (long)recent.observation.ota_target_id, 0x3456);
+        rc |= expect_eq_long("mbt mfid90 no cc recent source", (long)recent.observation.ota_source_id, 0x010206);
+        rc |= expect_eq_int("mbt mfid90 no cc recent service", recent.observation.service_options, 0x40);
     }
 
     // AMBTC Unit-to-Unit Voice Channel Grant (0x04): resolved FDMA channel dispatches one private grant.
@@ -548,9 +574,14 @@ main(void) {
         rc |= expect_eq_int("mbt 0x04 svc", ctx->slots[0].svc_bits, 0x00);
         rc |= expect_eq_int("mbt 0x04 dst", ctx->slots[0].dst, 0x0ABCDE);
         rc |= expect_eq_int("mbt 0x04 src", ctx->vc_src, 0x012345);
-        rc |= expect_contains_text("mbt 0x04 active", state.active_channel[0], "Active UU Ch: 100A");
-        rc |= expect_contains_text("mbt 0x04 active src", state.active_channel[0], "SRC: 74565");
-        rc |= expect_contains_text("mbt 0x04 active tgt", state.active_channel[0], "TGT: 703710");
+        dsd_recent_activity_entry recent = {0};
+        rc |= expect_eq_int("mbt 0x04 recent activity", copy_recent_activity(&state, 0U, &recent), 1);
+        rc |= expect_contains_text("mbt 0x04 active", recent.notice, "Active UU Ch: 100A");
+        rc |= expect_contains_text("mbt 0x04 active src", recent.notice, "SRC: 74565");
+        rc |= expect_contains_text("mbt 0x04 active tgt", recent.notice, "TGT: 703710");
+        rc |= expect_eq_int("mbt 0x04 recent kind", (int)recent.observation.kind, DSD_CALL_KIND_PRIVATE_VOICE);
+        rc |= expect_eq_long("mbt 0x04 recent target", (long)recent.observation.ota_target_id, 0x0ABCDE);
+        rc |= expect_eq_long("mbt 0x04 recent source", (long)recent.observation.ota_source_id, 0x012345);
         rc |= expect_contains_text("mbt 0x04 label", out, "Unit to Unit Voice Channel Grant - Extended");
         rc |= expect_contains_text("mbt 0x04 src fq", out, "FULL SRC [12345.678.234567]");
         rc |= expect_contains_text("mbt 0x04 tgt fq", out, "FULL TGT [ABCDE.234.456789]");
@@ -597,7 +628,10 @@ main(void) {
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 unresolved no grant", (int)p25_sm_get_ctx()->grant_count, 0);
-        rc |= expect_contains_text("mbt 0x04 unresolved active", state.active_channel[0], "Active UU Ch: 200A");
+        dsd_recent_activity_entry recent = {0};
+        rc |= expect_eq_int("mbt 0x04 unresolved recent activity", copy_recent_activity(&state, 0U, &recent), 1);
+        rc |= expect_contains_text("mbt 0x04 unresolved active", recent.notice, "Active UU Ch: 200A");
+        rc |= expect_eq_long("mbt 0x04 unresolved frequency", (long)recent.observation.frequency_hz, 0);
     }
 
     // TDMA IDEN channels report the derived FDMA channel and slot in the active-channel text.
@@ -611,7 +645,9 @@ main(void) {
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 tdma grant", (int)p25_sm_get_ctx()->grant_count, 1);
-        rc |= expect_contains_text("mbt 0x04 tdma suffix", state.active_channel[0], "(FDMA 0005 S2)");
+        dsd_recent_activity_entry recent = {0};
+        rc |= expect_eq_int("mbt 0x04 tdma recent activity", copy_recent_activity(&state, 0U, &recent), 1);
+        rc |= expect_contains_text("mbt 0x04 tdma suffix", recent.notice, "(FDMA 0005 S2)");
     }
 
     // Encrypted private voice grants reach the centralized classification-probe
@@ -627,8 +663,10 @@ main(void) {
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
         (void)p25_decode_pdu_trunking(&opts, &state, uu, sizeof uu);
         rc |= expect_eq_int("mbt 0x04 enc lockout probe grant", (int)p25_sm_get_ctx()->grant_count, 1);
-        rc |= expect_eq_int("mbt 0x04 encrypted service valid", state.p25_service_options_valid[0], 1);
-        rc |= expect_eq_int("mbt 0x04 encrypted svc stored", state.dmr_so, 0x40);
+        dsd_recent_activity_entry recent = {0};
+        rc |= expect_eq_int("mbt 0x04 encrypted recent activity", copy_recent_activity(&state, 0U, &recent), 1);
+        rc |= expect_eq_int("mbt 0x04 encrypted service", recent.observation.service_options, 0x40);
+        rc |= expect_eq_int("mbt 0x04 encrypted no active voice", has_active_call(&state, 0U), 0);
 
         opts.trunk_tune_enc_calls = 1;
         state.tg_hold = 0x222222;

@@ -10,8 +10,10 @@
  * - 7:    unknown
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
@@ -64,16 +66,18 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     return 1;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
     g_watchdog_calls++;
-    g_watchdog_src = src;
-    g_watchdog_dst = dst;
+    g_watchdog_src = observation->ota_source_id;
+    g_watchdog_dst = observation->ota_target_id;
     g_watchdog_slot = slot;
-    DSD_SNPRINTF(g_watchdog_data, sizeof g_watchdog_data, "%s", data_string ? data_string : "");
+    DSD_SNPRINTF(g_watchdog_data, sizeof g_watchdog_data, "%s", notice ? notice : "");
+    return 0;
 }
 
 void
@@ -128,6 +132,21 @@ reset_watchdog_capture(void) {
     g_watchdog_dst = 0;
     g_watchdog_slot = 0xFFU;
     DSD_MEMSET(g_watchdog_data, 0, sizeof g_watchdog_data);
+}
+
+static void
+seed_active_call(dsd_state* state, uint8_t slot, uint32_t source_id) {
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = source_id,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
 }
 
 static void
@@ -273,7 +292,7 @@ test_lip_and_vendor_gps(dsd_opts* opts, dsd_state* st) {
         uint8_t bits[96];
         DSD_MEMSET(bits, 0, sizeof bits);
         st->currentslot = 1;
-        st->lastsrcR = 0x102030;
+        seed_active_call(st, 1U, 0x102030U);
         st->event_history_s[1].Event_History_Items[0].source_id = 0x102030;
         DSD_MEMSET(st->dmr_embedded_gps[1], 0, sizeof st->dmr_embedded_gps[1]);
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
@@ -300,6 +319,7 @@ test_nxdn_gps_report_paths(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     uint8_t bits[280];
 
+    seed_active_call(st, 0U, 900003U);
     DSD_MEMSET(bits, 0, sizeof bits);
     set_bits_msb(bits, (int)sizeof bits, 16, 2500U, 15);
     set_bits_msb(bits, (int)sizeof bits, 56, 123U, 16);
@@ -355,6 +375,8 @@ main(void) {
     if (!st.event_history_s) {
         return 100;
     }
+    seed_active_call(&st, 0U, 900001U);
+    seed_active_call(&st, 1U, 900002U);
     rc |= test_packed_nmea_formats(&opts, &st);
     rc |= test_lip_and_vendor_gps(&opts, &st);
     rc |= test_nxdn_gps_report_paths(&opts, &st);

@@ -10,9 +10,11 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -41,14 +43,16 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    return 0;
 }
 
 void
@@ -127,8 +131,18 @@ main(int argc, char** argv) {
     // 1) Tune to VC via SM grant call
     dmr_sm_emit_group_grant(&opts, &state, /*freq_hz*/ 852000000, /*lpcn*/ 0, /*tg*/ 1234, /*src*/ 42);
     assert(opts.trunk_is_tuned == 1);
+    // Model the subsequently decoded voice call: grants are recent activity only.
+    const dsd_call_observation call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1234,
+        .policy_target_id = 1234,
+        .ota_source_id = 42,
+        .frequency_hz = 852000000,
+    };
+    assert(dsd_call_state_observe(&state, &call, DSD_CALL_BOUNDARY_BEGIN) > 0);
     // Set TG Hold to match active TG; ensure slot 0 context
-    state.lasttg = 1234;
     state.tg_hold = 1234;
     state.currentslot = 0;
     // 2) P_CLEAR should force release via SM (bypass hangtime/activity)

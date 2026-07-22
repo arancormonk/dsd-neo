@@ -15,6 +15,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
+#include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <stdarg.h>
@@ -43,12 +44,67 @@ static int g_beeper_count;
 static int g_last_beeper_id;
 static int g_frame_log_count;
 static char g_last_frame_log[512];
+
+typedef struct canonical_snapshot_race_ctx {
+    dsd_opts* opts;
+    dsd_state* state;
+    Event_History_I* history;
+    int writer_failed;
+    int reader_failed;
+} canonical_snapshot_race_ctx;
+
+static DSD_THREAD_RETURN_TYPE
+canonical_snapshot_writer(void* arg) {
+    canonical_snapshot_race_ctx* ctx = (canonical_snapshot_race_ctx*)arg;
+    for (uint32_t i = 0U; i < 256U; i++) {
+        const uint32_t target = 7000U + (i & 1U);
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = target,
+            .policy_target_id = target,
+            .ota_source_id = 8000U + i,
+            .observed_m = (double)i,
+        };
+        if (dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+            ctx->writer_failed = 1;
+            break;
+        }
+        dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+    }
+    DSD_THREAD_RETURN;
+}
+
+static DSD_THREAD_RETURN_TYPE
+canonical_snapshot_reader(void* arg) {
+    canonical_snapshot_race_ctx* ctx = (canonical_snapshot_race_ctx*)arg;
+    dsd_state* snapshot = (dsd_state*)calloc(1U, sizeof(*snapshot));
+    Event_History_I* copied_history = (Event_History_I*)calloc(2U, sizeof(*copied_history));
+    if (snapshot == NULL || copied_history == NULL) {
+        ctx->reader_failed = 1;
+    } else {
+        for (uint32_t i = 0U; i < 64U; i++) {
+            if (dsd_event_state_copy_snapshot(snapshot, ctx->state, copied_history) < 0) {
+                ctx->reader_failed = 1;
+                break;
+            }
+            dsd_call_snapshot call;
+            if (dsd_call_state_get(snapshot, 0U, &call) <= 0 || call.epoch == 0U) {
+                ctx->reader_failed = 1;
+                break;
+            }
+        }
+    }
+    dsd_state_ext_free_all(snapshot);
+    free(copied_history);
+    free(snapshot);
+    DSD_THREAD_RETURN;
+}
+
 static int g_open_wav_count;
 static int g_close_wav_count;
-
-enum {
-    TEST_DMR_DATA_BURST = 6,
-};
+static double g_observed_m;
 
 SNDFILE*
 open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
@@ -117,6 +173,7 @@ __wrap_beeper(dsd_opts* opts, dsd_state* state, int lr, int id, int ad, int len)
 
 static void
 reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(state, 0, sizeof *state);
     DSD_MEMSET(event_history, 0, sizeof event_history[0] * 2);
@@ -130,6 +187,46 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
     g_last_frame_log[0] = '\0';
     g_open_wav_count = 0;
     g_close_wav_count = 0;
+    g_observed_m = 1.0;
+}
+
+static int
+observe_test_call(dsd_state* state, uint8_t slot, int protocol, dsd_call_kind kind, uint64_t target_id,
+                  uint64_t source_id, uint16_t service_options, uint32_t channel, dsd_call_boundary boundary) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = target_id,
+        .policy_target_id = target_id,
+        .ota_source_id = source_id,
+        .channel = channel,
+        .service_options = service_options,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    return dsd_call_state_observe(state, &observation, boundary);
+}
+
+static int
+update_test_crypto(dsd_state* state, uint8_t slot, dsd_call_crypto_state classification, uint8_t algid, uint16_t kid,
+                   uint8_t audio_permitted) {
+    const dsd_call_crypto_update update = {
+        .classification = classification,
+        .algid = algid,
+        .kid = kid,
+        .audio_permitted = audio_permitted,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    return dsd_call_state_update_crypto(state, slot, &update);
+}
+
+static int
+emit_test_data_notice(dsd_opts* opts, dsd_state* state, uint64_t source_id, uint64_t target_id, const char* notice,
+                      uint8_t slot) {
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, source_id, target_id);
+    return dsd_event_emit_data_notice(opts, state, slot, &observation, notice);
 }
 
 static int
@@ -226,10 +323,10 @@ test_watchdog_current_marks_only_semantic_changes(void) {
     reset_fixture(&opts, &state, event_history);
     opts.playfiles = 1;
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.lastsrc = 1234U;
-    state.lasttg = 5678U;
     state.dmr_color_code = 1U;
-    state.gi[0] = 0;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     const uint64_t initial_revision = event_history[0].revision;
     watchdog_event_current(&opts, &state, 0);
@@ -239,7 +336,9 @@ test_watchdog_current_marks_only_semantic_changes(void) {
     watchdog_event_current(&opts, &state, 0);
     rc |= expect_u64("identical watchdog update leaves revision unchanged", event_history[0].revision, first_revision);
 
-    state.lastsrc = 4321U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 4321U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
     watchdog_event_current(&opts, &state, 0);
     rc |= expect_u64("semantic watchdog update advances revision", event_history[0].revision, first_revision + 1U);
     rc |= expect_u64("watchdog slot update leaves other slot unchanged", event_history[1].revision, 1U);
@@ -255,18 +354,13 @@ test_nonfinalizing_call_notice_has_no_call_end_side_effects(void) {
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
     opts.wav_out_f = (SNDFILE*)&wav_sentinel;
-    state.gi[0] = 1;
 
-    const dsd_call_snapshot call = {
-        .epoch = 1U,
-        .phase = DSD_CALL_PHASE_ACTIVE,
-        .protocol = DSD_SYNC_P25P1_POS,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 1234U,
-        .policy_target_id = 1234U,
-        .group_id = 1234U,
-    };
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
     const char* detail = "Target: 1234; has been locked out; Encryption Lock Out Enabled.";
 
     int rc = expect_int("nonfinalizing notice committed",
@@ -276,7 +370,9 @@ test_nonfinalizing_call_notice_has_no_call_end_side_effects(void) {
     rc |= expect_int("nonfinalizing notice does not beep", g_beeper_count, 0);
     rc |= expect_int("nonfinalizing notice does not close WAV", g_close_wav_count, 0);
     rc |= expect_int("nonfinalizing notice does not open WAV", g_open_wav_count, 0);
-    rc |= expect_int("nonfinalizing notice preserves slot identity", state.gi[0], 1);
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    rc |= expect_int("nonfinalizing notice preserves active call", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("nonfinalizing notice preserves call kind", call.kind, DSD_CALL_KIND_GROUP_VOICE);
     return rc;
 }
 
@@ -295,8 +391,7 @@ test_event_state_snapshot_copy_accepts_aliased_state(void) {
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = 2201U,
         .policy_target_id = 2201U,
-        .source_id = 3301U,
-        .group_id = 2201U,
+        .ota_source_id = 3301U,
         .observed_m = 1.0,
     };
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
@@ -324,7 +419,7 @@ test_end_only_data_call_does_not_emit_voice_end_alert(void) {
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
 
-    watchdog_event_datacall(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
+    (void)emit_test_data_notice(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
     watchdog_event_history(&opts, &state, 0);
 
     return expect_int("end-only data call should not beep", g_beeper_count, 0);
@@ -338,7 +433,7 @@ test_data_only_data_call_emits_one_data_alert(void) {
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_DATA;
 
-    watchdog_event_datacall(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
+    (void)emit_test_data_notice(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
     watchdog_event_history(&opts, &state, 0);
 
     int rc = 0;
@@ -354,7 +449,7 @@ test_data_call_emits_frame_log_record(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    watchdog_event_datacall(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
+    (void)emit_test_data_notice(&opts, &state, 1234, 5678, "MNIS ARS;", 0);
 
     int rc = 0;
     rc |= expect_int("data call should emit one frame log", g_frame_log_count, 1);
@@ -401,12 +496,14 @@ test_source_less_data_call_does_not_suppress_next_voice_start_alert(void) {
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START;
 
-    watchdog_event_datacall(&opts, &state, 0, 0, "MNIS ARS;", 0);
+    (void)emit_test_data_notice(&opts, &state, 0, 0, "MNIS ARS;", 0);
     watchdog_event_history(&opts, &state, 0);
 
     int rc = expect_int("source-less data should not beep as voice start", g_beeper_count, 0);
 
-    state.lastsrc = 1234;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
     watchdog_event_history(&opts, &state, 0);
 
     rc |= expect_int("voice start after source-less data should beep once", g_beeper_count, 1);
@@ -421,7 +518,7 @@ test_source_less_data_call_is_preserved_in_history(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    watchdog_event_datacall(&opts, &state, 0, 0, "MNIS ARS;", 0);
+    (void)emit_test_data_notice(&opts, &state, 0, 0, "MNIS ARS;", 0);
     watchdog_event_history(&opts, &state, 0);
 
     const Event_History* current = &state.event_history_s[0].Event_History_Items[0];
@@ -434,7 +531,7 @@ test_source_less_data_call_is_preserved_in_history(void) {
 }
 
 static int
-test_source_less_dmr_data_current_event_is_not_preserved_in_history(void) {
+test_source_less_dmr_data_notices_are_preserved_in_history(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
@@ -443,23 +540,17 @@ test_source_less_dmr_data_current_event_is_not_preserved_in_history(void) {
     state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     state.dmr_color_code = 1U;
 
-    state.dmrburstL = TEST_DMR_DATA_BURST;
-    watchdog_event_current(&opts, &state, 0);
+    (void)emit_test_data_notice(&opts, &state, 0U, 0U, "DMR slot 1 data;", 0U);
     watchdog_event_history(&opts, &state, 0);
 
-    state.dmrburstR = TEST_DMR_DATA_BURST;
-    watchdog_event_current(&opts, &state, 1);
+    (void)emit_test_data_notice(&opts, &state, 0U, 0U, "DMR slot 2 data;", 1U);
     watchdog_event_history(&opts, &state, 1);
 
     int rc = 0;
-    rc |= expect_int("slot 1 source-less DMR current should remain current",
-                     state.event_history_s[0].Event_History_Items[0].event_string[0] != '\0', 1);
-    rc |= expect_int("slot 1 source-less DMR current should not be stored",
-                     state.event_history_s[0].Event_History_Items[1].event_string[0], '\0');
-    rc |= expect_int("slot 2 source-less DMR current should remain current",
-                     state.event_history_s[1].Event_History_Items[0].event_string[0] != '\0', 1);
-    rc |= expect_int("slot 2 source-less DMR current should not be stored",
-                     state.event_history_s[1].Event_History_Items[1].event_string[0], '\0');
+    rc |= expect_has_substr("slot 1 source-less DMR data stored",
+                            state.event_history_s[0].Event_History_Items[1].event_string, "DMR slot 1 data;");
+    rc |= expect_has_substr("slot 2 source-less DMR data stored",
+                            state.event_history_s[1].Event_History_Items[1].event_string, "DMR slot 2 data;");
     return rc;
 }
 
@@ -474,11 +565,7 @@ test_sourced_dmr_data_current_event_does_not_emit_voice_end_alert(void) {
     state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     state.dmr_color_code = 1U;
 
-    state.lastsrc = 1234;
-    state.lasttg = 5678;
-    state.dmrburstL = TEST_DMR_DATA_BURST;
-    watchdog_event_current(&opts, &state, 0);
-    state.lastsrc = 0;
+    (void)emit_test_data_notice(&opts, &state, 1234U, 5678U, "DMR slot 1 data;", 0U);
     watchdog_event_history(&opts, &state, 0);
 
     int rc = 0;
@@ -491,11 +578,7 @@ test_sourced_dmr_data_current_event_does_not_emit_voice_end_alert(void) {
     state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     state.dmr_color_code = 1U;
 
-    state.lastsrcR = 2345;
-    state.lasttgR = 6789;
-    state.dmrburstR = TEST_DMR_DATA_BURST;
-    watchdog_event_current(&opts, &state, 1);
-    state.lastsrcR = 0;
+    (void)emit_test_data_notice(&opts, &state, 2345U, 6789U, "DMR slot 2 data;", 1U);
     watchdog_event_history(&opts, &state, 1);
 
     rc |= expect_int("slot 2 sourced DMR data end should not beep", g_beeper_count, 0);
@@ -511,11 +594,12 @@ test_voice_end_alert_still_emits_for_voice_history(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
-    state.event_history_s[0].Event_History_Items[0].source_id = 1234;
-    state.event_history_s[0].Event_History_Items[0].subtype = 0;
-    state.lastsrc = 0;
-
-    watchdog_event_history(&opts, &state, 0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end(&state, 0U, 2.0) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
 
     int rc = 0;
     rc |= expect_int("voice end should still beep once", g_beeper_count, 1);
@@ -532,18 +616,18 @@ test_edacs_service_string_appends_past_pointer_size(void) {
 
     opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
-    state.lastsrc = 1201;
-    state.lasttg = 0x0123;
     state.edacs_tuned_lcn = 7;
     state.edacs_site_id = 3;
     state.edacs_area_code = 1;
     state.edacs_sys_id = 0x2A;
-    state.edacs_vc_call_type = 0x0A;
     state.edacs_a_shift = 7;
     state.edacs_f_shift = 3;
     state.edacs_a_mask = 0x0F;
     state.edacs_f_mask = 0x0F;
     state.edacs_s_mask = 0x07;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_EDACS_POS, DSD_CALL_KIND_GROUP_VOICE, 0x0123U, 1201U, 0x0AU, 7U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     watchdog_event_current(&opts, &state, 0);
 
@@ -562,11 +646,11 @@ test_dmr_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.lastsrc = 123456U;
-    state.lasttg = 50061U;
-    state.gi[0] = 0;
     state.dmr_color_code = 7U;
     state.dmr_t3_syscode = 0xABCU;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 123456U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     watchdog_event_current(&opts, &state, 0);
 
@@ -587,14 +671,14 @@ test_p25_event_string_keeps_full_prefix_after_sprintf_hardening(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
-    state.lastsrc = 5790062U;
-    state.lasttg = 50061U;
-    state.gi[0] = 0;
     state.nac = 0x293;
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
     state.p2_siteid = 10U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     watchdog_event_current(&opts, &state, 0);
 
@@ -615,14 +699,14 @@ test_source_less_current_event_updates_history_metadata(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_P25P2_POS;
-    state.lastsrc = 0U;
-    state.lasttg = 21001U;
-    state.gi[0] = 0;
     state.nac = 0x006;
     state.p2_wacn = 0x45564U;
     state.p2_sysid = 0x006U;
     state.p2_rfssid = 10U;
     state.p2_siteid = 10U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 21001U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     watchdog_event_current(&opts, &state, 0);
 
@@ -695,30 +779,40 @@ test_source_transition_rotates_slot_wav_files(void) {
 
     opts.wav_out_f = (SNDFILE*)0x1;
     opts.wav_out_fR = (SNDFILE*)0x2;
-    state.event_history_s[0].Event_History_Items[0].source_id = 1234U;
-    DSD_SNPRINTF(state.event_history_s[0].Event_History_Items[0].event_string,
-                 sizeof state.event_history_s[0].Event_History_Items[0].event_string, "%s", "slot one voice");
-    state.lastsrc = 5678U;
-    watchdog_event_history(&opts, &state, 0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    g_open_wav_count = 0;
+    g_close_wav_count = 0;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 5678U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
 
     int rc = 0;
     rc |= expect_int("slot 1 wav close", g_close_wav_count, 1);
     rc |= expect_int("slot 1 wav reopen", g_open_wav_count, 1);
-    rc |= expect_has_substr("slot 1 transition stored", state.event_history_s[0].Event_History_Items[1].event_string,
-                            "slot one voice");
+    rc |= expect_int("slot 1 transition stored prior source",
+                     (int)state.event_history_s[0].Event_History_Items[1].source_id, 1234);
 
     g_open_wav_count = 0;
     g_close_wav_count = 0;
-    state.event_history_s[1].Event_History_Items[0].source_id = 2222U;
-    DSD_SNPRINTF(state.event_history_s[1].Event_History_Items[0].event_string,
-                 sizeof state.event_history_s[1].Event_History_Items[0].event_string, "%s", "slot two voice");
-    state.lastsrcR = 3333U;
-    watchdog_event_history(&opts, &state, 1);
+    assert(observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 200U, 2222U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+    g_open_wav_count = 0;
+    g_close_wav_count = 0;
+    assert(observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 200U, 3333U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
 
     rc |= expect_int("slot 2 wav close", g_close_wav_count, 1);
     rc |= expect_int("slot 2 wav reopen", g_open_wav_count, 1);
-    rc |= expect_has_substr("slot 2 transition stored", state.event_history_s[1].Event_History_Items[1].event_string,
-                            "slot two voice");
+    rc |= expect_int("slot 2 transition stored prior source",
+                     (int)state.event_history_s[1].Event_History_Items[1].source_id, 2222);
     return rc;
 }
 
@@ -730,13 +824,17 @@ test_ysf_current_sanitizes_ids_and_text_message(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_YSF_POS;
-    DSD_MEMSET(state.ysf_src, ' ', sizeof state.ysf_src);
-    DSD_MEMSET(state.ysf_tgt, ' ', sizeof state.ysf_tgt);
-    DSD_MEMCPY(state.ysf_src,
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_YSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+    };
+    DSD_MEMCPY(observation.source_text,
                "SRC\x01"
                "CALL",
                8);
-    DSD_MEMCPY(state.ysf_tgt, "TG*ROOM", 7);
+    DSD_MEMCPY(observation.target_text, "TG*ROOM", 7);
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     for (int i = 4; i < 8; i++) {
         for (int j = 0; j < 20; j++) {
             state.ysf_txt[i][j] = (j % 2 == 0) ? '*' : (char)('A' + i);
@@ -763,26 +861,33 @@ test_m17_dstar_dpmr_current_strings(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_M17_LSF_POS;
-    state.m17_dst = 0xFFFFFFFFFFFFULL;
-    state.m17_src = 12345ULL;
-    state.m17_can = 4U;
-    DSD_SNPRINTF(state.m17_src_csd, sizeof state.m17_src_csd, "%s", "SRC CSD");
-    DSD_SNPRINTF(state.m17_dst_csd, sizeof state.m17_dst_csd, "%s", "DST CSD");
-    DSD_SNPRINTF(state.m17_src_str, sizeof state.m17_src_str, "%s", "SRCSTR");
-    DSD_SNPRINTF(state.m17_dst_str, sizeof state.m17_dst_str, "%s", "DSTSTR");
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_M17_LSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = 0xFFFFFFFFFFFFULL,
+        .ota_source_id = 12345ULL,
+        .service_options = 4U,
+    };
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "SRCSTR");
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "BROADCAST");
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     watchdog_event_current(&opts, &state, 0);
 
     int rc = 0;
     const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
-    rc |= expect_str_eq("m17 src csd", item->src_str, "SRC CSD");
+    rc |= expect_str_eq("m17 source text", item->src_str, "SRCSTR");
     rc |= expect_has_substr("m17 broadcast event", item->event_string, "TGT: BROADCAST SRC: SRCSTR CAN: 04;");
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
-    DSD_MEMSET(state.dstar_src, ' ', sizeof state.dstar_src);
-    DSD_MEMSET(state.dstar_dst, ' ', sizeof state.dstar_dst);
-    DSD_MEMCPY(state.dstar_src, "N0CALL\x02/RPT", 11);
-    DSD_MEMCPY(state.dstar_dst, "CQCQCQ", 6);
+    DSD_MEMSET(&observation, 0, sizeof(observation));
+    observation.protocol = DSD_SYNC_DSTAR_VOICE_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_VOICE;
+    DSD_MEMCPY(observation.source_text, "N0CALL\x02/RPT", 11);
+    DSD_MEMCPY(observation.target_text, "CQCQCQ", 6);
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_str_eq("dstar sysid", item->sysid_string, "DSTAR");
@@ -792,9 +897,20 @@ test_m17_dstar_dpmr_current_strings(void) {
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_DPMR_FS2_POS;
     state.dpmr_color_code = 9U;
-    DSD_SNPRINTF(state.dpmr_caller_id, sizeof state.dpmr_caller_id, "%s", "CALLER7");
-    DSD_SNPRINTF(state.dpmr_target_id, sizeof state.dpmr_target_id, "%s", "TARGET9");
-    state.dPMRVoiceFS2Frame.Version[0] = 3U;
+    DSD_MEMSET(&observation, 0, sizeof(observation));
+    observation.protocol = DSD_SYNC_DPMR_FS2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_VOICE;
+    observation.channel = 9U;
+    observation.service_options = 3U << 8U;
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "CALLER7");
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "TARGET9");
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+        .audio_permitted = 0U,
+    };
+    (void)dsd_call_state_update_crypto(&state, 0U, &crypto);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_str_eq("dpmr sysid", item->sysid_string, "DPMR_CC_9");
@@ -811,9 +927,6 @@ test_nxdn_current_includes_channel_encryption_and_policy_labels(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_NXDN_POS;
-    state.gi[0] = 1;
-    state.nxdn_last_rid = 41001U;
-    state.nxdn_last_tg = 51002U;
     state.nxdn_last_ran = 23U;
     state.nxdn_location_site_code = 5U;
     state.nxdn_location_sys_code = 12U;
@@ -821,6 +934,24 @@ test_nxdn_current_includes_channel_encryption_and_policy_labels(void) {
     state.nxdn_key = 0x2AU;
     state.nxdn_grant_chan = 198U;
     state.nxdn_grant_freq = 453212500U;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 51002U,
+        .policy_target_id = 51002U,
+        .ota_source_id = 41001U,
+        .channel = 198U,
+        .frequency_hz = 453212500,
+    };
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = 3U,
+        .kid = 0x2AU,
+        .audio_permitted = 0U,
+    };
+    (void)dsd_call_state_update_crypto(&state, 0U, &crypto);
     if (append_policy_label(&state, 51002U, "D", "Dispatch") != 0
         || append_policy_label(&state, 41001U, "A", "Unit 41001") != 0) {
         DSD_FPRINTF(stderr, "failed to append NXDN policy labels\n");
@@ -849,18 +980,18 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
 
     opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
-    state.lastsrc = 0x800U;
-    state.lasttg = 0x0123U;
     state.edacs_tuned_lcn = 11U;
     state.edacs_site_id = 12U;
     state.edacs_area_code = 3U;
     state.edacs_sys_id = 0x45U;
-    state.edacs_vc_call_type = 0x01U;
     state.edacs_a_shift = 7;
     state.edacs_f_shift = 3;
     state.edacs_a_mask = 0x0F;
     state.edacs_f_mask = 0x0F;
     state.edacs_s_mask = 0x07;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_EDACS_POS, DSD_CALL_KIND_GROUP_VOICE, 0x0123U, 0U, 0x01U, 11U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     watchdog_event_current(&opts, &state, 0);
     int rc = 0;
@@ -871,13 +1002,13 @@ test_edacs_ea_mode_current_event_and_unknown_lid(void) {
     opts.trunk_is_tuned = 1;
     state.lastsynctype = DSD_SYNC_EDACS_POS;
     state.ea_mode = 1;
-    state.lastsrc = 77001U;
-    state.lasttg = 88002U;
     state.edacs_tuned_lcn = 12U;
     state.edacs_site_id = 7U;
     state.edacs_area_code = 2U;
     state.edacs_sys_id = 0x1234U;
-    state.edacs_vc_call_type = 0x48U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_EDACS_POS, DSD_CALL_KIND_GROUP_VOICE, 88002U, 77001U, 0x48U, 12U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
 
     watchdog_event_current(&opts, &state, 0);
     const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
@@ -895,14 +1026,12 @@ test_p25_and_dmr_current_append_security_flags(void) {
     reset_fixture(&opts, &state, event_history);
 
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.lastsrc = 123456U;
-    state.lasttg = 50061U;
-    state.gi[0] = 1;
     state.dmr_color_code = 7U;
     state.dmr_fid = 0x10U;
-    state.dmr_so = 0x80U | 0x40U | 0x30U | 0x08U | 0x04U | 0x03U;
-    state.payload_algid = 0x21U;
-    state.payload_keyid = 0x34U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_PRIVATE_VOICE, 50061U, 123456U, 0xFFU,
+                             0U, DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED, 0x21U, 0x34U, 0U) == 1);
     watchdog_event_current(&opts, &state, 0);
 
     int rc = 0;
@@ -918,15 +1047,11 @@ test_p25_and_dmr_current_append_security_flags(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_P25P2_POS;
-    state.lastsrc = 5790062U;
-    state.lasttg = 50061U;
-    state.gi[0] = 1;
     state.nac = 0x293;
-    state.payload_algid = 0x84U;
-    state.payload_keyid = 0x2222U;
-    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    state.dmr_so = 0x80U;
-    state.p25_service_options_valid[0] = 1;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_PRIVATE_VOICE, 50061U, 5790062U, 0x80U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED, 0x84U, 0x2222U, 0U) == 1);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("p25 enc flag", item->event_string, "ENC; ALG: 84; KID: 2222;");
@@ -935,14 +1060,14 @@ test_p25_and_dmr_current_append_security_flags(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_P25P1_POS;
-    state.lastp25type = 3;
-    state.lastsrc = 5790062U;
-    state.lasttg = 50061U;
-    state.gi[0] = 0;
     state.nac = 0x293;
+    /* Decoder scratch must not leak into a canonically clear call. */
     state.payload_algid = 0xBBU;
     state.payload_keyid = 0xC021U;
-    state.dmr_so = 0;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_CLEAR, 0U, 0U, 1U) == 1);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_no_substr("p25 clear grant ignores stale enc", item->event_string, "ENC;");
@@ -952,15 +1077,13 @@ test_p25_and_dmr_current_append_security_flags(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_P25P1_POS;
-    state.lastp25type = 3;
-    state.lastsrc = 5790062U;
-    state.lasttg = 50061U;
-    state.gi[0] = 0;
     state.nac = 0x293;
     state.payload_algid = 0;
     state.payload_keyid = 0;
     state.dmr_so = 0x40U;
-    state.p25_service_options_valid[0] = 0;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_no_substr("p25 stale service option ignores enc", item->event_string, "ENC;");
@@ -969,15 +1092,11 @@ test_p25_and_dmr_current_append_security_flags(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_P25P1_POS;
-    state.lastp25type = 3;
-    state.lastsrc = 5790062U;
-    state.lasttg = 50061U;
-    state.gi[0] = 0;
     state.nac = 0x293;
-    state.payload_algid = 0xBBU;
-    state.payload_keyid = 0xC021U;
-    state.dmr_so = 0x40U;
-    state.p25_service_options_valid[0] = 1;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0x40U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U, 0U, 0U) == 1);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("p25 grant service option keeps enc", item->event_string, "ENC;");
@@ -987,15 +1106,11 @@ test_p25_and_dmr_current_append_security_flags(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_P25P1_POS;
-    state.lastp25type = 2;
-    state.lastsrc = 5790062U;
-    state.lasttg = 50061U;
-    state.gi[0] = 0;
     state.nac = 0x293;
-    state.payload_algid = 0x84U;
-    state.payload_keyid = 0x2222U;
-    state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
-    state.dmr_so = 0;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED, 0x84U, 0x2222U, 0U) == 1);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_has_substr("p25 validated voice alg renders", item->event_string, "ENC; ALG: 84; KID: 2222;");
@@ -1004,10 +1119,6 @@ test_p25_and_dmr_current_append_security_flags(void) {
 
     reset_fixture(&opts, &state, event_history);
     state.lastsynctype = DSD_SYNC_P25P1_POS;
-    state.lastp25type = 2;
-    state.lastsrc = 4009646U;
-    state.lasttg = 3069U;
-    state.gi[0] = 0;
     state.nac = 0x798;
     state.payload_algid = 0xA0U;
     state.payload_keyid = 0x0064U;
@@ -1015,8 +1126,10 @@ test_p25_and_dmr_current_append_security_flags(void) {
     state.p25_p1_crypto_conflict.active = 1U;
     state.p25_p1_crypto_conflict.algid = 0xA0U;
     state.p25_p1_crypto_conflict.keyid = 0x0064U;
-    state.dmr_so = 0x04U;
-    state.p25_service_options_valid[0] = 1;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 3069U, 4009646U, 0x04U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_CLEAR, 0U, 0U, 1U) == 1);
     watchdog_event_current(&opts, &state, 0);
     item = &state.event_history_s[0].Event_History_Items[0];
     rc |= expect_no_substr("p25 pending conflict stays clear", item->event_string, "ENC;");
@@ -1040,8 +1153,7 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 100U;
     observation.policy_target_id = 900U;
-    observation.group_id = 100U;
-    observation.source_id = 200U;
+    observation.ota_source_id = 200U;
     observation.frequency_hz = 851012500L;
     observation.observed_m = 1.0;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
@@ -1094,36 +1206,35 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
 
     assert(dsd_call_state_end(&state, 0U, 3.5) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
-    observation.ota_target_id = observation.policy_target_id = observation.group_id = 300U;
-    observation.source_id = 0U;
+    observation.ota_target_id = observation.policy_target_id = 300U;
+    observation.ota_source_id = 0U;
     observation.observed_m = 4.0;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
     const uint64_t late_identity_epoch = snapshot.epoch;
-    observation.source_id = 400U;
+    observation.ota_source_id = 400U;
     observation.observed_m = 4.1;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
     dsd_event_sync_slot(&opts, &state, 0U);
     assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
     rc |= expect_u64("late source keeps epoch", snapshot.epoch, late_identity_epoch);
     observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
-    observation.ota_target_id = observation.policy_target_id = observation.private_id = 0xABCDEFU;
-    observation.group_id = 0U;
+    observation.ota_target_id = observation.policy_target_id = 0xABCDEFU;
     observation.observed_m = 4.2;
-    state.gi[0] = 1;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_int("known target change rotates prior row", (int)event_history[0].Event_History_Items[1].target_id,
                      300);
-    rc |= expect_int("canonical rotation preserves live private identity", state.gi[0], 1);
+    assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
+    rc |= expect_int("canonical rotation preserves live private identity", snapshot.kind, DSD_CALL_KIND_PRIVATE_VOICE);
 
     dsd_state_ext_free_all(&state);
     return rc;
 }
 
 static int
-test_first_canonical_epoch_commits_unrelated_fallback_call(void) {
+test_new_canonical_epoch_commits_prior_canonical_call(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
@@ -1132,41 +1243,38 @@ test_first_canonical_epoch_commits_unrelated_fallback_call(void) {
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
     opts.wav_out_f = (SNDFILE*)&wav_sentinel;
 
-    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.lasttg = 100U;
-    state.lastsrc = 200U;
-    state.gi[0] = 0;
-    watchdog_event_current(&opts, &state, 0U);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
 
-    state.lastsynctype = DSD_SYNC_P25P2_POS;
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_P25P2_POS,
         .slot = 0U,
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = 300U,
         .policy_target_id = 300U,
-        .source_id = 400U,
-        .group_id = 300U,
-        .observed_m = 1.0,
+        .ota_source_id = 400U,
+        .observed_m = 2.0,
     };
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* current = &event_history[0].Event_History_Items[0];
     const Event_History* committed = &event_history[0].Event_History_Items[1];
-    int rc = expect_int("first canonical epoch keeps current target", (int)current->target_id, 300);
-    rc |= expect_int("first canonical epoch commits prior target", (int)committed->target_id, 100);
-    rc |= expect_int("first canonical epoch commits prior source", (int)committed->source_id, 200);
-    rc |= expect_int("first canonical epoch commits prior protocol", committed->systype, DSD_SYNC_DMR_BS_VOICE_POS);
-    rc |= expect_int("first canonical epoch emits prior call end alert", g_beeper_count, 1);
-    rc |= expect_int("first canonical epoch closes prior call WAV", g_close_wav_count, 1);
-    rc |= expect_int("first canonical epoch opens next call WAV", g_open_wav_count, 1);
+    int rc = expect_int("new canonical epoch keeps current target", (int)current->target_id, 300);
+    rc |= expect_int("new canonical epoch commits prior target", (int)committed->target_id, 100);
+    rc |= expect_int("new canonical epoch commits prior source", (int)committed->source_id, 200);
+    rc |= expect_int("new canonical epoch commits prior protocol", committed->systype, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_int("new canonical epoch emits prior call end alert", g_beeper_count, 1);
+    rc |= expect_int("new canonical epoch closes prior call WAV", g_close_wav_count, 1);
+    rc |= expect_int("new canonical epoch opens next call WAV", g_open_wav_count, 1);
     dsd_state_ext_free_all(&state);
     return rc;
 }
 
 static int
-test_first_canonical_epoch_promotes_matching_fallback_call(void) {
+test_late_source_enriches_matching_canonical_call(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
@@ -1175,11 +1283,10 @@ test_first_canonical_epoch_promotes_matching_fallback_call(void) {
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
     opts.wav_out_f = (SNDFILE*)&wav_sentinel;
 
-    state.lastsynctype = DSD_SYNC_P25P2_POS;
-    state.lasttg = 100U;
-    state.lastsrc = 0U;
-    state.gi[0] = 0;
-    watchdog_event_current(&opts, &state, 0U);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
 
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_P25P2_POS,
@@ -1187,21 +1294,20 @@ test_first_canonical_epoch_promotes_matching_fallback_call(void) {
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = 100U,
         .policy_target_id = 100U,
-        .source_id = 200U,
-        .group_id = 100U,
-        .observed_m = 1.0,
+        .ota_source_id = 200U,
+        .observed_m = 2.0,
     };
-    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* current = &event_history[0].Event_History_Items[0];
     const Event_History* committed = &event_history[0].Event_History_Items[1];
-    int rc = expect_int("matching fallback promotion keeps target", (int)current->target_id, 100);
-    rc |= expect_int("matching fallback promotion adopts late source", (int)current->source_id, 200);
-    rc |= expect_int("matching fallback promotion avoids duplicate history", (int)committed->target_id, 0);
-    rc |= expect_int("matching fallback promotion avoids call end alert", g_beeper_count, 0);
-    rc |= expect_int("matching fallback promotion keeps WAV open", g_close_wav_count, 0);
-    rc |= expect_int("matching fallback promotion avoids new WAV", g_open_wav_count, 0);
+    int rc = expect_int("late source keeps target", (int)current->target_id, 100);
+    rc |= expect_int("late source is adopted", (int)current->source_id, 200);
+    rc |= expect_int("late source avoids duplicate history", (int)committed->target_id, 0);
+    rc |= expect_int("late source avoids call end alert", g_beeper_count, 0);
+    rc |= expect_int("late source keeps WAV open", g_close_wav_count, 0);
+    rc |= expect_int("late source avoids new WAV", g_open_wav_count, 0);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1219,14 +1325,13 @@ test_active_canonical_call_does_not_suppress_explicit_data(void) {
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 100U;
     observation.policy_target_id = 100U;
-    observation.group_id = 100U;
-    observation.source_id = 200U;
+    observation.ota_source_id = 200U;
     observation.observed_m = 1.0;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     state.lastsynctype = DSD_SYNC_P25P1_POS;
-    watchdog_event_datacall(&opts, &state, 700U, 800U, "P25 packet data;", 0U);
+    (void)emit_test_data_notice(&opts, &state, 700U, 800U, "P25 packet data;", 0U);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* current = &event_history[0].Event_History_Items[0];
@@ -1254,8 +1359,7 @@ test_ended_canonical_call_does_not_suppress_later_data(void) {
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 100U;
     observation.policy_target_id = 100U;
-    observation.group_id = 100U;
-    observation.source_id = 200U;
+    observation.ota_source_id = 200U;
     observation.observed_m = 1.0;
     assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -1263,10 +1367,7 @@ test_ended_canonical_call_does_not_suppress_later_data(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
 
     state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
-    state.lasttg = 800U;
-    state.lastsrc = 700U;
-    state.gi[0] = 0;
-    watchdog_event_datacall(&opts, &state, 700U, 800U, "DMR packet data;", 0U);
+    (void)emit_test_data_notice(&opts, &state, 700U, 800U, "DMR packet data;", 0U);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* committed = &event_history[0].Event_History_Items[1];
@@ -1276,6 +1377,55 @@ test_ended_canonical_call_does_not_suppress_later_data(void) {
     rc |= expect_int("post-P25 data subtype is preserved", committed->subtype, INT8_MAX);
     rc |= expect_has_substr("post-P25 data detail is preserved", committed->event_string, "DMR packet data");
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_concurrent_call_history_snapshot_copy(void) {
+    canonical_snapshot_race_ctx* ctx = (canonical_snapshot_race_ctx*)calloc(1U, sizeof(*ctx));
+    if (ctx == NULL) {
+        return 1;
+    }
+    ctx->opts = (dsd_opts*)calloc(1U, sizeof(*ctx->opts));
+    ctx->state = (dsd_state*)calloc(1U, sizeof(*ctx->state));
+    ctx->history = (Event_History_I*)calloc(2U, sizeof(*ctx->history));
+    if (ctx->opts == NULL || ctx->state == NULL || ctx->history == NULL) {
+        free(ctx->opts);
+        free(ctx->state);
+        free(ctx->history);
+        free(ctx);
+        return 1;
+    }
+    ctx->state->event_history_s = ctx->history;
+
+    const dsd_call_observation initial = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 7000U,
+        .policy_target_id = 7000U,
+        .ota_source_id = 8000U,
+    };
+    int rc = dsd_call_state_observe(ctx->state, &initial, DSD_CALL_BOUNDARY_BEGIN) < 0;
+    dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+
+    dsd_thread_t writer;
+    dsd_thread_t reader;
+    const int writer_created = dsd_thread_create(&writer, canonical_snapshot_writer, ctx) == 0;
+    const int reader_created = dsd_thread_create(&reader, canonical_snapshot_reader, ctx) == 0;
+    if (writer_created) {
+        rc |= dsd_thread_join(writer) != 0;
+    }
+    if (reader_created) {
+        rc |= dsd_thread_join(reader) != 0;
+    }
+    rc |= !writer_created || !reader_created || ctx->writer_failed || ctx->reader_failed;
+
+    dsd_state_ext_free_all(ctx->state);
+    free(ctx->opts);
+    free(ctx->state);
+    free(ctx->history);
+    free(ctx);
     return rc;
 }
 
@@ -1293,7 +1443,7 @@ main(void) {
     rc |= test_status_event_is_not_data_call_or_frame_log();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_source_less_data_call_is_preserved_in_history();
-    rc |= test_source_less_dmr_data_current_event_is_not_preserved_in_history();
+    rc |= test_source_less_dmr_data_notices_are_preserved_in_history();
     rc |= test_sourced_dmr_data_current_event_does_not_emit_voice_end_alert();
     rc |= test_voice_end_alert_still_emits_for_voice_history();
     rc |= test_edacs_service_string_appends_past_pointer_size();
@@ -1308,10 +1458,11 @@ main(void) {
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
-    rc |= test_first_canonical_epoch_commits_unrelated_fallback_call();
-    rc |= test_first_canonical_epoch_promotes_matching_fallback_call();
+    rc |= test_new_canonical_epoch_commits_prior_canonical_call();
+    rc |= test_late_source_enriches_matching_canonical_call();
     rc |= test_active_canonical_call_does_not_suppress_explicit_data();
     rc |= test_ended_canonical_call_does_not_suppress_later_data();
+    rc |= test_concurrent_call_history_snapshot_copy();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

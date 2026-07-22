@@ -370,8 +370,8 @@ main(void) {
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
     assert(s4_history[0].revision > 0U);
     assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 1234") != NULL);
-    assert(s4.lasttg == 0);
-    assert(s4.lastsrc == 0);
+    dsd_call_snapshot lockout_call;
+    assert(dsd_call_state_get(&s4, 0U, &lockout_call) <= 0 || lockout_call.phase != DSD_CALL_PHASE_ACTIVE);
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);
@@ -398,16 +398,13 @@ main(void) {
     old_call.kind = DSD_CALL_KIND_GROUP_VOICE;
     old_call.ota_target_id = 2222U;
     old_call.policy_target_id = 2222U;
-    old_call.group_id = 2222U;
-    old_call.source_id = 3333U;
+    old_call.ota_source_id = 3333U;
     old_call.observed_m = 1.0;
     assert(dsd_call_state_observe(&s4, &old_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 2222, 0x40, 1);
     assert(dsd_call_state_end(&s4, 0U, 2.0) == 1);
     dsd_event_sync_slot(&o4, &s4, 0U);
     s4.lastsynctype = DSD_SYNC_P25P1_POS;
-    s4.lasttg = 2222;
-    s4.lastsrc = 3333;
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 5678, 0x40, 1);
     assert(s4_history[0].Event_History_Items[1].target_id == 5678U);
     assert(s4_history[0].Event_History_Items[1].source_id == 0U);
@@ -2494,12 +2491,8 @@ main(void) {
     s24.payload_keyidR = 0x5678;
     s24.dmr_so = 0x40;
     s24.dmr_soR = 0x41;
-    s24.p25_service_options_valid[0] = 1;
-    s24.p25_service_options_valid[1] = 1;
     s24.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     s24.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    s24.p25_policy_tg[0] = 6201;
-    s24.p25_policy_tg[1] = 6202;
 
     dsd_tg_policy_call_route active_route = {6201U, 7201U, 851125000L, 1, 0, 0};
     dsd_tg_policy_decision active_decision = {0};
@@ -2520,9 +2513,9 @@ main(void) {
             .kind = DSD_CALL_KIND_GROUP_VOICE,
             .ota_target_id = 6201U + slot,
             .policy_target_id = 6201U + slot,
-            .source_id = 7201U + slot,
-            .group_id = 6201U + slot,
+            .ota_source_id = 7201U + slot,
             .frequency_hz = 851125000L,
+            .service_options = (uint16_t)(0x40U + (unsigned int)slot),
             .observed_m = 1.0 + slot,
         };
         assert(dsd_call_state_observe(&s24, &stale_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
@@ -2544,15 +2537,15 @@ main(void) {
     assert(s24.payload_algid == 0 && s24.payload_algidR == 0);
     assert(s24.payload_keyid == 0 && s24.payload_keyidR == 0);
     assert(s24.dmr_so == 0 && s24.dmr_soR == 0);
-    assert(s24.p25_service_options_valid[0] == 0 && s24.p25_service_options_valid[1] == 0);
     assert(s24.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN && s24.p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(s24.p25_policy_tg[0] == 0 && s24.p25_policy_tg[1] == 0);
     assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 0);
     dsd_call_snapshot released_call;
     assert(dsd_call_state_get(&s24, 0U, &released_call) == 1);
     assert(released_call.phase == DSD_CALL_PHASE_ENDED);
+    assert(released_call.policy_target_id == 6201U && released_call.service_options == 0x40U);
     assert(dsd_call_state_get(&s24, 1U, &released_call) == 1);
     assert(released_call.phase == DSD_CALL_PHASE_ENDED);
+    assert(released_call.policy_target_id == 6202U && released_call.service_options == 0x41U);
     dsd_state_ext_free_all(&s24);
 
     install_trunk_tuning_hooks();

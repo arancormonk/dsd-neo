@@ -1242,8 +1242,16 @@ ui_canonical_active_p25_freq(const dsd_call_state_snapshot* calls) {
 
 static long int
 ui_recent_activity_vc_freq(const dsd_state* state) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        return 0;
+    }
     for (int i = 0; i < 31; i++) {
-        const char* activity = state->active_channel[i];
+        const dsd_recent_activity_entry* entry = &recent.entries[i];
+        if (entry->observation.frequency_hz > 0) {
+            return (long int)entry->observation.frequency_hz;
+        }
+        const char* activity = entry->notice;
         if (!activity || activity[0] == '\0') {
             continue;
         }

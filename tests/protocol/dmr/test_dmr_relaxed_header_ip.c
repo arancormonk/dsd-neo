@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -94,15 +95,17 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)slot;
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
     g_datacall_calls++;
-    g_datacall_last_src = src;
-    g_datacall_last_dst = dst;
+    g_datacall_last_src = observation->ota_source_id;
+    g_datacall_last_dst = observation->ota_target_id;
     g_datacall_last_slot = slot;
-    DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", data_string ? data_string : "");
+    DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", notice ? notice : "");
+    return 0;
 }
 
 void
@@ -569,8 +572,6 @@ test_udt_iso7_single_block_dispatches_text_event(void) {
     assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") != NULL);
     assert(state.data_header_dd_format[0] == 0U);
     assert(state.data_header_bit_padding[0] == 0U);
-    assert(state.lastsrc == 0);
-    assert(state.lasttg == 0);
     assert(state.data_header_valid[0] == 0);
     assert(state.data_header_format[0] == 7);
 }
@@ -703,8 +704,6 @@ test_udt_binary_addressing_reserved_and_slot1_paths(void) {
     run_udt_single_block_on_slot(0x04U, block, 1U, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(g_datacall_last_slot == 1U);
-    assert(state_copy.lastsrcR == 0);
-    assert(state_copy.lasttgR == 0);
     assert(strstr(state_copy.event_history_s[1].Event_History_Items[0].text_message, "SLOT1") != NULL);
 }
 

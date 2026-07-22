@@ -14,7 +14,6 @@
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
-#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +23,8 @@ enum {
     DSD_CALL_STATE_SLOT_COUNT = 2,
     DSD_RECENT_ACTIVITY_COUNT = 31,
     DSD_RECENT_ACTIVITY_TEXT_SIZE = 200,
+    DSD_CALL_IDENTITY_TEXT_SIZE = 64,
+    DSD_CALL_ROUTE_COUNT = 2,
     DSD_RECENT_ACTIVITY_TTL_MS = 3000,
 };
 
@@ -35,6 +36,7 @@ typedef enum {
 
 typedef enum {
     DSD_CALL_KIND_UNKNOWN = 0,
+    DSD_CALL_KIND_VOICE,
     DSD_CALL_KIND_GROUP_VOICE,
     DSD_CALL_KIND_PRIVATE_VOICE,
     DSD_CALL_KIND_DATA,
@@ -57,11 +59,12 @@ typedef struct {
     int protocol; /**< DSD_SYNC_* value; use DSD_SYNC_NONE when unobserved. */
     uint8_t slot;
     dsd_call_kind kind;
-    uint32_t ota_target_id;
-    uint32_t policy_target_id;
-    uint32_t source_id;
-    uint32_t group_id;
-    uint32_t private_id;
+    uint64_t ota_target_id;
+    uint64_t policy_target_id;
+    uint64_t ota_source_id;
+    char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
     uint32_t channel;
     int64_t frequency_hz;
     uint16_t service_options;
@@ -69,6 +72,17 @@ typedef struct {
     uint8_t priority;
     double observed_m;
 } dsd_call_observation;
+
+static inline dsd_call_observation
+dsd_call_observation_data(int protocol, uint8_t slot, uint64_t source_id, uint64_t target_id) {
+    dsd_call_observation observation = {0};
+    observation.protocol = protocol;
+    observation.slot = slot;
+    observation.kind = DSD_CALL_KIND_DATA;
+    observation.ota_source_id = source_id;
+    observation.ota_target_id = target_id;
+    return observation;
+}
 
 typedef struct {
     dsd_call_crypto_state classification;
@@ -82,29 +96,30 @@ typedef struct {
 typedef struct {
     uint64_t revision;
     uint64_t epoch;
-    dsd_call_phase phase;
-    int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
-    uint8_t slot;
-    dsd_call_kind kind;
-    uint32_t ota_target_id;
-    uint32_t policy_target_id;
-    uint32_t source_id;
-    uint32_t group_id;
-    uint32_t private_id;
-    uint32_t channel;
+    uint64_t ota_target_id;
+    uint64_t policy_target_id;
+    uint64_t ota_source_id;
     int64_t frequency_hz;
-    uint16_t service_options;
-    uint8_t emergency;
-    uint8_t priority;
-    dsd_call_crypto_state crypto;
-    uint8_t algid;
-    uint16_t kid;
     uint64_t mi;
-    uint8_t audio_permitted;
-    uint8_t media_active;
     double started_m;
     double updated_m;
     double ended_m;
+    dsd_call_phase phase;
+    int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
+    dsd_call_kind kind;
+    uint32_t channel;
+    dsd_call_crypto_state crypto;
+    uint16_t service_options;
+    uint16_t kid;
+    uint8_t slot;
+    uint8_t emergency;
+    uint8_t priority;
+    uint8_t algid;
+    uint8_t audio_permitted;
+    uint8_t media_active;
+    char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
 } dsd_call_snapshot;
 
 typedef struct {
@@ -113,7 +128,8 @@ typedef struct {
 } dsd_call_state_snapshot;
 
 typedef struct {
-    char text[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    dsd_call_observation observation;
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     uint64_t updated_m_ms;
 } dsd_recent_activity_entry;
 
@@ -125,9 +141,7 @@ typedef struct {
 typedef struct {
     uint8_t valid;
     uint8_t index;
-    time_t last_active_time;
     dsd_recent_activity_entry entry;
-    char legacy_text[DSD_RECENT_ACTIVITY_TEXT_SIZE];
 } dsd_recent_activity_transaction;
 
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
@@ -136,16 +150,17 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
+int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
+int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
+                               const char* target_text, const char* route0_text, const char* route1_text,
+                               double observed_m);
 
-int dsd_recent_activity_set(dsd_state* state, uint8_t index, const char* text);
-int dsd_recent_activity_set_at(dsd_state* state, uint8_t index, const char* text, uint64_t observed_m_ms);
-int dsd_recent_activity_append(dsd_state* state, uint8_t index, const char* text);
-int dsd_recent_activity_append_at(dsd_state* state, uint8_t index, const char* text, uint64_t observed_m_ms);
+int dsd_recent_activity_publish(dsd_state* state, uint8_t index, const dsd_call_observation* observation,
+                                const char* notice, uint64_t observed_m_ms);
 int dsd_recent_activity_clear(dsd_state* state, uint8_t index);
 int dsd_recent_activity_clear_all(dsd_state* state);
 int dsd_recent_activity_copy_snapshot(const dsd_state* state, dsd_recent_activity_snapshot* out);
-int dsd_recent_activity_sync_legacy_entry(dsd_state* state, uint8_t index);
-int dsd_recent_activity_sync_legacy(dsd_state* state);
+int dsd_recent_activity_restore_snapshot(dsd_state* state, const dsd_recent_activity_snapshot* snapshot);
 int dsd_recent_activity_expire(dsd_state* state, uint64_t now_m_ms, uint64_t ttl_ms);
 int dsd_recent_activity_save(const dsd_state* state, uint8_t index, dsd_recent_activity_transaction* transaction);
 int dsd_recent_activity_restore(dsd_state* state, const dsd_recent_activity_transaction* transaction);

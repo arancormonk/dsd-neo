@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
@@ -64,9 +65,9 @@
 #endif
 
 static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len);
-static void M17decodeLSF(dsd_state* state);
+static void M17decodeLSF(const dsd_opts* opts, dsd_state* state);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
-static void M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res);
+static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
 static void M17decodeMetaPayload(dsd_state* state, uint8_t identifier);
 static void M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
@@ -107,10 +108,8 @@ m17_clip_float_to_short(float value) {
 }
 
 static void
-M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long int src) {
+M17decodeCSD(unsigned long long int dst, unsigned long long int src) {
     //evaluate dst and src, and determine if they need to be converted to callsign
-    DSD_MEMSET(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
-    DSD_MEMSET(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
     const uint8_t dst_kind = m17_address_classify(dst);
     const uint8_t src_kind = m17_address_classify(src);
     if (dst_kind == M17_ADDRESS_BROADCAST_KIND) {
@@ -120,9 +119,10 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
     } else if (dst_kind == M17_ADDRESS_RESERVED) {
         DSD_FPRINTF(stderr, " DST: RESERVED %012llx", dst);
     } else {
-        (void)m17_address_decode_csd(dst, state->m17_dst_csd);
-        DSD_SNPRINTF(state->m17_dst_str, sizeof(state->m17_dst_str), "%s", state->m17_dst_csd);
-        DSD_FPRINTF(stderr, " DST: %s", state->m17_dst_str);
+        char callsign[10];
+        DSD_MEMSET(callsign, 0, sizeof(callsign));
+        (void)m17_address_decode_csd(dst, callsign);
+        DSD_FPRINTF(stderr, " DST: %s", callsign);
     }
 
     if (src_kind == M17_ADDRESS_BROADCAST_KIND) {
@@ -132,9 +132,10 @@ M17decodeCSD(dsd_state* state, unsigned long long int dst, unsigned long long in
     } else if (src_kind == M17_ADDRESS_RESERVED) {
         DSD_FPRINTF(stderr, " SRC: RESERVED %012llx", src);
     } else {
-        (void)m17_address_decode_csd(src, state->m17_src_csd);
-        DSD_SNPRINTF(state->m17_src_str, sizeof(state->m17_src_str), "%s", state->m17_src_csd);
-        DSD_FPRINTF(stderr, " SRC: %s", state->m17_src_str);
+        char callsign[10];
+        DSD_MEMSET(callsign, 0, sizeof(callsign));
+        (void)m17_address_decode_csd(src, callsign);
+        DSD_FPRINTF(stderr, " SRC: %s", callsign);
     }
 
     //debug
@@ -240,8 +241,8 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     const uint16_t crc_ext = (uint16_t)convert_bits_into_output(&state->m17_lsf[M17_LSF_LSD_BITS], M17_LSF_CRC_BITS);
     const uint8_t crc_err = (crc_cmp != crc_ext) ? 1U : 0U;
 
-    if (crc_err == 0 || opts->aggressive_framesync == 0) {
-        M17decodeLSF(state);
+    if (crc_err == 0) {
+        M17decodeLSF(opts, state);
     }
 
     if (opts->payload == 1) {
@@ -256,7 +257,68 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
 }
 
 static void
-M17decodeLSF(dsd_state* state) {
+m17_format_address(uint64_t address, int source, char out[DSD_CALL_IDENTITY_TEXT_SIZE]) {
+    const uint8_t kind = m17_address_classify(address);
+    if (kind == M17_ADDRESS_BROADCAST_KIND) {
+        DSD_SNPRINTF(out, DSD_CALL_IDENTITY_TEXT_SIZE, "%s", source ? "UNKNOWN" : "BROADCAST");
+    } else if (kind == M17_ADDRESS_EXTENDED) {
+        DSD_SNPRINTF(out, DSD_CALL_IDENTITY_TEXT_SIZE, "EXTENDED %012llX", (unsigned long long)address);
+    } else if (kind == M17_ADDRESS_RESERVED) {
+        DSD_SNPRINTF(out, DSD_CALL_IDENTITY_TEXT_SIZE, "RESERVED %012llX", (unsigned long long)address);
+    } else {
+        char callsign[10];
+        DSD_MEMSET(callsign, 0, sizeof(callsign));
+        (void)m17_address_decode_csd(address, callsign);
+        DSD_SNPRINTF(out, DSD_CALL_IDENTITY_TEXT_SIZE, "%s", callsign);
+    }
+}
+
+static void
+m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
+    if (res->packet_stream == 0U || (res->dt != 2U && res->dt != 3U)) {
+        return;
+    }
+    if (state->m17encoder_tx == 1 && (!opts || opts->monitor_input_audio != 1)) {
+        return;
+    }
+    int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_M17(protocol)) {
+        protocol = DSD_SYNC_M17_LSF_POS;
+    }
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = res->dst,
+        .ota_source_id = res->src,
+        .service_options = res->cn,
+    };
+    m17_format_address(res->src, 1, observation.source_text);
+    m17_format_address(res->dst, 0, observation.target_text);
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+
+    const int has_key = res->et == 1U ? state->R != 0U : state->aes_key_loaded[0] == 1;
+    uint64_t mi = 0U;
+    for (int i = 0; i < 8; i++) {
+        mi = (mi << 8U) | state->m17_meta[i];
+    }
+    const dsd_call_crypto_update crypto = {
+        .classification = res->et == 0U ? DSD_CALL_CRYPTO_CLEAR
+                          : has_key     ? DSD_CALL_CRYPTO_DECRYPTABLE
+                                        : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = res->et,
+        .kid = res->es,
+        .mi = mi,
+        .audio_permitted = (uint8_t)(res->et == 0U || has_key),
+    };
+    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    if (opts) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
+}
+
+static void
+M17decodeLSF(const dsd_opts* opts, dsd_state* state) {
     struct m17_lsf_result res;
     if (m17_parse_lsf(state->m17_lsf, sizeof(state->m17_lsf), &res) != 0) {
         LOG_WARN("M17: failed to parse LSF\n");
@@ -264,6 +326,7 @@ M17decodeLSF(dsd_state* state) {
     }
 
     if (m17_apply_lsf_result(state, &res) == 1) {
+        m17_publish_lsf(opts, state, &res);
         M17logLSFTrailer(state, &res);
     }
 }
@@ -272,8 +335,6 @@ static void
 M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res) {
     //store this so we can reference it for playing voice and/or decoding data, dst/src etc
     state->m17_str_dt = M17streamDataTypeFromLSF(res);
-    state->m17_dst = res->dst;
-    state->m17_src = res->src;
     state->m17_can = res->cn;
     state->m17_enc = res->et;
     state->m17_enc_st = res->es;
@@ -288,12 +349,12 @@ M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res) {
 }
 
 static void
-M17logLSFSummary(dsd_state* state, const struct m17_lsf_result* res) {
+M17logLSFSummary(const struct m17_lsf_result* res) {
     /* Preserve the established log format while routing through LOG_* macros. */
     LOG_INFO("\n");
 
     LOG_INFO(" CAN: %d", res->cn);
-    M17decodeCSD(state, res->dst, res->src);
+    M17decodeCSD(res->dst, res->src);
 
     M17logDataType(res->dt);
 
@@ -830,6 +891,25 @@ M17processStreamPayloadBits(const dsd_opts* opts, dsd_state* state, const uint8_
     }
 }
 
+static void
+m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
+    if (state->m17_str_dt != 2U && state->m17_str_dt != 3U) {
+        return;
+    }
+    dsd_call_snapshot call;
+    if (!(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE)) {
+        int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : DSD_SYNC_M17_STR_POS;
+        const dsd_call_observation observation = {
+            .protocol = protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    }
+    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+}
+
 int
 m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                             uint8_t* processed_payload) {
@@ -865,6 +945,7 @@ m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_
 
     const uint8_t old_payload_decrypted = state->m17_payload_decrypted;
     state->m17_payload_decrypted = (state->m17_enc != 0U) ? 1U : 0U;
+    m17_mark_stream_media(opts, state);
     M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
     const int result = (state->m17_enc != 0U) ? M17_STREAM_ENCRYPTED_DISPATCHED : M17_STREAM_CLEAR_DISPATCHED;
     state->m17_payload_decrypted = old_payload_decrypted;
@@ -898,7 +979,7 @@ m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res) {
     }
 
     M17decodeLSFFields(state, res);
-    M17logLSFSummary(state, res);
+    M17logLSFSummary(res);
     M17storeLSFMeta(state, res);
     M17decodeLSFMeta(state, res);
     return 1;
@@ -980,6 +1061,9 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
 
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload((const dsd_opts*)opts, state, payload, stream_frame_number, processed_payload);
+    if (end != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
 }
 
 void
@@ -1207,8 +1291,8 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
 
-    if (crc_err == 0 || opts->aggressive_framesync == 0) {
-        M17decodeLSF(state);
+    if (crc_err == 0) {
+        M17decodeLSF(opts, state);
     }
 
     if (opts->payload == 1) {
@@ -1814,10 +1898,20 @@ m17_str_apply_monitor_side_state(m17_str_ctx* ctx) {
     if (ctx->opts->monitor_input_audio != 1) {
         return;
     }
-    DSD_SNPRINTF(ctx->state->m17_src_str, sizeof(ctx->state->m17_src_str), "%s", ctx->s40);
-    DSD_SNPRINTF(ctx->state->m17_dst_str, sizeof(ctx->state->m17_dst_str), "%s", ctx->d40);
-    ctx->state->m17_src = ctx->src;
-    ctx->state->m17_dst = ctx->dst;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_M17_LSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = ctx->dst,
+        .ota_source_id = ctx->src,
+        .source_text = {0},
+        .target_text = {0},
+        .service_options = ctx->can,
+    };
+    dsd_call_observation enriched = observation;
+    DSD_SNPRINTF(enriched.source_text, sizeof(enriched.source_text), "%s", ctx->s40);
+    DSD_SNPRINTF(enriched.target_text, sizeof(enriched.target_text), "%s", ctx->d40);
+    (void)dsd_call_state_observe(ctx->state, &enriched, DSD_CALL_BOUNDARY_CONTINUE);
     ctx->state->m17_can = ctx->can;
     ctx->state->m17_str_dt = ctx->st;
     ctx->state->m17_enc = 0;
@@ -3050,10 +3144,13 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_ext = (uint16_t)((ip_frame[52] << 8) + ip_frame[53]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     if (crc_ext == crc_cmp) {
-        M17decodeLSF(state);
+        M17decodeLSF(opts, state);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload(opts, state, payload, stream_frame_number, processed_payload);
+    if (eot != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n IP:");
@@ -3083,6 +3180,9 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
         m17_ip_dump_bytes_spaced(ip_frame, desc->dump_len, desc->dump_len, "");
     }
     if (desc->drop_carrier) {
+        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        }
         state->carrier = 0;
         state->synctype = DSD_SYNC_NONE;
     }
@@ -3106,7 +3206,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
     if (crc_ext == crc_cmp) {
-        M17decodeLSF(state);
+        M17decodeLSF(opts, state);
     }
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, err, 25, "                ");

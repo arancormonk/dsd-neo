@@ -3,10 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +25,39 @@
 #endif
 
 static int g_unicode_supported;
+
+static void
+seed_active_call(dsd_state* state, uint8_t slot, uint32_t source, uint32_t target) {
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
+    if (state->event_history_s != NULL) {
+        state->event_history_s[slot].Event_History_Items[0].source_id = source;
+        state->event_history_s[slot].Event_History_Items[0].target_id = target;
+    }
+}
+
+int
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+    dsd_call_snapshot call;
+    if (state == NULL || state->event_history_s == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || alias == NULL
+        || dsd_call_state_get(state, slot, &call) <= 0 || call.epoch != epoch) {
+        return 0;
+    }
+    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
+                 sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s", alias);
+    DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", alias);
+    state->event_history_s[slot].revision++;
+    return 1;
+}
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -111,40 +147,28 @@ test_direct_dmr_alias_decoders(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(st->dmr_pdu_sf[0], 0, sizeof(st->dmr_pdu_sf[0]), 'K', 7);
     value_to_bits_msb(st->dmr_pdu_sf[0], 7, sizeof(st->dmr_pdu_sf[0]), ',', 7);
     value_to_bits_msb(st->dmr_pdu_sf[0], 14, sizeof(st->dmr_pdu_sf[0]), '7', 7);
-    st->lastsrc = 700001u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    seed_active_call(st, 0U, 700001U, 0U);
     const uint64_t slot0_revision = st->event_history_s[0].revision;
     dmr_talker_alias_lc_decode(opts, st, 0, 0, 7, 3);
-    rc |= expect_str(st->generic_talker_alias[0], "Talker Alias: K,7; ", "iso7 generic alias");
+    rc |= expect_str(st->generic_talker_alias[0], "K,7; ", "iso7 generic alias");
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "K,7; ", "iso7 event alias");
     if (st->event_history_s[0].revision != slot0_revision + 1U) {
         DSD_FPRINTF(stderr, "iso7 event alias did not advance history revision once\n");
         rc = 1;
     }
-    if (st->generic_talker_alias_src[0] != (uint32_t)st->lastsrc) {
-        DSD_FPRINTF(stderr, "iso7 generic alias source mismatch\n");
-        rc = 1;
-    }
-
     DSD_MEMSET(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]));
     value_to_bits_msb(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]), 'A', 16);
     value_to_bits_msb(st->dmr_pdu_sf[1], 16, sizeof(st->dmr_pdu_sf[1]), 0, 16);
     value_to_bits_msb(st->dmr_pdu_sf[1], 32, sizeof(st->dmr_pdu_sf[1]), 0x0100U, 16);
-    st->lastsrcR = 700002u;
-    st->event_history_s[1].Event_History_Items[0].source_id = st->lastsrcR;
+    seed_active_call(st, 1U, 700002U, 0U);
     const uint64_t slot1_revision = st->event_history_s[1].revision;
     dmr_talker_alias_lc_decode(opts, st, 1, 1, 16, 3);
-    rc |= expect_str(st->generic_talker_alias[1], "Talker Alias: A *; ", "utf16 generic alias");
+    rc |= expect_str(st->generic_talker_alias[1], "A *; ", "utf16 generic alias");
     rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "A *; ", "utf16 event alias");
     if (st->event_history_s[1].revision != slot1_revision + 1U) {
         DSD_FPRINTF(stderr, "utf16 event alias did not advance history revision once\n");
         rc = 1;
     }
-    if (st->generic_talker_alias_src[1] != (uint32_t)st->lastsrcR) {
-        DSD_FPRINTF(stderr, "utf16 generic alias source mismatch\n");
-        rc = 1;
-    }
-
     return rc;
 }
 
@@ -160,9 +184,7 @@ test_harris_l3h_alias_state(dsd_opts* opts, dsd_state* st) {
     input[8] = 0x01;
 
     DSD_MEMSET(st->dmr_pdu_sf[0], 0xA5, sizeof(st->dmr_pdu_sf[0]));
-    st->lastsrc = 700003u;
-    st->lasttg = 42u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    seed_active_call(st, 0U, 700003U, 42U);
 
     l3h_embedded_alias_decode(opts, st, 0, 8, input);
 
@@ -172,7 +194,7 @@ test_harris_l3h_alias_state(dsd_opts* opts, dsd_state* st) {
         rc = 1;
     }
 
-    rc |= expect_policy_name(st, st->lastsrc, "BOB. ", "l3h runtime alias policy");
+    rc |= expect_policy_name(st, 700003U, "BOB. ", "l3h runtime alias policy");
 
     DSD_MEMSET(input, 0, sizeof input);
     input[4] = 'R';
@@ -182,15 +204,13 @@ test_harris_l3h_alias_state(dsd_opts* opts, dsd_state* st) {
     input[8] = '2';
 
     DSD_MEMSET(st->dmr_pdu_sf[1], 0xA5, sizeof(st->dmr_pdu_sf[1]));
-    st->lastsrcR = 700004u;
-    st->lasttgR = 43u;
-    st->event_history_s[1].Event_History_Items[0].source_id = st->lastsrcR;
+    seed_active_call(st, 1U, 700004U, 43U);
 
     l3h_embedded_alias_decode(opts, st, 1, 8, input);
 
     rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "RO. 2", "l3h slot1 event alias");
     rc |= expect_u8(st->dmr_pdu_sf[1][0], 0U, "l3h slot1 clears storage");
-    rc |= expect_policy_name(st, st->lastsrcR, "RO. 2", "l3h slot1 runtime alias policy");
+    rc |= expect_policy_name(st, 700004U, "RO. 2", "l3h slot1 runtime alias policy");
 
     return rc;
 }
@@ -220,10 +240,7 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     uint8_t lcw[72];
 
-    st->lastsrc = 710001u;
-    st->lasttg = 44u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710001U, 44U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
@@ -233,22 +250,19 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     build_l3h_alias_lcw(lcw, 0x33U, "UNIT   ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h block1+2 alias");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h block1+2 no policy");
+    rc |= expect_no_policy(st, 710001U, "l3h block1+2 no policy");
 
     build_l3h_alias_lcw(lcw, 0x34U, "ALPHA  ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT", "l3h duplicate block3");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h block1+2+3 no policy");
+    rc |= expect_no_policy(st, 710001U, "l3h block1+2+3 no policy");
 
     build_l3h_alias_lcw(lcw, 0x35U, "7      ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAUNIT7", "l3h unique block4");
-    rc |= expect_policy_name(st, st->lastsrc, "ALPHAUNIT7", "l3h complete policy");
+    rc |= expect_policy_name(st, 710001U, "ALPHAUNIT7", "l3h complete policy");
 
-    st->lastsrc = 710004u;
-    st->lasttg = 47u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710004U, 47U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "ECHO   ");
@@ -256,18 +270,15 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     build_l3h_alias_lcw(lcw, 0x33U, "ONE    ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated block1+2 alias");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h repeated block1+2 no policy");
+    rc |= expect_no_policy(st, 710004U, "l3h repeated block1+2 no policy");
     build_l3h_alias_lcw(lcw, 0x34U, "ECHO   ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     build_l3h_alias_lcw(lcw, 0x35U, "ONE    ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ECHOONE", "l3h repeated complete alias");
-    rc |= expect_policy_name(st, st->lastsrc, "ECHOONE", "l3h repeated complete policy");
+    rc |= expect_policy_name(st, 710004U, "ECHOONE", "l3h repeated complete policy");
 
-    st->lastsrc = 710005u;
-    st->lasttg = 48u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710005U, 48U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
@@ -275,50 +286,43 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     build_l3h_alias_lcw(lcw, 0x33U, "A      ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAA", "l3h contained fragment retained");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h contained fragment no policy");
+    rc |= expect_no_policy(st, 710005U, "l3h contained fragment no policy");
     build_l3h_alias_lcw(lcw, 0x34U, "ALPHA  ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     build_l3h_alias_lcw(lcw, 0x35U, "A      ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "ALPHAA",
                      "l3h contained fragment repeated complete alias");
-    rc |= expect_policy_name(st, st->lastsrc, "ALPHAA", "l3h contained fragment complete policy");
+    rc |= expect_policy_name(st, 710005U, "ALPHAA", "l3h contained fragment complete policy");
 
-    st->lastsrc = 710003u;
-    st->lasttg = 46u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710003U, 46U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x33U, "STALE  ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h stray block2 ignored");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h stray block2 no policy");
+    rc |= expect_no_policy(st, 710003U, "l3h stray block2 no policy");
 
-    st->lastsrc = 710002u;
-    st->lasttg = 45u;
+    seed_active_call(st, 0U, 710002U, 45U);
     st->event_history_s[0].Event_History_Items[0].source_id = 999999u;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "BAD    ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     build_l3h_alias_lcw(lcw, 0x33U, "CACHE  ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
-    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "", "l3h mismatch no event alias");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h mismatch no policy");
+    rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "BADCACHE",
+                     "l3h epoch enrichment ignores stale numeric history mirrors");
+    rc |= expect_no_policy(st, 710002U, "l3h mismatch no policy");
 
-    st->lastsrc = 710006u;
-    st->lasttg = 49u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710006U, 49U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x33U, "GOOD   ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "",
                      "l3h deferred mismatch clears block1 before stray block2");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h deferred mismatch stray block2 no policy");
+    rc |= expect_no_policy(st, 710006U, "l3h deferred mismatch stray block2 no policy");
 
     build_l3h_alias_lcw(lcw, 0x32U, "GOOD   ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
@@ -326,28 +330,22 @@ test_harris_l3h_phase1_block_assembly(dsd_opts* opts, dsd_state* st) {
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "GOODTWO",
                      "l3h current sequence recovers after deferred mismatch");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h recovered partial sequence no policy");
+    rc |= expect_no_policy(st, 710006U, "l3h recovered partial sequence no policy");
 
-    st->lastsrc = 710007u;
-    st->lasttg = 50u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710007U, 50U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x32U, "OLD    ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
 
-    st->lastsrc = 710008u;
-    st->lasttg = 51u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
-    st->event_history_s[0].Event_History_Items[0].target_id = st->lasttg;
+    seed_active_call(st, 0U, 710008U, 51U);
     st->event_history_s[0].Event_History_Items[0].alias[0] = '\0';
 
     build_l3h_alias_lcw(lcw, 0x33U, "NEW    ");
     l3h_embedded_alias_blocks_phase1(opts, st, 0, lcw);
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "",
                      "l3h source change clears stale block1 before block2");
-    rc |= expect_no_policy(st, st->lastsrc, "l3h source change stray block2 no policy");
+    rc |= expect_no_policy(st, 710008U, "l3h source change stray block2 no policy");
 
     return rc;
 }
@@ -441,14 +439,13 @@ test_tait_iso7_alias_sanitizes_and_policies(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(tait_bits, 30, sizeof(tait_bits), 0x1FU, 7);
     value_to_bits_msb(tait_bits, 37, sizeof(tait_bits), 'Z', 7);
 
-    st->lastsrc = 700005u;
+    seed_active_call(st, 0U, 700005U, 0U);
     st->nac = 0x293u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
 
     tait_iso7_embedded_alias_decode(opts, st, 0, 4, tait_bits);
 
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "A. Z", "tait event alias");
-    rc |= expect_policy_name(st, st->lastsrc, "A. Z", "tait runtime alias policy");
+    rc |= expect_policy_name(st, 700005U, "A. Z", "tait runtime alias policy");
 
     return rc;
 }
@@ -484,20 +481,19 @@ test_dmr_alias_header_and_block_format_variants(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(lc_bits, 18, sizeof(lc_bits), 5U, 5);
     value_to_bits_msb(lc_bits, 23, sizeof(lc_bits), 'H', 7);
     value_to_bits_msb(lc_bits, 30, sizeof(lc_bits), 'I', 7);
-    st->lastsrc = 700006u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    seed_active_call(st, 0U, 700006U, 0U);
 
     dmr_talker_alias_lc_header(opts, st, 0, lc_bits);
     rc |= expect_u8(st->dmr_alias_char_size[0], 7U, "dmr alias iso7 char size");
     rc |= expect_u8(st->dmr_alias_block_len[0], 5U, "dmr alias iso7 block len");
-    rc |= expect_str(st->generic_talker_alias[0], "Talker Alias: HI; ", "dmr alias iso7 header text");
+    rc |= expect_str(st->generic_talker_alias[0], "HI; ", "dmr alias iso7 header text");
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "HI; ", "dmr alias iso7 event text");
 
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
     value_to_bits_msb(lc_bits, 16, sizeof(lc_bits), 'J', 7);
     value_to_bits_msb(lc_bits, 23, sizeof(lc_bits), 'K', 7);
     dmr_talker_alias_lc_blocks(opts, st, 0, 0, lc_bits);
-    rc |= expect_str(st->generic_talker_alias[0], "Talker Alias: HI     JK; ", "dmr alias iso7 block text");
+    rc |= expect_str(st->generic_talker_alias[0], "HI     JK; ", "dmr alias iso7 block text");
     rc |= expect_u8(st->dmr_pdu_sf[0][49], lc_bits[16], "dmr alias iso7 block copy");
 
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
@@ -506,13 +502,12 @@ test_dmr_alias_header_and_block_format_variants(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(lc_bits, 24, sizeof(lc_bits), 'Q', 16);
     value_to_bits_msb(lc_bits, 40, sizeof(lc_bits), 0U, 16);
     value_to_bits_msb(lc_bits, 56, sizeof(lc_bits), 0x0100U, 16);
-    st->lastsrcR = 700007u;
-    st->event_history_s[1].Event_History_Items[0].source_id = st->lastsrcR;
+    seed_active_call(st, 1U, 700007U, 0U);
 
     dmr_talker_alias_lc_header(opts, st, 1, lc_bits);
     rc |= expect_u8(st->dmr_alias_char_size[1], 16U, "dmr alias utf16 char size");
     rc |= expect_u8(st->dmr_alias_block_len[1], 3U, "dmr alias utf16 block len");
-    rc |= expect_str(st->generic_talker_alias[1], "Talker Alias: Q *; ", "dmr alias utf16 header text");
+    rc |= expect_str(st->generic_talker_alias[1], "Q *; ", "dmr alias utf16 header text");
     rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "Q *; ", "dmr alias utf16 event text");
 
     DSD_MEMSET(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]));
@@ -523,7 +518,7 @@ test_dmr_alias_header_and_block_format_variants(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(lc_bits, 32, sizeof(lc_bits), '2', 16);
     value_to_bits_msb(lc_bits, 48, sizeof(lc_bits), '3', 16);
     dmr_talker_alias_lc_blocks(opts, st, 1, 0, lc_bits);
-    rc |= expect_str(st->generic_talker_alias[1], "Talker Alias: Z  123; ", "dmr alias utf16 block text");
+    rc |= expect_str(st->generic_talker_alias[1], "Z  123; ", "dmr alias utf16 block text");
     rc |= expect_u8(st->dmr_pdu_sf[1][48], lc_bits[16], "dmr alias utf16 block copy");
 
     return rc;
@@ -538,21 +533,19 @@ test_dmr_alias_invalid_characters_and_unicode_branch(dsd_opts* opts, dsd_state* 
     value_to_bits_msb(st->dmr_pdu_sf[0], 8, sizeof(st->dmr_pdu_sf[0]), 0x7FU, 8);
     value_to_bits_msb(st->dmr_pdu_sf[0], 16, sizeof(st->dmr_pdu_sf[0]), 0xFFU, 8);
     value_to_bits_msb(st->dmr_pdu_sf[0], 24, sizeof(st->dmr_pdu_sf[0]), 'B', 8);
-    st->lastsrc = 700008u;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    seed_active_call(st, 0U, 700008U, 0U);
 
     dmr_talker_alias_lc_decode(opts, st, 0, 2, 8, 4);
-    rc |= expect_str(st->generic_talker_alias[0], "Talker Alias: A  B; ", "dmr alias iso8 invalid chars");
+    rc |= expect_str(st->generic_talker_alias[0], "A  B; ", "dmr alias iso8 invalid chars");
     rc |= expect_str(st->event_history_s[0].Event_History_Items[0].alias, "A  B; ", "dmr alias iso8 event chars");
 
     DSD_MEMSET(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]));
     value_to_bits_msb(st->dmr_pdu_sf[1], 0, sizeof(st->dmr_pdu_sf[1]), 'C', 16);
-    st->lastsrcR = 700009u;
-    st->event_history_s[1].Event_History_Items[0].source_id = st->lastsrcR;
+    seed_active_call(st, 1U, 700009U, 0U);
     g_unicode_supported = 1;
     dmr_talker_alias_lc_decode(opts, st, 1, 3, 16, 1);
     g_unicode_supported = 0;
-    rc |= expect_str(st->generic_talker_alias[1], "Talker Alias: C; ", "dmr alias unicode-supported text");
+    rc |= expect_str(st->generic_talker_alias[1], "C; ", "dmr alias unicode-supported text");
     rc |= expect_str(st->event_history_s[1].Event_History_Items[0].alias, "C; ", "dmr alias unicode-supported event");
 
     return rc;
@@ -574,7 +567,7 @@ test_apx_alias_dump_updates_history_and_policy(dsd_opts* opts, dsd_state* st) {
     decoded[3] = ',';
     decoded[5] = 0x01;
 
-    st->event_history_s[0].Event_History_Items[0].source_id = rid;
+    seed_active_call(st, 0U, rid, 0U);
 
     apx_embedded_alias_dump(opts, st, 0, 6, input, decoded);
 
@@ -589,7 +582,7 @@ test_apx_alias_dump_updates_history_and_policy(dsd_opts* opts, dsd_state* st) {
     value_to_bits_msb(input, 92, sizeof(input), 0x678U, 12);
     value_to_bits_msb(input, 104, sizeof(input), rid_mismatch, 24);
     decoded[1] = 'X';
-    st->event_history_s[0].Event_History_Items[0].source_id = rid_mismatch + 1U;
+    seed_active_call(st, 0U, rid_mismatch + 1U, 0U);
     apx_embedded_alias_dump(opts, st, 0, 2, input, decoded);
     rc |= expect_no_policy(st, rid_mismatch, "apx dump mismatch no policy");
 
@@ -641,15 +634,8 @@ test_alias_sequence_state_is_per_decoder(dsd_opts* opts) {
     apx_embedded_alias_blocks_phase1(opts, st_a, 0, block);
     rc |= expect_u8(st_a->dmr_pdu_sf[0][72], 1U, "apx state A accepts block after state B header");
 
-    st_a->lastsrc = 720001u;
-    st_a->lasttg = 52u;
-    hist_a[0].Event_History_Items[0].source_id = st_a->lastsrc;
-    hist_a[0].Event_History_Items[0].target_id = st_a->lasttg;
-
-    st_b->lastsrc = 720002u;
-    st_b->lasttg = 53u;
-    hist_b[0].Event_History_Items[0].source_id = st_b->lastsrc;
-    hist_b[0].Event_History_Items[0].target_id = st_b->lasttg;
+    seed_active_call(st_a, 0U, 720001U, 52U);
+    seed_active_call(st_b, 0U, 720002U, 53U);
 
     build_l3h_alias_lcw(lcw, 0x32U, "ALPHA  ");
     l3h_embedded_alias_blocks_phase1(opts, st_a, 0, lcw);
@@ -691,8 +677,7 @@ main(void) {
     }
 
     st->currentslot = 0;
-    st->lastsrc = 123;
-    st->event_history_s[0].Event_History_Items[0].source_id = st->lastsrc;
+    seed_active_call(st, 0U, 123U, 0U);
 
     uint8_t lc_bits[80];
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
@@ -716,7 +701,7 @@ main(void) {
     rc |= test_alias_sequence_state_is_per_decoder(opts);
 
     // Runtime alias handling stores learned aliases through the policy table.
-    st->lastsrc = 600000u;
+    seed_active_call(st, 0U, 600000U, 0U);
     st->late_entry_mi_fragment[0][0][0] = 0x1122334455667788ULL;
 
     uint8_t tait_bits[64];
@@ -724,7 +709,7 @@ main(void) {
     tait_iso7_embedded_alias_decode(opts, st, 0, 1, tait_bits);
 
     dsd_tg_policy_lookup lookup;
-    if (dsd_tg_policy_lookup_id(st, st->lastsrc, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
+    if (dsd_tg_policy_lookup_id(st, 600000U, &lookup) != 0 || lookup.match != DSD_TG_POLICY_MATCH_EXACT) {
         DSD_FPRINTF(stderr, "runtime alias policy insert failed\n");
         rc = 1;
     }

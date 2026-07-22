@@ -26,7 +26,7 @@ extern "C" {
 uint8_t p25_decrypt_pdu(const dsd_opts* opts, const dsd_state* state, uint8_t* input, uint8_t alg_id, uint16_t key_id,
                         unsigned long long int mi, int len);
 uint8_t p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uint8_t* sap, int* ptr, int len);
-void p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t* sap, int* ptr);
+uint32_t p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t* sap, int* ptr);
 void p25_decode_pdu_header(dsd_opts* opts, dsd_state* state, const uint8_t* input);
 void p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len);
 void p25_decode_rsp(uint8_t C, uint8_t T, uint8_t S, char* rsp_string, size_t rsp_string_size);

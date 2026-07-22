@@ -592,9 +592,58 @@ edacs_tune_to_lcn(dsd_opts* opts, dsd_state* state, int lcn) {
     return 1;
 }
 
+static dsd_call_kind
+edacs_voice_call_kind(uint16_t call_flags) {
+    if ((call_flags & EDACS_IS_GROUP) != 0) {
+        return DSD_CALL_KIND_GROUP_VOICE;
+    }
+    if ((call_flags & EDACS_IS_INDIVIDUAL) != 0) {
+        return DSD_CALL_KIND_PRIVATE_VOICE;
+    }
+    return DSD_CALL_KIND_VOICE;
+}
+
+static dsd_call_observation
+edacs_voice_observation(const dsd_state* state, int lcn, int is_digital, uint64_t target, uint64_t source,
+                        dsd_call_kind kind, uint16_t call_flags) {
+    const dsd_call_observation observation = {
+        .protocol = is_digital ? DSD_SYNC_PROVOICE_POS : DSD_SYNC_EDACS_POS,
+        .slot = 0U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .channel = lcn > 0 ? (uint32_t)lcn : 0U,
+        .frequency_hz = lcn > 0 && lcn < 26 ? state->trunk_lcn_freq[lcn - 1] : 0,
+        .service_options = call_flags,
+        .emergency = (uint8_t)((call_flags & EDACS_IS_EMERGENCY) != 0),
+    };
+    return observation;
+}
+
 static void
-edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digital, int call_target,
-                          int tune_allowed) {
+edacs_publish_voice_grant(dsd_state* state, int lcn, int is_digital, uint64_t target, uint64_t source,
+                          dsd_call_kind kind, const dsd_call_observation* observation) {
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "%s %s grant TGT %llu SRC %llu", is_digital ? "Digital" : "Analog",
+                 kind == DSD_CALL_KIND_PRIVATE_VOICE ? "private" : "group", (unsigned long long)target,
+                 (unsigned long long)source);
+    if (lcn >= 0 && lcn < DSD_RECENT_ACTIVITY_COUNT) {
+        (void)dsd_recent_activity_publish(state, (uint8_t)lcn, observation, notice, 0U);
+    }
+}
+
+static void
+edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digital, int call_target, int call_source,
+                          uint16_t call_flags, int tune_allowed) {
+    const uint64_t target = call_target > 0 && call_target != 999999999 ? (uint64_t)call_target : 0U;
+    const uint64_t source =
+        call_source > 0 && call_source != 0x800 && call_source != 999999999 ? (uint64_t)call_source : 0U;
+    const dsd_call_kind kind = edacs_voice_call_kind(call_flags);
+    const dsd_call_observation observation =
+        edacs_voice_observation(state, lcn, is_digital, target, source, kind, call_flags);
+    edacs_publish_voice_grant(state, lcn, is_digital, target, source, kind, &observation);
+
     if (!tune_allowed || opts->trunk_enable != 1 || !edacs_lcn_is_tunable(state, lcn)) {
         return;
     }
@@ -602,9 +651,22 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
     if (!edacs_tune_to_lcn(opts, state, lcn)) {
         return;
     }
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
     edacs_prepare_voice_wav_output(opts, state, is_digital);
     if (is_digital == 0) {
         edacs_analog(opts, state, call_target, (unsigned char)lcn);
+    }
+}
+
+static void
+edacs_publish_data_activity(dsd_state* state, int lcn, uint64_t target, uint64_t source, const char* notice) {
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_EDACS_POS, 0U, source, target);
+    observation.channel = lcn > 0 ? (uint32_t)lcn : 0U;
+    observation.frequency_hz = lcn > 0 && lcn < 26 ? state->trunk_lcn_freq[lcn - 1] : 0;
+    if (lcn >= 0 && lcn < DSD_RECENT_ACTIVITY_COUNT) {
+        (void)dsd_recent_activity_publish(state, (uint8_t)lcn, &observation, notice, 0U);
     }
 }
 
@@ -647,6 +709,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         edacs_reset_digitize_overflow(state);
         edacs_process_analog_triplet(opts, state, analog1, analog2, analog3);
         edacs_emit_analog_audio(opts, state, analog1, analog2, analog3);
+        (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
 
         opts->rtl_pwr = pwr;
         count = edacs_update_squelch_count(pwr, sql, count);
@@ -790,10 +853,7 @@ edacs_handle_extended_mt2_initiate_test_call(dsd_state* state, unsigned long lon
     DSD_FPRINTF(stderr, " Initiate Test Call :: CC LCN [%02d] WC LCN [%02d]", cc_lcn, wc_lcn);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    state->edacs_vc_lcn = wc_lcn;
-    state->lasttg = 999999999;
-    state->lastsrc = 999999999;
-    state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_TEST_CALL;
+    edacs_publish_data_activity(state, wc_lcn, 0U, 0U, "EDACS test-call assignment");
 }
 
 static void
@@ -1003,20 +1063,12 @@ edacs_handle_extended_mt1_voice_group_call(dsd_opts* opts, dsd_state* state, uns
     int is_emergency = (msg_2 & 0x100000) >> 20;
     int source = (msg_2 & 0xFFFFF);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = group;
-    if (source != 0) {
-        state->lastsrc = source;
-    }
-
-    state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_GROUP;
+    uint16_t call_flags = EDACS_IS_VOICE | EDACS_IS_GROUP;
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
     if (is_emergency == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_EMERGENCY;
+        call_flags |= EDACS_IS_EMERGENCY;
     }
 
     DSD_FPRINTF(stderr, "%s", KGRN);
@@ -1048,7 +1100,8 @@ edacs_handle_extended_mt1_voice_group_call(dsd_opts* opts, dsd_state* state, uns
     policy_ok = (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)source, 0, 0, &decision) == 0
                  && decision.tune_allowed);
 
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, opts->trunk_tune_group_calls == 1 && policy_ok);
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, source, call_flags,
+                              opts->trunk_tune_group_calls == 1 && policy_ok);
 }
 
 static void
@@ -1062,23 +1115,14 @@ edacs_handle_extended_mt1_icall_update(dsd_opts* opts, dsd_state* state, unsigne
     int target = (msg_1 & 0xFFFFF);
     int source = (msg_2 & 0xFFFFF);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    if (target != 0) {
-        state->lasttg = target;
-    }
-    if (source != 0) {
-        state->lastsrc = source;
-    }
-
+    uint16_t call_flags;
     if (target == 0 && source == 0) {
-        state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_TEST_CALL;
+        call_flags = EDACS_IS_VOICE | EDACS_IS_TEST_CALL;
     } else {
-        state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL;
+        call_flags = EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL;
     }
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
 
     if (target == 0 && source == 0) {
@@ -1090,9 +1134,7 @@ edacs_handle_extended_mt1_icall_update(dsd_opts* opts, dsd_state* state, unsigne
             DSD_FPRINTF(stderr, " Update");
         }
         DSD_FPRINTF(stderr, " :: LCN [%02d]%s", lcn, edacs_lcn_status_string(lcn));
-        state->edacs_vc_lcn = lcn;
-        state->lasttg = 999999999;
-        state->lastsrc = 999999999;
+        edacs_publish_data_activity(state, lcn, 0U, 0U, "EDACS test-call assignment");
         lcn = 0;
     } else {
         DSD_FPRINTF(stderr, "%s", KCYN);
@@ -1118,7 +1160,8 @@ edacs_handle_extended_mt1_icall_update(dsd_opts* opts, dsd_state* state, unsigne
         (dsd_tg_policy_evaluate_private_call(opts, state, (uint32_t)source, (uint32_t)target, 0, 0, &decision) == 0
          && decision.tune_allowed);
 
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, opts->trunk_tune_private_calls == 1 && policy_ok);
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, source, call_flags,
+                              opts->trunk_tune_private_calls == 1 && policy_ok);
 }
 
 static void
@@ -1132,14 +1175,7 @@ edacs_handle_extended_mt1_channel_assignment(dsd_state* state, unsigned long lon
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    if (source != 0) {
-        state->lastsrc = source;
-    }
-
-    state->edacs_vc_call_type = EDACS_IS_INDIVIDUAL;
+    edacs_publish_data_activity(state, lcn, 0U, source, "EDACS unknown channel assignment");
 }
 
 static void
@@ -1152,17 +1188,9 @@ edacs_handle_extended_mt1_system_all_call(dsd_opts* opts, dsd_state* state, unsi
     int is_update = (msg_1 & 0x8000) >> 15;
     int source = (msg_2 & 0xFFFFF);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = 0;
-    if (source != 0) {
-        state->lastsrc = source;
-    }
-
-    state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_ALL_CALL;
+    uint16_t call_flags = EDACS_IS_VOICE | EDACS_IS_ALL_CALL;
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
 
     DSD_FPRINTF(stderr, "%s", KMAG);
@@ -1187,7 +1215,8 @@ edacs_handle_extended_mt1_system_all_call(dsd_opts* opts, dsd_state* state, unsi
         policy_ok = 1;
     }
 
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, -1, opts->trunk_tune_group_calls == 1 && policy_ok);
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, -1, source, call_flags,
+                              opts->trunk_tune_group_calls == 1 && policy_ok);
 }
 
 static void
@@ -1222,8 +1251,6 @@ edacs_handle_extended_mode(dsd_opts* opts, dsd_state* state, unsigned long long 
                            unsigned long long int msg_2) {
     unsigned char mt1 = (msg_1 & 0xF800000) >> 23;
     unsigned char mt2 = (msg_1 & 0x780000) >> 19;
-
-    state->edacs_vc_call_type = 0;
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, " MSG_1 [%07llX]", msg_1);
@@ -1276,28 +1303,24 @@ edacs_standard_mt_a_voice_group_print(int is_digital, int is_emergency, int is_t
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-static void
+static uint16_t
 edacs_standard_mt_a_voice_group_set_state(dsd_state* state, int is_digital, int is_emergency, int group, int lid,
                                           int lcn, int is_agency_call, int is_fleet_call) {
+    UNUSED2(group, lid);
     edacs_update_lcn_count(state, lcn);
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = group;
-    state->lastsrc = lid;
-
-    state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_GROUP;
+    uint16_t call_flags = EDACS_IS_VOICE | EDACS_IS_GROUP;
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
     if (is_emergency == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_EMERGENCY;
+        call_flags |= EDACS_IS_EMERGENCY;
     }
     if (is_agency_call) {
-        state->edacs_vc_call_type |= EDACS_IS_AGENCY_CALL;
+        call_flags |= EDACS_IS_AGENCY_CALL;
     } else if (is_fleet_call) {
-        state->edacs_vc_call_type |= EDACS_IS_FLEET_CALL;
+        call_flags |= EDACS_IS_FLEET_CALL;
     }
+    return call_flags;
 }
 
 static void
@@ -1314,15 +1337,16 @@ edacs_handle_standard_mt_a_voice_group_assignment(dsd_opts* opts, dsd_state* sta
 
     edacs_standard_mt_a_voice_group_print(is_digital, is_emergency, is_tx_trunk, group, lid, lcn, is_agency_call,
                                           is_fleet_call);
-    edacs_standard_mt_a_voice_group_set_state(state, is_digital, is_emergency, group, lid, lcn, is_agency_call,
-                                              is_fleet_call);
+    uint16_t call_flags = edacs_standard_mt_a_voice_group_set_state(state, is_digital, is_emergency, group, lid, lcn,
+                                                                    is_agency_call, is_fleet_call);
 
     dsd_tg_policy_decision decision;
     int policy_ok =
         (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)group, (uint32_t)lid, 0, 0, &decision) == 0
          && decision.tune_allowed);
 
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, opts->trunk_tune_group_calls == 1 && policy_ok);
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, group, lid, call_flags,
+                              opts->trunk_tune_group_calls == 1 && policy_ok);
 }
 
 static void
@@ -1357,17 +1381,7 @@ edacs_handle_standard_mt_a_data_call(dsd_state* state, unsigned long long int ms
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = target;
-    state->lastsrc = 0x800;
-
-    if (is_individual_call == 0) {
-        state->edacs_vc_call_type = EDACS_IS_GROUP;
-    } else {
-        state->edacs_vc_call_type = EDACS_IS_INDIVIDUAL;
-    }
+    edacs_publish_data_activity(state, lcn, (uint64_t)target, 0U, "EDACS data-call assignment");
 }
 
 static void
@@ -1395,7 +1409,7 @@ edacs_handle_standard_mt_b_status_message(unsigned long long int msg_1) {
 }
 
 static void
-edacs_handle_standard_mt_b_interconnect_assignment(dsd_state* state, unsigned long long int msg_1) {
+edacs_handle_standard_mt_b_interconnect_assignment(dsd_opts* opts, dsd_state* state, unsigned long long int msg_1) {
     int mt_c = (msg_1 & 0x300000) >> 20;
     int lcn = (msg_1 & 0xF8000) >> 15;
     int is_individual_id = (msg_1 & 0x4000) >> 14;
@@ -1420,40 +1434,37 @@ edacs_handle_standard_mt_b_interconnect_assignment(dsd_state* state, unsigned lo
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = 0;
-    state->lastsrc = target;
-
-    state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_INTERCONNECT;
+    uint16_t call_flags = EDACS_IS_VOICE | EDACS_IS_INTERCONNECT;
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, 0, target, call_flags, 0);
 }
 
-static void
+static uint16_t
 edacs_standard_channel_update_set_call_type(dsd_state* state, int is_individual, int is_test_call, int is_digital,
                                             int is_emergency, int is_agency_call, int is_fleet_call) {
-    state->edacs_vc_call_type = EDACS_IS_VOICE;
+    UNUSED(state);
+    uint16_t call_flags = EDACS_IS_VOICE;
     if (is_individual == 0) {
-        state->edacs_vc_call_type |= EDACS_IS_GROUP;
+        call_flags |= EDACS_IS_GROUP;
     } else if (is_test_call == 0) {
-        state->edacs_vc_call_type |= EDACS_IS_INDIVIDUAL;
+        call_flags |= EDACS_IS_INDIVIDUAL;
     } else {
-        state->edacs_vc_call_type |= EDACS_IS_TEST_CALL;
+        call_flags |= EDACS_IS_TEST_CALL;
     }
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
     if (is_emergency == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_EMERGENCY;
+        call_flags |= EDACS_IS_EMERGENCY;
     }
     if (is_agency_call) {
-        state->edacs_vc_call_type |= EDACS_IS_AGENCY_CALL;
+        call_flags |= EDACS_IS_AGENCY_CALL;
     } else if (is_fleet_call) {
-        state->edacs_vc_call_type |= EDACS_IS_FLEET_CALL;
+        call_flags |= EDACS_IS_FLEET_CALL;
     }
+    return call_flags;
 }
 
 static int
@@ -1515,19 +1526,13 @@ edacs_standard_channel_update_print(int is_individual, int is_test_call, int is_
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
-static void
+static uint16_t
 edacs_standard_channel_update_set_state(dsd_state* state, int lcn, int target, int is_individual, int is_test_call,
                                         int is_digital, int is_emergency, int is_agency_call, int is_fleet_call) {
+    UNUSED(target);
     edacs_update_lcn_count(state, lcn);
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = target;
-    // EDACS standard does not include a source LID for channel updates.
-    state->lastsrc = 0x800;
-
-    edacs_standard_channel_update_set_call_type(state, is_individual, is_test_call, is_digital, is_emergency,
-                                                is_agency_call, is_fleet_call);
+    return edacs_standard_channel_update_set_call_type(state, is_individual, is_test_call, is_digital, is_emergency,
+                                                       is_agency_call, is_fleet_call);
 }
 
 static void
@@ -1549,11 +1554,11 @@ edacs_handle_standard_mt_b_channel_update(dsd_opts* opts, dsd_state* state, unsi
 
     edacs_standard_channel_update_print(is_individual, is_test_call, is_digital, is_tx_trunk, is_emergency, target,
                                         source, lcn, is_agency_call, is_fleet_call);
-    edacs_standard_channel_update_set_state(state, lcn, target, is_individual, is_test_call, is_digital, is_emergency,
-                                            is_agency_call, is_fleet_call);
+    uint16_t call_flags = edacs_standard_channel_update_set_state(
+        state, lcn, target, is_individual, is_test_call, is_digital, is_emergency, is_agency_call, is_fleet_call);
 
     int policy_ok = edacs_standard_channel_update_policy_ok(opts, state, is_individual, target);
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, target,
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, source, call_flags,
                               ((is_individual == 0 && opts->trunk_tune_group_calls == 1)
                                || (is_individual == 1 && opts->trunk_tune_private_calls == 1))
                                   && policy_ok);
@@ -1583,9 +1588,7 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
         DSD_FPRINTF(stderr, " Test Call Channel Assignment ::");
         DSD_FPRINTF(stderr, " LCN [%02d]%s", lcn, edacs_lcn_status_string(lcn));
 
-        state->edacs_vc_lcn = lcn;
-        state->lasttg = 999999999;
-        state->lastsrc = 999999999;
+        edacs_publish_data_activity(state, lcn, 0U, 0U, "EDACS test-call assignment");
         lcn = 0;
     } else {
         DSD_FPRINTF(stderr, "%s", KCYN);
@@ -1604,19 +1607,14 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = target;
-    state->lastsrc = source;
-
+    uint16_t call_flags;
     if (target == 0 && source == 0) {
-        state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_TEST_CALL;
+        call_flags = EDACS_IS_VOICE | EDACS_IS_TEST_CALL;
     } else {
-        state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL;
+        call_flags = EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL;
     }
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
 
     dsd_tg_policy_decision decision;
@@ -1630,7 +1628,8 @@ edacs_handle_standard_mt_b_individual_assignment(dsd_opts* opts, dsd_state* stat
         policy_ok = 0;
     }
 
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, opts->trunk_tune_private_calls == 1 && policy_ok);
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, target, source, call_flags,
+                              opts->trunk_tune_private_calls == 1 && policy_ok);
 }
 
 static void
@@ -1794,15 +1793,9 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
     DSD_FPRINTF(stderr, "%s", KNRM);
     edacs_update_lcn_count(state, lcn);
 
-    if (lcn != 0) {
-        state->edacs_vc_lcn = lcn;
-    }
-    state->lasttg = 0;
-    state->lastsrc = lid;
-
-    state->edacs_vc_call_type = EDACS_IS_VOICE | EDACS_IS_ALL_CALL;
+    uint16_t call_flags = EDACS_IS_VOICE | EDACS_IS_ALL_CALL;
     if (is_digital == 1) {
-        state->edacs_vc_call_type |= EDACS_IS_DIGITAL;
+        call_flags |= EDACS_IS_DIGITAL;
     }
 
     dsd_tg_policy_decision decision;
@@ -1815,7 +1808,8 @@ edacs_handle_standard_mt_d_system_all_call(dsd_opts* opts, dsd_state* state, uns
         policy_ok = 1;
     }
 
-    edacs_try_tune_voice_call(opts, state, lcn, is_digital, 0, opts->trunk_tune_group_calls == 1 && policy_ok);
+    edacs_try_tune_voice_call(opts, state, lcn, is_digital, 0, lid, call_flags,
+                              opts->trunk_tune_group_calls == 1 && policy_ok);
 }
 
 static void
@@ -1869,7 +1863,7 @@ edacs_handle_standard_mt_b(dsd_opts* opts, dsd_state* state, unsigned long long 
                            unsigned char mt_b, unsigned char mt_d) {
     switch (mt_b) {
         case 0x0: edacs_handle_standard_mt_b_status_message(msg_1); return 1;
-        case 0x1: edacs_handle_standard_mt_b_interconnect_assignment(state, msg_1); return 1;
+        case 0x1: edacs_handle_standard_mt_b_interconnect_assignment(opts, state, msg_1); return 1;
         case 0x3: edacs_handle_standard_mt_b_channel_update(opts, state, msg_1, msg_2); return 1;
         case 0x4: edacs_handle_standard_mt_b_system_assigned_id(msg_1); return 1;
         case 0x5: edacs_handle_standard_mt_b_individual_assignment(opts, state, msg_1, msg_2); return 1;
@@ -1908,8 +1902,6 @@ edacs_handle_standard_mode(dsd_opts* opts, dsd_state* state, unsigned long long 
     unsigned char mt_a = (msg_1 & 0xE000000) >> 25;
     unsigned char mt_b = (msg_1 & 0x1C00000) >> 22;
     unsigned char mt_d = (msg_1 & 0x3E0000) >> 17;
-
-    state->edacs_vc_call_type = 0;
 
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, " MSG_1 [%07llX]", msg_1);
@@ -2010,13 +2002,11 @@ edacs(dsd_opts* opts, dsd_state* state) {
     (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
 
-    state->edacs_vc_lcn = -1; //init on negative for ncurses and tuning
-
     int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
     edacs_collect_bits(opts, state, edacs_bit);
 
     // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
-    //this is a simple quick and dirty solution to fix setting the lastsrc value to something that we don't want in event history
+    // Once tuned away from the control channel, do not decode stale control symbols as a new source identity.
     if (opts->trunk_is_tuned == 1) {
         goto EDACS_END;
     }
@@ -2073,6 +2063,7 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
 
     //watchdog event at this point
     state->lastsynctype = DSD_SYNC_EDACS_NEG;
+    (void)dsd_call_state_end(state, 0U, nowm);
     dsd_event_sync_slot(opts, state, 0);
 
     //close and rename wav file here, then open a new one
@@ -2095,15 +2086,9 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
         opts->trunk_is_tuned = 0;
 
         // EDACS-specific state cleanup
-        state->lasttg = 0;
-        state->lastsrc = 0;
         state->payload_algid = 0;
         state->payload_keyid = 0;
         state->payload_miP = 0;
-        DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "                     "); //21 spaces
-        DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "                     "); //21 spaces
-        (void)dsd_recent_activity_clear(state, 0U);
-        (void)dsd_recent_activity_clear(state, 1U);
         state->edacs_tuned_lcn = -1;
         state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
         state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;

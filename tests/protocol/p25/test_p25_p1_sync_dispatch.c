@@ -220,8 +220,6 @@ static const char k_valid_embedded_gps[] = "GPS: 41.12345N 087.12345W (41.12345,
 
 static void
 seed_stale_data_call_display(dsd_state* state) {
-    state->lasttg = 393226;
-    state->lastsrc = 0xFFFFFF;
     DSD_SNPRINTF(state->dmr_embedded_gps[0], sizeof(state->dmr_embedded_gps[0]), "%s", k_valid_embedded_gps);
     DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]),
                  "Data Call: Mobile Radio Statistics; SAP:24; LLID: 393226; ");

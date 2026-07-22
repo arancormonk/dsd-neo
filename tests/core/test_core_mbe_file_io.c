@@ -8,11 +8,13 @@
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -613,10 +615,14 @@ test_sdrtrunk_json_metadata_protocols_and_time(void) {
         rc |= run_sdrtrunk_json(json, &opts, &state);
         rc |= expect_int("sdrtrunk protocol synctype", state.synctype, cases[i].want_synctype);
         rc |= expect_int("sdrtrunk protocol lastsynctype", state.lastsynctype, cases[i].want_synctype);
-        rc |= expect_int("sdrtrunk group call", state.gi[0], 0);
-        rc |= expect_int("sdrtrunk target id", (int)state.lasttg, 1234);
-        rc |= expect_int("sdrtrunk source id", (int)state.lastsrc, 5678);
+        dsd_call_snapshot call = {0};
+        rc |= expect_true("sdrtrunk canonical call available", dsd_call_state_get(&state, 0U, &call) > 0);
+        rc |= expect_int("sdrtrunk group call", (int)call.kind, DSD_CALL_KIND_GROUP_VOICE);
+        rc |= expect_u64("sdrtrunk target id", call.ota_target_id, 1234U);
+        rc |= expect_u64("sdrtrunk policy target id", call.policy_target_id, 1234U);
+        rc |= expect_u64("sdrtrunk source id", call.ota_source_id, 5678U);
         rc |= expect_u64("sdrtrunk event time", (uint64_t)history[0].Event_History_Items[0].event_time, 1700000000ULL);
+        dsd_state_ext_free_all(&state);
     }
 
     return rc;
@@ -645,8 +651,14 @@ test_sdrtrunk_json_encryption_metadata_updates_payload_state(void) {
     rc |= expect_int("sdrtrunk encrypted algid", state.payload_algid, 0x81);
     rc |= expect_u16("sdrtrunk encrypted key id", state.payload_keyid, 4660);
     rc |= expect_u64("sdrtrunk encrypted mi truncates 18-char value", state.payload_mi, 0x0011223344556677ULL);
-    rc |= expect_int("sdrtrunk encrypted target id", (int)state.lasttg, 55);
-    rc |= expect_int("sdrtrunk encrypted source id", (int)state.lastsrc, 66);
+    dsd_call_snapshot call = {0};
+    rc |= expect_true("sdrtrunk encrypted canonical call available", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_u64("sdrtrunk encrypted target id", call.ota_target_id, 55U);
+    rc |= expect_u64("sdrtrunk encrypted source id", call.ota_source_id, 66U);
+    rc |= expect_int("sdrtrunk encrypted canonical algid", call.algid, 0x81);
+    rc |= expect_u16("sdrtrunk encrypted canonical key id", call.kid, 4660U);
+    rc |= expect_u64("sdrtrunk encrypted canonical mi", call.mi, 0x0011223344556677ULL);
+    dsd_state_ext_free_all(&state);
 
     return rc;
 }
@@ -693,15 +705,30 @@ test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     DSD_MEMSET(history, 0, sizeof history);
     opts.playfiles = 1;
-    state.lasttg = 111;
-    state.lastsrc = 222;
     state.event_history_s = history;
 
+    const dsd_call_observation seeded = {
+        .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 111U,
+        .policy_target_id = 111U,
+        .ota_source_id = 222U,
+    };
+    rc |= expect_true("sdrtrunk seed prior canonical call",
+                      dsd_call_state_observe(&state, &seeded, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_call_snapshot prior = {0};
+    rc |= expect_true("sdrtrunk prior canonical call available", dsd_call_state_get(&state, 0U, &prior) > 0);
+
     rc |= run_sdrtrunk_json(json, &opts, &state);
-    rc |= expect_int("sdrtrunk invalid target zero", (int)state.lasttg, 0);
-    rc |= expect_int("sdrtrunk invalid source zero", (int)state.lastsrc, 0);
-    rc |= expect_int("sdrtrunk private call", state.gi[0], 1);
+    dsd_call_snapshot call = {0};
+    rc |= expect_true("sdrtrunk invalid canonical call available", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_true("sdrtrunk invalid fields begin fresh epoch", call.epoch != prior.epoch);
+    rc |= expect_u64("sdrtrunk invalid target zero", call.ota_target_id, 0U);
+    rc |= expect_u64("sdrtrunk invalid source zero", call.ota_source_id, 0U);
+    rc |= expect_int("sdrtrunk private call", (int)call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
     rc |= expect_u64("sdrtrunk invalid time zero", (uint64_t)history[0].Event_History_Items[0].event_time, 0ULL);
+    dsd_state_ext_free_all(&state);
 
     return rc;
 }
@@ -1456,7 +1483,19 @@ test_symbol_capture_auto_rotation_reopens_and_logs_event(void) {
     DSD_SNPRINTF(opts.symbol_out_file, sizeof opts.symbol_out_file, "%s", old_path);
     opts.symbol_out_file_is_auto = 1;
     opts.symbol_out_file_creation_time = time(NULL) - 4000;
-    state.lastsrc = 1234;
+    const dsd_call_observation active_observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 4321U,
+        .policy_target_id = 4321U,
+        .ota_source_id = 1234U,
+    };
+    rc |= expect_true("rotation seeds active canonical call",
+                      dsd_call_state_observe(&state, &active_observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_call_snapshot active_before = {0};
+    rc |= expect_true("rotation canonical call available before notice",
+                      dsd_call_state_get(&state, 0U, &active_before) > 0);
 
     openSymbolOutFile(&opts, &state);
     rc |= expect_true("rotation source handle opened", opts.symbol_out_f != NULL);
@@ -1486,12 +1525,17 @@ test_symbol_capture_auto_rotation_reopens_and_logs_event(void) {
     rc |= expect_true("rotation generated capture name", has_suffix(opts.symbol_out_file, "_dibit_capture.bin"));
     rc |= expect_true("rotation updates creation time", opts.symbol_out_file_creation_time >= before);
     rc |= expect_true("rotation creation time bounded", opts.symbol_out_file_creation_time <= after + 1);
-    rc |= expect_int("rotation clears lastsrc", (int)state.lastsrc, 0);
+    dsd_call_snapshot active_after = {0};
+    rc |= expect_true("rotation canonical call available after notice",
+                      dsd_call_state_get(&state, 0U, &active_after) > 0);
+    rc |= expect_int("rotation preserves active call phase", (int)active_after.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_u64("rotation preserves active call epoch", active_after.epoch, active_before.epoch);
+    rc |= expect_u64("rotation preserves active call source", active_after.ota_source_id, 1234U);
 
-    // The user-visible event should name the generated capture and use sentinel IDs.
+    // The user-visible event should name the generated capture and retain its own explicit data identity.
     Event_History* rotated = &state.event_history_s[0].Event_History_Items[1];
-    rc |= expect_int("rotation event source", (int)rotated->source_id, 0xFFFFFF);
-    rc |= expect_int("rotation event target", (int)rotated->target_id, 0xFFFFFF);
+    rc |= expect_int("rotation event source", (int)rotated->source_id, 0);
+    rc |= expect_int("rotation event target", (int)rotated->target_id, 0);
     rc |= expect_true("rotation event string", strstr(rotated->event_string, "Dibit Capture File Rotated") != NULL);
     rc |= expect_true("rotation event names capture", strstr(rotated->event_string, opts.symbol_out_file) != NULL);
 
@@ -1525,6 +1569,7 @@ test_symbol_capture_auto_rotation_reopens_and_logs_event(void) {
 
     (void)remove(old_path);
     (void)remove_dir(dir);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

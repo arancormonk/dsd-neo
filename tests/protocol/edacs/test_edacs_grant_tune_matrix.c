@@ -15,6 +15,7 @@
  * the analog audio loop.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -283,6 +284,70 @@ edacs_expect(int cond, const char* test_case, const char* result_name, const cha
     return 1;
 }
 
+static int
+edacs_expect_recent(int lcn, dsd_call_kind kind, uint64_t target, uint64_t source, uint16_t service_options,
+                    const char* test_case, const char* result_name) {
+    dsd_recent_activity_snapshot recent = {0};
+    int rc = 0;
+    rc |= edacs_expect(lcn >= 0 && lcn < DSD_RECENT_ACTIVITY_COUNT, test_case, result_name,
+                       "recent activity index is valid");
+    if (lcn < 0 || lcn >= DSD_RECENT_ACTIVITY_COUNT) {
+        return rc;
+    }
+    rc |= edacs_expect(dsd_recent_activity_copy_snapshot(&g_state, &recent) > 0, test_case, result_name,
+                       "recent activity snapshot exists");
+    const dsd_recent_activity_entry* entry = &recent.entries[lcn];
+    rc |= edacs_expect(entry->notice[0] != '\0', test_case, result_name, "recent activity notice exists");
+    rc |= edacs_expect(entry->observation.channel == (uint32_t)lcn, test_case, result_name,
+                       "recent activity channel matches LCN");
+    rc |= edacs_expect(entry->observation.kind == kind, test_case, result_name, "recent activity kind");
+    rc |= edacs_expect(entry->observation.ota_target_id == target && entry->observation.ota_source_id == source,
+                       test_case, result_name, "recent activity target/source");
+    rc |= edacs_expect(entry->observation.service_options == service_options, test_case, result_name,
+                       "recent activity service flags");
+    rc |= edacs_expect(entry->observation.emergency == ((service_options & EDACS_IS_EMERGENCY) != 0), test_case,
+                       result_name, "recent activity emergency flag");
+    return rc;
+}
+
+static int
+edacs_expect_active(const edacs_grant_case* test_case, int active, const char* result_name) {
+    dsd_call_snapshot call = {0};
+    const int got = dsd_call_state_get(&g_state, 0U, &call);
+    if (!active) {
+        return edacs_expect(got <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE, test_case->name, result_name,
+                            "grant did not create an active call");
+    }
+
+    const dsd_call_kind kind =
+        (test_case->expected_flags & EDACS_IS_GROUP) != 0
+            ? DSD_CALL_KIND_GROUP_VOICE
+            : ((test_case->expected_flags & EDACS_IS_INDIVIDUAL) != 0 ? DSD_CALL_KIND_PRIVATE_VOICE
+                                                                      : DSD_CALL_KIND_VOICE);
+    int rc = 0;
+    rc |= edacs_expect(got > 0 && call.phase == DSD_CALL_PHASE_ACTIVE, test_case->name, result_name,
+                       "accepted grant created an active call");
+    rc |= edacs_expect(call.kind == kind, test_case->name, result_name, "active call kind");
+    rc |= edacs_expect(call.channel == (uint32_t)test_case->lcn && call.frequency_hz == test_case->freq_hz,
+                       test_case->name, result_name, "active call channel/frequency");
+    rc |= edacs_expect(call.ota_target_id == (uint64_t)test_case->expected_lasttg
+                           && call.ota_source_id == (uint64_t)test_case->expected_lastsrc,
+                       test_case->name, result_name, "active call target/source");
+    rc |= edacs_expect(call.service_options == (uint16_t)test_case->expected_flags, test_case->name, result_name,
+                       "active call service flags");
+    return rc;
+}
+
+static int
+edacs_expect_recent_only(int lcn, dsd_call_kind kind, uint64_t target, uint64_t source, uint16_t service_options,
+                         const char* test_case) {
+    int rc = edacs_expect_recent(lcn, kind, target, source, service_options, test_case, "state");
+    dsd_call_snapshot call = {0};
+    rc |= edacs_expect(dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE, test_case,
+                       "state", "control-channel activity did not create a voice call");
+    return rc;
+}
+
 static unsigned long long int
 edacs_standard_group_msg1(int mt_a, int lcn, int group, int source_lid) {
     unsigned long long int msg = ((unsigned long long int)(mt_a & 0x7) << 25U);
@@ -532,11 +597,12 @@ edacs_run_grant_result_case(const edacs_grant_case* test_case, dsd_trunk_tune_re
     rc |= edacs_expect(g_vc_tune_count == 1, test_case->name, result_name, "voice tune attempted once");
     rc |= edacs_expect(g_last_vc_freq == test_case->freq_hz, test_case->name, result_name,
                        "voice tune frequency matches LCN map");
-    rc |= edacs_expect(g_state.edacs_vc_lcn == test_case->lcn, test_case->name, result_name, "grant tracked VC LCN");
-    rc |= edacs_expect(g_state.lasttg == test_case->expected_lasttg && g_state.lastsrc == test_case->expected_lastsrc,
-                       test_case->name, result_name, "grant tracked target/source");
-    rc |= edacs_expect((g_state.edacs_vc_call_type & test_case->expected_flags) == test_case->expected_flags,
-                       test_case->name, result_name, "grant call flags");
+    const dsd_call_kind kind =
+        (test_case->expected_flags & EDACS_IS_GROUP) != 0 ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+    rc |= edacs_expect_recent(test_case->lcn, kind, (uint64_t)test_case->expected_lasttg,
+                              (uint64_t)test_case->expected_lastsrc, (uint16_t)test_case->expected_flags,
+                              test_case->name, result_name);
+    rc |= edacs_expect_active(test_case, accepted, result_name);
 
     if (accepted) {
         rc |= edacs_expect(g_state.edacs_tuned_lcn == test_case->lcn, test_case->name, result_name,
@@ -581,16 +647,16 @@ edacs_run_no_tune_guard_case(const edacs_grant_case* test_case, edacs_no_tune_gu
     int rc = 0;
     rc |= edacs_expect(g_vc_tune_count == 0, test_case->name, guard_name, "guard did not attempt tune");
     rc |= edacs_expect(g_last_vc_freq == 0, test_case->name, guard_name, "guard left tune frequency clear");
-    rc |= edacs_expect(g_state.edacs_vc_lcn == test_case->lcn, test_case->name, guard_name,
-                       "guard still tracked parsed VC LCN");
     rc |= edacs_expect(g_state.edacs_tuned_lcn == -1, test_case->name, guard_name, "guard left tuned LCN clear");
     rc |= edacs_expect(g_opts.trunk_is_tuned == 0, test_case->name, guard_name, "guard left tuned flags clear");
     rc |= edacs_expect(g_state.trunk_vc_freq[0] == 0 && g_state.p25_vc_freq[0] == 0, test_case->name, guard_name,
                        "guard left VC frequencies clear");
-    rc |= edacs_expect(g_state.lasttg == test_case->expected_lasttg && g_state.lastsrc == test_case->expected_lastsrc,
-                       test_case->name, guard_name, "guard preserved parsed target/source");
-    rc |= edacs_expect((g_state.edacs_vc_call_type & test_case->expected_flags) == test_case->expected_flags,
-                       test_case->name, guard_name, "guard preserved parsed call flags");
+    const dsd_call_kind kind =
+        (test_case->expected_flags & EDACS_IS_GROUP) != 0 ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+    rc |= edacs_expect_recent(test_case->lcn, kind, (uint64_t)test_case->expected_lasttg,
+                              (uint64_t)test_case->expected_lastsrc, (uint16_t)test_case->expected_flags,
+                              test_case->name, guard_name);
+    rc |= edacs_expect_active(test_case, 0, guard_name);
     return rc;
 }
 
@@ -640,13 +706,30 @@ edacs_setup_eot_fixture(void) {
     g_state.trunk_vc_freq[0] = 852012500L;
     g_state.trunk_vc_freq[1] = 852012500L;
     g_state.edacs_tuned_lcn = 5;
-    g_state.lasttg = 1201;
-    g_state.lastsrc = 42001;
     g_state.payload_algid = 0x84;
     g_state.payload_keyid = 0x1234;
     g_state.payload_miP = 0x5678;
-    DSD_SNPRINTF(g_state.call_string[0], sizeof(g_state.call_string[0]), "%s", "edacs active");
-    DSD_SNPRINTF(g_state.active_channel[0], sizeof(g_state.active_channel[0]), "%s", "active");
+
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_PROVOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = 42001U,
+        .channel = 5U,
+        .frequency_hz = 852012500L,
+        .service_options = EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL,
+    };
+    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_crypto(&g_state, 0U,
+                                       &(dsd_call_crypto_update){
+                                           .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+                                           .algid = 0x84,
+                                           .kid = 0x1234,
+                                           .mi = 0x5678,
+                                       });
+    (void)dsd_recent_activity_publish(&g_state, 5U, &observation, "EDACS active grant", 0U);
 
     g_vc_tune_count = 0;
     g_cc_tune_count = 0;
@@ -669,6 +752,13 @@ edacs_run_eot_result_case(dsd_trunk_tune_result result, const char* result_name)
     rc |= edacs_expect(g_cc_tune_count == 1, "eot-cc", result_name, "CC tune attempted once");
     rc |= edacs_expect(g_last_cc_freq == 851012500L, "eot-cc", result_name, "CC tune frequency");
     rc |= edacs_expect(g_skip_dibit_count == (240 * 8), "eot-cc", result_name, "EOT dibit skip was bounded");
+    dsd_call_snapshot call = {0};
+    rc |= edacs_expect(dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED, "eot-cc",
+                       result_name, "EOT ended canonical call before retuning");
+    rc |= edacs_expect(call.ota_target_id == 1201U && call.ota_source_id == 42001U, "eot-cc", result_name,
+                       "ended call retained identity");
+    rc |= edacs_expect_recent(5, DSD_CALL_KIND_GROUP_VOICE, 1201U, 42001U,
+                              EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL, "eot-cc", result_name);
 
     if (accepted) {
         rc |= edacs_expect(g_opts.trunk_is_tuned == 0, "eot-cc", result_name, "accepted CC return cleared tuned flags");
@@ -676,12 +766,8 @@ edacs_run_eot_result_case(dsd_trunk_tune_result result, const char* result_name)
             edacs_expect(g_state.edacs_tuned_lcn == -1, "eot-cc", result_name, "accepted CC return cleared tuned LCN");
         rc |= edacs_expect(g_state.p25_vc_freq[0] == 0 && g_state.trunk_vc_freq[0] == 0, "eot-cc", result_name,
                            "accepted CC return cleared VC frequencies");
-        rc |= edacs_expect(g_state.lasttg == 0 && g_state.lastsrc == 0, "eot-cc", result_name,
-                           "accepted CC return cleared call ids");
         rc |= edacs_expect(g_state.payload_algid == 0 && g_state.payload_keyid == 0 && g_state.payload_miP == 0,
                            "eot-cc", result_name, "accepted CC return cleared payload metadata");
-        rc |= edacs_expect(g_state.active_channel[0][0] == '\0', "eot-cc", result_name,
-                           "accepted CC return cleared active display");
     } else {
         rc |=
             edacs_expect(g_opts.trunk_is_tuned == 1, "eot-cc", result_name, "rejected CC return preserved tuned flags");
@@ -689,8 +775,6 @@ edacs_run_eot_result_case(dsd_trunk_tune_result result, const char* result_name)
             edacs_expect(g_state.edacs_tuned_lcn == 5, "eot-cc", result_name, "rejected CC return preserved tuned LCN");
         rc |= edacs_expect(g_state.p25_vc_freq[0] == 852012500L && g_state.trunk_vc_freq[0] == 852012500L, "eot-cc",
                            result_name, "rejected CC return preserved VC frequencies");
-        rc |= edacs_expect(g_state.lasttg == 1201 && g_state.lastsrc == 42001, "eot-cc", result_name,
-                           "rejected CC return preserved call ids");
         rc |= edacs_expect(g_state.payload_algid == 0x84 && g_state.payload_keyid == 0x1234
                                && g_state.payload_miP == 0x5678,
                            "eot-cc", result_name, "rejected CC return preserved payload metadata");
@@ -759,89 +843,50 @@ edacs_run_standard_state_cases(void) {
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_data_msg1(0, 4, 777, 0), edacs_standard_data_msg2(5));
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 4, "standard-data-group", "state", "tracked data LCN");
-    rc |= edacs_expect(g_state.lasttg == 777 && g_state.lastsrc == 0x800, "standard-data-group", "state",
-                       "tracked data target/source");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == EDACS_IS_GROUP, "standard-data-group", "state",
-                       "tracked group data call type");
+    rc |= edacs_expect_recent_only(4, DSD_CALL_KIND_DATA, 777U, 0U, 0U, "standard-data-group");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_data_msg1(1, 9, 12345, 1), edacs_standard_data_msg2(3));
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 9, "standard-data-individual", "state", "tracked data LCN");
-    rc |= edacs_expect(g_state.lasttg == 12345 && g_state.lastsrc == 0x800, "standard-data-individual", "state",
-                       "tracked individual data target/source");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == EDACS_IS_INDIVIDUAL, "standard-data-individual", "state",
-                       "tracked individual data call type");
+    rc |= edacs_expect_recent_only(9, DSD_CALL_KIND_DATA, 12345U, 0U, 0U, "standard-data-individual");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_interconnect_msg1(3, 4, 3210, 1), 0);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 4, "standard-interconnect", "state", "tracked interconnect LCN");
-    rc |= edacs_expect(g_state.lasttg == 0 && g_state.lastsrc == 3210, "standard-interconnect", "state",
-                       "tracked interconnect target");
-    rc |= edacs_expect((g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_INTERCONNECT | EDACS_IS_DIGITAL))
-                           == (EDACS_IS_VOICE | EDACS_IS_INTERCONNECT | EDACS_IS_DIGITAL),
-                       "standard-interconnect", "state", "tracked interconnect flags");
+    rc |= edacs_expect_recent_only(4, DSD_CALL_KIND_VOICE, 0U, 3210U,
+                                   EDACS_IS_VOICE | EDACS_IS_INTERCONNECT | EDACS_IS_DIGITAL, "standard-interconnect");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_channel_update_msg1(1, 4, 654, 1), 0);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 4, "standard-channel-update", "state", "tracked update LCN");
-    rc |= edacs_expect(g_state.lasttg == 654 && g_state.lastsrc == 0x800, "standard-channel-update", "state",
-                       "tracked update target/source");
-    rc |= edacs_expect(
-        (g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL | EDACS_IS_EMERGENCY))
-            == (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL | EDACS_IS_EMERGENCY),
-        "standard-channel-update", "state", "tracked update flags");
+    rc |= edacs_expect_recent_only(4, DSD_CALL_KIND_GROUP_VOICE, 654U, 0U,
+                                   EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL | EDACS_IS_EMERGENCY,
+                                   "standard-channel-update");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_group_msg1(1, 6, 0x080, 3000),
                               edacs_standard_group_msg2(3000));
-    rc |=
-        edacs_expect(g_state.edacs_vc_lcn == 6, "standard-analog-agency-emergency", "state", "tracked voice group LCN");
-    rc |= edacs_expect(g_state.lasttg == 0x080 && g_state.lastsrc == 3000, "standard-analog-agency-emergency", "state",
-                       "tracked voice group ids");
-    rc |= edacs_expect(
-        (g_state.edacs_vc_call_type
-         & (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_EMERGENCY | EDACS_IS_AGENCY_CALL | EDACS_IS_DIGITAL))
-            == (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_EMERGENCY | EDACS_IS_AGENCY_CALL),
-        "standard-analog-agency-emergency", "state", "tracked analog agency emergency flags");
+    rc |= edacs_expect_recent_only(6, DSD_CALL_KIND_GROUP_VOICE, 0x080U, 3000U,
+                                   EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_EMERGENCY | EDACS_IS_AGENCY_CALL,
+                                   "standard-analog-agency-emergency");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_channel_update_msg1(0, 7, 0x088, 0), 0);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 7, "standard-channel-update-fleet", "state", "tracked fleet update LCN");
-    rc |= edacs_expect(g_state.lasttg == 0x088 && g_state.lastsrc == 0x800, "standard-channel-update-fleet", "state",
-                       "tracked fleet update target/source");
-    rc |= edacs_expect(
-        (g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_FLEET_CALL | EDACS_IS_DIGITAL))
-            == (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_FLEET_CALL),
-        "standard-channel-update-fleet", "state", "tracked analog fleet update flags");
+    rc |= edacs_expect_recent_only(7, DSD_CALL_KIND_GROUP_VOICE, 0x088U, 0U,
+                                   EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_FLEET_CALL,
+                                   "standard-channel-update-fleet");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_channel_update_individual_msg1(3, 8, 4321), 1234);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 8, "standard-channel-update-individual", "state",
-                       "tracked individual update LCN");
-    rc |= edacs_expect(g_state.lasttg == 4321 && g_state.lastsrc == 0x800, "standard-channel-update-individual",
-                       "state", "tracked individual update target/source");
-    rc |= edacs_expect((g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL))
-                           == (EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL),
-                       "standard-channel-update-individual", "state", "tracked digital individual update flags");
+    rc |= edacs_expect_recent_only(8, DSD_CALL_KIND_PRIVATE_VOICE, 4321U, 1234U,
+                                   EDACS_IS_VOICE | EDACS_IS_INDIVIDUAL | EDACS_IS_DIGITAL,
+                                   "standard-channel-update-individual");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_channel_update_individual_msg1(0, 9, 0), 0);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 9, "standard-channel-update-test-call", "state",
-                       "tracked test-call update LCN");
-    rc |= edacs_expect(g_state.lasttg == 0 && g_state.lastsrc == 0x800, "standard-channel-update-test-call", "state",
-                       "tracked test-call update target/source");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == (EDACS_IS_VOICE | EDACS_IS_TEST_CALL),
-                       "standard-channel-update-test-call", "state", "tracked test-call update flags");
+    rc |= edacs_expect_recent_only(9, DSD_CALL_KIND_VOICE, 0U, 0U, EDACS_IS_VOICE | EDACS_IS_TEST_CALL,
+                                   "standard-channel-update-test-call");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_individual_msg1(10, 0, 1), 0);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 10, "standard-individual-test-call", "state",
-                       "tracked individual test-call LCN");
-    rc |= edacs_expect(g_state.lasttg == 0 && g_state.lastsrc == 0, "standard-individual-test-call", "state",
-                       "tracked individual test-call ids");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == (EDACS_IS_VOICE | EDACS_IS_TEST_CALL | EDACS_IS_DIGITAL),
-                       "standard-individual-test-call", "state", "tracked individual test-call flags");
+    rc |= edacs_expect_recent_only(10, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "standard-individual-test-call");
 
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_site_id_msg1(4, 2, 0x1B, 0), 0);
@@ -882,12 +927,8 @@ edacs_run_standard_state_cases(void) {
     edacs_setup_state_fixture(0);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_all_call_msg1(9, 1, 1010),
                               edacs_standard_all_call_msg2(1010));
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 9, "standard-all-call", "state", "tracked all-call LCN");
-    rc |= edacs_expect(g_state.lasttg == 0 && g_state.lastsrc == 1010, "standard-all-call", "state",
-                       "tracked all-call ids");
-    rc |= edacs_expect((g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL))
-                           == (EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL),
-                       "standard-all-call", "state", "tracked all-call flags");
+    rc |= edacs_expect_recent_only(9, DSD_CALL_KIND_VOICE, 0U, 1010U,
+                                   EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL, "standard-all-call");
 
     return rc;
 }
@@ -910,53 +951,30 @@ edacs_run_extended_state_cases(void) {
 
     edacs_setup_state_fixture(1);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_test_call_msg1(4, 9), 0);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 9, "extended-test-call", "state", "tracked test-call working LCN");
-    rc |= edacs_expect(g_state.lasttg == 999999999 && g_state.lastsrc == 999999999, "extended-test-call", "state",
-                       "tracked test-call ids");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == (EDACS_IS_VOICE | EDACS_IS_TEST_CALL), "extended-test-call",
-                       "state", "tracked test-call flags");
+    rc |= edacs_expect_recent_only(9, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "extended-test-call");
 
     edacs_setup_state_fixture(1);
     edacs_process_valid_frame(&g_opts, &g_state, 0x12ULL << 23U, edacs_extended_channel_assignment_msg2(4, 0xABCDE));
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 4, "extended-channel-assignment", "state",
-                       "tracked channel assignment LCN");
-    rc |= edacs_expect(g_state.lastsrc == 0xABCDE, "extended-channel-assignment", "state",
-                       "tracked channel assignment source");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == EDACS_IS_INDIVIDUAL, "extended-channel-assignment", "state",
-                       "tracked channel assignment call type");
+    rc |= edacs_expect_recent_only(4, DSD_CALL_KIND_DATA, 0U, 0xABCDEU, 0U, "extended-channel-assignment");
 
     edacs_setup_state_fixture(1);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_all_call_msg1(4, 1, 1), 0xBCDEF);
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 4, "extended-all-call", "state", "tracked all-call LCN");
-    rc |= edacs_expect(g_state.lasttg == 0 && g_state.lastsrc == 0xBCDEF, "extended-all-call", "state",
-                       "tracked all-call ids");
-    rc |= edacs_expect((g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL))
-                           == (EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL),
-                       "extended-all-call", "state", "tracked all-call flags");
+    rc |= edacs_expect_recent_only(4, DSD_CALL_KIND_VOICE, 0U, 0xBCDEFU,
+                                   EDACS_IS_VOICE | EDACS_IS_ALL_CALL | EDACS_IS_DIGITAL, "extended-all-call");
 
     edacs_setup_state_fixture(1);
     edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_group_update_msg1(0x6, 5, 0x3456, 1),
                               edacs_extended_group_msg2(0x45678, 1, 1));
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 5, "extended-analog-group-emergency-update", "state",
-                       "tracked analog group update LCN");
-    rc |= edacs_expect(g_state.lasttg == 0x3456 && g_state.lastsrc == 0x45678, "extended-analog-group-emergency-update",
-                       "state", "tracked analog group update ids");
-    rc |= edacs_expect(
-        (g_state.edacs_vc_call_type & (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_EMERGENCY | EDACS_IS_DIGITAL))
-            == (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_EMERGENCY),
-        "extended-analog-group-emergency-update", "state", "tracked analog emergency update flags");
+    rc |= edacs_expect_recent_only(5, DSD_CALL_KIND_GROUP_VOICE, 0x3456U, 0x45678U,
+                                   EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_EMERGENCY,
+                                   "extended-analog-group-emergency-update");
 
     edacs_setup_state_fixture(1);
-    g_state.edacs_vc_lcn = 17;
-    g_state.lastsrc = 0x12345;
     edacs_process_valid_frame(&g_opts, &g_state, edacs_extended_group_msg1(0x3, 0, 0x2222),
                               edacs_extended_group_msg2(0, 0, 1));
-    rc |= edacs_expect(g_state.edacs_vc_lcn == 17, "extended-zero-lcn-source-group", "state",
-                       "zero LCN preserved previous VC LCN");
-    rc |= edacs_expect(g_state.lasttg == 0x2222 && g_state.lastsrc == 0x12345, "extended-zero-lcn-source-group",
-                       "state", "zero source preserved previous source");
-    rc |= edacs_expect(g_state.edacs_vc_call_type == (EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL),
-                       "extended-zero-lcn-source-group", "state", "tracked digital group flags with zero fields");
+    rc |=
+        edacs_expect_recent_only(0, DSD_CALL_KIND_GROUP_VOICE, 0x2222U, 0U,
+                                 EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL, "extended-zero-lcn-source-group");
 
     edacs_setup_state_fixture(1);
     g_state.edacs_sys_id = 0x1111;

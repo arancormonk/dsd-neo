@@ -112,6 +112,13 @@ add_test(
 )
 
 add_test(
+    NAME CANONICAL_CALL_STATE_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/cmake/canonical_call_state_audit.cmake
+)
+
+add_test(
     NAME UI_NATIVE_BOUNDARY
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
 )
@@ -737,6 +744,7 @@ add_test(NAME PROVOICE_FRAME COMMAND dsd-neo_test_provoice_frame)
 add_executable(
     dsd-neo_test_provoice_process
     protocol/provoice/test_provoice_process.c
+    test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_frame.c
 )
@@ -787,6 +795,7 @@ add_test(NAME DPMR_SCRAMBLER COMMAND dsd-neo_test_dpmr_scrambler)
 add_executable(
     dsd-neo_test_dpmr_sync_dispatch
     protocol/dpmr/test_dpmr_sync_dispatch.c
+    test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
 )
 target_include_directories(
@@ -798,6 +807,7 @@ add_test(NAME DPMR_SYNC_DISPATCH COMMAND dsd-neo_test_dpmr_sync_dispatch)
 add_executable(
     dsd-neo_test_dpmr_voice_bridge
     protocol/dpmr/test_dpmr_voice_bridge.c
+    test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
 )
@@ -876,6 +886,7 @@ add_test(NAME X2TDMA_FRAME COMMAND dsd-neo_test_x2tdma_frame)
 add_executable(
     dsd-neo_test_x2tdma_sync_dispatch
     protocol/x2tdma/test_x2tdma_sync_dispatch.c
+    test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_x2tdma.c
 )
 target_include_directories(
@@ -901,6 +912,7 @@ add_test(NAME X2TDMA_DATA COMMAND dsd-neo_test_x2tdma_data)
 add_executable(
     dsd-neo_test_x2tdma_voice_helpers
     protocol/x2tdma/test_x2tdma_voice_helpers.c
+    test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/x2tdma/x2tdma_frame.c
 )
@@ -1026,6 +1038,7 @@ add_test(NAME NXDN_LFSR COMMAND dsd-neo_test_nxdn_lfsr)
 add_executable(
     dsd-neo_test_nxdn_crc32_bits
     protocol/nxdn/test_nxdn_crc32_bits.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_crc32_bits
@@ -1047,7 +1060,10 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_nxdn_element_bounds
-    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
+    PRIVATE
+        dsd-neo_proto_nxdn
+        dsd-neo_test_call_state_support
+        dsd-neo_test_support
 )
 add_test(NAME NXDN_ELEMENT_BOUNDS COMMAND dsd-neo_test_nxdn_element_bounds)
 
@@ -1261,6 +1277,10 @@ add_executable(
 target_include_directories(
     dsd-neo_test_app_control_actions
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_actions
+    PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME APP_CONTROL_ACTIONS COMMAND dsd-neo_test_app_control_actions)
 
@@ -1542,7 +1562,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_hotkeys_regression
-        PRIVATE dsd-neo_platform
+        PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
     )
     add_test(
         NAME UI_HOTKEYS_REGRESSION
@@ -2647,7 +2667,10 @@ target_compile_options(
     PRIVATE -ffunction-sections -fdata-sections
 )
 target_link_options(dsd-neo_test_core_audio2_helpers PRIVATE -Wl,--gc-sections)
-target_link_libraries(dsd-neo_test_core_audio2_helpers PRIVATE m)
+target_link_libraries(
+    dsd-neo_test_core_audio2_helpers
+    PRIVATE dsd-neo_test_call_state_support m
+)
 add_test(NAME CORE_AUDIO2_HELPERS COMMAND dsd-neo_test_core_audio2_helpers)
 
 add_executable(
@@ -3124,7 +3147,7 @@ target_compile_definitions(
 )
 target_link_libraries(
     dsd-neo_test_engine_trunk_scan
-    PRIVATE dsd-neo_runtime dsd-neo_test_support
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
 )
 add_test(NAME ENGINE_TRUNK_SCAN COMMAND dsd-neo_test_engine_trunk_scan)
 
@@ -3545,6 +3568,7 @@ add_test(NAME P25_P1_FEC_BOUNDS COMMAND dsd-neo_test_p25_p1_fec_boundaries)
 add_executable(
     dsd-neo_test_p25_p1_hdu_helpers
     protocol/p25/test_p25_p1_hdu_helpers.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_hdu_helpers
@@ -3577,6 +3601,7 @@ add_test(NAME P25_P1_LDU_HELPERS COMMAND dsd-neo_test_p25_p1_ldu_helpers)
 add_executable(
     dsd-neo_test_p25_p1_ldu1_helpers
     protocol/p25/test_p25_p1_ldu1_helpers.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_ldu1_helpers
@@ -3593,6 +3618,7 @@ add_test(NAME P25_P1_LDU1_HELPERS COMMAND dsd-neo_test_p25_p1_ldu1_helpers)
 add_executable(
     dsd-neo_test_p25_p1_ldu2_helpers
     protocol/p25/test_p25_p1_ldu2_helpers.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_ldu2_helpers
@@ -3621,7 +3647,7 @@ target_compile_options(
 target_link_options(dsd-neo_test_p25_p1_mdpu_helpers PRIVATE -Wl,--gc-sections)
 target_link_libraries(
     dsd-neo_test_p25_p1_mdpu_helpers
-    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr
+    PRIVATE dsd-neo_proto_p25 dsd-neo_proto_dmr dsd-neo_test_call_state_support
 )
 add_test(NAME P25_P1_MDPU_HELPERS COMMAND dsd-neo_test_p25_p1_mdpu_helpers)
 
@@ -3874,6 +3900,7 @@ add_test(
 add_executable(
     dsd-neo_test_p25_p2_xcch_helpers
     protocol/p25/test_p25_p2_xcch_helpers.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_p25_p2_xcch_helpers
@@ -3975,6 +4002,7 @@ add_executable(
     dsd-neo_test_p25_p1_tdu
     protocol/p25/test_p25_p1_tdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_tdu.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_p25_p1_tdu
@@ -4542,6 +4570,7 @@ add_test(NAME M17_ALGORITHMS COMMAND dsd-neo_test_m17_algorithms)
 add_executable(
     dsd-neo_test_m17_sync_dispatch
     protocol/m17/test_m17_sync_dispatch.c
+    test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_m17.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
@@ -5058,6 +5087,7 @@ if(DSD_HAS_RADIO)
         PRIVATE ${PROJECT_SOURCE_DIR}/include
     )
     dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_p25p2_rtl
+      dsd-neo_test_call_state_support
       ${DSD_NEO_TEST_MATH_LIB}
       ${LIBSNDFILE_LIBRARIES}
     )
@@ -5618,6 +5648,7 @@ add_executable(
     dsd-neo_test_dmr_embedded_gps_position_error
     protocol/dmr/test_dmr_embedded_gps_position_error.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/dsd_gps.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_dmr_embedded_gps_position_error
@@ -5651,7 +5682,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_talker_alias_header_len
-    PRIVATE dsd-neo_runtime
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support
 )
 add_test(
     NAME DMR_TALKER_ALIAS_HEADER_LEN
@@ -5882,6 +5913,7 @@ add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
 add_executable(
     dsd-neo_test_nxdn_grant_policy
     protocol/nxdn/test_nxdn_grant_policy.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_grant_policy
@@ -5893,6 +5925,7 @@ add_test(NAME NXDN_GRANT_POLICY COMMAND dsd-neo_test_nxdn_grant_policy)
 add_executable(
     dsd-neo_test_nxdn_grant_tune_matrix
     protocol/nxdn/test_nxdn_grant_tune_matrix.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_grant_tune_matrix
@@ -6000,6 +6033,7 @@ add_executable(
     dsd-neo_test_dibit_symbol_bin_soft
     core/test_dibit_symbol_bin_soft.c
     ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/call_state_stubs.c
 )
 target_include_directories(
     dsd-neo_test_dibit_symbol_bin_soft
@@ -6015,6 +6049,7 @@ add_executable(
     dsd-neo_test_dibit_rtl_fsk_reliability
     core/test_dibit_rtl_fsk_reliability.c
     ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    test_support/call_state_stubs.c
 )
 target_compile_definitions(
     dsd-neo_test_dibit_rtl_fsk_reliability

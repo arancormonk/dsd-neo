@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -246,7 +247,8 @@ dmr_sd_pdu_process(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t
         dsd_append(summary, sizeof(summary), "raw short-data payload; ");
     }
 
-    watchdog_event_datacall(opts, state, source, target, summary, slot);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, source, target);
+    (void)dsd_event_emit_data_notice(opts, state, slot, &observation, summary);
 }
 
 void
@@ -383,7 +385,8 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "IPC: %d; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
                  ipid, opcode, said, spid, src_idx_desc, src_port_desc, daid, dpid, dst_idx_desc, dst_port_desc);
-    watchdog_event_datacall(opts, state, said, daid, comp_string, slot);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, said, daid);
+    (void)dsd_event_emit_data_notice(opts, state, slot, &observation, comp_string);
 }
 
 static void DSD_ATTR_USED
@@ -717,7 +720,8 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
                          size_t effective_len, size_t ip_header_len, uint8_t* input) {
     if (effective_len < ip_header_len + 8u) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Truncated UDP;");
-        watchdog_event_datacall(opts, state, src24, dst24, state->dmr_lrrp_gps[slot], slot);
+        const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
+        (void)dsd_event_emit_data_notice(opts, state, slot, &observation, state->dmr_lrrp_gps[slot]);
         return;
     }
     uint16_t dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
@@ -856,7 +860,8 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     decode_ip_pdu_print_endpoints(prot, src24, dst24, src_port, dst_port, input);
     decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
 
-    watchdog_event_datacall(opts, state, src24, dst24, state->dmr_lrrp_gps[slot], slot);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
+    (void)dsd_event_emit_data_notice(opts, state, slot, &observation, state->dmr_lrrp_gps[slot]);
 }
 
 typedef struct {

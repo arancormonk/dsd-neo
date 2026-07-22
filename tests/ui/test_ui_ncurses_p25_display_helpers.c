@@ -353,20 +353,22 @@ run_active_vc_cases(void) {
 
     state.trunk_vc_freq[0] = 0;
     state.p25_vc_freq[0] = 0;
-    DSD_SNPRINTF(state.active_channel[2], sizeof(state.active_channel[2]), "TG 123 Ch: 123A slot 1");
-    state.trunk_chan_map[0x123A] = 853012500L;
+    dsd_call_observation recent = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 123U,
+        .channel = 0x123AU,
+        .frequency_hz = 853012500L,
+    };
+    assert(dsd_recent_activity_publish(&state, 2U, &recent, "TG 123 Ch: 123A slot 1", 1U) == 1);
     assert(ui_guess_active_vc_freq(&state) == 853012500L);
-
-    DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_SNPRINTF(state.active_channel[0], sizeof(state.active_channel[0]), "TG 456 Ch: 1234");
-    state.trunk_chan_map[1234] = 854012500L;
-    assert(ui_guess_active_vc_freq(&state) == 854012500L);
+    dsd_state_ext_free_all(&state);
 
     dsd_state* canonical = (dsd_state*)calloc(1U, sizeof(*canonical));
     assert(canonical != NULL);
     canonical->synctype = DSD_SYNC_P25P2_POS;
     canonical->p25_vc_freq[0] = 855012500L;
-    DSD_SNPRINTF(canonical->active_channel[0], sizeof(canonical->active_channel[0]), "TG: 1 Ch: 1234");
     canonical->trunk_chan_map[1234] = 856012500L;
     dsd_call_observation observation = {0};
     observation.protocol = DSD_SYNC_P25P2_POS;
@@ -612,11 +614,19 @@ run_p25_frequency_display_cases(void) {
 
     DSD_MEMSET(&state, 0, sizeof(state));
     state.p25_cc_freq = 853012500L;
-    DSD_SNPRINTF(state.active_channel[3], sizeof(state.active_channel[3]), "Active Group Ch: 123A TG: 100;");
-    state.trunk_chan_map[0x123A] = 854012500L;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .channel = 0x123AU,
+        .frequency_hz = 854012500L,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     reset_printw_capture();
     assert(ui_print_p25_cc_vc_metric(&state) == 1);
     assert_capture_contains("| CC/VC: CC:853.012500 MHz VC:854.012500 MHz");
+    dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_printw_capture();

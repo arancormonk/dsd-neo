@@ -12,6 +12,7 @@
  * accepts a group grant when LCW retune is enabled and CC is known.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -312,18 +313,20 @@ expect_eq_float(const char* tag, float got, float want) {
 }
 
 static int
-expect_blank_call_string(const char* tag, const char* value) {
-    for (int i = 0; i < 21; i++) {
-        if (value[i] != ' ') {
-            DSD_FPRINTF(stderr, "%s: byte %d got 0x%02X want 0x20\n", tag, i, (unsigned char)value[i]);
-            return 1;
-        }
-    }
-    if (value[21] != '\0') {
-        DSD_FPRINTF(stderr, "%s: byte 21 got 0x%02X want NUL\n", tag, (unsigned char)value[21]);
-        return 1;
-    }
-    return 0;
+seed_active_call(dsd_state* state, uint64_t target, uint64_t source, uint16_t service_options) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .service_options = service_options,
+        .emergency = (uint8_t)((service_options & 0x80U) != 0U),
+        .priority = (uint8_t)(service_options & 0x07U),
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }
 
 static int
@@ -407,9 +410,9 @@ main(void) {
     opts.payload = 0;
     state.p25_cc_freq = 851000000;
     state.tg_hold = 0;
-    int lastsrc = 0x00ABCDEF;
-    state.lastsrc = (unsigned long long)lastsrc;
+    const int lastsrc = 0x00ABCDEF;
     state.synctype = DSD_SYNC_P25P1_POS;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
     state.p25_chan_iden = 1;
     state.p25_iden_fdma[1].chan_type = 1;
     state.p25_iden_fdma[1].chan_spac = 100;
@@ -417,29 +420,35 @@ main(void) {
     state.p25_iden_fdma[1].trust = 2;
     state.p25_iden_fdma[1].populated = 1;
     state.p25_chan_tdma_explicit[1] = 1; // FDMA known
-    state.p25_call_emergency[0] = 1;
-    state.p25_call_priority[0] = 7;
-    state.p25_call_is_packet[0] = 1;
     state.aout_gain = 0.25F;
-    DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left active");
-    DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right active");
     g_rs_hard_result = 0;
     g_rs_soft_result = 1;
     g_rs_soft_called = 0;
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     p25_sm_init_ctx(ctx, &opts, &state);
+    rc |= expect_true("tdulc seed active canonical call", seed_active_call(&state, 0x7777, (uint64_t)lastsrc, 0x97));
     processTDULC(&opts, &state);
     rc |= expect_eq_int("grant called", (int)ctx->grant_count, 1);
     rc |= expect_eq_int("grant channel", ctx->vc_channel, 0x100A);
     rc |= expect_eq_int("grant svc", ctx->slots[0].svc_bits, 0x00);
     rc |= expect_eq_int("grant tg", ctx->vc_tg, 0x4567);
-    rc |= expect_eq_int("grant src", ctx->vc_src, lastsrc);
+    rc |= expect_eq_int("grant has no invented src", ctx->vc_src, 0);
     rc |= expect_eq_int("tdulc duid count", (int)state.p25_p1_duid_tdulc, 1);
-    rc |= expect_eq_int("tdulc emergency cleared", state.p25_call_emergency[0], 0);
-    rc |= expect_eq_int("tdulc priority cleared", state.p25_call_priority[0], 0);
-    rc |= expect_eq_int("tdulc packet cleared", state.p25_call_is_packet[0], 0);
-    rc |= expect_blank_call_string("tdulc left call string blanked", state.call_string[0]);
-    rc |= expect_blank_call_string("tdulc right call string blanked", state.call_string[1]);
+    dsd_call_snapshot ended_call;
+    rc |= expect_true("tdulc retains ended canonical call", dsd_call_state_get(&state, 0U, &ended_call) > 0);
+    rc |=
+        expect_true("tdulc ends canonical call once",
+                    ended_call.phase == DSD_CALL_PHASE_ENDED && ended_call.kind == DSD_CALL_KIND_GROUP_VOICE
+                        && ended_call.ota_target_id == 0x7777 && ended_call.ota_source_id == (uint64_t)lastsrc
+                        && ended_call.service_options == 0x97 && ended_call.emergency == 1 && ended_call.priority == 7);
+    dsd_recent_activity_snapshot activity;
+    rc |= expect_true("tdulc grant activity snapshot", dsd_recent_activity_copy_snapshot(&state, &activity) > 0);
+    rc |= expect_true("tdulc grant is recent activity",
+                      activity.entries[0].updated_m_ms != 0U
+                          && activity.entries[0].observation.kind == DSD_CALL_KIND_GROUP_VOICE
+                          && activity.entries[0].observation.ota_target_id == 0x4567
+                          && activity.entries[0].observation.ota_source_id == 0U
+                          && activity.entries[0].observation.channel == 0x100A);
     rc |= expect_eq_float("tdulc gain reset", state.aout_gain, opts.audio_gain);
     rc |= expect_true("tdulc monotonic time recorded", state.p25_p1_last_tdu_m > 0.0);
     rc |= expect_true("tdulc vc sync time refreshed", state.last_vc_sync_time_m > 0.0);
@@ -472,8 +481,8 @@ main(void) {
     opts.trunk_tune_enc_calls = 1;
     opts.payload = 1;
     state.p25_cc_freq = 851000000;
-    state.lastsrc = (unsigned long long)lastsrc;
     state.synctype = DSD_SYNC_P25P1_POS;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
     state.p25_chan_iden = 1;
     state.p25_iden_fdma[1].chan_type = 1;
     state.p25_iden_fdma[1].chan_spac = 100;

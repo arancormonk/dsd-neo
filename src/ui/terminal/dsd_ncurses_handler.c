@@ -14,6 +14,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/telemetry.h>
@@ -42,19 +43,19 @@ ncurses_drain_escape_sequence(void) {
 
 static uint32_t DSD_ATTR_USED
 ncurses_resolve_tg_hold_target(const dsd_opts* opts, const dsd_state* state, int right_slot) {
-    uint32_t tg = 0;
+    (void)opts;
     if (state->tg_hold != 0) {
-        return tg;
+        return 0;
     }
 
-    tg = (uint32_t)(right_slot ? state->lasttgR : state->lasttg);
-    if (tg == 0 && (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1)) {
-        return (uint32_t)state->nxdn_last_tg;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)(right_slot != 0), &call) && call.phase != DSD_CALL_PHASE_ENDED) {
+        uint64_t target = call.policy_target_id != 0 ? call.policy_target_id : call.ota_target_id;
+        if (target <= UINT32_MAX) {
+            return (uint32_t)target;
+        }
     }
-    if (tg == 0 && opts->frame_provoice == 1 && state->ea_mode == 0) {
-        return (uint32_t)(right_slot ? state->lastsrcR : state->lastsrc);
-    }
-    return tg;
+    return 0;
 }
 
 static int

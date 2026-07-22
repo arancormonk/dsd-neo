@@ -46,7 +46,6 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "nxdn_crc.h"
 
-static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 typedef void (*nxdn_element_handler_fn)(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
                                         size_t elements_bits);
 
@@ -200,7 +199,10 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 
 static void
 nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED4(opts, state, elements, elements_bits);
+    UNUSED2(elements, elements_bits);
+    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
 }
 
 static void
@@ -341,7 +343,8 @@ nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
     if (start != 0U && end != 0U) {
         char event_string[55];
         DSD_SNPRINTF(event_string, sizeof(event_string), "NXDN Digital Station ID: %s", station_id_string);
-        watchdog_event_datacall(opts, state, 65520U, 0U, event_string, 0U);
+        const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 65520U, 0U);
+        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, event_string);
     }
 
     if (opts->payload == 1) {
@@ -361,8 +364,6 @@ nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
 static void
 nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     UNUSED(elements_bits);
-    state->nxdn_last_rid = 0;
-    state->nxdn_last_tg = 0;
     NXDN_decode_srv_info(opts, state, elements);
     nxdn_element_mark_control_sync(opts, state);
 }
@@ -388,8 +389,6 @@ nxdn_element_handle_adj_site(dsd_opts* opts, dsd_state* state, const uint8_t* el
 static void
 nxdn_element_handle_tx_release(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     UNUSED(elements_bits);
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "");
-    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     nxdn_reset_data_call_state(state);
     NXDN_decode_VCALL(opts, state, elements);
 }
@@ -406,8 +405,6 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
     nxdn_reset_data_call_state(state);
     NXDN_decode_VCALL(opts, state, elements);
     nxdn_alias_reset(state);
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "");
-    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
 
     if ((opts->trunk_enable == 1) && state->p25_cc_freq != 0 && (opts->trunk_is_tuned == 1)) {
         dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, state->p25_cc_freq, 0, NULL);
@@ -419,12 +416,9 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         (void)dsd_recent_activity_clear_all(state);
-        state->nxdn_last_rid = 0;
-        state->nxdn_last_tg = 0;
         if (state->M == 0) {
             state->nxdn_cipher_type = 0;
         }
-        DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     }
 }
 
@@ -1082,7 +1076,8 @@ nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
     const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
     char comp_string[128];
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "DATA CALL SRC: %u; TGT: %u;", source, target);
-    watchdog_event_datacall(opts, state, source, target, comp_string, 0);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
+    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, comp_string);
 }
 
 static void
@@ -1505,21 +1500,35 @@ nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state,
     state->nxdn_grant_chan = grant_chan;
     state->nxdn_grant_freq = grant_freq;
 
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     if (grant_freq != 0) {
-        DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup],
-                     "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan, (double)grant_freq / 1000000.0,
-                     info->destination_id, info->source_unit_id);
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan,
+                     (double)grant_freq / 1000000.0, info->destination_id, info->source_unit_id);
     } else if (opts && opts->chan_in_file[0] != '\0') {
         nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
-        DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup],
-                     "Active Ch: %d (no chan_csv freq) TG: %d SRC: %d; ", grant_chan, info->destination_id,
-                     info->source_unit_id);
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d (no chan_csv freq) TG: %d SRC: %d; ", grant_chan,
+                     info->destination_id, info->source_unit_id);
     } else {
         nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
-        DSD_SNPRINTF(state->active_channel[dup], sizeof state->active_channel[dup], "Active Ch: %d TG: %d SRC: %d; ",
-                     grant_chan, info->destination_id, info->source_unit_id);
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d TG: %d SRC: %d; ", grant_chan, info->destination_id,
+                     info->source_unit_id);
     }
-    (void)dsd_recent_activity_sync_legacy_entry(state, (uint8_t)dup);
+    const int data_call = info->message_type == 0x0DU || info->message_type == 0x0EU;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = data_call               ? DSD_CALL_KIND_DATA
+                : info->call_type == 4U ? DSD_CALL_KIND_PRIVATE_VOICE
+                                        : DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = info->destination_id,
+        .policy_target_id = info->destination_id,
+        .ota_source_id = info->source_unit_id,
+        .channel = grant_chan,
+        .frequency_hz = grant_freq,
+        .service_options = info->cc_option,
+        .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
+    };
+    (void)dsd_recent_activity_publish(state, (uint8_t)dup, &observation, notice, 0U);
 }
 
 static int
@@ -1548,8 +1557,7 @@ nxdn_vcall_assgn_frequency(dsd_opts* opts, dsd_state* state, const struct nxdn_v
 }
 
 static int
-nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info,
-                                  long int freq) {
+nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, long int freq) {
     dsd_trunk_tune_result tune_result = dsd_trunk_tuning_hook_tune_to_freq(opts, state, freq, 0, NULL);
     if (!dsd_trunk_tune_result_is_ok(tune_result)) {
         return 0;
@@ -1557,11 +1565,6 @@ nxdn_vcall_assgn_setup_tuned_call(dsd_opts* opts, dsd_state* state, const struct
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
     state->lastsynctype = DSD_SYNC_NONE;
-    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(info->call_type));
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", NXDN_Call_Type_To_Str(info->call_type));
-    if (info->cc_option & 0x80U) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
-    }
     return 1;
 }
 
@@ -1603,7 +1606,7 @@ nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_
     const int policy_allowed = nxdn_policy_tune_allowed(opts, state, info->destination_id, info->source_unit_id,
                                                         is_private_call, data_call, 1, &policy_decision);
     if (nxdn_vcall_assgn_can_tune(opts, state, policy_allowed, hold_matches, freq)) {
-        if (!nxdn_vcall_assgn_setup_tuned_call(opts, state, info, freq)) {
+        if (!nxdn_vcall_assgn_setup_tuned_call(opts, state, freq)) {
             return;
         }
         nxdn_vcall_assgn_load_scrambler_key(opts, state, info);
@@ -2027,14 +2030,7 @@ nxdn_vcall_print_color(uint8_t message_type) {
 }
 
 static void
-nxdn_vcall_update_call_string(dsd_state* state, const struct nxdn_vcall_info* info) {
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", NXDN_Call_Type_To_Str(info->call_type));
-    if (info->cc_option & 0x80U) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Emergency");
-    }
-    if (info->cipher_type) {
-        dsd_append(state->call_string[0], sizeof state->call_string[0], " Enc");
-    }
+nxdn_vcall_update_crypto_flags(dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->cipher_type == 2U || info->cipher_type == 3U) {
         state->NxdnElementsContent.PartOfCurrentEncryptedFrame = 1;
         state->NxdnElementsContent.PartOfNextEncryptedFrame = 2;
@@ -2077,9 +2073,8 @@ nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
         DSD_FPRINTF(stderr, "Priority Paging ");
     }
 
-    nxdn_vcall_update_call_string(state, info);
+    nxdn_vcall_update_crypto_flags(state, info);
     DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type));
-    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", NXDN_Call_Type_To_Str(info->call_type));
     nxdn_vcall_print_voice_option(info);
     DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
     if (info->idas) {
@@ -2159,31 +2154,62 @@ nxdn_vcall_print_cipher(const dsd_opts* opts, const dsd_state* state, const stru
     }
 }
 
-static int
-nxdn_vcall_gi(uint8_t call_type) {
-    if (call_type == 0U || call_type == 1U) {
-        return 0;
-    }
+static dsd_call_kind
+nxdn_vcall_kind(uint8_t call_type) {
     if (call_type == 4U) {
-        return 1;
+        return DSD_CALL_KIND_PRIVATE_VOICE;
     }
-    return -1;
+    if (call_type == 0U || call_type == 1U) {
+        return DSD_CALL_KIND_GROUP_VOICE;
+    }
+    return DSD_CALL_KIND_VOICE;
+}
+
+static void
+nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id) {
+    const dsd_call_crypto_update update = {
+        .classification = cipher_type == 0U ? DSD_CALL_CRYPTO_CLEAR
+                          : state->R != 0U  ? DSD_CALL_CRYPTO_DECRYPTABLE
+                                            : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = cipher_type,
+        .kid = key_id,
+        .mi = state->payload_miN,
+        .audio_permitted = (uint8_t)(cipher_type == 0U || state->R != 0U),
+    };
+    if (dsd_call_state_update_crypto(state, 0U, &update) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
+
+static void
+nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    int protocol = DSD_SYNC_IS_NXDN(state->synctype) ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_NXDN(protocol)) {
+        protocol = DSD_SYNC_NXDN_POS;
+    }
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = nxdn_vcall_kind(info->call_type),
+        .ota_target_id = info->destination_id,
+        .policy_target_id = info->destination_id,
+        .ota_source_id = (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U,
+        .channel = state->nxdn_grant_chan,
+        .frequency_hz = state->trunk_vc_freq[0],
+        .service_options = info->cc_option,
+        .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    nxdn_vcall_publish_crypto(opts, state, info->cipher_type, info->key_id);
+    dsd_event_sync_slot(opts, state, 0U);
 }
 
 static void
 nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type == 0x01U) {
-        if ((info->voice_call_option & 0x0FU) < 4U) {
-            state->nxdn_last_rid = info->source_unit_id;
-        }
-        state->nxdn_last_tg = info->destination_id;
         state->nxdn_key = info->key_id;
-        state->gi[0] = nxdn_vcall_gi(info->call_type);
         state->nxdn_cipher_type = info->cipher_type;
     } else {
-        state->nxdn_last_rid = 0;
-        state->nxdn_last_tg = 0;
-        state->gi[0] = -1;
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
         nxdn_alias_reset(state);
     }
@@ -2239,10 +2265,16 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
 
 static void
 nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    if (info->message_type != 0x01U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
     nxdn_vcall_print_summary(state, info);
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
+    if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
+        nxdn_vcall_publish(opts, state, info);
+    }
     nxdn_vcall_run_enc_lockout(opts, state, info);
 }
 
@@ -2308,13 +2340,12 @@ nxdn_vcall_iv_prepare_cipher(dsd_state* state) {
 
 static void
 NXDN_decode_VCALL_IV(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    UNUSED(opts);
-
     state->payload_miN = nxdn_vcall_iv_extract(state, Message);
     DSD_FPRINTF(stderr, "\n  VCALL_IV: %016llX", state->payload_miN);
     if (state->nxdn_cipher_type == 0x02 || state->nxdn_cipher_type == 0x03) {
         nxdn_vcall_iv_prepare_cipher(state);
     }
+    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key);
 }
 
 struct nxdn_scch_info {
@@ -2480,13 +2511,8 @@ static void
 nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* info) {
     if (info->rep1 == 31U) {
         DSD_FPRINTF(stderr, "\n%s ", KRED);
-        state->nxdn_last_tg = 0;
-        state->nxdn_last_rid = 0;
     } else {
         DSD_FPRINTF(stderr, "\n%s ", KGRN);
-        if (info->now - state->last_vc_sync_time < 1) {
-            state->nxdn_last_tg = info->id;
-        }
     }
 
     DSD_FPRINTF(stderr, " Channel Update - CH: %d - TGT: %d ", info->rep1, info->id);
@@ -2495,15 +2521,41 @@ nxdn_scch_update_busy_display(dsd_state* state, const struct nxdn_scch_info* inf
         DSD_FPRINTF(stderr, "Termination ");
     }
     if (info->rep1 != 0U && info->rep1 != 31U) {
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = info->gu == 0U ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
+            .ota_target_id = info->id,
+            .policy_target_id = info->id,
+            .channel = info->rep1,
+        };
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
         if (info->gu == 0U) {
-            DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]),
-                         "Active Group Ch: %d TG: %d-%d; ", info->rep1, info->rep2, info->id);
+            DSD_SNPRINTF(notice, sizeof(notice), "Active Group Ch: %d TG: %d-%d; ", info->rep1, info->rep2, info->id);
         } else {
-            DSD_SNPRINTF(state->active_channel[info->rep1], sizeof(state->active_channel[info->rep1]),
-                         "Active Private Ch: %d TGT: %d-%d; ", info->rep1, info->rep2, info->id);
+            DSD_SNPRINTF(notice, sizeof(notice), "Active Private Ch: %d TGT: %d-%d; ", info->rep1, info->rep2,
+                         info->id);
         }
-        (void)dsd_recent_activity_sync_legacy_entry(state, info->rep1);
+        (void)dsd_recent_activity_publish(state, info->rep1, &observation, notice, 0U);
     }
+}
+
+static void
+nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_NXDN(call.protocol)) {
+        return;
+    }
+    const dsd_call_observation observation = {
+        .protocol = call.protocol,
+        .slot = 0U,
+        .kind = call.kind,
+        .ota_target_id = target_id,
+        .policy_target_id = target_id,
+        .ota_source_id = source_id,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
 }
 
 static void
@@ -2557,7 +2609,7 @@ nxdn_scch_handle_info3(dsd_state* state, const struct nxdn_scch_info* info) {
         DSD_FPRINTF(stderr, " Source Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
         if (info->now - state->last_vc_sync_time < 1) {
-            state->nxdn_last_rid = info->id;
+            nxdn_scch_enrich_identity(state, info->id, 0U);
         }
     }
 }
@@ -2576,7 +2628,7 @@ nxdn_scch_handle_info2(dsd_state* state, const struct nxdn_scch_info* info) {
         DSD_FPRINTF(stderr, " Target Update - Prefix CH: %d SRC: %d - (%d-%d) ", info->rep2, info->id, info->rep2,
                     info->id);
         if (info->now - state->last_vc_sync_time < 1) {
-            state->nxdn_last_tg = info->id;
+            nxdn_scch_enrich_identity(state, 0U, info->id);
         }
     }
 }
@@ -2702,16 +2754,4 @@ nxdn_alias_crc_ok(const dsd_state* state) {
 
     /* Standalone SACCH frames do not carry the same assembled CRC context. */
     return 1U;
-}
-
-static inline void
-dsd_append(char* dst, size_t dstsz, const char* src) {
-    if (!dst || !src || dstsz == 0) {
-        return;
-    }
-    size_t len = strlen(dst);
-    if (len >= dstsz) {
-        return;
-    }
-    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }

@@ -15,10 +15,7 @@
 #include <dsd-neo/ui/ncurses.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
-#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-
-unsigned long long int edacs_channel_tree[33][6];
 
 /* When ncurses UI is active, we temporarily suppress stderr to avoid stdio
  * mixed with the curses screen. Keep track so we can restore on close. */
@@ -95,9 +92,6 @@ dsd_terminal_open(dsd_opts* opts, dsd_state* state) {
 
     noecho();
     cbreak();
-
-    // initialize EDACS channel tree
-    DSD_MEMSET(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
 
     // When ncurses UI is active, suppress direct stderr logging to prevent
     // screen corruption from background fprintf calls in protocol paths.

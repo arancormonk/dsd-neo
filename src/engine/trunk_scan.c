@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
@@ -105,10 +106,6 @@ typedef struct {
     int p25_nb_count;
     int p25_secondary_cc_count;
     int p25_pending_announcement_count;
-    int lasttg;
-    int lasttgR;
-    int lastsrc;
-    int lastsrcR;
     uint32_t p25_src_nid;
     int dmr_mfid;
     int dmr_rest_channel;
@@ -127,7 +124,6 @@ typedef struct {
     uint32_t p25_patch_wuid[8][8];
     uint32_t p25_aff_rid[256];
     uint32_t p25_ga_rid[512];
-    uint32_t p25_policy_tg[2];
     uint16_t p25_prot_kid;
     int16_t p25_sys_time_offset;
     uint16_t p25_patch_sgid[8];
@@ -151,10 +147,6 @@ typedef struct {
     uint8_t p25_site_network_active_valid;
     uint8_t p25_site_network_active;
     uint8_t p25_cc_cache_loaded;
-    uint8_t p25_call_emergency[2];
-    uint8_t p25_call_priority[2];
-    uint8_t p25_call_is_packet[2];
-    uint8_t p25_service_options_valid[2];
     uint8_t p25_patch_is_patch[8];
     uint8_t p25_patch_active[8];
     uint8_t p25_patch_wgid_count[8];
@@ -163,7 +155,8 @@ typedef struct {
     uint8_t p25_patch_ssn[8];
     uint8_t p25_patch_key_valid[8];
     uint8_t dmr_confidence_locked;
-    int8_t gi[2];
+    dsd_call_state_snapshot call_state;
+    dsd_recent_activity_snapshot recent_activity;
     uint8_t dmr_confidence_color_code;
     uint8_t dmr_confidence_candidate_cc;
     uint8_t dmr_confidence_candidate_count;
@@ -720,8 +713,6 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
-    snapshot->gi[0] = -1;
-    snapshot->gi[1] = -1;
 }
 
 static void
@@ -758,36 +749,18 @@ trunk_scan_restore_dmr_confidence_snapshot(dsd_state* state, const dsd_trunk_sca
 
 static void
 trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    DSD_MEMCPY(snapshot->p25_call_emergency, state->p25_call_emergency, sizeof(snapshot->p25_call_emergency));
-    DSD_MEMCPY(snapshot->p25_call_priority, state->p25_call_priority, sizeof(snapshot->p25_call_priority));
-    DSD_MEMCPY(snapshot->p25_call_is_packet, state->p25_call_is_packet, sizeof(snapshot->p25_call_is_packet));
-    DSD_MEMCPY(snapshot->p25_policy_tg, state->p25_policy_tg, sizeof(snapshot->p25_policy_tg));
-    DSD_MEMCPY(snapshot->p25_service_options_valid, state->p25_service_options_valid,
-               sizeof(snapshot->p25_service_options_valid));
+    (void)dsd_call_state_copy_snapshot(state, &snapshot->call_state);
+    (void)dsd_recent_activity_copy_snapshot(state, &snapshot->recent_activity);
     snapshot->dmr_so = state->dmr_so;
     snapshot->dmr_soR = state->dmr_soR;
-    snapshot->lasttg = state->lasttg;
-    snapshot->lasttgR = state->lasttgR;
-    snapshot->lastsrc = state->lastsrc;
-    snapshot->lastsrcR = state->lastsrcR;
-    DSD_MEMCPY(snapshot->gi, state->gi, sizeof(snapshot->gi));
 }
 
 static void
 trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    DSD_MEMCPY(state->p25_call_emergency, snapshot->p25_call_emergency, sizeof(state->p25_call_emergency));
-    DSD_MEMCPY(state->p25_call_priority, snapshot->p25_call_priority, sizeof(state->p25_call_priority));
-    DSD_MEMCPY(state->p25_call_is_packet, snapshot->p25_call_is_packet, sizeof(state->p25_call_is_packet));
-    DSD_MEMCPY(state->p25_policy_tg, snapshot->p25_policy_tg, sizeof(state->p25_policy_tg));
-    DSD_MEMCPY(state->p25_service_options_valid, snapshot->p25_service_options_valid,
-               sizeof(state->p25_service_options_valid));
+    (void)dsd_call_state_restore_snapshot(state, &snapshot->call_state);
+    (void)dsd_recent_activity_restore_snapshot(state, &snapshot->recent_activity);
     state->dmr_so = snapshot->dmr_so;
     state->dmr_soR = snapshot->dmr_soR;
-    state->lasttg = snapshot->lasttg;
-    state->lasttgR = snapshot->lasttgR;
-    state->lastsrc = snapshot->lastsrc;
-    state->lastsrcR = snapshot->lastsrcR;
-    DSD_MEMCPY(state->gi, snapshot->gi, sizeof(state->gi));
 }
 
 static void

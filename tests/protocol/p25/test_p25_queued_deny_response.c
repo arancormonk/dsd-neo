@@ -5,10 +5,11 @@
 
 /*
  * Unit tests for P25 Queued Response (0x61) and Deny Response (0x67) handling.
- * Tests response classification, reason code lookup, SM notification, and active
- * channel display via the process_MAC_VPDU() entry point.
+ * Tests response classification, reason code lookup, SM notification, and
+ * structured activity display via the process_MAC_VPDU() entry point.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -34,6 +35,16 @@ static void
 reset_test_state(void) {
     dsd_state_ext_free_all(&st);
     DSD_MEMSET(&st, 0, sizeof st);
+}
+
+static const char*
+recent_notice(uint8_t index) {
+    static dsd_recent_activity_snapshot recent;
+    DSD_MEMSET(&recent, 0, sizeof recent);
+    if (dsd_recent_activity_copy_snapshot(&st, &recent) <= 0 || index >= DSD_RECENT_ACTIVITY_COUNT) {
+        return "";
+    }
+    return recent.entries[index].notice;
 }
 
 /* Alias decode helpers referenced by MAC VPDU handler */
@@ -140,12 +151,12 @@ test_que_rsp_field_extraction_known_payload(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "Target Unit Busy Other Service") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: reason missing from '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "Target Unit Busy Other Service") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: reason missing from '%s'\n", recent_notice(0U));
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "11259375") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: target missing from '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "11259375") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_que_rsp_field_extraction: target missing from '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -173,12 +184,12 @@ test_deny_rsp_field_extraction_known_payload(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "System Does Not Support Service") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: reason missing from '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "System Does Not Support Service") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: reason missing from '%s'\n", recent_notice(0U));
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "Target: 1") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: target missing from '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "Target: 1") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_field_extraction: target missing from '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -224,14 +235,14 @@ test_que_reason_code_lookup_all_known(void) {
                         st.p25_sm_queued_count, st.p25_sm_deny_count);
             rc = 1;
         }
-        if (strstr(st.active_channel[0], "QUE") == NULL) {
+        if (strstr(recent_notice(0U), "QUE") == NULL) {
             DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing 'QUE': '%s'\n",
-                        cases[i].code, st.active_channel[0]);
+                        cases[i].code, recent_notice(0U));
             rc = 1;
         }
-        if (strstr(st.active_channel[0], cases[i].expected_substr) == NULL) {
+        if (strstr(recent_notice(0U), cases[i].expected_substr) == NULL) {
             DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: active_channel missing '%s': '%s'\n",
-                        cases[i].code, cases[i].expected_substr, st.active_channel[0]);
+                        cases[i].code, cases[i].expected_substr, recent_notice(0U));
             rc = 1;
         }
     }
@@ -294,14 +305,14 @@ test_deny_reason_code_lookup_all_known(void) {
                         st.p25_sm_queued_count, st.p25_sm_deny_count);
             rc = 1;
         }
-        if (strstr(st.active_channel[0], "DENY") == NULL) {
+        if (strstr(recent_notice(0U), "DENY") == NULL) {
             DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing 'DENY': '%s'\n",
-                        cases[i].code, st.active_channel[0]);
+                        cases[i].code, recent_notice(0U));
             rc = 1;
         }
-        if (strstr(st.active_channel[0], cases[i].expected_substr) == NULL) {
+        if (strstr(recent_notice(0U), cases[i].expected_substr) == NULL) {
             DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: active_channel missing '%s': '%s'\n",
-                        cases[i].code, cases[i].expected_substr, st.active_channel[0]);
+                        cases[i].code, cases[i].expected_substr, recent_notice(0U));
             rc = 1;
         }
     }
@@ -328,14 +339,14 @@ test_que_rsp_user_reason_range(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "QUE") == NULL) {
+    if (strstr(recent_notice(0U), "QUE") == NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing 'QUE': '%s'\n",
-                    st.active_channel[0]);
+                    recent_notice(0U));
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "User/System Defined") == NULL) {
+    if (strstr(recent_notice(0U), "User/System Defined") == NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_que_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
-                    st.active_channel[0]);
+                    recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -360,14 +371,14 @@ test_deny_rsp_user_reason_range(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "DENY") == NULL) {
+    if (strstr(recent_notice(0U), "DENY") == NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing 'DENY': '%s'\n",
-                    st.active_channel[0]);
+                    recent_notice(0U));
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "User/System Defined") == NULL) {
+    if (strstr(recent_notice(0U), "User/System Defined") == NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_deny_rsp_user_reason_range: active_channel missing user/system label: '%s'\n",
-                    st.active_channel[0]);
+                    recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -575,12 +586,12 @@ test_active_channel_que_format(void) {
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
-    if (strstr(st.active_channel[0], "QUE") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing 'QUE' in '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "QUE") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing 'QUE' in '%s'\n", recent_notice(0U));
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "67890") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing '67890' in '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "67890") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_que_format: missing '67890' in '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -601,12 +612,12 @@ test_active_channel_deny_format(void) {
     process_MAC_VPDU(&opts, &st, 0, MAC);
 
     int rc = 0;
-    if (strstr(st.active_channel[0], "DENY") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing 'DENY' in '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "DENY") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing 'DENY' in '%s'\n", recent_notice(0U));
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "12345") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing '12345' in '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "12345") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_active_channel_deny_format: missing '12345' in '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -626,9 +637,9 @@ test_additional_info_indicator_controls_display(void) {
     reset_test_state();
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 0);
     process_MAC_VPDU(&opts, &st, 0, MAC);
-    if (strstr(st.active_channel[0], "Info:") != NULL) {
+    if (strstr(recent_notice(0U), "Info:") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: displayed info without AII: '%s'\n",
-                    st.active_channel[0]);
+                    recent_notice(0U));
         rc = 1;
     }
 
@@ -636,8 +647,8 @@ test_additional_info_indicator_controls_display(void) {
     reset_test_state();
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 1);
     process_MAC_VPDU(&opts, &st, 0, MAC);
-    if (strstr(st.active_channel[0], "Info: 123456") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "Info: 123456") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -663,8 +674,8 @@ test_motorola_queued_response_field_extraction(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "MOT QUEUED") == NULL || strstr(st.active_channel[0], "Info: 123456") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: active_channel '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "MOT QUEUED") == NULL || strstr(recent_notice(0U), "Info: 123456") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_response: active_channel '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;
@@ -686,9 +697,8 @@ test_motorola_deny_response_field_extraction(void) {
                     st.p25_sm_deny_count);
         rc = 1;
     }
-    if (strstr(st.active_channel[0], "MOT DENY") == NULL
-        || strstr(st.active_channel[0], "Site Access Denial") == NULL) {
-        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: active_channel '%s'\n", st.active_channel[0]);
+    if (strstr(recent_notice(0U), "MOT DENY") == NULL || strstr(recent_notice(0U), "Site Access Denial") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_deny_response: active_channel '%s'\n", recent_notice(0U));
         rc = 1;
     }
     return rc;

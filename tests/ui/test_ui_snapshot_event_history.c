@@ -74,7 +74,6 @@ static void
 assert_render_fields(const dsd_state* snap) {
     dsd_tg_policy_lookup lookup;
     assert(snap != NULL);
-    assert(snap->lasttg == 321);
     assert(snap->trunk_chan_map[0x1234] == 769768750L);
     assert(snap->trunk_chan_map_used_count == 1U);
     assert(snap->trunk_chan_map_used[0] == 0x1234U);
@@ -132,7 +131,6 @@ main(void) {
     }
 
     state->event_history_s = history;
-    state->lasttg = 321;
     dsd_state_set_trunk_chan_freq(state, 0x1234U, 769768750L);
 
     dsd_call_observation observation = {0};
@@ -141,8 +139,7 @@ main(void) {
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 321U;
     observation.policy_target_id = 321U;
-    observation.group_id = 321U;
-    observation.source_id = 654U;
+    observation.ota_source_id = 654U;
     observation.frequency_hz = 769768750L;
     observation.observed_m = 1.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
@@ -155,7 +152,7 @@ main(void) {
         .observed_m = 1.1,
     };
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
-    assert(dsd_recent_activity_set_at(state, 0U, "Active Ch: 1234 TG: 321; ", 1000U) == 1);
+    assert(dsd_recent_activity_publish(state, 0U, &observation, "Active Ch: 1234 TG: 321; ", 1000U) == 1);
 
     dsd_tg_policy_entry entry;
     assert(dsd_tg_policy_make_exact_entry(321U, "A", "DISPATCH", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0);
@@ -201,14 +198,14 @@ main(void) {
 
     dsd_app_snapshot_test_reset_event_history_copy_counts();
     dsd_app_telemetry_publish_snapshot(state);
-    observation.source_id = 999U;
+    observation.ota_source_id = 999U;
     observation.observed_m = 2.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 1);
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     crypto.audio_permitted = 0U;
     crypto.observed_m = 2.1;
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
-    assert(dsd_recent_activity_set_at(state, 0U, "mutated TG: 999; ", 2000U) == 1);
+    assert(dsd_recent_activity_publish(state, 0U, &observation, "mutated TG: 999; ", 2000U) == 1);
     history[0].Event_History_Items[1].source_id = 999U;
     DSD_SNPRINTF(history[0].Event_History_Items[1].src_str, sizeof history[0].Event_History_Items[1].src_str, "%s",
                  "MUTATED");
@@ -223,12 +220,12 @@ main(void) {
     assert_cc_candidates(snap);
     dsd_call_snapshot call;
     assert(dsd_call_state_get(snap, 0U, &call) == 1);
-    assert(call.source_id == 654U);
+    assert(call.ota_source_id == 654U);
     assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
     assert(call.algid == 0x84U);
     dsd_recent_activity_snapshot recent;
     assert(dsd_recent_activity_copy_snapshot(snap, &recent) == 1);
-    assert(strcmp(recent.entries[0].text, "Active Ch: 1234 TG: 321; ") == 0);
+    assert(strcmp(recent.entries[0].notice, "Active Ch: 1234 TG: 321; ") == 0);
     assert_history_copy_counts(1U, 1U, 1U, 1U);
 
     // Repeated publications with unchanged revisions do not copy either history slot.

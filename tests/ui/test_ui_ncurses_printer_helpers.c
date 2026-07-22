@@ -14,7 +14,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
-#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -22,7 +21,6 @@
 #include <dsd-neo/protocol/p25/p25_callsign.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/ui/menu_core.h>
-#include <dsd-neo/ui/ncurses.h>
 #include <dsd-neo/ui/ncurses_dsp_display.h>
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
@@ -41,7 +39,6 @@
 
 int ncurses_last_synctype;
 WINDOW* stdscr;
-unsigned long long int edacs_channel_tree[33][6];
 
 static char g_printw_capture[4096];
 static size_t g_printw_capture_len;
@@ -744,50 +741,42 @@ test_hytera_key_format_helper(void) {
 static void
 test_edacs_tree_update_helpers(void) {
     static dsd_state state;
+    static dsd_opts opts;
     DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(edacs_channel_tree, 0, sizeof(edacs_channel_tree));
+    DSD_MEMSET(&opts, 0, sizeof(opts));
     ncurses_last_synctype = DSD_SYNC_NONE;
 
     ui_update_sync_and_edacs_tree(NULL);
     assert(ncurses_last_synctype == DSD_SYNC_NONE);
 
     state.synctype = DSD_SYNC_EDACS_POS;
-    state.carrier = 0;
-    state.edacs_vc_lcn = 5;
     ui_update_sync_and_edacs_tree(&state);
     assert(ncurses_last_synctype == DSD_SYNC_EDACS_POS);
-    assert(edacs_channel_tree[5][1] == 0ULL);
 
-    state.carrier = 1;
-    state.lasttg = 1234;
-    state.lastsrc = 5678;
-    state.edacs_vc_call_type = EDACS_IS_GROUP;
-    ui_update_sync_and_edacs_tree(&state);
-    assert(edacs_channel_tree[5][0] == (unsigned long long)DSD_SYNC_EDACS_POS);
-    assert(edacs_channel_tree[5][1] == 5ULL);
-    assert(edacs_channel_tree[5][2] == 1234ULL);
-    assert(edacs_channel_tree[5][3] == 5678ULL);
-    assert(edacs_channel_tree[5][4] == (unsigned long long)EDACS_IS_GROUP);
-    assert(edacs_channel_tree[5][5] != 0ULL);
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_EDACS_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1234U,
+        .policy_target_id = 1234U,
+        .ota_source_id = 5678U,
+        .channel = 5U,
+    };
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    assert(dsd_recent_activity_publish(&state, 5U, &observation, "Group Voice Ch: 5 TG: 1234 Src: 5678;", now_ms) == 1);
+    state.trunk_lcn_freq[4] = 851012500L;
+    dsd_recent_activity_snapshot recent;
+    assert(dsd_recent_activity_copy_snapshot(&state, &recent) == 1);
+    reset_printw_capture();
+    ui_render_edacs_lcn_row(&opts, &state, 5, &recent);
+    assert_capture_contains("LCN [05][851.012500] MHz");
+    assert_capture_contains("Group Voice Ch: 5 TG: 1234 Src: 5678;");
+    assert_capture_contains("[Dispatch][A]");
 
-    edacs_channel_tree[5][3] = 77ULL;
     state.synctype = DSD_SYNC_NONE;
-    state.lastsrc = 0;
-    state.lasttg = 4321;
     ui_update_sync_and_edacs_tree(&state);
     assert(ncurses_last_synctype == DSD_SYNC_EDACS_POS);
-    assert(edacs_channel_tree[5][2] == 4321ULL);
-    assert(edacs_channel_tree[5][3] == 77ULL);
-
-    state.lastsrc = 0x800;
-    ui_update_sync_and_edacs_tree(&state);
-    assert(edacs_channel_tree[5][3] == 0ULL);
-
-    state.ea_mode = 1;
-    state.lastsrc = 0;
-    edacs_channel_tree[5][3] = 99ULL;
-    ui_update_sync_and_edacs_tree(&state);
-    assert(edacs_channel_tree[5][3] == 0ULL);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -806,10 +795,6 @@ test_patch_and_slot_helpers(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     state.dmrburstL = 16;
     state.dmrburstR = 21;
-    state.lasttg = 101;
-    state.lasttgR = 202;
-    state.lastsrc = 303;
-    state.lastsrcR = 404;
     state.payload_algid = 0x24;
     state.payload_algidR = 0x21;
     state.payload_keyid = 11;
@@ -823,22 +808,38 @@ test_patch_and_slot_helpers(void) {
     state.aes_key_loaded[0] = 1;
     state.A2[0] = 0x1111ULL;
     state.A4[0] = 0x2222ULL;
-    DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "slot-two-call");
     DSD_SNPRINTF(state.dmr_embedded_gps[1], sizeof(state.dmr_embedded_gps[1]), "gps");
     DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "lrrp");
     DSD_SNPRINTF(state.generic_talker_alias[1], sizeof(state.generic_talker_alias[1]), "alias");
 
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 202U,
+        .policy_target_id = 202U,
+        .ota_source_id = 404U,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = 0x21U,
+        .kid = 22U,
+        .mi = 0x5555666677778888ULL,
+    };
+    assert(dsd_call_state_update_crypto(&state, 1U, &crypto) == 1);
+
     ui_slot_view right = ui_build_slot_view(&state, 1);
     assert(right.slot_no == 2);
     assert(right.burst == 21);
-    assert(right.lasttg == 202);
-    assert(right.lastsrc == 404);
+    assert(right.target == 202);
+    assert(right.source == 404);
     assert(right.payload_algid == 0x21);
     assert(right.payload_keyid == 22);
     assert(right.payload_mi_dmr == 0x87654321ULL);
     assert(right.payload_mi_p25 == 0x5555666677778888ULL);
     assert(right.rc4_key == 0x67890ULL);
-    assert(strcmp(right.call_banner, "slot-two-call") == 0);
+    assert(strcmp(right.call_banner, " Group Encrypted") == 0);
     assert(strcmp(right.embedded_gps, "gps") == 0);
     assert(strcmp(right.lrrp_gps, "lrrp") == 0);
     assert(strcmp(right.talker_alias, "alias") == 0);
@@ -846,6 +847,7 @@ test_patch_and_slot_helpers(void) {
     assert(ui_slot_has_dxtra_embedded(1, 26) == 1);
     assert(ui_slot_has_dxtra_embedded(2, 26) == 0);
     assert(ui_slot_has_dxtra_embedded(2, 21) == 1);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -886,7 +888,6 @@ test_canonical_p25_slot_and_recent_activity(void) {
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = 1201U;
     observation.policy_target_id = 1201U;
-    observation.group_id = 1201U;
     observation.frequency_hz = 851012500;
     observation.observed_m = 1.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
@@ -903,8 +904,8 @@ test_canonical_p25_slot_and_recent_activity(void) {
     ui_slot_view slot = ui_build_slot_view(state, 0);
     assert(slot.canonical_p25 == 1);
     assert(slot.burst == 21);
-    assert(slot.lasttg == 1201);
-    assert(slot.lastsrc == 0);
+    assert(slot.target == 1201);
+    assert(slot.source == 0);
     reset_printw_capture();
     ui_slot_render_flags flags = {0};
     ui_render_slot_header_line(state, &slot, &flags);
@@ -920,8 +921,6 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert_capture_contains(" | VOICE");
 
     state->dmrburstR = 21;
-    state->lasttgR = 9999;
-    state->lastsrcR = 8888;
     ui_slot_view idle_companion = ui_build_slot_view(state, 1);
     assert(idle_companion.canonical_p25 == 0);
     assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
@@ -932,8 +931,14 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert(strstr(g_printw_capture, "8888") == NULL);
 
     const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
-    assert(dsd_recent_activity_set_at(state, 0U, "old TG: 100; ", now_ms - 4000U) == 1);
-    assert(dsd_recent_activity_set_at(state, 1U, "fresh TG: 200; ", now_ms - 1000U) == 1);
+    dsd_call_observation old_activity = observation;
+    old_activity.ota_target_id = 100U;
+    old_activity.policy_target_id = 100U;
+    dsd_call_observation fresh_activity = observation;
+    fresh_activity.ota_target_id = 200U;
+    fresh_activity.policy_target_id = 200U;
+    assert(dsd_recent_activity_publish(state, 0U, &old_activity, "old TG: 100; ", now_ms - 4000U) == 1);
+    assert(dsd_recent_activity_publish(state, 1U, &fresh_activity, "fresh TG: 200; ", now_ms - 1000U) == 1);
     reset_printw_capture();
     ui_render_active_channel_list(&(dsd_opts){0}, state, 31U);
     assert(strstr(g_printw_capture, "old") == NULL);
@@ -975,12 +980,18 @@ test_canonical_p25_slot_and_recent_activity(void) {
     state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state->dmrburstL = 21;
-    state->lasttg = 4321;
-    state->lastsrc = 8765;
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 4321U;
+    observation.policy_target_id = 4321U;
+    observation.ota_source_id = 8765U;
+    observation.frequency_hz = 0;
+    observation.observed_m = 3.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     slot = ui_build_slot_view(state, 0);
     assert(slot.canonical_p25 == 0);
-    assert(slot.lasttg == 4321);
-    assert(slot.lastsrc == 8765);
+    assert(slot.target == 4321);
+    assert(slot.source == 8765);
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
     assert_capture_contains("TGT: [    4321]");
