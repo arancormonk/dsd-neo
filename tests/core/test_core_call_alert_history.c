@@ -519,6 +519,38 @@ test_data_notice_preserves_decoded_payload_fields(void) {
 }
 
 static int
+test_data_notice_with_gps_owns_payload_without_consuming_active_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    Event_History* active = &event_history[0].Event_History_Items[0];
+    active->pdu[0] = 0xABU;
+    DSD_SNPRINTF(active->text_message, sizeof(active->text_message), "%s", "active call text");
+    DSD_SNPRINTF(active->gps_s, sizeof(active->gps_s), "%s", "active call GPS");
+
+    const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 1234U, 5678U);
+    assert(dsd_event_emit_data_notice_with_gps(&opts, &state, 0U, &observation, "GPS SRC: 1234; TGT: 5678;",
+                                               "41.500000 -87.250000")
+           == 0);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_str_eq("explicit data GPS", committed->gps_s, "41.500000 -87.250000");
+    rc |= expect_int("explicit GPS event does not inherit active PDU", committed->pdu[0], 0);
+    rc |= expect_int("explicit GPS event does not inherit active text", committed->text_message[0], '\0');
+    rc |= expect_int("explicit GPS event category", committed->category, DSD_EVENT_CATEGORY_DATA);
+    rc |= expect_int("explicit GPS event source", (int)committed->source_id, 1234);
+    rc |= expect_int("explicit GPS event target", (int)committed->target_id, 5678);
+    rc |= expect_int("explicit GPS preserves active PDU", current->pdu[0], 0xAB);
+    rc |= expect_str_eq("explicit GPS preserves active text", current->text_message, "active call text");
+    rc |= expect_str_eq("explicit GPS preserves active GPS", current->gps_s, "active call GPS");
+    return rc;
+}
+
+static int
 test_system_notice_is_not_attributed_as_radio_data(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1602,6 +1634,7 @@ main(void) {
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_data_call_emits_frame_log_record();
     rc |= test_data_notice_preserves_decoded_payload_fields();
+    rc |= test_data_notice_with_gps_owns_payload_without_consuming_active_row();
     rc |= test_system_notice_is_not_attributed_as_radio_data();
     rc |= test_status_event_is_not_data_call_or_frame_log();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();

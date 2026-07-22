@@ -43,15 +43,6 @@ gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source,
         return 0;
     }
     if (!has_active_call) {
-        if (state != NULL && state->event_history_s != NULL && slot < DSD_CALL_STATE_SLOT_COUNT && text != NULL) {
-            dsd_event_history_transaction transaction;
-            dsd_event_history_transaction_begin(state, &transaction);
-            Event_History_I* history = &state->event_history_s[slot];
-            DSD_SNPRINTF(history->Event_History_Items[0].gps_s, sizeof(history->Event_History_Items[0].gps_s), "%s",
-                         text);
-            dsd_event_history_mark_dirty(history);
-            dsd_event_history_transaction_end(&transaction);
-        }
         return 0;
     }
     if (call_out) {
@@ -929,7 +920,7 @@ nxdn_gps_report(const dsd_opts* opts, dsd_state* state, const uint8_t* input, ui
         char comp_string[128];
         DSD_SNPRINTF(comp_string, sizeof(comp_string), "GPS SRC: %u; TGT: %u;", source, target);
         const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
-        (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, 0U, &observation, comp_string);
+        (void)dsd_event_emit_data_notice_with_gps((dsd_opts*)opts, state, 0U, &observation, comp_string, gps_string);
     }
 
     if (src != 0U) {

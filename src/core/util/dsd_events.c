@@ -1376,9 +1376,9 @@ dsd_event_clear_data_payload(Event_History* item) {
     item->text_message[0] = '\0';
 }
 
-int
-dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
-                           const char* notice) {
+static int
+dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                                const char* notice, const char* gps, int consume_staged_payload) {
     if (opts == NULL || state == NULL || state->event_history_s == NULL || observation == NULL || notice == NULL
         || slot > 1U || observation->slot != slot || observation->kind != DSD_CALL_KIND_DATA) {
         return -1;
@@ -1404,8 +1404,12 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     item->event_time = time(NULL);
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
-    dsd_event_copy_data_payload(item, &active);
-    dsd_event_clear_data_payload(&active);
+    if (consume_staged_payload) {
+        dsd_event_copy_data_payload(item, &active);
+        dsd_event_clear_data_payload(&active);
+    } else {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
+    }
 
     char timestr[9];
     char datestr[11];
@@ -1429,6 +1433,21 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
         beeper(opts, state, slot, 80, 20, 3);
     }
     return 0;
+}
+
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, notice, NULL, 1);
+}
+
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    if (gps == NULL) {
+        return -1;
+    }
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, notice, gps, 0);
 }
 
 int

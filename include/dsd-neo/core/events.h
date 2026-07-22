@@ -131,6 +131,9 @@ int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_Hi
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
 int dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                                const char* notice);
+/** Commit a data notice with GPS owned by the new event, leaving the active row's staged payload unchanged. */
+int dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                        const dsd_call_observation* observation, const char* notice, const char* gps);
 /** Commit an informational system notice without attributing it to radio traffic. */
 int dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice);
 int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
