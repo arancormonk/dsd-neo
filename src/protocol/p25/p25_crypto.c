@@ -194,7 +194,8 @@ static int
 p25_crypto_p1_has_explicit_clear_service(const dsd_state* state) {
     dsd_call_snapshot call;
     return state && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-           && call.protocol == DSD_SYNC_P25P1_POS && (call.service_options & 0x40U) == 0;
+           && DSD_SYNC_IS_P25P1(call.protocol) && call.has_service_metadata != 0U
+           && (call.service_options & 0x40U) == 0;
 }
 
 static int

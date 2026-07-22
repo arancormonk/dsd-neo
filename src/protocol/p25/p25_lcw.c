@@ -399,6 +399,7 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
                 .service_options = call.service_options,
                 .emergency = call.emergency,
                 .priority = call.priority,
+                .has_service_metadata = call.has_service_metadata,
             };
             (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
             dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
@@ -970,6 +971,7 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
                     .service_options = call.service_options,
                     .emergency = call.emergency,
                     .priority = call.priority,
+                    .has_service_metadata = call.has_service_metadata,
                 };
                 (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
                 dsd_event_sync_slot(ctx->opts, ctx->state, 0U);

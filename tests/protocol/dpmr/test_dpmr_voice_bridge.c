@@ -190,6 +190,28 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
 }
 
 static int
+test_scrambler_secret_is_not_published_as_key_id(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.R = 0x12345ULL;
+    state.dPMRVoiceFS2Frame.Version[0] = 3U;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    dpmr_publish_call(&opts, &state);
+
+    dsd_call_snapshot call;
+    int rc = 0;
+    rc |= expect_int("scrambler-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("scrambler-call-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("scrambler-call-audio-permitted", call.audio_permitted, 1);
+    rc |= expect_int("scrambler-secret-not-key-id", call.kid, 0);
+    return rc;
+}
+
+static int
 test_deinterleave_transposes_6x12_blocks(void) {
     uint8_t input[72];
     uint8_t output[72];
@@ -394,6 +416,7 @@ main(void) {
     int rc = 0;
     rc |= test_first_group_scrambler_bridge_mutes_without_key();
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
+    rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_superframe_part_updates_called_and_calling_ids();

@@ -9,6 +9,7 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -218,7 +219,9 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     const uint8_t algid = (uint8_t)(slot == 0U ? state->payload_algid : state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? state->payload_keyid : state->payload_keyidR);
     const uint64_t mi = slot == 0U ? state->payload_mi : state->payload_miR;
-    const int has_key = slot == 0U ? state->R != 0U : state->RR != 0U;
+    const uint64_t r_key = slot == 0U ? state->R : state->RR;
+    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
+                                    : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, r_key);
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,

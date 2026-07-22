@@ -617,6 +617,7 @@ edacs_voice_observation(const dsd_state* state, int lcn, int is_digital, uint64_
         .frequency_hz = lcn > 0 && lcn < 26 ? state->trunk_lcn_freq[lcn - 1] : 0,
         .service_options = call_flags,
         .emergency = (uint8_t)((call_flags & EDACS_IS_EMERGENCY) != 0),
+        .has_service_metadata = 1U,
     };
     return observation;
 }

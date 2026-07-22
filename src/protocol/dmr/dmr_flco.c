@@ -12,6 +12,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
@@ -574,7 +575,9 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
     const uint64_t mi = ctx->slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
-    const int has_key = ctx->slot == 0U ? ctx->state->R != 0U : ctx->state->RR != 0U;
+    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
+    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
+                                    : dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -604,6 +607,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         .service_options = ctx->so,
         .emergency = (uint8_t)((ctx->so & 0x80U) != 0U),
         .priority = (uint8_t)(ctx->so & 0x03U),
+        .has_service_metadata = 1U,
     };
     const dsd_call_boundary boundary = ctx->type == 1U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
     (void)dsd_call_state_observe(ctx->state, &observation, boundary);

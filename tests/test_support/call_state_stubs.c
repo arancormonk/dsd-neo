@@ -58,9 +58,12 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     call->channel = observation->channel;
     call->frequency_hz = observation->frequency_hz;
-    call->service_options = observation->service_options;
-    call->emergency = observation->emergency;
-    call->priority = observation->priority;
+    if (observation->has_service_metadata != 0U) {
+        call->service_options = observation->service_options;
+        call->emergency = observation->emergency;
+        call->priority = observation->priority;
+        call->has_service_metadata = 1U;
+    }
     return begins_epoch;
 }
 

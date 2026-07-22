@@ -1527,6 +1527,7 @@ nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state,
         .frequency_hz = grant_freq,
         .service_options = info->cc_option,
         .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
+        .has_service_metadata = 1U,
     };
     (void)dsd_recent_activity_publish(state, (uint8_t)dup, &observation, notice, 0U);
 }
@@ -2198,6 +2199,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .frequency_hz = state->trunk_vc_freq[0],
         .service_options = info->cc_option,
         .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
+        .has_service_metadata = 1U,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     nxdn_vcall_publish_crypto(opts, state, info->cipher_type, info->key_id);

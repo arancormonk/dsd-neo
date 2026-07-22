@@ -169,6 +169,7 @@ seed_voice_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t tar
         .service_options = service_options,
         .emergency = (uint8_t)((service_options & 0x80U) != 0U),
         .priority = (uint8_t)(service_options & 0x07U),
+        .has_service_metadata = 1U,
     };
     return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }

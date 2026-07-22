@@ -61,17 +61,23 @@ reset_fixture(dsd_opts* opts, dsd_state* state) {
 }
 
 static int
-begin_p1_call(dsd_state* state, uint16_t service_options) {
+begin_p1_call_with_protocol(dsd_state* state, int protocol, uint16_t service_options) {
     const dsd_call_observation observation = {
-        .protocol = DSD_SYNC_P25P1_POS,
+        .protocol = protocol,
         .slot = 0U,
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = 3069U,
         .policy_target_id = 3069U,
         .ota_source_id = 101U,
         .service_options = service_options,
+        .has_service_metadata = 1U,
     };
     return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
+begin_p1_call(dsd_state* state, uint16_t service_options) {
+    return begin_p1_call_with_protocol(state, DSD_SYNC_P25P1_POS, service_options);
 }
 
 static int
@@ -193,6 +199,24 @@ test_begin_and_sticky_unknown(void) {
     p25_crypto_reset_slot(&state, 0);
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE2, 0, 0x40, 1);
     rc |= expect_int("clear regroup override", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
+    return rc;
+}
+
+static int
+test_phase1_negative_clear_conflict_requires_corroboration(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("seed inverted canonical P1 call", begin_p1_call_with_protocol(&state, DSD_SYNC_P25P1_NEG, 0x04U),
+                     1);
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
+    rc |= expect_int(
+        "inverted P1 clear-conflict tuple stays pending",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708), 3069),
+        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("inverted P1 clear-conflict tuple arms candidate", state.p25_p1_crypto_conflict.active, 1);
     return rc;
 }
 
@@ -573,6 +597,7 @@ main(void) {
     rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_phase1_resolution_does_not_override_phase2_gate();
     rc |= test_begin_and_sticky_unknown();
+    rc |= test_phase1_negative_clear_conflict_requires_corroboration();
     rc |= test_phase1_clear_conflict_requires_corroboration();
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();

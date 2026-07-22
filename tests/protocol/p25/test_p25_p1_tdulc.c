@@ -324,6 +324,7 @@ seed_active_call(dsd_state* state, uint64_t target, uint64_t source, uint16_t se
         .service_options = service_options,
         .emergency = (uint8_t)((service_options & 0x80U) != 0U),
         .priority = (uint8_t)(service_options & 0x07U),
+        .has_service_metadata = 1U,
         .observed_m = 1.0,
     };
     return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;

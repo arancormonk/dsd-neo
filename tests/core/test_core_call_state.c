@@ -25,6 +25,7 @@ group_call(uint8_t slot, uint32_t target, uint32_t source, double observed_m) {
     observation.frequency_hz = 851000000 + slot * 12500;
     observation.service_options = 3U;
     observation.priority = 3U;
+    observation.has_service_metadata = 1U;
     observation.observed_m = observed_m;
     return observation;
 }
@@ -163,6 +164,79 @@ test_snapshot_clone(dsd_state* state) {
 }
 
 static void
+test_voice_specialization_and_sparse_metadata(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    const uint64_t voice_epoch = snapshot.epoch;
+    assert(snapshot.has_service_metadata == 0U);
+
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 100U;
+    observation.policy_target_id = 100U;
+    observation.service_options = 0xC5U;
+    observation.emergency = 1U;
+    observation.priority = 5U;
+    observation.has_service_metadata = 1U;
+    observation.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == voice_epoch);
+    assert(snapshot.kind == DSD_CALL_KIND_GROUP_VOICE);
+    assert(snapshot.has_service_metadata == 1U);
+
+    observation = (dsd_call_observation){
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 200U,
+        .observed_m = 3.0,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == voice_epoch);
+    assert(snapshot.ota_source_id == 200U);
+    assert(snapshot.service_options == 0xC5U);
+    assert(snapshot.emergency == 1U);
+    assert(snapshot.priority == 5U);
+
+    observation.kind = DSD_CALL_KIND_VOICE;
+    observation.ota_target_id = 0U;
+    observation.policy_target_id = 0U;
+    observation.ota_source_id = 0U;
+    observation.observed_m = 4.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch == voice_epoch);
+    assert(snapshot.kind == DSD_CALL_KIND_GROUP_VOICE);
+    assert(snapshot.service_options == 0xC5U);
+
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.has_service_metadata = 1U;
+    observation.observed_m = 5.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.service_options == 0U);
+    assert(snapshot.emergency == 0U);
+    assert(snapshot.priority == 0U);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
 test_64bit_text_and_protocol_family_continuity(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);
@@ -281,6 +355,7 @@ main(void) {
     test_crypto_and_slot_isolation(state);
     test_recent_activity(state);
     test_snapshot_clone(state);
+    test_voice_specialization_and_sparse_metadata();
     test_64bit_text_and_protocol_family_continuity();
     test_positive_p25p1_protocol_observation();
     dsd_state_ext_free_all(state);

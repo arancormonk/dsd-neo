@@ -139,6 +139,7 @@ seed_active_call_state(dsd_opts* opts, dsd_state* state) {
         .service_options = 0x81,
         .emergency = 1,
         .priority = 1,
+        .has_service_metadata = 1U,
     };
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) >= 0);
     state->currentslot = 1;

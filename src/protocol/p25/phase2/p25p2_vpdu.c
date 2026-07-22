@@ -90,6 +90,7 @@ p25p2_vpdu_publish_activityf(dsd_state* state, uint8_t index, dsd_call_kind kind
         .frequency_hz = frequency,
         .service_options = service_options,
         .emergency = (service_options & 0x80U) != 0U,
+        .has_service_metadata = 1U,
     };
     (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
 }
@@ -165,6 +166,7 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
         .service_options = svc,
         .emergency = (uint8_t)((svc & 0x80U) != 0U),
         .priority = (uint8_t)(svc & 0x07U),
+        .has_service_metadata = (uint8_t)(service_options >= 0),
     };
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);

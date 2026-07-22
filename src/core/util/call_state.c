@@ -218,6 +218,13 @@ call_state_kind_changed(dsd_call_kind old_kind, dsd_call_kind new_kind) {
     if (old_kind == DSD_CALL_KIND_UNKNOWN || new_kind == DSD_CALL_KIND_UNKNOWN) {
         return 0;
     }
+    if ((old_kind == DSD_CALL_KIND_VOICE || new_kind == DSD_CALL_KIND_VOICE)
+        && (old_kind == DSD_CALL_KIND_VOICE || old_kind == DSD_CALL_KIND_GROUP_VOICE
+            || old_kind == DSD_CALL_KIND_PRIVATE_VOICE)
+        && (new_kind == DSD_CALL_KIND_VOICE || new_kind == DSD_CALL_KIND_GROUP_VOICE
+            || new_kind == DSD_CALL_KIND_PRIVATE_VOICE)) {
+        return 0;
+    }
     return old_kind != new_kind;
 }
 
@@ -261,7 +268,9 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     if (observation->protocol != DSD_SYNC_NONE) {
         snapshot->protocol = observation->protocol;
     }
-    if (observation->kind != DSD_CALL_KIND_UNKNOWN) {
+    if (observation->kind != DSD_CALL_KIND_UNKNOWN
+        && !(observation->kind == DSD_CALL_KIND_VOICE
+             && (snapshot->kind == DSD_CALL_KIND_GROUP_VOICE || snapshot->kind == DSD_CALL_KIND_PRIVATE_VOICE))) {
         snapshot->kind = observation->kind;
     }
     if (observation->ota_target_id != 0U) {
@@ -283,9 +292,12 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
     if (observation->frequency_hz != 0) {
         snapshot->frequency_hz = observation->frequency_hz;
     }
-    snapshot->service_options = observation->service_options;
-    snapshot->emergency = observation->emergency;
-    snapshot->priority = observation->priority;
+    if (observation->has_service_metadata != 0U) {
+        snapshot->service_options = observation->service_options;
+        snapshot->emergency = observation->emergency;
+        snapshot->priority = observation->priority;
+        snapshot->has_service_metadata = 1U;
+    }
 }
 
 int

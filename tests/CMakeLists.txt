@@ -5238,7 +5238,11 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_le_infer_algid PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_LE_INFER_ALGID COMMAND dsd-neo_test_dmr_le_infer_algid)
 
-add_executable(dsd-neo_test_dmr_pi_kirisun protocol/dmr/test_dmr_pi_kirisun.c)
+add_executable(
+    dsd-neo_test_dmr_pi_kirisun
+    protocol/dmr/test_dmr_pi_kirisun.c
+    test_support/call_state_stubs.c
+)
 target_include_directories(
     dsd-neo_test_dmr_pi_kirisun
     PRIVATE ${PROJECT_SOURCE_DIR}/include

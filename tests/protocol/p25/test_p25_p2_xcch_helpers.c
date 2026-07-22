@@ -218,6 +218,7 @@ p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst
             .policy_target_id = (uint64_t)(is_group ? tg : dst),
             .ota_source_id = (uint64_t)src,
             .service_options = (uint16_t)svc_bits,
+            .has_service_metadata = 1U,
         };
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     }
@@ -254,6 +255,7 @@ p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
             .policy_target_id = (uint64_t)(is_group ? tg : dst),
             .ota_source_id = (uint64_t)src,
             .service_options = (uint16_t)svc_bits,
+            .has_service_metadata = 1U,
         };
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     }

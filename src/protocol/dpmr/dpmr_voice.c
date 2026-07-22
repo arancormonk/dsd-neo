@@ -316,7 +316,7 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
     }
 }
 
-static void
+void
 dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     dsd_call_observation observation = {
         .protocol = state->synctype,
@@ -328,6 +328,7 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
                                       | (state->dPMRVoiceFS2Frame.CommunicationMode[0] << 4U)
                                       | state->dPMRVoiceFS2Frame.CommsFormat[0]),
         .emergency = (uint8_t)(state->dPMRVoiceFS2Frame.EmergencyPriority[0] != 0U),
+        .has_service_metadata = 1U,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
 
@@ -338,7 +339,6 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
         crypto.classification = state->R != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
         crypto.audio_permitted = state->R != 0U;
-        crypto.kid = (uint16_t)state->R;
     }
     (void)dsd_call_state_update_crypto(state, 0U, &crypto);
     dsd_event_sync_slot(opts, state, 0U);

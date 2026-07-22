@@ -70,6 +70,7 @@ typedef struct {
     uint16_t service_options;
     uint8_t emergency;
     uint8_t priority;
+    uint8_t has_service_metadata; /**< Non-zero when service options, emergency, and priority were observed. */
     double observed_m;
 } dsd_call_observation;
 
@@ -112,6 +113,7 @@ typedef struct {
     uint16_t service_options;
     uint16_t kid;
     uint8_t slot;
+    uint8_t has_service_metadata; /**< Non-zero after confirmed service metadata has been applied. */
     uint8_t emergency;
     uint8_t priority;
     uint8_t algid;

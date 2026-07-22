@@ -202,6 +202,7 @@ observe_test_call(dsd_state* state, uint8_t slot, int protocol, dsd_call_kind ki
         .ota_source_id = source_id,
         .channel = channel,
         .service_options = service_options,
+        .has_service_metadata = 1U,
         .observed_m = g_observed_m,
     };
     g_observed_m += 0.1;
@@ -868,6 +869,7 @@ test_m17_dstar_dpmr_current_strings(void) {
         .ota_target_id = 0xFFFFFFFFFFFFULL,
         .ota_source_id = 12345ULL,
         .service_options = 4U,
+        .has_service_metadata = 1U,
     };
     DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "SRCSTR");
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "BROADCAST");
@@ -903,6 +905,7 @@ test_m17_dstar_dpmr_current_strings(void) {
     observation.kind = DSD_CALL_KIND_VOICE;
     observation.channel = 9U;
     observation.service_options = 3U << 8U;
+    observation.has_service_metadata = 1U;
     DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "CALLER7");
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "TARGET9");
     (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);

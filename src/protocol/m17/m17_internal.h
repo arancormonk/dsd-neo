@@ -36,6 +36,7 @@ size_t m17_encode_packet_protocol_id(uint32_t identifier, uint8_t* out);
 
 int m17_process_lich(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bits);
 int m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res);
+int m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext);
 int m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                                 uint8_t* processed_payload);
 

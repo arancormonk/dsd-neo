@@ -110,6 +110,7 @@ canonical_call_set_service(uint8_t slot, uint16_t service_options) {
         .service_options = service_options,
         .emergency = (uint8_t)((service_options & 0x80U) != 0U),
         .priority = (uint8_t)(service_options & 0x07U),
+        .has_service_metadata = 1U,
         .observed_m = dsd_time_now_monotonic_s(),
     };
     return dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0;
@@ -127,6 +128,7 @@ canonical_call_begin_p1(uint64_t target, uint64_t source, uint16_t service_optio
         .service_options = service_options,
         .emergency = (uint8_t)((service_options & 0x80U) != 0U),
         .priority = (uint8_t)(service_options & 0x07U),
+        .has_service_metadata = 1U,
         .observed_m = dsd_time_now_monotonic_s(),
     };
     return dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;

@@ -65,7 +65,7 @@
 #endif
 
 static void decodeM17PKT(const dsd_opts* opts, dsd_state* state, const uint8_t* input, int len);
-static void M17decodeLSF(const dsd_opts* opts, dsd_state* state);
+static void M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
@@ -241,8 +241,8 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     const uint16_t crc_ext = (uint16_t)convert_bits_into_output(&state->m17_lsf[M17_LSF_LSD_BITS], M17_LSF_CRC_BITS);
     const uint8_t crc_err = (crc_cmp != crc_ext) ? 1U : 0U;
 
-    if (crc_err == 0) {
-        M17decodeLSF(opts, state);
+    if (crc_err == 0U || opts->aggressive_framesync == 0) {
+        M17decodeLSF(opts, state, crc_err == 0U);
     }
 
     if (opts->payload == 1) {
@@ -292,6 +292,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
         .ota_target_id = res->dst,
         .ota_source_id = res->src,
         .service_options = res->cn,
+        .has_service_metadata = 1U,
     };
     m17_format_address(res->src, 1, observation.source_text);
     m17_format_address(res->dst, 0, observation.target_text);
@@ -318,7 +319,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
 }
 
 static void
-M17decodeLSF(const dsd_opts* opts, dsd_state* state) {
+M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical) {
     struct m17_lsf_result res;
     if (m17_parse_lsf(state->m17_lsf, sizeof(state->m17_lsf), &res) != 0) {
         LOG_WARN("M17: failed to parse LSF\n");
@@ -326,7 +327,9 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state) {
     }
 
     if (m17_apply_lsf_result(state, &res) == 1) {
-        m17_publish_lsf(opts, state, &res);
+        if (publish_canonical != 0) {
+            m17_publish_lsf(opts, state, &res);
+        }
         M17logLSFTrailer(state, &res);
     }
 }
@@ -1286,13 +1289,13 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
     DSD_FPRINTF(stderr, "\n");
 }
 
-static int
+int
 m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext) {
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
 
-    if (crc_err == 0) {
-        M17decodeLSF(opts, state);
+    if (crc_err == 0 || opts->aggressive_framesync == 0) {
+        M17decodeLSF(opts, state, crc_err == 0);
     }
 
     if (opts->payload == 1) {
@@ -1907,6 +1910,7 @@ m17_str_apply_monitor_side_state(m17_str_ctx* ctx) {
         .source_text = {0},
         .target_text = {0},
         .service_options = ctx->can,
+        .has_service_metadata = 1U,
     };
     dsd_call_observation enriched = observation;
     DSD_SNPRINTF(enriched.source_text, sizeof(enriched.source_text), "%s", ctx->s40);
@@ -3144,7 +3148,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     const uint16_t crc_ext = (uint16_t)((ip_frame[52] << 8) + ip_frame[53]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
     if (crc_ext == crc_cmp) {
-        M17decodeLSF(opts, state);
+        M17decodeLSF(opts, state, 1);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload(opts, state, payload, stream_frame_number, processed_payload);
@@ -3206,7 +3210,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
     if (crc_ext == crc_cmp) {
-        M17decodeLSF(opts, state);
+        M17decodeLSF(opts, state, 1);
     }
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, err, 25, "                ");

@@ -720,6 +720,7 @@ edacs_setup_eot_fixture(void) {
         .channel = 5U,
         .frequency_hz = 852012500L,
         .service_options = EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL,
+        .has_service_metadata = 1U,
     };
     (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     (void)dsd_call_state_update_crypto(&g_state, 0U,

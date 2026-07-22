@@ -469,6 +469,63 @@ test_kirisun_flco_sets_late_entry_mode(void) {
 }
 
 static void
+test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.payload_algid = 0x24;
+    state.payload_keyid = 0x12;
+    state.aes_key_loaded[0] = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.payload_algid = 0x24;
+    state.payload_keyid = 0x13;
+    state.R = 0x123456789AULL;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    assert(call.audio_permitted == 0U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.K = 42U;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x10U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.K1 = 0x12345U;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x68U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+}
+
+static void
 test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1016,6 +1073,7 @@ main(void) {
     test_ms_direct_flco_reports_internal_slot_one();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
+    test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();
     test_hytera_flco_scan_hook_uses_final_call_type();

@@ -71,6 +71,7 @@ seed_p25p2_call(dsd_state* state, uint8_t slot, uint64_t target, uint64_t source
         .service_options = service_options,
         .emergency = emergency,
         .priority = priority,
+        .has_service_metadata = 1U,
     };
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) <= 0) {
         DSD_FPRINTF(stderr, "FAIL: could not seed canonical P25 Phase 2 call\n");

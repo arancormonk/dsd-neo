@@ -475,7 +475,7 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    const uint16_t type_word = m17_compose_frame_info(1U, 1U, 0U, 0U, 7U, 0U, 0U);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U);
     build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
     (void)m17_attach_lsf_crc(lsf_bits, lsf_packed);
 
@@ -505,6 +505,52 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
     for (size_t bit = 0U; bit < TEST_M17_LSF_BITS; bit++) {
         err |= expect_u8("bad LSF CRC clears staged LSF", state->m17_lsf[bit], 0U);
     }
+
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 0;
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        build_encoded_lich_chunk(lsf_bits, chunk, encoded);
+        err |= expect_int("relaxed bad CRC LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
+    }
+    err |= expect_int("relaxed bad LSF CRC does not publish call", get_m17_call(state, &call), 0);
+    err |= expect_u8("relaxed bad LSF CRC decodes data type", state->m17_str_dt, 2U);
+    err |= expect_u8("relaxed bad LSF CRC decodes CAN", state->m17_can, 7U);
+    err |= expect_u8("relaxed bad LSF CRC decodes encryption", state->m17_enc, 0U);
+    return err;
+}
+
+static int
+test_rf_lsf_crc_policy_preserves_relaxed_decode(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 1U, 2U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+
+    opts->aggressive_framesync = 1;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    state->m17_str_dt = 3U;
+    state->m17_can = 9U;
+    int err = 0;
+    err |= expect_int("strict RF LSF reports CRC error", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_u8("strict RF LSF preserves data type", state->m17_str_dt, 3U);
+    err |= expect_u8("strict RF LSF preserves CAN", state->m17_can, 9U);
+
+    opts->aggressive_framesync = 0;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("relaxed RF LSF reports CRC error", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_u8("relaxed RF LSF decodes data type", state->m17_str_dt, 2U);
+    err |= expect_u8("relaxed RF LSF decodes CAN", state->m17_can, 5U);
+    err |= expect_u8("relaxed RF LSF decodes encryption", state->m17_enc, 1U);
+    dsd_call_snapshot call;
+    err |= expect_int("relaxed RF LSF CRC does not publish call", get_m17_call(state, &call), 0);
     return err;
 }
 
@@ -1749,6 +1795,7 @@ main(void) {
     int err = 0;
     err |= test_embedded_lich_chunks_store_and_finalize_lsf_state();
     err |= test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc();
+    err |= test_rf_lsf_crc_policy_preserves_relaxed_decode();
     err |= test_lsf_application_resets_and_stores_state();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();

@@ -2444,6 +2444,7 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         .service_options = (uint16_t)service_options,
         .emergency = (uint8_t)((service_options & 0x80) != 0),
         .priority = (uint8_t)(service_options & 0x07),
+        .has_service_metadata = (uint8_t)p25_sm_svc_bits_valid(slot_ctx->svc_bits),
         .observed_m = observed_m,
     };
     const dsd_call_boundary boundary = new_epoch ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
@@ -5293,6 +5294,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .service_options = (uint16_t)service_options,
         .emergency = (uint8_t)((service_options & 0x80) != 0),
         .priority = (uint8_t)(service_options & 0x07),
+        .has_service_metadata = 1U,
     };
     dsd_call_boundary boundary = DSD_CALL_BOUNDARY_CONTINUE;
     if (ev->identity_valid && ev->type == P25_SM_EV_PTT) {

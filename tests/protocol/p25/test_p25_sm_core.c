@@ -2516,6 +2516,7 @@ main(void) {
             .ota_source_id = 7201U + slot,
             .frequency_hz = 851125000L,
             .service_options = (uint16_t)(0x40U + (unsigned int)slot),
+            .has_service_metadata = 1U,
             .observed_m = 1.0 + slot,
         };
         assert(dsd_call_state_observe(&s24, &stale_call, DSD_CALL_BOUNDARY_BEGIN) == 1);

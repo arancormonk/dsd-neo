@@ -51,6 +51,7 @@ p25p1_pdu_publish_activity(dsd_state* state, dsd_call_kind kind, uint64_t target
         .frequency_hz = frequency,
         .service_options = service_options,
         .emergency = (service_options & 0x80U) != 0U,
+        .has_service_metadata = 1U,
     };
     (void)dsd_recent_activity_publish(state, 0U, &observation, notice, 0U);
 }
