@@ -489,6 +489,7 @@ test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
     assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
     assert(call.audio_permitted == 1U);
 
+    dsd_state_ext_free_all(&state);
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
@@ -502,6 +503,7 @@ test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
     assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     assert(call.audio_permitted == 0U);
 
+    dsd_state_ext_free_all(&state);
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
@@ -513,6 +515,7 @@ test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
     assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
     assert(call.audio_permitted == 1U);
 
+    dsd_state_ext_free_all(&state);
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
@@ -523,6 +526,7 @@ test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
     assert(call.audio_permitted == 1U);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
