@@ -440,6 +440,37 @@ watchdog_event_call_is_authoritative(const dsd_call_snapshot* call, const dsd_ca
     return call->phase == DSD_CALL_PHASE_ENDED && (lifecycle->epoch != call->epoch || !lifecycle->ended_committed);
 }
 
+static uint32_t
+watchdog_event_call_target_id(const dsd_call_snapshot* call) {
+    if (call->ota_target_id != 0U) {
+        return call->ota_target_id;
+    }
+    if (call->policy_target_id != 0U) {
+        return call->policy_target_id;
+    }
+    return call->kind == DSD_CALL_KIND_GROUP_VOICE ? call->group_id : call->private_id;
+}
+
+static int
+watchdog_event_history_matches_call(const Event_History* item, const dsd_call_snapshot* call) {
+    if (item == NULL || call == NULL || item->category != DSD_EVENT_CATEGORY_VOICE || item->systype != call->protocol) {
+        return 0;
+    }
+
+    const int expected_gi = call->kind == DSD_CALL_KIND_GROUP_VOICE     ? 0
+                            : call->kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1
+                                                                        : -1;
+    if (expected_gi < 0 || item->gi != expected_gi) {
+        return 0;
+    }
+
+    const uint32_t target_id = watchdog_event_call_target_id(call);
+    if (item->target_id != 0U && item->target_id != target_id) {
+        return 0;
+    }
+    return item->source_id == 0U || item->source_id == call->source_id;
+}
+
 static void
 watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                      dsd_call_event_lifecycle* lifecycle) {
@@ -449,11 +480,14 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
         return;
     }
 
-    if (lifecycle->epoch != 0U && watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
-        const int is_data = watchdog_event_is_data_event(&event_struct->Event_History_Items[0]);
+    const Event_History* current = &event_struct->Event_History_Items[0];
+    const int has_content = watchdog_event_item_has_content(current);
+    const int promotes_current = lifecycle->epoch == 0U && watchdog_event_history_matches_call(current, call);
+    if (has_content && !promotes_current) {
+        const int is_data = watchdog_event_is_data_event(current);
         watchdog_event_handle_source_transition(opts, state, event_struct, slot,
                                                 watchdog_event_should_write_slot(state), is_data, 0);
-    } else if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+    } else if (has_content) {
         init_event_history(event_struct, 0, 1);
     }
 
@@ -1365,13 +1399,7 @@ watchdog_event_unlock_if_present(const dsd_call_state_ext* ext) {
 
 static uint32_t
 watchdog_event_notice_target(const dsd_call_snapshot* call) {
-    if (call->ota_target_id != 0U) {
-        return call->ota_target_id;
-    }
-    if (call->policy_target_id != 0U) {
-        return call->policy_target_id;
-    }
-    return call->kind == DSD_CALL_KIND_GROUP_VOICE ? call->group_id : call->private_id;
+    return watchdog_event_call_target_id(call);
 }
 
 static int

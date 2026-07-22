@@ -378,7 +378,12 @@ run_active_vc_cases(void) {
     assert(dsd_call_state_observe(canonical, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
     assert(ui_guess_active_vc_freq(canonical) == 857012500L);
     assert(dsd_call_state_end(canonical, 0U, 2.0) == 1);
-    assert(ui_guess_active_vc_freq(canonical) == 0L);
+    assert(ui_guess_active_vc_freq(canonical) == 855012500L);
+    canonical->trunk_vc_freq[0] = 858012500L;
+    assert(ui_guess_active_vc_freq(canonical) == 858012500L);
+    observation.observed_m = 3.0;
+    assert(dsd_call_state_observe(canonical, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(ui_guess_active_vc_freq(canonical) == 857012500L);
     dsd_state_ext_free_all(canonical);
     free(canonical);
 

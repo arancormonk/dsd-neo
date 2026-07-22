@@ -1240,11 +1240,6 @@ ui_canonical_active_p25_freq(const dsd_call_state_snapshot* calls) {
     return 0;
 }
 
-static int
-ui_state_has_p25_context(const dsd_state* state) {
-    return ui_is_p25_synctype(state->synctype) || ui_is_p25_synctype(state->lastsynctype);
-}
-
 static long int
 ui_recent_activity_vc_freq(const dsd_state* state) {
     for (int i = 0; i < 31; i++) {
@@ -1275,9 +1270,6 @@ ui_guess_active_vc_freq(const dsd_state* state) {
         const long int canonical_frequency = ui_canonical_active_p25_freq(&calls);
         if (canonical_frequency != 0) {
             return canonical_frequency;
-        }
-        if (ui_state_has_p25_context(state)) {
-            return 0;
         }
     }
     if (state->trunk_vc_freq[0] != 0) {

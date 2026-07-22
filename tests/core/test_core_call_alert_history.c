@@ -1123,6 +1123,90 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
 }
 
 static int
+test_first_canonical_epoch_commits_unrelated_fallback_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lasttg = 100U;
+    state.lastsrc = 200U;
+    state.gi[0] = 0;
+    watchdog_event_current(&opts, &state, 0U);
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 300U,
+        .policy_target_id = 300U,
+        .source_id = 400U,
+        .group_id = 300U,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    int rc = expect_int("first canonical epoch keeps current target", (int)current->target_id, 300);
+    rc |= expect_int("first canonical epoch commits prior target", (int)committed->target_id, 100);
+    rc |= expect_int("first canonical epoch commits prior source", (int)committed->source_id, 200);
+    rc |= expect_int("first canonical epoch commits prior protocol", committed->systype, DSD_SYNC_DMR_BS_VOICE_POS);
+    rc |= expect_int("first canonical epoch emits prior call end alert", g_beeper_count, 1);
+    rc |= expect_int("first canonical epoch closes prior call WAV", g_close_wav_count, 1);
+    rc |= expect_int("first canonical epoch opens next call WAV", g_open_wav_count, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_first_canonical_epoch_promotes_matching_fallback_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.lasttg = 100U;
+    state.lastsrc = 0U;
+    state.gi[0] = 0;
+    watchdog_event_current(&opts, &state, 0U);
+
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .source_id = 200U,
+        .group_id = 100U,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    int rc = expect_int("matching fallback promotion keeps target", (int)current->target_id, 100);
+    rc |= expect_int("matching fallback promotion adopts late source", (int)current->source_id, 200);
+    rc |= expect_int("matching fallback promotion avoids duplicate history", (int)committed->target_id, 0);
+    rc |= expect_int("matching fallback promotion avoids call end alert", g_beeper_count, 0);
+    rc |= expect_int("matching fallback promotion keeps WAV open", g_close_wav_count, 0);
+    rc |= expect_int("matching fallback promotion avoids new WAV", g_open_wav_count, 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_active_canonical_call_does_not_suppress_explicit_data(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1224,6 +1308,8 @@ main(void) {
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
+    rc |= test_first_canonical_epoch_commits_unrelated_fallback_call();
+    rc |= test_first_canonical_epoch_promotes_matching_fallback_call();
     rc |= test_active_canonical_call_does_not_suppress_explicit_data();
     rc |= test_ended_canonical_call_does_not_suppress_later_data();
 
