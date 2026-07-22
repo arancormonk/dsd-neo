@@ -155,8 +155,7 @@ typedef struct {
     uint8_t p25_patch_ssn[8];
     uint8_t p25_patch_key_valid[8];
     uint8_t dmr_confidence_locked;
-    dsd_call_state_snapshot call_state;
-    dsd_recent_activity_snapshot recent_activity;
+    dsd_call_context_snapshot call_context;
     uint8_t dmr_confidence_color_code;
     uint8_t dmr_confidence_candidate_cc;
     uint8_t dmr_confidence_candidate_count;
@@ -749,16 +748,14 @@ trunk_scan_restore_dmr_confidence_snapshot(dsd_state* state, const dsd_trunk_sca
 
 static void
 trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    (void)dsd_call_state_copy_snapshot(state, &snapshot->call_state);
-    (void)dsd_recent_activity_copy_snapshot(state, &snapshot->recent_activity);
+    (void)dsd_call_context_copy_snapshot(state, &snapshot->call_context);
     snapshot->dmr_so = state->dmr_so;
     snapshot->dmr_soR = state->dmr_soR;
 }
 
 static void
 trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    (void)dsd_call_state_restore_snapshot(state, &snapshot->call_state);
-    (void)dsd_recent_activity_restore_snapshot(state, &snapshot->recent_activity);
+    (void)dsd_call_context_restore_snapshot(state, &snapshot->call_context);
     state->dmr_so = snapshot->dmr_so;
     state->dmr_soR = snapshot->dmr_soR;
 }

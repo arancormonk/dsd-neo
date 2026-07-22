@@ -5167,18 +5167,6 @@ p25_sm_conventional_source(const dsd_state* state, const p25_sm_event_t* ev, int
 }
 
 static int
-p25_sm_conventional_service_options(const dsd_state* state, const p25_sm_event_t* ev, int slot) {
-    if (p25_sm_svc_bits_valid(ev->svc_bits)) {
-        return ev->svc_bits;
-    }
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
-        return call.service_options;
-    }
-    return 0;
-}
-
-static int
 p25_sm_conventional_protocol(const dsd_state* state) {
     if (DSD_SYNC_IS_P25(state->lastsynctype)) {
         return state->lastsynctype;
@@ -5282,7 +5270,8 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
     if (!p25_sm_conventional_resolve_call(state, ev, slot, &call)) {
         return;
     }
-    const int service_options = p25_sm_conventional_service_options(state, ev, slot);
+    const int has_service_metadata = p25_sm_svc_bits_valid(ev->svc_bits);
+    const int service_options = has_service_metadata ? ev->svc_bits : 0;
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = (uint8_t)slot,
@@ -5294,7 +5283,7 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .service_options = (uint16_t)service_options,
         .emergency = (uint8_t)((service_options & 0x80) != 0),
         .priority = (uint8_t)(service_options & 0x07),
-        .has_service_metadata = 1U,
+        .has_service_metadata = (uint8_t)has_service_metadata,
     };
     dsd_call_boundary boundary = DSD_CALL_BOUNDARY_CONTINUE;
     if (ev->identity_valid && ev->type == P25_SM_EV_PTT) {

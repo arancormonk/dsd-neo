@@ -1018,6 +1018,85 @@ test_call_identity_state_isolated_per_target(void) {
     return test_rc;
 }
 
+static int
+test_call_event_lifecycle_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 201U,
+    };
+    dsd_call_context_snapshot context = {0};
+    uint64_t ended_epoch = 0U;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "call lifecycle scan init failed: %s\n", err);
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    if (dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0
+        || dsd_call_state_end(&state, 0U, 0.1) <= 0) {
+        DSD_FPRINTF(stderr, "failed to stage ended call lifecycle for scan target\n");
+        test_rc = 1;
+        goto cleanup;
+    }
+    if (dsd_call_context_copy_snapshot(&state, &context) <= 0) {
+        DSD_FPRINTF(stderr, "failed to copy staged call lifecycle\n");
+        test_rc = 1;
+        goto cleanup;
+    }
+    ended_epoch = context.calls.slots[0].epoch;
+    context.events[0].epoch = ended_epoch;
+    context.events[0].ended_committed = 1U;
+    if (dsd_call_context_restore_snapshot(&state, &context) <= 0) {
+        DSD_FPRINTF(stderr, "failed to install staged call lifecycle\n");
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U || dsd_call_context_copy_snapshot(&state, &context) <= 0
+        || context.events[0].ended_committed != 0U) {
+        DSD_FPRINTF(stderr, "fresh scan target inherited another target's call lifecycle\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0U || dsd_call_context_copy_snapshot(&state, &context) <= 0
+        || context.calls.slots[0].phase != DSD_CALL_PHASE_ENDED || context.calls.slots[0].epoch != ended_epoch
+        || context.events[0].epoch != ended_epoch || context.events[0].ended_committed != 1U) {
+        DSD_FPRINTF(stderr, "scan target did not restore its committed call lifecycle\n");
+        test_rc = 1;
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static void
 seed_dmr_identity(dsd_state* state, int mfid, unsigned int syscode, const char* branding, const char* branding_sub,
                   const char* site_parms) {
@@ -3331,6 +3410,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_rejects_too_many_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_call_event_lifecycle_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_branding_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_confidence_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_service_options_state_isolated_per_target);

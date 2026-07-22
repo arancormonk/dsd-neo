@@ -1490,6 +1490,45 @@ test_concurrent_call_history_snapshot_copy(void) {
     return rc;
 }
 
+static int
+test_call_context_snapshot_restores_committed_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end(&state, 0U, 2.0) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    dsd_call_context_snapshot saved = {0};
+    assert(dsd_call_context_copy_snapshot(&state, &saved) == 1);
+    assert(saved.events[0].epoch == saved.calls.slots[0].epoch);
+    assert(saved.events[0].ended_committed == 1U);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 300U, 400U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_context_restore_snapshot(&state, &saved) == 1);
+
+    const uint64_t revision_before_resync = event_history[0].revision;
+    const int beeps_before_resync = g_beeper_count;
+    const int closes_before_resync = g_close_wav_count;
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = 0;
+    rc |= expect_u64("restored committed end is not replayed", event_history[0].revision, revision_before_resync);
+    rc |= expect_int("restored committed end does not beep again", g_beeper_count, beeps_before_resync);
+    rc |= expect_int("restored committed end does not rotate WAV again", g_close_wav_count, closes_before_resync);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1526,6 +1565,7 @@ main(void) {
     rc |= test_active_canonical_call_does_not_suppress_explicit_data();
     rc |= test_ended_canonical_call_does_not_suppress_later_data();
     rc |= test_concurrent_call_history_snapshot_copy();
+    rc |= test_call_context_snapshot_restores_committed_end();
 
     if (rc == 0) {
         printf("CORE_CALL_ALERT_HISTORY: OK\n");

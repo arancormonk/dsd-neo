@@ -8,14 +8,7 @@
 #include <stdint.h>
 #include "dsd-neo/core/state_fwd.h"
 
-typedef struct {
-    uint64_t epoch;
-    uint8_t ended_committed;
-    uint64_t notice_epoch;
-    uint64_t notice_target_id;
-    uint8_t notice_kind;
-    uint8_t notice_handled;
-} dsd_call_event_lifecycle;
+typedef dsd_call_event_lifecycle_snapshot dsd_call_event_lifecycle;
 
 typedef struct {
     dsd_mutex_t mutex;

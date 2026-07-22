@@ -140,6 +140,28 @@ typedef struct {
     dsd_recent_activity_entry entries[DSD_RECENT_ACTIVITY_COUNT];
 } dsd_recent_activity_snapshot;
 
+/** Event bookkeeping paired with one canonical call slot. */
+typedef struct {
+    uint64_t epoch;
+    uint8_t ended_committed;
+    uint64_t notice_epoch;
+    uint64_t notice_target_id;
+    uint8_t notice_kind;
+    uint8_t notice_handled;
+} dsd_call_event_lifecycle_snapshot;
+
+/**
+ * Complete canonical call context for runtime context switching.
+ *
+ * Restoring this snapshot preserves event commit bookkeeping while keeping
+ * epoch allocation monotonic within the destination state.
+ */
+typedef struct {
+    dsd_call_state_snapshot calls;
+    dsd_recent_activity_snapshot recent;
+    dsd_call_event_lifecycle_snapshot events[DSD_CALL_STATE_SLOT_COUNT];
+} dsd_call_context_snapshot;
+
 typedef struct {
     uint8_t valid;
     uint8_t index;
@@ -153,6 +175,8 @@ int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
+int dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out);
+int dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot);
 int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
                                const char* target_text, const char* route0_text, const char* route1_text,
                                double observed_m);

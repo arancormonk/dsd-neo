@@ -54,6 +54,9 @@ void m17_setup_conn_disc_eotx(unsigned long long src, uint8_t reflector_module, 
                               uint8_t* eotx);
 void m17_load_lsf_callsigns(uint8_t* m17_lsf, unsigned long long dst, unsigned long long src);
 uint16_t m17_attach_lsf_crc(uint8_t* m17_lsf, uint8_t* lsf_packed);
+void m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst, uint64_t src,
+                                const char* dst_text, const char* src_text, uint8_t can, uint64_t* active_epoch);
+void m17_end_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t* active_epoch);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);

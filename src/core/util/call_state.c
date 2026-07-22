@@ -465,6 +465,46 @@ dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot*
 }
 
 int
+dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out) {
+    if (!state || !out) {
+        return -1;
+    }
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (!ext) {
+        DSD_MEMSET(out, 0, sizeof(*out));
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    out->calls = ext->calls;
+    out->recent = ext->recent;
+    DSD_MEMCPY(out->events, ext->events, sizeof(out->events));
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot) {
+    if (!state || !snapshot) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    ext->calls = snapshot->calls;
+    ext->recent = snapshot->recent;
+    DSD_MEMCPY(ext->events, snapshot->events, sizeof(ext->events));
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (ext->epoch_sequence[slot] < snapshot->calls.slots[slot].epoch) {
+            ext->epoch_sequence[slot] = snapshot->calls.slots[slot].epoch;
+        }
+    }
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
 dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* source_text,
                            const char* target_text, const char* route0_text, const char* route1_text,
                            double observed_m) {

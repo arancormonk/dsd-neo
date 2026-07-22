@@ -305,9 +305,6 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     if (res->packet_stream == 0U || (res->dt != 2U && res->dt != 3U)) {
         return;
     }
-    if (state->m17encoder_tx == 1 && (!opts || opts->monitor_input_audio != 1)) {
-        return;
-    }
     int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : state->lastsynctype;
     if (!DSD_SYNC_IS_M17(protocol)) {
         protocol = DSD_SYNC_M17_LSF_POS;
@@ -1646,6 +1643,7 @@ typedef struct {
     uint8_t sid[2];
     uint8_t m17_ip_frame[432];
     uint8_t m17_ip_packed[54];
+    uint64_t monitored_call_epoch;
     int new_lsf;
 } m17_str_ctx;
 
@@ -1926,41 +1924,71 @@ m17_str_read_audio_inputs(m17_str_ctx* ctx) {
     return M17_STR_READ_OK;
 }
 
-static void
-m17_str_apply_monitor_side_state(m17_str_ctx* ctx) {
-    if (ctx->opts->monitor_input_audio != 1) {
+void
+m17_end_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t* active_epoch) {
+    if (state == NULL || active_epoch == NULL || *active_epoch == 0U) {
+        return;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == *active_epoch
+        && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
+    *active_epoch = 0U;
+}
+
+void
+m17_sync_monitored_tx_call(const dsd_opts* opts, dsd_state* state, uint64_t dst, uint64_t src, const char* dst_text,
+                           const char* src_text, uint8_t can, uint64_t* active_epoch) {
+    if (opts == NULL || state == NULL || active_epoch == NULL || opts->monitor_input_audio != 1) {
+        return;
+    }
+    if (state->m17encoder_tx != 1) {
+        m17_end_monitored_tx_call(opts, state, active_epoch);
         return;
     }
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_M17_LSF_POS,
         .slot = 0U,
         .kind = DSD_CALL_KIND_VOICE,
-        .ota_target_id = ctx->dst,
-        .ota_source_id = ctx->src,
+        .ota_target_id = dst,
+        .ota_source_id = src,
         .source_text = {0},
         .target_text = {0},
-        .service_options = ctx->can,
+        .service_options = can,
         .has_service_metadata = 1U,
     };
     dsd_call_observation enriched = observation;
-    DSD_SNPRINTF(enriched.source_text, sizeof(enriched.source_text), "%s", ctx->s40);
-    DSD_SNPRINTF(enriched.target_text, sizeof(enriched.target_text), "%s", ctx->d40);
-    (void)dsd_call_state_observe(ctx->state, &enriched, DSD_CALL_BOUNDARY_CONTINUE);
-    ctx->state->m17_can = ctx->can;
-    ctx->state->m17_str_dt = ctx->st;
-    ctx->state->m17_enc = 0;
-    ctx->state->m17_enc_st = 0;
-    ctx->state->m17_payload_decrypted = 0;
-    ctx->state->m17_signature_advertised = 0;
-    DSD_MEMSET(ctx->state->m17_signature_digest, 0, sizeof(ctx->state->m17_signature_digest));
-    DSD_MEMSET(ctx->state->m17_signature, 0, sizeof(ctx->state->m17_signature));
-    ctx->state->m17_signature_received_mask = 0;
-    ctx->state->m17_signature_complete = 0;
-    ctx->state->m17_signature_bad_sequence = 0;
-    ctx->state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_RUN;
-    for (int i = 0; i < 16; i++) {
-        ctx->state->m17_meta[i] = 0;
+    DSD_SNPRINTF(enriched.source_text, sizeof(enriched.source_text), "%s", src_text ? src_text : "");
+    DSD_SNPRINTF(enriched.target_text, sizeof(enriched.target_text), "%s", dst_text ? dst_text : "");
+    (void)dsd_call_state_observe(state, &enriched,
+                                 *active_epoch == 0U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && DSD_SYNC_IS_M17(call.protocol)) {
+        *active_epoch = call.epoch;
     }
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1U,
+    };
+    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    state->m17_can = can;
+    state->m17_enc = 0;
+    state->m17_enc_st = 0;
+    state->m17_payload_decrypted = 0;
+    state->m17_signature_advertised = 0;
+    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
+    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
+    state->m17_signature_received_mask = 0;
+    state->m17_signature_complete = 0;
+    state->m17_signature_bad_sequence = 0;
+    state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_RUN;
+    for (int i = 0; i < 16; i++) {
+        state->m17_meta[i] = 0;
+    }
+    dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
 }
 
 static void
@@ -2362,7 +2390,6 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
     DSD_MEMSET(&frame, 0, sizeof(frame));
 
     dsd_runtime_pump_controls(ctx->opts, ctx->state);
-    m17_str_apply_monitor_side_state(ctx);
     const int read_result = m17_str_read_audio_inputs(ctx);
     if (read_result != M17_STR_READ_OK) {
         return read_result;
@@ -2371,6 +2398,9 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
     m17_str_apply_filters_and_gain(ctx);
     m17_str_encode_codec2(ctx, &frame);
     m17_str_build_stream_frame(ctx, &frame);
+    ctx->state->m17_str_dt = ctx->st;
+    m17_sync_monitored_tx_call(ctx->opts, ctx->state, ctx->dst, ctx->src, ctx->d40, ctx->s40, ctx->can,
+                               &ctx->monitored_call_epoch);
 
     if (ctx->state->m17encoder_tx == 1) {
         m17_str_handle_tx_active(ctx, &frame);
@@ -2384,6 +2414,7 @@ m17_str_run_iteration(m17_str_ctx* ctx) {
 
 static void
 m17_str_finalize(m17_str_ctx* ctx) {
+    m17_end_monitored_tx_call(ctx->opts, ctx->state, &ctx->monitored_call_epoch);
     if (ctx->use_ip == 1) {
         (void)dsd_m17_udp_hook_blaster(ctx->opts, ctx->state, 10, ctx->disc);
     }

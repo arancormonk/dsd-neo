@@ -1232,6 +1232,45 @@ test_conventional_anonymous_activity_preserves_service_options(void) {
     return 0;
 }
 
+static int
+test_conventional_unknown_service_stays_unconfirmed(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_call_snapshot call;
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.has_service_metadata != 0U || call.service_options != 0U || call.emergency != 0U
+        || call.priority != 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional unknown service options were recorded as confirmed metadata\n");
+        return 1;
+    }
+
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0x85)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.has_service_metadata == 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional stale-service fixture did not publish confirmed metadata\n");
+        return 1;
+    }
+    const uint64_t first_epoch = call.epoch;
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 2000, 0, 456, 1, P25_SM_SVC_UNKNOWN)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.epoch != first_epoch + 1U || call.ota_target_id != 2000U || call.ota_source_id != 456U
+        || call.has_service_metadata != 0U || call.service_options != 0U || call.emergency != 0U
+        || call.priority != 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional unknown BEGIN inherited service metadata from a prior epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
 // Test: END closes one transmission but retains the traffic allocation until
 // its inactivity hang expires.
 static int
@@ -2260,6 +2299,7 @@ main(void) {
     fail += test_conventional_end_is_follower_noop();
     fail += test_conventional_anonymous_activity_waits_for_identity();
     fail += test_conventional_anonymous_activity_preserves_service_options();
+    fail += test_conventional_unknown_service_stays_unconfirmed();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += test_tdma_idle_ends_voice_with_newer_grant();

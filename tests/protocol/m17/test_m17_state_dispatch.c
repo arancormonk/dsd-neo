@@ -1693,6 +1693,94 @@ test_encoders_propagate_requested_udp_setup_failure(void) {
 }
 
 static int
+test_local_stream_lsf_publishes_canonical_identity(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
+    DSD_MEMSET(lsf_packed, 0, sizeof(lsf_packed));
+
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+
+    state->m17encoder_tx = 1;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    state->m17_can_en = -1;
+    opts->monitor_input_audio = 0;
+
+    int err = 0;
+    err |= expect_int("local stream LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    dsd_call_snapshot call;
+    err |= expect_int("local stream LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("local stream LSF call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("local stream LSF destination", call.ota_target_id, dst);
+    err |= expect_u64("local stream LSF source", call.ota_source_id, src);
+    err |= expect_int("local stream LSF CAN", call.service_options, 7);
+    err |= expect_int("local stream LSF service confirmed", call.has_service_metadata, 1);
+    err |= expect_int("local stream LSF crypto clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    err |= expect_int("local stream LSF source text", strcmp(call.source_text, M17_REF_LSF_SRC_CSD), 0);
+    err |= expect_int("local stream LSF destination text", strcmp(call.target_text, M17_REF_LSF_DST_CSD), 0);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    return err;
+}
+
+static int
+test_monitored_stream_call_follows_tx_lifecycle(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    uint64_t active_epoch = 0U;
+    opts->monitor_input_audio = 1;
+
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    dsd_call_snapshot call;
+    int err = 0;
+    err |= expect_int("idle monitored encoder does not publish call", get_m17_call(state, &call), 0);
+
+    state->m17encoder_tx = 1;
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    err |= expect_int("transmitting monitored encoder publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("transmitting monitored call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("transmitting monitored call epoch tracked", active_epoch, call.epoch);
+    err |= expect_u64("transmitting monitored destination", call.ota_target_id, dst);
+    err |= expect_u64("transmitting monitored source", call.ota_source_id, src);
+    err |= expect_int("transmitting monitored CAN", call.service_options, 7);
+    err |= expect_int("transmitting monitored crypto clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    err |= expect_int("transmitting monitored media active", call.media_active, 1);
+    const uint64_t tx_epoch = call.epoch;
+
+    state->m17encoder_tx = 0;
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    err |= expect_int("idle transition retains monitored call", get_m17_call(state, &call), 1);
+    err |= expect_int("idle transition ends monitored call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("idle transition preserves monitored epoch", call.epoch, tx_epoch);
+    err |= expect_u64("idle transition clears tracked epoch", active_epoch, 0U);
+    const uint64_t ended_revision = call.revision;
+
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    (void)get_m17_call(state, &call);
+    err |= expect_u64("repeated monitored idle is idempotent", call.revision, ended_revision);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    return err;
+}
+
+static int
 test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
@@ -1875,6 +1963,8 @@ main(void) {
     err |= test_packet_protocol_identifier_utf8_boundaries();
     err |= test_m17_hook_argument_guards();
     err |= test_encoders_propagate_requested_udp_setup_failure();
+    err |= test_local_stream_lsf_publishes_canonical_identity();
+    err |= test_monitored_stream_call_follows_tx_lifecycle();
     err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
     err |= test_stream_encoder_treats_stdin_eof_as_clean_shutdown();
     err |= test_ip_decoder_propagates_udp_backend_failure();
