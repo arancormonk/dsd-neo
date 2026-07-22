@@ -347,7 +347,7 @@ test_watchdog_current_marks_only_semantic_changes(void) {
 }
 
 static int
-test_nonfinalizing_call_notice_has_no_call_end_side_effects(void) {
+test_nonfinalizing_call_notice_defers_call_end_side_effects(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
@@ -374,6 +374,18 @@ test_nonfinalizing_call_notice_has_no_call_end_side_effects(void) {
     assert(dsd_call_state_get(&state, 0U, &call) == 1);
     rc |= expect_int("nonfinalizing notice preserves active call", call.phase, DSD_CALL_PHASE_ACTIVE);
     rc |= expect_int("nonfinalizing notice preserves call kind", call.kind, DSD_CALL_KIND_GROUP_VOICE);
+
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end(&state, 0U, 2.0) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    rc |= expect_int("later call end beeps", g_beeper_count, 1);
+    rc |= expect_int("later call end closes WAV", g_close_wav_count, 1);
+    rc |= expect_int("later call end opens WAV", g_open_wav_count, 1);
+    rc |=
+        expect_int("later call end commits rebuilt row", (int)event_history[0].Event_History_Items[1].target_id, 1234);
+    rc |= expect_has_substr("nonfinalizing notice remains in history",
+                            event_history[0].Event_History_Items[2].internal_str, "Target: 1234");
     return rc;
 }
 
@@ -1535,7 +1547,7 @@ main(void) {
 
     rc |= test_event_history_revision_primitives();
     rc |= test_watchdog_current_marks_only_semantic_changes();
-    rc |= test_nonfinalizing_call_notice_has_no_call_end_side_effects();
+    rc |= test_nonfinalizing_call_notice_defers_call_end_side_effects();
     rc |= test_event_state_snapshot_copy_accepts_aliased_state();
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();

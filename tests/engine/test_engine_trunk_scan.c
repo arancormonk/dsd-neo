@@ -1097,6 +1097,81 @@ cleanup:
     return test_rc;
 }
 
+static int
+test_call_event_current_rows_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[DSD_CALL_STATE_SLOT_COUNT];
+    reset_scan_opts_state(&opts, &state);
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    state.event_history_s = event_history;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "event row scan init failed: %s\n", err);
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    Event_History* current = &event_history[0].Event_History_Items[0];
+    current->target_id = 101U;
+    current->source_id = 201U;
+    DSD_SNPRINTF(current->event_string, sizeof current->event_string, "%s", "target-a-current");
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U
+        || event_history[0].Event_History_Items[0].event_string[0] != '\0') {
+        DSD_FPRINTF(stderr, "fresh scan target inherited another target's current event row\n");
+        test_rc = 1;
+    }
+
+    current = &event_history[0].Event_History_Items[0];
+    current->target_id = 301U;
+    current->source_id = 401U;
+    DSD_SNPRINTF(current->event_string, sizeof current->event_string, "%s", "target-b-current");
+    DSD_SNPRINTF(event_history[0].Event_History_Items[1].event_string,
+                 sizeof event_history[0].Event_History_Items[1].event_string, "%s", "shared-committed");
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0U
+        || strcmp(event_history[0].Event_History_Items[0].event_string, "target-a-current") != 0
+        || event_history[0].Event_History_Items[0].target_id != 101U
+        || strcmp(event_history[0].Event_History_Items[1].event_string, "shared-committed") != 0) {
+        DSD_FPRINTF(stderr, "scan target did not restore its current event row without changing history\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U
+        || strcmp(event_history[0].Event_History_Items[0].event_string, "target-b-current") != 0
+        || event_history[0].Event_History_Items[0].target_id != 301U
+        || strcmp(event_history[0].Event_History_Items[1].event_string, "shared-committed") != 0) {
+        DSD_FPRINTF(stderr, "scan target lost its saved current event row across context switches\n");
+        test_rc = 1;
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static void
 seed_dmr_identity(dsd_state* state, int mfid, unsigned int syscode, const char* branding, const char* branding_sub,
                   const char* site_parms) {
@@ -3411,6 +3486,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_lifecycle_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_call_event_current_rows_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_branding_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_confidence_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_service_options_state_isolated_per_target);

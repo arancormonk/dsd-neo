@@ -952,13 +952,9 @@ watchdog_event_current_args_valid(const dsd_opts* opts, const dsd_state* state, 
 }
 
 static int
-watchdog_event_current_skip_ended(const dsd_call_snapshot* call, dsd_call_event_lifecycle* lifecycle) {
+watchdog_event_current_skip_ended(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
     if (!call || !lifecycle || call->phase != DSD_CALL_PHASE_ENDED) {
         return 0;
-    }
-    if (lifecycle->notice_handled && lifecycle->notice_epoch == call->epoch) {
-        lifecycle->ended_committed = 1U;
-        return 1;
     }
     return lifecycle->epoch == call->epoch && lifecycle->ended_committed;
 }

@@ -7,6 +7,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -156,6 +157,7 @@ typedef struct {
     uint8_t p25_patch_key_valid[8];
     uint8_t dmr_confidence_locked;
     dsd_call_context_snapshot call_context;
+    Event_History event_current[DSD_CALL_STATE_SLOT_COUNT];
     uint8_t dmr_confidence_color_code;
     uint8_t dmr_confidence_candidate_cc;
     uint8_t dmr_confidence_candidate_count;
@@ -749,6 +751,14 @@ trunk_scan_restore_dmr_confidence_snapshot(dsd_state* state, const dsd_trunk_sca
 static void
 trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     (void)dsd_call_context_copy_snapshot(state, &snapshot->call_context);
+    if (state->event_history_s != NULL) {
+        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+            DSD_MEMCPY(&snapshot->event_current[slot], &state->event_history_s[slot].Event_History_Items[0],
+                       sizeof(snapshot->event_current[slot]));
+        }
+    } else {
+        DSD_MEMSET(snapshot->event_current, 0, sizeof(snapshot->event_current));
+    }
     snapshot->dmr_so = state->dmr_so;
     snapshot->dmr_soR = state->dmr_soR;
 }
@@ -756,6 +766,17 @@ trunk_scan_save_call_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
 static void
 trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
     (void)dsd_call_context_restore_snapshot(state, &snapshot->call_context);
+    if (state->event_history_s != NULL) {
+        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+            Event_History* current = &state->event_history_s[slot].Event_History_Items[0];
+            // Saved rows are exact byte copies, so padding bytes have defined snapshot values.
+            // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c)
+            if (memcmp(current, &snapshot->event_current[slot], sizeof(*current)) != 0) {
+                DSD_MEMCPY(current, &snapshot->event_current[slot], sizeof(*current));
+                dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+            }
+        }
+    }
     state->dmr_so = snapshot->dmr_so;
     state->dmr_soR = snapshot->dmr_soR;
 }
