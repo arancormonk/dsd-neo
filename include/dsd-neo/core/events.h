@@ -18,7 +18,9 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
 #include <dsd-neo/platform/threading.h>
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
