@@ -1017,15 +1017,15 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
         dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, ctx.target, ctx.source, is_private,
                                                       (ctx.so & 0x40U) != 0U, 0);
         dmr_flco_print_emergency_flag(&ctx);
+        if (ctx.type != 2U && ctx.CRCCorrect == 1U) {
+            dmr_flco_publish_voice(&ctx);
+        }
         dmr_flco_apply_enc_lockout(&ctx);
         dmr_flco_print_service_options(&ctx);
         dmr_flco_print_branding(&ctx);
         dmr_flco_print_tg_label(&ctx);
         dmr_flco_print_loaded_keys(&ctx);
         dmr_flco_print_extended_keys(&ctx);
-        if (ctx.type != 2U && ctx.CRCCorrect == 1U) {
-            dmr_flco_publish_voice(&ctx);
-        }
     }
 
     dmr_flco_finalize(&ctx);

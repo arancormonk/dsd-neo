@@ -17,6 +17,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -214,6 +215,7 @@ static int s_scan_activity_encrypted = 0;
 static int s_scan_activity_data_call = 0;
 static int s_tune_to_cc_calls = 0;
 static long int s_tune_to_cc_freq = 0;
+static int s_return_to_cc_calls = 0;
 
 static void
 capture_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
@@ -242,6 +244,17 @@ capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
     (void)ted_sps;
     s_tune_to_cc_calls++;
     s_tune_to_cc_freq = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+capture_return_to_cc_ending_calls(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    s_return_to_cc_calls++;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        (void)dsd_call_state_end(state, (uint8_t)slot, 0.0);
+    }
+    opts->trunk_is_tuned = 0;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -913,7 +926,52 @@ test_encrypted_flco_lockout_inserts_policy_and_event_history(void) {
     assert(strcmp(lookup.entry.mode, "B") == 0);
     assert(strcmp(lookup.entry.name, "ENC LO") == 0);
     assert(lookup.entry.source == DSD_TG_POLICY_SOURCE_ENC_LOCKOUT);
-    assert(strstr(history[0].Event_History_Items[1].internal_str, "Target: 1234; has been locked out;") != NULL);
+    assert(strstr(history[0].Event_History_Items[0].internal_str, "Target: 1234; has been locked out;") != NULL);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
+test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    state.trunk_cc_freq = 851250000L;
+    state.trunk_vc_freq[0] = 852000000L;
+    state.trunk_vc_freq[1] = 852000000L;
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+
+    dmr_sm_init(&opts, &state);
+    dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+    s_return_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .return_to_cc_request = capture_return_to_cc_ending_calls,
+    });
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+    assert(irr == 0U);
+    assert(s_return_to_cc_calls == 1);
+    assert(opts.trunk_is_tuned == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
     dsd_state_ext_free_all(&state);
 }
 
@@ -1089,6 +1147,7 @@ main(void) {
     test_cach_completed_fragment_crc_error_reports_voice_payload_context();
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
+    test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_activity_uses_each_slot_value();
