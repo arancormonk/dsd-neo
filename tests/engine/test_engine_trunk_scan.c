@@ -985,6 +985,11 @@ test_call_identity_state_isolated_per_target(void) {
     }
 
     seed_call_identity(&state, 101, 201, 102, 202, 0, 1);
+    dsd_call_snapshot target0_slot0 = {0};
+    if (dsd_call_state_get(&state, 0U, &target0_slot0) <= 0) {
+        DSD_FPRINTF(stderr, "target 0 call epoch unavailable\n");
+        test_rc = 1;
+    }
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -994,6 +999,11 @@ test_call_identity_state_isolated_per_target(void) {
     test_rc |= expect_call_identity("fresh target", &state, 0, 0, 0, 0, -1, -1);
 
     seed_call_identity(&state, 301, 401, 302, 402, 1, 0);
+    dsd_call_snapshot target1_slot0 = {0};
+    if (dsd_call_state_get(&state, 0U, &target1_slot0) <= 0 || target1_slot0.epoch <= target0_slot0.epoch) {
+        DSD_FPRINTF(stderr, "call epoch reused across scan targets\n");
+        test_rc = 1;
+    }
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {

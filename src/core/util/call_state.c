@@ -312,11 +312,11 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[observation->slot];
     const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
-    const uint64_t prior_epoch = snapshot->epoch;
     const double now_m = call_state_observed_m(observation->observed_m);
     if (begins_epoch) {
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
-        snapshot->epoch = call_state_next_nonzero(prior_epoch);
+        ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
+        snapshot->epoch = ext->epoch_sequence[observation->slot];
         snapshot->slot = observation->slot;
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
@@ -455,6 +455,11 @@ dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot*
     }
     dsd_call_state_ext_lock(ext);
     ext->calls = *snapshot;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (ext->epoch_sequence[slot] < snapshot->slots[slot].epoch) {
+            ext->epoch_sequence[slot] = snapshot->slots[slot].epoch;
+        }
+    }
     dsd_call_state_ext_unlock(ext);
     return 1;
 }
@@ -667,10 +672,12 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
     dsd_call_state_snapshot calls;
     dsd_recent_activity_snapshot recent;
     dsd_call_event_lifecycle events[DSD_CALL_STATE_SLOT_COUNT];
+    uint64_t epoch_sequence[DSD_CALL_STATE_SLOT_COUNT];
     dsd_call_state_ext_lock(src_ext);
     calls = src_ext->calls;
     recent = src_ext->recent;
     DSD_MEMCPY(events, src_ext->events, sizeof(events));
+    DSD_MEMCPY(epoch_sequence, src_ext->epoch_sequence, sizeof(epoch_sequence));
     dsd_call_state_ext_unlock(src_ext);
 
     dsd_call_state_ext* dst_ext = dsd_call_state_ext_get(dst, 1);
@@ -682,6 +689,7 @@ dsd_call_state_copy_to_state(dsd_state* dst, const dsd_state* src) {
     dst_ext->calls = calls;
     dst_ext->recent = recent;
     DSD_MEMCPY(dst_ext->events, events, sizeof(events));
+    DSD_MEMCPY(dst_ext->epoch_sequence, epoch_sequence, sizeof(epoch_sequence));
     dsd_call_state_ext_unlock(dst_ext);
     return 1;
 }
@@ -710,6 +718,7 @@ dsd_call_state_test_set_epoch(dsd_state* state, uint8_t slot, uint64_t epoch) {
     }
     dsd_call_state_ext_lock(ext);
     ext->calls.slots[slot].epoch = epoch;
+    ext->epoch_sequence[slot] = epoch;
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

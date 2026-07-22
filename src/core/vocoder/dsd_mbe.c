@@ -1743,6 +1743,14 @@ mark_vocoder_call_media_sync_supported(int protocol) {
            || DSD_SYNC_IS_YSF(protocol);
 }
 
+static uint8_t
+mark_vocoder_call_media_slot(int protocol, int current_slot) {
+    if ((DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_DMR(protocol)) && current_slot == 1) {
+        return 1U;
+    }
+    return 0U;
+}
+
 static void
 mark_vocoder_call_media(dsd_opts* opts, dsd_state* state) {
     int protocol = state->synctype;
@@ -1750,7 +1758,7 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state) {
     if (!voice_sync) {
         return;
     }
-    const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
+    const uint8_t slot = mark_vocoder_call_media_slot(protocol, state->currentslot);
     dsd_call_snapshot call;
     const int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     if (!has_active) {

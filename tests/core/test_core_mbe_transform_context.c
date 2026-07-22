@@ -6,6 +6,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
@@ -2334,6 +2335,11 @@ test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
 
     processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("dstar-second canonical slot0", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("dstar-second canonical slot0 active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_int("dstar-second canonical slot0 media", call.media_active, 1);
+    rc |= expect_eq_int("dstar-second no phantom slot1", dsd_call_state_get(&state, 1U, &call), 0);
     rc |= expect_eq_int("dstar-second errs", state.errs, expected_errs);
     rc |= expect_eq_int("dstar-second errs2", state.errs2, expected_errs2);
     rc |= expect_eq_int("dstar-second status", strcmp(state.err_str, expected_err_str), 0);

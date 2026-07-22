@@ -1309,6 +1309,7 @@ dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, 
             dst_ext->calls = src_ext->calls;
             dst_ext->recent = src_ext->recent;
             DSD_MEMCPY(dst_ext->events, src_ext->events, sizeof(dst_ext->events));
+            DSD_MEMCPY(dst_ext->epoch_sequence, src_ext->epoch_sequence, sizeof(dst_ext->epoch_sequence));
         }
     } else {
         (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);

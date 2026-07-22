@@ -409,6 +409,13 @@ ldu2_maybe_begin_lsd_alias(dsd_state* state, const Ldu2Frame* frame) {
 }
 
 static void
+ldu2_enrich_lsd_alias_if_call(dsd_state* state, const dsd_call_snapshot* call, int has_call, const char* alias) {
+    if (has_call) {
+        (void)dsd_event_enrich_alias(state, 0U, call->epoch, alias);
+    }
+}
+
+static void
 ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
     int k = state->data_block_counter[0];
     if (state->dmr_alias_format[0] != 0x02 || k < state->dmr_alias_block_len[0]) {
@@ -432,8 +439,8 @@ ldu2_maybe_finalize_lsd_alias(const dsd_opts* opts, dsd_state* state) {
                 str[str_pos++] = ch;
             }
         }
-        (void)dsd_event_enrich_alias(state, 0U, call.epoch, str);
     }
+    ldu2_enrich_lsd_alias_if_call(state, &call, has_call, str);
 
     if (tsrc != 0) {
         const char* mode = "D";

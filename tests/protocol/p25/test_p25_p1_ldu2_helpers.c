@@ -745,6 +745,27 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
 }
 
 static int
+test_ldu2_alias_without_canonical_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    state.dmr_alias_format[0] = 0x02;
+    state.dmr_alias_block_len[0] = 1;
+    state.data_block_counter[0] = 1;
+    DSD_MEMCPY(state.dmr_alias_block_segment[0][0][0], "TEST", 4U);
+
+    ldu2_maybe_finalize_lsd_alias(&opts, &state);
+
+    rc |= expect_int("alias without call skips policy", g_policy_make_calls, 0);
+    rc |= expect_int("alias without call resets format", state.dmr_alias_format[0], 0);
+    return rc;
+}
+
+static int
 test_ldu2_nondefinitive_metadata_preserves_prior_tuple(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -935,6 +956,7 @@ main(void) {
     rc |= test_ldu2_consume_trailing_status_feeds_classifier();
     rc |= test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters();
     rc |= test_ldu2_decode_key_reporting_and_lsd_alias_state();
+    rc |= test_ldu2_alias_without_canonical_call();
     rc |= test_ldu2_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_ldu2_decode_post_fec_rejects_malformed_ess_bits();
     rc |= test_ldu2_key_reporting_preserves_user_unmute();

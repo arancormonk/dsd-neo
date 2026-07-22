@@ -22,6 +22,7 @@ typedef struct {
     dsd_call_state_snapshot calls;
     dsd_recent_activity_snapshot recent;
     dsd_call_event_lifecycle events[DSD_CALL_STATE_SLOT_COUNT];
+    uint64_t epoch_sequence[DSD_CALL_STATE_SLOT_COUNT];
 } dsd_call_state_ext;
 
 dsd_call_state_ext* dsd_call_state_ext_get(dsd_state* state, int create);

@@ -715,6 +715,10 @@ test_slot_ptt_and_end_helpers(void) {
     rc |= expect_int("end slot0 gps clear", state.dmr_embedded_gps[0][0], '\0');
     rc |= expect_int("end slot0 lrrp clear", state.dmr_lrrp_gps[0][0], '\0');
 
+    rc |= expect_int("end canonical call", dsd_call_state_end(&state, 0U, 1.0), 1);
+    rc |= expect_int("ended slot target retained for diagnostics", p25p2_xcch_get_slot_tg(&state, 0), 0x2222);
+    rc |= expect_int("ended slot source retained for diagnostics", p25p2_xcch_get_slot_src(&state, 0), 0x112233);
+
     return rc;
 }
 

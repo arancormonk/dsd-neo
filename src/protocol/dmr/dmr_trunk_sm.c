@@ -251,7 +251,7 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int
             .frequency_hz = ctx->vc_freq_hz,
             .observed_m = now_m,
         };
-        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) >= 0) {
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0) {
             ctx->vc_identity_published = 1;
         }
     }

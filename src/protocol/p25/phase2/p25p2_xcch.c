@@ -144,7 +144,8 @@ static int
 p25p2_xcch_get_slot_tg(const dsd_state* state, int slot) {
     dsd_call_snapshot call;
     if (!p25p2_xcch_slot_valid(slot) || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0
-        || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_target_id > INT_MAX) {
+        || (call.phase != DSD_CALL_PHASE_ACTIVE && call.phase != DSD_CALL_PHASE_ENDED)
+        || call.ota_target_id > INT_MAX) {
         return 0;
     }
     return (int)call.ota_target_id;
@@ -154,7 +155,8 @@ static int
 p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
     dsd_call_snapshot call;
     if (!p25p2_xcch_slot_valid(slot) || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0
-        || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_source_id > INT_MAX) {
+        || (call.phase != DSD_CALL_PHASE_ACTIVE && call.phase != DSD_CALL_PHASE_ENDED)
+        || call.ota_source_id > INT_MAX) {
         return 0;
     }
     return (int)call.ota_source_id;
