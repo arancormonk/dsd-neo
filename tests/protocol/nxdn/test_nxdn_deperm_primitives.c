@@ -507,8 +507,11 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 777);
     rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 777);
     rc |= expect_str("sacch2-single-alias", state.generic_talker_alias[0], "JPN DCR");
-    rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR; ");
-    rc |= expect_int("sacch2-single-event-revision", (int)histories[0].revision, 1);
+    rc |= expect_int("sacch2-single-event-protocol", histories[0].Event_History_Items[0].systype, DSD_SYNC_NXDN_POS);
+    rc |= expect_int("sacch2-single-event-target", histories[0].Event_History_Items[0].target_id, 777);
+    rc |= expect_int("sacch2-single-event-source", histories[0].Event_History_Items[0].source_id, 777);
+    rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR");
+    rc |= expect_int("sacch2-single-event-revision", histories[0].revision > 1U, 1);
     rc |= expect_int("sacch2-single-cipher", state.nxdn_cipher_type, 1);
     rc |= expect_int("sacch2-single-enc-lockout", state.dmr_encL, 1);
 

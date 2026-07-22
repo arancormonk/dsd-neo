@@ -714,7 +714,7 @@ nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const stru
 }
 
 static void
-nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fields* fields) {
+nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
         state->payload_miN = 0;
     }
@@ -732,10 +732,11 @@ nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fie
         .ota_source_id = 777U,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "JPN DCR");
-    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
-                 sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", "JPN DCR");
-    dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
+    }
     if (fields->sf_fb) {
         state->payload_miN = 0;
     }
@@ -815,7 +816,7 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     nxdn_print_sacch2_header(state, &fields);
     const uint8_t crc_sf_check = nxdn_update_sacch2_segment_crc(state, &fields);
     nxdn_store_sacch2_frame(state, trellis_buf, &fields);
-    nxdn_update_sacch2_identity_state(state, &fields);
+    nxdn_update_sacch2_identity_state(opts, state, &fields);
     nxdn_print_sacch2_complete_message(opts, state, &fields, crc_sf_check);
     nxdn_print_sacch2_payload(opts, state, &fields, m_data);
     nxdn_reset_sacch2_if_done(state, &fields);

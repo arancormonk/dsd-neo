@@ -1737,10 +1737,63 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
 static int
 mark_vocoder_call_media_sync_supported(int protocol) {
     return DSD_SYNC_IS_P25P1(protocol) || protocol == DSD_SYNC_X2TDMA_VOICE_POS || protocol == DSD_SYNC_X2TDMA_VOICE_NEG
-           || protocol == DSD_SYNC_DSTAR_VOICE_POS || protocol == DSD_SYNC_DSTAR_VOICE_NEG
-           || protocol == DSD_SYNC_DMR_BS_VOICE_POS || protocol == DSD_SYNC_DMR_BS_VOICE_NEG
-           || protocol == DSD_SYNC_DMR_MS_VOICE || DSD_SYNC_IS_PROVOICE(protocol) || DSD_SYNC_IS_NXDN(protocol)
-           || DSD_SYNC_IS_YSF(protocol);
+           || DSD_SYNC_IS_DSTAR(protocol) || protocol == DSD_SYNC_DMR_BS_VOICE_POS
+           || protocol == DSD_SYNC_DMR_BS_VOICE_NEG || protocol == DSD_SYNC_DMR_MS_VOICE
+           || DSD_SYNC_IS_PROVOICE(protocol) || DSD_SYNC_IS_NXDN(protocol) || DSD_SYNC_IS_YSF(protocol);
+}
+
+typedef enum {
+    MBE_MEDIA_FAMILY_NONE,
+    MBE_MEDIA_FAMILY_P25P1,
+    MBE_MEDIA_FAMILY_X2TDMA,
+    MBE_MEDIA_FAMILY_DSTAR,
+    MBE_MEDIA_FAMILY_DMR,
+    MBE_MEDIA_FAMILY_PROVOICE,
+    MBE_MEDIA_FAMILY_NXDN,
+    MBE_MEDIA_FAMILY_YSF,
+    MBE_MEDIA_FAMILY_DPMR,
+} mbe_media_protocol_family;
+
+static int
+mark_vocoder_call_media_protocol_family(int protocol) {
+    if (DSD_SYNC_IS_P25P1(protocol)) {
+        return MBE_MEDIA_FAMILY_P25P1;
+    }
+    if (DSD_SYNC_IS_X2TDMA(protocol)) {
+        return MBE_MEDIA_FAMILY_X2TDMA;
+    }
+    if (DSD_SYNC_IS_DSTAR(protocol)) {
+        return MBE_MEDIA_FAMILY_DSTAR;
+    }
+    if (DSD_SYNC_IS_DMR(protocol)) {
+        return MBE_MEDIA_FAMILY_DMR;
+    }
+    if (DSD_SYNC_IS_PROVOICE(protocol)) {
+        return MBE_MEDIA_FAMILY_PROVOICE;
+    }
+    if (DSD_SYNC_IS_NXDN(protocol)) {
+        return MBE_MEDIA_FAMILY_NXDN;
+    }
+    if (DSD_SYNC_IS_YSF(protocol)) {
+        return MBE_MEDIA_FAMILY_YSF;
+    }
+    return DSD_SYNC_IS_DPMR(protocol) ? MBE_MEDIA_FAMILY_DPMR : MBE_MEDIA_FAMILY_NONE;
+}
+
+static int
+mark_vocoder_call_media_protocol_compatible(int decoder_protocol, int call_protocol) {
+    const int decoder_family = mark_vocoder_call_media_protocol_family(decoder_protocol);
+    const int call_family = mark_vocoder_call_media_protocol_family(call_protocol);
+    if (decoder_family != MBE_MEDIA_FAMILY_NONE && decoder_family == call_family) {
+        return 1;
+    }
+
+    /* YSF and scrambled dPMR temporarily select another synctype to reuse an MBE decoder. */
+    if (call_family == MBE_MEDIA_FAMILY_YSF
+        && (decoder_family == MBE_MEDIA_FAMILY_NXDN || decoder_family == MBE_MEDIA_FAMILY_P25P1)) {
+        return 1;
+    }
+    return call_family == MBE_MEDIA_FAMILY_DPMR && decoder_family == MBE_MEDIA_FAMILY_NXDN;
 }
 
 static uint8_t
@@ -1760,7 +1813,8 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state) {
     }
     const uint8_t slot = mark_vocoder_call_media_slot(protocol, state->currentslot);
     dsd_call_snapshot call;
-    const int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                           && mark_vocoder_call_media_protocol_compatible(protocol, call.protocol);
     if (!has_active) {
         const dsd_call_observation observation = {
             .protocol = protocol,
