@@ -1409,3 +1409,39 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     }
     return 0;
 }
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    if (opts == NULL || state == NULL || state->event_history_s == NULL || notice == NULL || slot > 1U) {
+        return -1;
+    }
+
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History active;
+    DSD_MEMCPY(&active, &event_struct->Event_History_Items[0], sizeof(active));
+    init_event_history(event_struct, 0, 1);
+
+    Event_History* item = &event_struct->Event_History_Items[0];
+    item->write = 1;
+    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
+    item->systype = DSD_SYNC_NONE;
+    item->subtype = -1;
+    item->gi = -1;
+    item->event_time = time(NULL);
+
+    char timestr[9];
+    char datestr[11];
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
+    DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s %s %s", datestr, timestr, notice);
+
+    if (opts->event_out_file[0] != '\0') {
+        write_event_to_log_file(opts, state, slot, 0U, item->event_string);
+    }
+    push_event_history(event_struct);
+    DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
+    dsd_event_history_mark_dirty(event_struct);
+
+    dsd_frame_logf(opts, "FRAME SYSTEM slot=%d %s", slot + 1, notice);
+    return 0;
+}

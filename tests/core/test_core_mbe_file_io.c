@@ -1533,8 +1533,9 @@ test_symbol_capture_auto_rotation_reopens_and_logs_event(void) {
     rc |= expect_u64("rotation preserves active call epoch", active_after.epoch, active_before.epoch);
     rc |= expect_u64("rotation preserves active call source", active_after.ota_source_id, 1234U);
 
-    // The user-visible event should name the generated capture and retain its own explicit data identity.
+    // The user-visible event should name the generated capture without being attributed to radio data.
     Event_History* rotated = &state.event_history_s[0].Event_History_Items[1];
+    rc |= expect_int("rotation event category", rotated->category, DSD_EVENT_CATEGORY_SYSTEM);
     rc |= expect_int("rotation event source", (int)rotated->source_id, 0);
     rc |= expect_int("rotation event target", (int)rotated->target_id, 0);
     rc |= expect_true("rotation event string", strstr(rotated->event_string, "Dibit Capture File Rotated") != NULL);

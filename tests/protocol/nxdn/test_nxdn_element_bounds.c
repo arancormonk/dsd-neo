@@ -645,6 +645,47 @@ test_disc_trunk_return_clears_call_state(void) {
 }
 
 static int
+test_idle_keeps_active_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[8] = {0};
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    set_message_type(bits, 0x10U);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .policy_target_id = 0x4567U,
+        .ota_source_id = 0x1234U,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot before;
+    assert(dsd_call_state_get(state, 0U, &before) == 1);
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    dsd_call_snapshot after;
+    int rc = 0;
+    rc |= expect_int("idle-call-present", dsd_call_state_get(state, 0U, &after), 1);
+    rc |= expect_int("idle-call-active", after.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_u64("idle-call-epoch", after.epoch, before.epoch);
+    rc |= expect_u64("idle-call-target", after.ota_target_id, before.ota_target_id);
+    rc |= expect_u64("idle-call-source", after.ota_source_id, before.ota_source_id);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_sdcall_header_short_is_ignored(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -1624,6 +1665,7 @@ main(void) {
     rc |= test_decode_guards_and_unknown_dispatch();
     rc |= test_sacch_full_decode_crc_gate_and_reset();
     rc |= test_disc_trunk_return_clears_call_state();
+    rc |= test_idle_keeps_active_call();
     rc |= test_sdcall_header_short_is_ignored();
     rc |= test_sdcall_iv_short_type_c_is_ignored();
     rc |= test_sdcall_iv_type_d_min_length_is_accepted();

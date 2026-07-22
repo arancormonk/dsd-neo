@@ -461,6 +461,38 @@ test_data_call_emits_frame_log_record(void) {
 }
 
 static int
+test_system_notice_is_not_attributed_as_radio_data(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_DATA;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("system notice emits", dsd_event_emit_system_notice(&opts, &state, 0U, "Capture rotated;"), 0);
+    const Event_History* current = &state.event_history_s[0].Event_History_Items[0];
+    const Event_History* stored = &state.event_history_s[0].Event_History_Items[1];
+    rc |= expect_int("system notice preserves current voice target", (int)current->target_id, 5678);
+    rc |= expect_int("system notice category", stored->category, DSD_EVENT_CATEGORY_SYSTEM);
+    rc |= expect_int("system notice severity", stored->severity, DSD_EVENT_SEVERITY_INFO);
+    rc |= expect_int("system notice neutral subtype", stored->subtype, -1);
+    rc |= expect_int("system notice neutral systype", stored->systype, DSD_SYNC_NONE);
+    rc |= expect_int("system notice source", (int)stored->source_id, 0);
+    rc |= expect_int("system notice target", (int)stored->target_id, 0);
+    rc |= expect_has_substr("system notice text", stored->event_string, "Capture rotated;");
+    rc |= expect_int("system notice does not alert as data", g_beeper_count, 0);
+    rc |= expect_int("system notice emits one frame log", g_frame_log_count, 1);
+    rc |= expect_has_substr("system notice frame log category", g_last_frame_log, "FRAME SYSTEM slot=1");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_status_event_is_not_data_call_or_frame_log(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1443,6 +1475,7 @@ main(void) {
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_data_call_emits_frame_log_record();
+    rc |= test_system_notice_is_not_attributed_as_radio_data();
     rc |= test_status_event_is_not_data_call_or_frame_log();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
     rc |= test_source_less_data_call_is_preserved_in_history();

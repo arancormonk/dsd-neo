@@ -2998,8 +2998,7 @@ ui_cmd_handle_symcap_save(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (state && state->event_history_s) {
         char event_str[2000] = {0};
         DSD_SNPRINTF(event_str, sizeof event_str, "DSD-neo Dibit Capture File Started: %s;", opts->symbol_out_file);
-        const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NONE, 0U, 0U, 0U);
-        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, event_str);
+        (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
         dsd_event_sync_slot(opts, state, 0);
     }
     opts->symbol_out_file_creation_time = time(NULL);
@@ -3016,8 +3015,7 @@ ui_cmd_handle_symcap_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app
         if (state && state->event_history_s) {
             char event_str[2000] = {0};
             DSD_SNPRINTF(event_str, sizeof event_str, "DSD-neo Dibit Capture File  Closed: %s;", opts->symbol_out_file);
-            const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NONE, 0U, 0U, 0U);
-            (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, event_str);
+            (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
             dsd_event_sync_slot(opts, state, 0);
         }
     }

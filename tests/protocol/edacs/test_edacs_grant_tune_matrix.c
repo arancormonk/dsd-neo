@@ -856,7 +856,7 @@ edacs_run_standard_state_cases(void) {
                                    EDACS_IS_VOICE | EDACS_IS_INTERCONNECT | EDACS_IS_DIGITAL, "standard-interconnect");
 
     edacs_setup_state_fixture(0);
-    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_channel_update_msg1(1, 4, 654, 1), 0);
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_channel_update_msg1(1, 4, 654, 1), 0x2AAAU);
     rc |= edacs_expect_recent_only(4, DSD_CALL_KIND_GROUP_VOICE, 654U, 0U,
                                    EDACS_IS_VOICE | EDACS_IS_GROUP | EDACS_IS_DIGITAL | EDACS_IS_EMERGENCY,
                                    "standard-channel-update");

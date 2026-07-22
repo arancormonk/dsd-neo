@@ -199,10 +199,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
 
 static void
 nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    UNUSED2(elements, elements_bits);
-    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot(opts, state, 0U);
-    }
+    UNUSED4(opts, state, elements, elements_bits);
 }
 
 static void

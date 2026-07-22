@@ -1545,7 +1545,7 @@ edacs_handle_standard_mt_b_channel_update(dsd_opts* opts, dsd_state* state, unsi
     int is_emergency = (is_individual == 0) ? (msg_1 & 0x2000) >> 13 : 0;
     int group = (msg_1 & 0x7FF);
     int lid = (msg_1 & 0x3FFF);
-    int source = (msg_2 & 0x3FFF);
+    int source = is_individual != 0 ? (msg_2 & 0x3FFF) : 0;
     int is_agency_call = is_individual == 0 && isAgencyCallGroup(group, state);
     int is_fleet_call = is_individual == 0 && isFleetCallGroup(group, state);
     int target = (is_individual == 0) ? group : lid;

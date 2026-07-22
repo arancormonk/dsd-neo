@@ -37,6 +37,7 @@ static char g_printw_capture[4096];
 static size_t g_printw_capture_len;
 static int g_test_rows = 24;
 static int g_test_cols = 80;
+static uint64_t g_monotonic_ns;
 
 static void
 reset_printw_capture(void) {
@@ -106,7 +107,7 @@ assert_capture_lines_fit(int max_cols) {
 
 uint64_t
 dsd_time_monotonic_ns(void) { // NOLINT(misc-use-internal-linkage)
-    return 0;
+    return g_monotonic_ns;
 }
 
 uint64_t
@@ -361,9 +362,16 @@ run_active_vc_cases(void) {
         .channel = 0x123AU,
         .frequency_hz = 853012500L,
     };
-    assert(dsd_recent_activity_publish(&state, 2U, &recent, "TG 123 Ch: 123A slot 1", 1U) == 1);
+    g_monotonic_ns = UINT64_C(10000000000);
+    const uint64_t now_ms = dsd_time_monotonic_ns() / UINT64_C(1000000);
+    assert(dsd_recent_activity_publish(&state, 2U, &recent, "TG 123 Ch: 123A slot 1", now_ms) == 1);
     assert(ui_guess_active_vc_freq(&state) == 853012500L);
+    assert(dsd_recent_activity_publish(&state, 2U, &recent, "TG 123 Ch: 123A slot 1",
+                                       now_ms - DSD_RECENT_ACTIVITY_TTL_MS - 1U)
+           == 1);
+    assert(ui_guess_active_vc_freq(&state) == 0);
     dsd_state_ext_free_all(&state);
+    g_monotonic_ns = 0U;
 
     dsd_state* canonical = (dsd_state*)calloc(1U, sizeof(*canonical));
     assert(canonical != NULL);

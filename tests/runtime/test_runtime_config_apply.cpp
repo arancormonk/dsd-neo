@@ -1946,6 +1946,20 @@ test_ui_file_capture_commands_manage_handles(void) {
     rc |= expect_int_eq("queued WAV toggles remove temp files", count_directory_entries(wav_dir), 0);
 #endif
 
+    dsd_app_command_submit(DSD_APP_CMD_SYMCAP_SAVE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("symbol capture start command drains", applied, 1);
+    rc |= expect_true("symbol capture start opens handle", opts->symbol_out_f != NULL);
+    rc |= expect_int_eq("symbol capture start event category",
+                        state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
+    char auto_sym_path[sizeof opts->symbol_out_file] = {0};
+    DSD_SNPRINTF(auto_sym_path, sizeof auto_sym_path, "%s", opts->symbol_out_file);
+    if (opts->symbol_out_f) {
+        fclose(opts->symbol_out_f);
+        opts->symbol_out_f = NULL;
+    }
+    (void)remove(auto_sym_path);
+
     FILE* sym_fp = dsd_fopen_private(sym_path, "wb");
     if (!sym_fp) {
         DSD_FPRINTF(stderr, "FAIL: symbol capture stop setup failed for %s\n", sym_path);
@@ -1960,6 +1974,8 @@ test_ui_file_capture_commands_manage_handles(void) {
         rc |= expect_true("symbol capture stop closes handle", opts->symbol_out_f == NULL);
         rc |= expect_true("symbol capture stop stages replay input path", strcmp(opts->audio_in_dev, sym_path) == 0);
         rc |= expect_int_eq("symbol capture stop clears auto flag", opts->symbol_out_file_is_auto, 0);
+        rc |= expect_int_eq("symbol capture stop event category",
+                            state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
     }
 
     free_test_runtime(&runtime);

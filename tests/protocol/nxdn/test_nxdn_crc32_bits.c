@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -246,9 +247,15 @@ test_message_type_reset_contract(void) {
 
     state.aout_gain = 7.0f;
     nxdn_message_type(&opts, &state, 0x10U);
-    rc |= expect_float_close("idle-gain-reset", state.aout_gain, opts.audio_gain, 1e-6f);
+    rc |= expect_float_close("idle-gain-kept", state.aout_gain, 7.0f, 1e-6f);
+    rc |= expect_int("idle-no-alias-reset", g_alias_reset_calls, 0);
     rc |= expect_int("idle-call-present", dsd_call_state_get(&state, 0U, &call), 1);
-    rc |= expect_int("idle-call-ended", call.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_int("idle-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_u32("idle-target-kept", (uint32_t)call.ota_target_id, 5678U);
+    rc |= expect_int("idle-cipher-kept", state.nxdn_cipher_type, 1);
+    rc |= expect_int("idle-r-kept", state.R, 42);
+    rc |= expect_int("idle-sacch-kept", all_sacch_segments_are(0U, &state), 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

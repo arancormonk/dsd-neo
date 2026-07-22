@@ -909,8 +909,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             DSD_MEMSET(event_str, 0, sizeof(event_str));
             DSD_SNPRINTF(event_str, sizeof(event_str), "DSD-neo Dibit Capture File Rotated: %s;",
                          opts->symbol_out_file);
-            const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NONE, 0U, 0U, 0U);
-            (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, event_str);
+            (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
 
             opts->symbol_out_file_creation_time = time(NULL);
         }

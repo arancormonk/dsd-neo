@@ -1048,7 +1048,7 @@ nxdn_message_type_label(uint8_t message_type) {
 
 static int
 nxdn_message_type_resets_call(uint8_t message_type) {
-    return message_type == 0x08U || message_type == 0x10U || message_type == 0x11U || message_type == 0xE8U;
+    return message_type == 0x08U || message_type == 0x11U || message_type == 0xE8U;
 }
 
 static int
@@ -1183,7 +1183,7 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    //End the canonical call on explicit release, disconnect, or idle signaling.
+    //End the canonical call on explicit release or disconnect signaling.
     if (nxdn_message_type_resets_call(MessageType)) {
         if (dsd_call_state_end(state, 0U, 0.0) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
