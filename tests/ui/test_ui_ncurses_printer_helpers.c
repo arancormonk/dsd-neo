@@ -1000,6 +1000,66 @@ test_canonical_p25_slot_and_recent_activity(void) {
     free(state);
 }
 
+static void
+test_live_protocol_panels_ignore_ended_call_identity(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = 424242U,
+        .ota_source_id = 434343U,
+        .observed_m = 1.0,
+    };
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "STALE-DST");
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "STALE-SRC");
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", "STALE-RPT1");
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", "STALE-RPT2");
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    ncurses_last_synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    reset_printw_capture();
+    ui_render_call_info_dstar(state);
+    assert_capture_contains("STALE-DST");
+    assert_capture_contains("STALE-SRC");
+    assert(dsd_call_state_end(state, 0U, 2.0) == 1);
+
+    reset_printw_capture();
+    ui_render_call_info_dstar(state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert_capture_contains("DEST: unknown");
+    assert_capture_contains("SRC: unknown");
+
+    ncurses_last_synctype = DSD_SYNC_M17_STR_POS;
+    reset_printw_capture();
+    ui_render_call_info_m17(state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert(strstr(g_printw_capture, "424242") == NULL);
+    assert(strstr(g_printw_capture, "434343") == NULL);
+
+    reset_printw_capture();
+    ui_print_ysf_call_routes(state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert_capture_contains("DST: unknown SRC: unknown");
+
+    reset_printw_capture();
+    ui_render_nxdn_tgt_src_line(state);
+    assert(strstr(g_printw_capture, "424242") == NULL);
+    assert(strstr(g_printw_capture, "434343") == NULL);
+    assert_capture_contains("TGT: [    0]");
+    assert_capture_contains("SRC: [    0]");
+
+    ncurses_last_synctype = DSD_SYNC_DPMR_FS1_POS;
+    reset_printw_capture();
+    ui_render_call_info_dpmr(&(dsd_opts){0}, state);
+    assert(strstr(g_printw_capture, "STALE-") == NULL);
+    assert_capture_contains("TGT: [unknown] SRC: [unknown]");
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_input_source_helpers();
@@ -1015,6 +1075,7 @@ main(void) {
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();
+    test_live_protocol_panels_ignore_ended_call_identity();
     return 0;
 }
 

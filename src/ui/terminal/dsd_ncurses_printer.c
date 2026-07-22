@@ -1685,6 +1685,19 @@ ui_render_event_history_section(const dsd_state* state) {
     attroff(COLOR_PAIR(4)); //cyan for history
 }
 
+static int
+ui_active_call_snapshot(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call) {
+    if (call == NULL) {
+        return 0;
+    }
+    DSD_MEMSET(call, 0, sizeof(*call));
+    if (dsd_call_state_get(state, slot, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    DSD_MEMSET(call, 0, sizeof(*call));
+    return 0;
+}
+
 static void
 ui_render_call_info_dstar(dsd_state* state) {
     //DSTAR
@@ -1692,8 +1705,7 @@ ui_render_call_info_dstar(dsd_state* state) {
         printw("| %s ", dsd_synctype_to_string(ncurses_last_synctype));
         printw("\n");
         dsd_call_snapshot call;
-        DSD_MEMSET(&call, 0, sizeof(call));
-        (void)dsd_call_state_get(state, 0U, &call);
+        (void)ui_active_call_snapshot(state, 0U, &call);
         printw("| RPT2: %s", call.route_text[1][0] != '\0' ? call.route_text[1] : "unknown");
         printw(" RPT1: %s", call.route_text[0][0] != '\0' ? call.route_text[0] : "unknown");
         printw("\n");
@@ -1756,8 +1768,7 @@ ui_render_call_info_m17(dsd_state* state) {
 
         printw("DST: ");
         dsd_call_snapshot call;
-        DSD_MEMSET(&call, 0, sizeof(call));
-        (void)dsd_call_state_get(state, 0U, &call);
+        (void)ui_active_call_snapshot(state, 0U, &call);
         const uint8_t dst_kind = m17_address_classify(call.ota_target_id);
         if (dst_kind == M17_ADDRESS_BROADCAST_KIND) {
             printw("BROADCAST ");
@@ -1825,8 +1836,7 @@ ui_print_ysf_frame_information(uint8_t frame_information) {
 static void
 ui_print_ysf_call_routes(const dsd_state* state) {
     dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof(call));
-    (void)dsd_call_state_get(state, 0U, &call);
+    (void)ui_active_call_snapshot(state, 0U, &call);
     printw("| DST: %s SRC: %s \n", call.target_text[0] != '\0' ? call.target_text : "unknown",
            call.source_text[0] != '\0' ? call.source_text : "unknown");
     printw("| UPL: %s DNL: %s \n", call.route_text[0][0] != '\0' ? call.route_text[0] : "unknown",
@@ -1988,8 +1998,7 @@ ui_render_nxdn_site_line(const dsd_state* state, int idas) {
 static void
 ui_render_nxdn_tgt_src_line(const dsd_state* state) {
     dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof(call));
-    (void)dsd_call_state_get(state, 0U, &call);
+    (void)ui_active_call_snapshot(state, 0U, &call);
     const unsigned long target = call.ota_target_id <= ULONG_MAX ? (unsigned long)call.ota_target_id : 0UL;
     const unsigned long source = call.ota_source_id <= ULONG_MAX ? (unsigned long)call.ota_source_id : 0UL;
     printw("| ");
@@ -2116,8 +2125,7 @@ ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
     if (DSD_SYNC_IS_DPMR(ncurses_last_synctype)) {
         printw("| DCC: [%i] ", state->dpmr_color_code);
         dsd_call_snapshot call;
-        DSD_MEMSET(&call, 0, sizeof(call));
-        (void)dsd_call_state_get(state, 0U, &call);
+        (void)ui_active_call_snapshot(state, 0U, &call);
         printw("TGT: [%s] SRC: [%s] ", call.target_text[0] != '\0' ? call.target_text : "unknown",
                call.source_text[0] != '\0' ? call.source_text : "unknown");
         printw("\n| ");
@@ -2486,8 +2494,7 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
 static unsigned long
 ui_active_call_source(const dsd_state* state, uint8_t slot) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || call.ota_source_id > ULONG_MAX) {
+    if (!ui_active_call_snapshot(state, slot, &call) || call.ota_source_id > ULONG_MAX) {
         return 0UL;
     }
     return (unsigned long)call.ota_source_id;

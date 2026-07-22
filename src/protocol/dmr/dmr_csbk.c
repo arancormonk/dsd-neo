@@ -591,7 +591,7 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
 
     if (opts->trunk_enable == 1 && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1
         && (move_freq > 0 || (move_lpcn > 0 && move_lpcn < 0xFFFF))) {
-        dmr_sm_emit_group_grant(opts, state, move_freq, move_lpcn, mv_target, mv_source);
+        dmr_sm_emit_group_grant_slot(opts, state, move_freq, move_lpcn, tslot, mv_target, mv_source);
     }
 }
 
@@ -2163,9 +2163,9 @@ dmr_cspdu_con_plus_try_tune_voice(dsd_opts* opts, dsd_state* state, const dmr_co
 
     state->is_con_plus = 1;
     if (g->opt == 3) {
-        dmr_sm_emit_indiv_grant(opts, state, f, g->lcn, g->grp_addr, g->src_addr);
+        dmr_sm_emit_indiv_grant_slot(opts, state, f, g->lcn, g->tslot, g->grp_addr, g->src_addr);
     } else {
-        dmr_sm_emit_group_grant(opts, state, f, g->lcn, g->grp_addr, g->src_addr);
+        dmr_sm_emit_group_grant_slot(opts, state, f, g->lcn, g->tslot, g->grp_addr, g->src_addr);
     }
 }
 

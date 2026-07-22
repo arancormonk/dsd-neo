@@ -1394,6 +1394,53 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
     NXDN_Elements_Content_decode(opts, state, 1U, iv_bits, sizeof(iv_bits));
     rc |= expect_u64("vcall-aes-iv", (uint64_t)state->payload_miN, iv);
     rc |= expect_int("vcall-aes-new-iv", state->nxdn_new_iv, 1);
+    dsd_call_snapshot call;
+    rc |= expect_int("vcall-aes-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-aes-canonical-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("vcall-aes-canonical-audio", call.audio_permitted, 1);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_vcall_aes_key_flag_drives_crypto_state(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+
+    state->aes_key_loaded[0] = 1;
+    state->A1[0] = 0U;
+    state->A2[0] = 0x1112131415161718ULL;
+    state->R = 0U;
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_int("zero-first-word AES canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("zero-first-word AES decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("zero-first-word AES permits audio", call.audio_permitted, 1);
+    rc |= expect_int("zero-first-word AES unmutes", state->dmr_encL, 0);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->R = 0xDEADBEEFU;
+    state->aes_key_loaded[0] = 0;
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+    rc |= expect_int("stale-R AES canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("stale-R AES remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("stale-R AES blocks audio", call.audio_permitted, 0);
+    rc |= expect_int("stale-R AES remains muted", state->dmr_encL, 1);
 
     dsd_state_ext_free_all(state);
     free(state);
@@ -1594,6 +1641,7 @@ main(void) {
     rc |= test_vcall_des_keyloader_and_iv_signal();
     rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();
     rc |= test_vcall_aes_keyloader_and_iv_signal();
+    rc |= test_vcall_aes_key_flag_drives_crypto_state();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();

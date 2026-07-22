@@ -555,6 +555,58 @@ test_rf_lsf_crc_policy_preserves_relaxed_decode(void) {
 }
 
 static int
+publish_m17_voice_lsf(dsd_opts* opts, dsd_state* state, uint8_t encryption_type, uint8_t encryption_subtype) {
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, encryption_type, encryption_subtype, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, M17_REF_AES_NONCE);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    return m17_finalize_lsf_crc(opts, state, lsf_packed, crc);
+}
+
+static int
+test_lsf_crypto_availability_matches_payload_validation(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    dsd_call_snapshot call;
+    int err = 0;
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_segments[0] = 2U;
+    DSD_MEMCPY(state->aes_key, M17_REF_AES128_KEY, sizeof(M17_REF_AES128_KEY));
+    err |= expect_int("AES-128 LSF accepted", publish_m17_voice_lsf(opts, state, 2U, 0U), 0);
+    err |= expect_int("AES-128 LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("AES-128 LSF decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    err |= expect_u8("AES-128 LSF permits audio", call.audio_permitted, 1U);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_segments[0] = 2U;
+    DSD_MEMCPY(state->aes_key, M17_REF_AES128_KEY, sizeof(M17_REF_AES128_KEY));
+    err |= expect_int("short AES-256 LSF accepted", publish_m17_voice_lsf(opts, state, 2U, 2U), 0);
+    err |= expect_int("short AES-256 LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("short AES-256 LSF remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    err |= expect_u8("short AES-256 LSF blocks audio", call.audio_permitted, 0U);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->R = 0x100U;
+    err |= expect_int("masked-zero scrambler LSF accepted", publish_m17_voice_lsf(opts, state, 1U, 0U), 0);
+    err |= expect_int("masked-zero scrambler LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("masked-zero scrambler remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    err |= expect_u8("masked-zero scrambler blocks audio", call.audio_permitted, 0U);
+
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static int
 test_lsf_application_resets_and_stores_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
@@ -1796,6 +1848,7 @@ main(void) {
     err |= test_embedded_lich_chunks_store_and_finalize_lsf_state();
     err |= test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc();
     err |= test_rf_lsf_crc_policy_preserves_relaxed_decode();
+    err |= test_lsf_crypto_availability_matches_payload_validation();
     err |= test_lsf_application_resets_and_stores_state();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();

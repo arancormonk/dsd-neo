@@ -2166,16 +2166,31 @@ nxdn_vcall_kind(uint8_t call_type) {
     return DSD_CALL_KIND_VOICE;
 }
 
+static int
+nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
+    if (state == NULL) {
+        return 0;
+    }
+    if (cipher_type == 3U) {
+        return state->aes_key_loaded[0] == 1;
+    }
+    if (cipher_type == 1U || cipher_type == 2U) {
+        return state->R != 0U;
+    }
+    return 0;
+}
+
 static void
 nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type, uint8_t key_id) {
+    const int has_key = nxdn_vcall_has_key(state, cipher_type);
     const dsd_call_crypto_update update = {
         .classification = cipher_type == 0U ? DSD_CALL_CRYPTO_CLEAR
-                          : state->R != 0U  ? DSD_CALL_CRYPTO_DECRYPTABLE
+                          : has_key         ? DSD_CALL_CRYPTO_DECRYPTABLE
                                             : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
         .algid = cipher_type,
         .kid = key_id,
         .mi = state->payload_miN,
-        .audio_permitted = (uint8_t)(cipher_type == 0U || state->R != 0U),
+        .audio_permitted = (uint8_t)(cipher_type == 0U || has_key),
     };
     if (dsd_call_state_update_crypto(state, 0U, &update) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
@@ -2217,7 +2232,7 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
     }
 
     state->dmr_encL = (state->nxdn_cipher_type != 0) ? 1 : 0;
-    if (state->nxdn_cipher_type == 0 || state->R != 0) {
+    if (state->nxdn_cipher_type == 0 || nxdn_vcall_has_key(state, (uint8_t)state->nxdn_cipher_type)) {
         state->dmr_encL = 0;
     }
 }

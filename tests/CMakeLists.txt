@@ -4627,7 +4627,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_clamp
-    PRIVATE dsd-neo_platform dsd-neo_runtime
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SM_CLAMP COMMAND dsd-neo_test_dmr_t3_sm_clamp)
 
@@ -4645,7 +4645,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_release
-    PRIVATE dsd-neo_platform dsd-neo_runtime
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SM_RELEASE COMMAND dsd-neo_test_dmr_t3_sm_release)
 
@@ -4663,7 +4663,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
-    PRIVATE dsd-neo_platform dsd-neo_runtime
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
 )
 add_test(
     NAME DMR_T3_SM_RETURN_TO_CC_MATRIX
@@ -4685,7 +4685,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_shim
-    PRIVATE dsd-neo_platform dsd-neo_runtime
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform dsd-neo_runtime
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 

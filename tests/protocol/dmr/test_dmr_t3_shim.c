@@ -12,8 +12,11 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -159,6 +162,38 @@ test_lpcn_trust_gating(void) {
     assert(state.trunk_vc_freq[0] == prev); // unchanged (blocked)
 }
 
+static void
+test_grant_identity_seeds_matching_voice_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_env(&opts, &state);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    dmr_sm_init(&opts, &state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_emit_group_grant_slot(&opts, &state, 855012500L, 0x245, 1, 3101, 4202);
+    assert(ctx->state == DMR_SM_TUNED);
+    assert(ctx->vc_slot == 1);
+
+    dsd_call_snapshot call;
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    assert(dsd_call_state_get(&state, 0U, &call) == 0);
+    assert(ctx->vc_identity_published == 0);
+
+    dmr_sm_emit_voice_sync(&opts, &state, 1);
+    assert(dsd_call_state_get(&state, 1U, &call) == 1);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
+    assert(call.ota_target_id == 3101U);
+    assert(call.policy_target_id == 3101U);
+    assert(call.ota_source_id == 4202U);
+    assert(call.channel == 0x245U);
+    assert(call.frequency_hz == 855012500L);
+    assert(ctx->vc_identity_published == 1);
+
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -170,6 +205,7 @@ main(int argc, char** argv) {
     test_neighbor_candidates();
     test_explicit_grant_and_release();
     test_lpcn_trust_gating();
+    test_grant_identity_seeds_matching_voice_slot();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     printf("DMR_T3_SHIM: OK\n");
     return 0;

@@ -73,6 +73,7 @@ static void M17decodeMetaPayload(dsd_state* state, uint8_t identifier);
 static void M17decodeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
 static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
 static int m17_can_matches_state(const dsd_state* state);
+static int m17_load_aes_key(const dsd_state* state, uint8_t subtype, uint8_t key[32]);
 
 static void
 m17_write_wav_short_block(SNDFILE* file, const short* samples, sf_count_t sample_count, const char* context) {
@@ -273,6 +274,32 @@ m17_format_address(uint64_t address, int source, char out[DSD_CALL_IDENTITY_TEXT
     }
 }
 
+static int
+m17_load_scrambler_seed(const dsd_state* state, uint8_t subtype, uint32_t* seed) {
+    if (state == NULL || seed == NULL) {
+        return 0;
+    }
+    const uint32_t mask = m17_scrambler_mask_for_subtype(subtype);
+    *seed = (uint32_t)state->R & mask;
+    return mask != 0U && *seed != 0U;
+}
+
+static int
+m17_lsf_has_key(const dsd_state* state, const struct m17_lsf_result* res) {
+    if (state == NULL || res == NULL) {
+        return 0;
+    }
+    if (res->et == 1U) {
+        uint32_t seed = 0U;
+        return m17_load_scrambler_seed(state, res->es, &seed);
+    }
+    if (res->et == 2U) {
+        uint8_t key[32];
+        return m17_load_aes_key(state, res->es, key);
+    }
+    return 0;
+}
+
 static void
 m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
     if (res->packet_stream == 0U || (res->dt != 2U && res->dt != 3U)) {
@@ -298,7 +325,7 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     m17_format_address(res->dst, 0, observation.target_text);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
 
-    const int has_key = res->et == 1U ? state->R != 0U : state->aes_key_loaded[0] == 1;
+    const int has_key = m17_lsf_has_key(state, res);
     uint64_t mi = 0U;
     for (int i = 0; i < 8; i++) {
         mi = (mi << 8U) | state->m17_meta[i];
@@ -572,7 +599,10 @@ m17_decrypt_stream_payload(dsd_state* state, uint16_t frame_number, const uint8_
     }
 
     if (state->m17_enc == 1U) {
-        const uint32_t seed = (uint32_t)state->R & m17_scrambler_mask_for_subtype(state->m17_enc_st);
+        uint32_t seed = 0U;
+        if (!m17_load_scrambler_seed(state, state->m17_enc_st, &seed)) {
+            return 0;
+        }
         return m17_scrambler_apply_bits(state->m17_enc_st, seed, frame_number, input_bits, output_bits,
                                         M17_STREAM_PAYLOAD_BITS)
                == 0;
