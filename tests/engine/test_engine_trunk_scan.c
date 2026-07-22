@@ -601,6 +601,7 @@ make_runtime_targets(const char* body, char* out_path, size_t out_sz, char* out_
 
 static void
 reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_scan_enabled = 1;
@@ -1726,6 +1727,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     if (test_rc != 0) {
@@ -1756,6 +1758,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;

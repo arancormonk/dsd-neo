@@ -321,6 +321,7 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     DSD_SNPRINTF(label, sizeof label, "%s source", tag);
     rc |= expect_eq_long(label, (long)call.ota_source_id, 0x010203);
 
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -364,6 +365,7 @@ run_standard_regroup_voice_user_nonstandard_guard_case(void) {
     rc |= expect_eq_long("0x90/mfid90 guard mac timestamp", state.p25_p2_last_mac_active[0], 0);
     rc |= expect_contains("0x90/mfid90 guard alias", state.generic_talker_alias[0], "KEEP");
 
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

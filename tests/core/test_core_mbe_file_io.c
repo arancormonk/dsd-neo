@@ -974,6 +974,7 @@ test_sdrtrunk_json_encrypted_keystreams_write_voice_records(void) {
         if (cases[i].want_algid != 0) {
             rc |= expect_int(cases[i].tag, state.payload_algid, cases[i].want_algid);
         }
+        dsd_state_ext_free_all(&state);
     }
 
     return rc;

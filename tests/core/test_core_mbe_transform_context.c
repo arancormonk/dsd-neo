@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
@@ -551,6 +552,7 @@ test_changed_frame_restores_total_error_repeat_fallback(void) {
 static void
 init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* prev_enhanced, mbe_parms* cur2,
                mbe_parms* prev2, mbe_parms* prev_enhanced2) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     mbe_initMbeParms(cur, prev, prev_enhanced);
     mbe_initMbeParms(cur2, prev2, prev_enhanced2);
@@ -981,6 +983,7 @@ test_process_mbe_frame_p25p1_tail_erasure_requires_exact_clear_state(void) {
         rc |= expect_eq_int("p25p1-tail-nonclear corrections", (int)state.p25_p1_accepted_corrections, 10);
         rc |= expect_eq_int("p25p1-tail-nonclear suppressed", (int)state.p25_p1_suppressed_tail_frames, 0);
         rc |= expect_eq_int("p25p1-tail-nonclear excluded", (int)state.p25_p1_excluded_tail_corrections, 0);
+        dsd_state_ext_free_all(&state);
     }
     return rc;
 }

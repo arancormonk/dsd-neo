@@ -15,6 +15,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/ui/keymap.h>
 #include <stdint.h>
@@ -381,6 +382,7 @@ main(void) {
     assert(g_cap.calls == 0);
 
     printf("UI_HOTKEYS_REGRESSION: OK\n");
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return 0;

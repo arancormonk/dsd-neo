@@ -454,8 +454,7 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk
 
 static void
 dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
-                                 int data_call, uint8_t lcn, uint16_t lpchannum, long int freq, uint32_t target,
-                                 uint32_t source) {
+                                 int data_call, uint16_t lpchannum, long int freq, uint32_t target, uint32_t source) {
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1 || freq == 0) {
         return;
     }
@@ -470,8 +469,6 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
 
     dmr_csbk_print_group_label(state, target);
-    if (lcn == 0 && data_call == 0) {}
-    if (lcn == 1 && data_call == 0) {}
 
     struct dmr_csbk_result res;
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {
@@ -524,7 +521,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, lcn, lpchannum, freq, target,
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, lpchannum, freq, target,
                                      source);
 }
 

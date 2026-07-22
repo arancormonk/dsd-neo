@@ -11,6 +11,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -511,6 +512,7 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-cipher", state.nxdn_cipher_type, 1);
     rc |= expect_int("sacch2-single-enc-lockout", state.dmr_encL, 1);
 
+    dsd_state_ext_free_all(&state);
     init_sacch2_state(&state, histories);
     DSD_MEMSET(state.nxdn_sacch_frame_segment, 0, sizeof(state.nxdn_sacch_frame_segment));
     DSD_MEMSET(state.nxdn_sacch_frame_segcrc, 0, sizeof(state.nxdn_sacch_frame_segcrc));
@@ -525,6 +527,7 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-complete-clears-pdu", 0U, state.dmr_pdu_sf[0][0], 0U);
     rc |= expect_str("sacch2-complete-alias", state.generic_talker_alias[0], "JPN DCR");
 
+    dsd_state_ext_free_all(&state);
     init_sacch2_state(&state, histories);
     state.M = 1;
     state.payload_miN = 0x55U;
@@ -536,6 +539,7 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-bad-crc-no-call", dsd_call_state_get(&state, 0U, &call), 0);
     rc |= expect_str("sacch2-bad-crc-no-alias", state.generic_talker_alias[0], "");
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
