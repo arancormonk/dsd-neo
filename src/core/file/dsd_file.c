@@ -1911,8 +1911,11 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     long event_seconds = 0;
     (void)dsd_parse_long_strict(time_str, 10, 0L, LONG_MAX, &event_seconds);
     time_t event_time = (time_t)event_seconds;
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     state->event_history_s[0].Event_History_Items[0].event_time = event_time;
     dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
 
     char timestr[9];
     char datestr[11];

@@ -363,9 +363,12 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
         DSD_FPRINTF(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
         if (state->event_history_s != NULL) {
+            dsd_event_history_transaction transaction;
+            dsd_event_history_transaction_begin(state, &transaction);
             DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                          sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
             dsd_event_history_mark_dirty(&state->event_history_s[0]);
+            dsd_event_history_transaction_end(&transaction);
         }
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");

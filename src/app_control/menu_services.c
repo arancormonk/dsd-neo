@@ -187,9 +187,12 @@ svc_reset_event_history(dsd_state* state) {
     if (!state || !state->event_history_s) {
         return;
     }
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     for (uint8_t i = 0; i < 2; i++) {
         init_event_history(&state->event_history_s[i], 0, 255);
     }
+    dsd_event_history_transaction_end(&transaction);
 }
 
 void

@@ -168,6 +168,8 @@ typedef struct {
     dsd_recent_activity_entry entry;
 } dsd_recent_activity_transaction;
 
+/** Ensure the canonical call-state extension and its transaction mutex exist. */
+int dsd_call_state_ensure(dsd_state* state);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
 int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);

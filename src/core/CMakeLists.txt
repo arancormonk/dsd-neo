@@ -1,5 +1,10 @@
 add_library(dsd-neo_core)
 
+target_compile_definitions(
+    dsd-neo_core
+    PUBLIC DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+)
+
 target_sources(
     dsd-neo_core
     PRIVATE

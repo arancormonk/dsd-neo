@@ -16,7 +16,9 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/threading.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -27,6 +29,35 @@ extern "C" {
 
 void init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop);
 void push_event_history(Event_History_I* event_struct);
+
+/** Opaque guard for serializing event-history mutations with telemetry snapshots. */
+typedef struct {
+    void* opaque;
+} dsd_event_history_transaction;
+
+static inline void
+dsd_event_history_transaction_begin(dsd_state* state, dsd_event_history_transaction* transaction) {
+    if (transaction == NULL) {
+        return;
+    }
+    transaction->opaque = state != NULL ? state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] : NULL;
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+    if (transaction->opaque != NULL) {
+        (void)dsd_mutex_lock((dsd_mutex_t*)transaction->opaque);
+    }
+#endif
+}
+
+static inline void
+dsd_event_history_transaction_end(dsd_event_history_transaction* transaction) {
+    if (transaction == NULL || transaction->opaque == NULL) {
+        return;
+    }
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+    (void)dsd_mutex_unlock((dsd_mutex_t*)transaction->opaque);
+#endif
+    transaction->opaque = NULL;
+}
 
 static inline void
 dsd_event_history_mark_dirty(Event_History_I* event_struct) {

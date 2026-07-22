@@ -11,8 +11,10 @@
  * paths do not require live audio/device stubs.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +57,7 @@ static int g_dmr_voice_slot_allowed[2];
 static int g_gate_mono_forced_enc = -1;
 static int g_gate_dual_forced_enc_l = -1;
 static int g_gate_dual_forced_enc_r = -1;
+static unsigned long g_gate_mono_tg;
 
 void
 mbe_floattoshort(const float* in, short* out) {
@@ -195,7 +198,7 @@ int
 dsd_audio_group_gate_mono(const dsd_opts* opts, const dsd_state* state, unsigned long tg, int enc_in, int* enc_out) {
     (void)opts;
     (void)state;
-    (void)tg;
+    g_gate_mono_tg = tg;
     if (enc_out) {
         *enc_out = (g_gate_mono_forced_enc >= 0) ? g_gate_mono_forced_enc : enc_in;
     }
@@ -310,6 +313,7 @@ reset_gate_capture(void) {
     g_gate_mono_forced_enc = -1;
     g_gate_dual_forced_enc_l = -1;
     g_gate_dual_forced_enc_r = -1;
+    g_gate_mono_tg = 0UL;
 }
 
 static int
@@ -931,6 +935,40 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
 }
 
 static int
+test_audio_gate_target_preserves_p25_ota_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.slot1_on = 1;
+
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 9400U,
+        .policy_target_id = 9502U,
+    };
+    int rc =
+        expect_int("P25 patch call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    state.synctype = DSD_SYNC_P25P1_POS;
+    reset_gate_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("P25 gate receives OTA supergroup", (int)g_gate_mono_tg, 9400);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    observation.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    rc |= expect_int("DMR call observed", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    reset_gate_capture();
+    playSynthesizedVoiceFM(&opts, &state);
+    rc |= expect_int("non-P25 gate receives policy target", (int)g_gate_mono_tg, 9502);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_silent_s16_helper(void) {
     short all_zero[4] = {0, 0, 0, 0};
     short with_audio[4] = {0, 0, -1, 0};
@@ -954,6 +992,7 @@ main(void) {
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
     rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
+    rc |= test_audio_gate_target_preserves_p25_ota_identity();
     rc |= test_silent_s16_helper();
     return rc;
 }

@@ -11,12 +11,16 @@
 #include <dsd-neo/platform/timing.h>
 
 #include <ctype.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "call_state_internal.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+_Static_assert(offsetof(dsd_call_state_ext, mutex) == 0U,
+               "event-history transactions require the call-state mutex at offset zero");
 
 static dsd_mutex_t g_call_state_alloc_mutex;
 static atomic_int g_call_state_alloc_mutex_state = 0; /* 0=uninit, 1=initing, 2=init */
@@ -120,6 +124,11 @@ dsd_call_state_ext_unlock(const dsd_call_state_ext* ext) {
     if (ext) {
         (void)dsd_mutex_unlock((dsd_mutex_t*)&ext->mutex);
     }
+}
+
+int
+dsd_call_state_ensure(dsd_state* state) {
+    return dsd_call_state_ext_get(state, 1) != NULL ? 1 : 0;
 }
 
 static double

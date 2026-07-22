@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -1123,6 +1124,7 @@ initState(dsd_state* state) {
     init_state_nxdn_and_dmr_defaults(state);
     init_state_string_and_m17_defaults(state);
     init_state_codec2_and_events(state);
+    (void)dsd_call_state_ensure(state);
 
 } //init_state
 

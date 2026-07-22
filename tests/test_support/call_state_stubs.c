@@ -8,21 +8,51 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/platform/threading.h>
 #include <stdint.h>
 #include <string.h>
 
 static const dsd_state* g_stub_state;
+
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+static struct {
+    dsd_mutex_t mutex;
+    dsd_call_snapshot calls[DSD_CALL_STATE_SLOT_COUNT];
+} g_stub_ext;
+
+#define g_stub_calls (g_stub_ext.calls)
+static int g_stub_mutex_initialized;
+#else
 static dsd_call_snapshot g_stub_calls[DSD_CALL_STATE_SLOT_COUNT];
+#endif
 static uint64_t g_stub_epoch;
 
 static void
 stub_select_state(dsd_state* state) {
-    if (g_stub_state != state || state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] != g_stub_calls) {
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+    if (!g_stub_mutex_initialized) {
+        (void)dsd_mutex_init(&g_stub_ext.mutex);
+        g_stub_mutex_initialized = 1;
+    }
+    void* stub_ext = &g_stub_ext;
+#else
+    void* stub_ext = g_stub_calls;
+#endif
+    if (g_stub_state != state || state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] != stub_ext) {
         g_stub_state = state;
         DSD_MEMSET(g_stub_calls, 0, sizeof(g_stub_calls));
-        state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] = g_stub_calls;
+        state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] = stub_ext;
         state->state_ext_cleanup[DSD_STATE_EXT_CORE_CALL_STATE] = NULL;
     }
+}
+
+int
+dsd_call_state_ensure(dsd_state* state) {
+    if (state == NULL) {
+        return 0;
+    }
+    stub_select_state(state);
+    return 1;
 }
 
 int

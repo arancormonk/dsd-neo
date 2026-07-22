@@ -1334,6 +1334,9 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
         return;
     }
 
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     Event_History_I* event_struct = &state->event_history_s[slot];
     init_event_history(event_struct, 0, 1);
 
@@ -1355,6 +1358,7 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
 
     DSD_SNPRINTF(item->event_string, sizeof item->event_string, "%s %s %s", datestr, timestr, status_string);
     dsd_event_history_mark_dirty(event_struct);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
@@ -1362,6 +1366,13 @@ dsd_event_copy_data_payload(Event_History* dst, const Event_History* src) {
     DSD_MEMCPY(dst->pdu, src->pdu, sizeof(dst->pdu));
     DSD_SNPRINTF(dst->gps_s, sizeof(dst->gps_s), "%s", src->gps_s);
     DSD_SNPRINTF(dst->text_message, sizeof(dst->text_message), "%s", src->text_message);
+}
+
+static void
+dsd_event_clear_data_payload(Event_History* item) {
+    DSD_MEMSET(item->pdu, 0, sizeof(item->pdu));
+    item->gps_s[0] = '\0';
+    item->text_message[0] = '\0';
 }
 
 int
@@ -1372,6 +1383,9 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
         return -1;
     }
 
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     Event_History_I* event_struct = &state->event_history_s[slot];
     Event_History active;
     DSD_MEMCPY(&active, &event_struct->Event_History_Items[0], sizeof(active));
@@ -1390,6 +1404,7 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     dsd_event_copy_data_payload(item, &active);
+    dsd_event_clear_data_payload(&active);
 
     char timestr[9];
     char datestr[11];
@@ -1403,6 +1418,7 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     push_event_history(event_struct);
     DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
     dsd_event_history_mark_dirty(event_struct);
+    dsd_event_history_transaction_end(&transaction);
 
     dsd_frame_logf(opts, "FRAME DATA slot=%d src=%llu dst=%llu %s", slot + 1,
                    (unsigned long long)observation->ota_source_id, (unsigned long long)observation->ota_target_id,
@@ -1420,6 +1436,9 @@ dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, con
         return -1;
     }
 
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     Event_History_I* event_struct = &state->event_history_s[slot];
     Event_History active;
     DSD_MEMCPY(&active, &event_struct->Event_History_Items[0], sizeof(active));
@@ -1445,6 +1464,7 @@ dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, con
     push_event_history(event_struct);
     DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
     dsd_event_history_mark_dirty(event_struct);
+    dsd_event_history_transaction_end(&transaction);
 
     dsd_frame_logf(opts, "FRAME SYSTEM slot=%d %s", slot + 1, notice);
     return 0;

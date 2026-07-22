@@ -824,23 +824,25 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     char local_out[256];
     DSD_MEMSET(local_out, 0, sizeof(local_out));
-    char* out = local_out;
-    size_t out_cap = sizeof(local_out);
-    if (have_events) {
-        DSD_MEMSET(state->event_history_s[slot_idx].Event_History_Items[0].text_message, 0,
-                   sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message));
-        out = state->event_history_s[slot_idx].Event_History_Items[0].text_message;
-        out_cap = sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message);
+    if (valid) {
+        nmea_copy_printable_sentence(input, len_bytes, local_out, sizeof(local_out));
+
+        if (local_out[0] != '\0') {
+            DSD_FPRINTF(stderr, "%s", local_out);
+        }
+    } else {
+        nmea_print_invalid_reason(start_value, end_value, checksum_calc, checksum_ext);
     }
 
-    if (valid) {
-        nmea_copy_printable_sentence(input, len_bytes, out, out_cap);
+    if (have_events) {
+        dsd_event_history_transaction transaction;
+        dsd_event_history_transaction_begin(state, &transaction);
+        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].text_message,
+                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].text_message), "%s", local_out);
+        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
+        dsd_event_history_transaction_end(&transaction);
 
-        if (out[0] != '\0') {
-            DSD_FPRINTF(stderr, "%s", out);
-        }
-
-        if (have_events) {
+        if (valid) {
             uint32_t source = (uint32_t)state->dmr_lrrp_source[slot_idx];
             uint32_t target = (uint32_t)state->dmr_lrrp_target[slot_idx];
             char comp_string[128];
@@ -849,12 +851,6 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
                 dsd_call_observation_data(state->lastsynctype, slot_idx, source, target);
             (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, slot_idx, &observation, comp_string);
         }
-    } else {
-        nmea_print_invalid_reason(start_value, end_value, checksum_calc, checksum_ext);
-    }
-
-    if (have_events) {
-        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
     }
 
     state->dmr_lrrp_source[slot_idx] = 0U;

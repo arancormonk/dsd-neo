@@ -48,7 +48,9 @@ dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
     if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
         return 0UL;
     }
-    uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+    uint64_t target = DSD_SYNC_IS_P25(call.protocol)
+                          ? call.ota_target_id
+                          : (call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id);
     return target <= ULONG_MAX ? (unsigned long)target : 0UL;
 }
 

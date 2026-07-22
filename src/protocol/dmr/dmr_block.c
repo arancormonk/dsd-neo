@@ -709,8 +709,22 @@ dmr_udt_append_text_event(dsd_state* state, uint8_t slot, char c) {
     char tmp[2];
     tmp[0] = c;
     tmp[1] = 0;
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
                sizeof state->event_history_s[slot].Event_History_Items[0].text_message, tmp);
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_event_history_transaction_end(&transaction);
+}
+
+static void
+dmr_udt_set_text_event(dsd_state* state, uint8_t slot, const char* text) {
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
+                 sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s", text);
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
@@ -825,8 +839,7 @@ dmr_udt_handle_iso7(dmr_udt_ctx* ctx) {
     int end = ctx->payload_bits / 7;
     DSD_FPRINTF(stderr, "ISO7 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "ISO7 Text; ");
-    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
-                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
+    dmr_udt_set_text_event(ctx->state, ctx->slot, " ");
     for (int i = 0; i < end; i++) {
         uint8_t iso7c = (uint8_t)convert_bits_into_output(&ctx->cs_bits[(i * 7) + 96], 7);
         if (iso7c >= 0x20 && iso7c <= 0x7E) {
@@ -843,8 +856,7 @@ dmr_udt_handle_iso8(dmr_udt_ctx* ctx) {
     int end = ctx->payload_bits / 8;
     DSD_FPRINTF(stderr, "ISO8 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "ISO8 Text; ");
-    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
-                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
+    dmr_udt_set_text_event(ctx->state, ctx->slot, " ");
     for (int i = 0; i < end; i++) {
         uint8_t iso8c = (uint8_t)convert_bits_into_output(&ctx->cs_bits[(i * 8) + 96], 8);
         if (iso8c >= 0x20 && iso8c <= 0x7E) {
@@ -861,8 +873,7 @@ dmr_udt_handle_utf16(dmr_udt_ctx* ctx) {
     int end = ctx->payload_bits / 16;
     DSD_FPRINTF(stderr, "UTF16 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "UTF16 Text; ");
-    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
-                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "%s", " ");
+    dmr_udt_set_text_event(ctx->state, ctx->slot, " ");
     dmr_udt_emit_utf16_text(ctx, 96, end);
 }
 
@@ -900,9 +911,9 @@ dmr_udt_handle_mixed_utf16(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "Address: %d; ", address);
     DSD_FPRINTF(stderr, "UTF16 Text: ");
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "Mixed Add/Text; ");
-    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message,
-                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].text_message), "Address: %d;",
-                 address);
+    char address_text[64];
+    DSD_SNPRINTF(address_text, sizeof(address_text), "Address: %d;", address);
+    dmr_udt_set_text_event(ctx->state, ctx->slot, address_text);
     dmr_udt_emit_utf16_text(ctx, 96 + 32, end);
 }
 
@@ -1198,10 +1209,13 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
     } else if (mnis_type == 0x01) {
         utf8_to_text(ctx->state, 0, len - offset, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        dsd_event_history_transaction transaction;
+        dsd_event_history_transaction_begin(ctx->state, &transaction);
         DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s,
                      sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].gps_s), "%s",
                      ctx->state->dmr_lrrp_gps[ctx->slot]);
         dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
+        dsd_event_history_transaction_end(&transaction);
     }
 
     if (mnis_type != 0x11 && mnis_type != 0x01) {

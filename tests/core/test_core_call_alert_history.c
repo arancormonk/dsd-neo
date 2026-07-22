@@ -72,6 +72,22 @@ canonical_snapshot_writer(void* arg) {
             break;
         }
         dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+        if ((i & 7U) == 0U) {
+            dsd_event_history_transaction transaction;
+            dsd_event_history_transaction_begin(ctx->state, &transaction);
+            DSD_SNPRINTF(ctx->history[0].Event_History_Items[0].text_message,
+                         sizeof(ctx->history[0].Event_History_Items[0].text_message), "packet-%u", i);
+            dsd_event_history_mark_dirty(&ctx->history[0]);
+            dsd_event_history_transaction_end(&transaction);
+
+            const dsd_call_observation data =
+                dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 9000U + i, 10000U + i);
+            if (dsd_event_emit_data_notice(ctx->opts, ctx->state, 0U, &data, "Concurrent packet data;") != 0
+                || dsd_event_emit_system_notice(ctx->opts, ctx->state, 0U, "Concurrent system notice;") != 0) {
+                ctx->writer_failed = 1;
+                break;
+            }
+        }
     }
     DSD_THREAD_RETURN;
 }
@@ -495,6 +511,10 @@ test_data_notice_preserves_decoded_payload_fields(void) {
     rc |= expect_str_eq("data payload GPS", committed->gps_s, "41.500000 -87.250000");
     rc |= expect_int("data payload category", committed->category, DSD_EVENT_CATEGORY_DATA);
     rc |= expect_has_substr("data payload notice", committed->event_string, "NMEA SRC: 1234; TGT: 5678;");
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("staged data PDU is cleared from current row", current->pdu[0], 0);
+    rc |= expect_int("staged data text is cleared from current row", current->text_message[0], '\0');
+    rc |= expect_int("staged data GPS is cleared from current row", current->gps_s[0], '\0');
     return rc;
 }
 
@@ -1404,6 +1424,11 @@ test_active_canonical_call_does_not_suppress_explicit_data(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
 
     state.lastsynctype = DSD_SYNC_P25P1_POS;
+    event_history[0].Event_History_Items[0].pdu[0] = 0xABU;
+    DSD_SNPRINTF(event_history[0].Event_History_Items[0].text_message,
+                 sizeof(event_history[0].Event_History_Items[0].text_message), "%s", "packet text");
+    DSD_SNPRINTF(event_history[0].Event_History_Items[0].gps_s, sizeof(event_history[0].Event_History_Items[0].gps_s),
+                 "%s", "packet GPS");
     (void)emit_test_data_notice(&opts, &state, 700U, 800U, "P25 packet data;", 0U);
     dsd_event_sync_slot(&opts, &state, 0U);
 
@@ -1415,6 +1440,9 @@ test_active_canonical_call_does_not_suppress_explicit_data(void) {
     rc |= expect_int("active-call data source is preserved", (int)committed->source_id, 700);
     rc |= expect_int("active-call data subtype is preserved", committed->subtype, INT8_MAX);
     rc |= expect_has_substr("active-call data detail is preserved", committed->event_string, "P25 packet data");
+    rc |= expect_int("active voice row drops staged data PDU", current->pdu[0], 0);
+    rc |= expect_int("active voice row drops staged data text", current->text_message[0], '\0');
+    rc |= expect_int("active voice row drops staged data GPS", current->gps_s[0], '\0');
     dsd_state_ext_free_all(&state);
     return rc;
 }

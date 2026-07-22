@@ -2273,11 +2273,16 @@ live_scanner_emit_start_history(dsd_state* state) {
     }
 
     watchdog_event_status(state, "Any decoded voice calls or data calls display here;", 0);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     push_event_history(&state->event_history_s[0]);
     init_event_history(&state->event_history_s[0], 0, 1);
+    dsd_event_history_transaction_end(&transaction);
     watchdog_event_status(state, "DSD-neo Started and Event History Initialized;", 0);
+    dsd_event_history_transaction_begin(state, &transaction);
     push_event_history(&state->event_history_s[0]);
     init_event_history(&state->event_history_s[0], 0, 1);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void

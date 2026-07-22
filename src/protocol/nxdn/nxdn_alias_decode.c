@@ -43,9 +43,12 @@ nxdn_alias_publish(dsd_state* state, const char* alias) {
     }
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", alias);
     if (state->event_history_s != NULL) {
+        dsd_event_history_transaction transaction;
+        dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                      sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", alias);
         dsd_event_history_mark_dirty(&state->event_history_s[0]);
+        dsd_event_history_transaction_end(&transaction);
     }
 }
 

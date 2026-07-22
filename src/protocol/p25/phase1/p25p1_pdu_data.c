@@ -896,7 +896,10 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
     if (state == NULL || state->event_history_s == NULL) {
         return;
     }
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     if (state->event_history_s[0].Event_History_Items[0].text_message[0] == '\0') {
+        dsd_event_history_transaction_end(&transaction);
         return;
     }
 
@@ -907,6 +910,7 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
     dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void

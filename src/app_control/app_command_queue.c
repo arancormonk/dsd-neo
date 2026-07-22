@@ -2891,10 +2891,13 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     }
 
     int eh_slot = (slot == 0) ? 0 : 1;
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  "Target: %d; has been locked out; User Lock Out.", tg);
     dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
+    dsd_event_history_transaction_end(&transaction);
     watchdog_event_current(opts, state, eh_slot);
 
     DSD_SNPRINTF(metadata, sizeof(metadata), "%02X",

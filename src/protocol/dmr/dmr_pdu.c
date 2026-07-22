@@ -58,7 +58,9 @@ convert_hex_to_dec(uint16_t input) {
 static void DSD_ATTR_USED
 utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
+    dsd_event_history_transaction transaction;
     if (wr == 1) {
+        dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
                      sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
                      ""); //full text string
@@ -107,6 +109,7 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
     //debug
     if (wr == 1) {
         dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+        dsd_event_history_transaction_end(&transaction);
     }
 }
 
@@ -115,7 +118,9 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     DSD_FPRINTF(stderr, "\n UTF8 Text: ");
 
+    dsd_event_history_transaction transaction;
     if (wr == 1) {
+        dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
                      sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
                      ""); //full text string
@@ -146,15 +151,19 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     //add elipses to indicate this is possibly truncated
     if (wr == 1) {
         dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+        dsd_event_history_transaction_end(&transaction);
     }
 }
 
 static void
 dmr_sd_pdu_store_text(dsd_state* state, uint8_t slot, const char* text) {
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     Event_History* item = &state->event_history_s[slot].Event_History_Items[0];
     DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", text != NULL ? text : "");
     dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
     dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
@@ -168,11 +177,14 @@ dmr_sd_pdu_print_raw(const uint8_t* dmr_pdu, uint16_t len) {
 static void
 dmr_sd_pdu_copy_location(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t len, const uint8_t* dmr_pdu) {
     dmr_locn(opts, state, len, dmr_pdu);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[slot].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[slot]);
     dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0], DSD_EVENT_SEVERITY_INFO,
                                         DSD_EVENT_CATEGORY_DATA);
     dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
@@ -608,17 +620,22 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
         case 4001:
             DSD_FPRINTF(stderr, "LRRP;");
             dmr_lrrp(opts, state, payload_len, src24, dst24, payload, 1);
+            dsd_event_history_transaction transaction;
+            dsd_event_history_transaction_begin(state, &transaction);
             dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
             dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+            dsd_event_history_transaction_end(&transaction);
             return 1;
         case 4004:
             DSD_FPRINTF(stderr, "XCMP;");
             DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "XCMP SRC: %d; DST: %d;", src24,
                          dst24);
+            dsd_event_history_transaction_begin(state, &transaction);
             dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
                                                 DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
             dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+            dsd_event_history_transaction_end(&transaction);
             return 1;
         case 4005: {
             DSD_FPRINTF(stderr, "ARS;");
