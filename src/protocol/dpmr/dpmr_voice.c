@@ -217,6 +217,12 @@ dpmr_publish_identity_fragment(dsd_state* state, uint32_t id_value, int target) 
         dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), identity,
                       sizeof(observation.target_text) - 1U);
     } else {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_DPMR(call.protocol)) {
+            dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), call.target_text,
+                          sizeof(observation.target_text) - 1U);
+        }
         dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), identity,
                       sizeof(observation.source_text) - 1U);
     }

@@ -293,6 +293,17 @@ test_superframe_part_updates_called_and_calling_ids(void) {
     rc |= expect_int("calling-id", strcmp(call.source_text, "100000*"), 0);
     rc |= expect_int("calling-next-part", opts.dPMR_next_part_of_superframe, 1);
     rc |= expect_int("called-id-preserved", strcmp(call.target_text, "1000000"), 0);
+    const uint64_t first_caller_epoch = call.epoch;
+
+    part = (dpmr_superframe_part){.frame_number = {2U, 3U},
+                                  .id_value = 2928210U,
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{false, false}, {false, false}}};
+    dpmr_update_superframe_part(&opts, &state, &part);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("changed-calling-id", strcmp(call.source_text, "200000*"), 0);
+    rc |= expect_int("changed-calling-preserves-called-id", strcmp(call.target_text, "1000000"), 0);
+    rc |= expect_int("changed-calling-starts-epoch", call.epoch != first_caller_epoch, 1);
 
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 10U,
@@ -310,7 +321,7 @@ test_superframe_part_updates_called_and_calling_ids(void) {
     dpmr_update_superframe_part(&opts, &state, &part);
     (void)dsd_call_state_get(&state, 0U, &call);
     rc |= expect_int("unknown-preserves-called", strcmp(call.target_text, "1000000"), 0);
-    rc |= expect_int("unknown-preserves-calling", strcmp(call.source_text, "100000*"), 0);
+    rc |= expect_int("unknown-preserves-calling", strcmp(call.source_text, "200000*"), 0);
     rc |= expect_int("unknown-toggles-next-part", opts.dPMR_next_part_of_superframe, 1);
 
     opts.dPMR_next_part_of_superframe = 1;

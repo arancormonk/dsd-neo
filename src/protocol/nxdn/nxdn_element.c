@@ -2569,15 +2569,42 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
         || !DSD_SYNC_IS_NXDN(call.protocol)) {
         return;
     }
-    const dsd_call_observation observation = {
+    dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
         .kind = call.kind,
-        .ota_target_id = target_id,
-        .policy_target_id = target_id,
-        .ota_source_id = source_id,
+        .ota_target_id = target_id != 0U ? target_id : call.ota_target_id,
+        .policy_target_id = target_id != 0U ? target_id : call.policy_target_id,
+        .ota_source_id = source_id != 0U ? source_id : call.ota_source_id,
+        .channel = call.channel,
+        .frequency_hz = call.frequency_hz,
+        .service_options = call.service_options,
+        .emergency = call.emergency,
+        .priority = call.priority,
+        .has_service_metadata = call.has_service_metadata,
     };
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (source_id == 0U) {
+        DSD_MEMCPY(observation.source_text, call.source_text, sizeof(observation.source_text));
+    }
+    if (target_id == 0U) {
+        DSD_MEMCPY(observation.target_text, call.target_text, sizeof(observation.target_text));
+    }
+    DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
+    DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
+
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+        const dsd_call_crypto_update crypto = {
+            .classification = call.crypto,
+            .algid = call.algid,
+            .kid = call.kid,
+            .mi = call.mi,
+            .audio_permitted = call.audio_permitted,
+        };
+        (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+        if (call.media_active != 0U) {
+            (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+        }
+    }
 }
 
 static void

@@ -67,7 +67,25 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     stub_select_state(state);
     dsd_call_snapshot* call = &g_stub_calls[observation->slot];
-    const int begins_epoch = boundary == DSD_CALL_BOUNDARY_BEGIN || call->phase != DSD_CALL_PHASE_ACTIVE;
+    int begins_epoch = boundary == DSD_CALL_BOUNDARY_BEGIN || call->phase != DSD_CALL_PHASE_ACTIVE;
+    const uint64_t old_target = call->ota_target_id != 0U ? call->ota_target_id : call->policy_target_id;
+    const uint64_t new_target =
+        observation->ota_target_id != 0U ? observation->ota_target_id : observation->policy_target_id;
+    if (!begins_epoch && old_target != 0U && new_target != 0U && old_target != new_target) {
+        begins_epoch = 1;
+    }
+    if (!begins_epoch && call->ota_source_id != 0U && observation->ota_source_id != 0U
+        && call->ota_source_id != observation->ota_source_id) {
+        begins_epoch = 1;
+    }
+    if (!begins_epoch && call->source_text[0] != '\0' && observation->source_text[0] != '\0'
+        && strcmp(call->source_text, observation->source_text) != 0) {
+        begins_epoch = 1;
+    }
+    if (!begins_epoch && call->target_text[0] != '\0' && observation->target_text[0] != '\0'
+        && strcmp(call->target_text, observation->target_text) != 0) {
+        begins_epoch = 1;
+    }
     if (begins_epoch) {
         DSD_MEMSET(call, 0, sizeof(*call));
         call->epoch = ++g_stub_epoch;
@@ -90,6 +108,12 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     if (observation->target_text[0] != '\0') {
         DSD_SNPRINTF(call->target_text, sizeof(call->target_text), "%s", observation->target_text);
+    }
+    if (observation->route_text[0][0] != '\0') {
+        DSD_SNPRINTF(call->route_text[0], sizeof(call->route_text[0]), "%s", observation->route_text[0]);
+    }
+    if (observation->route_text[1][0] != '\0') {
+        DSD_SNPRINTF(call->route_text[1], sizeof(call->route_text[1]), "%s", observation->route_text[1]);
     }
     call->channel = observation->channel;
     call->frequency_hz = observation->frequency_hz;
