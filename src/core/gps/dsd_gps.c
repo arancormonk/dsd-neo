@@ -38,8 +38,11 @@ static int
 gps_enrich_active_call(dsd_state* state, uint8_t slot, uint32_t expected_source, const char* text,
                        dsd_call_snapshot* call_out) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || (expected_source != 0U && call.ota_source_id != expected_source)) {
+    const int has_active_call = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (has_active_call && expected_source != 0U && call.ota_source_id != expected_source) {
+        return 0;
+    }
+    if (!has_active_call) {
         if (state != NULL && state->event_history_s != NULL && slot < DSD_CALL_STATE_SLOT_COUNT && text != NULL) {
             dsd_event_history_transaction transaction;
             dsd_event_history_transaction_begin(state, &transaction);

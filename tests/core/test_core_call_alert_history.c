@@ -603,6 +603,27 @@ test_source_less_data_call_does_not_suppress_next_voice_start_alert(void) {
 }
 
 static int
+test_canonical_data_call_uses_data_metadata_without_voice_start_alert(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_DATA, 5678U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    int rc = expect_int("canonical data should not beep as voice start", g_beeper_count, 0);
+    rc |= expect_int("canonical data category", current->category, DSD_EVENT_CATEGORY_DATA);
+    rc |= expect_int("canonical data group/private marker", current->gi, -1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_source_less_data_call_is_preserved_in_history(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1584,6 +1605,7 @@ main(void) {
     rc |= test_system_notice_is_not_attributed_as_radio_data();
     rc |= test_status_event_is_not_data_call_or_frame_log();
     rc |= test_source_less_data_call_does_not_suppress_next_voice_start_alert();
+    rc |= test_canonical_data_call_uses_data_metadata_without_voice_start_alert();
     rc |= test_source_less_data_call_is_preserved_in_history();
     rc |= test_source_less_dmr_data_notices_are_preserved_in_history();
     rc |= test_sourced_dmr_data_current_event_does_not_emit_voice_end_alert();

@@ -361,7 +361,7 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
     lifecycle->notice_target_id = 0U;
     lifecycle->notice_kind = DSD_CALL_KIND_UNKNOWN;
     lifecycle->notice_handled = 0U;
-    if (call->phase == DSD_CALL_PHASE_ACTIVE
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         beeper(opts, state, slot, 40, 86, 3);
     }
@@ -542,6 +542,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     }
     ctx->protocol = call->protocol;
     ctx->kind = call->kind;
+    ctx->category = call->kind == DSD_CALL_KIND_DATA ? DSD_EVENT_CATEGORY_DATA : DSD_EVENT_CATEGORY_VOICE;
     ctx->crypto = call->crypto;
     ctx->source_id = call->ota_source_id <= UINT32_MAX ? (uint32_t)call->ota_source_id : 0U;
     ctx->target_id = watchdog_event_call_target_id(call);

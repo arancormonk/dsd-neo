@@ -2433,6 +2433,8 @@ ui_apply_canonical_call_slot(ui_slot_view* slot, const dsd_call_snapshot* call) 
         kind = "Group";
     } else if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         kind = "Private";
+    } else if (call->kind == DSD_CALL_KIND_DATA) {
+        kind = "Data";
     }
     DSD_SNPRINTF(slot->call_banner, sizeof slot->call_banner, " %s%s%s", kind, call->emergency ? " Emergency" : "",
                  call->crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? " Encrypted" : "");

@@ -948,6 +948,17 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert_capture_contains("|        | fresh TG: 200");
     assert(strstr(g_printw_capture, "RECENT") == NULL);
 
+    dsd_call_observation data_observation = observation;
+    data_observation.kind = DSD_CALL_KIND_DATA;
+    data_observation.ota_target_id = 2202U;
+    data_observation.policy_target_id = 2202U;
+    data_observation.observed_m = 1.5;
+    assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    slot = ui_build_slot_view(state, 0);
+    assert(slot.canonical_p25 == 1);
+    assert(slot.burst == 6);
+    assert(strcmp(slot.call_banner, " Data") == 0);
+
     assert(dsd_call_state_end(state, 0U, 2.0) == 1);
     slot = ui_build_slot_view(state, 0);
     assert(slot.call.phase == DSD_CALL_PHASE_ENDED);

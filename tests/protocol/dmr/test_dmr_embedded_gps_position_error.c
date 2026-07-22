@@ -258,6 +258,14 @@ test_packed_nmea_formats(dsd_opts* opts, dsd_state* st) {
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "270", "harris-nmea-heading");
         rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "-87.254167",
                                 "harris-nmea-event-lon");
+
+        DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
+                     sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
+        const uint64_t revision = st->event_history_s[1].revision;
+        nmea_harris(opts, st, bits, 900003U, 2);
+        rc |= expect_i("harris-mismatched-source-preserves-gps",
+                       strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+        rc |= expect_i("harris-mismatched-source-preserves-revision", st->event_history_s[1].revision == revision, 1);
     }
 
     return rc;
