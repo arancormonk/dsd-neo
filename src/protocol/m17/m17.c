@@ -301,6 +301,13 @@ m17_lsf_has_key(const dsd_state* state, const struct m17_lsf_result* res) {
 }
 
 static void
+m17_end_packet_call(const dsd_opts* opts, dsd_state* state) {
+    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
+}
+
+static void
 m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res) {
     const int is_voice = res->packet_stream != 0U && (res->dt == 2U || res->dt == 3U);
     const int is_data = res->packet_stream == 0U || res->dt == 1U;
@@ -2742,6 +2749,7 @@ encodeM17PKT(dsd_opts* opts, dsd_state* state) {
     m17_pkt_print_full_payload(&ctx);
     m17_pkt_send_mpkt_if_enabled(&ctx);
     m17_pkt_run_loop(&ctx);
+    m17_end_packet_call(opts, state);
     return 0;
 }
 
@@ -3044,6 +3052,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     m17_pkt_log_final_if_enabled(opts, state, end, crc_cmp, crc_ext);
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
+    m17_end_packet_call(opts, state);
 }
 
 //WIP PKT decoder - soft symbol enhanced

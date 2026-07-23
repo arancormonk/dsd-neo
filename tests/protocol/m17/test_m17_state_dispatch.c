@@ -1409,13 +1409,39 @@ stage_packet_with_crc(dsd_state* state, const uint8_t* app, uint16_t app_len, ui
     state->m17_pkt[app_len + 1U] = (uint8_t)(crc & 0xFFU);
 }
 
+static uint64_t
+start_m17_packet_call(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]) {
+    DSD_MEMSET(event_history, 0, sizeof(Event_History_I) * 2U);
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&event_history[slot], 0, 255);
+    }
+    state->event_history_s = event_history;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_M17_LSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+        .ota_target_id = 0xFFFFFFFFFFFFULL,
+        .ota_source_id = 0x000000000001ULL,
+        .source_text = "M17SRC",
+        .target_text = "BROADCAST",
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) <= 0) {
+        return 0U;
+    }
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? call.epoch : 0U;
+}
+
 static int
 test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t app[2U + M17_META_BYTES];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
+    Event_History_I event_history[2];
     static const char text[M17_TEXT_BLOCK_BYTES] = {'R', 'F', '-', 'P', 'K', 'T', '-', 'O', 'K', 0, 0, 0, 0};
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(expected_text, 0, sizeof(expected_text));
@@ -1427,11 +1453,13 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     const uint16_t crc = m17_crc16(app, app_len);
     state->m17_can_en = -1;
     state->m17_pbc_ct = 4;
+    const uint64_t first_epoch = start_m17_packet_call(opts, state, event_history);
     stage_packet_with_crc(state, app, app_len, crc);
 
     m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
 
     int err = 0;
+    err |= expect_int("valid packet EOT starts canonical epoch", first_epoch != 0U, 1);
     err |= expect_u8("valid packet EOT text expected bitmap", state->m17_text_meta_expected_bitmap, 0x01U);
     err |= expect_u8("valid packet EOT text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("valid packet EOT text control", state->m17_text_meta_control_or, 0x11U);
@@ -1440,7 +1468,31 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     for (size_t i = 0U; i < total_len; i++) {
         err |= expect_u8("valid packet EOT clears packet buffer", state->m17_pkt[i], 0U);
     }
+    dsd_call_snapshot call;
+    err |= expect_int("valid packet EOT retains canonical call", get_m17_call(state, &call), 1);
+    err |= expect_int("valid packet EOT ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("valid packet EOT preserves canonical epoch", call.epoch, first_epoch);
+    err |= expect_int("valid packet EOT clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+    err |= expect_int("valid packet EOT commits event history",
+                      event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
 
+    const dsd_call_observation next_packet = {
+        .protocol = DSD_SYNC_M17_LSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+        .ota_target_id = 0xFFFFFFFFFFFFULL,
+        .ota_source_id = 0x000000000001ULL,
+        .source_text = "M17SRC",
+        .target_text = "BROADCAST",
+    };
+    err |= expect_int("next matching packet starts canonical epoch",
+                      dsd_call_state_observe(state, &next_packet, DSD_CALL_BOUNDARY_CONTINUE), 1);
+    err |= expect_int("next matching packet retains canonical call", get_m17_call(state, &call), 1);
+    err |= expect_int("next matching packet is active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_int("next matching packet uses distinct epoch", call.epoch != first_epoch, 1);
+
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
     state->m17_pbc_ct = 2;
@@ -1464,6 +1516,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
         err |= expect_u8("bad packet CRC clears packet buffer", state->m17_pkt[i], 0U);
     }
 
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
@@ -1478,6 +1531,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     err |= expect_u8("non-aggressive bad CRC still decodes control", state->m17_text_meta_control_or, 0x11U);
     err |=
         expect_bytes("non-aggressive bad CRC text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -1821,10 +1875,17 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     dsd_state* state = &g_state;
     uint8_t expected_lsf[TEST_M17_LSF_BITS];
     uint8_t expected_packed[M17_LSF_BYTES];
+    Event_History_I event_history[2];
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(expected_lsf, 0, sizeof(expected_lsf));
     DSD_MEMSET(expected_packed, 0, sizeof(expected_packed));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&event_history[slot], 0, 255);
+    }
+    state->event_history_s = event_history;
 
     state->m17_can_en = -1;
     DSD_SNPRINTF(state->m17sms, sizeof(state->m17sms), "%s", "OK");
@@ -1848,10 +1909,24 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     dsd_call_snapshot call;
     err |= expect_int("packet LSF monitor publishes identity", get_m17_call(state, &call), 1);
     err |= expect_int("packet LSF monitor publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_int("packet encoder ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
     err |= expect_u64("packet LSF monitor destination", call.ota_target_id, dst);
     err |= expect_u64("packet LSF monitor source", call.ota_source_id, src);
     err |= expect_u8("packet LSF monitor CAN", state->m17_can, 7U);
+    err |= expect_int("packet encoder clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+    err |= expect_int("packet encoder commits event history",
+                      event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
+
+    const uint64_t first_epoch = call.epoch;
+    exitflag = 0;
+    err |= expect_int("next matching packet encoder completes", encodeM17PKT(opts, state), 0);
+    exitflag = 0;
+    err |= expect_int("next matching packet encoder retains call", get_m17_call(state, &call), 1);
+    err |= expect_int("next matching packet encoder ends call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("next matching packet encoder uses distinct epoch", call.epoch != first_epoch, 1);
     dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
     return err;
 }
 
