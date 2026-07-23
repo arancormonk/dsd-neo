@@ -302,7 +302,10 @@ m17_lsf_has_key(const dsd_state* state, const struct m17_lsf_result* res) {
 
 static void
 m17_end_packet_call(const dsd_opts* opts, dsd_state* state) {
-    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && call.kind == DSD_CALL_KIND_DATA && DSD_SYNC_IS_M17(call.protocol)
+        && dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }
@@ -936,7 +939,8 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_call_snapshot call;
-    if (!(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE)) {
+    if (!(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+          && DSD_SYNC_IS_M17(call.protocol))) {
         int protocol = DSD_SYNC_IS_M17(state->synctype) ? state->synctype : DSD_SYNC_M17_STR_POS;
         const dsd_call_observation observation = {
             .protocol = protocol,

@@ -947,6 +947,49 @@ test_clear_signed_payload_updates_digest_and_dispatches(void) {
     return err;
 }
 
+static int
+test_stream_voice_replaces_foreign_active_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+
+    const dsd_call_observation foreign = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .ota_source_id = 4201U,
+    };
+    int err = 0;
+    err |= expect_int("foreign call starts before M17 late entry",
+                      dsd_call_state_observe(state, &foreign, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot call;
+    err |= expect_int("foreign call is available before M17 late entry", get_m17_call(state, &call), 1);
+    const uint64_t foreign_epoch = call.epoch;
+
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    state->m17_str_dt = 2U;
+    state->m17_can_en = -1;
+    err |= expect_int("late-entry M17 voice dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("late-entry M17 voice publishes a call", get_m17_call(state, &call), 1);
+    err |= expect_int("late-entry M17 voice remains active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_int("late-entry M17 voice replaces foreign epoch", call.epoch != foreign_epoch, 1);
+    err |= expect_int("late-entry M17 voice owns canonical protocol", DSD_SYNC_IS_M17(call.protocol), 1);
+    err |= expect_int("late-entry M17 voice uses voice kind", call.kind, DSD_CALL_KIND_VOICE);
+    err |= expect_u64("late-entry M17 voice clears foreign destination", call.ota_target_id, 0U);
+    err |= expect_u64("late-entry M17 voice clears foreign source", call.ota_source_id, 0U);
+    err |= expect_u8("late-entry M17 voice marks media", call.media_active, 1U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 #ifdef USE_CODEC2
 static int
 test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
@@ -1548,6 +1591,68 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
 }
 
 static int
+test_packet_eot_preserves_non_packet_calls(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t app[2U + M17_META_BYTES];
+    static const char text[M17_TEXT_BLOCK_BYTES] = {'R', 'F', '-', 'P', 'K', 'T', '-', 'E', 'O', 'T', 0, 0, 0};
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    build_packet_text_meta_app(app, text);
+    const uint16_t app_len = (uint16_t)sizeof(app);
+    const uint16_t crc = m17_crc16(app, app_len);
+
+    const dsd_call_observation foreign = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1301U,
+        .ota_source_id = 4301U,
+    };
+    int err = 0;
+    err |= expect_int("foreign call starts before packet EOT",
+                      dsd_call_state_observe(state, &foreign, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot call;
+    err |= expect_int("foreign call is available before packet EOT", get_m17_call(state, &call), 1);
+    const uint64_t foreign_epoch = call.epoch;
+    stage_packet_with_crc(state, app, app_len, crc);
+
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+
+    err |= expect_int("packet EOT preserves foreign call", get_m17_call(state, &call), 1);
+    err |= expect_int("packet EOT keeps foreign call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("packet EOT keeps foreign epoch", call.epoch, foreign_epoch);
+    err |= expect_int("packet EOT keeps foreign protocol", call.protocol, DSD_SYNC_DMR_BS_VOICE_POS);
+    err |= expect_u64("packet EOT keeps foreign destination", call.ota_target_id, 1301U);
+    err |= expect_u64("packet EOT keeps foreign source", call.ota_source_id, 4301U);
+
+    const dsd_call_observation m17_voice = {
+        .protocol = DSD_SYNC_M17_STR_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = 2301U,
+        .ota_source_id = 5301U,
+    };
+    err |= expect_int("M17 voice starts before packet EOT",
+                      dsd_call_state_observe(state, &m17_voice, DSD_CALL_BOUNDARY_BEGIN), 1);
+    err |= expect_int("M17 voice is available before packet EOT", get_m17_call(state, &call), 1);
+    const uint64_t voice_epoch = call.epoch;
+    stage_packet_with_crc(state, app, app_len, crc);
+
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+
+    err |= expect_int("packet EOT preserves M17 voice", get_m17_call(state, &call), 1);
+    err |= expect_int("packet EOT keeps M17 voice active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("packet EOT keeps M17 voice epoch", call.epoch, voice_epoch);
+    err |= expect_int("packet EOT keeps M17 voice kind", call.kind, DSD_CALL_KIND_VOICE);
+    err |= expect_u64("packet EOT keeps M17 voice destination", call.ota_target_id, 2301U);
+    err |= expect_u64("packet EOT keeps M17 voice source", call.ota_source_id, 5301U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static int
 test_encoder_control_lsf_and_dibit_helpers(void) {
     uint8_t conn[11];
     uint8_t disc[10];
@@ -2073,6 +2178,7 @@ main(void) {
     err |= test_stream_signature_frames_are_consumed_and_verify_without_key();
     err |= test_stream_signature_out_of_order_marks_sequence_error();
     err |= test_clear_signed_payload_updates_digest_and_dispatches();
+    err |= test_stream_voice_replaces_foreign_active_call();
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();
@@ -2085,6 +2191,7 @@ main(void) {
     err |= test_ip_stream_frames_apply_crc_gated_lsf_state();
     err |= test_ip_mpkt_frames_apply_crc_gated_packet_state();
     err |= test_packet_eot_finalization_crc_gates_decode_and_clears_state();
+    err |= test_packet_eot_preserves_non_packet_calls();
     err |= test_encoder_control_lsf_and_dibit_helpers();
     err |= test_packet_protocol_identifier_utf8_boundaries();
     err |= test_m17_hook_argument_guards();
