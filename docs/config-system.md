@@ -505,8 +505,9 @@ Output format:
 ### Decode Modes
 
 The `decode` key in `[mode]` configures the frame types and modulation.
-Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `nxdn48`, `nxdn96`,
-`x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`, `analog`.
+Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
+`nxdn96`, `x2tdma`, `ysf`, `dstar`, `edacs_pv`, `dpmr`, `m17`, `tdma`,
+`analog`. `dmr_mono` selects the same single-slot decoder as CLI `-fr`.
 Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
 `provoice`, and `analog_monitor` are translated to their canonical modes when
 read. Generated configurations always use the canonical values above.

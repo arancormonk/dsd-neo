@@ -139,6 +139,30 @@ test_dmr_prefers_gfsk(void) {
 }
 
 static int
+test_dmr_mono_preset_restores_single_slot_decoder(void) {
+    static dsd_opts opts = {0};
+    static dsd_state state = {0};
+
+    opts.dmr_stereo = 1;
+    state.dmr_stereo = 1;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR_MONO, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "config DMR mono apply failed\n");
+        return 1;
+    }
+    if (!(opts.frame_dmr == 1 && opts.frame_dstar == 0 && opts.frame_p25p1 == 0 && opts.frame_p25p2 == 0
+          && opts.dmr_mono == 1 && opts.dmr_stereo == 0 && state.dmr_stereo == 0 && opts.pulse_digi_rate_out == 8000
+          && opts.pulse_digi_out_channels == 2 && strcmp(opts.output_name, "DMR-Mono") == 0)) {
+        DSD_FPRINTF(stderr,
+                    "config DMR mono settings mismatch frame=%d mono=%d stereo=%d state_stereo=%d rate=%d "
+                    "channels=%d output=%s\n",
+                    opts.frame_dmr, opts.dmr_mono, opts.dmr_stereo, state.dmr_stereo, opts.pulse_digi_rate_out,
+                    opts.pulse_digi_out_channels, opts.output_name);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_dmr_preserves_manual_c4fm_lock(void) {
     static dsd_opts opts = {0};
     static dsd_state state = {0};
@@ -363,7 +387,7 @@ test_symbol_timing_and_inference(void) {
         int expected_center;
     } timing_cases[] = {
         {DSDCFG_MODE_P25P2, 16, 6},    {DSDCFG_MODE_NXDN48, 40, 18}, {DSDCFG_MODE_DPMR, 40, 18},
-        {DSDCFG_MODE_EDACS_PV, 10, 4}, {DSDCFG_MODE_DMR, 20, 8},
+        {DSDCFG_MODE_EDACS_PV, 10, 4}, {DSDCFG_MODE_DMR, 20, 8},     {DSDCFG_MODE_DMR_MONO, 20, 8},
     };
 
     static const struct {
@@ -421,6 +445,14 @@ test_symbol_timing_and_inference(void) {
         return 1;
     }
 
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_dmr = 1;
+    opts.dmr_mono = 1;
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_DMR_MONO) {
+        DSD_FPRINTF(stderr, "DMR mono infer mismatch\n");
+        return 1;
+    }
+
     for (size_t i = 0; i < sizeof infer_cases / sizeof infer_cases[0]; i++) {
         DSD_MEMSET(&opts, 0, sizeof opts);
         opts.frame_dstar = (infer_cases[i].bit & (1u << 0)) != 0;
@@ -443,8 +475,9 @@ test_symbol_timing_and_inference(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     opts.frame_dstar = 1;
     opts.frame_dmr = 1;
+    opts.dmr_mono = 1;
     if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AUTO) {
-        DSD_FPRINTF(stderr, "mixed unsupported infer should return AUTO\n");
+        DSD_FPRINTF(stderr, "mixed unsupported mono infer should return AUTO\n");
         return 1;
     }
 
@@ -457,6 +490,7 @@ main(void) {
     rc |= test_auto_profile_differences();
     rc |= test_p25p2_prefers_qpsk();
     rc |= test_dmr_prefers_gfsk();
+    rc |= test_dmr_mono_preset_restores_single_slot_decoder();
     rc |= test_dmr_preserves_manual_c4fm_lock();
     rc |= test_interactive_x2_and_ysf_behavior();
     rc |= test_cli_preset_mapping_and_guards();

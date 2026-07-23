@@ -1724,6 +1724,93 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
 }
 
 static int
+test_process_mbe_frame_trunked_mono_bs_fallback_routes_slot2(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    mbe_parms expected_cur;
+    mbe_parms expected_prev;
+    mbe_parms expected_prev_enhanced;
+    char ambe_fr[4][24] = {{0}};
+    char ambe_d[49] = {0};
+    float expected_audio[160] = {0};
+    char expected_err_str[96] = {0};
+    int expected_errs = -1;
+    int expected_errs2 = -1;
+    mbe_process_result result;
+    char wav_path_l[1024];
+    char wav_path_r[1024];
+    SNDFILE* wav_out_l = create_wav_temp(wav_path_l, sizeof(wav_path_l), "dmr_bs_fallback_l");
+    SNDFILE* wav_out_r = create_wav_temp(wav_path_r, sizeof(wav_path_r), "dmr_bs_fallback_r");
+
+    ambe_fr[0][11] = 1;
+    ambe_fr[2][20] = 1;
+
+    int ret = mbe_decodeAmbe3600x2450Frame((const char (*)[24])ambe_fr, ambe_d, &result);
+    store_expected_decode_status(ret, &expected_errs, &expected_errs2, &result);
+    rc |= expect_eq_int("dmr-bs-fallback fixture decodes", ret >= 0, 1);
+    if (ret >= 0) {
+        mbe_initMbeParms(&expected_cur, &expected_prev, &expected_prev_enhanced);
+        ret = mbe_processAmbe2450Dataf(expected_audio, &result, ambe_d, &expected_cur, &expected_prev,
+                                       &expected_prev_enhanced);
+        store_expected_process_status(ret, expected_audio, &expected_errs, &expected_errs2, expected_err_str,
+                                      sizeof(expected_err_str), &result);
+        rc |= expect_eq_int("dmr-bs-fallback fixture processes", ret >= 0, 1);
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    opts.dmr_mono = 1;
+    opts.dmr_stereo = 0;
+    opts.dmr_stereo_wav = 1;
+    opts.wav_out_f = wav_out_l;
+    opts.wav_out_fR = wav_out_r;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.currentslot = 1;
+    state.dmr_stereo = 1;
+
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+
+    rc |= expect_eq_int("dmr-bs-fallback keeps slot1 errs", state.errs, 0);
+    rc |= expect_eq_int("dmr-bs-fallback errs", state.errsR, expected_errs);
+    rc |= expect_eq_int("dmr-bs-fallback errs2", state.errs2R, expected_errs2);
+    rc |= expect_eq_int("dmr-bs-fallback status", strcmp(state.err_strR, expected_err_str), 0);
+    rc |=
+        expect_eq_mem("dmr-bs-fallback temp audio", state.audio_out_temp_bufR, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_mem("dmr-bs-fallback staged right", state.f_r, expected_audio, sizeof(expected_audio));
+    rc |= expect_eq_int("dmr-bs-fallback enc flag", state.dmr_encR, 0);
+    rc |= expect_eq_int("dmr-bs-fallback debug errors", state.debug_audio_errorsR, state.errs2R);
+
+    if (wav_out_l) {
+        sf_write_sync(wav_out_l);
+        rc |= expect_eq_int("dmr-bs-fallback slot1 wav frames", (int)sf_seek(wav_out_l, 0, SEEK_END), 0);
+        rc |= expect_eq_int("dmr-bs-fallback slot1 wav close", sf_close(wav_out_l), 0);
+        (void)remove(wav_path_l);
+        opts.wav_out_f = NULL;
+    } else {
+        rc |= 1;
+    }
+    if (wav_out_r) {
+        sf_write_sync(wav_out_r);
+        rc |= expect_eq_int("dmr-bs-fallback slot2 wav frames", (int)sf_seek(wav_out_r, 0, SEEK_END), 160);
+        rc |= expect_eq_int("dmr-bs-fallback slot2 wav close", sf_close(wav_out_r), 0);
+        (void)remove(wav_path_r);
+        opts.wav_out_fR = NULL;
+    } else {
+        rc |= 1;
+    }
+
+    return rc;
+}
+
+static int
 test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots(void) {
     int rc = 0;
     static dsd_opts opts;
@@ -2488,6 +2575,7 @@ main(void) {
     rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
+    rc |= test_process_mbe_frame_trunked_mono_bs_fallback_routes_slot2();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
     rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();

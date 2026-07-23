@@ -1547,6 +1547,63 @@ test_snapshot_mode_inference_tdma_and_auto(void) {
     return rc;
 }
 
+static int
+test_snapshot_roundtrip_dmr_mono_mode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.frame_dmr = 1;
+    opts.dmr_mono = 1;
+    opts.dmr_stereo = 0;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    int rc = 0;
+    if (!snap.has_mode || snap.decode_mode != DSDCFG_MODE_DMR_MONO) {
+        DSD_FPRINTF(stderr, "DMR mono snapshot mode mismatch: %d\n", (int)snap.decode_mode);
+        rc |= 1;
+    }
+
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (!strstr(rendered, "decode = \"dmr_mono\"")) {
+        DSD_FPRINTF(stderr, "DMR mono snapshot was not rendered canonically:\n%s\n", rendered);
+        rc |= 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig loaded;
+    if (dsd_user_config_load(path, &loaded) != 0 || loaded.decode_mode != DSDCFG_MODE_DMR_MONO) {
+        DSD_FPRINTF(stderr, "DMR mono saved config did not reload\n");
+        (void)remove(path);
+        return 1;
+    }
+
+    reset_opts_and_state(opts, state);
+    opts.dmr_stereo = 1;
+    state.dmr_stereo = 1;
+    dsd_apply_user_config_to_opts(&loaded, &opts, &state);
+    if (!(opts.frame_dmr == 1 && opts.dmr_mono == 1 && opts.dmr_stereo == 0 && state.dmr_stereo == 0
+          && opts.pulse_digi_rate_out == 8000 && opts.pulse_digi_out_channels == 2
+          && strcmp(opts.output_name, "DMR-Mono") == 0)) {
+        DSD_FPRINTF(stderr,
+                    "DMR mono reload did not restore runtime mode frame=%d mono=%d stereo=%d state_stereo=%d "
+                    "rate=%d channels=%d output=%s\n",
+                    opts.frame_dmr, opts.dmr_mono, opts.dmr_stereo, state.dmr_stereo, opts.pulse_digi_rate_out,
+                    opts.pulse_digi_out_channels, opts.output_name);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1571,5 +1628,6 @@ main(void) {
     rc |= test_apply_mode_ysf_uses_config_profile_behavior();
     rc |= test_snapshot_staged_file_rate_uses_requested_rate();
     rc |= test_snapshot_mode_inference_tdma_and_auto();
+    rc |= test_snapshot_roundtrip_dmr_mono_mode();
     return rc;
 }

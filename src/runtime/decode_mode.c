@@ -181,6 +181,17 @@ decode_mode_apply_dmr(dsd_opts* o, dsd_state* s) {
 }
 
 static void
+decode_mode_apply_dmr_mono(dsd_opts* o, dsd_state* s) {
+    decode_mode_apply_dmr(o, s);
+    o->dmr_stereo = 0;
+    s->dmr_stereo = 0;
+    o->dmr_mono = 1;
+    o->pulse_digi_rate_out = 8000;
+    o->pulse_digi_out_channels = 2;
+    DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DMR-Mono");
+}
+
+static void
 decode_mode_apply_nxdn48(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->frame_dstar = 0;
     o->frame_x2tdma = 0;
@@ -474,6 +485,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         case DSDCFG_MODE_P25P1: decode_mode_apply_p25p1(opts, state); return 0;
         case DSDCFG_MODE_P25P2: decode_mode_apply_p25p2(opts, state); return 0;
         case DSDCFG_MODE_DMR: decode_mode_apply_dmr(opts, state); return 0;
+        case DSDCFG_MODE_DMR_MONO: decode_mode_apply_dmr_mono(opts, state); return 0;
         case DSDCFG_MODE_DSTAR: decode_mode_apply_dstar(opts, state); return 0;
         case DSDCFG_MODE_EDACS_PV: decode_mode_apply_edacs_pv(opts, state); return 0;
         case DSDCFG_MODE_DPMR: decode_mode_apply_dpmr(opts, state); return 0;
@@ -520,6 +532,10 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
     mask |= ((unsigned)(opts->frame_provoice != 0) << 8);
     mask |= ((unsigned)(opts->frame_ysf != 0) << 9);
     mask |= ((unsigned)(opts->frame_m17 != 0) << 10);
+
+    if (mask == DSD_MODE_BIT_DMR && opts->dmr_mono == 1) {
+        return DSDCFG_MODE_DMR_MONO;
+    }
 
     static const struct {
         unsigned mask;
