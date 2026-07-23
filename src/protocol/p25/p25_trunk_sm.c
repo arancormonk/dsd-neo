@@ -5505,6 +5505,21 @@ p25_lockout_get_call_context(const dsd_state* state, uint8_t slot, int target, i
     return 0;
 }
 
+static int
+p25_lockout_end_matching_call(dsd_state* state, uint8_t slot, dsd_call_snapshot* call) {
+    const uint64_t epoch = call->epoch;
+    if (dsd_call_state_end(state, slot, dsd_time_now_monotonic_s()) <= 0) {
+        return 0;
+    }
+
+    dsd_call_snapshot ended;
+    if (dsd_call_state_get(state, slot, &ended) <= 0 || ended.epoch != epoch || ended.phase != DSD_CALL_PHASE_ENDED) {
+        return 0;
+    }
+    *call = ended;
+    return 1;
+}
+
 void
 p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int target, int svc_bits,
                                 int is_group) {
@@ -5520,7 +5535,7 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         const int finalizes_call = p25_lockout_get_call_context(state, slot, target, svc_bits, is_group, &call);
         char detail[160];
         DSD_SNPRINTF(detail, sizeof(detail), "Target: %d; has been locked out; Encryption Lock Out Enabled.", target);
-        if (finalizes_call) {
+        if (finalizes_call && p25_lockout_end_matching_call(state, slot, &call)) {
             (void)dsd_event_emit_call_notice(opts, state, slot, &call, detail);
         } else {
             (void)dsd_event_emit_call_notice_nonfinalizing(opts, state, slot, &call, detail);

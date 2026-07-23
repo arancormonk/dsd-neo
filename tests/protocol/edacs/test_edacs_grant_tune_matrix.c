@@ -16,6 +16,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -32,6 +33,8 @@
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #endif
+#include <sndfile.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -80,6 +83,10 @@ static int g_udp_fail_every = 0;
 static int g_udp_blast_count = 0;
 static size_t g_udp_blast_bytes[3];
 static short g_udp_blast_first[3];
+static Event_History_I g_eot_history[2];
+static max_align_t g_wav_sentinel;
+static int g_close_wav_count = 0;
+static int g_open_wav_count = 0;
 #ifdef USE_RADIO
 static int g_rtl_read_count = 0;
 static int g_rtl_return_pwr_count = 0;
@@ -92,6 +99,12 @@ void __wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count);
 void __wrap_watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 void __wrap_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+SNDFILE* __wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
+                                          const char* dir, const Event_History_I* event_struct);
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+SNDFILE* __wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate,
+                              uint8_t ext);
 
 void
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -115,6 +128,31 @@ __wrap_watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t sl
     (void)opts;
     (void)state;
     (void)slot;
+}
+
+SNDFILE*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                                 const Event_History_I* event_struct) {
+    (void)wav_file;
+    (void)opts;
+    (void)wav_out_filename;
+    (void)dir;
+    (void)event_struct;
+    g_close_wav_count++;
+    return NULL;
+}
+
+SNDFILE*
+// NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+__wrap_open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_t sample_rate, uint8_t ext) {
+    (void)dir;
+    (void)temp_filename;
+    (void)temp_filename_size;
+    (void)sample_rate;
+    (void)ext;
+    g_open_wav_count++;
+    return (SNDFILE*)&g_wav_sentinel;
 }
 
 static dsd_trunk_tune_result
@@ -809,6 +847,32 @@ edacs_run_eot_retry_after_reject_case(dsd_trunk_tune_result first_result, const 
 }
 
 static int
+edacs_run_eot_wav_rotation_case(void) {
+    g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    edacs_setup_eot_fixture();
+    edacs_install_hooks();
+
+    DSD_MEMSET(g_eot_history, 0, sizeof(g_eot_history));
+    init_event_history(&g_eot_history[0], 0U, 255U);
+    init_event_history(&g_eot_history[1], 0U, 255U);
+    g_state.event_history_s = g_eot_history;
+    g_opts.dmr_stereo_wav = 1;
+    g_opts.static_wav_file = 0;
+    g_opts.wav_out_f = (SNDFILE*)&g_wav_sentinel;
+    g_close_wav_count = 0;
+    g_open_wav_count = 0;
+
+    eot_cc(&g_opts, &g_state);
+
+    int rc = edacs_expect(g_close_wav_count == 1, "eot-wav", "dynamic", "EOT closed the call WAV once");
+    rc |= edacs_expect(g_open_wav_count == 1, "eot-wav", "dynamic", "EOT opened the next WAV once");
+    rc |= edacs_expect(g_opts.wav_out_f == (SNDFILE*)&g_wav_sentinel, "eot-wav", "dynamic",
+                       "EOT retained the newly opened WAV");
+    return rc;
+}
+
+static int
 edacs_run_retune_after_eot_case(const edacs_grant_case* test_case) {
     g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
     g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -1409,6 +1473,7 @@ main(void) {
     rc |= edacs_run_eot_retry_after_reject_case(DSD_TRUNK_TUNE_RESULT_DEFERRED, "deferred-then-ok");
     rc |= edacs_run_eot_retry_after_reject_case(DSD_TRUNK_TUNE_RESULT_FAILED, "failed-then-ok");
     rc |= edacs_run_eot_retry_after_reject_case(DSD_TRUNK_TUNE_RESULT_TIMEOUT, "timeout-then-ok");
+    rc |= edacs_run_eot_wav_rotation_case();
     rc |= edacs_run_retune_after_eot_case(&cases[3]);
     rc |= edacs_run_standard_state_cases();
     rc |= edacs_run_extended_state_cases();

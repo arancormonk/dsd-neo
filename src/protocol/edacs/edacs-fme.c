@@ -2067,15 +2067,6 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     (void)dsd_call_state_end(state, 0U, nowm);
     dsd_event_sync_slot(opts, state, 0);
 
-    //close and rename wav file here, then open a new one
-    if (opts->dmr_stereo_wav == 1) {
-        if (opts->wav_out_f != NULL) {
-            opts->wav_out_f = close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
-                                                        &state->event_history_s[0]);
-        }
-        opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
-    }
-
     //jump back to CC here
     long int cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
     if ((opts->trunk_enable == 1) && cc != 0 && (opts->trunk_is_tuned == 1)) {

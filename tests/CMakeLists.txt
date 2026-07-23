@@ -6024,6 +6024,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=skipDibit"
             "-Wl,--wrap=watchdog_event_current"
             "-Wl,--wrap=watchdog_event_history"
+            "-Wl,--wrap=close_and_rename_wav_file"
+            "-Wl,--wrap=open_wav_file"
     )
     add_test(
         NAME EDACS_GRANT_TUNE_MATRIX
