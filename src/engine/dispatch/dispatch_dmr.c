@@ -73,6 +73,10 @@ dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
         dmr_set_slot_lights(state);
         dmr_bootstrap_ms_if_enabled(opts, state);
     }
+    if (opts->dmr_mono == 1 && state->synctype == DSD_SYNC_DMR_MS_VOICE) {
+        dmr_set_slot_lights(state);
+        dmr_bootstrap_ms_if_enabled(opts, state);
+    }
     if (opts->dmr_stereo == 1) {
         state->dmr_stereo = 1;
         if (state->synctype >= DSD_SYNC_DMR_MS_VOICE) {

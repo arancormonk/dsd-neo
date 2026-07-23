@@ -237,6 +237,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
 #endif
     opts->payload = 0;
     opts->inverted_dpmr = 0;
+    opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
     opts->aggressive_framesync = 1;
     /* DMR: strict CRC gating by default (use -F to relax, like other protocols). */

@@ -82,9 +82,9 @@ test_auto_profile_differences(void) {
         DSD_FPRINTF(stderr, "cli AUTO should enable all digital frame flags\n");
         return 1;
     }
-    if (opts.pulse_digi_out_channels != 2 || opts.dmr_stereo != 1) {
-        DSD_FPRINTF(stderr, "cli AUTO audio settings mismatch channels=%d stereo=%d\n", opts.pulse_digi_out_channels,
-                    opts.dmr_stereo);
+    if (opts.pulse_digi_out_channels != 2 || opts.dmr_stereo != 1 || opts.dmr_mono != 0) {
+        DSD_FPRINTF(stderr, "cli AUTO audio settings mismatch channels=%d stereo=%d mono=%d\n",
+                    opts.pulse_digi_out_channels, opts.dmr_stereo, opts.dmr_mono);
         return 1;
     }
 
@@ -196,9 +196,9 @@ test_interactive_x2_and_ysf_behavior(void) {
         DSD_FPRINTF(stderr, "config YSF apply failed\n");
         return 1;
     }
-    if (!(opts.pulse_digi_out_channels == 2 && opts.dmr_stereo == 1)) {
-        DSD_FPRINTF(stderr, "config YSF audio settings mismatch channels=%d stereo=%d\n", opts.pulse_digi_out_channels,
-                    opts.dmr_stereo);
+    if (!(opts.pulse_digi_out_channels == 2 && opts.dmr_stereo == 1 && opts.dmr_mono == 0)) {
+        DSD_FPRINTF(stderr, "config YSF audio settings mismatch channels=%d stereo=%d mono=%d\n",
+                    opts.pulse_digi_out_channels, opts.dmr_stereo, opts.dmr_mono);
         return 1;
     }
 
@@ -208,9 +208,9 @@ test_interactive_x2_and_ysf_behavior(void) {
         DSD_FPRINTF(stderr, "interactive YSF apply failed\n");
         return 1;
     }
-    if (!(opts.pulse_digi_out_channels == 1 && opts.dmr_stereo == 0 && state.dmr_stereo == 0)) {
-        DSD_FPRINTF(stderr, "interactive YSF audio settings mismatch channels=%d stereo=%d state_stereo=%d\n",
-                    opts.pulse_digi_out_channels, opts.dmr_stereo, state.dmr_stereo);
+    if (!(opts.pulse_digi_out_channels == 1 && opts.dmr_stereo == 0 && state.dmr_stereo == 0 && opts.dmr_mono == 0)) {
+        DSD_FPRINTF(stderr, "interactive YSF audio settings mismatch channels=%d stereo=%d state_stereo=%d mono=%d\n",
+                    opts.pulse_digi_out_channels, opts.dmr_stereo, state.dmr_stereo, opts.dmr_mono);
         return 1;
     }
     return 0;
@@ -336,6 +336,19 @@ test_remaining_preset_modes(void) {
         || dsd_apply_decode_mode_preset(DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, &opts, NULL) != -1
         || dsd_apply_decode_mode_preset(DSDCFG_MODE_UNSET, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != -1) {
         DSD_FPRINTF(stderr, "preset apply guards should reject NULL/unknown modes\n");
+        return 1;
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.dmr_mono = 1;
+    state.dmr_stereo = 1;
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN96, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "config NXDN96 apply failed\n");
+        return 1;
+    }
+    if (opts.dmr_mono != 1 || state.dmr_stereo != 1) {
+        DSD_FPRINTF(stderr, "config NXDN96 should preserve mono/state stereo settings\n");
         return 1;
     }
 

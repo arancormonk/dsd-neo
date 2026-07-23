@@ -169,6 +169,24 @@ test_bs_voice_routes_to_mono_bootstrap(void) {
 }
 
 static void
+test_ms_voice_routes_to_single_slot_bootstrap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    opts.dmr_mono = 1;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    dsd_dispatch_handle_dmr(&opts, &state);
+
+    assert(strcmp(state.slot1light, " slot1 ") == 0);
+    assert(strcmp(state.slot2light, " slot2 ") == 0);
+    assert(ms_bootstrap_calls == 1);
+    assert(bs_bootstrap_calls == 0);
+}
+
+static void
 test_stereo_voice_routes_by_synctype(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -241,6 +259,7 @@ main(void) {
     test_synctype_helpers();
     test_branding_update();
     test_bs_voice_routes_to_mono_bootstrap();
+    test_ms_voice_routes_to_single_slot_bootstrap();
     test_stereo_voice_routes_by_synctype();
     test_ms_data_routes_to_ms_data();
     test_bs_data_routes_to_data_sync();

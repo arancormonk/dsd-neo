@@ -1491,7 +1491,7 @@ mbe_post_left_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fram
 
 static void
 mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (opts->dmr_stereo != 1 || state->currentslot != 0) {
+    if ((opts->dmr_mono != 1 && opts->dmr_stereo != 1) || state->currentslot != 0) {
         return;
     }
 
@@ -1589,7 +1589,7 @@ mbe_post_other_copy_float_buffer(dsd_state* state, int is_p25p2) {
 
 static void
 mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
-    if (opts->dmr_stereo != 0) {
+    if (opts->dmr_mono != 0 || opts->dmr_stereo != 0) {
         return;
     }
 

@@ -377,6 +377,29 @@ test_ms_direct_flco_reports_internal_slot_one(void) {
 }
 
 static void
+test_single_slot_flco_forces_slot_one_context(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_mono = 1;
+    state.currentslot = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0U);
+    assert(state.currentslot == 0);
+    assert(state.lasttg == 1001U);
+    assert(state.lastsrc == 2002U);
+    assert(state.lasttgR == 0U);
+    assert(state.lastsrcR == 0U);
+}
+
+static void
 test_hytera_basic_key_output_uses_segment_count(void) {
     char out[2048];
 
@@ -979,6 +1002,7 @@ main(void) {
 
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
+    test_single_slot_flco_forces_slot_one_context();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
     test_hytera_enhanced_flco_uses_secondary_checksum();

@@ -94,6 +94,7 @@ decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
         o->mod_qpsk = 0;
         s->rf_mod = 0;
         o->dmr_stereo = 1;
+        o->dmr_mono = 0;
         o->pulse_digi_rate_out = 8000;
         o->pulse_digi_out_channels = 2;
     }
@@ -119,6 +120,7 @@ decode_mode_apply_p25p1(dsd_opts* o, dsd_state* s) {
     o->mod_qpsk = 0;
     o->mod_gfsk = 0;
     s->rf_mod = 0;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->ssize = 36;
@@ -147,6 +149,7 @@ decode_mode_apply_p25p2(dsd_opts* o, dsd_state* s) {
     s->rf_mod = 1;
     o->dmr_stereo = 1;
     s->dmr_stereo = 0;
+    o->dmr_mono = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "P25p2");
 }
 
@@ -171,6 +174,7 @@ decode_mode_apply_dmr(dsd_opts* o, dsd_state* s) {
         s->rf_mod = 2;
     }
     o->dmr_stereo = 1;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 2;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DMR");
@@ -198,6 +202,7 @@ decode_mode_apply_nxdn48(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         s->dmr_stereo = 0;
+        o->dmr_mono = 0;
     }
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
@@ -226,6 +231,7 @@ decode_mode_apply_nxdn96(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         s->dmr_stereo = 0;
+        o->dmr_mono = 0;
     }
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
@@ -252,6 +258,7 @@ decode_mode_apply_x2tdma(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = (p == DSD_DECODE_PRESET_PROFILE_INTERACTIVE) ? 1 : 2;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "X2-TDMA");
 }
@@ -273,6 +280,7 @@ decode_mode_apply_ysf(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->mod_qpsk = 0;
     o->mod_gfsk = 0;
     s->rf_mod = 0;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         o->dmr_stereo = 0;
@@ -301,6 +309,7 @@ decode_mode_apply_dstar(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     s->rf_mod = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DSTAR");
@@ -330,6 +339,7 @@ decode_mode_apply_edacs_pv(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "EDACS/PV");
 }
@@ -356,6 +366,7 @@ decode_mode_apply_dpmr(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "dPMR");
 }
@@ -380,6 +391,7 @@ decode_mode_apply_m17(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     o->use_cosine_filter = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "M17");
@@ -404,6 +416,7 @@ decode_mode_apply_tdma(dsd_opts* o, dsd_state* s) {
     o->mod_gfsk = 0;
     s->rf_mod = 0;
     o->dmr_stereo = 1;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 2;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "TDMA");
@@ -426,6 +439,7 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
     s->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->rf_mod = 0;
     o->monitor_input_audio = 1;
     o->analog_only = 1;

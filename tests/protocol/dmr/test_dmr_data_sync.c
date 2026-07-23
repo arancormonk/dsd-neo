@@ -257,6 +257,26 @@ test_data_sync_dispatches_burst_and_reliability(void) {
 }
 
 static void
+test_single_slot_data_sync_bypasses_confidence_and_cach(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    static dsd_dibit_soft_t reliab[90];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload, reliab);
+    reset_fixture();
+
+    opts.dmr_mono = 1;
+    g_confidence_result = DMR_CONFIDENCE_REJECT;
+    dmr_data_sync(&opts, &state);
+
+    assert(g_handler_calls == 1);
+    assert(g_reset_calls == 0);
+    assert(g_cach_calls == 0);
+    assert(state.dmr_color_code == 5);
+}
+
+static void
 test_cach_failure_resets_without_dispatch(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -465,6 +485,7 @@ test_connect_plus_idle_bursts_clear_tuned_sync_times(void) {
 int
 main(void) {
     test_data_sync_dispatches_burst_and_reliability();
+    test_single_slot_data_sync_bypasses_confidence_and_cach();
     test_cach_failure_resets_without_dispatch();
     test_golay_failure_resets_and_skips_live_tail();
     test_live_second_half_reliability_and_debug_output();

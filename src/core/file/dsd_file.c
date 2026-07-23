@@ -293,14 +293,14 @@ PrintAMBEData(dsd_opts* opts, const dsd_state* state, const char* ambe_d) {
 
     if (opts->payload == 1) {
         //preceeding line break, if required
-        if (opts->dmr_stereo == 0) {
+        if (opts->dmr_stereo == 0 && opts->dmr_mono == 0) {
             DSD_FPRINTF(stderr, "\n");
         }
 
         DSD_FPRINTF(stderr, " AMBE %014llX err = [%X] [%X] ", ambe, errs, errs2);
 
         //trailing line break, if required
-        if (opts->dmr_stereo == 1) {
+        if (opts->dmr_stereo == 1 || opts->dmr_mono == 1) {
             DSD_FPRINTF(stderr, "\n");
         }
     }

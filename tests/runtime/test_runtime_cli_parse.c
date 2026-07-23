@@ -365,6 +365,7 @@ test_compatibility_short_options_use_current_facilities(void) {
     initOpts(opts);
     initState(state);
     opts->p25_lcw_retune = 0;
+    opts->dmr_mono = 0;
     opts->dmr_stereo = 0;
     opts->pulse_digi_rate_out = 48000;
     opts->pulse_digi_out_channels = 1;
@@ -386,10 +387,12 @@ test_compatibility_short_options_use_current_facilities(void) {
     char* argv_nm[] = {arg0, arg_nm, NULL};
     exit_rc = -1;
     rc = dsd_parse_args(2, argv_nm, opts, state, &argc_effective, &exit_rc);
-    if (rc != DSD_PARSE_CONTINUE || opts->dmr_stereo != 0 || opts->pulse_digi_rate_out != 48000
+    if (rc != DSD_PARSE_CONTINUE || opts->dmr_mono != 1 || opts->dmr_stereo != 0 || opts->pulse_digi_rate_out != 48000
         || opts->pulse_digi_out_channels != 1) {
-        DSD_FPRINTF(stderr, "expected -nm to preserve the active preset, got rc=%d stereo=%d rate=%d channels=%d\n", rc,
-                    opts->dmr_stereo, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels);
+        DSD_FPRINTF(stderr,
+                    "expected -nm to enable single-slot DMR without changing the active preset, got rc=%d mono=%d "
+                    "stereo=%d rate=%d channels=%d\n",
+                    rc, opts->dmr_mono, opts->dmr_stereo, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels);
         test_rc = 1;
     }
 
@@ -5070,7 +5073,7 @@ test_f_edacs_presets_match_reference_modes(void) {
 }
 
 static int
-test_f_fr_alias_uses_current_dmr_preset(void) {
+test_f_fr_restores_single_slot_mono_preset(void) {
     static const struct {
         int with_c4fm_lock;
         int mod_c4fm;
@@ -5105,16 +5108,18 @@ test_f_fr_alias_uses_current_dmr_preset(void) {
         int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
 
         if (rc != DSD_PARSE_CONTINUE || opts->frame_dmr != 1 || opts->frame_dstar != 0 || opts->frame_p25p1 != 0
-            || opts->frame_p25p2 != 0 || opts->dmr_stereo != 1 || opts->pulse_digi_rate_out != 8000
-            || opts->pulse_digi_out_channels != 2 || strcmp(opts->output_name, "DMR") != 0
-            || opts->mod_cli_lock != cases[i].with_c4fm_lock || opts->mod_c4fm != cases[i].mod_c4fm
-            || opts->mod_qpsk != 0 || opts->mod_gfsk != cases[i].mod_gfsk || state->rf_mod != cases[i].rf_mod) {
+            || opts->frame_p25p2 != 0 || opts->dmr_mono != 1 || opts->dmr_stereo != 0 || state->dmr_stereo != 0
+            || opts->pulse_digi_rate_out != 8000 || opts->pulse_digi_out_channels != 2
+            || strcmp(opts->output_name, "DMR-Mono") != 0 || opts->mod_cli_lock != cases[i].with_c4fm_lock
+            || opts->mod_c4fm != cases[i].mod_c4fm || opts->mod_qpsk != 0 || opts->mod_gfsk != cases[i].mod_gfsk
+            || state->rf_mod != cases[i].rf_mod) {
             DSD_FPRINTF(stderr,
-                        "unexpected -fr canonical mapping rc=%d frame=%d stereo=%d rate=%d channels=%d "
+                        "unexpected -fr single-slot preset rc=%d frame=%d mono=%d stereo=%d state_stereo=%d "
+                        "rate=%d channels=%d "
                         "lock=%d mod=%d/%d/%d rf_mod=%d output=%s\n",
-                        rc, opts->frame_dmr, opts->dmr_stereo, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels,
-                        opts->mod_cli_lock, opts->mod_c4fm, opts->mod_qpsk, opts->mod_gfsk, state->rf_mod,
-                        opts->output_name);
+                        rc, opts->frame_dmr, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo,
+                        opts->pulse_digi_rate_out, opts->pulse_digi_out_channels, opts->mod_cli_lock, opts->mod_c4fm,
+                        opts->mod_qpsk, opts->mod_gfsk, state->rf_mod, opts->output_name);
             test_rc = 1;
         }
 
@@ -6414,7 +6419,7 @@ main(void) {
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_dpmr_and_m17_presets_match_documented_letters();
     rc |= test_f_edacs_presets_match_reference_modes();
-    rc |= test_f_fr_alias_uses_current_dmr_preset();
+    rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();
     rc |= test_mc_before_f_dmr_preserves_c4fm_lock();

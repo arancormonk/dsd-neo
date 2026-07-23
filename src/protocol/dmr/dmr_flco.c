@@ -156,6 +156,10 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->type = type;
     ctx->restchannel = -1;
 
+    if (opts->dmr_mono == 1) {
+        state->currentslot = 0;
+    }
+
     ctx->slot = state->currentslot;
     ctx->slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
     ctx->pf = lc_bits[0];
