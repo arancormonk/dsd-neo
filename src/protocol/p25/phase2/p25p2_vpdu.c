@@ -3315,6 +3315,7 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
         double mac_hold = p25p2_vpdu_cfg_mac_hold_s(state, 0.75);
         double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.75);
         int other_audio = 0;
+        uint8_t released_slot = (uint8_t)(eslot & 1);
 
         DSD_FPRINTF(stderr, "\n MAC Release:  ");
         DSD_FPRINTF(stderr, uf ? "Forced; " : "Unforced; ");
@@ -3324,13 +3325,15 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "TGT: %d; ", add);
         DSD_FPRINTF(stderr, "CC: %03X; ", cc);
 
-        dsd_p25p2_flush_partial_audio_slot(opts, state, eslot & 1);
+        dsd_p25p2_flush_partial_audio_slot(opts, state, released_slot);
         p25p2_vpdu_gate_slot_audio(state, eslot);
-        p25_crypto_reset_slot(state, eslot & 1);
+        if (dsd_call_state_end(state, released_slot, dsd_time_now_monotonic_s()) > 0) {
+            dsd_event_sync_slot(opts, state, released_slot);
+        }
+        p25_crypto_reset_slot(state, released_slot);
         other_audio = p25p2_vpdu_other_slot_audio_with_history(state, eslot, mac_hold, voice_hold);
         if (!other_audio) {
             (void)p25p2_vpdu_force_release_after_grace(opts, state);
-        } else {
         }
     }
 

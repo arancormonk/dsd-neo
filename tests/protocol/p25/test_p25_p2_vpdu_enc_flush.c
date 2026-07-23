@@ -6,6 +6,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -140,10 +141,14 @@ main(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state st;
+    static Event_History_I event_history[2];
     install_trunk_tuning_hooks();
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = capture_audio});
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&st, 0, sizeof st);
+    st.event_history_s = event_history;
+    init_event_history(&event_history[0], 0U, 255U);
+    init_event_history(&event_history[1], 0U, 255U);
 
     // Trunking + ENC lockout enabled and tuned to VC
     opts.trunk_enable = 1;
@@ -263,6 +268,9 @@ main(void) {
     opts.slot2_on = 1;
     st.currentslot = 0;
     rc |= expect_eq("MAC Release seed active call", seed_group_call(&st, 0U, 0x2222), 1);
+    rc |= expect_eq("MAC Release seed active companion", seed_group_call(&st, 1U, 0x3333), 1);
+    dsd_event_sync_slot(&opts, &st, 0U);
+    dsd_event_sync_slot(&opts, &st, 1U);
     st.dmrburstL = 21;
     st.dmrburstR = 21;
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
@@ -284,6 +292,12 @@ main(void) {
     rc |= expect_eq("MAC Release tail drained", st.s_l4[0][0], 0);
     rc |= expect_eq("MAC Release crypto reset after flush", st.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_eq("MAC Release retains active companion", g_return_to_cc_called, 0);
+    dsd_call_context_snapshot call_context;
+    rc |= expect_eq("MAC Release copies call context", dsd_call_context_copy_snapshot(&st, &call_context), 1);
+    rc |= expect_eq("MAC Release ends released slot", call_context.calls.slots[0].phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq("MAC Release finalizes released event", call_context.events[0].ended_committed, 1);
+    rc |= expect_eq("MAC Release keeps companion active", call_context.calls.slots[1].phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq("MAC Release leaves companion event open", call_context.events[1].ended_committed, 0);
 
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&st);
