@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -88,6 +89,34 @@ p25_crypto_canonical_classification(dsd_p25_crypto_state crypto_state) {
         case DSD_P25_CRYPTO_BLOCKED: return DSD_CALL_CRYPTO_ENCRYPTED;
         default: return DSD_CALL_CRYPTO_UNKNOWN;
     }
+}
+
+static int
+p25_crypto_phase1_protocol(const dsd_state* state) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
+        return state->synctype;
+    }
+    return DSD_SYNC_IS_P25P1(state->lastsynctype) ? state->lastsynctype : DSD_SYNC_P25P1_POS;
+}
+
+static int
+p25_crypto_ensure_phase1_call(dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+
+    int64_t frequency_hz = state->p25_vc_freq[0];
+    if (frequency_hz == 0) {
+        frequency_hz = state->trunk_vc_freq[0];
+    }
+    const dsd_call_observation observation = {
+        .protocol = p25_crypto_phase1_protocol(state),
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .frequency_hz = frequency_hz,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }
 
 static void
@@ -265,8 +294,12 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     if (reset_stream) {
         p25_crypto_reset_stream_state(state, phase, slot);
     }
+    const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(state) : 0;
     p25_crypto_set_state(state, slot, resolved);
     p25_crypto_publish_canonical(opts, state, slot);
+    if (began_phase1_call && opts) {
+        dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
 
     if ((resolved == DSD_P25_CRYPTO_DECRYPTABLE || resolved == DSD_P25_CRYPTO_BLOCKED) && opts) {
         p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);

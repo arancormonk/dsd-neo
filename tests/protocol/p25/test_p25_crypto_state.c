@@ -6,6 +6,7 @@
 /* Shared Phase 1/Phase 2 crypto resolution and slot-isolation regressions. */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -89,6 +90,64 @@ expect_p1_service(const char* tag, const dsd_state* state, uint16_t service_opti
         return 1;
     }
     return expect_int(tag, call.service_options, service_options);
+}
+
+static int
+test_phase1_resolution_opens_anonymous_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    reset_fixture(&opts, &state);
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 255);
+    init_event_history(&history[1], 0, 255);
+    state.event_history_s = history;
+    state.synctype = DSD_SYNC_P25P1_NEG;
+
+    const uint64_t mi = UINT64_C(0x0102030405060708);
+    int rc = 0;
+    rc |= expect_int("late-entry P1 metadata resolves blocked",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x2345, mi, 0),
+                     DSD_P25_CRYPTO_BLOCKED);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("late-entry P1 opens canonical call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("late-entry P1 call is active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("late-entry P1 preserves inverted sync", call.protocol, DSD_SYNC_P25P1_NEG);
+    rc |= expect_int("late-entry P1 call is anonymous voice", call.kind, DSD_CALL_KIND_VOICE);
+    rc |= expect_int("late-entry P1 canonical crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED);
+    rc |= expect_int("late-entry P1 canonical ALGID", call.algid, 0x81);
+    rc |= expect_int("late-entry P1 canonical KID", call.kid, 0x2345);
+    rc |= expect_u64("late-entry P1 canonical MI", call.mi, mi);
+    rc |= expect_int("late-entry P1 canonical audio gate", call.audio_permitted, 0);
+    rc |= expect_int("late-entry P1 synchronizes event tracking",
+                     history[0].Event_History_Items[0].event_string[0] != '\0', 1);
+    const uint64_t anonymous_epoch = call.epoch;
+
+    const dsd_call_observation identity = {
+        .protocol = DSD_SYNC_P25P1_NEG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect_int("late-entry P1 identity enriches anonymous epoch",
+                     dsd_call_state_observe(&state, &identity, DSD_CALL_BOUNDARY_CONTINUE), 0);
+    rc |= expect_int("late-entry P1 enriched call remains available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_u64("late-entry P1 enrichment preserves epoch", call.epoch, anonymous_epoch);
+    rc |= expect_int("late-entry P1 enrichment applies target", call.ota_target_id, 3069);
+    rc |= expect_int("late-entry P1 enrichment preserves crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED);
+
+    reset_fixture(&opts, &state);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    rc |= expect_int("Phase 2 resolution remains assignment-owned",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x2345, mi, 0),
+                     DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("Phase 2 crypto does not invent a call", dsd_call_state_get(&state, 0U, &call), 0);
+    return rc;
 }
 
 static int
@@ -594,6 +653,7 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_phase1_resolution_opens_anonymous_call();
     rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_phase1_resolution_does_not_override_phase2_gate();
     rc |= test_begin_and_sticky_unknown();
