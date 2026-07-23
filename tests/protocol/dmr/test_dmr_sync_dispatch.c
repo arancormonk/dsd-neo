@@ -177,6 +177,8 @@ test_ms_voice_routes_to_single_slot_bootstrap(void) {
     reset_calls();
 
     opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
+    state.dmr_stereo = 1;
     state.synctype = DSD_SYNC_DMR_MS_VOICE;
     dsd_dispatch_handle_dmr(&opts, &state);
 
@@ -184,6 +186,7 @@ test_ms_voice_routes_to_single_slot_bootstrap(void) {
     assert(strcmp(state.slot2light, " slot2 ") == 0);
     assert(ms_bootstrap_calls == 1);
     assert(bs_bootstrap_calls == 0);
+    assert(state.dmr_stereo == 0);
 }
 
 static void

@@ -1705,6 +1705,7 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.currentslot = 0;
@@ -2105,6 +2106,7 @@ test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
+    opts.dmr_mono = 1;
     opts.dmr_stereo = 1;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_P25P2_POS;
@@ -2216,6 +2218,7 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
+    opts.dmr_mono = 1;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_PROVOICE_POS;
 

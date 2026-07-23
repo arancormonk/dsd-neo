@@ -1489,9 +1489,14 @@ mbe_post_left_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fram
     }
 }
 
+static int
+mbe_post_dmr_mono_active(const dsd_opts* opts, const dsd_state* state) {
+    return opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype);
+}
+
 static void
 mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if ((opts->dmr_mono != 1 && opts->dmr_stereo != 1) || state->currentslot != 0) {
+    if ((!mbe_post_dmr_mono_active(opts, state) && opts->dmr_stereo != 1) || state->currentslot != 0) {
         return;
     }
 
@@ -1527,7 +1532,7 @@ mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fra
 
 static void
 mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (opts->dmr_stereo != 1 || state->currentslot != 1) {
+    if (mbe_post_dmr_mono_active(opts, state) || opts->dmr_stereo != 1 || state->currentslot != 1) {
         return;
     }
 
@@ -1589,7 +1594,7 @@ mbe_post_other_copy_float_buffer(dsd_state* state, int is_p25p2) {
 
 static void
 mbe_post_other_audio(const dsd_opts* opts, dsd_state* state) {
-    if (opts->dmr_mono != 0 || opts->dmr_stereo != 0) {
+    if (mbe_post_dmr_mono_active(opts, state) || opts->dmr_stereo != 0) {
         return;
     }
 
@@ -1623,7 +1628,8 @@ mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
 
 static int
 mbe_post_allow_mono_wav(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->static_wav_file != 0 || opts->wav_out_f == NULL || opts->dmr_stereo != 0) {
+    if (opts->static_wav_file != 0 || opts->wav_out_f == NULL
+        || (opts->dmr_stereo != 0 && !mbe_post_dmr_mono_active(opts, state))) {
         return 0;
     }
     int allow_wav = 0;
@@ -1632,7 +1638,8 @@ mbe_post_allow_mono_wav(const dsd_opts* opts, const dsd_state* state) {
 
 static int
 mbe_post_allow_stereo_slot_wav(const dsd_opts* opts, const dsd_state* state, int slot) {
-    if (opts->dmr_stereo_wav != 1 || opts->dmr_stereo != 1 || state->currentslot != slot) {
+    if (opts->dmr_stereo_wav != 1 || opts->dmr_stereo != 1 || mbe_post_dmr_mono_active(opts, state)
+        || state->currentslot != slot) {
         return 0;
     }
     int allow_wav = 0;

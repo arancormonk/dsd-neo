@@ -1942,8 +1942,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }                                                                                                              \
         case 'n': {                                                                                                    \
             if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
-                opts->dmr_stereo = 0;                                                                                  \
-                state->dmr_stereo = 0;                                                                                 \
                 opts->dmr_mono = 1;                                                                                    \
                 LOG_INFO("NOTICE: DMR single-slot mono decoder enabled.\n");                                           \
                 break;                                                                                                 \
