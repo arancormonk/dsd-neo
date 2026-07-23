@@ -874,9 +874,14 @@ ysf_call_kind(uint8_t call_mode) {
     return DSD_CALL_KIND_VOICE;
 }
 
+static bool
+ysf_is_fallback_voice_frame(const ysf_fich_info* info) {
+    return info->err != 0 && info->fi == 1U && (info->dt == 0U || info->dt == 2U || info->dt == 3U);
+}
+
 static void
 ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
-    if (info->err == 0 && (info->fi == 0U || info->fi == 1U)) {
+    if ((info->err == 0 && (info->fi == 0U || info->fi == 1U)) || ysf_is_fallback_voice_frame(info)) {
         const int protocol = DSD_SYNC_IS_YSF(state->synctype) ? state->synctype : DSD_SYNC_YSF_POS;
         const dsd_call_observation observation = {
             .protocol = protocol,

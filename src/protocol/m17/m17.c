@@ -953,9 +953,9 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
 }
 
-int
-m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
-                            uint8_t* processed_payload) {
+static int
+m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
+                                     uint16_t frame_number, uint8_t* processed_payload, int update_media) {
     if (opts == NULL || state == NULL || payload == NULL || processed_payload == NULL) {
         return M17_STREAM_INVALID;
     }
@@ -988,7 +988,9 @@ m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_
 
     const uint8_t old_payload_decrypted = state->m17_payload_decrypted;
     state->m17_payload_decrypted = (state->m17_enc != 0U) ? 1U : 0U;
-    m17_mark_stream_media(opts, state);
+    if (update_media != 0) {
+        m17_mark_stream_media(opts, state);
+    }
     M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
     const int result = (state->m17_enc != 0U) ? M17_STREAM_ENCRYPTED_DISPATCHED : M17_STREAM_CLEAR_DISPATCHED;
     state->m17_payload_decrypted = old_payload_decrypted;
@@ -997,6 +999,12 @@ m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_
         M17printStreamBits(trellis_buf);
     }
     return result;
+}
+
+int
+m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
+                            uint8_t* processed_payload) {
+    return m17_dispatch_stream_payload_internal(opts, state, payload, frame_number, processed_payload, 1);
 }
 
 int
@@ -3223,12 +3231,13 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
 
     const uint16_t crc_ext = (uint16_t)((ip_frame[52] << 8) + ip_frame[53]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, 52);
-    if (crc_ext == crc_cmp) {
+    const int crc_valid = crc_ext == crc_cmp;
+    if (crc_valid) {
         M17decodeLSF(opts, state, 1);
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
-    (void)m17_dispatch_stream_payload(opts, state, payload, stream_frame_number, processed_payload);
-    if (crc_ext == crc_cmp && eot != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid);
+    if (crc_valid && eot != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
@@ -743,6 +744,58 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
 }
 
 static void
+test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    state.synctype = DSD_SYNC_YSF_NEG;
+
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    processYSF(&opts, &state);
+
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.protocol == DSD_SYNC_YSF_NEG);
+    const uint64_t first_epoch = call.epoch;
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+
+    encode_fich_input(fich_bits, 1, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    processYSF(&opts, &state);
+
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    assert(g_process_mbe_call_count == 4);
+    for (size_t i = 0U; i < 4U; i++) {
+        assert(g_process_mbe_synctype[i] == DSD_SYNC_NXDN_POS);
+    }
+    call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != first_epoch);
+    assert(call.protocol == DSD_SYNC_YSF_NEG);
+    assert(call.kind == DSD_CALL_KIND_VOICE);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -848,6 +901,7 @@ main(void) {
     test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error();
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
+    test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_terminator_enriches_identity_before_call_end();
     return 0;

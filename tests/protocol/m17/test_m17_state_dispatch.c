@@ -1360,6 +1360,45 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
 }
 
 static int
+test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t ip_frame[54];
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEFU, M17_REF_STREAM_FN, 1U, payload_bits);
+
+    state->m17_can_en = -1;
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+
+    int err = 0;
+    dsd_call_snapshot call;
+    err |= expect_int("valid voice EOT publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("valid voice EOT ends call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("valid voice EOT owns M17 protocol", DSD_SYNC_IS_M17(call.protocol), 1);
+    const uint64_t ended_epoch = call.epoch;
+
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEFU, (uint16_t)(M17_REF_STREAM_FN + 1U), 0U, payload_bits);
+    ip_frame[52] ^= 0x01U;
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+
+    err |= expect_int("bad-CRC voice frame retains call", get_m17_call(state, &call), 1);
+    err |= expect_int("bad-CRC voice frame keeps call ended", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("bad-CRC voice frame preserves epoch", call.epoch, ended_epoch);
+    err |= expect_u8("bad-CRC voice frame leaves media inactive", call.media_active, 0U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static int
 test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
@@ -2189,6 +2228,7 @@ main(void) {
     err |= test_bert_hard_payload_decode_primitives();
     err |= test_frame_info_packet_and_ip_helpers();
     err |= test_ip_stream_frames_apply_crc_gated_lsf_state();
+    err |= test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch();
     err |= test_ip_mpkt_frames_apply_crc_gated_packet_state();
     err |= test_packet_eot_finalization_crc_gates_decode_and_clears_state();
     err |= test_packet_eot_preserves_non_packet_calls();
