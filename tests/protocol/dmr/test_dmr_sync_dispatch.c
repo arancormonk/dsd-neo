@@ -210,7 +210,7 @@ test_trunked_bs_voice_in_mono_mode_falls_back_to_bs_bootstrap(void) {
     assert(open_left_calls == 1);
     assert(bs_bootstrap_calls == 1);
     assert(ms_bootstrap_calls == 0);
-    assert(state.dmr_stereo == 0);
+    assert(state.dmr_stereo == 1);
 }
 
 static void

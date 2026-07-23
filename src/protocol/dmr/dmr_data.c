@@ -239,7 +239,7 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
     ctx->burst =
         (uint8_t)((ctx->SlotType[4] << 3) + (ctx->SlotType[5] << 2) + (ctx->SlotType[6] << 1) + ctx->SlotType[7]);
 
-    if (ctx->state->dmr_ms_mode == 0 && ctx->opts->dmr_mono == 0) {
+    if (ctx->state->dmr_ms_mode == 0) {
         dmr_confidence_result confidence =
             dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code, ctx->burst);
         if (confidence == DMR_CONFIDENCE_REJECT) {
@@ -286,7 +286,7 @@ dmr_data_dispatch_burst(dmr_data_sync_ctx* ctx) {
         dmr_sm_emit_data_sync(ctx->opts, ctx->state, ctx->state->currentslot);
     }
     dmr_data_burst_handler(ctx->opts, ctx->state, ctx->info, ctx->burst, ctx->rel98);
-    if (ctx->state->dmr_ms_mode == 0 && ctx->opts->dmr_mono == 0) {
+    if (ctx->state->dmr_ms_mode == 0) {
         (void)dmr_cach(ctx->opts, ctx->state, ctx->cachdata);
     }
     DSD_FPRINTF(stderr, "\n");
