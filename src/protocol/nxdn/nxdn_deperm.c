@@ -750,6 +750,26 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
 }
 
 static void
+nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher) {
+    if (!nxdn_dcr_is_sb0_message_type(message_type)) {
+        return;
+    }
+    const int has_key = cipher == 1U && state->R != 0;
+    const dsd_call_crypto_update crypto = {
+        .classification = cipher == 0U   ? DSD_CALL_CRYPTO_CLEAR
+                          : cipher == 1U ? (has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING)
+                                         : DSD_CALL_CRYPTO_UNKNOWN,
+        .algid = cipher,
+        .kid = 0U,
+        .mi = state->payload_miN,
+        .audio_permitted = (uint8_t)(cipher == 0U || has_key),
+    };
+    if (dsd_call_state_update_crypto(state, 0U, &crypto) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
+}
+
+static void
 nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields,
                                    uint8_t crc_sf_check) {
     const int single_frame_ok = fields->sf_fb && fields->sf_pof && nxdn_sacch2_crc_ok(fields);
@@ -774,6 +794,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
     }
 
     state->dmr_encL = (state->nxdn_cipher_type != 0 && state->R == 0) ? 1 : 0;
+    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher);
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
         DSD_FPRINTF(stderr, "MFID: %02X; ", mfid);

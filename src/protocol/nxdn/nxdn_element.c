@@ -2687,7 +2687,7 @@ nxdn_scch_handle_info2(dsd_state* state, const struct nxdn_scch_info* info) {
 }
 
 static void
-nxdn_scch_handle_info1(dsd_state* state, const struct nxdn_scch_info* info) {
+nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     uint8_t duplex_mode[32] = {0};
     uint8_t transmission_mode[32] = {0};
     DSD_FPRINTF(stderr, "Call Option - ");
@@ -2701,9 +2701,10 @@ nxdn_scch_handle_info1(dsd_state* state, const struct nxdn_scch_info* info) {
         if (info->cipher) {
             DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
             DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
-            state->nxdn_cipher_type = info->cipher;
-            state->nxdn_key = info->key_id;
         }
+        state->nxdn_cipher_type = info->cipher;
+        state->nxdn_key = info->key_id;
+        nxdn_vcall_publish_crypto(opts, state, info->cipher, info->key_id);
     } else {
         DSD_FPRINTF(stderr, "\n%s ", KYEL);
         DSD_FPRINTF(stderr, "Call IV B: %04llX; ", info->iv_b);
@@ -2711,6 +2712,7 @@ nxdn_scch_handle_info1(dsd_state* state, const struct nxdn_scch_info* info) {
         state->payload_miN = state->payload_miN | (info->iv_c << 6);
         state->payload_miN = state->payload_miN | info->iv_b;
         DSD_FPRINTF(stderr, "Completed IV: %016llX", state->payload_miN);
+        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key);
     }
 }
 
@@ -2736,7 +2738,7 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
         nxdn_scch_handle_info2(state, &info);
     }
     if (info.opcode == 0x07U || info.opcode == 0x03U) {
-        nxdn_scch_handle_info1(state, &info);
+        nxdn_scch_handle_info1(opts, state, &info);
     }
 }
 

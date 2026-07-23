@@ -34,6 +34,7 @@
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
+void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 
 static int g_alias_prop_calls;
 static uint8_t g_alias_prop_crc_ok;
@@ -1538,6 +1539,69 @@ test_vcall_aes_key_flag_drives_crypto_state(void) {
 }
 
 static int
+test_type_d_scch_publishes_crypto_fragments(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t message[32];
+    const uint8_t cipher = 2U;
+    const uint8_t key_id = 0x2AU;
+    const uint64_t iv_a = 0x155U;
+    const uint64_t iv_b = 0x2DU;
+    const uint64_t iv_c = 0x12U;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U);
+    write_bits_u64(message, 16U, cipher, 2U);
+    write_bits_u64(message, 18U, key_id, 6U);
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_int("type-d-scch-option-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("type-d-scch-option-crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("type-d-scch-option-algid", call.algid, cipher);
+    rc |= expect_int("type-d-scch-option-key", call.kid, key_id);
+    rc |= expect_u64("type-d-scch-option-mi", call.mi, 0U);
+    rc |= expect_int("type-d-scch-option-audio", call.audio_permitted, 0);
+    rc |= expect_int("type-d-scch-option-legacy-cipher", state->nxdn_cipher_type, cipher);
+    rc |= expect_int("type-d-scch-option-legacy-key", state->nxdn_key, key_id);
+
+    state->payload_miN = iv_a << 11;
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U);
+    write_bits_u64(message, 8U, iv_c, 5U);
+    write_bits_u64(message, 18U, iv_b, 6U);
+    message[24] = 1U;
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    const uint64_t completed_iv = (iv_a << 11) | (iv_c << 6) | iv_b;
+    rc |= expect_int("type-d-scch-iv-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("type-d-scch-iv-crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("type-d-scch-iv-algid", call.algid, cipher);
+    rc |= expect_int("type-d-scch-iv-key", call.kid, key_id);
+    rc |= expect_u64("type-d-scch-iv-mi", call.mi, completed_iv);
+    rc |= expect_u64("type-d-scch-iv-legacy-mi", state->payload_miN, completed_iv);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -1733,6 +1797,7 @@ main(void) {
     rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();
     rc |= test_vcall_aes_keyloader_and_iv_signal();
     rc |= test_vcall_aes_key_flag_drives_crypto_state();
+    rc |= test_type_d_scch_publishes_crypto_fragments();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();
