@@ -1357,10 +1357,14 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u64("valid MPKT destination", call.ota_target_id, dst);
     err |= expect_u64("valid MPKT source", call.ota_source_id, src);
     err |= expect_int("valid MPKT event destination",
-                      strcmp(event_history[0].Event_History_Items[0].tgt_str, M17_REF_LSF_DST_CSD), 0);
+                      strcmp(event_history[0].Event_History_Items[1].tgt_str, M17_REF_LSF_DST_CSD), 0);
     err |= expect_int("valid MPKT event source",
-                      strcmp(event_history[0].Event_History_Items[0].src_str, M17_REF_LSF_SRC_CSD), 0);
-    err |= expect_int("valid MPKT event row", event_history[0].Event_History_Items[0].event_string[0] != '\0', 1);
+                      strcmp(event_history[0].Event_History_Items[1].src_str, M17_REF_LSF_SRC_CSD), 0);
+    err |= expect_int("valid MPKT ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("valid MPKT clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+    err |= expect_int("valid MPKT commits event history",
+                      event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
     err |= expect_u8("valid MPKT packet mode data type", state->m17_str_dt, 20U);
     err |= expect_u8("valid MPKT CAN", state->m17_can, 5U);
     err |= expect_u8("valid MPKT clear encryption", state->m17_enc, 0U);
@@ -1368,6 +1372,14 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u8("valid MPKT text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("valid MPKT text control", state->m17_text_meta_control_or, 0x11U);
     err |= expect_bytes("valid MPKT text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
+
+    const uint64_t first_epoch = call.epoch;
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
+    err |= expect_int("next matching MPKT retains canonical call", get_m17_call(state, &call), 1);
+    err |= expect_int("next matching MPKT ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("next matching MPKT uses distinct epoch", call.epoch != first_epoch, 1);
+    err |= expect_int("next matching MPKT clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
 
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));

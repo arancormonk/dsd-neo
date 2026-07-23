@@ -3291,6 +3291,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     }
     if (crc_ext == crc_cmp) {
         decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 3);
+        m17_end_packet_call(opts, state);
     } else {
         DSD_FPRINTF(stderr, " IP CRC ERR");
     }
