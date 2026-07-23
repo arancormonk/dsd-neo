@@ -253,14 +253,20 @@ test_audio_actions(void) {
 }
 
 static int
-seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
+seed_voice_call_ids(dsd_state* state, uint8_t slot, int protocol, uint64_t target, uint64_t source) {
     dsd_call_observation observation = {0};
     observation.protocol = protocol;
     observation.slot = slot;
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = target;
     observation.policy_target_id = target;
+    observation.ota_source_id = source;
     return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
+seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
+    return seed_voice_call_ids(state, slot, protocol, target, 0U);
 }
 
 static int
@@ -304,16 +310,16 @@ test_trunk_actions(void) {
     opts.frame_provoice = 1;
     state.ea_mode = 0;
     state.tg_hold = 0;
-    rc |= !seed_voice_call(&state, 0, DSD_SYNC_PROVOICE_POS, 2346);
+    rc |= !seed_voice_call_ids(&state, 0, DSD_SYNC_PROVOICE_POS, 0U, 2346U);
     cmd = cmd_slot(DSD_APP_CMD_TG_HOLD_TOGGLE, 0);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
-    rc |= expect_int("tg hold provoice slot 0 fallback", (int)state.tg_hold, 2346);
+    rc |= expect_int("tg hold provoice slot 0 source fallback", (int)state.tg_hold, 2346);
 
     state.tg_hold = 0;
-    rc |= !seed_voice_call(&state, 1, DSD_SYNC_PROVOICE_POS, 3456);
+    rc |= !seed_voice_call_ids(&state, 1, DSD_SYNC_PROVOICE_POS, 0U, 3456U);
     cmd = cmd_slot(DSD_APP_CMD_TG_HOLD_TOGGLE, 1);
     dispatch_one(dsd_app_actions_trunk, &opts, &state, &cmd);
-    rc |= expect_int("tg hold provoice slot 1 fallback", (int)state.tg_hold, 3456);
+    rc |= expect_int("tg hold provoice slot 1 source fallback", (int)state.tg_hold, 3456);
 
     state.tg_hold = 0;
     opts.frame_provoice = 0;

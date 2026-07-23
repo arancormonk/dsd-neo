@@ -8,6 +8,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "../command_dispatch.h"
@@ -61,6 +62,9 @@ ui_handle_tg_hold_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, slot, &call) && call.phase != DSD_CALL_PHASE_ENDED) {
         uint64_t target = call.policy_target_id != 0 ? call.policy_target_id : call.ota_target_id;
+        if (target == 0 && state->ea_mode == 0 && DSD_SYNC_IS_PROVOICE(call.protocol)) {
+            target = call.ota_source_id;
+        }
         if (target != 0 && target <= UINT32_MAX) {
             state->tg_hold = (uint32_t)target;
         }

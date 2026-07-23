@@ -42,14 +42,20 @@ typedef struct {
 } UiPostCapture;
 
 static void
-seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
+seed_voice_call_ids(dsd_state* state, uint8_t slot, int protocol, uint64_t target, uint64_t source) {
     dsd_call_observation observation = {0};
     observation.protocol = protocol;
     observation.slot = slot;
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.ota_target_id = target;
     observation.policy_target_id = target;
+    observation.ota_source_id = source;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
+static void
+seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
+    seed_voice_call_ids(state, slot, protocol, target, 0U);
 }
 
 static UiPostCapture g_cap;
@@ -306,10 +312,10 @@ main(void) {
     assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 3003U);
 
-    /* ProVoice fallback path for slot-2 hold when TG is absent. */
+    /* Standard-addressing ProVoice falls back to the source LID when no target is published. */
     cap_reset();
     state->tg_hold = 0;
-    seed_voice_call(state, 1, DSD_SYNC_PROVOICE_POS, 4004);
+    seed_voice_call_ids(state, 1, DSD_SYNC_PROVOICE_POS, 0U, 4004U);
     state->ea_mode = 0;
     opts->frame_nxdn48 = 0;
     opts->frame_nxdn96 = 0;

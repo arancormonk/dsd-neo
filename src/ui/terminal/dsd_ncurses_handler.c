@@ -17,6 +17,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/menu_core.h>
@@ -51,6 +52,9 @@ ncurses_resolve_tg_hold_target(const dsd_opts* opts, const dsd_state* state, int
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, (uint8_t)(right_slot != 0), &call) && call.phase != DSD_CALL_PHASE_ENDED) {
         uint64_t target = call.policy_target_id != 0 ? call.policy_target_id : call.ota_target_id;
+        if (target == 0 && state->ea_mode == 0 && DSD_SYNC_IS_PROVOICE(call.protocol)) {
+            target = call.ota_source_id;
+        }
         if (target <= UINT32_MAX) {
             return (uint32_t)target;
         }
