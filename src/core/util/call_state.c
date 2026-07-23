@@ -191,8 +191,8 @@ static void
 call_state_normalize_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src) {
     size_t out = 0U;
     int pending_space = 0;
+    DSD_MEMSET(dst, 0, DSD_CALL_IDENTITY_TEXT_SIZE);
     if (!src) {
-        dst[0] = '\0';
         return;
     }
     while (*src != '\0' && isspace((unsigned char)*src)) {

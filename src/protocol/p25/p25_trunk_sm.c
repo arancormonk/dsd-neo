@@ -1733,6 +1733,7 @@ p25_grant_store_vc_context(p25_sm_ctx_t* ctx, dsd_state* state, const p25_sm_eve
     ctx->vc_is_tdma = is_tdma_channel(state, ev->channel);
     if (state) {
         state->p25_p1_identity_pending = 0;
+        state->p25_p1_identity_epoch_started = 0;
     }
     const int data_call = (eval_ctx && eval_ctx->data_call) ? 1 : 0;
     ctx->vc_data_call = data_call;
@@ -2752,6 +2753,7 @@ static void
 p25_p1_identity_clear(dsd_state* state) {
     if (state) {
         state->p25_p1_identity_pending = 0;
+        state->p25_p1_identity_epoch_started = 0;
     }
 }
 
@@ -3303,6 +3305,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     p25_call_end_slot(opts, state, s, now_m);
     if (state && !ctx->vc_is_tdma && arm_stale_regrant_guard) {
         state->p25_p1_identity_pending = 1;
+        state->p25_p1_identity_epoch_started = 0;
     }
     ctx->slots[s].last_stop_m = now_m;
     ctx->vc_activity_seen = 1;
@@ -3759,6 +3762,7 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         state->p25_p2_media_rejected[0] = 0;
         state->p25_p2_media_rejected[1] = 0;
         state->p25_p1_identity_pending = 0;
+        state->p25_p1_identity_epoch_started = 0;
         state->p25_p2_active_slot = -1;
         state->p25_vc_freq[0] = 0;
         state->p25_vc_freq[1] = 0;

@@ -301,6 +301,7 @@ hdu_maybe_enc_lockout(dsd_opts* opts, dsd_state* state, int algid, int keyid, ui
             // even when its predecessor's terminator was missed. Defer policy and
             // encrypted-call attribution until an identity-bearing LCW arrives.
             state->p25_p1_identity_pending = 1;
+            state->p25_p1_identity_epoch_started = 0;
             state->p25_p2_audio_allowed[0] = 0;
         }
     }

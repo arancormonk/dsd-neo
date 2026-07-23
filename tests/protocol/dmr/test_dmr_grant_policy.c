@@ -66,6 +66,12 @@ recent_activity_is_empty(const dsd_state* state, uint8_t index) {
            || recent.entries[index].observation.kind == DSD_CALL_KIND_UNKNOWN;
 }
 
+static int
+recent_activity_has_slot(const dsd_state* state, uint8_t index, uint8_t slot) {
+    dsd_recent_activity_snapshot recent;
+    return dsd_recent_activity_copy_snapshot(state, &recent) > 0 && recent.entries[index].observation.slot == slot;
+}
+
 static void
 seed_voice_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target, uint64_t source) {
     const dsd_call_observation observation = {
@@ -642,6 +648,26 @@ main(void) {
     rc |= expect_true("cap+ 3e tune hook called", g_result_tune_to_freq_calls == 1);
     rc |= expect_true("cap+ 3e tune updates rtl center", cap_opts.rtlsdr_center_freq == cap_grant_freq);
     rc |= expect_true("cap+ 3e reset uses pre-tune center", g_dmr_reset_blocks_calls == 1);
+
+    init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_tune_group_calls = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    g_result_tune_to_freq_calls = 0;
+    build_cap_plus_3e_single_group(bits, bytes, 1U, 1U, 42U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ disabled group preserves decoded target",
+                      recent_activity_matches(&cap_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 42U, 0U, 1U, "LSN:1 TG:42;"));
+    rc |= expect_true("cap+ LSN 1 publishes slot zero", recent_activity_has_slot(&cap_st, 1U, 0U));
+    rc |= expect_true("cap+ disabled group does not tune", g_result_tune_to_freq_calls == 0);
+
+    init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_tune_group_calls = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    build_cap_plus_3e_single_group(bits, bytes, 1U, 2U, 43U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ LSN 2 preserves decoded target",
+                      recent_activity_matches(&cap_st, 2U, DSD_CALL_KIND_GROUP_VOICE, 43U, 0U, 2U, "LSN:2 TG:43;"));
+    rc |= expect_true("cap+ LSN 2 publishes slot one", recent_activity_has_slot(&cap_st, 2U, 1U));
 
     init_env(&cap_opts, &cap_st);
     cap_opts.rtlsdr_center_freq = cap_old_freq;

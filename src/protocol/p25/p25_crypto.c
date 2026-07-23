@@ -102,7 +102,8 @@ p25_crypto_phase1_protocol(const dsd_state* state) {
 static int
 p25_crypto_ensure_phase1_call(dsd_state* state) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (active && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
         return 0;
     }
 
@@ -116,7 +117,11 @@ p25_crypto_ensure_phase1_call(dsd_state* state) {
         .kind = DSD_CALL_KIND_VOICE,
         .frequency_hz = frequency_hz,
     };
-    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+    const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+    if (began && state->p25_p1_identity_pending) {
+        state->p25_p1_identity_epoch_started = 1;
+    }
+    return began;
 }
 
 static void

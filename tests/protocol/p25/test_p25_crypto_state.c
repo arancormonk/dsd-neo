@@ -151,6 +151,65 @@ test_phase1_resolution_opens_anonymous_call(void) {
 }
 
 static int
+test_phase1_pending_identity_starts_one_new_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("retained carrier starts known P1 call", begin_p1_call(&state, 0x40U), 1);
+    rc |= expect_int(
+        "retained carrier resolves prior crypto",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x1111, UINT64_C(0x0102030405060708), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("retained carrier prior call available", dsd_call_state_get(&state, 0U, &call), 1);
+    const uint64_t prior_epoch = call.epoch;
+    rc |= expect_int("retained carrier prior target", call.ota_target_id, 3069);
+    rc |= expect_int("retained carrier prior source", call.ota_source_id, 101);
+
+    state.p25_p1_identity_pending = 1;
+    state.p25_p1_identity_epoch_started = 0;
+    rc |= expect_int(
+        "pending-identity HDU resolves new crypto",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x2222, UINT64_C(0x1112131415161718), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("pending-identity call available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("pending-identity HDU starts new epoch", call.epoch != prior_epoch, 1);
+    const uint64_t pending_epoch = call.epoch;
+    rc |= expect_int("pending-identity epoch is anonymous target", call.ota_target_id, 0);
+    rc |= expect_int("pending-identity epoch is anonymous source", call.ota_source_id, 0);
+    rc |= expect_int("pending-identity epoch records ALGID", call.algid, 0x84);
+    rc |= expect_int("pending-identity epoch records KID", call.kid, 0x2222);
+
+    rc |= expect_int(
+        "repeat pending crypto remains blocked",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x2222, UINT64_C(0x1112131415161718), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("repeat pending crypto call available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_u64("repeat pending crypto keeps epoch", call.epoch, pending_epoch);
+
+    const dsd_call_observation identity = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect_int("repeated LCW identity enriches pending epoch",
+                     dsd_call_state_observe(&state, &identity, DSD_CALL_BOUNDARY_CONTINUE), 0);
+    rc |= expect_int("enriched pending call available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_u64("repeated LCW identity keeps pending epoch", call.epoch, pending_epoch);
+    rc |= expect_int("repeated LCW identity sets target", call.ota_target_id, 3069);
+    rc |= expect_int("repeated LCW identity sets source", call.ota_source_id, 101);
+    return rc;
+}
+
+static int
 test_explicit_audio_unmute_respects_lockout(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -340,6 +399,19 @@ test_phase1_clear_conflict_requires_corroboration(void) {
         DSD_P25_CRYPTO_BLOCKED);
     rc |= expect_int("identity-pending tuple does not use stale clear service", state.p25_p1_crypto_conflict.active, 0);
     state.p25_p1_identity_pending = 0;
+    state.p25_p1_identity_epoch_started = 0;
+    const dsd_call_observation accepted_clear_identity = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = 0x04U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect_int("accepted clear LCW enriches pending epoch",
+                     dsd_call_state_observe(&state, &accepted_clear_identity, DSD_CALL_BOUNDARY_CONTINUE), 0);
     rc |= expect_int("accepted clear LCW defers retained tuple", p25_crypto_p1_defer_clear_conflict(&state, 0x04), 1);
     rc |= expect_int("retained tuple becomes pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
@@ -654,6 +726,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_phase1_resolution_opens_anonymous_call();
+    rc |= test_phase1_pending_identity_starts_one_new_epoch();
     rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_phase1_resolution_does_not_override_phase2_gate();
     rc |= test_begin_and_sticky_unknown();

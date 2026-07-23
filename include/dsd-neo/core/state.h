@@ -674,6 +674,8 @@ struct dsd_state {
     dsd_p25_crypto_state p25_crypto_state[2];
     // Retained Phase 1 carrier requires the next transmission's LCW identity before media or lockout.
     int p25_p1_identity_pending;
+    // Canonical anonymous epoch opened for the retained-carrier transmission awaiting identity.
+    int p25_p1_identity_epoch_started;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.

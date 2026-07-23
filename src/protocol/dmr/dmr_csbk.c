@@ -56,11 +56,11 @@ dmr_csbk_print_group_label(const dsd_state* state, uint32_t id) {
 }
 
 static void
-dmr_csbk_publish_activity(dsd_state* state, uint8_t index, dsd_call_kind kind, uint64_t target, uint64_t source,
-                          uint16_t channel, long int frequency, int emergency, const char* notice) {
+dmr_csbk_publish_activity(dsd_state* state, uint8_t index, uint8_t slot, dsd_call_kind kind, uint64_t target,
+                          uint64_t source, uint16_t channel, long int frequency, int emergency, const char* notice) {
     const dsd_call_observation observation = {
         .protocol = state->lastsynctype,
-        .slot = index & 1U,
+        .slot = slot & 1U,
         .kind = kind,
         .ota_target_id = target,
         .policy_target_id = target,
@@ -387,7 +387,7 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
         dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)
             ? DSD_CALL_KIND_DATA
             : ((csbk_o == 49 || csbk_o == 50) ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE);
-    dmr_csbk_publish_activity(state, lcn, call_kind, target, source, channel, frequency, emergency, notice);
+    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, target, source, channel, frequency, emergency, notice);
 }
 
 static void
@@ -583,8 +583,8 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
     if (move_lpcn != 0) {
         char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
         DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %u; ", move_lpcn, suf, mv_target);
-        dmr_csbk_publish_activity(state, (uint8_t)tslot, DSD_CALL_KIND_GROUP_VOICE, mv_target, mv_source, move_lpcn,
-                                  move_freq, 0, notice);
+        dmr_csbk_publish_activity(state, (uint8_t)tslot, (uint8_t)tslot, DSD_CALL_KIND_GROUP_VOICE, mv_target,
+                                  mv_source, move_lpcn, move_freq, 0, notice);
     }
 
     dmr_cspdu_pf0_move_debounce_slot(state, tslot);
@@ -1635,6 +1635,7 @@ typedef struct {
     uint8_t bank_two;
     uint8_t ch[24];
     uint8_t pch[24];
+    uint16_t decoded_targets[24];
     uint16_t t_tg[24];
     int start;
     int end;
@@ -1653,6 +1654,7 @@ dmr_cspdu_cap_plus_3e_init_ctx(dmr_cap_plus_3e_ctx* ctx, const uint8_t cs_pdu_bi
     ctx->end = 16;
     DSD_MEMSET(ctx->ch, 0, sizeof(ctx->ch));
     DSD_MEMSET(ctx->pch, 0, sizeof(ctx->pch));
+    DSD_MEMSET(ctx->decoded_targets, 0, sizeof(ctx->decoded_targets));
     DSD_MEMSET(ctx->t_tg, 0, sizeof(ctx->t_tg));
 }
 
@@ -1860,6 +1862,7 @@ dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dsd_state* state, dmr_ca
     if (ctx->ch[i] == 1) {
         uint16_t tg = (uint16_t)convert_bits_into_output(&state->cap_plus_csbk_bits[ctx->ts][(*k * 8) + 32], 8);
         DSD_FPRINTF(stderr, tg ? "%5d;  " : "Group;  ", tg);
+        ctx->decoded_targets[i] = tg;
         if (opts->trunk_tune_group_calls == 1) {
             ctx->t_tg[i] = tg;
         }
@@ -1875,6 +1878,7 @@ dmr_cspdu_cap_plus_3e_render_slot(const dsd_opts* opts, dsd_state* state, dmr_ca
         uint16_t tg = (uint16_t)convert_bits_into_output(
             &state->cap_plus_csbk_bits[ctx->ts][(ctx->active_group_count * 8) + (*x * 16) + 56], 16);
         DSD_FPRINTF(stderr, tg ? "%5d;  " : " P||D;  ", tg);
+        ctx->decoded_targets[i] = tg;
         if (opts->trunk_tune_private_calls == 1) {
             ctx->t_tg[i] = tg;
         }
@@ -1900,7 +1904,7 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     DSD_FPRINTF(stderr, "\n  ");
     (void)dsd_recent_activity_clear_all(state);
     DSD_SNPRINTF(notices[0], sizeof notices[0], "Cap+ ");
-    dmr_csbk_publish_activity(state, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notices[0]);
+    dmr_csbk_publish_activity(state, 0U, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notices[0]);
     dmr_cspdu_cap_plus_3e_calc_window(ctx);
 
     for (int i = ctx->start; i < ctx->end; i++) {
@@ -1914,7 +1918,8 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     for (int i = 1; i <= 16; i++) {
         if (notices[i][0] != '\0') {
             const dsd_call_kind kind = ctx->pch[i - 1] == 1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
-            dmr_csbk_publish_activity(state, (uint8_t)i, kind, ctx->t_tg[i - 1], 0U, (uint16_t)i,
+            const uint8_t slot = (uint8_t)((i - 1) & 1);
+            dmr_csbk_publish_activity(state, (uint8_t)i, slot, kind, ctx->decoded_targets[i - 1], 0U, (uint16_t)i,
                                       state->trunk_chan_map[i], 0, notices[i]);
         }
     }
@@ -2191,8 +2196,8 @@ dmr_cspdu_con_plus_handle_voice(dsd_opts* opts, dsd_state* state, const uint8_t 
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", g.lcn, suf, g.grp_addr);
     const dsd_call_kind kind = g.opt == 3 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
-    dmr_csbk_publish_activity(state, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr, (uint16_t)g.lcn,
-                              state->trunk_chan_map[g.lcn], 0, notice);
+    dmr_csbk_publish_activity(state, g.tslot, g.tslot, kind, (uint64_t)g.grp_addr, (uint64_t)g.src_addr,
+                              (uint16_t)g.lcn, state->trunk_chan_map[g.lcn], 0, notice);
 
     if (opts->trunk_enable == 0 && state->trunk_chan_map[g.lcn] != 0) {
         state->trunk_vc_freq[0] = state->trunk_chan_map[g.lcn];
@@ -2239,7 +2244,7 @@ dmr_cspdu_con_plus_handle_data(dsd_opts* opts, dsd_state* state, const uint8_t c
     now = time(NULL);
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", lcn, suf, dtarget);
-    dmr_csbk_publish_activity(state, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
+    dmr_csbk_publish_activity(state, tslot, tslot, DSD_CALL_KIND_DATA, dtarget, 0U, lcn, state->trunk_chan_map[lcn], 0,
                               notice);
     if (opts->trunk_tune_data_calls == 0) {
         return;
@@ -2390,7 +2395,7 @@ dmr_cspdu_xpt_print_and_collect(const dsd_opts* opts, dsd_state* state, uint8_t 
             t_tg[slot_idx] = 1;
         }
     }
-    dmr_csbk_publish_activity(state, xpt_seq, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notice);
+    dmr_csbk_publish_activity(state, xpt_seq, xpt_seq & 1U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, 0, 0, notice);
 }
 
 static void

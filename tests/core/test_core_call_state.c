@@ -264,6 +264,17 @@ test_64bit_text_and_protocol_family_continuity(void) {
     assert(strcmp(snapshot.target_text, "BROADCAST") == 0);
     assert(strcmp(snapshot.route_text[0], "RPT1_") == 0);
     assert(strcmp(snapshot.route_text[1], "RPT2 ROUTE") == 0);
+    for (size_t i = strlen(snapshot.source_text) + 1U; i < sizeof(snapshot.source_text); i++) {
+        assert(snapshot.source_text[i] == '\0');
+    }
+    for (size_t i = strlen(snapshot.target_text) + 1U; i < sizeof(snapshot.target_text); i++) {
+        assert(snapshot.target_text[i] == '\0');
+    }
+    for (size_t route = 0U; route < DSD_CALL_ROUTE_COUNT; route++) {
+        for (size_t i = strlen(snapshot.route_text[route]) + 1U; i < sizeof(snapshot.route_text[route]); i++) {
+            assert(snapshot.route_text[route][i] == '\0');
+        }
+    }
 
     observation.protocol = DSD_SYNC_M17_STR_NEG;
     observation.policy_target_id = 88U;
