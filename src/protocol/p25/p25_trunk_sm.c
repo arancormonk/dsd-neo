@@ -60,6 +60,8 @@ static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts*
                                                     const char* slot_log);
 static void handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 static void handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+static void p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot,
+                                         int new_epoch, double observed_m);
 static void p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
 #ifdef USE_RADIO
 static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
@@ -2021,6 +2023,10 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
 
     p25_grant_refresh_duplicate_slot(ctx, state, route, now_m, data_call);
     p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call, now_m);
+    const int call_slot = p25_grant_logical_slot(ctx, route->slot);
+    if (!data_call && call_slot >= 0 && call_slot <= 1 && ctx->slots[call_slot].voice_active) {
+        p25_call_publish_observation(ctx, opts, state, call_slot, 0, now_m);
+    }
     if (data_call) {
         ctx->t_tune_m = now_m;
         ctx->t_voice_m = 0.0;

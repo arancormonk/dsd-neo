@@ -1636,6 +1636,53 @@ main(void) {
     assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
+    // A same-route grant update received during active voice must refresh the
+    // canonical service metadata even when the clear/encrypted classification
+    // does not change and no later ACTIVE event supplies the new options.
+    static dsd_opts o19m;
+    static dsd_state s19m;
+    DSD_MEMSET(&o19m, 0, sizeof(o19m));
+    DSD_MEMSET(&s19m, 0, sizeof(s19m));
+    o19m.trunk_enable = 1;
+    o19m.trunk_tune_group_calls = 1;
+    o19m.trunk_tune_enc_calls = 1;
+    s19m.p25_cc_freq = 851000000;
+    setup_tdma_iden(&s19m, 2);
+
+    p25_sm_ctx_t ctx19m;
+    p25_sm_init_ctx(&ctx19m, &o19m, &s19m);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_hook_commits_decoder_state = 1;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event_t metadata_grant = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5801, 6801, 0x00);
+    p25_sm_event(&ctx19m, &o19m, &s19m, &metadata_grant);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19m.grant_count == 1U);
+    p25_sm_event_t metadata_active = p25_sm_ev_active(0);
+    p25_sm_event(&ctx19m, &o19m, &s19m, &metadata_active);
+    assert(ctx19m.slots[0].voice_active == 1);
+
+    dsd_call_snapshot metadata_call;
+    assert(dsd_call_state_get(&s19m, 0U, &metadata_call) == 1);
+    assert(metadata_call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(metadata_call.service_options == 0x00U);
+    const uint64_t metadata_epoch = metadata_call.epoch;
+
+    p25_sm_event_t metadata_update = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5801, 6801, 0x87);
+    p25_sm_event(&ctx19m, &o19m, &s19m, &metadata_update);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19m.grant_count == 1U);
+    assert(ctx19m.slots[0].svc_bits == 0x87);
+    assert(dsd_call_state_get(&s19m, 0U, &metadata_call) == 1);
+    assert(metadata_call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(metadata_call.epoch == metadata_epoch);
+    assert(metadata_call.service_options == 0x87U);
+    assert(metadata_call.has_service_metadata == 1U);
+    assert(metadata_call.emergency == 1U);
+    assert(metadata_call.priority == 7U);
+    dsd_state_ext_free_all(&s19m);
+
     // A regroup KAS transition to explicit KEY=0 must replace an already
     // decryptable crypto stream even when the duplicate grant retains ENC.
     static dsd_opts o19k;

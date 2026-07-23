@@ -588,6 +588,39 @@ nxdn_run_scch_termination_case(void) {
 }
 
 static int
+nxdn_run_scch_busy_enrich_case(void) {
+    const nxdn_case busy = {
+        "type-d-scch-busy-enrich", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 1400U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    g_state.last_vc_sync_time = time(NULL);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&g_state, 0U, &call);
+    const uint64_t previous_epoch = call.epoch;
+
+    nxdn_install_hooks();
+    nxdn_run_case_decode(&busy);
+
+    int rc = 0;
+    rc |= nxdn_expect(g_tune_count == 0, busy.name, "recent-voice", "busy update did not retune");
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1, busy.name, "recent-voice", "canonical call exists");
+    rc |= nxdn_expect(call.phase == DSD_CALL_PHASE_ACTIVE, busy.name, "recent-voice", "canonical call remains active");
+    rc |= nxdn_expect(call.epoch == previous_epoch, busy.name, "recent-voice", "anonymous call enriched in place");
+    rc |= nxdn_expect(call.ota_target_id == busy.scch_id && call.policy_target_id == busy.scch_id, busy.name,
+                      "recent-voice", "busy target applied to canonical call");
+    rc |= nxdn_expect(call.media_active == 1U, busy.name, "recent-voice", "media state preserved");
+    return rc;
+}
+
+static int
 nxdn_run_scch_identity_context_case(void) {
     const nxdn_case context = {
         "type-d-scch-identity-context", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 0, 0, 0, 0,
@@ -730,6 +763,7 @@ main(void) {
     rc |= nxdn_run_active_other_tg_no_tune_case();
     rc |= nxdn_run_hold_match_retune_case();
     rc |= nxdn_run_scch_termination_case();
+    rc |= nxdn_run_scch_busy_enrich_case();
     rc |= nxdn_run_scch_identity_context_case();
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

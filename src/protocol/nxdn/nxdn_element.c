@@ -2615,6 +2615,9 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     DSD_FPRINTF(stderr, "Go to Repeater: %d; ", info->rep1);
     DSD_FPRINTF(stderr, "Home Repeater: %d; ", info->rep2);
     nxdn_scch_update_busy_display(opts, state, info);
+    if (info->rep1 != 31U && info->now - state->last_vc_sync_time < 1) {
+        nxdn_scch_enrich_identity(state, 0U, info->id);
+    }
     nxdn_scch_apply_busy_tune(opts, state, info);
 }
 
