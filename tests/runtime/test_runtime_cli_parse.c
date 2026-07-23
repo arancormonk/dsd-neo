@@ -366,7 +366,8 @@ test_compatibility_short_options_use_current_facilities(void) {
     initState(state);
     opts->p25_lcw_retune = 0;
     opts->dmr_mono = 0;
-    opts->dmr_stereo = 0;
+    opts->dmr_stereo = 1;
+    state->dmr_stereo = 1;
     opts->pulse_digi_rate_out = 48000;
     opts->pulse_digi_out_channels = 1;
 
@@ -387,12 +388,28 @@ test_compatibility_short_options_use_current_facilities(void) {
     char* argv_nm[] = {arg0, arg_nm, NULL};
     exit_rc = -1;
     rc = dsd_parse_args(2, argv_nm, opts, state, &argc_effective, &exit_rc);
-    if (rc != DSD_PARSE_CONTINUE || opts->dmr_mono != 1 || opts->dmr_stereo != 0 || opts->pulse_digi_rate_out != 48000
-        || opts->pulse_digi_out_channels != 1) {
+    if (rc != DSD_PARSE_CONTINUE || opts->dmr_mono != 1 || opts->dmr_stereo != 0 || state->dmr_stereo != 0
+        || opts->pulse_digi_rate_out != 48000 || opts->pulse_digi_out_channels != 1) {
         DSD_FPRINTF(stderr,
                     "expected -nm to enable single-slot DMR without changing the active preset, got rc=%d mono=%d "
-                    "stereo=%d rate=%d channels=%d\n",
-                    rc, opts->dmr_mono, opts->dmr_stereo, opts->pulse_digi_rate_out, opts->pulse_digi_out_channels);
+                    "stereo=%d state_stereo=%d rate=%d channels=%d\n",
+                    rc, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo, opts->pulse_digi_rate_out,
+                    opts->pulse_digi_out_channels);
+        test_rc = 1;
+    }
+
+    char arg_fs[] = "-fs";
+    char* argv_fs_nm[] = {arg0, arg_fs, arg_nm, NULL};
+    exit_rc = -1;
+    rc = dsd_parse_args(3, argv_fs_nm, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || opts->frame_dmr != 1 || opts->dmr_mono != 1 || opts->dmr_stereo != 0
+        || state->dmr_stereo != 0 || opts->pulse_digi_rate_out != 8000 || opts->pulse_digi_out_channels != 2
+        || strcmp(opts->output_name, "DMR") != 0) {
+        DSD_FPRINTF(stderr,
+                    "expected -fs -nm to select only the single-slot DMR decoder, got rc=%d frame=%d mono=%d "
+                    "stereo=%d state_stereo=%d rate=%d channels=%d output=%s\n",
+                    rc, opts->frame_dmr, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo, opts->pulse_digi_rate_out,
+                    opts->pulse_digi_out_channels, opts->output_name);
         test_rc = 1;
     }
 
