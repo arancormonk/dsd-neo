@@ -51,7 +51,11 @@ typedef enum {
 } dsd_call_crypto_state;
 
 typedef enum {
-    DSD_CALL_BOUNDARY_CONTINUE = 0,
+    DSD_CALL_BOUNDARY_CONTINUE = 0, /**< Merge compatible observations into the active call epoch. */
+    /**
+     * Begin a new epoch, except when an identity-bearing voice observation specializes the active
+     * protocol-compatible, identity-less generic voice epoch.
+     */
     DSD_CALL_BOUNDARY_BEGIN,
 } dsd_call_boundary;
 

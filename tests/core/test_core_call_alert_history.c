@@ -1380,6 +1380,61 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
 }
 
 static int
+test_provisional_voice_identity_does_not_commit_zero_row(void) {
+    static const int protocols[] = {
+        DSD_SYNC_P25P1_POS,       DSD_SYNC_P25P2_POS,    DSD_SYNC_DMR_BS_VOICE_POS,
+        DSD_SYNC_NXDN_POS,        DSD_SYNC_PROVOICE_POS, DSD_SYNC_YSF_POS,
+        DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_M17_STR_POS,
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(protocols) / sizeof(protocols[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+        rc |= expect_int(
+            "provisional call starts epoch",
+            observe_test_call(&state, 0U, protocols[i], DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+            1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+
+        dsd_call_snapshot snapshot;
+        assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
+        const uint64_t provisional_epoch = snapshot.epoch;
+        rc |= expect_int("provisional call emits one start alert", g_beeper_count, 1);
+
+        rc |= expect_int("identity begin specializes provisional epoch",
+                         observe_test_call(&state, 0U, protocols[i], DSD_CALL_KIND_GROUP_VOICE, 1000U + i, 2000U + i,
+                                           0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                         0);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(dsd_call_state_get(&state, 0U, &snapshot) == 1);
+        rc |= expect_u64("identity begin preserves provisional epoch", snapshot.epoch, provisional_epoch);
+
+        const Event_History* current = &event_history[0].Event_History_Items[0];
+        const Event_History* prior = &event_history[0].Event_History_Items[1];
+        rc |= expect_int("specialized current row has target", (int)current->target_id, (int)(1000U + i));
+        rc |= expect_int("specialized current row has source", (int)current->source_id, (int)(2000U + i));
+        rc |= expect_int("specialization does not commit provisional row", prior->event_string[0], '\0');
+        rc |= expect_int("specialization does not repeat start alert", g_beeper_count, 1);
+
+        assert(dsd_call_state_end(&state, 0U, 3.0) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        const Event_History* committed = &event_history[0].Event_History_Items[1];
+        rc |= expect_int("final row keeps identified target", (int)committed->target_id, (int)(1000U + i));
+        rc |= expect_int("final row keeps identified source", (int)committed->source_id, (int)(2000U + i));
+        rc |= expect_int("no zero-only row remains after finalization",
+                         event_history[0].Event_History_Items[2].event_string[0], '\0');
+        rc |= expect_int("identified call emits one end alert", g_beeper_count, 2);
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_new_canonical_epoch_commits_prior_canonical_call(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1655,6 +1710,7 @@ main(void) {
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
+    rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_late_source_enriches_matching_canonical_call();
     rc |= test_active_canonical_call_does_not_suppress_explicit_data();

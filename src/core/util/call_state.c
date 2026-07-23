@@ -238,9 +238,54 @@ call_state_kind_changed(dsd_call_kind old_kind, dsd_call_kind new_kind) {
 }
 
 static int
+call_state_kind_is_voice(dsd_call_kind kind) {
+    return kind == DSD_CALL_KIND_VOICE || kind == DSD_CALL_KIND_GROUP_VOICE || kind == DSD_CALL_KIND_PRIVATE_VOICE;
+}
+
+static int
+call_state_text_is_known(const char* text) {
+    char normalized[DSD_CALL_IDENTITY_TEXT_SIZE];
+    call_state_normalize_text(normalized, text);
+    return normalized[0] != '\0';
+}
+
+static int
+call_state_snapshot_is_provisional_voice(const dsd_call_snapshot* current) {
+    return current->phase == DSD_CALL_PHASE_ACTIVE && current->kind == DSD_CALL_KIND_VOICE
+           && call_state_effective_target_snapshot(current) == 0U && current->ota_source_id == 0U
+           && current->source_text[0] == '\0' && current->target_text[0] == '\0' && current->route_text[0][0] == '\0'
+           && current->route_text[1][0] == '\0';
+}
+
+static int
+call_state_observation_has_identity(const dsd_call_observation* observation) {
+    return call_state_effective_target_observation(observation) != 0U || observation->ota_source_id != 0U
+           || call_state_text_is_known(observation->source_text) || call_state_text_is_known(observation->target_text)
+           || call_state_text_is_known(observation->route_text[0])
+           || call_state_text_is_known(observation->route_text[1]);
+}
+
+static int
+call_state_begin_specializes_provisional_voice(const dsd_call_snapshot* current,
+                                               const dsd_call_observation* observation, dsd_call_boundary boundary) {
+    if (boundary != DSD_CALL_BOUNDARY_BEGIN || !call_state_snapshot_is_provisional_voice(current)
+        || !call_state_kind_is_voice(observation->kind) || !call_state_observation_has_identity(observation)) {
+        return 0;
+    }
+    if (current->protocol == DSD_SYNC_NONE || observation->protocol == DSD_SYNC_NONE) {
+        return 1;
+    }
+    return call_state_protocol_family(current->protocol) == call_state_protocol_family(observation->protocol);
+}
+
+static int
 call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
                                     dsd_call_boundary boundary) {
-    if (boundary == DSD_CALL_BOUNDARY_BEGIN || current->phase != DSD_CALL_PHASE_ACTIVE) {
+    if (current->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    if (boundary == DSD_CALL_BOUNDARY_BEGIN
+        && !call_state_begin_specializes_provisional_voice(current, observation, boundary)) {
         return 1;
     }
     if (current->protocol != DSD_SYNC_NONE && observation->protocol != DSD_SYNC_NONE

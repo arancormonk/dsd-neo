@@ -237,6 +237,98 @@ test_voice_specialization_and_sparse_metadata(void) {
 }
 
 static void
+test_explicit_identity_specializes_provisional_voice(void) {
+    static const struct {
+        int provisional_protocol;
+        int identified_protocol;
+    } cases[] = {
+        {DSD_SYNC_P25P1_POS, DSD_SYNC_P25P1_NEG},
+        {DSD_SYNC_P25P2_POS, DSD_SYNC_P25P2_NEG},
+        {DSD_SYNC_X2TDMA_VOICE_POS, DSD_SYNC_X2TDMA_VOICE_NEG},
+        {DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DSTAR_HD_NEG},
+        {DSD_SYNC_M17_STR_POS, DSD_SYNC_M17_LSF_NEG},
+        {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_DMR_BS_VOICE_NEG},
+        {DSD_SYNC_PROVOICE_POS, DSD_SYNC_EDACS_NEG},
+        {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS4_NEG},
+        {DSD_SYNC_NXDN_POS, DSD_SYNC_NXDN_NEG},
+        {DSD_SYNC_YSF_POS, DSD_SYNC_YSF_NEG},
+    };
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+        assert(state != NULL);
+        dsd_call_observation observation = {
+            .protocol = cases[i].provisional_protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+            .observed_m = 1.0,
+        };
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+        dsd_call_snapshot snapshot;
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        const uint64_t provisional_epoch = snapshot.epoch;
+
+        observation.protocol = cases[i].identified_protocol;
+        observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+        observation.ota_target_id = 1000U + i;
+        observation.policy_target_id = 1000U + i;
+        observation.ota_source_id = 2000U + i;
+        observation.observed_m = 2.0;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 0);
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        assert(snapshot.epoch == provisional_epoch);
+        assert(snapshot.kind == DSD_CALL_KIND_GROUP_VOICE);
+        assert(snapshot.ota_target_id == 1000U + i);
+        assert(snapshot.ota_source_id == 2000U + i);
+
+        observation.observed_m = 3.0;
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+        assert(snapshot.epoch != provisional_epoch);
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+}
+
+static void
+test_explicit_begin_keeps_real_provisional_boundaries(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = 1.0,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    const uint64_t first_epoch = snapshot.epoch;
+
+    observation.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch != first_epoch);
+    const uint64_t second_epoch = snapshot.epoch;
+
+    observation.protocol = DSD_SYNC_P25P1_POS;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 3000U;
+    observation.policy_target_id = 3000U;
+    observation.ota_source_id = 4000U;
+    observation.observed_m = 3.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.epoch != second_epoch);
+    assert(snapshot.protocol == DSD_SYNC_P25P1_POS);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
 test_64bit_text_and_protocol_family_continuity(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
     assert(state != NULL);
@@ -367,6 +459,8 @@ main(void) {
     test_recent_activity(state);
     test_snapshot_clone(state);
     test_voice_specialization_and_sparse_metadata();
+    test_explicit_identity_specializes_provisional_voice();
+    test_explicit_begin_keeps_real_provisional_boundaries();
     test_64bit_text_and_protocol_family_continuity();
     test_positive_p25p1_protocol_observation();
     dsd_state_ext_free_all(state);
