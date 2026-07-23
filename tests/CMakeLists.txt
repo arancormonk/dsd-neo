@@ -5422,6 +5422,7 @@ add_test(NAME DMR_RELAXED_HEADER_IP COMMAND dsd-neo_test_dmr_relaxed_header_ip)
 add_executable(
     dsd-neo_test_dmr_lrrp_time_fallback
     protocol/dmr/test_dmr_lrrp_time_fallback.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5447,6 +5448,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_time_valid
     protocol/dmr/test_dmr_lrrp_time_valid.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5469,6 +5471,7 @@ add_test(NAME DMR_LRRP_TIME_VALID COMMAND dsd-neo_test_dmr_lrrp_time_valid)
 add_executable(
     dsd-neo_test_dmr_lrrp_token_alignment
     protocol/dmr/test_dmr_lrrp_token_alignment.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5493,6 +5496,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_response_token_lengths
     protocol/dmr/test_dmr_lrrp_response_token_lengths.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5517,6 +5521,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_resync_prefix
     protocol/dmr/test_dmr_lrrp_resync_prefix.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5541,6 +5546,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_position_token_precedence
     protocol/dmr/test_dmr_lrrp_position_token_precedence.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5566,6 +5572,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_lrrp_crc_gating
     protocol/dmr/test_dmr_lrrp_crc_gating.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )
@@ -5631,6 +5638,7 @@ add_test(
 add_executable(
     dsd-neo_test_dmr_locn_time_fallback
     protocol/dmr/test_dmr_locn_time_fallback.c
+    test_support/data_event_gps_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
 )

@@ -38,6 +38,7 @@ static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
 static uint8_t g_datacall_slot;
 static char g_datacall_text[512];
+static char g_datacall_gps[256];
 
 static void
 reset_spies(void) {
@@ -47,6 +48,7 @@ reset_spies(void) {
     g_datacall_dst = 0;
     g_datacall_slot = 0;
     DSD_MEMSET(g_datacall_text, 0, sizeof(g_datacall_text));
+    DSD_MEMSET(g_datacall_gps, 0, sizeof(g_datacall_gps));
 }
 
 // Minimal stubs for direct link with dmr_pdu.c
@@ -64,9 +66,11 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
-    (void)state;
     (void)input;
     g_lip_calls++;
+    uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
+    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s",
+                 "LIP: 41.500000, -87.250000");
 }
 
 void
@@ -88,6 +92,14 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     g_datacall_dst = observation->ota_target_id;
     g_datacall_slot = slot;
     DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
+    return 0;
+}
+
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    (void)dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+    DSD_SNPRINTF(g_datacall_gps, sizeof(g_datacall_gps), "%s", gps ? gps : "");
     return 0;
 }
 
@@ -558,6 +570,7 @@ main(void) {
             rc |= 1;
         }
         rc |= expect_has_substr(g_datacall_text, "SRC: 11:2", "compressed extended source summary");
+        rc |= expect_has_substr(g_datacall_gps, "41.500000", "compressed LIP event GPS");
     }
 
     // Case 9: compressed UDP guards short/null PDUs without emitting datacalls.

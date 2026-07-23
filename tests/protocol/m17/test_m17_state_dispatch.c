@@ -1282,6 +1282,20 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
         err |= expect_u8("valid IP stream copied LSF bits", state->m17_lsf[i], lsf_bits[i]);
     }
 
+    const uint64_t active_epoch = call.epoch;
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEF, (uint16_t)(M17_REF_STREAM_FN + 1U), 1U, payload_bits);
+    ip_frame[52] ^= 0x01U;
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+    err |= expect_int("bad-CRC EOT keeps IP stream call", get_m17_call(state, &call), 1);
+    err |= expect_int("bad-CRC EOT keeps IP stream active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("bad-CRC EOT keeps IP stream epoch", call.epoch, active_epoch);
+
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEF, (uint16_t)(M17_REF_STREAM_FN + 2U), 0U, payload_bits);
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+    err |= expect_int("valid frame after bad EOT keeps IP stream call", get_m17_call(state, &call), 1);
+    err |= expect_int("valid frame after bad EOT keeps IP stream active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("valid frame after bad EOT keeps IP stream epoch", call.epoch, active_epoch);
+
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;

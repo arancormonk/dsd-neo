@@ -633,6 +633,7 @@ typedef struct {
     uint32_t udt_target;
     int payload_bits;
     char udt_string[500];
+    char event_gps[sizeof(((dsd_state*)0)->dmr_embedded_gps[0])];
 } dmr_udt_ctx;
 
 static int DSD_ATTR_USED
@@ -924,9 +925,25 @@ dmr_udt_handle_nmea(dmr_udt_ctx* ctx) {
     if (ctx->cs_bits[96] == 1) {
         DSD_FPRINTF(stderr, " Encrypted Format :(");
     } else if (ctx->udt_uab == 1) {
+        char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
+        DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
+        ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
         nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 1);
+        DSD_SNPRINTF(ctx->event_gps, sizeof(ctx->event_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
+        if (ctx->event_gps[0] == '\0') {
+            DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
+                         previous_gps);
+        }
     } else if (ctx->udt_uab == 2) {
+        char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
+        DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
+        ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
         nmea_iec_61162_1(ctx->opts, ctx->state, ctx->cs_bits + 96, ctx->udt_source, 2);
+        DSD_SNPRINTF(ctx->event_gps, sizeof(ctx->event_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
+        if (ctx->event_gps[0] == '\0') {
+            DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
+                         previous_gps);
+        }
     } else if (ctx->udt_uab == 3) {
         DSD_FPRINTF(stderr, " Unspecified MFID Format: %02X;",
                     (uint8_t)convert_bits_into_output(&ctx->cs_bits[184], 8));
@@ -939,7 +956,15 @@ static void
 dmr_udt_handle_lip(dmr_udt_ctx* ctx) {
     dsd_append(ctx->udt_string, sizeof ctx->udt_string, "LIP; ");
     DSD_FPRINTF(stderr, "\n");
+    char previous_gps[sizeof(ctx->state->dmr_embedded_gps[ctx->slot])];
+    DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
+    ctx->state->dmr_embedded_gps[ctx->slot][0] = '\0';
     lip_protocol_decoder(ctx->opts, ctx->state, ctx->cs_bits + 96);
+    DSD_SNPRINTF(ctx->event_gps, sizeof(ctx->event_gps), "%s", ctx->state->dmr_embedded_gps[ctx->slot]);
+    if (ctx->event_gps[0] == '\0') {
+        DSD_SNPRINTF(ctx->state->dmr_embedded_gps[ctx->slot], sizeof(ctx->state->dmr_embedded_gps[ctx->slot]), "%s",
+                     previous_gps);
+    }
 }
 
 static void
@@ -972,7 +997,12 @@ dmr_udt_finalize(dmr_udt_ctx* ctx) {
     DSD_FPRINTF(stderr, "%s", KNRM);
     const dsd_call_observation observation =
         dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, ctx->udt_source, ctx->udt_target);
-    (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
+    if (ctx->event_gps[0] != '\0') {
+        (void)dsd_event_emit_data_notice_with_gps(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string,
+                                                  ctx->event_gps);
+    } else {
+        (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, ctx->udt_string);
+    }
 }
 
 static void DSD_ATTR_USED

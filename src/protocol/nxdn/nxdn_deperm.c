@@ -1192,7 +1192,7 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     //End the canonical call on explicit release or disconnect signaling.
-    if (nxdn_message_type_resets_call(MessageType)) {
+    if (state->NxdnElementsContent.VCallCrcIsGood != 0U && nxdn_message_type_resets_call(MessageType)) {
         if (dsd_call_state_end(state, 0U, 0.0) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }

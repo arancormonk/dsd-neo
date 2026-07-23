@@ -3215,7 +3215,7 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload(opts, state, payload, stream_frame_number, processed_payload);
-    if (eot != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    if (crc_ext == crc_cmp && eot != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 

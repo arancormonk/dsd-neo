@@ -490,13 +490,13 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
                                | ((state->NxdnElementsContent.F2 & 1U) << 6U) | MessageType);
     MessageTypeDispatch = MessageType;
 
-    nxdn_message_type(opts, state, MessageTypeExt);
-
     /* Save the "Message Type" field */
     state->NxdnElementsContent.MessageType = MessageType;
 
     /* Set the CRC state */
     state->NxdnElementsContent.VCallCrcIsGood = CrcCorrect;
+
+    nxdn_message_type(opts, state, MessageTypeExt);
 
     if (MessageTypeExt == 0xE7U) {
         nxdn_alias_decode_arib(opts, state, ElementsContent, nxdn_alias_crc_ok(state));
@@ -2285,7 +2285,8 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
 
 static void
 nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    if (info->message_type != 0x01U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    if (info->message_type != 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U
+        && dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
     nxdn_vcall_print_summary(state, info);

@@ -185,6 +185,7 @@ seed_call_state(dsd_opts* opts, dsd_state* state) {
     state->nxdn_cipher_type = 1;
     state->keyloader = 1;
     state->R = 42;
+    state->NxdnElementsContent.VCallCrcIsGood = 1U;
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 0, sizeof(state->nxdn_sacch_frame_segcrc));
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 0, sizeof(state->nxdn_sacch_frame_segment));
 }
@@ -255,6 +256,18 @@ test_message_type_reset_contract(void) {
     rc |= expect_int("idle-cipher-kept", state.nxdn_cipher_type, 1);
     rc |= expect_int("idle-r-kept", state.R, 42);
     rc |= expect_int("idle-sacch-kept", all_sacch_segments_are(0U, &state), 1);
+
+    seed_call_state(&opts, &state);
+    g_alias_reset_calls = 0;
+    state.NxdnElementsContent.VCallCrcIsGood = 0U;
+    nxdn_message_type(&opts, &state, 0x08U);
+    rc |= expect_int("bad-crc-release-no-alias-reset", g_alias_reset_calls, 0);
+    rc |= expect_int("bad-crc-release-call-present", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("bad-crc-release-call-active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_u32("bad-crc-release-target-kept", (uint32_t)call.ota_target_id, 5678U);
+    rc |= expect_int("bad-crc-release-cipher-kept", state.nxdn_cipher_type, 1);
+    rc |= expect_int("bad-crc-release-r-kept", state.R, 42);
+    rc |= expect_int("bad-crc-release-sacch-kept", all_sacch_segments_are(0U, &state), 1);
     dsd_state_ext_free_all(&state);
     return rc;
 }

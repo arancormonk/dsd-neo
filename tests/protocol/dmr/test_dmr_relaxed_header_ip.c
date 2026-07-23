@@ -51,6 +51,7 @@ static uint32_t g_datacall_last_src;
 static uint32_t g_datacall_last_dst;
 static uint8_t g_datacall_last_slot;
 static char g_datacall_last_text[256];
+static char g_datacall_last_gps[256];
 static unsigned int g_lip_calls;
 static unsigned int g_nmea_calls;
 static uint32_t g_nmea_last_src;
@@ -108,24 +109,34 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     return 0;
 }
 
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    (void)dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+    DSD_SNPRINTF(g_datacall_last_gps, sizeof(g_datacall_last_gps), "%s", gps ? gps : "");
+    return 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
-    (void)state;
     (void)input;
     g_lip_calls++;
+    DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
+                 "LIP: 41.500000, -87.250000");
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type) {
     (void)opts;
-    (void)state;
     (void)input;
     g_nmea_calls++;
     g_nmea_last_src = src;
     g_nmea_last_type = type;
+    DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
+                 "GPS: (41.500000, -87.250000)");
 }
 
 // Stubs to avoid linking runtime/core
@@ -491,6 +502,7 @@ reset_datacall_spy(void) {
     g_datacall_last_dst = 0;
     g_datacall_last_slot = 0;
     DSD_MEMSET(g_datacall_last_text, 0, sizeof(g_datacall_last_text));
+    DSD_MEMSET(g_datacall_last_gps, 0, sizeof(g_datacall_last_gps));
     g_lip_calls = 0;
     g_nmea_calls = 0;
     g_nmea_last_src = 0;
@@ -655,11 +667,13 @@ test_udt_text_and_dispatch_formats(void) {
     assert(g_nmea_last_src == 0x000222U);
     assert(g_nmea_last_type == 1);
     assert(strstr(g_datacall_last_text, "NMEA") != NULL);
+    assert(strstr(g_datacall_last_gps, "41.500000") != NULL);
 
     build_udt_flag_block(block, 0U);
     run_udt_single_block(0x0BU, block, NULL);
     assert(g_lip_calls == 1U);
     assert(strstr(g_datacall_last_text, "LIP") != NULL);
+    assert(strstr(g_datacall_last_gps, "41.500000") != NULL);
 }
 
 static void

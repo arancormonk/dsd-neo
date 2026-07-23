@@ -341,16 +341,16 @@ dmr_udp_comp_resolve_port_ptr(const uint8_t* pdu, uint16_t len, uint16_t* spid, 
     return ptr;
 }
 
-static void DSD_ATTR_USED
+static int DSD_ATTR_USED
 dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spid, uint16_t dpid, uint16_t len,
                             uint16_t ptr, const uint8_t* pdu) {
     if (len <= ptr) {
-        return;
+        return 0;
     }
     len -= ptr;
     if (spid == 1 || dpid == 1) {
         utf16_to_text(state, 1, len, pdu + ptr); //assumming text starts right at the ptr value
-        return;
+        return 0;
     }
     if (spid == 2 || dpid == 2) {
         uint8_t bits[127 * 8];
@@ -360,10 +360,19 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spi
         }
         DSD_MEMSET(bits, 0, sizeof(bits));
         unpack_byte_array_into_bit_array(pdu + ptr, bits, (int)decode_len);
+        uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
+        char previous_gps[sizeof(state->dmr_embedded_gps[slot])];
+        DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", state->dmr_embedded_gps[slot]);
+        state->dmr_embedded_gps[slot][0] = '\0';
         lip_protocol_decoder(opts, state, bits);
-        return;
+        if (state->dmr_embedded_gps[slot][0] != '\0') {
+            return 1;
+        }
+        DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s", previous_gps);
+        return 0;
     }
     DSD_FPRINTF(stderr, "Unknown Decode Format;");
+    return 0;
 }
 
 void
@@ -390,7 +399,7 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
                 said, src_idx_desc, daid, dst_idx_desc);
     DSD_FPRINTF(stderr, "\n Src Port Idx: %d (%s); Dst Port Idx: %d (%s); ", spid, src_port_desc, dpid, dst_port_desc);
 
-    dmr_udp_comp_decode_payload(opts, state, spid, dpid, len, ptr, DMR_PDU);
+    const int has_gps = dmr_udp_comp_decode_payload(opts, state, spid, dpid, len, ptr, DMR_PDU);
 
     uint8_t slot = (state->currentslot == 1) ? 1 : 0;
     char comp_string[500];
@@ -398,7 +407,12 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "IPC: %d; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
                  ipid, opcode, said, spid, src_idx_desc, src_port_desc, daid, dpid, dst_idx_desc, dst_port_desc);
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, said, daid);
-    (void)dsd_event_emit_data_notice(opts, state, slot, &observation, comp_string);
+    if (has_gps) {
+        (void)dsd_event_emit_data_notice_with_gps(opts, state, slot, &observation, comp_string,
+                                                  state->dmr_embedded_gps[slot]);
+    } else {
+        (void)dsd_event_emit_data_notice(opts, state, slot, &observation, comp_string);
+    }
 }
 
 static void DSD_ATTR_USED
