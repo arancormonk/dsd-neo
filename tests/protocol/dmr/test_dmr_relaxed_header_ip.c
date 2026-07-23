@@ -221,7 +221,7 @@ des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_u
     (void)nblocks;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
@@ -229,6 +229,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     g_decode_ip_calls++;
     g_decode_ip_last_len = len;
     g_decode_ip_first_byte = input ? input[0] : 0U;
+    return 1;
 }
 
 void

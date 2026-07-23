@@ -112,7 +112,7 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 }
 
 // Under test
-void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
+int decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
 void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
@@ -659,6 +659,10 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Truncated UDP;", "truncated udp label");
         rc |= expect_has_substr(g_datacall_text, "Truncated UDP;", "truncated udp datacall");
+        if (g_datacall_calls != 1U) {
+            DSD_FPRINTF(stderr, "truncated udp datacall count mismatch: %u\n", g_datacall_calls);
+            rc |= 1;
+        }
     }
 
     // Case 14: ICMP destination-unreachable with an attached IPv4 message recursively decodes the attachment.

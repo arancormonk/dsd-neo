@@ -622,6 +622,39 @@ edacs_setup_state_fixture(int ea_mode) {
 }
 
 static int
+edacs_run_inverted_polarity_cases(const edacs_grant_case* voice_case) {
+    int rc = 0;
+    dsd_call_snapshot call = {0};
+    dsd_recent_activity_snapshot recent = {0};
+
+    g_vc_result = DSD_TRUNK_TUNE_RESULT_OK;
+    edacs_setup_fixture(voice_case);
+    g_state.synctype = DSD_SYNC_EDACS_NEG;
+    edacs_install_hooks();
+    edacs_process_valid_frame(&g_opts, &g_state, voice_case->msg_1, voice_case->msg_2);
+
+    rc |= edacs_expect(dsd_call_state_get(&g_state, 0U, &call) > 0, "inverted-polarity", "voice",
+                       "digital grant created canonical call");
+    rc |= edacs_expect(call.protocol == DSD_SYNC_PROVOICE_NEG, "inverted-polarity", "voice",
+                       "canonical digital grant preserved inverted polarity");
+    rc |= edacs_expect(dsd_recent_activity_copy_snapshot(&g_state, &recent) > 0, "inverted-polarity", "voice",
+                       "digital grant published recent activity");
+    rc |= edacs_expect(recent.entries[voice_case->lcn].observation.protocol == DSD_SYNC_PROVOICE_NEG,
+                       "inverted-polarity", "voice", "recent digital grant preserved inverted polarity");
+
+    edacs_setup_state_fixture(0);
+    g_state.synctype = DSD_SYNC_EDACS_NEG;
+    edacs_process_valid_frame(&g_opts, &g_state, edacs_standard_data_msg1(0, 4, 777, 0), edacs_standard_data_msg2(5));
+
+    DSD_MEMSET(&recent, 0, sizeof(recent));
+    rc |= edacs_expect(dsd_recent_activity_copy_snapshot(&g_state, &recent) > 0, "inverted-polarity", "data",
+                       "data grant published recent activity");
+    rc |= edacs_expect(recent.entries[4].observation.protocol == DSD_SYNC_EDACS_NEG, "inverted-polarity", "data",
+                       "recent data grant preserved inverted polarity");
+    return rc;
+}
+
+static int
 edacs_run_grant_result_case(const edacs_grant_case* test_case, dsd_trunk_tune_result result, const char* result_name) {
     g_vc_result = result;
     g_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
@@ -1466,6 +1499,7 @@ main(void) {
     rc |= edacs_run_retry_after_reject_case(&cases[0], DSD_TRUNK_TUNE_RESULT_DEFERRED, "retry-after-deferred");
     rc |= edacs_run_retry_after_reject_case(&cases[1], DSD_TRUNK_TUNE_RESULT_FAILED, "retry-after-failed");
     rc |= edacs_run_retry_after_reject_case(&cases[2], DSD_TRUNK_TUNE_RESULT_TIMEOUT, "retry-after-timeout");
+    rc |= edacs_run_inverted_polarity_cases(&cases[0]);
 
     for (size_t r = 0; r < sizeof(results) / sizeof(results[0]); r++) {
         rc |= edacs_run_eot_result_case(results[r].result, results[r].name);

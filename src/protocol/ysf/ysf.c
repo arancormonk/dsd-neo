@@ -45,9 +45,10 @@ ysf_enrich_identity(dsd_state* state, uint8_t cm, const char* source, const char
     const dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
-        .kind = cm == 3U   ? DSD_CALL_KIND_PRIVATE_VOICE
-                : cm == 0U ? DSD_CALL_KIND_GROUP_VOICE
-                           : DSD_CALL_KIND_VOICE,
+        .kind = call.kind == DSD_CALL_KIND_DATA ? DSD_CALL_KIND_DATA
+                : cm == 3U                      ? DSD_CALL_KIND_PRIVATE_VOICE
+                : cm == 0U                      ? DSD_CALL_KIND_GROUP_VOICE
+                                                : DSD_CALL_KIND_VOICE,
     };
     dsd_call_observation enriched = observation;
     DSD_SNPRINTF(enriched.source_text, sizeof(enriched.source_text), "%s", source ? source : "");
@@ -875,13 +876,12 @@ ysf_call_kind(uint8_t call_mode) {
 
 static void
 ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
-    const int voice_mode = info->dt == 0U || info->dt == 2U || info->dt == 3U;
-    if (info->err == 0 && voice_mode && (info->fi == 0U || info->fi == 1U)) {
+    if (info->err == 0 && (info->fi == 0U || info->fi == 1U)) {
         const int protocol = DSD_SYNC_IS_YSF(state->synctype) ? state->synctype : DSD_SYNC_YSF_POS;
         const dsd_call_observation observation = {
             .protocol = protocol,
             .slot = 0U,
-            .kind = ysf_call_kind(info->cm),
+            .kind = info->dt == 1U ? DSD_CALL_KIND_DATA : ysf_call_kind(info->cm),
         };
         const dsd_call_boundary boundary = info->fi == 0U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
         if (dsd_call_state_observe(state, &observation, boundary) > 0) {

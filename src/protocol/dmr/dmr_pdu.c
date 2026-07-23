@@ -751,8 +751,6 @@ decode_ip_pdu_handle_udp(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_
                          size_t effective_len, size_t ip_header_len, uint8_t* input) {
     if (effective_len < ip_header_len + 8u) {
         DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "Truncated UDP;");
-        const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
-        (void)dsd_event_emit_data_notice(opts, state, slot, &observation, state->dmr_lrrp_gps[slot]);
         return;
     }
     uint16_t dst_port = (uint16_t)((input[ip_header_len + 2] << 8) | input[ip_header_len + 3]);
@@ -832,19 +830,19 @@ decode_ip_pdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t p
 }
 
 //IP PDU header decode and port forward to appropriate decoder
-void
+int
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     if (!opts) {
-        return;
+        return 0;
     }
     if (!state) {
-        return;
+        return 0;
     }
     if (!input) {
-        return;
+        return 0;
     }
     if (len < 20) {
-        return;
+        return 0;
     }
 
     uint8_t slot = state->currentslot;
@@ -861,13 +859,13 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
 
     size_t ip_header_len = (size_t)ihl * 4u;
     if (version != 4) {
-        return;
+        return 0;
     }
     if (ihl < 5) {
-        return;
+        return 0;
     }
     if (ip_header_len > (size_t)len) {
-        return;
+        return 0;
     }
     size_t effective_len = (size_t)len;
     if ((size_t)tlen >= ip_header_len) {
@@ -892,7 +890,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
 
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
-    (void)dsd_event_emit_data_notice(opts, state, slot, &observation, state->dmr_lrrp_gps[slot]);
+    return dsd_event_emit_data_notice(opts, state, slot, &observation, state->dmr_lrrp_gps[slot]) == 0;
 }
 
 typedef struct {

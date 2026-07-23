@@ -603,11 +603,24 @@ edacs_voice_call_kind(uint16_t call_flags) {
     return DSD_CALL_KIND_VOICE;
 }
 
+static int
+edacs_observation_protocol(const dsd_state* state, int is_digital) {
+    int sync = state != NULL ? state->synctype : DSD_SYNC_NONE;
+    if (!DSD_SYNC_IS_EDACS(sync) && state != NULL) {
+        sync = state->lastsynctype;
+    }
+    const int inverted = sync == DSD_SYNC_EDACS_NEG || sync == DSD_SYNC_PROVOICE_NEG;
+    if (is_digital) {
+        return inverted ? DSD_SYNC_PROVOICE_NEG : DSD_SYNC_PROVOICE_POS;
+    }
+    return inverted ? DSD_SYNC_EDACS_NEG : DSD_SYNC_EDACS_POS;
+}
+
 static dsd_call_observation
 edacs_voice_observation(const dsd_state* state, int lcn, int is_digital, uint64_t target, uint64_t source,
                         dsd_call_kind kind, uint16_t call_flags) {
     const dsd_call_observation observation = {
-        .protocol = is_digital ? DSD_SYNC_PROVOICE_POS : DSD_SYNC_EDACS_POS,
+        .protocol = edacs_observation_protocol(state, is_digital),
         .slot = 0U,
         .kind = kind,
         .ota_target_id = target,
@@ -663,7 +676,8 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
 
 static void
 edacs_publish_data_activity(dsd_state* state, int lcn, uint64_t target, uint64_t source, const char* notice) {
-    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_EDACS_POS, 0U, source, target);
+    dsd_call_observation observation =
+        dsd_call_observation_data(edacs_observation_protocol(state, 0), 0U, source, target);
     observation.channel = lcn > 0 ? (uint32_t)lcn : 0U;
     observation.frequency_hz = lcn > 0 && lcn < 26 ? state->trunk_lcn_freq[lcn - 1] : 0;
     if (lcn >= 0 && lcn < DSD_RECENT_ACTIVITY_COUNT) {

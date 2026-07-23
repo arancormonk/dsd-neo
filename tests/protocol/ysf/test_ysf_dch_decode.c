@@ -691,9 +691,13 @@ test_process_ysf_full_rate_data_routes_fich_and_dch_state(void) {
     assert(state.ysf_fi == 0U);
     assert(state.ysf_dt == 1U);
     assert(state.ysf_cm == 0U);
-    dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof(call));
-    assert(dsd_call_state_get(&state, 0U, &call) == 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_DATA);
+    assert(strcmp(call.target_text, "PYSFDST001") == 0);
+    assert(strcmp(call.source_text, "PYSFSRC002") == 0);
+    assert(strcmp(call.route_text[0], "PYSFUPL003") == 0);
+    assert(strcmp(call.route_text[1], "PYSFDNL004") == 0);
 }
 
 static void
