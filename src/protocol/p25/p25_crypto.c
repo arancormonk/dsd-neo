@@ -103,7 +103,8 @@ static int
 p25_crypto_ensure_phase1_call(dsd_state* state) {
     dsd_call_snapshot call;
     const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
-    if (active && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
+    if (active && DSD_SYNC_IS_P25P1(call.protocol)
+        && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
         return 0;
     }
 

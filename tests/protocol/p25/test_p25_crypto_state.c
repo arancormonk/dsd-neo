@@ -151,6 +151,61 @@ test_phase1_resolution_opens_anonymous_call(void) {
 }
 
 static int
+test_phase1_resolution_replaces_foreign_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const int foreign_protocols[] = {
+        DSD_SYNC_DMR_BS_VOICE_POS,
+        DSD_SYNC_P25P2_POS,
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(foreign_protocols) / sizeof(foreign_protocols[0]); i++) {
+        reset_fixture(&opts, &state);
+        DSD_MEMSET(history, 0, sizeof(history));
+        init_event_history(&history[0], 0, 255);
+        init_event_history(&history[1], 0, 255);
+        state.event_history_s = history;
+
+        const int foreign_protocol = foreign_protocols[i];
+        rc |= expect_int("foreign call starts", begin_p1_call_with_protocol(&state, foreign_protocol, 0x40U), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+
+        dsd_call_snapshot call;
+        rc |= expect_int("foreign call is available", dsd_call_state_get(&state, 0U, &call), 1);
+        const uint64_t foreign_epoch = call.epoch;
+        rc |= expect_int("foreign event is attributed to its protocol", history[0].Event_History_Items[0].systype,
+                         foreign_protocol);
+
+        state.synctype = DSD_SYNC_P25P1_NEG;
+        const uint64_t mi = UINT64_C(0x2122232425262728);
+        rc |= expect_int("direct-transition P1 metadata resolves blocked",
+                         p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x3456, mi, 0),
+                         DSD_P25_CRYPTO_BLOCKED);
+
+        rc |= expect_int("direct-transition P1 call is available", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_int("direct-transition P1 starts a new epoch", call.epoch != foreign_epoch, 1);
+        rc |= expect_int("direct-transition P1 owns canonical call", call.protocol, DSD_SYNC_P25P1_NEG);
+        rc |= expect_int("direct-transition P1 call is anonymous voice", call.kind, DSD_CALL_KIND_VOICE);
+        rc |= expect_int("direct-transition P1 clears foreign target", call.ota_target_id, 0);
+        rc |= expect_int("direct-transition P1 clears foreign source", call.ota_source_id, 0);
+        rc |= expect_int("direct-transition P1 records ALGID", call.algid, 0x81);
+        rc |= expect_int("direct-transition P1 records KID", call.kid, 0x3456);
+        rc |= expect_u64("direct-transition P1 records MI", call.mi, mi);
+
+        rc |= expect_int("direct-transition event is attributed to P1", history[0].Event_History_Items[0].systype,
+                         DSD_SYNC_P25P1_NEG);
+        rc |= expect_int("direct-transition event records ALGID", history[0].Event_History_Items[0].enc_alg, 0x81);
+        rc |= expect_int("direct-transition event records KID", history[0].Event_History_Items[0].enc_key, 0x3456);
+        rc |= expect_u64("direct-transition event records MI", history[0].Event_History_Items[0].mi, mi);
+        rc |= expect_int("foreign event remains attributed to its protocol", history[0].Event_History_Items[1].systype,
+                         foreign_protocol);
+    }
+    return rc;
+}
+
+static int
 test_phase1_pending_identity_starts_one_new_epoch(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -726,6 +781,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_phase1_resolution_opens_anonymous_call();
+    rc |= test_phase1_resolution_replaces_foreign_call();
     rc |= test_phase1_pending_identity_starts_one_new_epoch();
     rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_phase1_resolution_does_not_override_phase2_gate();
