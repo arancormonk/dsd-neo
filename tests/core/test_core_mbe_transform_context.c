@@ -1718,6 +1718,7 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
     rc |= expect_eq_mem("frame-hard-dmr temp audio", state.audio_out_temp_buf, expected_audio, sizeof(expected_audio));
     rc |= expect_eq_mem("frame-hard-dmr staged left", state.f_l, expected_audio, sizeof(expected_audio));
     rc |= expect_eq_int("frame-hard-dmr enc flag", state.dmr_encL, 0);
+    rc |= expect_eq_int("frame-hard-dmr inactive right muted", state.dmr_encR, 1);
     rc |= expect_eq_int("frame-hard-dmr debug errors", state.debug_audio_errors, state.errs2);
 
     return rc;

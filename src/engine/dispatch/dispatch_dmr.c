@@ -71,6 +71,7 @@ dmr_bootstrap_mono(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_enable == 1 && DSD_SYNC_IS_DMR_BS(state->synctype)) {
         state->dmr_stereo = 1;
         dmrBSBootstrap(opts, state);
+        state->dmr_stereo = 0;
         return;
     }
     state->dmr_stereo = 0;

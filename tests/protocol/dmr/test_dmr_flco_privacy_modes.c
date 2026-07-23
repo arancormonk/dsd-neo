@@ -386,7 +386,7 @@ test_single_slot_flco_forces_slot_one_context(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.dmr_mono = 1;
-    state.dmr_ms_mode = 1;
+    state.dmr_stereo = 0;
     state.currentslot = 1;
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
 
@@ -401,7 +401,7 @@ test_single_slot_flco_forces_slot_one_context(void) {
 }
 
 static void
-test_mono_option_preserves_bs_slot_context(void) {
+test_trunked_mono_bs_fallback_preserves_slot_context(void) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t bits[80];
@@ -410,6 +410,7 @@ test_mono_option_preserves_bs_slot_context(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.dmr_mono = 1;
+    state.dmr_stereo = 1;
     state.currentslot = 1;
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
 
@@ -1027,7 +1028,7 @@ main(void) {
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();
-    test_mono_option_preserves_bs_slot_context();
+    test_trunked_mono_bs_fallback_preserves_slot_context();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
     test_hytera_enhanced_flco_uses_secondary_checksum();

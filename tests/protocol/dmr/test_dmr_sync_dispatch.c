@@ -21,6 +21,7 @@ int dsd_dispatch_matches_dmr(int synctype);
 void dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state);
 
 static int bs_bootstrap_calls;
+static int bs_bootstrap_stereo;
 static int close_left_calls;
 static int close_right_calls;
 static int data_sync_calls;
@@ -31,6 +32,7 @@ static int open_left_calls;
 static void
 reset_calls(void) {
     bs_bootstrap_calls = 0;
+    bs_bootstrap_stereo = 0;
     close_left_calls = 0;
     close_right_calls = 0;
     data_sync_calls = 0;
@@ -63,8 +65,8 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 void
 dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
     bs_bootstrap_calls++;
+    bs_bootstrap_stereo = state->dmr_stereo;
 }
 
 void
@@ -209,8 +211,9 @@ test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap(void) {
     assert(strcmp(state.slot2light, " slot2 ") == 0);
     assert(open_left_calls == 0);
     assert(bs_bootstrap_calls == 1);
+    assert(bs_bootstrap_stereo == 1);
     assert(ms_bootstrap_calls == 0);
-    assert(state.dmr_stereo == 1);
+    assert(state.dmr_stereo == 0);
 }
 
 static void

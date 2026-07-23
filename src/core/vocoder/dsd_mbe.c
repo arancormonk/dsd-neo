@@ -1537,7 +1537,11 @@ mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fra
 
 static void
 mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (mbe_post_dmr_mono_active(opts, state) || !mbe_post_stereo_active(opts, state) || state->currentslot != 1) {
+    if (mbe_post_dmr_mono_active(opts, state)) {
+        state->dmr_encR = 1;
+        return;
+    }
+    if (!mbe_post_stereo_active(opts, state) || state->currentslot != 1) {
         return;
     }
 
