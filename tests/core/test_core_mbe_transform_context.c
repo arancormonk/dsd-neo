@@ -2300,6 +2300,8 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
     int expected_errs = -1;
     int expected_errs2 = -1;
     mbe_process_result result;
+    char wav_path[1024];
+    SNDFILE* wav_out = create_wav_temp(wav_path, sizeof(wav_path), "provoice_stale_slot_wav");
 
     imbe7100_fr[0][3] = 1;
     imbe7100_fr[2][11] = 1;
@@ -2319,8 +2321,10 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_mono = 1;
+    opts.wav_out_f = wav_out;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_PROVOICE_POS;
+    state.currentslot = 1;
 
     processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
 
@@ -2331,6 +2335,14 @@ test_process_mbe_frame_hard_provoice_stages_audio(void) {
     rc |= expect_eq_mem("hard-provoice staged left", state.f_l, expected_audio, sizeof(expected_audio));
     rc |= expect_eq_int("hard-provoice debug errors", state.debug_audio_errors, state.errs2);
     rc |= expect_eq_int("hard-provoice keeps p25 history length", state.p25_p1_voice_err_hist_len, 0);
+    rc |= expect_eq_int("hard-provoice stale-slot wav output opened", wav_out != NULL, 1);
+    if (wav_out) {
+        sf_write_sync(wav_out);
+        rc |= expect_eq_int("hard-provoice stale-slot wav frames", (int)sf_seek(wav_out, 0, SEEK_END), 160);
+        rc |= expect_eq_int("hard-provoice stale-slot wav close", sf_close(wav_out), 0);
+        (void)remove(wav_path);
+        opts.wav_out_f = NULL;
+    }
 
     return rc;
 }
