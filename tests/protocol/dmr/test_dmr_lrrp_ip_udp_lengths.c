@@ -106,11 +106,19 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
 }
 
 int
-dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
-                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
-    (void)dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                               const dsd_call_observation* observation, dsd_event_category category,
+                                               const char* notice, const char* gps) {
+    (void)dsd_event_emit_data_notice_classified(opts, state, slot, observation, category, notice);
     DSD_SNPRINTF(g_datacall_gps, sizeof(g_datacall_gps), "%s", gps ? gps : "");
     return 0;
+}
+
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA,
+                                                          notice, gps);
 }
 
 int
@@ -474,6 +482,27 @@ build_compressed_udp_lip_with_extended_src_port(uint8_t* out, size_t cap) {
     return 10U;
 }
 
+static size_t
+build_compressed_udp_extended_port(uint8_t* out, size_t cap, uint16_t port, uint8_t extended_source, uint8_t peer_pid,
+                                   uint8_t include_payload) {
+    const size_t len = include_payload ? 8U : 7U;
+    if (cap < len || peer_pid == 0U || peer_pid > 0x7FU) {
+        return 0;
+    }
+    DSD_MEMSET(out, 0, cap);
+    out[0] = 0x00;
+    out[1] = 0x7C;
+    out[2] = 0x10;
+    out[3] = extended_source ? 0U : peer_pid;
+    out[4] = extended_source ? peer_pid : 0U;
+    out[5] = (uint8_t)(port >> 8);
+    out[6] = (uint8_t)(port & 0xFFU);
+    if (include_payload) {
+        out[7] = 0xA5U;
+    }
+    return len;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -534,6 +563,13 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "P25 Atlas SRC(IP): 1.2.3.4; DST(IP): 5.6.7.8;", "atlas9361 label");
         rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "atlas9361 category");
+
+        reset_spies();
+        plen = build_ipv4_udp_empty_payload(pkt, sizeof pkt, 65000U);
+        pkt[20] = (uint8_t)(9361U >> 8);
+        pkt[21] = (uint8_t)(9361U & 0xFFU);
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "atlas9361 source category");
     }
 
     // Shared P25 Tier 2 location service remains packet data.
@@ -589,6 +625,7 @@ main(void) {
         }
         rc |= expect_has_substr(g_datacall_text, "SRC: 1:1", "compressed source summary");
         rc |= expect_has_substr(g_datacall_text, "DST: 2:63", "compressed destination summary");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "compressed text category");
     }
 
     // Case 8: compressed UDP with an extended source port should dispatch bounded LIP bits once.
@@ -603,9 +640,45 @@ main(void) {
         }
         rc |= expect_has_substr(g_datacall_text, "SRC: 11:2", "compressed extended source summary");
         rc |= expect_has_substr(g_datacall_gps, "41.500000", "compressed LIP event GPS");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "compressed LIP category");
     }
 
-    // Case 9: compressed UDP guards short/null PDUs without emitting datacalls.
+    // Case 9: compressed UDP classifies supported control services at either endpoint.
+    {
+        static const struct {
+            uint16_t port;
+            dsd_event_category category;
+        } cases[] = {
+            {4004U, DSD_EVENT_CATEGORY_CONTROL}, {4005U, DSD_EVENT_CATEGORY_CONTROL},
+            {4009U, DSD_EVENT_CATEGORY_CONTROL}, {9361U, DSD_EVENT_CATEGORY_CONTROL},
+            {4008U, DSD_EVENT_CATEGORY_DATA},
+        };
+
+        for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+            for (uint8_t extended_source = 0U; extended_source <= 1U; extended_source++) {
+                reset_spies();
+                size_t plen =
+                    build_compressed_udp_extended_port(pkt, sizeof pkt, cases[i].port, extended_source, 63U, 0U);
+                st.currentslot = 0;
+                dmr_udp_comp_pdu(&opts, &st, (uint16_t)plen, pkt);
+                rc |= expect_category(g_datacall_category, cases[i].category,
+                                      extended_source ? "compressed source service category"
+                                                      : "compressed destination service category");
+            }
+        }
+    }
+
+    // Case 10: classified compressed UDP GPS preserves the endpoint-derived category.
+    {
+        reset_spies();
+        size_t plen = build_compressed_udp_extended_port(pkt, sizeof pkt, 4005U, 1U, 2U, 1U);
+        st.currentslot = 0;
+        dmr_udp_comp_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "compressed control GPS category");
+        rc |= expect_has_substr(g_datacall_gps, "41.500000", "compressed control GPS payload");
+    }
+
+    // Case 11: compressed UDP guards short/null PDUs without emitting datacalls.
     {
         reset_spies();
         dmr_udp_comp_pdu(&opts, &st, 4, pkt);
@@ -616,7 +689,7 @@ main(void) {
         }
     }
 
-    // Case 10: generic short data emits source/target datacall metadata without requiring LOCN parsing.
+    // Case 12: generic short data emits source/target datacall metadata without requiring LOCN parsing.
     {
         reset_spies();
         const uint8_t text[] = {'H', 'E', 'L', 'L', 'O'};
@@ -633,7 +706,7 @@ main(void) {
         rc |= expect_has_substr(g_datacall_text, "Short Data SRC: 1234; TGT: 5678;", "short data summary");
     }
 
-    // Case 11: UDP application service ports update GPS/event summaries by service kind.
+    // Case 13: UDP application service ports classify either endpoint by service kind.
     {
         const struct {
             const char* tag;
@@ -657,10 +730,18 @@ main(void) {
             decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
             rc |= expect_has_substr(st.dmr_lrrp_gps[0], cases[i].tag, "udp service label");
             rc |= expect_category(g_datacall_category, cases[i].category, "udp service category");
+
+            reset_spies();
+            plen = build_ipv4_udp_payload(pkt, sizeof pkt, 65000U, NULL, 0U);
+            pkt[20] = (uint8_t)(cases[i].port >> 8);
+            pkt[21] = (uint8_t)(cases[i].port & 0xFFU);
+            st.dmr_lrrp_gps[0][0] = '\0';
+            decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+            rc |= expect_category(g_datacall_category, cases[i].category, "udp source service category");
         }
     }
 
-    // Case 12: UDP/4007 TMS acknowledgment and UTF-16 text take distinct state paths.
+    // Case 14: UDP/4007 TMS acknowledgment and UTF-16 text take distinct state paths.
     {
         reset_spies();
         const uint8_t ack_payload[] = {0x00, 0x05, 0x01, 0x00, 0x00};
@@ -680,7 +761,7 @@ main(void) {
         rc |= expect_has_substr(st.event_history_s[0].Event_History_Items[0].text_message, "OK", "tms text payload");
     }
 
-    // Case 13: unknown UDP and truncated UDP headers emit bounded datacall summaries.
+    // Case 15: unknown UDP and truncated UDP headers emit bounded datacall summaries.
     {
         reset_spies();
         size_t plen = build_ipv4_udp_payload(pkt, sizeof pkt, 65000U, NULL, 0U);
@@ -701,7 +782,7 @@ main(void) {
         }
     }
 
-    // Case 14: ICMP destination-unreachable with an attached IPv4 message recursively decodes the attachment.
+    // Case 16: ICMP destination-unreachable with an attached IPv4 message recursively decodes the attachment.
     {
         reset_spies();
         size_t plen = build_ipv4_icmp_attached_udp_service(pkt, sizeof pkt, 4008U);
@@ -715,7 +796,7 @@ main(void) {
         }
     }
 
-    // Case 15: malformed TMS address length is bounded and reported as truncated.
+    // Case 17: malformed TMS address length is bounded and reported as truncated.
     {
         reset_spies();
         const uint8_t malformed_addr_payload[] = {0x00, 0x08, 0x00, 0x04, 0x00};

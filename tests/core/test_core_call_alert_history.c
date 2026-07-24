@@ -664,6 +664,22 @@ test_data_notice_with_gps_owns_payload_without_consuming_active_row(void) {
     rc |= expect_int("explicit GPS preserves active PDU", current->pdu[0], 0xAB);
     rc |= expect_str_eq("explicit GPS preserves active text", current->text_message, "active call text");
     rc |= expect_str_eq("explicit GPS preserves active GPS", current->gps_s, "active call GPS");
+
+    reset_fixture(&opts, &state, event_history);
+    active = &event_history[0].Event_History_Items[0];
+    active->pdu[0] = 0xCDU;
+    DSD_SNPRINTF(active->text_message, sizeof(active->text_message), "%s", "control-active text");
+    assert(dsd_event_emit_data_notice_classified_with_gps(&opts, &state, 0U, &observation, DSD_EVENT_CATEGORY_CONTROL,
+                                                          "Control GPS;", "42.000000 -88.000000")
+           == 0);
+
+    committed = &event_history[0].Event_History_Items[1];
+    current = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("classified GPS event category", committed->category, DSD_EVENT_CATEGORY_CONTROL);
+    rc |= expect_str_eq("classified GPS event payload", committed->gps_s, "42.000000 -88.000000");
+    rc |= expect_int("classified GPS event does not inherit active PDU", committed->pdu[0], 0);
+    rc |= expect_int("classified GPS preserves active PDU", current->pdu[0], 0xCD);
+    rc |= expect_str_eq("classified GPS preserves active text", current->text_message, "control-active text");
     return rc;
 }
 
