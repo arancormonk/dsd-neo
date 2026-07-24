@@ -597,6 +597,9 @@ dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, 
     if (encR != 0) {
         return 0;
     }
+    if (opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_mono_slot == 1) {
+        return 1;
+    }
     if (opts->slot1_on == 0 && opts->slot2_on == 1) {
         return 1;
     }
@@ -613,6 +616,9 @@ static int
 dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL) {
     if (encL != 0) {
         return 0;
+    }
+    if (opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_mono_slot != 1) {
+        return 1;
     }
     if (opts->slot1_on == 1 && opts->slot2_on == 0) {
         return 1;

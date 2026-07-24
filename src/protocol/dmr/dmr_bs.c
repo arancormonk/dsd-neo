@@ -920,6 +920,8 @@ dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
         goto END;
     }
 
+    dmr_sm_emit_voice_sync(opts, state, ctx.internalslot);
+
     read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr2, 90, 18, 18, NULL);
     read_dmr_bs_ambe_segment_stream(opts, state, ctx.ambe_fr3, 108, 36, 0, NULL);
 

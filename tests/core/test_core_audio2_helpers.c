@@ -705,6 +705,37 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, 0, 0);
     rc |= expect_int("ss3 slot1 only copies left to right", state.s_r4[0][1], 55);
 
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    opts.dmr_mono = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmrburstL = 16;
+    state.dmrburstR = 16;
+    state.dmr_mono_slot = 1;
+    state.s_l4[0][0] = 11;
+    state.s_r4[0][0] = 77;
+    encL = 0;
+    encR = 0;
+    dsd_dmr_apply_mono_slot_gate(&opts, &state, &encL, &encR);
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, encL, encR);
+    rc |= expect_int("ss3 mono slot2 duplicates right to left with dual voice", state.s_l4[0][0], 77);
+    rc |= expect_int("ss3 mono slot2 preserves right with dual voice", state.s_r4[0][0], 77);
+
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    state.dmr_mono_slot = 0;
+    state.s_l4[0][0] = 88;
+    state.s_r4[0][0] = 22;
+    encL = 0;
+    encR = 0;
+    dsd_dmr_apply_mono_slot_gate(&opts, &state, &encL, &encR);
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, encL, encR);
+    rc |= expect_int("ss3 mono slot1 preserves left with dual voice", state.s_l4[0][0], 88);
+    rc |= expect_int("ss3 mono slot1 duplicates left to right with dual voice", state.s_r4[0][0], 88);
+
     return rc;
 }
 
