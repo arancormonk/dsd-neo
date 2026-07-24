@@ -37,6 +37,7 @@ static unsigned int g_datacall_calls;
 static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
 static uint8_t g_datacall_slot;
+static dsd_event_category g_datacall_category;
 static char g_datacall_text[512];
 static char g_datacall_gps[256];
 
@@ -47,6 +48,7 @@ reset_spies(void) {
     g_datacall_src = 0;
     g_datacall_dst = 0;
     g_datacall_slot = 0;
+    g_datacall_category = DSD_EVENT_CATEGORY_UNKNOWN;
     DSD_MEMSET(g_datacall_text, 0, sizeof(g_datacall_text));
     DSD_MEMSET(g_datacall_gps, 0, sizeof(g_datacall_gps));
 }
@@ -83,16 +85,24 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
 }
 
 int
-dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
-                           const char* notice) {
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
     (void)opts;
     (void)state;
     g_datacall_calls++;
     g_datacall_src = observation->ota_source_id;
     g_datacall_dst = observation->ota_target_id;
     g_datacall_slot = slot;
+    g_datacall_category = category;
     DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
     return 0;
+}
+
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_classified(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 int
@@ -130,6 +140,15 @@ static int
 expect_nonempty(const char* buf, const char* tag) {
     if (!buf || buf[0] == '\0') {
         DSD_FPRINTF(stderr, "%s: empty output\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_category(dsd_event_category got, dsd_event_category want, const char* tag) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: category got %d want %d\n", tag, (int)got, (int)want);
         return 1;
     }
     return 0;
@@ -481,6 +500,7 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_nonempty(st.dmr_lrrp_gps[0], "ihl=5 decoded");
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], " km/h 90", "ihl=5 has speed+heading");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "udp4001 LRRP category");
     }
 
     // Case 2: IPv4 options present (IHL=6). Decoder must honor IHL to locate UDP.
@@ -491,6 +511,7 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_nonempty(st.dmr_lrrp_gps[0], "ihl=6 decoded");
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], " km/h 90", "ihl=6 has speed+heading");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "udp4001 options category");
     }
 
     // Case 3: Vertex TMS on UDP/5007 should not trim valid text when data_block_poc is non-zero.
@@ -512,6 +533,17 @@ main(void) {
         st.dmr_lrrp_gps[0][0] = '\0';
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "P25 Atlas SRC(IP): 1.2.3.4; DST(IP): 5.6.7.8;", "atlas9361 label");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_CONTROL, "atlas9361 category");
+    }
+
+    // Shared P25 Tier 2 location service remains packet data.
+    {
+        reset_spies();
+        size_t plen = build_ipv4_udp_empty_payload(pkt, sizeof pkt, 49198);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "P25 Tier 2 LOCN SRC(IP):", "location49198 label");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "location49198 category");
     }
 
     // Case 5: Short/empty UDP TMS payload should be reported as truncated, not indexed past the payload.
@@ -604,11 +636,14 @@ main(void) {
     // Case 11: UDP application service ports update GPS/event summaries by service kind.
     {
         const struct {
-            uint16_t port;
             const char* tag;
+            uint16_t port;
+            dsd_event_category category;
         } cases[] = {
-            {4005U, "ARS SRC:"},        {4008U, "Telemetry SRC:"}, {4009U, "OTAP SRC:"},
-            {4012U, "Batt. Man. SRC:"}, {4013U, "JTS SRC:"},       {4069U, "SCADA SRC:"},
+            {"XCMP SRC:", 4004U, DSD_EVENT_CATEGORY_CONTROL},    {"ARS SRC:", 4005U, DSD_EVENT_CATEGORY_CONTROL},
+            {"Telemetry SRC:", 4008U, DSD_EVENT_CATEGORY_DATA},  {"OTAP SRC:", 4009U, DSD_EVENT_CATEGORY_CONTROL},
+            {"Batt. Man. SRC:", 4012U, DSD_EVENT_CATEGORY_DATA}, {"JTS SRC:", 4013U, DSD_EVENT_CATEGORY_DATA},
+            {"SCADA SRC:", 4069U, DSD_EVENT_CATEGORY_DATA},
         };
 
         const uint8_t ars_payload[] = {'A', 'R', 'S', 0};
@@ -621,6 +656,7 @@ main(void) {
             st.dmr_lrrp_gps[0][0] = '\0';
             decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
             rc |= expect_has_substr(st.dmr_lrrp_gps[0], cases[i].tag, "udp service label");
+            rc |= expect_category(g_datacall_category, cases[i].category, "udp service category");
         }
     }
 

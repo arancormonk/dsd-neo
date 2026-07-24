@@ -647,7 +647,7 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
                          dst24);
             dsd_event_history_transaction_begin(state, &transaction);
             dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0],
-                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
+                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_CONTROL);
             dsd_event_history_mark_dirty(&state->event_history_s[slot]);
             dsd_event_history_transaction_end(&transaction);
             return 1;
@@ -829,6 +829,21 @@ decode_ip_pdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t p
     DSD_FPRINTF(stderr, "Unknown IP Protocol: %02X;", prot);
 }
 
+static dsd_event_category
+decode_ip_pdu_event_category(uint8_t protocol, uint16_t dst_port) {
+    if (protocol != 0x11U) {
+        return DSD_EVENT_CATEGORY_DATA;
+    }
+
+    switch (dst_port) {
+        case 4004U:
+        case 4005U:
+        case 4009U:
+        case 9361U: return DSD_EVENT_CATEGORY_CONTROL;
+        default: return DSD_EVENT_CATEGORY_DATA;
+    }
+}
+
 //IP PDU header decode and port forward to appropriate decoder
 int
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
@@ -890,7 +905,9 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     decode_ip_pdu_dispatch(opts, state, slot, prot, src24, dst24, effective_len, ip_header_len, input);
 
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, src24, dst24);
-    return dsd_event_emit_data_notice(opts, state, slot, &observation, state->dmr_lrrp_gps[slot]) == 0;
+    const dsd_event_category category = decode_ip_pdu_event_category(prot, dst_port);
+    return dsd_event_emit_data_notice_classified(opts, state, slot, &observation, category, state->dmr_lrrp_gps[slot])
+           == 0;
 }
 
 typedef struct {

@@ -44,21 +44,31 @@ static int g_datacall_count;
 static int g_history_count;
 static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
+static dsd_event_category g_datacall_category;
 static char g_datacall_text[256];
 
 // Stubs required by linked decoder units
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
-                           const char* notice) {
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
     (void)opts;
     (void)state;
     (void)slot;
     g_datacall_count++;
     g_datacall_src = observation->ota_source_id;
     g_datacall_dst = observation->ota_target_id;
+    g_datacall_category = category;
     DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
     return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_classified(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 void
@@ -553,6 +563,10 @@ main(void) {
     // Expect aux_sap=32 (RegAuth) after ES header
     if (sap != 32) {
         DSD_FPRINTF(stderr, "expected SAP 32 after ES header, got %d\n", sap);
+        rc = 1;
+    }
+    if (g_datacall_category != DSD_EVENT_CATEGORY_CONTROL) {
+        DSD_FPRINTF(stderr, "expected SAP 32 control category, got %d\n", (int)g_datacall_category);
         rc = 1;
     }
     (void)remove(cap.path);

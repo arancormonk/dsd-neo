@@ -795,6 +795,30 @@ typedef struct {
     int data_notice_emitted;
 } P25PduDecodeStatus;
 
+static dsd_event_category
+p25_pdu_event_category(uint8_t fmt, uint8_t sap) {
+    if (fmt == 3U) {
+        return DSD_EVENT_CATEGORY_DATA;
+    }
+
+    switch (sap) {
+        case 3U:
+        case 6U:
+        case 29U:
+        case 32U:
+        case 33U:
+        case 34U:
+        case 37U:
+        case 38U:
+        case 39U:
+        case 40U:
+        case 41U:
+        case 61U:
+        case 63U: return DSD_EVENT_CATEGORY_CONTROL;
+        default: return DSD_EVENT_CATEGORY_DATA;
+    }
+}
+
 static P25PduDataFields
 p25_read_pdu_data_fields(const uint8_t* input) {
     P25PduDataFields pdu;
@@ -1018,6 +1042,7 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     if (!status.data_notice_emitted) {
         const dsd_call_observation observation =
             dsd_call_observation_data(state->lastsynctype, 0U, pdu.source_id, pdu.target_id);
-        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, state->dmr_lrrp_gps[0]);
+        (void)dsd_event_emit_data_notice_classified(opts, state, 0U, &observation,
+                                                    p25_pdu_event_category(pdu.fmt, pdu.sap), state->dmr_lrrp_gps[0]);
     }
 }

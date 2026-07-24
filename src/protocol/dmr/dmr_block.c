@@ -1228,6 +1228,11 @@ dmr_block_type1_print_mnis_type(uint8_t mnis_type) {
     }
 }
 
+static dsd_event_category
+dmr_block_type1_mnis_event_category(uint8_t mnis_type) {
+    return (mnis_type == 0x33U || mnis_type == 0x88U) ? DSD_EVENT_CATEGORY_CONTROL : DSD_EVENT_CATEGORY_DATA;
+}
+
 static void
 dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, int offset,
                                     uint32_t msrc, uint32_t mdst) {
@@ -1256,13 +1261,15 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         const dsd_call_observation observation = dsd_call_observation_data(
             ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
             (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
-        (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation, mnis_str);
+        (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
+                                                    dmr_block_type1_mnis_event_category(mnis_type), mnis_str);
     } else if (mnis_type == 0x11 || mnis_type == 0x01) {
         const dsd_call_observation observation = dsd_call_observation_data(
             ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
             (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
-        (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, ctx->slot, &observation,
-                                         ctx->state->dmr_lrrp_gps[ctx->slot]);
+        (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
+                                                    dmr_block_type1_mnis_event_category(mnis_type),
+                                                    ctx->state->dmr_lrrp_gps[ctx->slot]);
     }
 }
 

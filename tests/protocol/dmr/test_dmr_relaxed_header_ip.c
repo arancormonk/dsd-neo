@@ -50,6 +50,7 @@ static unsigned int g_datacall_calls;
 static uint32_t g_datacall_last_src;
 static uint32_t g_datacall_last_dst;
 static uint8_t g_datacall_last_slot;
+static dsd_event_category g_datacall_last_category;
 static char g_datacall_last_text[256];
 static char g_datacall_last_gps[256];
 static unsigned int g_lip_calls;
@@ -97,16 +98,24 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 int
-dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
-                           const char* notice) {
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
     (void)opts;
     (void)state;
     g_datacall_calls++;
     g_datacall_last_src = observation->ota_source_id;
     g_datacall_last_dst = observation->ota_target_id;
     g_datacall_last_slot = slot;
+    g_datacall_last_category = category;
     DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", notice ? notice : "");
     return 0;
+}
+
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_classified(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA, notice);
 }
 
 int
@@ -502,6 +511,7 @@ reset_datacall_spy(void) {
     g_datacall_last_src = 0;
     g_datacall_last_dst = 0;
     g_datacall_last_slot = 0;
+    g_datacall_last_category = DSD_EVENT_CATEGORY_UNKNOWN;
     DSD_MEMSET(g_datacall_last_text, 0, sizeof(g_datacall_last_text));
     DSD_MEMSET(g_datacall_last_gps, 0, sizeof(g_datacall_last_gps));
     g_lip_calls = 0;
@@ -756,10 +766,13 @@ static void
 run_type1_pdu_for_sap(uint8_t sap, const uint8_t block[12]) {
     static dsd_opts opts;
     static dsd_state state;
+    static Event_History_I history[2];
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
 
     opts.aggressive_framesync = 1;
+    state.event_history_s = history;
     state.currentslot = 0;
     state.data_header_valid[0] = 1;
     state.data_header_blocks[0] = 1;
@@ -771,6 +784,29 @@ run_type1_pdu_for_sap(uint8_t sap, const uint8_t block[12]) {
     uint8_t mutable_block[12];
     DSD_MEMCPY(mutable_block, block, sizeof(mutable_block));
     dmr_block_assembler(&opts, &state, mutable_block, (uint8_t)sizeof(mutable_block), 0, 1);
+}
+
+static void
+test_type1_mnis_classifies_decoded_service(void) {
+    static const struct {
+        uint8_t mnis_type;
+        dsd_event_category category;
+    } cases[] = {
+        {0x01U, DSD_EVENT_CATEGORY_DATA},
+        {0x11U, DSD_EVENT_CATEGORY_DATA},
+        {0x33U, DSD_EVENT_CATEGORY_CONTROL},
+        {0x88U, DSD_EVENT_CATEGORY_CONTROL},
+    };
+
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        uint8_t block[12] = {0};
+        block[1] = 0x10U;
+        block[4] = cases[i].mnis_type;
+        append_type1_crc32(block, sizeof(block));
+        run_type1_pdu_for_sap(1U, block);
+        assert(g_datacall_calls == 1U);
+        assert(g_datacall_last_category == cases[i].category);
+    }
 }
 
 static void
@@ -1133,6 +1169,7 @@ main(int argc, char** argv) {
     test_udt_binary_addressing_reserved_and_slot1_paths();
     test_crc_valid_type1_pdu_dispatches_in_strict_mode();
     test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps();
+    test_type1_mnis_classifies_decoded_service();
     test_type1_encrypted_notice_reports_missing_key();
     test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
