@@ -311,11 +311,10 @@ template <int TapsLen>
 static inline ComplexIq
 hb_complex_fixed_accumulate_scalar(const HbComplexBoundary& source, const float* taps, int n) {
     constexpr int center = (TapsLen - 1) >> 1;
-    constexpr int side_count = (center + 1) >> 1;
     const int center_rel = n << 1;
     const ComplexIq center_sample = {source.in[center_rel << 1], source.in[(center_rel << 1) + 1]};
     ComplexIq acc = {taps[center] * center_sample.i, taps[center] * center_sample.q};
-    HbComplexFixedScalarSide<0, side_count>::apply(source, taps, center_rel, acc.i, acc.q);
+    HbComplexFixedScalarSide<0, (TapsLen + 1) / 4>::apply(source, taps, center_rel, acc.i, acc.q);
     return acc;
 }
 
@@ -352,7 +351,6 @@ hb_complex_decim2_fixed(const float* in, int ch_len, float* out, const float* hi
                         const float* taps, float last_i, float last_q) {
     static_assert(TapsLen == 15 || TapsLen == 31, "fixed half-band kernel supports 15 or 31 taps");
     constexpr int center = (TapsLen - 1) >> 1;
-    constexpr int side_count = (center + 1) >> 1;
     const int out_ch_len = ch_len >> 1;
     const HbComplexBoundary source = {in, ch_len, hist_i, hist_q, TapsLen - 1, last_i, last_q};
 
@@ -376,7 +374,7 @@ hb_complex_decim2_fixed(const float* in, int ch_len, float* out, const float* hi
         __m256 acc0 = _mm256_fmadd_ps(center_tap, load_iq_stride2_4(center_base), _mm256_setzero_ps());
         __m256 acc1 = _mm256_fmadd_ps(center_tap, load_iq_stride2_4(center_base + 16), _mm256_setzero_ps());
 
-        HbComplexFixedVectorSide<0, side_count>::apply(center_base, taps, acc0, acc1);
+        HbComplexFixedVectorSide<0, (TapsLen + 1) / 4>::apply(center_base, taps, acc0, acc1);
         _mm256_storeu_ps(out + (n << 1), acc0);
         _mm256_storeu_ps(out + ((n + 4) << 1), acc1);
     }
