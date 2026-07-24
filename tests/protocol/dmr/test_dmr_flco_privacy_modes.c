@@ -448,10 +448,9 @@ test_single_slot_flco_forces_slot_one_context(void) {
 
     assert(irr == 0U);
     assert(state.currentslot == 0);
-    assert(state.lasttg == 1001U);
-    assert(state.lastsrc == 2002U);
-    assert(state.lasttgR == 0U);
-    assert(state.lastsrcR == 0U);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert_no_active_call(&state, 1U);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -472,10 +471,9 @@ test_trunked_mono_bs_fallback_preserves_slot_context(void) {
 
     assert(irr == 0U);
     assert(state.currentslot == 1);
-    assert(state.lasttg == 0U);
-    assert(state.lastsrc == 0U);
-    assert(state.lasttgR == 1001U);
-    assert(state.lastsrcR == 2002U);
+    assert_no_active_call(&state, 0U);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
