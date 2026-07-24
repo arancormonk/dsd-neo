@@ -334,10 +334,15 @@ dmr_forced_privacy_unmute_enabled(const dsd_state* state) {
 DSD_AUDIO2_INTERNAL void
 dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
     const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
+    const int inactive_mono_right = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_stereo == 0;
     int l_is_enc = state->dmr_encL != 0;
     int r_is_enc = state->dmr_encR != 0;
     *encL = (forced_dmr_privacy || !l_is_enc || opts->dmr_mute_encL == 0) ? 0 : 1;
-    *encR = (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) ? 0 : 1;
+    if (inactive_mono_right) {
+        *encR = 1;
+    } else {
+        *encR = (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) ? 0 : 1;
+    }
 }
 
 DSD_AUDIO2_INTERNAL void

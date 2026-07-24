@@ -1195,7 +1195,7 @@ apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state)
     if (cfg->has_mode) {
         (void)dsd_apply_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
     }
-    if (cfg->has_dmr_mono) {
+    if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
         opts->dmr_mono = cfg->dmr_mono ? 1 : 0;
     }
 }

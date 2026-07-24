@@ -565,6 +565,17 @@ test_dmr_slot_mute_and_duplication_helpers(void) {
     rc |= expect_int("forced privacy unmutes left", encL, 0);
     rc |= expect_int("forced privacy keeps right unmuted", encR, 0);
 
+    state.baofeng_ap = 0;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    state.dmr_stereo = 0;
+    state.dmr_encL = 0;
+    state.dmr_encR = 1;
+    opts.dmr_mono = 1;
+    opts.dmr_mute_encR = 0;
+    dsd_dmr_init_slot_mute_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("dmr mono left remains active", encL, 0);
+    rc |= expect_int("dmr mono inactive right ignores key unmute", encR, 1);
+
     float a[320] = {0};
     float b[320] = {0};
     float c[320] = {0};
@@ -923,6 +934,26 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("fs3 resets left block", state.f_l4[0][0], 0.0f);
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 2;
+    opts.dmr_mono = 1;
+    opts.dmr_mute_encR = 0;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    state.dmr_encL = 0;
+    state.dmr_encR = 1;
+    state.f_l4[0][0] = 0.25f;
+    state.f_l4[1][0] = 0.5f;
+    state.f_l4[2][0] = -0.25f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS3(&opts, &state);
+    const float* dmr_mono_stereo = (const float*)g_udp_blast_data;
+    rc |= expect_int("dmr mono stereo output calls", g_udp_blast_calls, 3);
+    rc |= expect_size("dmr mono stereo output bytes", g_udp_blast_bytes, 320U * sizeof(float));
+    rc |= expect_float("dmr mono stereo left sample", dmr_mono_stereo[0], -0.25f);
+    rc |= expect_float("dmr mono stereo duplicates right sample", dmr_mono_stereo[1], -0.25f);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_mono = 0;
+    opts.dmr_mute_encR = 1;
     state.dmr_encL = 1;
     state.dmr_encR = 1;
     reset_sink_capture();

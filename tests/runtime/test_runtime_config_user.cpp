@@ -1624,6 +1624,41 @@ test_snapshot_roundtrip_dmr_mono_override(void) {
     return rc;
 }
 
+static int
+test_dmr_mono_preset_precedes_false_override(void) {
+    static const char* ini = "version = 1\n\n"
+                             "[mode]\n"
+                             "decode = \"dmr_mono\"\n"
+                             "dmr_mono = false\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "dmr_mono preset conflict config failed to load\n");
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.dmr_stereo = 1;
+    state.dmr_stereo = 1;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (opts.frame_dmr != 1 || opts.dmr_mono != 1 || opts.dmr_stereo != 0 || state.dmr_stereo != 0) {
+        DSD_FPRINTF(stderr, "dmr_mono preset lost to false override: frame=%d mono=%d stereo=%d state_stereo=%d\n",
+                    opts.frame_dmr, opts.dmr_mono, opts.dmr_stereo, state.dmr_stereo);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1649,5 +1684,6 @@ main(void) {
     rc |= test_snapshot_staged_file_rate_uses_requested_rate();
     rc |= test_snapshot_mode_inference_tdma_and_auto();
     rc |= test_snapshot_roundtrip_dmr_mono_override();
+    rc |= test_dmr_mono_preset_precedes_false_override();
     return rc;
 }
