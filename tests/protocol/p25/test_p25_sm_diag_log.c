@@ -278,8 +278,6 @@ main(void) {
     p25_sm_event_t slot1_grant = p25_sm_ev_group_grant((2 << 12) | 11, 0, 3456, 7890, 0);
     p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot0_grant);
     p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot1_grant);
-    slot_state.lasttgR = 3456;
-    slot_state.lastsrcR = 7890;
     slot_state.p25_p2_audio_allowed[1] = 1;
     p25_sm_event_t slot1_active = p25_sm_ev_active(1);
     p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot1_active);

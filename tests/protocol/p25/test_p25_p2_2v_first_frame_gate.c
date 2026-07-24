@@ -10,8 +10,11 @@
  * decoded.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
@@ -51,6 +54,14 @@ void playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state);
 void playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                               const char* detail);
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                             const dsd_call_snapshot* call, const char* detail);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void LFSRP(dsd_state* state);
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -135,6 +146,35 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
+}
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+int
+dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                           const char* detail) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)call;
+    (void)detail;
+    return 0;
+}
+
+int
+dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                         const char* detail) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)call;
+    (void)detail;
+    return 0;
 }
 
 void
@@ -290,10 +330,27 @@ expect_eq(const char* tag, int got, int want) {
     return 0;
 }
 
+static int
+seed_group_call(dsd_state* state, uint8_t slot, uint64_t target) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+}
+
 static void
 reset_state(dsd_opts* opts, dsd_state* st) {
+    dsd_state_ext_free_all(st);
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(st, 0, sizeof *st);
+    st->lastsynctype = DSD_SYNC_P25P2_POS;
+    (void)seed_group_call(st, 0U, 1234);
+    (void)seed_group_call(st, 1U, 5678);
     // Ensure deterministic behavior
     opts->floating_point = 0;
     opts->dmr_mute_encL = 1;
@@ -571,7 +628,7 @@ main(void) {
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     st.p25_p2_audio_allowed[0] = 1;
     st.dmr_so = 0x40;
-    st.lasttg = 1234;
+    rc |= expect_eq("slot0 encrypted follow seed call", seed_group_call(&st, 0U, 1234), 1);
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "captures");
     reset_mbe_calls();
     process_2V(&opts, &st);
@@ -590,7 +647,7 @@ main(void) {
     st.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     st.p25_p2_audio_allowed[0] = 1;
     st.dmr_so = 0x40;
-    st.lasttg = 1234;
+    rc |= expect_eq("slot0 unresolved unmute seed call", seed_group_call(&st, 0U, 1234), 1);
     reset_mbe_calls();
     process_2V(&opts, &st);
     rc |= expect_eq("slot0 unresolved unmute: mbe calls", g_mbe_calls, 0);
@@ -722,7 +779,7 @@ main(void) {
     opts.trunk_tune_enc_calls = 0;
     opts.trunk_use_allow_list = 1;
     st.currentslot = 0;
-    st.lasttg = 1234;
+    rc |= expect_eq("slot0 policy-muted seed call", seed_group_call(&st, 0U, 1234), 1);
     st.tg_hold = 4321;
     st.p25_p2_audio_allowed[0] = 0;
     st.dmr_so = 0x40;
@@ -832,7 +889,7 @@ main(void) {
     opts.trunk_tune_enc_calls = 0;
     opts.trunk_use_allow_list = 1;
     st.currentslot = 1;
-    st.lasttgR = 5678;
+    rc |= expect_eq("slot1 policy-muted seed call", seed_group_call(&st, 1U, 5678), 1);
     st.tg_hold = 8765;
     st.p25_p2_audio_allowed[1] = 0;
     st.dmr_soR = 0x40;
@@ -859,5 +916,6 @@ main(void) {
     rc |= expect_eq("slot1 clear algid overrides svc: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 clear algid overrides svc: gate open", st.p25_p2_audio_allowed[1], 1);
 
+    dsd_state_ext_free_all(&st);
     return rc;
 }

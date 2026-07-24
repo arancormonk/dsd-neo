@@ -24,6 +24,7 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -362,9 +363,12 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
         DSD_FPRINTF(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
         if (state->event_history_s != NULL) {
+            dsd_event_history_transaction transaction;
+            dsd_event_history_transaction_begin(state, &transaction);
             DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
                          sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", csm_alias);
             dsd_event_history_mark_dirty(&state->event_history_s[0]);
+            dsd_event_history_transaction_end(&transaction);
         }
     } else if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: decode error; ");
@@ -713,7 +717,7 @@ nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const stru
 }
 
 static void
-nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fields* fields) {
+nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
         state->payload_miN = 0;
     }
@@ -721,16 +725,47 @@ nxdn_update_sacch2_identity_state(dsd_state* state, const struct nxdn_sacch2_fie
         return;
     }
 
-    state->gi[0] = 0;
     state->nxdn_last_ran = 7;
-    state->nxdn_last_tg = 777;
-    state->nxdn_last_rid = 777;
-    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "JPN DCR");
-    DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].alias,
-                 sizeof(state->event_history_s[0].Event_History_Items[0].alias), "%s; ", "JPN DCR");
-    dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 777U,
+            .policy_target_id = 777U,
+            .ota_source_id = 777U,
+        };
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+            (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
+        }
+    } else if (fields->sf_mes == 0x1EU && dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+    }
     if (fields->sf_fb) {
         state->payload_miN = 0;
+    }
+}
+
+static void
+nxdn_publish_sacch2_crypto(const dsd_opts* opts, dsd_state* state, uint8_t message_type, uint8_t cipher) {
+    if (!nxdn_dcr_is_sb0_message_type(message_type)) {
+        return;
+    }
+    const int has_key = cipher == 1U && state->R != 0;
+    const dsd_call_crypto_update crypto = {
+        .classification = cipher == 0U   ? DSD_CALL_CRYPTO_CLEAR
+                          : cipher == 1U ? (has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED_PENDING)
+                                         : DSD_CALL_CRYPTO_UNKNOWN,
+        .algid = cipher,
+        .kid = 0U,
+        .mi = state->payload_miN,
+        .audio_permitted = (uint8_t)(cipher == 0U || has_key),
+    };
+    if (dsd_call_state_update_crypto(state, 0U, &crypto) > 0) {
+        dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }
 
@@ -759,6 +794,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
     }
 
     state->dmr_encL = (state->nxdn_cipher_type != 0 && state->R == 0) ? 1 : 0;
+    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher);
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
         DSD_FPRINTF(stderr, "MFID: %02X; ", mfid);
@@ -808,7 +844,7 @@ nxdn_handle_sacch2(const dsd_opts* opts, dsd_state* state, const uint8_t* trelli
     nxdn_print_sacch2_header(state, &fields);
     const uint8_t crc_sf_check = nxdn_update_sacch2_segment_crc(state, &fields);
     nxdn_store_sacch2_frame(state, trellis_buf, &fields);
-    nxdn_update_sacch2_identity_state(state, &fields);
+    nxdn_update_sacch2_identity_state(opts, state, &fields);
     nxdn_print_sacch2_complete_message(opts, state, &fields, crc_sf_check);
     nxdn_print_sacch2_payload(opts, state, &fields, m_data);
     nxdn_reset_sacch2_if_done(state, &fields);
@@ -1176,18 +1212,18 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    //Zero out stale values on DISC or TX_REL only (IDLE messaages occur often on NXDN96 VCH, and randomly on Type-C FACCH1 steals for some reason)
-    if (nxdn_message_type_resets_call(MessageType)) {
+    //End the canonical call on explicit release or disconnect signaling.
+    if (state->NxdnElementsContent.VCallCrcIsGood != 0U && nxdn_message_type_resets_call(MessageType)) {
+        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        }
         nxdn_alias_reset(state);
-        state->nxdn_last_rid = 0;
-        state->nxdn_last_tg = 0;
         state->nxdn_cipher_type = 0; // Force will reactivate it if needed during voice tx
         if (state->keyloader == 1) {
             state->R = 0;
         }
         DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
         DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-        DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "");
     }
 
     if (nxdn_message_type_resets_gain(MessageType)) {

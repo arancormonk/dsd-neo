@@ -5,6 +5,7 @@
 
 /* Verify private-grant allow-list behavior in the P25p1 PDU helper path. */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -40,6 +41,17 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
+}
+
+static int
+recent_activity(dsd_state* state, dsd_recent_activity_entry* entry) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        DSD_MEMSET(entry, 0, sizeof(*entry));
+        return 0;
+    }
+    *entry = recent.entries[0];
+    return entry->notice[0] != '\0';
 }
 
 static void
@@ -353,9 +365,13 @@ main(void) {
     opts.trunk_is_tuned = 0;
     reset_calls();
     (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
-    rc |= expect_true("p1 pdu group emergency state", st.p25_call_emergency[0] == 0);
-    rc |= expect_true("p1 pdu group priority state", st.p25_call_priority[0] == 0);
-    rc |= expect_true("p1 pdu group active channel", strstr(st.active_channel[0], "TG: 4660") != NULL);
+    dsd_recent_activity_entry activity;
+    rc |= expect_true("p1 pdu group activity", recent_activity(&st, &activity));
+    rc |= expect_true("p1 pdu group activity kind", activity.observation.kind == DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_true("p1 pdu group emergency state", activity.observation.emergency == 0U);
+    rc |= expect_true("p1 pdu group priority state", activity.observation.priority == 0U);
+    rc |= expect_true("p1 pdu group activity target", activity.observation.ota_target_id == 0x1234U);
+    rc |= expect_true("p1 pdu group activity notice", strstr(activity.notice, "TG: 4660") != NULL);
 
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x37;
@@ -373,17 +389,27 @@ main(void) {
     opts.trunk_use_allow_list = 0;
     opts.payload = 0;
     opts.trunk_is_tuned = 0;
-    st.lasttg = 0x010203;
     st.synctype = DSD_SYNC_P25P1_POS;
     st.p25_vc_freq[0] = 0;
     st.p25_vc_freq[1] = 0;
+    dsd_call_observation telephone_call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 0x010203U,
+        .policy_target_id = 0x010203U,
+    };
+    rc |= expect_true("seed telephone canonical call",
+                      dsd_call_state_observe(&st, &telephone_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
     reset_calls();
     (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
     rc |= expect_true("p1 pdu telephone nontrunk p1 vc freq", st.p25_vc_freq[0] == 851125000);
     rc |= expect_true("p1 pdu telephone p1 leaves slot 2 freq", st.p25_vc_freq[1] == 0);
     rc |= expect_true("p1 pdu telephone no trunk tune hook",
                       g_group_grant_count == 0 && st.p25_sm_tune_count == before + 1);
-    rc |= expect_true("p1 pdu telephone active channel", strstr(st.active_channel[0], "Active Tele Ch: 100A") != NULL);
+    rc |= expect_true("p1 pdu telephone activity", recent_activity(&st, &activity));
+    rc |= expect_true("p1 pdu telephone activity kind", activity.observation.kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= expect_true("p1 pdu telephone activity notice", strstr(activity.notice, "Active Tele Ch: 100A") != NULL);
 
     rc |= expect_true("policy seed mfid90 sg", seed_policy_group(&st, 0x2222u, "A", "SG-ALLOW") == 0);
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
@@ -406,7 +432,9 @@ main(void) {
     opts.trunk_is_tuned = 0;
     reset_calls();
     (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
-    rc |= expect_true("p1 pdu mfid90 active channel", strstr(st.active_channel[0], "SG: 8738") != NULL);
+    rc |= expect_true("p1 pdu mfid90 activity", recent_activity(&st, &activity));
+    rc |= expect_true("p1 pdu mfid90 activity kind", activity.observation.kind == DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_true("p1 pdu mfid90 activity notice", strstr(activity.notice, "SG: 8738") != NULL);
 
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
     mpdu[0] = 0x17; // inbound ALT MBT ISP
@@ -420,10 +448,10 @@ main(void) {
     opts.trunk_is_tuned = 0;
     reset_calls();
     before = st.p25_sm_tune_count;
-    st.active_channel[0][0] = '\0';
+    (void)dsd_recent_activity_clear_all(&st);
     (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
     rc |= expect_true("inbound ambtc uu no tune", st.p25_sm_tune_count == before);
-    rc |= expect_true("inbound ambtc uu no active grant", strstr(st.active_channel[0], "Active UU") == NULL);
+    rc |= expect_true("inbound ambtc uu no recent grant", !recent_activity(&st, &activity));
     rc |= expect_true("inbound ambtc uu no group callback", g_group_grant_count == 0);
 
     DSD_MEMSET(mpdu, 0, sizeof mpdu);
@@ -447,10 +475,10 @@ main(void) {
     mpdu[17] = 0x22;
     opts.trunk_is_tuned = 0;
     reset_calls();
-    st.active_channel[0][0] = '\0';
+    (void)dsd_recent_activity_clear_all(&st);
     (void)p25_decode_pdu_trunking(&opts, &st, mpdu, sizeof mpdu);
     rc |= expect_true("inbound mfid90 regroup no group callback", g_group_grant_count == 0);
-    rc |= expect_true("inbound mfid90 regroup no active grant", strstr(st.active_channel[0], "MFID90 Ch") == NULL);
+    rc |= expect_true("inbound mfid90 regroup no recent grant", !recent_activity(&st, &activity));
 
     dsd_state_ext_free_all(&st);
 

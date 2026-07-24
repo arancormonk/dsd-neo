@@ -236,10 +236,6 @@ typedef struct {
     unsigned int CCHDataHammingOk[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned char CCHDataCRC[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CCHDataCrcOk[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
-    unsigned char CalledID[8];
-    unsigned int CalledIDOk;
-    unsigned char CallingID[8];
-    unsigned int CallingIDOk;
     unsigned int FrameNumbering[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CommunicationMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int Version[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
@@ -339,14 +335,10 @@ struct dsd_state {
     double rtl_fsk_reacquire_last_sync_m;
     double rtl_fsk_reacquire_gap_start_m;
     double rtl_fsk_reacquire_last_request_m;
-    time_t
-        last_active_time; //time the a 'call grant' was received, used to clear the active_channel strings after x seconds
     time_t last_t3_tune_time;   // last time a DMR T3 grant was received (wall clock)
     double last_t3_tune_time_m; // same as above, monotonic seconds
     // DMR: rate-limit for single-fragment SLCO logging per slot
     time_t slco_sfrag_last[2];
-    unsigned long long int m17_dst;
-    unsigned long long int m17_src;
     //event history itemized per slot
     Event_History_I* event_history_s;
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
@@ -475,11 +467,6 @@ struct dsd_state {
     int carrier;
     char tg[25][16];
     int tgcount;
-    int lasttg;
-    int lasttgR;
-    int lastsrc;
-    int lastsrcR;
-    int8_t gi[2]; //group, or private call, per slot
     uint8_t eh_index;
     uint8_t eh_slot;
     int nac;
@@ -551,11 +538,8 @@ struct dsd_state {
     unsigned int dmr_color_code;
     unsigned int dmr_t3_syscode;
     unsigned int nxdn_last_ran;
-    unsigned int nxdn_last_rid;
-    unsigned int nxdn_last_tg;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
-    char nxdn_call_type[1024];
 
     NxdnElementsContent_t NxdnElementsContent;
 
@@ -631,14 +615,9 @@ struct dsd_state {
     char dmr_embedded_gps[2][600];    //2 slots by 99 char string for string embedded gps
     char dmr_lrrp_gps[2][600];        //2 slots by 99 char string for string lrrp gps
     char dmr_site_parms[200];         //string for site/net info depending on type of DMR system (TIII or Con+)
-    char call_string[2][200];         //string for call information
-    char active_channel[31][200];     //string for storing and displaying active trunking channels
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
-    // Source unit ID that last populated generic_talker_alias per slot
-    // Used to suppress stale alias across protocol/call transitions
-    uint32_t generic_talker_alias_src[2];
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
 
@@ -651,9 +630,6 @@ struct dsd_state {
     HPFilter HRCFilterL;
     LPFilter RCFilterR;
     HPFilter HRCFilterR;
-
-    char dpmr_caller_id[20];
-    char dpmr_target_id[20];
 
     int dpmr_color_code;
 
@@ -698,6 +674,8 @@ struct dsd_state {
     dsd_p25_crypto_state p25_crypto_state[2];
     // Retained Phase 1 carrier requires the next transmission's LCW identity before media or lockout.
     int p25_p1_identity_pending;
+    // Canonical anonymous epoch opened for the retained-carrier transmission awaiting identity.
+    int p25_p1_identity_epoch_started;
     // Definitive Phase 1 HDU crypto arrived after the last authoritative LCW identity.
     int p25_p1_hdu_crypto_fresh;
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
@@ -994,13 +972,6 @@ struct dsd_state {
     p25_apx_alias_rx_state_t p25_apx_alias_rx[2];
     p25_l3h_alias_phase1_state_t p25_l3h_alias_phase1[2];
 
-    // P25 current-call flags (per logical slot; FDMA uses slot 0)
-    uint8_t p25_call_emergency[2];        // 1 if current call is emergency
-    uint8_t p25_call_priority[2];         // 0..7 call priority (0 if unknown)
-    uint8_t p25_call_is_packet[2];        // 1 if call/service marked as packet (data), else 0
-    uint8_t p25_service_options_valid[2]; // 1 when dmr_so/dmr_soR hold fresh P25 service options
-    uint32_t p25_policy_tg[2];            // matched policy TG for patched SG calls; 0 means use OTA TG
-
     //experimental symbol file capture read throttle
     int use_throttle;                        //only use throttle if set to 1
     uint64_t symbol_replay_next_deadline_ns; //0 when uninitialized
@@ -1020,19 +991,17 @@ struct dsd_state {
     unsigned short esk_mask;
     uint32_t edacs_sys_id;
     uint32_t edacs_area_code;
-    int edacs_lcn_count;    //running tally of lcn's observed on edacs system
-    int edacs_cc_lcn;       //current lcn for the edacs control channel
-    int edacs_vc_lcn;       //current lcn for any active vc (not the one we are tuned/tuning to)
-    int edacs_tuned_lcn;    //the vc we are currently tuned to...above variable is for updating all in the matrix
-    int edacs_vc_call_type; //the type of call on the given VC - see defines below
-    int edacs_a_bits;       //  Agency Significant Bits
-    int edacs_f_bits;       //   Fleet Significant Bits
-    int edacs_s_bits;       //Subfleet Significant Bits
-    int edacs_a_shift;      //Calculated Shift for A Bits
-    int edacs_f_shift;      //Calculated Shift for F Bits
-    int edacs_a_mask;       //Calculated Mask for A Bits
-    int edacs_f_mask;       //Calculated Mask for F Bits
-    int edacs_s_mask;       //Calculated Mask for S Bits
+    int edacs_lcn_count; //running tally of lcn's observed on edacs system
+    int edacs_cc_lcn;    //current lcn for the edacs control channel
+    int edacs_tuned_lcn; //the vc we are currently tuned to...above variable is for updating all in the matrix
+    int edacs_a_bits;    //  Agency Significant Bits
+    int edacs_f_bits;    //   Fleet Significant Bits
+    int edacs_s_bits;    //Subfleet Significant Bits
+    int edacs_a_shift;   //Calculated Shift for A Bits
+    int edacs_f_shift;   //Calculated Shift for F Bits
+    int edacs_a_mask;    //Calculated Mask for A Bits
+    int edacs_f_mask;    //Calculated Mask for F Bits
+    int edacs_s_mask;    //Calculated Mask for S Bits
 
     //trunking lcn freq list
     int lcn_freq_count;
@@ -1079,9 +1048,6 @@ struct dsd_state {
     char dmr_branding[20];
     char dmr_branding_sub[80];
 
-    //Remus DMR End Call Alert Beep
-    int dmr_end_alert[2]; //dmr TLC end call alert beep has already played once flag
-
     //Bitmap Filtering Options
     int audio_smoothing;
 
@@ -1089,10 +1055,6 @@ struct dsd_state {
     uint8_t ysf_dt; //data type -- VD1, VD2, Full Rate, etc.
     uint8_t ysf_fi; //frame information -- HC, CC, TC
     uint8_t ysf_cm; //group or private call
-    char ysf_tgt[11];
-    char ysf_src[11];
-    char ysf_upl[11];
-    char ysf_dnl[11];
     char ysf_rm1[6];
     char ysf_rm2[6];
     char ysf_rm3[6];
@@ -1100,10 +1062,6 @@ struct dsd_state {
     char ysf_txt[21][21]; //text storage blocks
 
     //DSTAR Call Strings and Info
-    char dstar_rpt1[9];
-    char dstar_rpt2[9];
-    char dstar_dst[9];
-    char dstar_src[13];
     char dstar_txt[60];
     char dstar_gps[60];
 
@@ -1131,12 +1089,6 @@ struct dsd_state {
     int m17_can_en;  //can value supplied to the encoding side
     int m17_rate;    //sampling rate for audio input
     int m17_vox;     //vox enabled via PWR value
-
-    char m17_dst_csd[20];
-    char m17_src_csd[20];
-
-    char m17_src_str[50];
-    char m17_dst_str[50];
 
     uint8_t m17_meta[16]; //packed meta
     uint8_t m17_text_meta_control_or;

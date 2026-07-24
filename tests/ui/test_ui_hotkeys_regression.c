@@ -12,8 +12,11 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/ui/keymap.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,6 +40,23 @@ typedef struct {
     uint8_t data[32];
     int calls;
 } UiPostCapture;
+
+static void
+seed_voice_call_ids(dsd_state* state, uint8_t slot, int protocol, uint64_t target, uint64_t source) {
+    dsd_call_observation observation = {0};
+    observation.protocol = protocol;
+    observation.slot = slot;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = target;
+    observation.policy_target_id = target;
+    observation.ota_source_id = source;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
+static void
+seed_voice_call(dsd_state* state, uint8_t slot, int protocol, uint64_t target) {
+    seed_voice_call_ids(state, slot, protocol, target, 0U);
+}
 
 static UiPostCapture g_cap;
 static int g_redraw_calls = 0;
@@ -255,7 +275,7 @@ main(void) {
     /* 'k' should set hold from slot-1 TG when no hold is active. */
     cap_reset();
     state->tg_hold = 0;
-    state->lasttg = 1001;
+    seed_voice_call(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, 1001);
     opts->frame_nxdn48 = 0;
     opts->frame_nxdn96 = 0;
     opts->frame_provoice = 0;
@@ -268,7 +288,7 @@ main(void) {
     /* 'k' should clear hold (post 0) when hold is already active. */
     cap_reset();
     state->tg_hold = 4242;
-    state->lasttg = 9999;
+    seed_voice_call(state, 0, DSD_SYNC_DMR_BS_VOICE_POS, 9999);
     assert(dsd_terminal_handle_input(opts, state, DSD_KEY_TG_HOLD1) == 1);
     assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 0U);
@@ -276,7 +296,7 @@ main(void) {
     /* 'l' should set hold from slot-2 TG when no hold is active. */
     cap_reset();
     state->tg_hold = 0;
-    state->lasttgR = 2002;
+    seed_voice_call(state, 1, DSD_SYNC_DMR_BS_VOICE_POS, 2002);
     assert(dsd_terminal_handle_input(opts, state, DSD_KEY_TG_HOLD2) == 1);
     assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 2002U);
@@ -284,8 +304,7 @@ main(void) {
     /* NXDN fallback path for slot-1 hold when DMR/P25 TG is absent. */
     cap_reset();
     state->tg_hold = 0;
-    state->lasttg = 0;
-    state->nxdn_last_tg = 3003;
+    seed_voice_call(state, 0, DSD_SYNC_NXDN_POS, 3003);
     opts->frame_nxdn48 = 1;
     opts->frame_nxdn96 = 0;
     opts->frame_provoice = 0;
@@ -293,11 +312,10 @@ main(void) {
     assert(g_cap.id == DSD_APP_CMD_TG_HOLD_SET);
     assert(cap_u32() == 3003U);
 
-    /* ProVoice fallback path for slot-2 hold when TG is absent. */
+    /* Standard-addressing ProVoice falls back to the source LID when no target is published. */
     cap_reset();
     state->tg_hold = 0;
-    state->lasttgR = 0;
-    state->lastsrcR = 4004;
+    seed_voice_call_ids(state, 1, DSD_SYNC_PROVOICE_POS, 0U, 4004U);
     state->ea_mode = 0;
     opts->frame_nxdn48 = 0;
     opts->frame_nxdn96 = 0;
@@ -370,6 +388,7 @@ main(void) {
     assert(g_cap.calls == 0);
 
     printf("UI_HOTKEYS_REGRESSION: OK\n");
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return 0;

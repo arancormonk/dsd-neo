@@ -3,7 +3,9 @@
  * Copyright (C) 2025 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -29,6 +31,9 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
 
     if (state->synctype == DSD_SYNC_M17_EOT_POS || state->synctype == DSD_SYNC_M17_EOT_NEG) {
         skipDibit(opts, state, M17_EOT_REMAINING_DIBITS);
+        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+            dsd_event_sync_slot(opts, state, 0U);
+        }
         DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
         state->m17_pbc_ct = 0;
         state->m17_polarity = 0;

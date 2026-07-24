@@ -5,10 +5,12 @@
  * DMR Tier III trunking state machine - event-driven, tick-based.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -115,7 +117,11 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     ctx->vc_freq_hz = 0;
     ctx->vc_lpcn = 0;
     ctx->vc_tg = 0;
+    ctx->vc_dst = 0;
     ctx->vc_src = 0;
+    ctx->vc_slot = -1;
+    ctx->vc_is_group = 0;
+    ctx->vc_identity_published = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_voice_m = 0.0;
 
@@ -184,7 +190,11 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;
     ctx->vc_tg = ev->tg;
+    ctx->vc_dst = ev->dst;
     ctx->vc_src = ev->src;
+    ctx->vc_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : -1;
+    ctx->vc_is_group = ev->is_group != 0;
+    ctx->vc_identity_published = 0;
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
 
@@ -221,6 +231,29 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int
 
     if (state) {
         state->last_vc_sync_time_m = now_m;
+    }
+
+    if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0
+        && (ctx->vc_slot < 0 || ctx->vc_slot == s)) {
+        int protocol = DSD_SYNC_IS_DMR(state->synctype) ? state->synctype : state->lastsynctype;
+        if (!DSD_SYNC_IS_DMR(protocol)) {
+            protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+        }
+        const uint64_t target = (uint64_t)(ctx->vc_is_group ? ctx->vc_tg : ctx->vc_dst);
+        const dsd_call_observation observation = {
+            .protocol = protocol,
+            .slot = (uint8_t)s,
+            .kind = ctx->vc_is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
+            .ota_target_id = target,
+            .policy_target_id = target,
+            .ota_source_id = (uint64_t)ctx->vc_src,
+            .channel = (uint32_t)ctx->vc_lpcn,
+            .frequency_hz = ctx->vc_freq_hz,
+            .observed_m = now_m,
+        };
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0) {
+            ctx->vc_identity_published = 1;
+        }
     }
 
     sm_log(opts, "voice-sync");
@@ -379,6 +412,7 @@ dmr_sm_init_ctx(dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state)
     }
 
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->vc_slot = -1;
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
@@ -498,13 +532,25 @@ dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot) {
 
 void
 dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src) {
+    dmr_sm_emit_group_grant_slot(opts, state, freq_hz, lpcn, -1, tg, src);
+}
+
+void
+dmr_sm_emit_group_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int tg, int src) {
     dmr_sm_event_t ev = dmr_sm_ev_group_grant(freq_hz, lpcn, tg, src);
+    ev.slot = (slot >= 0 && slot <= 1) ? slot : -1;
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
 }
 
 void
 dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int dst, int src) {
+    dmr_sm_emit_indiv_grant_slot(opts, state, freq_hz, lpcn, -1, dst, src);
+}
+
+void
+dmr_sm_emit_indiv_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int dst, int src) {
     dmr_sm_event_t ev = dmr_sm_ev_indiv_grant(freq_hz, lpcn, dst, src);
+    ev.slot = (slot >= 0 && slot <= 1) ? slot : -1;
     dmr_sm_event(dmr_sm_get_ctx(), opts, state, &ev);
 }
 

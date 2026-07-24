@@ -10,8 +10,10 @@
  * - 7:    unknown
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
@@ -41,6 +43,7 @@ static uint32_t g_watchdog_src;
 static uint32_t g_watchdog_dst;
 static uint8_t g_watchdog_slot;
 static char g_watchdog_data[128];
+static char g_watchdog_gps[256];
 
 // Minimal stubs for direct link with dsd_gps.c
 const char*
@@ -64,16 +67,37 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
     return 1;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
     g_watchdog_calls++;
-    g_watchdog_src = src;
-    g_watchdog_dst = dst;
+    g_watchdog_src = observation->ota_source_id;
+    g_watchdog_dst = observation->ota_target_id;
     g_watchdog_slot = slot;
-    DSD_SNPRINTF(g_watchdog_data, sizeof g_watchdog_data, "%s", data_string ? data_string : "");
+    DSD_SNPRINTF(g_watchdog_data, sizeof g_watchdog_data, "%s", notice ? notice : "");
+    if (state != NULL && state->event_history_s != NULL && slot < DSD_CALL_STATE_SLOT_COUNT) {
+        DSD_SNPRINTF(g_watchdog_gps, sizeof g_watchdog_gps, "%s",
+                     state->event_history_s[slot].Event_History_Items[0].gps_s);
+    }
+    return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    (void)opts;
+    (void)state;
+    g_watchdog_calls++;
+    g_watchdog_src = observation->ota_source_id;
+    g_watchdog_dst = observation->ota_target_id;
+    g_watchdog_slot = slot;
+    DSD_SNPRINTF(g_watchdog_data, sizeof g_watchdog_data, "%s", notice ? notice : "");
+    DSD_SNPRINTF(g_watchdog_gps, sizeof g_watchdog_gps, "%s", gps ? gps : "");
+    return 0;
 }
 
 void
@@ -128,6 +152,22 @@ reset_watchdog_capture(void) {
     g_watchdog_dst = 0;
     g_watchdog_slot = 0xFFU;
     DSD_MEMSET(g_watchdog_data, 0, sizeof g_watchdog_data);
+    DSD_MEMSET(g_watchdog_gps, 0, sizeof g_watchdog_gps);
+}
+
+static void
+seed_active_call(dsd_state* state, uint8_t slot, uint32_t source_id) {
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = source_id,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
 }
 
 static void
@@ -233,6 +273,23 @@ test_packed_nmea_formats(dsd_opts* opts, dsd_state* st) {
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "270", "harris-nmea-heading");
         rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "-87.254167",
                                 "harris-nmea-event-lon");
+
+        DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
+                     sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
+        const uint64_t revision = st->event_history_s[1].revision;
+        nmea_harris(opts, st, bits, 900003U, 2);
+        rc |= expect_i("harris-mismatched-source-preserves-gps",
+                       strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+        rc |= expect_i("harris-mismatched-source-preserves-revision", st->event_history_s[1].revision == revision, 1);
+
+        (void)dsd_call_state_end(st, 1U, 0.0);
+        st->event_history_s[1].Event_History_Items[0].gps_s[0] = '\0';
+        const uint64_t ownerless_revision = st->event_history_s[1].revision;
+        nmea_harris(opts, st, bits, 900003U, 2);
+        rc |= expect_i("ownerless-harris-does-not-stage-gps", st->event_history_s[1].Event_History_Items[0].gps_s[0],
+                       '\0');
+        rc |= expect_i("ownerless-harris-preserves-revision", st->event_history_s[1].revision == ownerless_revision, 1);
+        seed_active_call(st, 1U, 900002U);
     }
 
     return rc;
@@ -273,7 +330,7 @@ test_lip_and_vendor_gps(dsd_opts* opts, dsd_state* st) {
         uint8_t bits[96];
         DSD_MEMSET(bits, 0, sizeof bits);
         st->currentslot = 1;
-        st->lastsrcR = 0x102030;
+        seed_active_call(st, 1U, 0x102030U);
         st->event_history_s[1].Event_History_Items[0].source_id = 0x102030;
         DSD_MEMSET(st->dmr_embedded_gps[1], 0, sizeof st->dmr_embedded_gps[1]);
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
@@ -300,6 +357,7 @@ test_nxdn_gps_report_paths(dsd_opts* opts, dsd_state* st) {
     int rc = 0;
     uint8_t bits[280];
 
+    seed_active_call(st, 0U, 900003U);
     DSD_MEMSET(bits, 0, sizeof bits);
     set_bits_msb(bits, (int)sizeof bits, 16, 2500U, 15);
     set_bits_msb(bits, (int)sizeof bits, 56, 123U, 16);
@@ -329,6 +387,28 @@ test_nxdn_gps_report_paths(dsd_opts* opts, dsd_state* st) {
     rc |= expect_u32("nxdn-source-reset", st->dmr_lrrp_source[0], 0U);
     rc |= expect_u32("nxdn-target-reset", st->dmr_lrrp_target[0], 0U);
 
+    DSD_SNPRINTF(st->event_history_s[0].Event_History_Items[0].gps_s,
+                 sizeof st->event_history_s[0].Event_History_Items[0].gps_s, "%s", "existing call GPS");
+    st->dmr_lrrp_source[0] = 1234U;
+    st->dmr_lrrp_target[0] = 5678U;
+    reset_watchdog_capture();
+    nxdn_gps_report(opts, st, bits, 900004U);
+    rc |= expect_has_substr(g_watchdog_gps, "41.", "mismatched-nxdn-data-event-lat");
+    rc |= expect_has_substr(g_watchdog_gps, "87.", "mismatched-nxdn-data-event-lon");
+    rc |= expect_i("mismatched-nxdn-preserves-active-gps",
+                   strcmp(st->event_history_s[0].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+
+    (void)dsd_call_state_end(st, 0U, 0.0);
+    DSD_MEMSET(st->event_history_s[0].Event_History_Items[0].gps_s, 0,
+               sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
+    st->dmr_lrrp_source[0] = 1234U;
+    st->dmr_lrrp_target[0] = 5678U;
+    reset_watchdog_capture();
+    nxdn_gps_report(opts, st, bits, 900003U);
+    rc |= expect_has_substr(g_watchdog_gps, "41.", "standalone-nxdn-data-event-lat");
+    rc |= expect_has_substr(g_watchdog_gps, "87.", "standalone-nxdn-data-event-lon");
+    rc |= expect_i("standalone-nxdn-does-not-stage-gps", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
+
     DSD_MEMSET(bits, 0, sizeof bits);
     set_bits_msb(bits, (int)sizeof bits, 184, 9900U, 16);
     st->dmr_lrrp_source[0] = 4444U;
@@ -355,6 +435,8 @@ main(void) {
     if (!st.event_history_s) {
         return 100;
     }
+    seed_active_call(&st, 0U, 900001U);
+    seed_active_call(&st, 1U, 900002U);
     rc |= test_packed_nmea_formats(&opts, &st);
     rc |= test_lip_and_vendor_gps(&opts, &st);
     rc |= test_nxdn_gps_report_paths(&opts, &st);

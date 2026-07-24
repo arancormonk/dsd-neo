@@ -217,19 +217,11 @@ dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* sta
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
     g_watchdog_history_calls++;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    (void)opts;
-    (void)state;
-    (void)slot;
     g_watchdog_current_calls++;
 }
 

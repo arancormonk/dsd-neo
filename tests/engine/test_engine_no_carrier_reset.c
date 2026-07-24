@@ -3,7 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -272,6 +274,17 @@ main(void) {
         return 1;
     }
 
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P1_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 5001U;
+    observation.policy_target_id = 5001U;
+    observation.ota_source_id = 6001U;
+    observation.observed_m = 1.0;
+    rc |= expect_true("seed canonical call", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+
     // DMR payload and soft-decision history share noCarrier's generic reset path.
     // Seed both buffers with sentinels and move the payload pointer into the
     // dibit buffer to catch regressions that reset through the wrong backing
@@ -310,6 +323,12 @@ main(void) {
     state->data_header_bit_padding[1] = 7U;
 
     noCarrier(opts, state);
+
+    dsd_call_snapshot ended_call;
+    rc |= expect_true("no-carrier retains canonical snapshot", dsd_call_state_get(state, 0U, &ended_call) == 1);
+    rc |= expect_true("no-carrier ends canonical call", ended_call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("no-carrier commits canonical history",
+                      state->event_history_s[0].Event_History_Items[1].target_id == 5001U);
 
     rc |= expect_true("dmr-payload-pointer-buffer", state->dmr_payload_p == state->dmr_payload_buf + 200);
     rc |= expect_true("dmr-payload-pointer-not-dibit", state->dmr_payload_p != state->dibit_buf + 200);
@@ -437,7 +456,17 @@ main(void) {
     state->trunk_vc_freq[0] = 851012500;
     state->trunk_vc_freq[1] = 851012500;
     state->p25_p2_active_slot = 0;
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: stale");
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 7001U;
+    observation.policy_target_id = 7001U;
+    observation.ota_source_id = 8001U;
+    observation.channel = 1U;
+    observation.frequency_hz = 851012500;
+    observation.observed_m = 0.0;
+    rc |= expect_true("p25-no-cc-hangtime-seeds-call",
+                      dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     noCarrier(opts, state);
 
@@ -446,7 +475,9 @@ main(void) {
                                                           && state->trunk_vc_freq[0] == 0
                                                           && state->trunk_vc_freq[1] == 0);
     rc |= expect_true("p25-no-cc-hangtime-clears-active-slot", state->p25_p2_active_slot == -1);
-    rc |= expect_true("p25-no-cc-hangtime-clears-active", state->active_channel[0][0] == '\0');
+    dsd_call_snapshot stale_call = {0};
+    rc |= expect_true("p25-no-cc-hangtime-retains-call-snapshot", dsd_call_state_get(state, 0U, &stale_call) > 0);
+    rc |= expect_true("p25-no-cc-hangtime-ends-active", stale_call.phase == DSD_CALL_PHASE_ENDED);
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {

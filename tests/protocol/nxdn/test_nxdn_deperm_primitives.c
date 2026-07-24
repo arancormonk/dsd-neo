@@ -8,8 +8,10 @@
  * SACCH, FACCH, CAC, FACCH2, and FACCH3 soft-decision paths.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -500,14 +502,37 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-single-copy-cipher-lsb", 1U, state.dmr_pdu_sf[0][1], 1U);
     rc |= expect_int("sacch2-single-payload-seed-clear", (int)state.payload_miN, 0);
     rc |= expect_int("sacch2-single-last-ran", (int)state.nxdn_last_ran, 7);
-    rc |= expect_int("sacch2-single-last-tg", state.nxdn_last_tg, 777);
-    rc |= expect_int("sacch2-single-last-rid", state.nxdn_last_rid, 777);
+    dsd_call_snapshot call;
+    rc |= expect_int("sacch2-single-canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 777);
+    rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 777);
+    rc |= expect_int("sacch2-single-canonical-crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("sacch2-single-canonical-algid", call.algid, 1);
+    rc |= expect_int("sacch2-single-canonical-key", call.kid, 0);
+    rc |= expect_int("sacch2-single-canonical-mi", (int)call.mi, 0);
+    rc |= expect_int("sacch2-single-canonical-audio", call.audio_permitted, 0);
     rc |= expect_str("sacch2-single-alias", state.generic_talker_alias[0], "JPN DCR");
-    rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR; ");
-    rc |= expect_int("sacch2-single-event-revision", (int)histories[0].revision, 1);
+    rc |= expect_int("sacch2-single-event-protocol", histories[0].Event_History_Items[0].systype, DSD_SYNC_NXDN_POS);
+    rc |= expect_int("sacch2-single-event-target", histories[0].Event_History_Items[0].target_id, 777);
+    rc |= expect_int("sacch2-single-event-source", histories[0].Event_History_Items[0].source_id, 777);
+    rc |= expect_int("sacch2-single-event-encrypted", histories[0].Event_History_Items[0].enc, 1);
+    rc |= expect_int("sacch2-single-event-algid", histories[0].Event_History_Items[0].enc_alg, 1);
+    rc |= expect_int("sacch2-single-event-key", histories[0].Event_History_Items[0].enc_key, 0);
+    rc |= expect_int("sacch2-single-event-mi", (int)histories[0].Event_History_Items[0].mi, 0);
+    rc |= expect_str("sacch2-single-event-alias", histories[0].Event_History_Items[0].alias, "JPN DCR");
+    rc |= expect_int("sacch2-single-event-revision", histories[0].revision > 1U, 1);
     rc |= expect_int("sacch2-single-cipher", state.nxdn_cipher_type, 1);
     rc |= expect_int("sacch2-single-enc-lockout", state.dmr_encL, 1);
 
+    const uint64_t call_epoch = call.epoch;
+    make_sacch2_trellis(trellis, 1U, 2U, 0x1EU);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x15U, 0x15U);
+    rc |= expect_u8_at("sacch2-end-message-type", 0U, state.nxdn_dcr_sf_message_type, 0x1EU);
+    rc |= expect_int("sacch2-end-canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("sacch2-end-phase", call.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_int("sacch2-end-preserves-epoch", call.epoch == call_epoch, 1);
+
+    dsd_state_ext_free_all(&state);
     init_sacch2_state(&state, histories);
     DSD_MEMSET(state.nxdn_sacch_frame_segment, 0, sizeof(state.nxdn_sacch_frame_segment));
     DSD_MEMSET(state.nxdn_sacch_frame_segcrc, 0, sizeof(state.nxdn_sacch_frame_segcrc));
@@ -520,8 +545,18 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-complete-message-type", 0U, state.nxdn_dcr_sf_message_type, 0x02U);
     rc |= expect_sacch_reset_to_ones(&state);
     rc |= expect_u8_at("sacch2-complete-clears-pdu", 0U, state.dmr_pdu_sf[0][0], 0U);
-    rc |= expect_str("sacch2-complete-alias", state.generic_talker_alias[0], "JPN DCR");
+    rc |= expect_int("sacch2-pdu-no-call", dsd_call_state_get(&state, 0U, &call), 0);
+    rc |= expect_str("sacch2-pdu-no-alias", state.generic_talker_alias[0], "");
 
+    dsd_state_ext_free_all(&state);
+    init_sacch2_state(&state, histories);
+    make_sacch2_trellis(trellis, 1U, 2U, 0x00U);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x0CU, 0x0CU);
+    rc |= expect_u8_at("sacch2-idle-message-type", 0U, state.nxdn_dcr_sf_message_type, 0x00U);
+    rc |= expect_int("sacch2-idle-no-call", dsd_call_state_get(&state, 0U, &call), 0);
+    rc |= expect_str("sacch2-idle-no-alias", state.generic_talker_alias[0], "");
+
+    dsd_state_ext_free_all(&state);
     init_sacch2_state(&state, histories);
     state.M = 1;
     state.payload_miN = 0x55U;
@@ -531,8 +566,9 @@ test_sacch2_state_update(void) {
     rc |= expect_u8_at("sacch2-bad-crc-message-type", 0U, state.nxdn_dcr_sf_message_type, 0xFFU);
     rc |= expect_u8_at("sacch2-bad-crc-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 1U);
     rc |= expect_int("sacch2-bad-crc-seed-clear", (int)state.payload_miN, 0);
-    rc |= expect_int("sacch2-bad-crc-no-tg", state.nxdn_last_tg, 0);
+    rc |= expect_int("sacch2-bad-crc-no-call", dsd_call_state_get(&state, 0U, &call), 0);
     rc |= expect_str("sacch2-bad-crc-no-alias", state.generic_talker_alias[0], "");
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

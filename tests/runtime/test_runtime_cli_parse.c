@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -3230,9 +3231,14 @@ test_sdrtrunk_json_forced_dmr_algid_uses_talkgroup_key(void) {
         DSD_FPRINTF(stderr, "expected keyloader SDRTrunk JSON reset to clear AES loaded state\n");
         test_rc = 1;
     }
-    if (state->lasttg != 1234U || state->lastsrc != 5678U || state->gi[0] != 1) {
-        DSD_FPRINTF(stderr, "unexpected SDRTrunk JSON call metadata tg=%d src=%d gi=%d\n", state->lasttg,
-                    state->lastsrc, state->gi[0]);
+    dsd_call_snapshot call = {0};
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.kind != DSD_CALL_KIND_PRIVATE_VOICE || call.ota_target_id != 1234U || call.policy_target_id != 1234U
+        || call.ota_source_id != 5678U) {
+        DSD_FPRINTF(stderr,
+                    "unexpected SDRTrunk JSON call metadata phase=%d kind=%d target=%" PRIu64 " policy=%" PRIu64
+                    " source=%" PRIu64 "\n",
+                    (int)call.phase, (int)call.kind, call.ota_target_id, call.policy_target_id, call.ota_source_id);
         test_rc = 1;
     }
 

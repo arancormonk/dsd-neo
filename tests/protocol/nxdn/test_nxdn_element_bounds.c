@@ -7,8 +7,11 @@
  * Regression checks for NXDN element length guards on short payloads.
  */
 
+#include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
@@ -31,9 +34,11 @@
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
+void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 
 static int g_alias_prop_calls;
 static uint8_t g_alias_prop_crc_ok;
+static uint8_t g_message_type_crc_ok;
 static int g_channel_to_frequency_calls;
 static int g_channel_to_frequency_quiet_calls;
 static uint16_t g_channel_to_frequency_channel;
@@ -52,8 +57,8 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     (void)opts;
-    (void)state;
     (void)MessageType;
+    g_message_type_crc_ok = state->NxdnElementsContent.VCallCrcIsGood;
 }
 
 void
@@ -216,15 +221,17 @@ reset_assignment_capture(void) {
     g_mapped_channel_freq = 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    g_datacall_src = src;
-    g_datacall_dst = dst;
+    g_datacall_src = observation->ota_source_id;
+    g_datacall_dst = observation->ota_target_id;
     g_datacall_slot = slot;
-    DSD_SNPRINTF(g_datacall_event, sizeof(g_datacall_event), "%s", data_string ? data_string : "");
+    DSD_SNPRINTF(g_datacall_event, sizeof(g_datacall_event), "%s", notice ? notice : "");
+    return 0;
 }
 
 void
@@ -282,6 +289,12 @@ uint64_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_time_monotonic_ns(void) {
     return 0ULL;
+}
+
+uint64_t
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
 }
 
 dsd_trunk_tune_result
@@ -449,16 +462,6 @@ all_sacch_segments_are(uint8_t value, const dsd_state* state) {
     return 1;
 }
 
-static int
-active_channels_are_zero(const dsd_state* state) {
-    for (size_t i = 0U; i < 31U; i++) {
-        if (state->active_channel[i][0] != '\0') {
-            return 0;
-        }
-    }
-    return 1;
-}
-
 static void
 load_sacch_segments_from_bits(dsd_state* state, const uint8_t* bits) {
     for (size_t frame = 0U; frame < 4U; frame++) {
@@ -513,6 +516,7 @@ test_decode_guards_and_unknown_dispatch(void) {
     rc |= expect_int("unknown-crc-recorded", state->NxdnElementsContent.VCallCrcIsGood, 0);
     rc |= expect_int("unknown-keeps-data-state", state->data_header_valid[0], 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -559,6 +563,7 @@ test_sacch_full_decode_crc_gate_and_reset(void) {
     rc |= expect_int("sacch-good-crc-reset", all_sacch_segments_are(1U, state), 1);
     rc |= expect_int("sacch-recorded-type", state->NxdnElementsContent.MessageType, 0x17);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -580,8 +585,15 @@ test_disc_trunk_return_clears_call_state(void) {
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 1;
     state->p25_cc_freq = 851012500L;
-    state->nxdn_last_rid = 0x1234;
-    state->nxdn_last_tg = 0x4567;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .policy_target_id = 0x4567U,
+        .ota_source_id = 0x1234U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     state->nxdn_cipher_type = 2;
     state->data_header_valid[0] = 1;
     state->data_header_blocks[0] = 7;
@@ -590,9 +602,14 @@ test_disc_trunk_return_clears_call_state(void) {
     state->payload_mi = 0x1122334455667788ULL;
     state->dmr_lrrp_source[0] = 99;
     state->dmr_lrrp_target[0] = 100;
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "active");
-    DSD_SNPRINTF(state->nxdn_call_type, sizeof(state->nxdn_call_type), "%s", "Group");
-    DSD_SNPRINTF(state->active_channel[3], sizeof(state->active_channel[3]), "%s", "busy");
+    const dsd_call_observation activity = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .channel = 3U,
+    };
+    assert(dsd_recent_activity_publish(state, 3U, &activity, "busy", 1U) == 1);
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 0, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 0, sizeof(state->nxdn_sacch_frame_segcrc));
     g_alias_prop_calls = 0;
@@ -607,11 +624,13 @@ test_disc_trunk_return_clears_call_state(void) {
     rc |= expect_int("disc-tune-cc-freq", (int)g_tune_cc_freq, (int)851012500L);
     rc |= expect_int("disc-tune-cc-sps", g_tune_cc_ted_sps, 0);
     rc |= expect_int("disc-trunk-cleared", opts->trunk_is_tuned, 0);
-    rc |= expect_int("disc-rid-reset", state->nxdn_last_rid, 0);
-    rc |= expect_int("disc-tg-reset", state->nxdn_last_tg, 0);
+    dsd_call_snapshot call;
+    rc |= expect_int("disc-call-present", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("disc-call-ended", call.phase, DSD_CALL_PHASE_ENDED);
     rc |= expect_int("disc-cipher-reset", state->nxdn_cipher_type, 0);
-    rc |= expect_int("disc-call-string-cleared", state->call_string[0][0], '\0');
-    rc |= expect_int("disc-call-type-cleared", state->nxdn_call_type[0], '\0');
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("disc-recent-activity-snapshot", dsd_recent_activity_copy_snapshot(state, &recent), 1);
+    rc |= expect_int("disc-recent-activity-cleared", recent.entries[3].notice[0], '\0');
     rc |= expect_int("disc-data-valid-reset", state->data_header_valid[0], 0);
     rc |= expect_int("disc-data-blocks-reset", state->data_header_blocks[0], 1);
     rc |= expect_int("disc-payload-alg-reset", state->payload_algid, 0);
@@ -620,8 +639,96 @@ test_disc_trunk_return_clears_call_state(void) {
     rc |= expect_int("disc-lrrp-src-reset", state->dmr_lrrp_source[0], 0);
     rc |= expect_int("disc-lrrp-tgt-reset", state->dmr_lrrp_target[0], 0);
     rc |= expect_int("disc-sacch-reset", all_sacch_segments_are(1U, state), 1);
-    rc |= expect_int("disc-active-channels-reset", active_channels_are_zero(state), 1);
 
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_idle_keeps_active_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[8] = {0};
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    set_message_type(bits, 0x10U);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .policy_target_id = 0x4567U,
+        .ota_source_id = 0x1234U,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot before;
+    assert(dsd_call_state_get(state, 0U, &before) == 1);
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    dsd_call_snapshot after;
+    int rc = 0;
+    rc |= expect_int("idle-call-present", dsd_call_state_get(state, 0U, &after), 1);
+    rc |= expect_int("idle-call-active", after.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_u64("idle-call-epoch", after.epoch, before.epoch);
+    rc |= expect_u64("idle-call-target", after.ota_target_id, before.ota_target_id);
+    rc |= expect_u64("idle-call-source", after.ota_source_id, before.ota_source_id);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_bad_crc_release_keeps_active_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x4567U,
+        .policy_target_id = 0x4567U,
+        .ota_source_id = 0x1234U,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot before;
+    assert(dsd_call_state_get(state, 0U, &before) == 1);
+
+    int rc = 0;
+    const uint8_t release_types[] = {0x08U, 0x11U};
+    for (size_t i = 0U; i < sizeof(release_types) / sizeof(release_types[0]); i++) {
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_message_type(bits, release_types[i]);
+        g_message_type_crc_ok = 1U;
+        NXDN_Elements_Content_decode(opts, state, 0U, bits, sizeof(bits));
+
+        dsd_call_snapshot after;
+        rc |= expect_int("bad-crc-release-message-type-sees-crc", g_message_type_crc_ok, 0);
+        rc |= expect_int("bad-crc-release-call-present", dsd_call_state_get(state, 0U, &after), 1);
+        rc |= expect_int("bad-crc-release-call-active", after.phase, DSD_CALL_PHASE_ACTIVE);
+        rc |= expect_u64("bad-crc-release-call-epoch", after.epoch, before.epoch);
+        rc |= expect_u64("bad-crc-release-call-target", after.ota_target_id, before.ota_target_id);
+        rc |= expect_u64("bad-crc-release-call-source", after.ota_source_id, before.ota_source_id);
+    }
+
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -826,26 +933,19 @@ test_srv_info_anchors_control_channel_from_rigctl(void) {
     opts->use_rigctl = 1;
     state->p25_cc_freq = 851012500L;
     state->trunk_cc_freq = 851012500L;
-    state->nxdn_last_rid = 0x1111U;
-    state->nxdn_last_tg = 0x2222U;
     state->nxdn_grant_chan = 77U;
-    DSD_SNPRINTF(state->active_channel[3], sizeof(state->active_channel[3]), "%s", "stale");
     g_current_rigctl_freq = 855262500L;
 
     NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
 
     int rc = 0;
     rc |= expect_int("srv-info-message-type", state->NxdnElementsContent.MessageType, 0x19);
-    rc |= expect_int("srv-info-last-rid-reset", state->nxdn_last_rid, 0);
-    rc |= expect_int("srv-info-last-tg-reset", state->nxdn_last_tg, 0);
     rc |= expect_int("srv-info-ran", state->nxdn_last_ran, 0x34);
     rc |= expect_int("srv-info-site-code", state->nxdn_location_site_code, 0x234);
     rc |= expect_int("srv-info-sys-code", state->nxdn_location_sys_code, 1);
     rc |= expect_string("srv-info-category", state->nxdn_location_category, "Global");
     rc |= expect_int("srv-info-cc-freq", (int)state->p25_cc_freq, (int)855262500L);
     rc |= expect_int("srv-info-trunk-cc-freq", (int)state->trunk_cc_freq, (int)855262500L);
-    rc |= expect_int("srv-info-active-channels-reset", active_channels_are_zero(state), 1);
-    rc |= expect_int("srv-info-grant-chan-reset", state->nxdn_grant_chan, 0);
 
     g_current_rigctl_freq = 0;
     free(state);
@@ -1215,11 +1315,14 @@ test_arib_vcall_uses_shifted_fields(void) {
     rc |= expect_int("arib-vcall-dst", state->NxdnElementsContent.DestinationID, 0x4567);
     rc |= expect_int("arib-vcall-cipher", state->NxdnElementsContent.CipherType, 1);
     rc |= expect_int("arib-vcall-key", state->NxdnElementsContent.KeyID, 0x2A);
-    rc |= expect_int("arib-vcall-last-rid", state->nxdn_last_rid, 0x1234);
-    rc |= expect_int("arib-vcall-last-tg", state->nxdn_last_tg, 0x4567);
+    dsd_call_snapshot call;
+    rc |= expect_int("arib-vcall-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_u64("arib-vcall-source", call.ota_source_id, 0x1234U);
+    rc |= expect_u64("arib-vcall-target", call.ota_target_id, 0x4567U);
+    rc |= expect_int("arib-vcall-kind", call.kind, DSD_CALL_KIND_GROUP_VOICE);
     rc |= expect_int("arib-vcall-key-state", state->nxdn_key, 0x2A);
-    rc |= expect_int("arib-vcall-gi", state->gi[0], 0);
     rc |= expect_int("arib-vcall-encrypted", state->dmr_encL, 1);
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1248,8 +1351,8 @@ test_bad_crc_encrypted_vcall_records_metadata(void) {
     rc |= expect_int("bad-crc-vcall-dst", state->NxdnElementsContent.DestinationID, 0x2468);
     rc |= expect_int("bad-crc-vcall-cipher", state->NxdnElementsContent.CipherType, 3);
     rc |= expect_int("bad-crc-vcall-key", state->NxdnElementsContent.KeyID, 0x09);
-    rc |= expect_int("bad-crc-vcall-last-rid", state->nxdn_last_rid, 0x1357);
-    rc |= expect_int("bad-crc-vcall-last-tg", state->nxdn_last_tg, 0x2468);
+    dsd_call_snapshot call;
+    rc |= expect_int("bad-crc-vcall-no-canonical-call", dsd_call_state_get(state, 0U, &call), 0);
     rc |= expect_int("bad-crc-vcall-cipher-state", state->nxdn_cipher_type, 3);
     rc |= expect_int("bad-crc-vcall-lockout", state->dmr_encL, 1);
     free(state);
@@ -1293,6 +1396,7 @@ test_vcall_des_keyloader_and_iv_signal(void) {
     rc |= expect_u64("vcall-des-iv", (uint64_t)state->payload_miN, iv);
     rc |= expect_int("vcall-des-new-iv", state->nxdn_new_iv, 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1328,6 +1432,7 @@ test_vcall_scrambler_keyloader_uses_active_nxdn48_profile(void) {
     rc |= expect_u64("vcall-scrambler-key", (uint64_t)state->R, scrambler_key);
     rc |= expect_int("vcall-scrambler-unmutes-loaded-key", state->dmr_encL, 0);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1379,7 +1484,118 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
     NXDN_Elements_Content_decode(opts, state, 1U, iv_bits, sizeof(iv_bits));
     rc |= expect_u64("vcall-aes-iv", (uint64_t)state->payload_miN, iv);
     rc |= expect_int("vcall-aes-new-iv", state->nxdn_new_iv, 1);
+    dsd_call_snapshot call;
+    rc |= expect_int("vcall-aes-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-aes-canonical-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("vcall-aes-canonical-audio", call.audio_permitted, 1);
 
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_vcall_aes_key_flag_drives_crypto_state(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
+
+    state->aes_key_loaded[0] = 1;
+    state->A1[0] = 0U;
+    state->A2[0] = 0x1112131415161718ULL;
+    state->R = 0U;
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_int("zero-first-word AES canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("zero-first-word AES decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("zero-first-word AES permits audio", call.audio_permitted, 1);
+    rc |= expect_int("zero-first-word AES unmutes", state->dmr_encL, 0);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->R = 0xDEADBEEFU;
+    state->aes_key_loaded[0] = 0;
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+    rc |= expect_int("stale-R AES canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("stale-R AES remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("stale-R AES blocks audio", call.audio_permitted, 0);
+    rc |= expect_int("stale-R AES remains muted", state->dmr_encL, 1);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_type_d_scch_publishes_crypto_fragments(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t message[32];
+    const uint8_t cipher = 2U;
+    const uint8_t key_id = 0x2AU;
+    const uint64_t iv_a = 0x155U;
+    const uint64_t iv_b = 0x2DU;
+    const uint64_t iv_c = 0x12U;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U);
+    write_bits_u64(message, 16U, cipher, 2U);
+    write_bits_u64(message, 18U, key_id, 6U);
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    int rc = 0;
+    dsd_call_snapshot call;
+    rc |= expect_int("type-d-scch-option-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("type-d-scch-option-crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("type-d-scch-option-algid", call.algid, cipher);
+    rc |= expect_int("type-d-scch-option-key", call.kid, key_id);
+    rc |= expect_u64("type-d-scch-option-mi", call.mi, 0U);
+    rc |= expect_int("type-d-scch-option-audio", call.audio_permitted, 0);
+    rc |= expect_int("type-d-scch-option-legacy-cipher", state->nxdn_cipher_type, cipher);
+    rc |= expect_int("type-d-scch-option-legacy-key", state->nxdn_key, key_id);
+
+    state->payload_miN = iv_a << 11;
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_u64(message, 0U, 3U, 2U);
+    write_bits_u64(message, 8U, iv_c, 5U);
+    write_bits_u64(message, 18U, iv_b, 6U);
+    message[24] = 1U;
+    NXDN_decode_scch(opts, state, message, 1U);
+
+    const uint64_t completed_iv = (iv_a << 11) | (iv_c << 6) | iv_b;
+    rc |= expect_int("type-d-scch-iv-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("type-d-scch-iv-crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("type-d-scch-iv-algid", call.algid, cipher);
+    rc |= expect_int("type-d-scch-iv-key", call.kid, key_id);
+    rc |= expect_u64("type-d-scch-iv-mi", call.mi, completed_iv);
+    rc |= expect_u64("type-d-scch-iv-legacy-mi", state->payload_miN, completed_iv);
+
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1399,9 +1615,15 @@ test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
     DSD_MEMSET(bits, 0, sizeof(bits));
 
     write_arib_vcall_fields(bits, 0xE8U, 0xABU, 0x40U, 4U, 0U, 0x2222U, 0x3333U, 0U, 0x05U);
-    state->nxdn_last_rid = 0x7777U;
-    state->nxdn_last_tg = 0x8888U;
-    state->gi[0] = 1;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x8888U,
+        .policy_target_id = 0x8888U,
+        .ota_source_id = 0x7777U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "stale");
 
     NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
@@ -1412,10 +1634,11 @@ test_arib_tx_release_uses_shifted_fields_and_clears_call(void) {
     rc |= expect_int("arib-release-src", state->NxdnElementsContent.SourceUnitID, 0x2222);
     rc |= expect_int("arib-release-dst", state->NxdnElementsContent.DestinationID, 0x3333);
     rc |= expect_int("arib-release-key", state->NxdnElementsContent.KeyID, 0x05);
-    rc |= expect_int("arib-release-last-rid", state->nxdn_last_rid, 0);
-    rc |= expect_int("arib-release-last-tg", state->nxdn_last_tg, 0);
-    rc |= expect_int("arib-release-gi", state->gi[0], -1);
+    dsd_call_snapshot call;
+    rc |= expect_int("arib-release-canonical", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("arib-release-ended", call.phase, DSD_CALL_PHASE_ENDED);
     rc |= expect_int("arib-release-alias", state->generic_talker_alias[0][0], '\0');
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1464,16 +1687,20 @@ test_assignment_group_grant_anchors_tunes_and_loads_scrambler(void) {
     rc |= expect_int("assignment-group-trunk-cc-freq", (int)state->trunk_cc_freq, (int)control_freq);
     rc |= expect_int("assignment-group-grant-channel", state->nxdn_grant_chan, channel);
     rc |= expect_int("assignment-group-grant-freq", (int)state->nxdn_grant_freq, (int)grant_freq);
-    rc |= expect_contains("assignment-group-active", state->active_channel[0], "Active Ch: 298");
-    rc |= expect_contains("assignment-group-active-tg", state->active_channel[0], "TG: 1110 SRC: 291");
-    rc |= expect_string("assignment-group-call-type", state->nxdn_call_type, "Group Call");
-    rc |= expect_string("assignment-group-call-string", state->call_string[0], "Group Call Emergency");
+    dsd_call_snapshot call;
+    rc |= expect_int("assignment-group-no-voice-call", dsd_call_state_get(state, 0U, &call), 0);
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("assignment-group-activity-snapshot", dsd_recent_activity_copy_snapshot(state, &recent), 1);
+    rc |= expect_int("assignment-group-activity-kind", recent.entries[0].observation.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_int("assignment-group-activity-emergency", recent.entries[0].observation.emergency, 1);
+    rc |= expect_int("assignment-group-activity-channel", recent.entries[0].observation.channel, channel);
     rc |= expect_u64("assignment-group-key", (uint64_t)state->R, (uint64_t)scrambler_key);
     rc |= expect_u64("assignment-group-mi", (uint64_t)state->payload_miN, (uint64_t)scrambler_key);
     rc |= expect_int("assignment-group-m-cipher", state->nxdn_cipher_type, 1);
     rc |= expect_int("assignment-group-sync-reset", state->lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("assignment-group-sacch-reset", all_sacch_segments_are(1U, state), 1);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1514,7 +1741,6 @@ test_assignment_data_gate_and_duplicate_release(void) {
     rc |= expect_int("assignment-data-grant-channel", state->nxdn_grant_chan, data_channel);
     rc |= expect_int("assignment-data-grant-freq", (int)state->nxdn_grant_freq, (int)data_freq);
     rc |= expect_int("assignment-data-no-tune", g_tune_freq_calls, 0);
-    rc |= expect_contains("assignment-data-active", state->active_channel[0], "TG: 770 SRC: 513");
 
     reset_assignment_capture();
     opts->trunk_tune_data_calls = 1;
@@ -1532,9 +1758,13 @@ test_assignment_data_gate_and_duplicate_release(void) {
     rc |= expect_int("assignment-dup-tune-calls", g_tune_freq_calls, 1);
     rc |= expect_int("assignment-dup-tune-freq", (int)g_tune_freq_freq, (int)voice_freq);
     rc |= expect_int("assignment-dup-sync-reset", state->lastsynctype, DSD_SYNC_NONE);
-    rc |= expect_string("assignment-dup-call-string", state->call_string[0], "Group Call");
-    rc |= expect_contains("assignment-dup-active", state->active_channel[0], "TG: 1282 SRC: 1025");
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("assignment-dup-activity-snapshot", dsd_recent_activity_copy_snapshot(state, &recent), 1);
+    rc |= expect_int("assignment-dup-activity-kind", recent.entries[0].observation.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_int("assignment-dup-activity-target", (int)recent.entries[0].observation.ota_target_id, 0x0502);
+    rc |= expect_int("assignment-dup-activity-channel", recent.entries[0].observation.channel, voice_channel);
 
+    dsd_state_ext_free_all(state);
     free(state);
     free(opts);
     return rc;
@@ -1547,6 +1777,8 @@ main(void) {
     rc |= test_decode_guards_and_unknown_dispatch();
     rc |= test_sacch_full_decode_crc_gate_and_reset();
     rc |= test_disc_trunk_return_clears_call_state();
+    rc |= test_idle_keeps_active_call();
+    rc |= test_bad_crc_release_keeps_active_call();
     rc |= test_sdcall_header_short_is_ignored();
     rc |= test_sdcall_iv_short_type_c_is_ignored();
     rc |= test_sdcall_iv_type_d_min_length_is_accepted();
@@ -1564,6 +1796,8 @@ main(void) {
     rc |= test_vcall_des_keyloader_and_iv_signal();
     rc |= test_vcall_scrambler_keyloader_uses_active_nxdn48_profile();
     rc |= test_vcall_aes_keyloader_and_iv_signal();
+    rc |= test_vcall_aes_key_flag_drives_crypto_state();
+    rc |= test_type_d_scch_publishes_crypto_fragments();
     rc |= test_arib_tx_release_uses_shifted_fields_and_clears_call();
     rc |= test_assignment_group_grant_anchors_tunes_and_loads_scrambler();
     rc |= test_assignment_data_gate_and_duplicate_release();

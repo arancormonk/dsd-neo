@@ -3057,10 +3057,8 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     frame_sync_runtime_init(&rt, opts, state);
 
     frame_sync_publish_ui_throttled(opts, state);
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
-    watchdog_event_history(opts, state, 1);
-    watchdog_event_current(opts, state, 1);
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 1);
 
     for (;;) {
         rt.t++;

@@ -117,8 +117,6 @@ test_process_voice_integer_playback(void) {
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     state.ea_mode = 1;
-    state.lasttg = 100344;
-    state.lastsrc = 321;
     state.edacs_site_id = 7;
     state.edacs_tuned_lcn = 4;
     reset_counters();
@@ -142,7 +140,6 @@ test_process_voice_float_playback(void) {
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     state.ea_mode = 0;
-    state.lastsrc = 0x123;
     state.edacs_site_id = 9;
     state.edacs_tuned_lcn = 6;
     reset_counters();

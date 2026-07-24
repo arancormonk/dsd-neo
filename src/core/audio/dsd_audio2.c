@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -22,6 +23,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <limits.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
@@ -38,6 +40,18 @@ write_s16_audio(dsd_opts* opts, const int16_t* buf, size_t frames) {
     if (opts->audio_out_stream) {
         dsd_audio_write(opts->audio_out_stream, buf, frames);
     }
+}
+
+static unsigned long
+dsd_audio_call_target(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0UL;
+    }
+    uint64_t target = DSD_SYNC_IS_P25(call.protocol)
+                          ? call.ota_target_id
+                          : (call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id);
+    return target <= ULONG_MAX ? (unsigned long)target : 0UL;
 }
 
 /* Convert float audio to int16 and write using the abstraction layer */
@@ -382,8 +396,8 @@ dsd_apply_slot_hard_mute_flags(const dsd_opts* opts, int* encL, int* encR) {
 
 static void
 dsd_apply_dual_tg_audio_gate(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
-    unsigned long TGL = (unsigned long)state->lasttg;
-    unsigned long TGR = (unsigned long)state->lasttgR;
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
+    unsigned long TGR = dsd_audio_call_target(state, 1U);
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, *encL, *encR, encL, encR);
     if (!dsd_p25_audio_output_permitted(opts, state, 0)) {
         *encL = 1;
@@ -799,8 +813,8 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         encR = 1;
     }
 
-    unsigned long TGL = (unsigned long)state->lasttg;
-    unsigned long TGR = (unsigned long)state->lasttgR;
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
+    unsigned long TGR = dsd_audio_call_target(state, 1U);
 
     // Apply whitelist/TG-hold gating shared with other mixers.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
@@ -925,7 +939,7 @@ playSynthesizedVoiceFS(dsd_opts* opts, dsd_state* state) {
         encL = 1;
     }
 
-    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
     (void)dsd_audio_group_gate_mono(opts, state, TGL, encL, &encL);
     if (is_p25p1 && !dsd_p25_audio_output_permitted(opts, state, 0)) {
         encL = 1;
@@ -945,10 +959,7 @@ playSynthesizedVoiceFM(dsd_opts* opts, dsd_state* state) {
     agf(opts, state, state->f_l, 0);
     int encL = dsd_fdma_crypto_muted(opts, state, 1);
 
-    unsigned long TGL = (unsigned long)state->lasttg;
-    if (opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1) {
-        TGL = (unsigned long)state->nxdn_last_tg;
-    }
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
 
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
@@ -994,7 +1005,7 @@ playSynthesizedVoiceSS(dsd_opts* opts, dsd_state* state) {
         encL = 1;
     }
 
-    unsigned long TGL = (unsigned long)state->lasttg;
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
 
     encL = dsd_fdma_apply_group_gate(opts, state, TGL, encL);
 
@@ -1030,8 +1041,8 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
 
     dsd_dmr_ss3_init_enc_flags(state, &encL, &encR);
 
-    unsigned long TGL = (unsigned long)state->lasttg;
-    unsigned long TGR = (unsigned long)state->lasttgR;
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
+    unsigned long TGR = dsd_audio_call_target(state, 1U);
 
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
@@ -1084,8 +1095,8 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
     // then apply whitelist/TG-hold rules shared with other mixers.
     dsd_set_p25p2_slot_mute_flags(state, &encL, &encR);
 
-    unsigned long TGL = (unsigned long)state->lasttg;
-    unsigned long TGR = (unsigned long)state->lasttgR;
+    unsigned long TGL = dsd_audio_call_target(state, 0U);
+    unsigned long TGR = dsd_audio_call_target(state, 1U);
 
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
     if (!dsd_p25_audio_output_permitted(opts, state, 0)) {

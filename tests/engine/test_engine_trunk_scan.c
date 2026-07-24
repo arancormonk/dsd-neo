@@ -3,11 +3,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -25,6 +27,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -598,6 +601,7 @@ make_runtime_targets(const char* body, char* out_path, size_t out_sz, char* out_
 
 static void
 reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_scan_enabled = 1;
@@ -695,11 +699,6 @@ seed_target0_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].wacn = 0xABCDE;
     state->p25_pending_announcements[0].last_seen = 445;
     state->p25_src_nid = 0xABCDE;
-    state->p25_call_emergency[0] = 1;
-    state->p25_call_priority[0] = 7;
-    state->p25_call_is_packet[0] = 1;
-    state->p25_policy_tg[0] = 200;
-    state->p25_policy_tg[1] = 201;
 }
 
 static void
@@ -767,11 +766,6 @@ seed_target1_p25_state(dsd_state* state) {
     state->p25_pending_announcements[0].channel = 0x400B;
     state->p25_pending_announcements[0].last_seen = 909;
     state->p25_src_nid = 0x77777;
-    state->p25_call_emergency[0] = 0;
-    state->p25_call_priority[0] = 2;
-    state->p25_call_is_packet[0] = 0;
-    state->p25_policy_tg[0] = 901;
-    state->p25_policy_tg[1] = 902;
 }
 
 static int
@@ -780,9 +774,7 @@ expect_empty_target_p25_state(const dsd_state* state) {
         || state->p25_sys_services_valid != 0 || state->p25_site_lra_valid != 0
         || state->p25_site_network_active_valid != 0 || state->p25_patch_count != 0 || state->p25_aff_count != 0
         || state->p25_ga_count != 0 || state->p25_nb_count != 0 || state->p25_secondary_cc_count != 0
-        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0 || state->p25_call_emergency[0] != 0
-        || state->p25_call_priority[0] != 0 || state->p25_call_is_packet[0] != 0 || state->p25_policy_tg[0] != 0
-        || state->p25_policy_tg[1] != 0) {
+        || state->p25_pending_announcement_count != 0 || state->p25_src_nid != 0) {
         DSD_FPRINTF(stderr, "target 0 P25 state leaked into empty target 1 snapshot\n");
         return 1;
     }
@@ -823,9 +815,8 @@ expect_target0_p25_state(const dsd_state* state) {
         || state->p25_nb_entries[0].site != 2 || state->p25_nb_entries[0].cfva != 3
         || state->p25_nb_entries[0].lra != 0x55 || state->p25_nb_entries[0].lra_valid != 1
         || state->p25_nb_entries[0].cfva_valid != 1 || state->p25_nb_entries[0].last_seen != 444
-        || state->p25_src_nid != 0xABCDE || state->p25_call_emergency[0] != 1 || state->p25_call_priority[0] != 7
-        || state->p25_call_is_packet[0] != 1 || state->p25_policy_tg[0] != 200 || state->p25_policy_tg[1] != 201) {
-        DSD_FPRINTF(stderr, "P25 neighbor/current-call state leaked across scan targets\n");
+        || state->p25_src_nid != 0xABCDE) {
+        DSD_FPRINTF(stderr, "P25 neighbor state leaked across scan targets\n");
         test_rc = 1;
     }
     if (state->p25_secondary_cc_count != 1 || state->p25_secondary_cc_entries[0].freq != 851625000
@@ -921,22 +912,48 @@ test_coordinator_idle_rotation_and_state_restore(void) {
 }
 
 static void
-seed_call_identity(dsd_state* state, int lasttg, int lastsrc, int lasttgR, int lastsrcR, int gi0, int gi1) {
-    state->lasttg = lasttg;
-    state->lastsrc = lastsrc;
-    state->lasttgR = lasttgR;
-    state->lastsrcR = lastsrcR;
-    state->gi[0] = (int8_t)gi0;
-    state->gi[1] = (int8_t)gi1;
+seed_call_identity(dsd_state* state, int target0, int source0, int target1, int source1, int private0, int private1) {
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .kind = private0 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = (uint64_t)target0,
+        .policy_target_id = (uint64_t)target0,
+        .ota_source_id = (uint64_t)source0,
+    };
+    observation.slot = 0U;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
+    observation.slot = 1U;
+    observation.kind = private1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = (uint64_t)target1;
+    observation.policy_target_id = (uint64_t)target1;
+    observation.ota_source_id = (uint64_t)source1;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
+        abort();
+    }
 }
 
 static int
-expect_call_identity(const char* label, const dsd_state* state, int lasttg, int lastsrc, int lasttgR, int lastsrcR,
-                     int gi0, int gi1) {
-    if (state->lasttg != lasttg || state->lastsrc != lastsrc || state->lasttgR != lasttgR || state->lastsrcR != lastsrcR
-        || state->gi[0] != gi0 || state->gi[1] != gi1) {
-        DSD_FPRINTF(stderr, "%s call identity mismatch tg=%d src=%d tgR=%d srcR=%d gi=%d/%d\n", label, state->lasttg,
-                    state->lastsrc, state->lasttgR, state->lastsrcR, state->gi[0], state->gi[1]);
+expect_call_identity(const char* label, const dsd_state* state, int target0, int source0, int target1, int source1,
+                     int private0, int private1) {
+    dsd_call_snapshot calls[2];
+    const int have0 = dsd_call_state_get(state, 0U, &calls[0]);
+    const int have1 = dsd_call_state_get(state, 1U, &calls[1]);
+    if (private0 < 0 && private1 < 0) {
+        if (have0 > 0 || have1 > 0) {
+            DSD_FPRINTF(stderr, "%s unexpectedly restored canonical calls\n", label);
+            return 1;
+        }
+        return 0;
+    }
+    const dsd_call_kind kind0 = private0 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    const dsd_call_kind kind1 = private1 ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE;
+    if (have0 <= 0 || have1 <= 0 || calls[0].phase != DSD_CALL_PHASE_ACTIVE || calls[1].phase != DSD_CALL_PHASE_ACTIVE
+        || calls[0].ota_target_id != (uint64_t)target0 || calls[0].ota_source_id != (uint64_t)source0
+        || calls[1].ota_target_id != (uint64_t)target1 || calls[1].ota_source_id != (uint64_t)source1
+        || calls[0].kind != kind0 || calls[1].kind != kind1) {
+        DSD_FPRINTF(stderr, "%s canonical call identity mismatch\n", label);
         return 1;
     }
     return 0;
@@ -968,6 +985,11 @@ test_call_identity_state_isolated_per_target(void) {
     }
 
     seed_call_identity(&state, 101, 201, 102, 202, 0, 1);
+    dsd_call_snapshot target0_slot0 = {0};
+    if (dsd_call_state_get(&state, 0U, &target0_slot0) <= 0) {
+        DSD_FPRINTF(stderr, "target 0 call epoch unavailable\n");
+        test_rc = 1;
+    }
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1) {
@@ -977,6 +999,11 @@ test_call_identity_state_isolated_per_target(void) {
     test_rc |= expect_call_identity("fresh target", &state, 0, 0, 0, 0, -1, -1);
 
     seed_call_identity(&state, 301, 401, 302, 402, 1, 0);
+    dsd_call_snapshot target1_slot0 = {0};
+    if (dsd_call_state_get(&state, 0U, &target1_slot0) <= 0 || target1_slot0.epoch <= target0_slot0.epoch) {
+        DSD_FPRINTF(stderr, "call epoch reused across scan targets\n");
+        test_rc = 1;
+    }
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 0) {
@@ -985,6 +1012,160 @@ test_call_identity_state_isolated_per_target(void) {
     }
     test_rc |= expect_call_identity("restored target", &state, 101, 201, 102, 202, 0, 1);
 
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_call_event_lifecycle_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+        .policy_target_id = 101U,
+        .ota_source_id = 201U,
+    };
+    dsd_call_context_snapshot context = {0};
+    uint64_t ended_epoch = 0U;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "call lifecycle scan init failed: %s\n", err);
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    if (dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0
+        || dsd_call_state_end(&state, 0U, 0.1) <= 0) {
+        DSD_FPRINTF(stderr, "failed to stage ended call lifecycle for scan target\n");
+        test_rc = 1;
+        goto cleanup;
+    }
+    if (dsd_call_context_copy_snapshot(&state, &context) <= 0) {
+        DSD_FPRINTF(stderr, "failed to copy staged call lifecycle\n");
+        test_rc = 1;
+        goto cleanup;
+    }
+    ended_epoch = context.calls.slots[0].epoch;
+    context.events[0].epoch = ended_epoch;
+    context.events[0].ended_committed = 1U;
+    if (dsd_call_context_restore_snapshot(&state, &context) <= 0) {
+        DSD_FPRINTF(stderr, "failed to install staged call lifecycle\n");
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U || dsd_call_context_copy_snapshot(&state, &context) <= 0
+        || context.events[0].ended_committed != 0U) {
+        DSD_FPRINTF(stderr, "fresh scan target inherited another target's call lifecycle\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0U || dsd_call_context_copy_snapshot(&state, &context) <= 0
+        || context.calls.slots[0].phase != DSD_CALL_PHASE_ENDED || context.calls.slots[0].epoch != ended_epoch
+        || context.events[0].epoch != ended_epoch || context.events[0].ended_committed != 1U) {
+        DSD_FPRINTF(stderr, "scan target did not restore its committed call lifecycle\n");
+        test_rc = 1;
+    }
+
+cleanup:
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_call_event_current_rows_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[DSD_CALL_STATE_SLOT_COUNT];
+    reset_scan_opts_state(&opts, &state);
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    state.event_history_s = event_history;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "event row scan init failed: %s\n", err);
+        test_rc = 1;
+        goto cleanup;
+    }
+
+    Event_History* current = &event_history[0].Event_History_Items[0];
+    current->target_id = 101U;
+    current->source_id = 201U;
+    DSD_SNPRINTF(current->event_string, sizeof current->event_string, "%s", "target-a-current");
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U
+        || event_history[0].Event_History_Items[0].event_string[0] != '\0') {
+        DSD_FPRINTF(stderr, "fresh scan target inherited another target's current event row\n");
+        test_rc = 1;
+    }
+
+    current = &event_history[0].Event_History_Items[0];
+    current->target_id = 301U;
+    current->source_id = 401U;
+    DSD_SNPRINTF(current->event_string, sizeof current->event_string, "%s", "target-b-current");
+    DSD_SNPRINTF(event_history[0].Event_History_Items[1].event_string,
+                 sizeof event_history[0].Event_History_Items[1].event_string, "%s", "shared-committed");
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0U
+        || strcmp(event_history[0].Event_History_Items[0].event_string, "target-a-current") != 0
+        || event_history[0].Event_History_Items[0].target_id != 101U
+        || strcmp(event_history[0].Event_History_Items[1].event_string, "shared-committed") != 0) {
+        DSD_FPRINTF(stderr, "scan target did not restore its current event row without changing history\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1U
+        || strcmp(event_history[0].Event_History_Items[0].event_string, "target-b-current") != 0
+        || event_history[0].Event_History_Items[0].target_id != 301U
+        || strcmp(event_history[0].Event_History_Items[1].event_string, "shared-committed") != 0) {
+        DSD_FPRINTF(stderr, "scan target lost its saved current event row across context switches\n");
+        test_rc = 1;
+    }
+
+cleanup:
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -1710,6 +1891,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     if (test_rc != 0) {
@@ -1740,6 +1922,7 @@ test_protocol_hooks_only_expose_matching_target_contexts(void) {
     }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_ext_free_all(&state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -3302,6 +3485,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_rejects_too_many_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_call_event_lifecycle_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_call_event_current_rows_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_branding_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_confidence_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_dmr_service_options_state_isolated_per_target);

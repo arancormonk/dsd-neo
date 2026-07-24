@@ -9,8 +9,11 @@
  * This drives p25_decode_extended_address and p25_decode_es_header paths.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <errno.h>
 #include <limits.h>
@@ -44,16 +47,18 @@ static uint32_t g_datacall_dst;
 static char g_datacall_text[256];
 
 // Stubs required by linked decoder units
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
     (void)slot;
     g_datacall_count++;
-    g_datacall_src = src;
-    g_datacall_dst = dst;
-    DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", str ? str : "");
+    g_datacall_src = observation->ota_source_id;
+    g_datacall_dst = observation->ota_target_id;
+    DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
+    return 0;
 }
 
 void
@@ -71,6 +76,15 @@ watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    g_history_count++;
 }
 
 void
@@ -93,13 +107,14 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     return 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
     (void)state;
     (void)len;
     (void)input;
+    return 0;
 }
 
 static int
@@ -324,6 +339,27 @@ test_p25_pdu_label_helpers(void) {
 }
 
 static int
+seed_voice_call(dsd_state* state, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+}
+
+static int
+same_voice_identity(const dsd_call_snapshot* before, const dsd_call_snapshot* after) {
+    return before->epoch == after->epoch && before->phase == after->phase && before->protocol == after->protocol
+           && before->kind == after->kind && before->ota_target_id == after->ota_target_id
+           && before->policy_target_id == after->policy_target_id && before->ota_source_id == after->ota_source_id;
+}
+
+static int
 test_p25_pdu_header_state_updates(void) {
     static dsd_opts opts;
     static dsd_state st;
@@ -345,8 +381,8 @@ test_p25_pdu_header_state_updates(void) {
     reset_watchdog_counters();
     p25_decode_pdu_header(&opts, &st, header);
     int rc = 0;
-    rc |= expect_u32("header lasttg", st.lasttg, 0x123456);
-    rc |= expect_u32("header lastsrc any", st.lastsrc, 0xFFFFFF);
+    dsd_call_snapshot call;
+    rc |= expect_u32("header does not start voice call", (uint32_t)(dsd_call_state_get(&st, 0U, &call) > 0), 0);
     rc |= expect_contains("header data-call summary", st.dmr_lrrp_gps[0], "Packet Data");
     rc |= expect_u32("header non-response no datacall", (uint32_t)g_datacall_count, 0);
 
@@ -359,16 +395,19 @@ test_p25_pdu_header_state_updates(void) {
     header[5] = 0x23;
     reset_watchdog_counters();
     p25_decode_pdu_header(&opts, &st, header);
-    rc |= expect_u32("response final lasttg", st.lasttg, 0x000123);
-    rc |= expect_u32("response final lastsrc", st.lastsrc, 0xFFFFFF);
+    rc |= expect_u32("response does not start voice call", (uint32_t)(dsd_call_state_get(&st, 0U, &call) > 0), 0);
     rc |= expect_u32("response datacall count", (uint32_t)g_datacall_count, 1);
-    rc |= expect_u32("response history count", (uint32_t)g_history_count, 1);
-    rc |= expect_u32("response datacall src", g_datacall_src, 0xFFFFFF);
+    rc |= expect_u32("response datacall src", g_datacall_src, 0x000123);
+    rc |= expect_u32("response datacall dst", g_datacall_dst, 0);
     rc |= expect_contains("response datacall text", g_datacall_text, "Undeliverable");
 
+    dsd_state_ext_free_all(&st);
     DSD_MEMSET(&st, 0, sizeof(st));
-    st.lastsrc = 0x111111;
-    st.lasttg = 0x222222;
+    st.lastsynctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_u32("trunking header seed voice", (uint32_t)seed_voice_call(&st, 0x222222, 0x111111), 1);
+    dsd_call_snapshot before;
+    dsd_call_snapshot after;
+    rc |= expect_u32("trunking header get before", (uint32_t)(dsd_call_state_get(&st, 0U, &before) > 0), 1);
     DSD_MEMSET(header, 0, sizeof(header));
     header[0] = 0x10;
     header[1] = 61; // trunking-control SAP is intentionally skipped
@@ -377,9 +416,10 @@ test_p25_pdu_header_state_updates(void) {
     header[5] = 0xCC;
     reset_watchdog_counters();
     p25_decode_pdu_header(&opts, &st, header);
-    rc |= expect_u32("trunking header preserves src", st.lastsrc, 0x111111);
-    rc |= expect_u32("trunking header preserves tg", st.lasttg, 0x222222);
+    rc |= expect_u32("trunking header get after", (uint32_t)(dsd_call_state_get(&st, 0U, &after) > 0), 1);
+    rc |= expect_u32("trunking header preserves voice", (uint32_t)same_voice_identity(&before, &after), 1);
     rc |= expect_u32("trunking header no datacall", (uint32_t)g_datacall_count, 0);
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 

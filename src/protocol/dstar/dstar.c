@@ -61,8 +61,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         }
 
         //slot 1
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        dsd_event_sync_slot(opts, state, 0);
     }
 
     DSD_FPRINTF(stderr, "\n");

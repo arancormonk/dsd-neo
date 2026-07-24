@@ -11,6 +11,7 @@
  * 2025-03 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -25,7 +26,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <time.h>
 #include "../p25_cc_update.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -35,6 +35,25 @@
 static inline int
 p25_signed_offset_units(int sign_bit, int raw_offset) {
     return sign_bit ? raw_offset : -raw_offset;
+}
+
+static void
+p25p1_pdu_publish_activity(dsd_state* state, dsd_call_kind kind, uint64_t target, uint64_t source, uint16_t channel,
+                           long int frequency, uint16_t service_options, const char* notice) {
+    const dsd_call_observation observation = {
+        .protocol = state->lastsynctype,
+        .slot = 0U,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .channel = channel,
+        .frequency_hz = frequency,
+        .service_options = service_options,
+        .emergency = (service_options & 0x80U) != 0U,
+        .has_service_metadata = 1U,
+    };
+    (void)dsd_recent_activity_publish(state, 0U, &observation, notice, 0U);
 }
 
 static void DSD_ATTR_USED
@@ -280,14 +299,10 @@ p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t*
 
 static void DSD_ATTR_USED
 p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
-    state->dmr_so = (uint16_t)svc;
-    state->p25_service_options_valid[0] = 1;
+    UNUSED(state);
 
     if (svc & 0x80) {
         DSD_FPRINTF(stderr, " Emergency");
-        state->p25_call_emergency[0] = 1;
-    } else {
-        state->p25_call_emergency[0] = 0;
     }
 
     if (svc & 0x40) {
@@ -307,9 +322,6 @@ p25_print_voice_svc_common(const dsd_opts* opts, dsd_state* state, int svc) {
             DSD_FPRINTF(stderr, " R");
         }
         DSD_FPRINTF(stderr, " Priority %d", svc & 0x7);
-        state->p25_call_priority[0] = (uint8_t)(svc & 0x7);
-    } else {
-        state->p25_call_priority[0] = 0;
     }
 }
 
@@ -473,9 +485,10 @@ p25_handle_mbt_group_voice_grant(dsd_opts* opts, dsd_state* state, const uint8_t
 
     char suf1[32];
     p25_format_chan_suffix(state, channelt, -1, suf1, sizeof(suf1));
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Ch: %04X%s TG: %d; ", channelt,
-                 suf1, group);
-    state->last_active_time = time(NULL);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %d; ", channelt, suf1, group);
+    p25p1_pdu_publish_activity(state, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)group, (uint64_t)src, (uint16_t)channelt,
+                               freq1, (uint16_t)svc_bits, notice);
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 
@@ -541,9 +554,9 @@ p25_handle_mbt_unit_to_unit_voice_grant(dsd_opts* opts, dsd_state* state, const 
 
     char suf2[32];
     p25_format_chan_suffix(state, channelt, -1, suf2, sizeof(suf2));
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active UU Ch: %04X%s SRC: %u TGT: %u; ",
-                 channelt, suf2, source, target);
-    state->last_active_time = time(NULL);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "Active UU Ch: %04X%s SRC: %u TGT: %u; ", channelt, suf2, source, target);
+    p25p1_pdu_publish_activity(state, DSD_CALL_KIND_PRIVATE_VOICE, target, source, channelt, freq1, svc, notice);
 
     p25p1_pdu_print_group_label(state, (uint32_t)target);
 
@@ -722,7 +735,16 @@ p25_telephone_update_nontrunk_vc_freq(const dsd_opts* opts, dsd_state* state, ui
         return;
     }
 
-    if ((int)target != state->lasttg && (int)target != state->lasttgR) {
+    int matches_active_call = 0;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && call.ota_target_id == target) {
+            matches_active_call = 1;
+            break;
+        }
+    }
+    if (!matches_active_call) {
         return;
     }
 
@@ -755,10 +777,11 @@ p25_handle_mbt_telephone_interconnect_grant(dsd_opts* opts, dsd_state* state, co
     freq = process_channel_to_freq(opts, state, channel);
 
     if (channel != 0 && channel != 0xFFFF) {
-        DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "Active Tele Ch: %04X TGT: %u; ",
-                     channel, target);
+        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+        DSD_SNPRINTF(notice, sizeof notice, "Active Tele Ch: %04X TGT: %u; ", channel, target);
+        p25p1_pdu_publish_activity(state, DSD_CALL_KIND_PRIVATE_VOICE, target, 0U, (uint16_t)channel, freq,
+                                   (uint16_t)svc, notice);
     }
-    state->last_active_time = time(NULL);
 
     p25p1_pdu_print_group_label(state, target);
 
@@ -808,9 +831,10 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
 
     char suf3[32];
     p25_format_chan_suffix(state, channelt, -1, suf3, sizeof(suf3));
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "MFID90 Ch: %04X%s SG: %d ", channelt,
-                 suf3, group);
-    state->last_active_time = time(NULL);
+    char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
+    DSD_SNPRINTF(notice, sizeof notice, "MFID90 Ch: %04X%s SG: %d ", channelt, suf3, group);
+    p25p1_pdu_publish_activity(state, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)group, (uint64_t)src, (uint16_t)channelt,
+                               freq1, (uint16_t)svc_bits, notice);
 
     p25p1_pdu_print_group_label(state, (uint32_t)group);
 

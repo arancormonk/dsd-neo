@@ -10,10 +10,12 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -44,6 +46,61 @@ expect_true(const char* tag, int cond) {
     return 0;
 }
 
+static int
+recent_activity_matches(const dsd_state* state, uint8_t index, dsd_call_kind kind, uint64_t target, uint64_t source,
+                        uint32_t channel, const char* notice_fragment) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        return 0;
+    }
+    const dsd_recent_activity_entry* entry = &recent.entries[index];
+    return entry->observation.kind == kind && entry->observation.ota_target_id == target
+           && entry->observation.ota_source_id == source && entry->observation.channel == channel
+           && (!notice_fragment || strstr(entry->notice, notice_fragment) != NULL);
+}
+
+static int
+recent_activity_is_empty(const dsd_state* state, uint8_t index) {
+    dsd_recent_activity_snapshot recent;
+    return dsd_recent_activity_copy_snapshot(state, &recent) <= 0
+           || recent.entries[index].observation.kind == DSD_CALL_KIND_UNKNOWN;
+}
+
+static int
+recent_activity_has_slot(const dsd_state* state, uint8_t index, uint8_t slot) {
+    dsd_recent_activity_snapshot recent;
+    return dsd_recent_activity_copy_snapshot(state, &recent) > 0 && recent.entries[index].observation.slot == slot;
+}
+
+static void
+seed_voice_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) <= 0) {
+        DSD_FPRINTF(stderr, "FAIL: could not seed canonical DMR voice call\n");
+        abort();
+    }
+}
+
+static int
+active_call_matches(const dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == kind
+           && call.ota_target_id == target && call.ota_source_id == source;
+}
+
+static int
+no_active_call(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE;
+}
+
 static void
 free_test_state(dsd_state* st) {
     if (st) {
@@ -67,13 +124,22 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
 }
 
 void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)data_string;
     (void)slot;
+}
+
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
+    (void)slot;
+    return 0;
 }
 
 void
@@ -127,6 +193,7 @@ extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint3
 
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
@@ -511,8 +578,9 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("absolute grant learns mbc lpcn", st->trunk_chan_map[88] == 452012500L);
     rc |= expect_true("absolute grant marks unconfirmed trust while off cc", st->dmr_lcn_trust[88] == 2U);
-    rc |= expect_true("absolute grant active channel uses mbc lpcn",
-                      strstr(st->active_channel[0], "Active Group Ch: 0058 (TDMA S1) TG: 3300;") != NULL);
+    rc |= expect_true("absolute grant publishes mbc lpcn activity",
+                      recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3300U, 4400U, 88U,
+                                              "Active Group Ch: 0058 (TDMA S1) TG: 3300;"));
     rc |= expect_true("absolute grant dispatches learned frequency",
                       opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == 452012500L);
 
@@ -529,11 +597,12 @@ main(void) {
 
     reset_to_cc(opts, st);
     const uint16_t unmapped_lpcn = 0x0123;
-    DSD_MEMSET(st->active_channel[0], 0, sizeof(st->active_channel[0]));
+    (void)dsd_recent_activity_clear(st, 0U);
     build_grant(bits, bytes, 49U, unmapped_lpcn, 3325U, 4425U, 0U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-    rc |= expect_true("unmapped logical grant records active channel",
-                      strstr(st->active_channel[0], "Active Group Ch: 0123 (TDMA S1) TG: 3325;") != NULL);
+    rc |= expect_true("unmapped logical grant publishes activity",
+                      recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3325U, 4425U, unmapped_lpcn,
+                                              "Active Group Ch: 0123 (TDMA S1) TG: 3325;"));
     rc |= expect_true("unmapped logical grant does not tune", opts->trunk_is_tuned == 0 && st->trunk_vc_freq[0] == 0);
 
     st->trunk_chan_map[lpcn] = freq;
@@ -581,6 +650,26 @@ main(void) {
     rc |= expect_true("cap+ 3e reset uses pre-tune center", g_dmr_reset_blocks_calls == 1);
 
     init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_tune_group_calls = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    g_result_tune_to_freq_calls = 0;
+    build_cap_plus_3e_single_group(bits, bytes, 1U, 1U, 42U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ disabled group preserves decoded target",
+                      recent_activity_matches(&cap_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 42U, 0U, 1U, "LSN:1 TG:42;"));
+    rc |= expect_true("cap+ LSN 1 publishes slot zero", recent_activity_has_slot(&cap_st, 1U, 0U));
+    rc |= expect_true("cap+ disabled group does not tune", g_result_tune_to_freq_calls == 0);
+
+    init_env(&cap_opts, &cap_st);
+    cap_opts.trunk_tune_group_calls = 0;
+    cap_st.last_vc_sync_time = time(NULL) - 10;
+    build_cap_plus_3e_single_group(bits, bytes, 1U, 2U, 43U);
+    dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("cap+ LSN 2 preserves decoded target",
+                      recent_activity_matches(&cap_st, 2U, DSD_CALL_KIND_GROUP_VOICE, 43U, 0U, 2U, "LSN:2 TG:43;"));
+    rc |= expect_true("cap+ LSN 2 publishes slot one", recent_activity_has_slot(&cap_st, 2U, 1U));
+
+    init_env(&cap_opts, &cap_st);
     cap_opts.rtlsdr_center_freq = cap_old_freq;
     cap_st.trunk_cc_freq = cap_old_freq;
     cap_st.trunk_chan_map[3] = 853250000L;
@@ -591,7 +680,8 @@ main(void) {
     dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
     rc |= expect_true("cap+ 3e private tune hook called", g_result_tune_to_freq_calls == 1);
     rc |= expect_true("cap+ 3e private tune updates VC", cap_st.trunk_vc_freq[0] == 853250000L);
-    rc |= expect_true("cap+ 3e private active channel", strstr(cap_st.active_channel[3], "LSN:3 PC:4242;") != NULL);
+    rc |= expect_true("cap+ 3e private activity", recent_activity_matches(&cap_st, 3U, DSD_CALL_KIND_PRIVATE_VOICE,
+                                                                          4242U, 0U, 3U, "LSN:3 PC:4242;"));
     rc |= expect_true("cap+ 3e private clears block counter", cap_st.cap_plus_block_num[0] == 0);
 
     init_env(&cap_opts, &cap_st);
@@ -603,7 +693,7 @@ main(void) {
     dmr_cspdu(&cap_opts, &cap_st, bits, bytes, 1U, 0U);
     rc |= expect_true("cap+ 3e private disabled suppresses tune",
                       g_result_tune_to_freq_calls == 0 && cap_opts.trunk_is_tuned == 0);
-    rc |= expect_true("cap+ 3e private disabled omits active PC", cap_st.active_channel[3][0] == '\0');
+    rc |= expect_true("cap+ 3e private disabled omits activity", recent_activity_is_empty(&cap_st, 3U));
 
     init_env(&cap_opts, &cap_st);
     cap_st.trunk_cc_freq = 851000000L;
@@ -628,8 +718,9 @@ main(void) {
     rc |= expect_true("con+ voice group tune", con_opts.trunk_is_tuned == 1 && con_st.trunk_vc_freq[0] == 855125000L);
     rc |= expect_true("con+ voice branding", strcmp(con_st.dmr_branding, "Motorola") == 0);
     rc |= expect_true("con+ voice sub-branding", strcmp(con_st.dmr_branding_sub, "Con+ ") == 0);
-    rc |= expect_true("con+ voice active slot",
-                      strstr(con_st.active_channel[1], "Active Ch: 0005 (TDMA S2) TG: 4478310;") != NULL);
+    rc |= expect_true("con+ voice activity slot",
+                      recent_activity_matches(&con_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x445566U, 0x112233U, 5U,
+                                              "Active Ch: 0005 (TDMA S2) TG: 4478310;"));
     rc |= expect_true("con+ voice state-machine tg", dmr_sm_get_ctx()->vc_tg == 0x445566);
 
     init_env(&con_opts, &con_st);
@@ -643,8 +734,9 @@ main(void) {
     rc |= expect_true("con+ private voice state-machine target/source",
                       dmr_sm_get_ctx()->vc_tg == 0 && dmr_sm_get_ctx()->vc_src == 0x001122);
     rc |= expect_true("con+ private voice marks flavor", con_st.is_con_plus == 1);
-    rc |= expect_true("con+ private voice active slot",
-                      strstr(con_st.active_channel[0], "Active Ch: 0006 (TDMA S1) TG: 13124;") != NULL);
+    rc |= expect_true("con+ private voice activity slot",
+                      recent_activity_matches(&con_st, 0U, DSD_CALL_KIND_PRIVATE_VOICE, 0x003344U, 0x001122U, 6U,
+                                              "Active Ch: 0006 (TDMA S1) TG: 13124;"));
 
     init_env(&con_opts, &con_st);
     con_opts.trunk_tune_group_calls = 0;
@@ -652,8 +744,9 @@ main(void) {
     con_st.last_vc_sync_time = time(NULL) - 10;
     build_con_plus_voice(bits, bytes, 0x112233U, 0x445566U, 5U, 1U, 2U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("con+ group disabled keeps grant visible",
-                      strstr(con_st.active_channel[1], "Active Ch: 0005 (TDMA S2) TG: 4478310;") != NULL);
+    rc |= expect_true("con+ group disabled keeps grant activity visible",
+                      recent_activity_matches(&con_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x445566U, 0x112233U, 5U,
+                                              "Active Ch: 0005 (TDMA S2) TG: 4478310;"));
     rc |= expect_true("con+ group disabled suppresses tune",
                       con_opts.trunk_is_tuned == 0 && dmr_sm_get_ctx()->vc_tg == 0);
     rc |= expect_true("con+ group disabled still brands", strcmp(con_st.dmr_branding_sub, "Con+ ") == 0);
@@ -674,17 +767,19 @@ main(void) {
     rc |= expect_true("con+ data tune hook called", g_result_tune_to_freq_calls == 1);
     rc |= expect_true("con+ data tune updates VC", con_st.trunk_vc_freq[0] == 856250000L);
     rc |= expect_true("con+ data reset blocks", g_dmr_reset_blocks_calls == 1);
-    rc |= expect_true("con+ data active slot",
-                      strstr(con_st.active_channel[0], "Active Ch: 0004 (TDMA S1) TG: 51966;") != NULL);
+    rc |= expect_true("con+ data activity slot", recent_activity_matches(&con_st, 0U, DSD_CALL_KIND_DATA, 0x00CAFEU, 0U,
+                                                                         4U, "Active Ch: 0004 (TDMA S1) TG: 51966;"));
     rc |= expect_true("con+ data marks flavor", con_st.is_con_plus == 1);
 
     init_env(&con_opts, &con_st);
     con_opts.trunk_tune_data_calls = 0;
-    DSD_SNPRINTF(con_st.active_channel[0], sizeof(con_st.active_channel[0]), "pre-data-channel");
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
     rc |= expect_true("con+ data disabled suppresses tune", con_opts.trunk_is_tuned == 0 && con_st.is_con_plus == 0);
     rc |= expect_true("con+ data disabled still brands", strcmp(con_st.dmr_branding_sub, "Con+ ") == 0);
+    rc |= expect_true("con+ data disabled keeps grant activity",
+                      recent_activity_matches(&con_st, 0U, DSD_CALL_KIND_DATA, 0x00CAFEU, 0U, 4U,
+                                              "Active Ch: 0004 (TDMA S1) TG: 51966;"));
 
     init_env(&con_opts, &con_st);
     con_opts.trunk_tune_data_calls = 1;
@@ -694,17 +789,24 @@ main(void) {
     con_st.last_vc_sync_time = time(NULL) - 10;
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("con+ data policy block keeps grant visible",
-                      strstr(con_st.active_channel[0], "Active Ch: 0004 (TDMA S1) TG: 51966;") != NULL);
+    rc |= expect_true("con+ data policy block keeps grant activity visible",
+                      recent_activity_matches(&con_st, 0U, DSD_CALL_KIND_DATA, 0x00CAFEU, 0U, 4U,
+                                              "Active Ch: 0004 (TDMA S1) TG: 51966;"));
     rc |=
         expect_true("con+ data policy block suppresses tune", con_opts.trunk_is_tuned == 0 && con_st.is_con_plus == 0);
 
     init_env(&con_opts, &con_st);
     con_opts.trunk_tune_data_calls = 1;
     con_st.trunk_chan_map[4] = 856250000L;
-    con_st.last_active_time = time(NULL);
     con_st.last_vc_sync_time = time(NULL) - 10;
-    DSD_SNPRINTF(con_st.active_channel[0], sizeof(con_st.active_channel[0]), "previous active");
+    const dsd_call_observation previous_activity = {
+        .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+        .ota_target_id = 777U,
+        .channel = 9U,
+    };
+    (void)dsd_recent_activity_publish(&con_st, 0U, &previous_activity, "previous active", 0U);
     g_fail_tune_to_freq_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = fail_result_tune_to_freq,
@@ -714,7 +816,8 @@ main(void) {
     build_con_plus_data(bits, bytes, 0x00CAFEU, 4U, 0U);
     dmr_cspdu(&con_opts, &con_st, bits, bytes, 1U, 0U);
     rc |= expect_true("con+ data failed tune hook called", g_fail_tune_to_freq_calls == 1);
-    rc |= expect_true("con+ data rollback active", strcmp(con_st.active_channel[0], "previous active") == 0);
+    rc |= expect_true("con+ data rollback restores activity",
+                      recent_activity_matches(&con_st, 0U, DSD_CALL_KIND_DATA, 777U, 0U, 9U, "previous active"));
     rc |= expect_true("con+ data failed tune does not mark flavor", con_st.is_con_plus == 0);
     install_trunk_tuning_hooks();
 
@@ -759,14 +862,14 @@ main(void) {
     build_p_protect(bits, bytes, 0U, 1U, 0x003333U, 0x004444U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("group protect marks slot 1 voice burst", pf0_st.dmrburstL == 1);
-    rc |= expect_true("group protect maps GI to group", pf0_st.gi[0] == 0);
+    rc |= expect_true("group protect does not create a voice call", no_active_call(&pf0_st, 0U));
 
     init_env(&pf0_opts, &pf0_st);
     pf0_st.currentslot = 1;
     build_p_protect(bits, bytes, 1U, 0U, 0x005555U, 0x006666U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("private protect marks slot 2 voice burst", pf0_st.dmrburstR == 1);
-    rc |= expect_true("private protect maps GI to private", pf0_st.gi[1] == 1);
+    rc |= expect_true("private protect does not create a voice call", no_active_call(&pf0_st, 1U));
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_is_tuned = 1;
@@ -779,17 +882,15 @@ main(void) {
 
     init_env(&pf0_opts, &pf0_st);
     pf0_st.currentslot = 1;
-    pf0_st.gi[1] = 9;
     build_c_ahoy(bits, bytes, 1U, 4U, 0x009999U, 0x000777U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_ahoy group maps slot GI to group", pf0_st.gi[1] == 0);
+    rc |= expect_true("c_ahoy group does not create a voice call", no_active_call(&pf0_st, 1U));
 
     init_env(&pf0_opts, &pf0_st);
     pf0_st.currentslot = 0;
-    pf0_st.gi[0] = 9;
     build_c_ahoy(bits, bytes, 0U, 2U, 0x008888U, 0x000666U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_ahoy private maps slot GI to private", pf0_st.gi[0] == 1);
+    rc |= expect_true("c_ahoy private does not create a voice call", no_active_call(&pf0_st, 0U));
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.use_rigctl = 1;
@@ -818,24 +919,22 @@ main(void) {
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_enable = 0;
-    pf0_st.gi[0] = 0;
     build_c_move(bits, bytes, 12U, 0U, 0x001234U, 0x005678U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 1 target", pf0_st.lasttg == 0x001234U);
-    rc |= expect_true("c_move slot 1 source", pf0_st.lastsrc == 0x005678U);
-    rc |= expect_true("c_move slot 1 call string", strcmp(pf0_st.call_string[0], "   Group  Move      ") == 0);
+    rc |= expect_true("c_move slot 1 activity",
+                      recent_activity_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 0x001234U, 0x005678U, 12U,
+                                              "Active Ch: 000C (TDMA S1) TG: 4660;"));
+    rc |= expect_true("c_move slot 1 does not create a call", no_active_call(&pf0_st, 0U));
     rc |= expect_true("c_move slot 1 debounces opposite slot", pf0_st.dmrburstL == 16 && pf0_st.dmrburstR == 9);
-    rc |= expect_true("c_move slot 1 active channel",
-                      strstr(pf0_st.active_channel[0], "Active Ch: 000C (TDMA S1) TG: 4660;") != NULL);
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_enable = 0;
-    pf0_st.gi[1] = 1;
     build_c_move(bits, bytes, 13U, 1U, 0x002345U, 0x006789U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 2 target", pf0_st.lasttgR == 0x002345U);
-    rc |= expect_true("c_move slot 2 source", pf0_st.lastsrcR == 0x006789U);
-    rc |= expect_true("c_move slot 2 call string", strcmp(pf0_st.call_string[1], " Private  Move      ") == 0);
+    rc |= expect_true("c_move slot 2 activity",
+                      recent_activity_matches(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x002345U, 0x006789U, 13U,
+                                              "Active Ch: 000D (TDMA S2) TG: 9029;"));
+    rc |= expect_true("c_move slot 2 does not create a call", no_active_call(&pf0_st, 1U));
     rc |= expect_true("c_move slot 2 debounces opposite slot", pf0_st.dmrburstR == 16 && pf0_st.dmrburstL == 9);
 
     init_env(&pf0_opts, &pf0_st);
@@ -843,26 +942,26 @@ main(void) {
     pf0_st.currentslot = 0;
     pf0_st.dmrburstL = 6;
     pf0_st.dmrburstR = 6;
-    DSD_SNPRINTF(pf0_st.call_string[0], sizeof(pf0_st.call_string[0]), "slot one active");
+    seed_voice_call(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 4400U, 3300U);
     build_p_clear(bits, bytes, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear trunk disabled leaves slot 1 burst", pf0_st.dmrburstL == 6);
     rc |= expect_true("p_clear trunk disabled leaves opposite burst", pf0_st.dmrburstR == 6);
-    rc |= expect_true("p_clear trunk disabled leaves slot 1 call string",
-                      strcmp(pf0_st.call_string[0], "slot one active") == 0);
+    rc |= expect_true("p_clear trunk disabled leaves canonical slot 1 call",
+                      active_call_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 4400U, 3300U));
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_is_tuned = 1;
     pf0_st.currentslot = 1;
     pf0_st.dmrburstL = 6;
     pf0_st.dmrburstR = 16;
-    DSD_SNPRINTF(pf0_st.call_string[1], sizeof(pf0_st.call_string[1]), "slot two data");
-    DSD_SNPRINTF(pf0_st.active_channel[1], sizeof(pf0_st.active_channel[1]), "slot two data channel");
+    const dsd_call_observation slot_two_data = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 1U, 0U, 9900U);
+    (void)dsd_recent_activity_publish(&pf0_st, 1U, &slot_two_data, "slot two data channel", 1U);
     build_p_clear(bits, bytes, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear data clears slot 2 burst state", pf0_st.dmrburstL == 9 && pf0_st.dmrburstR == 9);
-    rc |= expect_true("p_clear data clears slot 2 call string", pf0_st.call_string[1][0] == '\0');
-    rc |= expect_true("p_clear data clears slot 2 active channel", pf0_st.active_channel[1][0] == '\0');
+    rc |= expect_true("p_clear data clears slot 2 activity", recent_activity_is_empty(&pf0_st, 1U));
+    rc |= expect_true("p_clear data does not create a call", no_active_call(&pf0_st, 1U));
     rc |= expect_true("p_clear data does not force release", pf0_st.trunk_sm_force_release == 0);
     rc |= expect_true("p_clear data does not return to cc", pf0_st.p25_sm_release_count == 0);
 
@@ -873,12 +972,18 @@ main(void) {
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear hold setup tunes vc", pf0_opts.trunk_is_tuned == 1 && dmr_sm_get_ctx()->vc_tg == 5500);
     pf0_st.currentslot = 1;
-    pf0_st.lasttgR = 5500;
+    seed_voice_call(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 5500U, 6500U);
     pf0_st.tg_hold = 5500U;
     pf0_st.dmrburstL = 16;
     pf0_st.dmrburstR = 16;
-    DSD_SNPRINTF(pf0_st.call_string[1], sizeof(pf0_st.call_string[1]), "slot two voice");
-    DSD_SNPRINTF(pf0_st.active_channel[1], sizeof(pf0_st.active_channel[1]), "slot two voice channel");
+    const dsd_call_observation slot_two_voice_activity = {
+        .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 5500U,
+        .ota_source_id = 6500U,
+    };
+    (void)dsd_recent_activity_publish(&pf0_st, 1U, &slot_two_voice_activity, "slot two voice channel", 1U);
     g_return_to_cc_result_calls = 0;
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = test_tune_request,
@@ -891,8 +996,7 @@ main(void) {
     rc |= expect_true("p_clear hold forced return hook called", g_return_to_cc_result_calls == 1);
     rc |= expect_true("p_clear hold clears force latch", pf0_st.trunk_sm_force_release == 0);
     rc |= expect_true("p_clear hold returns to cc", pf0_opts.trunk_is_tuned == 0 && pf0_st.p25_sm_release_count == 1);
-    rc |= expect_true("p_clear hold clears slot 2 labels",
-                      pf0_st.call_string[1][0] == '\0' && pf0_st.active_channel[1][0] == '\0');
+    rc |= expect_true("p_clear hold clears slot 2 activity", recent_activity_is_empty(&pf0_st, 1U));
     pf0_st.tg_hold = 0;
 
     init_env(&pf0_opts, &pf0_st);
@@ -945,11 +1049,12 @@ main(void) {
     build_xpt_site_status(bits, bytes, 0U, 2U, xpt_status, xpt_tg);
     dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
     rc |= expect_true("xpt site status updates site parms", strcmp(xpt_st.dmr_site_parms, "Free LCN - 2 ") == 0);
-    rc |= expect_true("xpt site status records active TG",
-                      strstr(xpt_st.active_channel[0], "LSN:1 TG:77;") != NULL
-                          && strstr(xpt_st.active_channel[0], "LSN:5 TG:99;") != NULL);
-    rc |=
-        expect_true("xpt site status records active private", strstr(xpt_st.active_channel[0], "LSN:2 PC:88;") != NULL);
+    rc |= expect_true("xpt site status records active TG activity",
+                      recent_activity_matches(&xpt_st, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "LSN:1 TG:77;"));
+    rc |= expect_true("xpt site status records second active TG activity",
+                      recent_activity_matches(&xpt_st, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "LSN:5 TG:99;"));
+    rc |= expect_true("xpt site status records active private activity",
+                      recent_activity_matches(&xpt_st, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "LSN:2 PC:88;"));
     rc |= expect_true("xpt site status sets rtl control channel",
                       xpt_opts.trunk_is_tuned == 1 && xpt_st.trunk_cc_freq == 461250000L);
     rc |= expect_true("xpt site status sets branding", strcmp(xpt_st.dmr_branding_sub, "XPT ") == 0);
@@ -971,7 +1076,8 @@ main(void) {
     rc |= expect_true("xpt seq1 private uses banked LSN map", xpt_st.trunk_vc_freq[0] == 462012500L);
     rc |= expect_true("xpt seq1 learns rtl control channel", xpt_st.trunk_cc_freq == 462000000L);
     rc |= expect_true("xpt seq1 rotates symbols before tune", g_rotate_symbol_out_file_calls == 1);
-    rc |= expect_true("xpt seq1 writes banked active channel", xpt_st.active_channel[1][0] == '\0');
+    rc |= expect_true("xpt seq1 publishes empty bank activity",
+                      recent_activity_matches(&xpt_st, 1U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, NULL));
     dsd_state_ext_free_all(&xpt_st);
 
     init_env(&xpt_opts, &xpt_st);
@@ -983,7 +1089,8 @@ main(void) {
     uint8_t xpt_debounce_tg[6] = {55U, 0U, 0U, 0U, 0U, 0U};
     build_xpt_site_status(bits, bytes, 2U, 0U, xpt_debounce_status, xpt_debounce_tg);
     dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("xpt seq2 records banked active TG", strstr(xpt_st.active_channel[2], "LSN:13 TG:55;") != NULL);
+    rc |= expect_true("xpt seq2 records banked active TG activity",
+                      recent_activity_matches(&xpt_st, 2U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "LSN:13 TG:55;"));
     rc |= expect_true("xpt seq2 debounce suppresses grant", dmr_sm_get_ctx()->vc_tg == 0);
     rc |= expect_true("xpt seq2 still learns rtl control channel", xpt_st.trunk_cc_freq == 463000000L);
     dsd_state_ext_free_all(&xpt_st);
@@ -999,8 +1106,8 @@ main(void) {
     uint8_t xpt_block_tg[6] = {44U, 0U, 0U, 0U, 0U, 0U};
     build_xpt_site_status(bits, bytes, 0U, 0U, xpt_block_status, xpt_block_tg);
     dmr_cspdu(&xpt_opts, &xpt_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("xpt allow-list block keeps active TG visible",
-                      strstr(xpt_st.active_channel[0], "LSN:1 TG:44;") != NULL);
+    rc |= expect_true("xpt allow-list block keeps active TG activity visible",
+                      recent_activity_matches(&xpt_st, 0U, DSD_CALL_KIND_DATA, 0U, 0U, 0U, "LSN:1 TG:44;"));
     rc |= expect_true("xpt allow-list block suppresses grant", dmr_sm_get_ctx()->vc_tg == 0);
     rc |= expect_true("xpt allow-list block does not tune VC", xpt_st.trunk_vc_freq[0] == 0);
     dsd_state_ext_free_all(&xpt_st);
@@ -1015,6 +1122,10 @@ main(void) {
     if (rc == 0) {
         printf("DMR_GRANT_POLICY: OK\n");
     }
+    dsd_state_ext_free_all(&cap_st);
+    dsd_state_ext_free_all(&con_st);
+    dsd_state_ext_free_all(&pf0_st);
+    dsd_state_ext_free_all(&xpt_st);
     free_test_state(st);
     free(opts);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

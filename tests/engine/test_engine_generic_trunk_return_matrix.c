@@ -10,6 +10,7 @@
  * than the P25 trunk state machine helper.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -140,9 +141,23 @@ setup_generic_fixture(dsd_opts** opts_out, dsd_state** state_out, const generic_
     state->p25_p2_audio_allowed[1] = 1;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    state->p25_call_is_packet[0] = 1;
-    state->p25_call_is_packet[1] = 1;
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "%s", scenario);
+    const dsd_call_observation observation = {
+        .protocol = test_case->synctype,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .policy_target_id = 1201U,
+        .ota_source_id = 42001U,
+        .channel = 1U,
+        .frequency_hz = GENERIC_TRUNK_VC_HZ,
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) <= 0
+        || dsd_recent_activity_publish(state, 1U, &observation, scenario, 0U) <= 0) {
+        free_test_runtime(opts, state);
+        *opts_out = NULL;
+        *state_out = NULL;
+        return 1;
+    }
     return 0;
 }
 
@@ -150,8 +165,20 @@ static int
 p25_p2_voice_aliases_cleared(const dsd_state* state) {
     return state->p25_p2_active_slot == -1 && state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0
            && state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN
-           && state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN && state->p25_call_is_packet[0] == 0
-           && state->p25_call_is_packet[1] == 0;
+           && state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN;
+}
+
+static int
+canonical_call_ended(const dsd_state* state) {
+    dsd_call_snapshot call = {0};
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED && call.ota_target_id == 1201U
+           && call.ota_source_id == 42001U;
+}
+
+static int
+recent_activity_cleared(const dsd_state* state) {
+    dsd_recent_activity_snapshot recent = {0};
+    return dsd_recent_activity_copy_snapshot(state, &recent) <= 0 || recent.entries[1].notice[0] == '\0';
 }
 
 static int
@@ -175,6 +202,7 @@ run_recent_vc_case(const generic_return_case* test_case) {
                           && state->p2_siteid == 0 && state->p25_sys_is_tdma == 0);
     rc |= expect_true(test_case->name, "recent-vc", "p25 slot and audio aliases cleared",
                       p25_p2_voice_aliases_cleared(state));
+    rc |= expect_true(test_case->name, "recent-vc", "carrier loss ended canonical call", canonical_call_ended(state));
 
     free_test_runtime(opts, state);
     return rc;
@@ -203,8 +231,8 @@ run_stale_vc_with_cc_case(const generic_return_case* test_case) {
                       state->p2_cc == 0 && state->p2_wacn == 0 && state->p2_sysid == 0 && state->p25_sys_is_tdma == 0);
     rc |= expect_true(test_case->name, "stale-vc-with-cc", "p25 slot and audio aliases cleared",
                       p25_p2_voice_aliases_cleared(state));
-    rc |=
-        expect_true(test_case->name, "stale-vc-with-cc", "active display cleared", state->active_channel[0][0] == '\0');
+    rc |= expect_true(test_case->name, "stale-vc-with-cc", "canonical call ended", canonical_call_ended(state));
+    rc |= expect_true(test_case->name, "stale-vc-with-cc", "recent activity cleared", recent_activity_cleared(state));
 
     free_test_runtime(opts, state);
     return rc;

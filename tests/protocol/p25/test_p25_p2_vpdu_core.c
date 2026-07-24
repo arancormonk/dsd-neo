@@ -8,10 +8,13 @@
  * and unknown-length fallback handling.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
@@ -19,6 +22,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <unistd.h>
+#endif
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -112,6 +118,63 @@ expect_contains(const char* tag, const char* haystack, const char* needle) {
     return 0;
 }
 
+static const dsd_recent_activity_entry*
+recent_activity(const dsd_state* state, uint8_t index) {
+    static dsd_recent_activity_snapshot recent;
+    DSD_MEMSET(&recent, 0, sizeof recent);
+    if (index >= DSD_RECENT_ACTIVITY_COUNT || dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        return NULL;
+    }
+    return &recent.entries[index];
+}
+
+static const char*
+recent_notice(const dsd_state* state, uint8_t index) {
+    const dsd_recent_activity_entry* entry = recent_activity(state, index);
+    return entry ? entry->notice : "";
+}
+
+static int
+seed_identity_calls(dsd_state* state) {
+    const dsd_call_observation left = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x1111U,
+        .policy_target_id = 0x1111U,
+        .ota_source_id = 0x010203U,
+    };
+    const dsd_call_observation right = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 0x2222U,
+        .policy_target_id = 0x2222U,
+        .ota_source_id = 0x040506U,
+    };
+    return dsd_call_state_observe(state, &left, DSD_CALL_BOUNDARY_BEGIN) > 0
+           && dsd_call_state_observe(state, &right, DSD_CALL_BOUNDARY_BEGIN) > 0;
+}
+
+static int
+expect_identity_calls(const char* tag, const dsd_state* state) {
+    dsd_call_snapshot left = {0};
+    dsd_call_snapshot right = {0};
+    int rc = 0;
+    char label[128];
+    DSD_SNPRINTF(label, sizeof label, "%s canonical slots", tag);
+    rc |= expect_true(label, dsd_call_state_get(state, 0U, &left) > 0 && dsd_call_state_get(state, 1U, &right) > 0);
+    DSD_SNPRINTF(label, sizeof label, "%s slot0 target", tag);
+    rc |= expect_eq_long(label, (long)left.ota_target_id, 0x1111);
+    DSD_SNPRINTF(label, sizeof label, "%s slot1 target", tag);
+    rc |= expect_eq_long(label, (long)right.ota_target_id, 0x2222);
+    DSD_SNPRINTF(label, sizeof label, "%s slot0 source", tag);
+    rc |= expect_eq_long(label, (long)left.ota_source_id, 0x010203);
+    DSD_SNPRINTF(label, sizeof label, "%s slot1 source", tag);
+    rc |= expect_eq_long(label, (long)right.ota_source_id, 0x040506);
+    return rc;
+}
+
 static int
 expect_file_contains(const char* tag, const char* path, const char* needle) {
     FILE* f = fopen(path, "rb");
@@ -175,10 +238,7 @@ seed_metadata_only_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_tune_group_calls = 1;
     opts->trunk_tune_private_calls = 1;
     state->p25_cc_freq = 851000000L;
-    state->lasttg = 0x1111;
-    state->lasttgR = 0x2222;
-    state->lastsrc = 0x010203;
-    state->lastsrcR = 0x040506;
+    (void)seed_identity_calls(state);
     state->p25_aff_count = 1;
     state->p25_aff_rid[0] = 0x112233;
     state->p25_ga_count = 1;
@@ -187,7 +247,8 @@ seed_metadata_only_state(dsd_opts* opts, dsd_state* state) {
     state->p25_patch_count = 1;
     state->p25_patch_sgid[0] = 0x4567;
     state->p25_patch_active[0] = 1;
-    DSD_SNPRINTF(state->active_channel[0], sizeof state->active_channel[0], "%s", "KEEP");
+    const dsd_call_observation recent = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 0U, 0U);
+    (void)dsd_recent_activity_publish(state, 0U, &recent, "KEEP", 0U);
 }
 
 static int
@@ -202,15 +263,8 @@ expect_metadata_only_state(const char* tag, const dsd_opts* opts, const dsd_stat
     DSD_SNPRINTF(label, sizeof label, "%s vc1", tag);
     rc |= expect_eq_long(label, state->p25_vc_freq[1], 0);
     DSD_SNPRINTF(label, sizeof label, "%s active channel", tag);
-    rc |= expect_contains(label, state->active_channel[0], "KEEP");
-    DSD_SNPRINTF(label, sizeof label, "%s lasttg", tag);
-    rc |= expect_eq_long(label, state->lasttg, 0x1111);
-    DSD_SNPRINTF(label, sizeof label, "%s lasttgR", tag);
-    rc |= expect_eq_long(label, state->lasttgR, 0x2222);
-    DSD_SNPRINTF(label, sizeof label, "%s lastsrc", tag);
-    rc |= expect_eq_long(label, state->lastsrc, 0x010203);
-    DSD_SNPRINTF(label, sizeof label, "%s lastsrcR", tag);
-    rc |= expect_eq_long(label, state->lastsrcR, 0x040506);
+    rc |= expect_contains(label, recent_notice(state, 0U), "KEEP");
+    rc |= expect_identity_calls(tag, state);
     DSD_SNPRINTF(label, sizeof label, "%s aff count", tag);
     rc |= expect_eq_long(label, state->p25_aff_count, 1);
     DSD_SNPRINTF(label, sizeof label, "%s ga count", tag);
@@ -576,6 +630,13 @@ run_sccb_full_cache_preservation_case(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     state = (dsd_state*)calloc(1, sizeof(*state));
     if (!state) {
+#if DSD_PLATFORM_WIN_NATIVE
+        (void)_rmdir(dir);
+#else
+        (void)rmdir(dir);
+#endif
+        (void)dsd_test_unsetenv("DSD_NEO_CACHE_DIR");
+        (void)dsd_test_unsetenv("DSD_NEO_CC_CACHE");
         return 1;
     }
 
@@ -596,11 +657,26 @@ run_sccb_full_cache_preservation_case(void) {
     if (n <= 0 || (size_t)n >= sizeof cache_path) {
         dsd_state_ext_free_all(state);
         free(state);
+#if DSD_PLATFORM_WIN_NATIVE
+        (void)_rmdir(dir);
+#else
+        (void)rmdir(dir);
+#endif
+        (void)dsd_test_unsetenv("DSD_NEO_CACHE_DIR");
+        (void)dsd_test_unsetenv("DSD_NEO_CC_CACHE");
         return 1;
     }
     if (!write_full_sccb_cache_fixture(cache_path, 852000000L)) {
         dsd_state_ext_free_all(state);
         free(state);
+        (void)remove(cache_path);
+#if DSD_PLATFORM_WIN_NATIVE
+        (void)_rmdir(dir);
+#else
+        (void)rmdir(dir);
+#endif
+        (void)dsd_test_unsetenv("DSD_NEO_CACHE_DIR");
+        (void)dsd_test_unsetenv("DSD_NEO_CC_CACHE");
         return 1;
     }
 
@@ -623,6 +699,14 @@ run_sccb_full_cache_preservation_case(void) {
 
     dsd_state_ext_free_all(state);
     free(state);
+    (void)remove(cache_path);
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)_rmdir(dir);
+#else
+    (void)rmdir(dir);
+#endif
+    (void)dsd_test_unsetenv("DSD_NEO_CACHE_DIR");
+    (void)dsd_test_unsetenv("DSD_NEO_CC_CACHE");
     return rc;
 }
 
@@ -711,8 +795,9 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[4] = 0x0A;
     put_u24_ull(MAC, 5, 0x010203);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0x03 telephone user active", state.active_channel[0], "TELE Target: 66051");
-    rc |= expect_eq_long("0x03 telephone user last active", state.last_active_time != 0, 1);
+    rc |= expect_contains("0x03 telephone user active", recent_notice(&state, 0U), "TELE Target: 66051");
+    const dsd_recent_activity_entry* telephone = recent_activity(&state, 0U);
+    rc |= expect_true("0x03 telephone user activity timestamp", telephone && telephone->updated_m_ms != 0U);
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -723,8 +808,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 5, 0x123456);
     put_u24_ull(MAC, 8, 0x654321);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0x4C RUM target", state.active_channel[0], "RUM Target: 1193046");
-    rc |= expect_contains("0x4C RUM source", state.active_channel[0], "Source: 6636321");
+    rc |= expect_contains("0x4C RUM target", recent_notice(&state, 0U), "RUM Target: 1193046");
+    rc |= expect_contains("0x4C RUM source", recent_notice(&state, 0U), "Source: 6636321");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -739,8 +824,8 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[13] = 0x34;
     MAC[14] = 0x80;
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0x5E RUM enhanced target", state.active_channel[0], "RUM-E Target: 66051");
-    rc |= expect_contains("0x5E RUM enhanced tg", state.active_channel[0], "TG: 17767");
+    rc |= expect_contains("0x5E RUM enhanced target", recent_notice(&state, 0U), "RUM-E Target: 66051");
+    rc |= expect_contains("0x5E RUM enhanced tg", recent_notice(&state, 0U), "TG: 17767");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -752,9 +837,9 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("p1 bridged 0x18 status target", state.active_channel[0], "STATUS Target: 703710");
-    rc |= expect_contains("p1 bridged 0x18 status source", state.active_channel[0], "Source: 74565");
-    rc |= expect_contains("p1 bridged 0x18 status codes", state.active_channel[0], "Unit: 21 User: 43");
+    rc |= expect_contains("p1 bridged 0x18 status target", recent_notice(&state, 0U), "STATUS Target: 703710");
+    rc |= expect_contains("p1 bridged 0x18 status source", recent_notice(&state, 0U), "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "Unit: 21 User: 43");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -764,8 +849,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("p1 bridged 0x1A query target", state.active_channel[0], "Status Query Target: 703710");
-    rc |= expect_contains("p1 bridged 0x1A query source", state.active_channel[0], "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x1A query target", recent_notice(&state, 0U), "Status Query Target: 703710");
+    rc |= expect_contains("p1 bridged 0x1A query source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -777,9 +862,9 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("p1 bridged 0x1C message target", state.active_channel[0], "MSG Target: 703710");
-    rc |= expect_contains("p1 bridged 0x1C message source", state.active_channel[0], "Source: 74565");
-    rc |= expect_contains("p1 bridged 0x1C message body", state.active_channel[0], "Message: BEEF");
+    rc |= expect_contains("p1 bridged 0x1C message target", recent_notice(&state, 0U), "MSG Target: 703710");
+    rc |= expect_contains("p1 bridged 0x1C message source", recent_notice(&state, 0U), "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x1C message body", recent_notice(&state, 0U), "Message: BEEF");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -789,8 +874,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("p1 bridged 0x1F alert target", state.active_channel[0], "Call Alert Target: 703710");
-    rc |= expect_contains("p1 bridged 0x1F alert source", state.active_channel[0], "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x1F alert target", recent_notice(&state, 0U), "Call Alert Target: 703710");
+    rc |= expect_contains("p1 bridged 0x1F alert source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -800,9 +885,9 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("p1 bridged 0x2A affiliation target", state.active_channel[0],
+    rc |= expect_contains("p1 bridged 0x2A affiliation target", recent_notice(&state, 0U),
                           "Group Affiliation Query Target: 703710");
-    rc |= expect_contains("p1 bridged 0x2A affiliation source", state.active_channel[0], "Source: 74565");
+    rc |= expect_contains("p1 bridged 0x2A affiliation source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -813,8 +898,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 5, 0x010203);
     put_fqid_tail_ull(MAC, 8, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xCC RUM extended target", state.active_channel[0], "RUM-X Target: 66051");
-    rc |= expect_contains("0xCC RUM extended source", state.active_channel[0], "Source: 1122867");
+    rc |= expect_contains("0xCC RUM extended target", recent_notice(&state, 0U), "RUM-X Target: 66051");
+    rc |= expect_contains("0xCC RUM extended source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -825,8 +910,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 5, 0x010203);
     put_fqid_tail_ull(MAC, 8, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xD8 status extended", state.active_channel[0], "STATUS-X Target: 66051");
-    rc |= expect_contains("0xD8 status source", state.active_channel[0], "Source: 1122867");
+    rc |= expect_contains("0xD8 status extended", recent_notice(&state, 0U), "STATUS-X Target: 66051");
+    rc |= expect_contains("0xD8 status source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -835,8 +920,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 2, 0x010203);
     put_fqid_tail_ull(MAC, 5, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xDA query extended", state.active_channel[0], "Status Query-X Target: 66051");
-    rc |= expect_contains("0xDA query source", state.active_channel[0], "Source: 1122867");
+    rc |= expect_contains("0xDA query extended", recent_notice(&state, 0U), "Status Query-X Target: 66051");
+    rc |= expect_contains("0xDA query source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -847,8 +932,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 5, 0x010203);
     put_fqid_tail_ull(MAC, 8, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xDC message extended", state.active_channel[0], "MSG-X Target: 66051");
-    rc |= expect_contains("0xDC message payload", state.active_channel[0], "Message: CAFE");
+    rc |= expect_contains("0xDC message extended", recent_notice(&state, 0U), "MSG-X Target: 66051");
+    rc |= expect_contains("0xDC message payload", recent_notice(&state, 0U), "Message: CAFE");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -857,8 +942,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 2, 0x010203);
     put_fqid_tail_ull(MAC, 5, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xDF alert extended", state.active_channel[0], "Call Alert-X Target: 66051");
-    rc |= expect_contains("0xDF alert source", state.active_channel[0], "Source: 1122867");
+    rc |= expect_contains("0xDF alert extended", recent_notice(&state, 0U), "Call Alert-X Target: 66051");
+    rc |= expect_contains("0xDF alert source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -870,8 +955,8 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 8, 0x010203);
     put_fqid_tail_ull(MAC, 11, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xE4 extfunc target", state.active_channel[0], "EXTFUNC-X Target: 66051");
-    rc |= expect_contains("0xE4 extfunc source", state.active_channel[0], "Source: 1122867");
+    rc |= expect_contains("0xE4 extfunc target", recent_notice(&state, 0U), "EXTFUNC-X Target: 66051");
+    rc |= expect_contains("0xE4 extfunc source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -886,8 +971,8 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[13] = 0xE1;
     MAC[14] = 0x23;
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xE5 extfunc lcch target", state.active_channel[0], "EXTFUNC-L Target: 66051");
-    rc |= expect_contains("0xE5 extfunc lcch source", state.active_channel[0], "Source: ABCDE:123");
+    rc |= expect_contains("0xE5 extfunc lcch target", recent_notice(&state, 0U), "EXTFUNC-L Target: 66051");
+    rc |= expect_contains("0xE5 extfunc lcch source", recent_notice(&state, 0U), "Source: ABCDE:123");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -896,9 +981,9 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 2, 0x010203);
     put_fqid_tail_ull(MAC, 5, 0xABCDE, 0x123, 0x112233);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xEA affiliation query extended", state.active_channel[0],
+    rc |= expect_contains("0xEA affiliation query extended", recent_notice(&state, 0U),
                           "Group Affiliation Query-X Target: 66051");
-    rc |= expect_contains("0xEA affiliation query source", state.active_channel[0], "Source: 1122867");
+    rc |= expect_contains("0xEA affiliation query source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -923,8 +1008,8 @@ run_standard_mac_unit_to_unit_extended_cases(void) {
     put_fqid_tail_ull(MAC, 6, 0xABCDE, 0x123, 0xAABBCC);
     put_u24_ull(MAC, 13, 0x010203);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xC4 corrected target", state.active_channel[0], "TGT: 66051");
-    rc |= expect_contains("0xC4 corrected source", state.active_channel[0], "SRC: 11189196");
+    rc |= expect_contains("0xC4 corrected target", recent_notice(&state, 0U), "TGT: 66051");
+    rc |= expect_contains("0xC4 corrected source", recent_notice(&state, 0U), "SRC: 11189196");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -937,8 +1022,8 @@ run_standard_mac_unit_to_unit_extended_cases(void) {
     put_fqid_tail_ull(MAC, 6, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(MAC, 13, 0x445566);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xC6 update target", state.active_channel[0], "TGT: 4478310");
-    rc |= expect_contains("0xC6 update source", state.active_channel[0], "SRC: 1122867");
+    rc |= expect_contains("0xC6 update target", recent_notice(&state, 0U), "TGT: 4478310");
+    rc |= expect_contains("0xC6 update source", recent_notice(&state, 0U), "SRC: 1122867");
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -969,7 +1054,7 @@ run_group_affiliation_response_extended_case(void) {
     put_u24_ull(MAC, 14, 0x010203);
 
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("0xE8 affiliation active", state.active_channel[0], "AFF-X Target: 66051");
+    rc |= expect_contains("0xE8 affiliation active", recent_notice(&state, 0U), "AFF-X Target: 66051");
     rc |= expect_eq_long("0xE8 accepted aff count", state.p25_aff_count, 1);
     rc |= expect_eq_long("0xE8 accepted ga count", state.p25_ga_count, 1);
     rc |= expect_eq_long("0xE8 accepted target", state.p25_aff_rid[0], 0x010203);
@@ -987,10 +1072,7 @@ seed_vendor_display_only_state(dsd_opts* opts, dsd_state* state) {
     opts->trunk_enable = 1;
     opts->trunk_is_tuned = 0;
     state->p25_cc_freq = 851000000L;
-    state->lasttg = 0x1111;
-    state->lasttgR = 0x2222;
-    state->lastsrc = 0x010203;
-    state->lastsrcR = 0x040506;
+    (void)seed_identity_calls(state);
     state->p25_aff_count = 1;
     state->p25_aff_rid[0] = 0x112233;
     state->p25_ga_count = 1;
@@ -1010,14 +1092,7 @@ expect_vendor_display_only_state(const char* tag, const dsd_opts* opts, const ds
     rc |= expect_eq_long(label, opts->trunk_is_tuned, 0);
     DSD_SNPRINTF(label, sizeof label, "%s cc freq", tag);
     rc |= expect_eq_long(label, state->p25_cc_freq, 851000000L);
-    DSD_SNPRINTF(label, sizeof label, "%s lasttg", tag);
-    rc |= expect_eq_long(label, state->lasttg, 0x1111);
-    DSD_SNPRINTF(label, sizeof label, "%s lasttgR", tag);
-    rc |= expect_eq_long(label, state->lasttgR, 0x2222);
-    DSD_SNPRINTF(label, sizeof label, "%s lastsrc", tag);
-    rc |= expect_eq_long(label, state->lastsrc, 0x010203);
-    DSD_SNPRINTF(label, sizeof label, "%s lastsrcR", tag);
-    rc |= expect_eq_long(label, state->lastsrcR, 0x040506);
+    rc |= expect_identity_calls(tag, state);
     DSD_SNPRINTF(label, sizeof label, "%s aff count", tag);
     rc |= expect_eq_long(label, state->p25_aff_count, 1);
     DSD_SNPRINTF(label, sizeof label, "%s ga count", tag);
@@ -1066,9 +1141,9 @@ run_vendor_mac_display_only_cases(void) {
     put_u24_ull(MAC, 12, 0x070809);
     put_u24_ull(MAC, 15, 0x0A0B0C);
     process_MAC_VPDU(&opts, &state, 1 /* SACCH */, MAC);
-    rc |= expect_contains("moto 0x82 active radios label", state.active_channel[0], "MOT AGR 130");
-    rc |= expect_contains("moto 0x82 active radios rid1", state.active_channel[0], "66051");
-    rc |= expect_contains("moto 0x82 active radios rid4", state.active_channel[0], "658188");
+    rc |= expect_contains("moto 0x82 active radios label", recent_notice(&state, 0U), "MOT AGR 130");
+    rc |= expect_contains("moto 0x82 active radios rid1", recent_notice(&state, 0U), "66051");
+    rc |= expect_contains("moto 0x82 active radios rid4", recent_notice(&state, 0U), "658188");
     rc |= expect_vendor_display_only_state("moto 0x82", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1082,9 +1157,9 @@ run_vendor_mac_display_only_cases(void) {
     put_u24_ull(MAC, 6, 0x010203);
     put_u24_ull(MAC, 9, 0x040506);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("moto 0x8F active radios label", state.active_channel[0], "MOT AGR 143");
-    rc |= expect_contains("moto 0x8F active radios status", state.active_channel[0], "Status: 80");
-    rc |= expect_contains("moto 0x8F active radios rid2", state.active_channel[0], "263430");
+    rc |= expect_contains("moto 0x8F active radios label", recent_notice(&state, 0U), "MOT AGR 143");
+    rc |= expect_contains("moto 0x8F active radios status", recent_notice(&state, 0U), "Status: 80");
+    rc |= expect_contains("moto 0x8F active radios rid2", recent_notice(&state, 0U), "263430");
     rc |= expect_vendor_display_only_state("moto 0x8F", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1094,7 +1169,7 @@ run_vendor_mac_display_only_cases(void) {
     MAC[2] = 0x90;
     MAC[3] = 0x03;
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_contains("moto 0xBF feature marker", state.active_channel[0], "MOT AGR Feature Active");
+    rc |= expect_contains("moto 0xBF feature marker", recent_notice(&state, 0U), "MOT AGR Feature Active");
     rc |= expect_vendor_display_only_state("moto 0xBF", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1173,7 +1248,7 @@ run_standard_mac_multifragment_cases(void) {
     init_multifragment_continuation(cont, 10);
     put_u24_ull(cont, 3, 0x010203);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-    rc |= expect_true("orphan continuation does not mutate active state", state.active_channel[0][0] == '\0');
+    rc |= expect_true("orphan continuation does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -1184,16 +1259,16 @@ run_standard_mac_multifragment_cases(void) {
     put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(base, 16, 0x445566);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
-    rc |= expect_true("base fragment does not mutate active state", state.active_channel[0][0] == '\0');
+    rc |= expect_true("base fragment does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
 
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-    rc |= expect_contains("completed 0xD9 status label", state.active_channel[0], "STATUS-L");
-    rc |= expect_contains("completed 0xD9 target", state.active_channel[0], "Target: 66051");
-    rc |= expect_contains("completed 0xD9 source", state.active_channel[0], "Source: 4478310");
-    rc |= expect_contains("completed 0xD9 unit", state.active_channel[0], "Unit: 12");
-    rc |= expect_contains("completed 0xD9 user", state.active_channel[0], "User: 34");
+    rc |= expect_contains("completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
+    rc |= expect_contains("completed 0xD9 target", recent_notice(&state, 0U), "Target: 66051");
+    rc |= expect_contains("completed 0xD9 source", recent_notice(&state, 0U), "Source: 4478310");
+    rc |= expect_contains("completed 0xD9 unit", recent_notice(&state, 0U), "Unit: 12");
+    rc |= expect_contains("completed 0xD9 user", recent_notice(&state, 0U), "User: 34");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -1215,7 +1290,7 @@ run_standard_mac_multifragment_cases(void) {
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-    rc |= expect_contains("null avoid zero bias allows completion", state.active_channel[0], "STATUS-L");
+    rc |= expect_contains("null avoid zero bias allows completion", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -1232,7 +1307,7 @@ run_standard_mac_multifragment_cases(void) {
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
     process_MAC_VPDU(&opts, &state, 1 /* SACCH */, cont);
-    rc |= expect_contains("SACCH completed 0xD9 status label", state.active_channel[0], "STATUS-L");
+    rc |= expect_contains("SACCH completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
     rc |= expect_eq_long("SACCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
     dsd_state_ext_free_all(&state);
 
@@ -1255,11 +1330,11 @@ run_standard_mac_multifragment_cases(void) {
     rc |= expect_eq_long("slot1 continuation does not append slot0", state.p25_mac_frag[0].collected, 16);
     rc |= expect_eq_long("slot1 continuation leaves slot0 active", state.p25_mac_frag[0].active, 1);
     rc |= expect_eq_long("slot1 continuation has no slot1 active", state.p25_mac_frag[1].active, 0);
-    rc |= expect_true("slot1 continuation does not complete slot0", state.active_channel[0][0] == '\0');
+    rc |= expect_true("slot1 continuation does not complete slot0", recent_notice(&state, 0U)[0] == '\0');
 
     state.currentslot = 0;
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-    rc |= expect_contains("slot0 continuation completes slot0", state.active_channel[0], "STATUS-L");
+    rc |= expect_contains("slot0 continuation completes slot0", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
     for (size_t i = 0; i < sizeof(complete_cases) / sizeof(complete_cases[0]); i++) {
@@ -1281,8 +1356,8 @@ run_standard_mac_multifragment_cases(void) {
 
         process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
         process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-        rc |=
-            expect_contains("completed multi-fragment opcode label", state.active_channel[0], complete_cases[i].label);
+        rc |= expect_contains("completed multi-fragment opcode label", recent_notice(&state, 0U),
+                              complete_cases[i].label);
         dsd_state_ext_free_all(&state);
     }
 
@@ -1291,7 +1366,7 @@ run_standard_mac_multifragment_cases(void) {
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
     init_multifragment_continuation(cont, 2); // invalid: no continuation payload after opcode/length bytes
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
-    rc |= expect_true("invalid continuation clears without active state", state.active_channel[0][0] == '\0');
+    rc |= expect_true("invalid continuation clears without active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
@@ -1305,7 +1380,7 @@ run_standard_mac_multifragment_cases(void) {
     process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
     rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag[0].active, 0);
     rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag[0].collected, 0);
-    rc |= expect_contains("max-length multi-fragment completes", state.active_channel[0], "AUTH-L");
+    rc |= expect_contains("max-length multi-fragment completes", recent_notice(&state, 0U), "AUTH-L");
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -1560,8 +1635,11 @@ run_cases(void) {
         MAC[15] = 0xCC; // SUID tail source
 
         process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-        rc |= expect_eq_long("p2_private_ext_target", state.lasttg, 0x012345);
-        rc |= expect_eq_long("p2_private_ext_suid_source", state.lastsrc, 0xAABBCC);
+        dsd_call_snapshot call = {0};
+        rc |= expect_true("p2_private_ext canonical call", dsd_call_state_get(&state, 0U, &call) > 0);
+        rc |= expect_eq_long("p2_private_ext_target", (long)call.ota_target_id, 0x012345);
+        rc |= expect_eq_long("p2_private_ext_suid_source", (long)call.ota_source_id, 0xAABBCC);
+        rc |= expect_eq_long("p2_private_ext_kind", (long)call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
         dsd_state_ext_free_all(&state);
     }
 
@@ -1589,6 +1667,16 @@ main(void) {
     }
     int rc = run_cases();
     dsd_test_capture_stderr_end(&cap);
+    if (rc != 0) {
+        FILE* diagnostics = fopen(cap.path, "rb");
+        if (diagnostics) {
+            char line[512];
+            while (fgets(line, sizeof line, diagnostics)) {
+                DSD_FPRINTF(stderr, "%s", line);
+            }
+            fclose(diagnostics);
+        }
+    }
     rc |= expect_file_contains("tdma 0x11 paging label", cap.path, "TDMA Indirect Group Paging");
     rc |= expect_file_contains("tdma 0x11 paging tg1", cap.path, "TG1 [4660][1234]");
     rc |= expect_file_contains("tdma 0x11 paging tg4", cap.path, "TG4 [52719][CDEF]");

@@ -9,10 +9,12 @@
 #include "fixtures/m17_reference_vectors.h"
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/m17/m17.h>
@@ -248,6 +250,12 @@ expect_u64(const char* label, unsigned long long got, unsigned long long want) {
 }
 
 static int
+get_m17_call(const dsd_state* state, dsd_call_snapshot* call) {
+    DSD_MEMSET(call, 0, sizeof(*call));
+    return dsd_call_state_get(state, 0U, call);
+}
+
+static int
 expect_u8(const char* label, uint8_t got, uint8_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got %u want %u\n", label, (unsigned)got, (unsigned)want);
@@ -428,13 +436,16 @@ test_embedded_lich_chunks_store_and_finalize_lsf_state(void) {
             err |= expect_u8("LICH chunk stored", state->m17_lsf[((size_t)chunk * M17_LICH_CHUNK_BITS) + bit],
                              lsf_bits[((size_t)chunk * M17_LICH_CHUNK_BITS) + bit]);
         }
-        err |= expect_u64("LICH does not decode before final chunk", state->m17_dst, 0ULL);
+        dsd_call_snapshot call;
+        err |= expect_int("LICH does not decode before final chunk", get_m17_call(state, &call), 0);
     }
 
     build_encoded_lich_chunk(lsf_bits, (uint8_t)(M17_LICH_CHUNKS - 1U), encoded);
     err |= expect_int("final LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
-    err |= expect_u64("final LICH decodes dst", state->m17_dst, dst);
-    err |= expect_u64("final LICH decodes src", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("final LICH publishes call", get_m17_call(state, &call), 1);
+    err |= expect_u64("final LICH decodes dst", call.ota_target_id, dst);
+    err |= expect_u64("final LICH decodes src", call.ota_source_id, src);
     err |= expect_u8("final LICH decodes data type", state->m17_str_dt, 2U);
     err |= expect_u8("final LICH decodes CAN", state->m17_can, 6U);
     err |= expect_u8("final LICH clear encryption", state->m17_enc, 0U);
@@ -442,10 +453,11 @@ test_embedded_lich_chunks_store_and_finalize_lsf_state(void) {
     for (size_t bit = 0U; bit < TEST_M17_LSF_BITS; bit++) {
         err |= expect_u8("final LICH clears staged LSF", state->m17_lsf[bit], 0U);
     }
-    if (strcmp(state->m17_dst_str, M17_REF_LSF_DST_CSD) != 0 || strcmp(state->m17_src_str, M17_REF_LSF_SRC_CSD) != 0) {
-        DSD_FPRINTF(stderr, "final LICH callsigns: dst='%s' src='%s'\n", state->m17_dst_str, state->m17_src_str);
+    if (strcmp(call.target_text, M17_REF_LSF_DST_CSD) != 0 || strcmp(call.source_text, M17_REF_LSF_SRC_CSD) != 0) {
+        DSD_FPRINTF(stderr, "final LICH callsigns: dst='%s' src='%s'\n", call.target_text, call.source_text);
         err |= 1;
     }
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -463,7 +475,7 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    const uint16_t type_word = m17_compose_frame_info(1U, 1U, 0U, 0U, 7U, 0U, 0U);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U);
     build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
     (void)m17_attach_lsf_crc(lsf_bits, lsf_packed);
 
@@ -483,18 +495,114 @@ test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc(void) {
 
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->aggressive_framesync = 1;
-    state->m17_dst = 0x111122223333ULL;
-    state->m17_src = 0x444455556666ULL;
     lsf_bits[M17_LSF_LSD_BITS + 3U] ^= 1U;
     for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
         build_encoded_lich_chunk(lsf_bits, chunk, encoded);
         err |= expect_int("bad CRC LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
     }
-    err |= expect_u64("bad LSF CRC preserves dst under aggressive sync", state->m17_dst, 0x111122223333ULL);
-    err |= expect_u64("bad LSF CRC preserves src under aggressive sync", state->m17_src, 0x444455556666ULL);
+    dsd_call_snapshot call;
+    err |= expect_int("bad LSF CRC does not publish call", get_m17_call(state, &call), 0);
     for (size_t bit = 0U; bit < TEST_M17_LSF_BITS; bit++) {
         err |= expect_u8("bad LSF CRC clears staged LSF", state->m17_lsf[bit], 0U);
     }
+
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->aggressive_framesync = 0;
+    for (uint8_t chunk = 0U; chunk < M17_LICH_CHUNKS; chunk++) {
+        build_encoded_lich_chunk(lsf_bits, chunk, encoded);
+        err |= expect_int("relaxed bad CRC LICH chunk accepted", m17_process_lich(state, opts, encoded), 0);
+    }
+    err |= expect_int("relaxed bad LSF CRC does not publish call", get_m17_call(state, &call), 0);
+    err |= expect_u8("relaxed bad LSF CRC decodes data type", state->m17_str_dt, 2U);
+    err |= expect_u8("relaxed bad LSF CRC decodes CAN", state->m17_can, 7U);
+    err |= expect_u8("relaxed bad LSF CRC decodes encryption", state->m17_enc, 0U);
+    return err;
+}
+
+static int
+test_rf_lsf_crc_policy_preserves_relaxed_decode(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 1U, 2U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+
+    opts->aggressive_framesync = 1;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    state->m17_str_dt = 3U;
+    state->m17_can = 9U;
+    int err = 0;
+    err |= expect_int("strict RF LSF reports CRC error", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_u8("strict RF LSF preserves data type", state->m17_str_dt, 3U);
+    err |= expect_u8("strict RF LSF preserves CAN", state->m17_can, 9U);
+
+    opts->aggressive_framesync = 0;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("relaxed RF LSF reports CRC error", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_u8("relaxed RF LSF decodes data type", state->m17_str_dt, 2U);
+    err |= expect_u8("relaxed RF LSF decodes CAN", state->m17_can, 5U);
+    err |= expect_u8("relaxed RF LSF decodes encryption", state->m17_enc, 1U);
+    dsd_call_snapshot call;
+    err |= expect_int("relaxed RF LSF CRC does not publish call", get_m17_call(state, &call), 0);
+    return err;
+}
+
+static int
+publish_m17_voice_lsf(dsd_opts* opts, dsd_state* state, uint8_t encryption_type, uint8_t encryption_subtype) {
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, encryption_type, encryption_subtype, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, M17_REF_AES_NONCE);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    return m17_finalize_lsf_crc(opts, state, lsf_packed, crc);
+}
+
+static int
+test_lsf_crypto_availability_matches_payload_validation(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    dsd_call_snapshot call;
+    int err = 0;
+
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_segments[0] = 2U;
+    DSD_MEMCPY(state->aes_key, M17_REF_AES128_KEY, sizeof(M17_REF_AES128_KEY));
+    err |= expect_int("AES-128 LSF accepted", publish_m17_voice_lsf(opts, state, 2U, 0U), 0);
+    err |= expect_int("AES-128 LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("AES-128 LSF decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    err |= expect_u8("AES-128 LSF permits audio", call.audio_permitted, 1U);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->aes_key_loaded[0] = 1;
+    state->aes_key_segments[0] = 2U;
+    DSD_MEMCPY(state->aes_key, M17_REF_AES128_KEY, sizeof(M17_REF_AES128_KEY));
+    err |= expect_int("short AES-256 LSF accepted", publish_m17_voice_lsf(opts, state, 2U, 2U), 0);
+    err |= expect_int("short AES-256 LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("short AES-256 LSF remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    err |= expect_u8("short AES-256 LSF blocks audio", call.audio_permitted, 0U);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->R = 0x100U;
+    err |= expect_int("masked-zero scrambler LSF accepted", publish_m17_voice_lsf(opts, state, 1U, 0U), 0);
+    err |= expect_int("masked-zero scrambler LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("masked-zero scrambler remains pending", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    err |= expect_u8("masked-zero scrambler blocks audio", call.audio_permitted, 0U);
+
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -502,8 +610,6 @@ static int
 test_lsf_application_resets_and_stores_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
-    state->m17_dst = 0x1111ULL;
-    state->m17_src = 0x2222ULL;
     state->m17_can = 3U;
     state->m17_enc = 1U;
     state->m17_payload_decrypted = 1U;
@@ -517,8 +623,6 @@ test_lsf_application_resets_and_stores_state(void) {
     struct m17_lsf_result res = valid_lsf_result();
     int err = 0;
     err |= expect_int("valid LSF applied", m17_apply_lsf_result(state, &res), 1);
-    err |= expect_u64("LSF dst", state->m17_dst, res.dst);
-    err |= expect_u64("LSF src", state->m17_src, res.src);
     err |= expect_u8("LSF CAN", state->m17_can, res.cn);
     err |= expect_u8("LSF dt", state->m17_str_dt, res.dt);
     err |= expect_u8("LSF enc", state->m17_enc, res.et);
@@ -536,10 +640,6 @@ test_lsf_application_resets_and_stores_state(void) {
     for (size_t i = 0U; i < sizeof(state->m17_signature); i++) {
         err |= expect_u8("LSF signature buffer reset", state->m17_signature[i], 0U);
     }
-    if (strcmp(state->m17_dst_str, "AB1CD") != 0 || strcmp(state->m17_src_str, "AB1CD") != 0) {
-        DSD_FPRINTF(stderr, "LSF callsigns: dst='%s' src='%s'\n", state->m17_dst_str, state->m17_src_str);
-        err |= 1;
-    }
     return err;
 }
 
@@ -547,8 +647,6 @@ static int
 test_lsf_rejects_reserved_type_without_replacing_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
-    state->m17_dst = 0x1111ULL;
-    state->m17_src = 0x2222ULL;
     state->m17_can = 4U;
     state->m17_enc = 1U;
 
@@ -557,8 +655,6 @@ test_lsf_rejects_reserved_type_without_replacing_state(void) {
 
     int err = 0;
     err |= expect_int("reserved LSF rejected", m17_apply_lsf_result(state, &res), 0);
-    err |= expect_u64("reserved LSF dst preserved", state->m17_dst, 0x1111ULL);
-    err |= expect_u64("reserved LSF src preserved", state->m17_src, 0x2222ULL);
     err |= expect_u8("reserved LSF CAN preserved", state->m17_can, 4U);
     err |= expect_u8("reserved LSF enc preserved", state->m17_enc, 1U);
     return err;
@@ -568,8 +664,6 @@ static int
 test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
     dsd_state* state = &g_state;
     DSD_MEMSET(state, 0, sizeof(*state));
-    state->m17_dst = 0x1234ULL;
-    state->m17_src = 0x5678ULL;
     state->m17_can = 6U;
     state->m17_str_dt = 3U;
 
@@ -578,16 +672,12 @@ test_lsf_rejects_invalid_addresses_without_replacing_state(void) {
 
     int err = 0;
     err |= expect_int("invalid destination rejected", m17_apply_lsf_result(state, &res), 0);
-    err |= expect_u64("invalid destination preserves dst", state->m17_dst, 0x1234ULL);
-    err |= expect_u64("invalid destination preserves src", state->m17_src, 0x5678ULL);
     err |= expect_u8("invalid destination preserves CAN", state->m17_can, 6U);
     err |= expect_u8("invalid destination preserves data type", state->m17_str_dt, 3U);
 
     res = valid_lsf_result();
     res.src_is_valid = 0U;
     err |= expect_int("invalid source rejected", m17_apply_lsf_result(state, &res), 0);
-    err |= expect_u64("invalid source preserves dst", state->m17_dst, 0x1234ULL);
-    err |= expect_u64("invalid source preserves src", state->m17_src, 0x5678ULL);
     err |= expect_u8("invalid source preserves CAN", state->m17_can, 6U);
     err |= expect_u8("invalid source preserves data type", state->m17_str_dt, 3U);
     return err;
@@ -857,6 +947,49 @@ test_clear_signed_payload_updates_digest_and_dispatches(void) {
     return err;
 }
 
+static int
+test_stream_voice_replaces_foreign_active_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+
+    const dsd_call_observation foreign = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201U,
+        .ota_source_id = 4201U,
+    };
+    int err = 0;
+    err |= expect_int("foreign call starts before M17 late entry",
+                      dsd_call_state_observe(state, &foreign, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot call;
+    err |= expect_int("foreign call is available before M17 late entry", get_m17_call(state, &call), 1);
+    const uint64_t foreign_epoch = call.epoch;
+
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    state->m17_str_dt = 2U;
+    state->m17_can_en = -1;
+    err |= expect_int("late-entry M17 voice dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("late-entry M17 voice publishes a call", get_m17_call(state, &call), 1);
+    err |= expect_int("late-entry M17 voice remains active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_int("late-entry M17 voice replaces foreign epoch", call.epoch != foreign_epoch, 1);
+    err |= expect_int("late-entry M17 voice owns canonical protocol", DSD_SYNC_IS_M17(call.protocol), 1);
+    err |= expect_int("late-entry M17 voice uses voice kind", call.kind, DSD_CALL_KIND_VOICE);
+    err |= expect_u64("late-entry M17 voice clears foreign destination", call.ota_target_id, 0U);
+    err |= expect_u64("late-entry M17 voice clears foreign source", call.ota_source_id, 0U);
+    err |= expect_u8("late-entry M17 voice marks media", call.media_active, 1U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 #ifdef USE_CODEC2
 static int
 test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
@@ -890,6 +1023,7 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     err |= expect_int("3200 voice UDP opts", g_udp_audio_last_opts == opts, 1);
     err |= expect_int("3200 voice UDP state", g_udp_audio_last_state == state, 1);
     reset_audio_fakes();
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -923,6 +1057,7 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     err |= expect_int("1600 voice UDP bytes", (int)g_udp_audio_last_nsam, (int)(320U * sizeof(short)));
     err |= expect_int("1600 voice UDP first sample", (int)g_udp_audio_last_first_sample, 1001);
     reset_audio_fakes();
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -953,6 +1088,7 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     err |= expect_int("slot-disabled voice suppresses UDP", g_udp_audio_calls, 0);
     err |= expect_int("slot-disabled voice leaves UDP byte count clear", (int)g_udp_audio_last_nsam, 0);
     reset_audio_fakes();
+    dsd_state_ext_free_all(state);
     return err;
 }
 #endif
@@ -1135,11 +1271,9 @@ test_frame_info_packet_and_ip_helpers(void) {
     err |= expect_int("PONG keeps synctype", state->synctype, DSD_SYNC_M17_STR_POS);
 
     uint8_t short_mpkt[12] = {'M', 'P', 'K', 'T', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0x55, 0xAA};
-    state->m17_dst = 0x111122223333ULL;
-    state->m17_src = 0x444455556666ULL;
     m17_ip_dispatch_frame(opts, state, short_mpkt, sizeof(short_mpkt));
-    err |= expect_u64("short MPKT preserves dst", state->m17_dst, 0x111122223333ULL);
-    err |= expect_u64("short MPKT preserves src", state->m17_src, 0x444455556666ULL);
+    dsd_call_snapshot call;
+    err |= expect_int("short MPKT does not publish call", get_m17_call(state, &call), 0);
 
     uint8_t unknown[10] = {'N', 'O', 'P', 'E', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
     state->carrier = 1;
@@ -1176,8 +1310,11 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     int err = 0;
     err |= expect_int("valid IP stream sets carrier", state->carrier, 1);
     err |= expect_int("valid IP stream sets synctype", state->synctype, DSD_SYNC_M17_STR_POS);
-    err |= expect_u64("valid IP stream dst", state->m17_dst, dst);
-    err |= expect_u64("valid IP stream src", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("data IP stream publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_int("data IP stream publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_u64("data IP stream destination", call.ota_target_id, dst);
+    err |= expect_u64("data IP stream source", call.ota_source_id, src);
     err |= expect_u8("valid IP stream data type", state->m17_str_dt, 1U);
     err |= expect_u8("valid IP stream CAN", state->m17_can, 5U);
     err |= expect_u8("valid IP stream AES mode", state->m17_enc, 2U);
@@ -1188,11 +1325,24 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
         err |= expect_u8("valid IP stream copied LSF bits", state->m17_lsf[i], lsf_bits[i]);
     }
 
+    const uint64_t active_epoch = call.epoch;
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEF, (uint16_t)(M17_REF_STREAM_FN + 1U), 1U, payload_bits);
+    ip_frame[52] ^= 0x01U;
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+    err |= expect_int("bad-CRC EOT keeps IP stream call", get_m17_call(state, &call), 1);
+    err |= expect_int("bad-CRC EOT keeps IP stream active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("bad-CRC EOT keeps IP stream epoch", call.epoch, active_epoch);
+
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEF, (uint16_t)(M17_REF_STREAM_FN + 2U), 0U, payload_bits);
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+    err |= expect_int("valid frame after bad EOT keeps IP stream call", get_m17_call(state, &call), 1);
+    err |= expect_int("valid frame after bad EOT keeps IP stream active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("valid frame after bad EOT keeps IP stream epoch", call.epoch, active_epoch);
+
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
     state->m17_str_dt = 1U;
-    state->m17_dst = 0x111122223333ULL;
-    state->m17_src = 0x444455556666ULL;
     state->m17_enc = 0U;
     DSD_MEMSET(state->m17_meta, 0x5A, sizeof(state->m17_meta));
     m17_aes_build_counter(state->m17_meta, (uint16_t)(M17_STREAM_FRAME_END_MASK | M17_REF_STREAM_FN), counter);
@@ -1202,11 +1352,49 @@ test_ip_stream_frames_apply_crc_gated_lsf_state(void) {
     m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
     err |= expect_int("bad IP stream CRC sets carrier", state->carrier, 1);
     err |= expect_int("bad IP stream CRC sets synctype", state->synctype, DSD_SYNC_M17_STR_POS);
-    err |= expect_u64("bad IP stream CRC preserves dst", state->m17_dst, 0x111122223333ULL);
-    err |= expect_u64("bad IP stream CRC preserves src", state->m17_src, 0x444455556666ULL);
+    err |= expect_int("bad data IP stream CRC does not publish call", get_m17_call(state, &call), 0);
     err |= expect_u8("bad IP stream CRC preserves enc", state->m17_enc, 0U);
     err |= expect_u8("bad IP stream CRC stores counter high", state->m17_meta[14], counter[14]);
     err |= expect_u8("bad IP stream CRC stores counter low", state->m17_meta[15], counter[15]);
+    return err;
+}
+
+static int
+test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t ip_frame[54];
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEFU, M17_REF_STREAM_FN, 1U, payload_bits);
+
+    state->m17_can_en = -1;
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+
+    int err = 0;
+    dsd_call_snapshot call;
+    err |= expect_int("valid voice EOT publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("valid voice EOT ends call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("valid voice EOT owns M17 protocol", DSD_SYNC_IS_M17(call.protocol), 1);
+    const uint64_t ended_epoch = call.epoch;
+
+    build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEFU, (uint16_t)(M17_REF_STREAM_FN + 1U), 0U, payload_bits);
+    ip_frame[52] ^= 0x01U;
+    m17_ip_dispatch_frame(opts, state, ip_frame, sizeof(ip_frame));
+
+    err |= expect_int("bad-CRC voice frame retains call", get_m17_call(state, &call), 1);
+    err |= expect_int("bad-CRC voice frame keeps call ended", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("bad-CRC voice frame preserves epoch", call.epoch, ended_epoch);
+    err |= expect_u8("bad-CRC voice frame leaves media inactive", call.media_active, 0U);
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -1218,10 +1406,16 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     uint8_t mpkt_frame[80];
     uint8_t app[2U + M17_META_BYTES];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
+    Event_History_I event_history[2];
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(app, 0, sizeof(app));
     DSD_MEMSET(expected_text, 0, sizeof(expected_text));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&event_history[slot], 0, 255);
+    }
+    state->event_history_s = event_history;
 
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
@@ -1239,8 +1433,20 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
 
     int err = 0;
-    err |= expect_u64("valid MPKT dst", state->m17_dst, dst);
-    err |= expect_u64("valid MPKT src", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("valid MPKT publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_int("valid MPKT publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_u64("valid MPKT destination", call.ota_target_id, dst);
+    err |= expect_u64("valid MPKT source", call.ota_source_id, src);
+    err |= expect_int("valid MPKT event destination",
+                      strcmp(event_history[0].Event_History_Items[1].tgt_str, M17_REF_LSF_DST_CSD), 0);
+    err |= expect_int("valid MPKT event source",
+                      strcmp(event_history[0].Event_History_Items[1].src_str, M17_REF_LSF_SRC_CSD), 0);
+    err |= expect_int("valid MPKT ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("valid MPKT clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+    err |= expect_int("valid MPKT commits event history",
+                      event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
     err |= expect_u8("valid MPKT packet mode data type", state->m17_str_dt, 20U);
     err |= expect_u8("valid MPKT CAN", state->m17_can, 5U);
     err |= expect_u8("valid MPKT clear encryption", state->m17_enc, 0U);
@@ -1249,10 +1455,18 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u8("valid MPKT text control", state->m17_text_meta_control_or, 0x11U);
     err |= expect_bytes("valid MPKT text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
 
+    const uint64_t first_epoch = call.epoch;
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
+    err |= expect_int("next matching MPKT retains canonical call", get_m17_call(state, &call), 1);
+    err |= expect_int("next matching MPKT ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("next matching MPKT uses distinct epoch", call.epoch != first_epoch, 1);
+    err |= expect_int("next matching MPKT clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
+    state->event_history_s = event_history;
     state->m17_can_en = -1;
-    state->m17_dst = 0xAAAABBBBCCCCULL;
-    state->m17_src = 0x111122223333ULL;
     state->m17_text_meta_expected_bitmap = 0x0FU;
     state->m17_text_meta_received_bitmap = 0x02U;
     state->m17_text_meta_control_or = 0xF2U;
@@ -1261,14 +1475,14 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     mpkt_frame[mpkt_len - 1U] ^= 0x01U;
 
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
-    err |= expect_u64("bad MPKT CRC preserves dst", state->m17_dst, 0xAAAABBBBCCCCULL);
-    err |= expect_u64("bad MPKT CRC preserves src", state->m17_src, 0x111122223333ULL);
+    err |= expect_int("bad MPKT CRC does not publish call", get_m17_call(state, &call), 0);
     err |= expect_u8("bad MPKT CRC preserves text expected", state->m17_text_meta_expected_bitmap, 0x0FU);
     err |= expect_u8("bad MPKT CRC preserves text received", state->m17_text_meta_received_bitmap, 0x02U);
     err |= expect_u8("bad MPKT CRC preserves text control", state->m17_text_meta_control_or, 0xF2U);
     for (size_t i = 0U; i < sizeof(state->m17_text_meta); i++) {
         err |= expect_u8("bad MPKT CRC preserves text bytes", state->m17_text_meta[i], 0x5AU);
     }
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -1289,13 +1503,39 @@ stage_packet_with_crc(dsd_state* state, const uint8_t* app, uint16_t app_len, ui
     state->m17_pkt[app_len + 1U] = (uint8_t)(crc & 0xFFU);
 }
 
+static uint64_t
+start_m17_packet_call(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]) {
+    DSD_MEMSET(event_history, 0, sizeof(Event_History_I) * 2U);
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&event_history[slot], 0, 255);
+    }
+    state->event_history_s = event_history;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_M17_LSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+        .ota_target_id = 0xFFFFFFFFFFFFULL,
+        .ota_source_id = 0x000000000001ULL,
+        .source_text = "M17SRC",
+        .target_text = "BROADCAST",
+    };
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) <= 0) {
+        return 0U;
+    }
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? call.epoch : 0U;
+}
+
 static int
 test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t app[2U + M17_META_BYTES];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
+    Event_History_I event_history[2];
     static const char text[M17_TEXT_BLOCK_BYTES] = {'R', 'F', '-', 'P', 'K', 'T', '-', 'O', 'K', 0, 0, 0, 0};
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(expected_text, 0, sizeof(expected_text));
@@ -1307,11 +1547,13 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     const uint16_t crc = m17_crc16(app, app_len);
     state->m17_can_en = -1;
     state->m17_pbc_ct = 4;
+    const uint64_t first_epoch = start_m17_packet_call(opts, state, event_history);
     stage_packet_with_crc(state, app, app_len, crc);
 
     m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
 
     int err = 0;
+    err |= expect_int("valid packet EOT starts canonical epoch", first_epoch != 0U, 1);
     err |= expect_u8("valid packet EOT text expected bitmap", state->m17_text_meta_expected_bitmap, 0x01U);
     err |= expect_u8("valid packet EOT text received bitmap", state->m17_text_meta_received_bitmap, 0x01U);
     err |= expect_u8("valid packet EOT text control", state->m17_text_meta_control_or, 0x11U);
@@ -1320,7 +1562,31 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     for (size_t i = 0U; i < total_len; i++) {
         err |= expect_u8("valid packet EOT clears packet buffer", state->m17_pkt[i], 0U);
     }
+    dsd_call_snapshot call;
+    err |= expect_int("valid packet EOT retains canonical call", get_m17_call(state, &call), 1);
+    err |= expect_int("valid packet EOT ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("valid packet EOT preserves canonical epoch", call.epoch, first_epoch);
+    err |= expect_int("valid packet EOT clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+    err |= expect_int("valid packet EOT commits event history",
+                      event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
 
+    const dsd_call_observation next_packet = {
+        .protocol = DSD_SYNC_M17_LSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+        .ota_target_id = 0xFFFFFFFFFFFFULL,
+        .ota_source_id = 0x000000000001ULL,
+        .source_text = "M17SRC",
+        .target_text = "BROADCAST",
+    };
+    err |= expect_int("next matching packet starts canonical epoch",
+                      dsd_call_state_observe(state, &next_packet, DSD_CALL_BOUNDARY_CONTINUE), 1);
+    err |= expect_int("next matching packet retains canonical call", get_m17_call(state, &call), 1);
+    err |= expect_int("next matching packet is active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_int("next matching packet uses distinct epoch", call.epoch != first_epoch, 1);
+
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
     state->m17_pbc_ct = 2;
@@ -1344,6 +1610,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
         err |= expect_u8("bad packet CRC clears packet buffer", state->m17_pkt[i], 0U);
     }
 
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     state->m17_can_en = -1;
@@ -1358,6 +1625,69 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     err |= expect_u8("non-aggressive bad CRC still decodes control", state->m17_text_meta_control_or, 0x11U);
     err |=
         expect_bytes("non-aggressive bad CRC text bytes", state->m17_text_meta, expected_text, sizeof(expected_text));
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static int
+test_packet_eot_preserves_non_packet_calls(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t app[2U + M17_META_BYTES];
+    static const char text[M17_TEXT_BLOCK_BYTES] = {'R', 'F', '-', 'P', 'K', 'T', '-', 'E', 'O', 'T', 0, 0, 0};
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    build_packet_text_meta_app(app, text);
+    const uint16_t app_len = (uint16_t)sizeof(app);
+    const uint16_t crc = m17_crc16(app, app_len);
+
+    const dsd_call_observation foreign = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1301U,
+        .ota_source_id = 4301U,
+    };
+    int err = 0;
+    err |= expect_int("foreign call starts before packet EOT",
+                      dsd_call_state_observe(state, &foreign, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot call;
+    err |= expect_int("foreign call is available before packet EOT", get_m17_call(state, &call), 1);
+    const uint64_t foreign_epoch = call.epoch;
+    stage_packet_with_crc(state, app, app_len, crc);
+
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+
+    err |= expect_int("packet EOT preserves foreign call", get_m17_call(state, &call), 1);
+    err |= expect_int("packet EOT keeps foreign call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("packet EOT keeps foreign epoch", call.epoch, foreign_epoch);
+    err |= expect_int("packet EOT keeps foreign protocol", call.protocol, DSD_SYNC_DMR_BS_VOICE_POS);
+    err |= expect_u64("packet EOT keeps foreign destination", call.ota_target_id, 1301U);
+    err |= expect_u64("packet EOT keeps foreign source", call.ota_source_id, 4301U);
+
+    const dsd_call_observation m17_voice = {
+        .protocol = DSD_SYNC_M17_STR_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .ota_target_id = 2301U,
+        .ota_source_id = 5301U,
+    };
+    err |= expect_int("M17 voice starts before packet EOT",
+                      dsd_call_state_observe(state, &m17_voice, DSD_CALL_BOUNDARY_BEGIN), 1);
+    err |= expect_int("M17 voice is available before packet EOT", get_m17_call(state, &call), 1);
+    const uint64_t voice_epoch = call.epoch;
+    stage_packet_with_crc(state, app, app_len, crc);
+
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+
+    err |= expect_int("packet EOT preserves M17 voice", get_m17_call(state, &call), 1);
+    err |= expect_int("packet EOT keeps M17 voice active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("packet EOT keeps M17 voice epoch", call.epoch, voice_epoch);
+    err |= expect_int("packet EOT keeps M17 voice kind", call.kind, DSD_CALL_KIND_VOICE);
+    err |= expect_u64("packet EOT keeps M17 voice destination", call.ota_target_id, 2301U);
+    err |= expect_u64("packet EOT keeps M17 voice source", call.ota_source_id, 5301U);
+    dsd_state_ext_free_all(state);
     return err;
 }
 
@@ -1608,15 +1938,110 @@ test_encoders_propagate_requested_udp_setup_failure(void) {
 }
 
 static int
+test_local_stream_lsf_publishes_canonical_identity(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
+    DSD_MEMSET(lsf_packed, 0, sizeof(lsf_packed));
+
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+
+    state->m17encoder_tx = 1;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    state->m17_can_en = -1;
+    opts->monitor_input_audio = 0;
+
+    int err = 0;
+    err |= expect_int("local stream LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    dsd_call_snapshot call;
+    err |= expect_int("local stream LSF publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("local stream LSF call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("local stream LSF destination", call.ota_target_id, dst);
+    err |= expect_u64("local stream LSF source", call.ota_source_id, src);
+    err |= expect_int("local stream LSF CAN", call.service_options, 7);
+    err |= expect_int("local stream LSF service confirmed", call.has_service_metadata, 1);
+    err |= expect_int("local stream LSF crypto clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    err |= expect_int("local stream LSF source text", strcmp(call.source_text, M17_REF_LSF_SRC_CSD), 0);
+    err |= expect_int("local stream LSF destination text", strcmp(call.target_text, M17_REF_LSF_DST_CSD), 0);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    return err;
+}
+
+static int
+test_monitored_stream_call_follows_tx_lifecycle(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    uint64_t active_epoch = 0U;
+    opts->monitor_input_audio = 1;
+
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    dsd_call_snapshot call;
+    int err = 0;
+    err |= expect_int("idle monitored encoder does not publish call", get_m17_call(state, &call), 0);
+
+    state->m17encoder_tx = 1;
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    err |= expect_int("transmitting monitored encoder publishes call", get_m17_call(state, &call), 1);
+    err |= expect_int("transmitting monitored call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    err |= expect_u64("transmitting monitored call epoch tracked", active_epoch, call.epoch);
+    err |= expect_u64("transmitting monitored destination", call.ota_target_id, dst);
+    err |= expect_u64("transmitting monitored source", call.ota_source_id, src);
+    err |= expect_int("transmitting monitored CAN", call.service_options, 7);
+    err |= expect_int("transmitting monitored crypto clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    err |= expect_int("transmitting monitored media active", call.media_active, 1);
+    const uint64_t tx_epoch = call.epoch;
+
+    state->m17encoder_tx = 0;
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    err |= expect_int("idle transition retains monitored call", get_m17_call(state, &call), 1);
+    err |= expect_int("idle transition ends monitored call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("idle transition preserves monitored epoch", call.epoch, tx_epoch);
+    err |= expect_u64("idle transition clears tracked epoch", active_epoch, 0U);
+    const uint64_t ended_revision = call.revision;
+
+    m17_sync_monitored_tx_call(opts, state, dst, src, M17_REF_LSF_DST_CSD, M17_REF_LSF_SRC_CSD, 7U, &active_epoch);
+    (void)get_m17_call(state, &call);
+    err |= expect_u64("repeated monitored idle is idempotent", call.revision, ended_revision);
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    return err;
+}
+
+static int
 test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     dsd_opts* opts = &g_opts;
     dsd_state* state = &g_state;
     uint8_t expected_lsf[TEST_M17_LSF_BITS];
     uint8_t expected_packed[M17_LSF_BYTES];
+    Event_History_I event_history[2];
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(expected_lsf, 0, sizeof(expected_lsf));
     DSD_MEMSET(expected_packed, 0, sizeof(expected_packed));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    for (uint8_t slot = 0U; slot < 2U; slot++) {
+        init_event_history(&event_history[slot], 0, 255);
+    }
+    state->event_history_s = event_history;
 
     state->m17_can_en = -1;
     DSD_SNPRINTF(state->m17sms, sizeof(state->m17sms), "%s", "OK");
@@ -1637,9 +2062,27 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     err |= expect_int("packet LSF monitor bypasses NXDN decoder symbols", g_conv_decode_calls, 0);
     err |= expect_int("packet LSF monitor bypasses NXDN decoder chainback", g_conv_chainback_calls, 0);
     err |= expect_bytes("packet LSF monitor exact roundtrip", state->m17_lsf, expected_lsf, sizeof(expected_lsf));
-    err |= expect_u64("packet LSF monitor destination", state->m17_dst, dst);
-    err |= expect_u64("packet LSF monitor source", state->m17_src, src);
+    dsd_call_snapshot call;
+    err |= expect_int("packet LSF monitor publishes identity", get_m17_call(state, &call), 1);
+    err |= expect_int("packet LSF monitor publishes data kind", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_int("packet encoder ends canonical call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_u64("packet LSF monitor destination", call.ota_target_id, dst);
+    err |= expect_u64("packet LSF monitor source", call.ota_source_id, src);
     err |= expect_u8("packet LSF monitor CAN", state->m17_can, 7U);
+    err |= expect_int("packet encoder clears current event",
+                      event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
+    err |= expect_int("packet encoder commits event history",
+                      event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
+
+    const uint64_t first_epoch = call.epoch;
+    exitflag = 0;
+    err |= expect_int("next matching packet encoder completes", encodeM17PKT(opts, state), 0);
+    exitflag = 0;
+    err |= expect_int("next matching packet encoder retains call", get_m17_call(state, &call), 1);
+    err |= expect_int("next matching packet encoder ends call", call.phase, DSD_CALL_PHASE_ENDED);
+    err |= expect_int("next matching packet encoder uses distinct epoch", call.epoch != first_epoch, 1);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
     return err;
 }
 
@@ -1762,6 +2205,8 @@ main(void) {
     int err = 0;
     err |= test_embedded_lich_chunks_store_and_finalize_lsf_state();
     err |= test_embedded_lich_rejects_invalid_counter_and_gates_bad_lsf_crc();
+    err |= test_rf_lsf_crc_policy_preserves_relaxed_decode();
+    err |= test_lsf_crypto_availability_matches_payload_validation();
     err |= test_lsf_application_resets_and_stores_state();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
@@ -1772,6 +2217,7 @@ main(void) {
     err |= test_stream_signature_frames_are_consumed_and_verify_without_key();
     err |= test_stream_signature_out_of_order_marks_sequence_error();
     err |= test_clear_signed_payload_updates_digest_and_dispatches();
+    err |= test_stream_voice_replaces_foreign_active_call();
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();
@@ -1782,12 +2228,16 @@ main(void) {
     err |= test_bert_hard_payload_decode_primitives();
     err |= test_frame_info_packet_and_ip_helpers();
     err |= test_ip_stream_frames_apply_crc_gated_lsf_state();
+    err |= test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch();
     err |= test_ip_mpkt_frames_apply_crc_gated_packet_state();
     err |= test_packet_eot_finalization_crc_gates_decode_and_clears_state();
+    err |= test_packet_eot_preserves_non_packet_calls();
     err |= test_encoder_control_lsf_and_dibit_helpers();
     err |= test_packet_protocol_identifier_utf8_boundaries();
     err |= test_m17_hook_argument_guards();
     err |= test_encoders_propagate_requested_udp_setup_failure();
+    err |= test_local_stream_lsf_publishes_canonical_identity();
+    err |= test_monitored_stream_call_follows_tx_lifecycle();
     err |= test_packet_encoder_monitors_lsf_with_canonical_viterbi();
     err |= test_stream_encoder_treats_stdin_eof_as_clean_shutdown();
     err |= test_ip_decoder_propagates_udp_backend_failure();

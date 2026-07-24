@@ -6,11 +6,13 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/aes.h>
@@ -551,6 +553,7 @@ test_changed_frame_restores_total_error_repeat_fallback(void) {
 static void
 init_mbe_state(dsd_state* state, mbe_parms* cur, mbe_parms* prev, mbe_parms* prev_enhanced, mbe_parms* cur2,
                mbe_parms* prev2, mbe_parms* prev_enhanced2) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
     mbe_initMbeParms(cur, prev, prev_enhanced);
     mbe_initMbeParms(cur2, prev2, prev_enhanced2);
@@ -981,6 +984,7 @@ test_process_mbe_frame_p25p1_tail_erasure_requires_exact_clear_state(void) {
         rc |= expect_eq_int("p25p1-tail-nonclear corrections", (int)state.p25_p1_accepted_corrections, 10);
         rc |= expect_eq_int("p25p1-tail-nonclear suppressed", (int)state.p25_p1_suppressed_tail_frames, 0);
         rc |= expect_eq_int("p25p1-tail-nonclear excluded", (int)state.p25_p1_excluded_tail_corrections, 0);
+        dsd_state_ext_free_all(&state);
     }
     return rc;
 }
@@ -2422,6 +2426,11 @@ test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
 
     processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("dstar-second canonical slot0", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("dstar-second canonical slot0 active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_int("dstar-second canonical slot0 media", call.media_active, 1);
+    rc |= expect_eq_int("dstar-second no phantom slot1", dsd_call_state_get(&state, 1U, &call), 0);
     rc |= expect_eq_int("dstar-second errs", state.errs, expected_errs);
     rc |= expect_eq_int("dstar-second errs2", state.errs2, expected_errs2);
     rc |= expect_eq_int("dstar-second status", strcmp(state.err_str, expected_err_str), 0);
@@ -2439,6 +2448,128 @@ test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state(void) {
         opts.wav_out_f = NULL;
     }
 
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_process_mbe_frame_media_protocol_lifecycle(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+
+    static const int dstar_header_synctypes[] = {DSD_SYNC_DSTAR_HD_POS, DSD_SYNC_DSTAR_HD_NEG};
+    for (size_t i = 0U; i < sizeof(dstar_header_synctypes) / sizeof(dstar_header_synctypes[0]); i++) {
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        state.synctype = dstar_header_synctypes[i];
+        processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+        rc |= expect_eq_int("dstar-header canonical call", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_eq_int("dstar-header protocol", call.protocol, dstar_header_synctypes[i]);
+        rc |= expect_eq_int("dstar-header media", call.media_active, 1);
+    }
+
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    dsd_call_observation dstar_data = {
+        .protocol = DSD_SYNC_DSTAR_HD_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_DATA,
+    };
+    DSD_SNPRINTF(dstar_data.source_text, sizeof(dstar_data.source_text), "%s", "N0CALL /TST");
+    DSD_SNPRINTF(dstar_data.target_text, sizeof(dstar_data.target_text), "%s", "CQCQCQ");
+    (void)dsd_call_state_observe(&state, &dstar_data, DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_eq_int("dstar-data initial call", dsd_call_state_get(&state, 0U, &call), 1);
+    const uint64_t dstar_data_epoch = call.epoch;
+    state.synctype = DSD_SYNC_DSTAR_HD_POS;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("dstar-data retained call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("dstar-data retained epoch", call.epoch == dstar_data_epoch, 1);
+    rc |= expect_eq_int("dstar-data retained kind", call.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_eq_int("dstar-data retained source", strcmp(call.source_text, "N0CALL /TST"), 0);
+    rc |= expect_eq_int("dstar-data retained target", strcmp(call.target_text, "CQCQCQ"), 0);
+
+    static const int clear_dpmr_synctypes[] = {DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_DPMR_FS4_NEG};
+    for (size_t i = 0U; i < sizeof(clear_dpmr_synctypes) / sizeof(clear_dpmr_synctypes[0]); i++) {
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        const dsd_call_observation observation = {
+            .protocol = clear_dpmr_synctypes[i],
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        rc |= expect_eq_int("clear-dpmr initial call", dsd_call_state_get(&state, 0U, &call), 1);
+        const uint64_t epoch = call.epoch;
+        state.synctype = clear_dpmr_synctypes[i];
+        processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+        rc |= expect_eq_int("clear-dpmr retained call", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_eq_int("clear-dpmr retained epoch", call.epoch == epoch, 1);
+        rc |= expect_eq_int("clear-dpmr retained protocol", call.protocol, clear_dpmr_synctypes[i]);
+        rc |= expect_eq_int("clear-dpmr media", call.media_active, 1);
+    }
+
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    const dsd_call_observation stale_dmr = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1234U,
+    };
+    (void)dsd_call_state_observe(&state, &stale_dmr, DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_eq_int("cross-protocol stale call", dsd_call_state_get(&state, 0U, &call), 1);
+    const uint64_t stale_epoch = call.epoch;
+    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+    rc |= expect_eq_int("cross-protocol replacement", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("cross-protocol replacement epoch", call.epoch != stale_epoch, 1);
+    rc |= expect_eq_int("cross-protocol replacement protocol", call.protocol, DSD_SYNC_DSTAR_VOICE_POS);
+    rc |= expect_eq_int("cross-protocol replacement target", (int)call.ota_target_id, 0);
+    rc |= expect_eq_int("cross-protocol replacement media", call.media_active, 1);
+
+    static const struct {
+        int call_protocol;
+        int decoder_protocol;
+    } decoder_overrides[] = {
+        {DSD_SYNC_YSF_POS, DSD_SYNC_NXDN_POS},
+        {DSD_SYNC_YSF_NEG, DSD_SYNC_P25P1_POS},
+        {DSD_SYNC_DPMR_FS2_POS, DSD_SYNC_NXDN_POS},
+    };
+
+    for (size_t i = 0U; i < sizeof(decoder_overrides) / sizeof(decoder_overrides[0]); i++) {
+        init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+        const dsd_call_observation observation = {
+            .protocol = decoder_overrides[i].call_protocol,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 4321U,
+        };
+        (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        rc |= expect_eq_int("decoder-override initial call", dsd_call_state_get(&state, 0U, &call), 1);
+        const uint64_t epoch = call.epoch;
+        state.synctype = decoder_overrides[i].decoder_protocol;
+        if (DSD_SYNC_IS_P25P1(state.synctype)) {
+            processMbeFrame(&opts, &state, imbe_fr, NULL, NULL);
+        } else {
+            processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+        }
+        rc |= expect_eq_int("decoder-override retained call", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_eq_int("decoder-override retained epoch", call.epoch == epoch, 1);
+        rc |= expect_eq_int("decoder-override retained protocol", call.protocol, decoder_overrides[i].call_protocol);
+        rc |= expect_eq_int("decoder-override retained target", (int)call.ota_target_id, 4321);
+        rc |= expect_eq_int("decoder-override media", call.media_active, 1);
+    }
+
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -2589,6 +2720,7 @@ main(void) {
     rc |= test_process_mbe_frame_hard_provoice_stages_audio();
     rc |= test_process_mbe_frame_ambe2_routes_slot2_error_state();
     rc |= test_process_mbe_frame_dstar_ignores_stale_stereo_slot_state();
+    rc |= test_process_mbe_frame_media_protocol_lifecycle();
     rc |= test_process_mbe_frame_x2_slot2_uses_right_error_state_and_stages_audio();
 
     if (rc == 0) {

@@ -5,9 +5,13 @@
 
 /* Shared Phase 1/Phase 2 crypto resolution and slot-isolation regressions. */
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -49,11 +53,215 @@ bytes_are_zero(const void* ptr, size_t size) {
 
 static void
 reset_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_tune_enc_calls = 1;
     opts->dmr_mute_encL = 1;
     opts->dmr_mute_encR = 1;
+}
+
+static int
+begin_p1_call_with_protocol(dsd_state* state, int protocol, uint16_t service_options) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = service_options,
+        .has_service_metadata = 1U,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
+begin_p1_call(dsd_state* state, uint16_t service_options) {
+    return begin_p1_call_with_protocol(state, DSD_SYNC_P25P1_POS, service_options);
+}
+
+static int
+expect_p1_service(const char* tag, const dsd_state* state, uint16_t service_options) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.protocol != DSD_SYNC_P25P1_POS) {
+        DSD_FPRINTF(stderr, "%s: missing active canonical P25 Phase 1 call\n", tag);
+        return 1;
+    }
+    return expect_int(tag, call.service_options, service_options);
+}
+
+static int
+test_phase1_resolution_opens_anonymous_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    reset_fixture(&opts, &state);
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 255);
+    init_event_history(&history[1], 0, 255);
+    state.event_history_s = history;
+    state.synctype = DSD_SYNC_P25P1_NEG;
+
+    const uint64_t mi = UINT64_C(0x0102030405060708);
+    int rc = 0;
+    rc |= expect_int("late-entry P1 metadata resolves blocked",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x2345, mi, 0),
+                     DSD_P25_CRYPTO_BLOCKED);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("late-entry P1 opens canonical call", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("late-entry P1 call is active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_int("late-entry P1 preserves inverted sync", call.protocol, DSD_SYNC_P25P1_NEG);
+    rc |= expect_int("late-entry P1 call is anonymous voice", call.kind, DSD_CALL_KIND_VOICE);
+    rc |= expect_int("late-entry P1 canonical crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED);
+    rc |= expect_int("late-entry P1 canonical ALGID", call.algid, 0x81);
+    rc |= expect_int("late-entry P1 canonical KID", call.kid, 0x2345);
+    rc |= expect_u64("late-entry P1 canonical MI", call.mi, mi);
+    rc |= expect_int("late-entry P1 canonical audio gate", call.audio_permitted, 0);
+    rc |= expect_int("late-entry P1 synchronizes event tracking",
+                     history[0].Event_History_Items[0].event_string[0] != '\0', 1);
+    const uint64_t anonymous_epoch = call.epoch;
+
+    const dsd_call_observation identity = {
+        .protocol = DSD_SYNC_P25P1_NEG,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect_int("late-entry P1 identity enriches anonymous epoch",
+                     dsd_call_state_observe(&state, &identity, DSD_CALL_BOUNDARY_CONTINUE), 0);
+    rc |= expect_int("late-entry P1 enriched call remains available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_u64("late-entry P1 enrichment preserves epoch", call.epoch, anonymous_epoch);
+    rc |= expect_int("late-entry P1 enrichment applies target", call.ota_target_id, 3069);
+    rc |= expect_int("late-entry P1 enrichment preserves crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED);
+
+    reset_fixture(&opts, &state);
+    state.synctype = DSD_SYNC_P25P2_POS;
+    rc |= expect_int("Phase 2 resolution remains assignment-owned",
+                     p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x81, 0x2345, mi, 0),
+                     DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("Phase 2 crypto does not invent a call", dsd_call_state_get(&state, 0U, &call), 0);
+    return rc;
+}
+
+static int
+test_phase1_resolution_replaces_foreign_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const int foreign_protocols[] = {
+        DSD_SYNC_DMR_BS_VOICE_POS,
+        DSD_SYNC_P25P2_POS,
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(foreign_protocols) / sizeof(foreign_protocols[0]); i++) {
+        reset_fixture(&opts, &state);
+        DSD_MEMSET(history, 0, sizeof(history));
+        init_event_history(&history[0], 0, 255);
+        init_event_history(&history[1], 0, 255);
+        state.event_history_s = history;
+
+        const int foreign_protocol = foreign_protocols[i];
+        rc |= expect_int("foreign call starts", begin_p1_call_with_protocol(&state, foreign_protocol, 0x40U), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+
+        dsd_call_snapshot call;
+        rc |= expect_int("foreign call is available", dsd_call_state_get(&state, 0U, &call), 1);
+        const uint64_t foreign_epoch = call.epoch;
+        rc |= expect_int("foreign event is attributed to its protocol", history[0].Event_History_Items[0].systype,
+                         foreign_protocol);
+
+        state.synctype = DSD_SYNC_P25P1_NEG;
+        const uint64_t mi = UINT64_C(0x2122232425262728);
+        rc |= expect_int("direct-transition P1 metadata resolves blocked",
+                         p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x3456, mi, 0),
+                         DSD_P25_CRYPTO_BLOCKED);
+
+        rc |= expect_int("direct-transition P1 call is available", dsd_call_state_get(&state, 0U, &call), 1);
+        rc |= expect_int("direct-transition P1 starts a new epoch", call.epoch != foreign_epoch, 1);
+        rc |= expect_int("direct-transition P1 owns canonical call", call.protocol, DSD_SYNC_P25P1_NEG);
+        rc |= expect_int("direct-transition P1 call is anonymous voice", call.kind, DSD_CALL_KIND_VOICE);
+        rc |= expect_int("direct-transition P1 clears foreign target", call.ota_target_id, 0);
+        rc |= expect_int("direct-transition P1 clears foreign source", call.ota_source_id, 0);
+        rc |= expect_int("direct-transition P1 records ALGID", call.algid, 0x81);
+        rc |= expect_int("direct-transition P1 records KID", call.kid, 0x3456);
+        rc |= expect_u64("direct-transition P1 records MI", call.mi, mi);
+
+        rc |= expect_int("direct-transition event is attributed to P1", history[0].Event_History_Items[0].systype,
+                         DSD_SYNC_P25P1_NEG);
+        rc |= expect_int("direct-transition event records ALGID", history[0].Event_History_Items[0].enc_alg, 0x81);
+        rc |= expect_int("direct-transition event records KID", history[0].Event_History_Items[0].enc_key, 0x3456);
+        rc |= expect_u64("direct-transition event records MI", history[0].Event_History_Items[0].mi, mi);
+        rc |= expect_int("foreign event remains attributed to its protocol", history[0].Event_History_Items[1].systype,
+                         foreign_protocol);
+    }
+    return rc;
+}
+
+static int
+test_phase1_pending_identity_starts_one_new_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("retained carrier starts known P1 call", begin_p1_call(&state, 0x40U), 1);
+    rc |= expect_int(
+        "retained carrier resolves prior crypto",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x81, 0x1111, UINT64_C(0x0102030405060708), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("retained carrier prior call available", dsd_call_state_get(&state, 0U, &call), 1);
+    const uint64_t prior_epoch = call.epoch;
+    rc |= expect_int("retained carrier prior target", call.ota_target_id, 3069);
+    rc |= expect_int("retained carrier prior source", call.ota_source_id, 101);
+
+    state.p25_p1_identity_pending = 1;
+    state.p25_p1_identity_epoch_started = 0;
+    rc |= expect_int(
+        "pending-identity HDU resolves new crypto",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x2222, UINT64_C(0x1112131415161718), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("pending-identity call available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("pending-identity HDU starts new epoch", call.epoch != prior_epoch, 1);
+    const uint64_t pending_epoch = call.epoch;
+    rc |= expect_int("pending-identity epoch is anonymous target", call.ota_target_id, 0);
+    rc |= expect_int("pending-identity epoch is anonymous source", call.ota_source_id, 0);
+    rc |= expect_int("pending-identity epoch records ALGID", call.algid, 0x84);
+    rc |= expect_int("pending-identity epoch records KID", call.kid, 0x2222);
+
+    rc |= expect_int(
+        "repeat pending crypto remains blocked",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0x84, 0x2222, UINT64_C(0x1112131415161718), 3069),
+        DSD_P25_CRYPTO_BLOCKED);
+    rc |= expect_int("repeat pending crypto call available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_u64("repeat pending crypto keeps epoch", call.epoch, pending_epoch);
+
+    const dsd_call_observation identity = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect_int("repeated LCW identity enriches pending epoch",
+                     dsd_call_state_observe(&state, &identity, DSD_CALL_BOUNDARY_CONTINUE), 0);
+    rc |= expect_int("enriched pending call available", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_u64("repeated LCW identity keeps pending epoch", call.epoch, pending_epoch);
+    rc |= expect_int("repeated LCW identity sets target", call.ota_target_id, 3069);
+    rc |= expect_int("repeated LCW identity sets source", call.ota_source_id, 101);
+    return rc;
 }
 
 static int
@@ -168,6 +376,24 @@ test_begin_and_sticky_unknown(void) {
 }
 
 static int
+test_phase1_negative_clear_conflict_requires_corroboration(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("seed inverted canonical P1 call", begin_p1_call_with_protocol(&state, DSD_SYNC_P25P1_NEG, 0x04U),
+                     1);
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
+    rc |= expect_int(
+        "inverted P1 clear-conflict tuple stays pending",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708), 3069),
+        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("inverted P1 clear-conflict tuple arms candidate", state.p25_p1_crypto_conflict.active, 1);
+    return rc;
+}
+
+static int
 test_phase1_clear_conflict_requires_corroboration(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -175,9 +401,10 @@ test_phase1_clear_conflict_requires_corroboration(void) {
     opts.unmute_encrypted_p25 = 1;
 
     int rc = 0;
+    rc |= expect_int("seed canonical P1 call", begin_p1_call(&state, 0x04U), 1);
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, 0x04, 0);
     rc |= expect_int("P1 begin stores clear grant service", state.dmr_so, 0x04);
-    rc |= expect_int("P1 begin marks grant service valid", state.p25_service_options_valid[0], 1);
+    rc |= expect_p1_service("P1 begin preserves canonical grant service", &state, 0x04U);
 
     rc |= expect_int(
         "first clear-conflict tuple stays pending",
@@ -227,13 +454,24 @@ test_phase1_clear_conflict_requires_corroboration(void) {
         DSD_P25_CRYPTO_BLOCKED);
     rc |= expect_int("identity-pending tuple does not use stale clear service", state.p25_p1_crypto_conflict.active, 0);
     state.p25_p1_identity_pending = 0;
+    state.p25_p1_identity_epoch_started = 0;
+    const dsd_call_observation accepted_clear_identity = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 3069U,
+        .policy_target_id = 3069U,
+        .ota_source_id = 101U,
+        .service_options = 0x04U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect_int("accepted clear LCW enriches pending epoch",
+                     dsd_call_state_observe(&state, &accepted_clear_identity, DSD_CALL_BOUNDARY_CONTINUE), 0);
     rc |= expect_int("accepted clear LCW defers retained tuple", p25_crypto_p1_defer_clear_conflict(&state, 0x04), 1);
     rc |= expect_int("retained tuple becomes pending", state.p25_crypto_state[0], DSD_P25_CRYPTO_ENCRYPTED_PENDING);
 
     p25_crypto_reset_slot(&state, 0);
     rc |= expect_int("slot reset clears conflict", state.p25_p1_crypto_conflict.active, 0);
-    state.dmr_so = 0x04;
-    state.p25_service_options_valid[0] = 1;
     rc |= expect_int(
         "Phase 2 bypasses Phase 1 conflict policy",
         p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0xA0, 0x0064, UINT64_C(0x6162636465666768), 3069),
@@ -268,7 +506,8 @@ test_phase1_clear_conflict_requires_corroboration(void) {
 
     p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE1, 0, -1, 0);
     rc |= expect_int("unknown P1 service clears stale grant bits", state.dmr_so, 0);
-    rc |= expect_int("unknown P1 service clears validity", state.p25_service_options_valid[0], 0);
+    rc |= expect_p1_service("unknown crypto hint does not erase canonical service", &state, 0x04U);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -541,9 +780,13 @@ test_slot_local_transition_purge_and_mi_refresh(void) {
 int
 main(void) {
     int rc = 0;
+    rc |= test_phase1_resolution_opens_anonymous_call();
+    rc |= test_phase1_resolution_replaces_foreign_call();
+    rc |= test_phase1_pending_identity_starts_one_new_epoch();
     rc |= test_explicit_audio_unmute_respects_lockout();
     rc |= test_phase1_resolution_does_not_override_phase2_gate();
     rc |= test_begin_and_sticky_unknown();
+    rc |= test_phase1_negative_clear_conflict_requires_corroboration();
     rc |= test_phase1_clear_conflict_requires_corroboration();
     rc |= test_algorithm_and_manual_key_resolution();
     rc |= test_imported_key_activation_is_slot_aware();

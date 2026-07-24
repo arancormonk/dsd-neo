@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
@@ -24,7 +25,6 @@
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/p25_optional_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -642,7 +642,7 @@ p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uin
 }
 
 //SAP 31 //Extended Addressing
-void
+uint32_t
 p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t* sap, int* ptr) {
 
     UNUSED(opts);
@@ -663,8 +663,6 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
     p25_decode_sap(ea_sap, ea_sap_string, sizeof ea_sap_string);
     UNUSED(ea_sap_string);
 
-    //Print to Data Call String for Ncurses Terminal
-    state->lastsrc = ea_llid;
     char ea_str[200];
     DSD_MEMSET(ea_str, 0, sizeof(ea_str));
     DSD_SNPRINTF(ea_str, sizeof(ea_str), "EXT ADD SRC: %d; SAP:%02X;%s", ea_llid, ea_sap, ea_sap_string);
@@ -672,6 +670,7 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     *sap = ea_sap;
     *ptr += 12;
+    return ea_llid;
 }
 
 typedef struct {
@@ -758,20 +757,10 @@ p25_update_pdu_header_state(dsd_opts* opts, dsd_state* state, const P25PduHeader
     } else {
         DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "Data Call Response:%s LLID: %d; ",
                      rsp_string, h->address);
-        state->lastsrc = 0xFFFFFF;
-        watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
-        state->lastsrc = 0;
-        state->lasttg = 0;
-        state->p25_policy_tg[0] = 0;
-        watchdog_event_history(opts, state, 0);
-        dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+        const dsd_call_observation observation =
+            dsd_call_observation_data(state->lastsynctype, 0U, h->io ? 0U : h->address, h->io ? h->address : 0U);
+        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, state->dmr_lrrp_gps[0]);
     }
-
-    if ((uint32_t)state->lasttg != h->address) {
-        state->p25_policy_tg[0] = 0;
-    }
-    state->lasttg = h->address;
-    state->lastsrc = 0xFFFFFF; // none given, unless extended, so put any here for now
 }
 
 //PDU Format Header Decode
@@ -797,7 +786,14 @@ typedef struct {
     uint8_t blks;
     uint8_t pad;
     uint8_t offset;
+    uint32_t source_id;
+    uint32_t target_id;
 } P25PduDataFields;
+
+typedef struct {
+    int json_emitted;
+    int data_notice_emitted;
+} P25PduDecodeStatus;
 
 static P25PduDataFields
 p25_read_pdu_data_fields(const uint8_t* input) {
@@ -810,6 +806,8 @@ p25_read_pdu_data_fields(const uint8_t* input) {
     pdu.blks = input[6] & 0x7F;
     pdu.pad = input[7] & 0x1F;
     pdu.offset = input[9] & 0x3F;
+    pdu.source_id = pdu.io == 0 ? pdu.llid : 0U;
+    pdu.target_id = pdu.io == 1 ? pdu.llid : 0U;
     return pdu;
 }
 
@@ -876,10 +874,10 @@ p25_handle_sap6_sndcp_data(dsd_opts* opts, dsd_state* state, const P25PduDataFie
     p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
 }
 
-static int
+static P25PduDecodeStatus
 p25_handle_sap4_packet_data(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, uint8_t* input, int len,
                             int ptr, int encrypted) {
-    uint8_t emitted = 0;
+    P25PduDecodeStatus status = {0};
     if (pdu->offset == 2 && len >= 2) {
         const uint8_t* header = input + 12;
         uint8_t type = p25_nibble_hi(header[0]);
@@ -892,10 +890,10 @@ p25_handle_sap4_packet_data(dsd_opts* opts, dsd_state* state, const P25PduDataFi
         DSD_FPRINTF(stderr, " %s;", summary);
         DSD_SNPRINTF(state->dmr_lrrp_gps[0], sizeof(state->dmr_lrrp_gps[0]), "%s", summary);
         p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
-        emitted = 1;
+        status.json_emitted = 1;
     }
-    decode_ip_pdu(opts, state, (uint16_t)(len + 1), input + ptr);
-    return emitted;
+    status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)(len + 1), input + ptr);
+    return status;
 }
 
 static void
@@ -903,7 +901,10 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
     if (state == NULL || state->event_history_s == NULL) {
         return;
     }
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     if (state->event_history_s[0].Event_History_Items[0].text_message[0] == '\0') {
+        dsd_event_history_transaction_end(&transaction);
         return;
     }
 
@@ -914,15 +915,19 @@ p25_store_lrrp_text_for_history(dsd_state* state) {
     DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].gps_s,
                  sizeof(state->event_history_s[0].Event_History_Items[0].gps_s), "%s", state->dmr_lrrp_gps[0]);
     dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
 }
 
-static void
+static P25PduDecodeStatus
 p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu,
                                const uint8_t* payload, int len, int ptr, int encrypted) {
+    P25PduDecodeStatus status = {
+        .json_emitted = 1,
+    };
     int span = p25_pdu_payload_span(len, ptr);
     if (span <= 0) {
         p25_emit_pdu_json_for_fields(pdu, len, encrypted, "");
-        return;
+        return status;
     }
     if (span > P25_PDU_MAX_DECODE_BYTES) {
         span = P25_PDU_MAX_DECODE_BYTES;
@@ -935,9 +940,10 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         unpack_byte_array_into_bit_array(payload, payload_bits, span);
 
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
-        state->dmr_lrrp_source[slot] = (uint32_t)state->lastsrc;
-        state->dmr_lrrp_target[slot] = (uint32_t)state->lasttg;
+        state->dmr_lrrp_source[slot] = pdu->source_id;
+        state->dmr_lrrp_target[slot] = pdu->target_id;
         nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span);
+        status.data_notice_emitted = nmea_valid != 0U;
     }
 
     if (!nmea_valid) {
@@ -950,22 +956,25 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         summary = state->event_history_s[0].Event_History_Items[0].text_message;
     }
     p25_emit_pdu_json_for_fields(pdu, len, encrypted, summary);
+    return status;
 }
 
-static int
+static P25PduDecodeStatus
 p25_decode_clear_pdu_payload(dsd_opts* opts, dsd_state* state, const P25PduDataFields* pdu, uint8_t* input, int len,
                              int ptr, int encrypted) {
+    P25PduDecodeStatus status = {0};
     uint8_t* payload = input + ptr;
     switch (pdu->sap) {
-        case 0: decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); return 0;
+        case 0: status.data_notice_emitted = decode_ip_pdu(opts, state, (uint16_t)(len + 1), payload); return status;
         case 4: return p25_handle_sap4_packet_data(opts, state, pdu, input, len, ptr, encrypted);
-        case 6: p25_handle_sap6_sndcp_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
-        case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
-        case 34: p25_handle_sap34_syscfg_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
-        case 48: p25_handle_sap48_location_data(opts, state, pdu, payload, len, ptr, encrypted); return 1;
-        default: break;
+        case 6: p25_handle_sap6_sndcp_data(opts, state, pdu, payload, len, ptr, encrypted); break;
+        case 32: p25_handle_sap32_regauth_data(opts, state, pdu, payload, len, ptr, encrypted); break;
+        case 34: p25_handle_sap34_syscfg_data(opts, state, pdu, payload, len, ptr, encrypted); break;
+        case 48: return p25_handle_sap48_location_data(opts, state, pdu, payload, len, ptr, encrypted);
+        default: return status;
     }
-    return 0;
+    status.json_emitted = 1;
+    return status;
 }
 
 static uint8_t
@@ -973,7 +982,7 @@ p25_decode_pdu_optional_headers(dsd_opts* opts, dsd_state* state, uint8_t* input
                                 int len) {
     uint8_t encrypted = 0;
     if (pdu->sap == 31) {
-        p25_decode_extended_address(opts, state, input + *ptr, &pdu->sap, ptr);
+        pdu->source_id = p25_decode_extended_address(opts, state, input + *ptr, &pdu->sap, ptr);
     }
     if (pdu->sap == 1) {
         encrypted = p25_decode_es_header(opts, state, input + *ptr, &pdu->sap, ptr, len);
@@ -986,7 +995,7 @@ void
 p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     P25PduDataFields pdu = p25_read_pdu_data_fields(input);
     uint8_t encrypted = 0;
-    int json_emitted = 0;
+    P25PduDecodeStatus status = {0};
     int ptr = 12; //initial ptr index value past the first header
 
     len = p25_pdu_payload_len(len, pdu.pad);
@@ -997,19 +1006,18 @@ p25_decode_pdu_data(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
         if (pdu.offset) {
             ptr = 12 + pdu.offset;
         }
-        json_emitted = p25_decode_clear_pdu_payload(opts, state, &pdu, input, len, ptr, encrypted);
+        status = p25_decode_clear_pdu_payload(opts, state, &pdu, input, len, ptr, encrypted);
     } else {
         DSD_FPRINTF(stderr, " Encrypted PDU;");
     }
 
-    if (!json_emitted && pdu.sap != 32 && pdu.sap != 34 && pdu.sap != 48) {
+    if (!status.json_emitted && pdu.sap != 32 && pdu.sap != 34 && pdu.sap != 48) {
         p25_emit_pdu_json_for_fields(&pdu, len, encrypted, "");
     }
 
-    watchdog_event_datacall(opts, state, state->lastsrc, state->lasttg, state->dmr_lrrp_gps[0], 0);
-    state->lastsrc = 0;
-    state->lasttg = 0;
-    state->p25_policy_tg[0] = 0;
-    watchdog_event_history(opts, state, 0);
-    dsd_p25_optional_hook_watchdog_event_current(opts, state, 0);
+    if (!status.data_notice_emitted) {
+        const dsd_call_observation observation =
+            dsd_call_observation_data(state->lastsynctype, 0U, pdu.source_id, pdu.target_id);
+        (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, state->dmr_lrrp_gps[0]);
+    }
 }

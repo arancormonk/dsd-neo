@@ -243,8 +243,7 @@ dmr_ms_advance_voice_cycle(dsd_opts* opts, dsd_state* state, uint8_t* vc) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
     dmr_sm_tick_ctx(dmr_sm_get_ctx(), opts, state); // handle hangtime/release logic
     return 1;
 }

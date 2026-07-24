@@ -4,6 +4,8 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -13,6 +15,18 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"
+
+static void
+dpmr_end_active_call(dsd_opts* opts, dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_DPMR(call.protocol)) {
+        return;
+    }
+    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+}
 
 int
 dsd_dispatch_matches_dpmr(int synctype) {
@@ -25,6 +39,7 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     //dPMR
     if ((state->synctype == DSD_SYNC_DPMR_FS1_POS) || (state->synctype == DSD_SYNC_DPMR_FS1_NEG)) {
         /* dPMR Frame Sync 1 */
+        dpmr_end_active_call(opts, state);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
@@ -34,9 +49,15 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "dPMR Frame Sync 2 ");
 
         state->nac = 0;
-        state->lastsrc = 0;
-        state->lasttg = 0;
-        state->nac = 0;
+
+        dsd_call_observation observation = {
+            .protocol = state->synctype,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+            dsd_event_sync_slot(opts, state, 0U);
+        }
 
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
@@ -48,12 +69,14 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
 
     } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
         /* dPMR Frame Sync 3 */
+        dpmr_end_active_call(opts, state);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
         }
     } else if ((state->synctype == DSD_SYNC_DPMR_FS4_POS) || (state->synctype == DSD_SYNC_DPMR_FS4_NEG)) {
         /* dPMR Frame Sync 4 */
+        dpmr_end_active_call(opts, state);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);

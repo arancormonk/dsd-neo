@@ -9,7 +9,10 @@
  * 2022-12 DSD-FME Florida Man Edition
  *-----------------------------------------------------------------------------*/
 
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -210,6 +213,27 @@ dmr_pi_handle_dmra(dsd_state* state, const uint8_t pi_byte[]) {
     }
 }
 
+static void
+dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
+    const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
+    const uint8_t algid = (uint8_t)(slot == 0U ? state->payload_algid : state->payload_algidR);
+    const uint16_t kid = (uint16_t)(slot == 0U ? state->payload_keyid : state->payload_keyidR);
+    const uint64_t mi = slot == 0U ? state->payload_mi : state->payload_miR;
+    const uint64_t r_key = slot == 0U ? state->R : state->RR;
+    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
+                                    : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, r_key);
+    const dsd_call_crypto_update update = {
+        .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = algid,
+        .kid = kid,
+        .mi = mi,
+        .audio_permitted = (uint8_t)has_key,
+    };
+    if (dsd_call_state_update_crypto(state, slot, &update) > 0) {
+        dsd_event_sync_slot(opts, state, slot);
+    }
+}
+
 void
 dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors) {
     const uint8_t MFID = PI_BYTE[1];
@@ -223,16 +247,21 @@ dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect,
 
     if (MFID == 0x0A && CRCCorrect == 1) { //Kirisun
         dmr_pi_handle_kirisun(opts, state, PI_BYTE);
+        dmr_pi_publish_crypto(opts, state);
         return;
     }
 
     if (MFID == 0x68) { //Hytera Enhanced
         dmr_pi_handle_hytera(opts, state, PI_BYTE);
+        if (dmr_hytera_checksum(PI_BYTE, 9U) == PI_BYTE[9]) {
+            dmr_pi_publish_crypto(opts, state);
+        }
         return;
     }
 
-    if (MFID == 0x10) { //DMRA
+    if (MFID == 0x10 && CRCCorrect == 1) { //DMRA
         dmr_pi_handle_dmra(state, PI_BYTE);
+        dmr_pi_publish_crypto(opts, state);
     }
 }
 

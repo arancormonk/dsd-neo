@@ -82,7 +82,11 @@ typedef struct {
     long vc_freq_hz;
     int vc_lpcn;
     int vc_tg;
+    int vc_dst;
     int vc_src;
+    int vc_slot;
+    int vc_is_group;
+    int vc_identity_published;
 
     // Timing (monotonic only)
     double t_tune_m;    // Time of last VC tune
@@ -162,9 +166,19 @@ void dmr_sm_emit_release(dsd_opts* opts, dsd_state* state, int slot);
 void dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src);
 
 /**
+ * @brief Emit a group voice grant with its advertised TDMA slot.
+ */
+void dmr_sm_emit_group_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int tg, int src);
+
+/**
  * @brief Emit an individual voice grant event.
  */
 void dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int dst, int src);
+
+/**
+ * @brief Emit an individual voice grant with its advertised TDMA slot.
+ */
+void dmr_sm_emit_indiv_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int dst, int src);
 
 /**
  * @brief Initialize the global state machine singleton.

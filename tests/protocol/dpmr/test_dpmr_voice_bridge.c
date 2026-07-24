@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -189,6 +190,28 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
 }
 
 static int
+test_scrambler_secret_is_not_published_as_key_id(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.R = 0x12345ULL;
+    state.dPMRVoiceFS2Frame.Version[0] = 3U;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    dpmr_publish_call(&opts, &state);
+
+    dsd_call_snapshot call;
+    int rc = 0;
+    rc |= expect_int("scrambler-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("scrambler-call-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
+    rc |= expect_int("scrambler-call-audio-permitted", call.audio_permitted, 1);
+    rc |= expect_int("scrambler-secret-not-key-id", call.kid, 0);
+    return rc;
+}
+
+static int
 test_deinterleave_transposes_6x12_blocks(void) {
     uint8_t input[72];
     uint8_t output[72];
@@ -244,44 +267,61 @@ test_superframe_part_updates_called_and_calling_ids(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    const dsd_call_observation begin = {
+        .protocol = DSD_SYNC_DPMR_FS2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(&state, &begin, DSD_CALL_BOUNDARY_BEGIN);
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
     dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("called-id", strcmp((const char*)state.dPMRVoiceFS2Frame.CalledID, "1000000"), 0);
-    rc |= expect_int("called-id-ok", (int)state.dPMRVoiceFS2Frame.CalledIDOk, 1);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("called-id", strcmp(call.target_text, "1000000"), 0);
     rc |= expect_int("called-next-part", opts.dPMR_next_part_of_superframe, 2);
-    rc |= expect_int("calling-id-preserved-empty", strcmp((const char*)state.dPMRVoiceFS2Frame.CallingID, ""), 0);
+    rc |= expect_int("calling-id-preserved-empty", strcmp(call.source_text, ""), 0);
 
     part = (dpmr_superframe_part){.frame_number = {2U, 3U},
                                   .id_value = 1464110U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{true, true}, {true, true}}};
     dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("calling-id", strcmp((const char*)state.dPMRVoiceFS2Frame.CallingID, "100000*"), 0);
-    rc |= expect_int("calling-id-ok-from-hamming", (int)state.dPMRVoiceFS2Frame.CallingIDOk, 1);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("calling-id", strcmp(call.source_text, "100000*"), 0);
     rc |= expect_int("calling-next-part", opts.dPMR_next_part_of_superframe, 1);
-    rc |= expect_int("called-id-preserved", strcmp((const char*)state.dPMRVoiceFS2Frame.CalledID, "1000000"), 0);
+    rc |= expect_int("called-id-preserved", strcmp(call.target_text, "1000000"), 0);
+    const uint64_t first_caller_epoch = call.epoch;
+
+    part = (dpmr_superframe_part){.frame_number = {2U, 3U},
+                                  .id_value = 2928210U,
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{false, false}, {false, false}}};
+    dpmr_update_superframe_part(&opts, &state, &part);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("changed-calling-id", strcmp(call.source_text, "200000*"), 0);
+    rc |= expect_int("changed-calling-preserves-called-id", strcmp(call.target_text, "1000000"), 0);
+    rc |= expect_int("changed-calling-starts-epoch", call.epoch != first_caller_epoch, 1);
 
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 10U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{true, true}, {false, false}}};
     dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("weak-called-id", strcmp((const char*)state.dPMRVoiceFS2Frame.CalledID, "000000*"), 0);
-    rc |= expect_int("weak-called-id-not-ok", (int)state.dPMRVoiceFS2Frame.CalledIDOk, 0);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("weak-called-id-does-not-overwrite", strcmp(call.target_text, "1000000"), 0);
     rc |= expect_int("weak-called-next-part", opts.dPMR_next_part_of_superframe, 2);
 
-    state.dPMRVoiceFS2Frame.CalledIDOk = 1U;
-    state.dPMRVoiceFS2Frame.CallingIDOk = 1U;
     part = (dpmr_superframe_part){.frame_number = {1U, 2U},
                                   .id_value = 0U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{false, false}, {false, false}}};
     dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("unknown-clears-called-ok", (int)state.dPMRVoiceFS2Frame.CalledIDOk, 0);
-    rc |= expect_int("unknown-clears-calling-ok", (int)state.dPMRVoiceFS2Frame.CallingIDOk, 0);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("unknown-preserves-called", strcmp(call.target_text, "1000000"), 0);
+    rc |= expect_int("unknown-preserves-calling", strcmp(call.source_text, "200000*"), 0);
     rc |= expect_int("unknown-toggles-next-part", opts.dPMR_next_part_of_superframe, 1);
 
     opts.dPMR_next_part_of_superframe = 1;
@@ -300,14 +340,22 @@ test_id_print_side_effects_track_valid_target_caller_and_color(void) {
     int rc = 0;
 
     DSD_MEMSET(&state, 0, sizeof(state));
-    state.dPMRVoiceFS2Frame.CalledIDOk = 1U;
-    state.dPMRVoiceFS2Frame.CallingIDOk = 1U;
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DPMR_FS2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "200000*");
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
 
-    dpmr_print_ids(&state, "1000000", "200000*");
+    dpmr_print_ids(&state);
 
-    rc |= expect_int("print-target-id", strcmp(state.dpmr_target_id, "1000000"), 0);
-    rc |= expect_int("print-caller-id", strcmp(state.dpmr_caller_id, "200000*"), 0);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("print-target-id", strcmp(call.target_text, "1000000"), 0);
+    rc |= expect_int("print-caller-id", strcmp(call.source_text, "200000*"), 0);
     rc |= expect_int("print-color-code", state.dpmr_color_code, 12);
     return rc;
 }
@@ -318,25 +366,11 @@ test_id_print_side_effects_suppress_invalid_ids(void) {
     int rc = 0;
 
     DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_SNPRINTF(state.dpmr_target_id, sizeof(state.dpmr_target_id), "%s", "prior-tg");
-    DSD_SNPRINTF(state.dpmr_caller_id, sizeof(state.dpmr_caller_id), "%s", "prior-src");
     state.dpmr_color_code = 7;
-    state.dPMRVoiceFS2Frame.CalledIDOk = 0U;
-    state.dPMRVoiceFS2Frame.CallingIDOk = 1U;
     state.dPMRVoiceFS2Frame.ColorCode[0] = 4U;
 
-    dpmr_print_ids(&state, "3000000", "4000000");
-
-    rc |= expect_int("invalid-called-keeps-target", strcmp(state.dpmr_target_id, "prior-tg"), 0);
-    rc |= expect_int("invalid-called-keeps-caller", strcmp(state.dpmr_caller_id, "prior-src"), 0);
+    dpmr_print_ids(&state);
     rc |= expect_int("invalid-called-keeps-color", state.dpmr_color_code, 7);
-
-    state.dPMRVoiceFS2Frame.CalledIDOk = 1U;
-    state.dPMRVoiceFS2Frame.CallingIDOk = 0U;
-    dpmr_print_ids(&state, "5000000", "6000000");
-    rc |= expect_int("invalid-calling-updates-target", strcmp(state.dpmr_target_id, "5000000"), 0);
-    rc |= expect_int("invalid-calling-keeps-caller", strcmp(state.dpmr_caller_id, "prior-src"), 0);
-    rc |= expect_int("invalid-calling-keeps-color", state.dpmr_color_code, 7);
     return rc;
 }
 
@@ -378,8 +412,9 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
         rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.Version[i], 0);
     }
 
-    rc |= expect_int("process-called-id", strcmp((const char*)state.dPMRVoiceFS2Frame.CalledID, "0000000"), 0);
-    rc |= expect_int("process-called-id-ok", (int)state.dPMRVoiceFS2Frame.CalledIDOk, 1);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("process-called-id", strcmp(call.target_text, "0000000"), 0);
     rc |= expect_int("process-next-part", opts.dPMR_next_part_of_superframe, 2);
     rc |= expect_int("process-invalid-color-code", (int)state.dPMRVoiceFS2Frame.ColorCode[0], -1);
     rc |= expect_int("process-no-color-side-effect", state.dpmr_color_code, 0);
@@ -392,6 +427,7 @@ main(void) {
     int rc = 0;
     rc |= test_first_group_scrambler_bridge_mutes_without_key();
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
+    rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_superframe_part_updates_called_and_calling_ids();

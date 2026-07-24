@@ -8,6 +8,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -101,7 +102,7 @@ test_dispatch_close_only_syncs(void) {
 }
 
 static void
-test_dispatch_voice_sync_resets_state_and_processes_voice(void) {
+test_dispatch_voice_sync_begins_anonymous_call_and_processes_voice(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -110,16 +111,18 @@ test_dispatch_voice_sync_resets_state_and_processes_voice(void) {
     DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "captures");
     state.synctype = DSD_SYNC_DPMR_FS2_POS;
     state.nac = 123;
-    state.lastsrc = 456;
-    state.lasttg = 789;
 
     dsd_dispatch_handle_dpmr(&opts, &state);
 
     assert(g_open_calls == 1);
     assert(g_voice_calls == 1);
     assert(state.nac == 0);
-    assert(state.lastsrc == 0);
-    assert(state.lasttg == 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_VOICE);
+    assert(call.ota_source_id == 0U);
+    assert(call.ota_target_id == 0U);
     assert(strcmp(state.fsubtype, " VOICE        ") == 0);
 }
 
@@ -129,7 +132,7 @@ main(void) {
     test_sync_pattern_pairs();
     test_synctype_helpers();
     test_dispatch_close_only_syncs();
-    test_dispatch_voice_sync_resets_state_and_processes_voice();
+    test_dispatch_voice_sync_begins_anonymous_call_and_processes_voice();
     printf("DPMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

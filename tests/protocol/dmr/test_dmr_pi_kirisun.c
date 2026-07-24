@@ -6,8 +6,10 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -85,6 +87,62 @@ build_txi_value(uint8_t opcode, uint8_t delay) {
         low_bits[i] = (uint8_t)((low8 >> (7 - i)) & 1U);
     }
     return (uint16_t)(((uint16_t)crc3(low_bits, 8U) << 8U) | low8);
+}
+
+static void
+seed_active_voice_call(dsd_state* state) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1001U,
+        .policy_target_id = 1001U,
+        .ota_source_id = 2002U,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static void
+test_pi_canonical_crypto_uses_algorithm_aware_keys(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.aes_key_segments[0] = 4U;
+    state.A1[0] = 1U;
+    state.A2[0] = 2U;
+    state.A3[0] = 3U;
+    state.A4[0] = 4U;
+    uint8_t kirisun_pi[10] = {0x36, 0x0A, 0x40, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x01};
+    dmr_pi(&opts, &state, kirisun_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.R = 0x123456789AULL;
+    uint8_t aes_pi[10] = {0x04, 0x10, 0x12, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+    dmr_pi(&opts, &state, aes_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED);
+    assert(call.audio_permitted == 0U);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.aes_key_loaded[0] = 1;
+    dmr_pi(&opts, &state, aes_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
 }
 
 static void
@@ -627,6 +685,7 @@ main(void) {
     InitAllFecFunction();
 
     test_pi_kirisun_slot0_sets_fields_and_le_mode();
+    test_pi_canonical_crypto_uses_algorithm_aware_keys();
     test_pi_kirisun_requires_crc_ok();
     test_pi_kirisun_slot1_sets_fields_and_le_mode();
     test_pi_kirisun_generic_alg_sets_fields();

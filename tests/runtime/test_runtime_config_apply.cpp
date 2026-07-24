@@ -19,6 +19,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -1610,14 +1611,22 @@ test_ui_protocol_reset_and_mode_toggles(void) {
     state->edacs_site_id = 3;
     state->edacs_lcn_count = 5;
     state->edacs_cc_lcn = 2;
-    state->edacs_vc_lcn = 4;
     state->edacs_tuned_lcn = 6;
-    state->edacs_vc_call_type = 1;
     state->p25_cc_freq = 851000000;
     state->trunk_cc_freq = 852000000;
     opts->trunk_is_tuned = 1;
-    state->lasttg = 123;
-    state->lastsrc = 456;
+    dsd_call_observation provoice_call = {0};
+    provoice_call.protocol = DSD_SYNC_PROVOICE_POS;
+    provoice_call.slot = 0U;
+    provoice_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    provoice_call.ota_target_id = 123U;
+    provoice_call.policy_target_id = 123U;
+    provoice_call.ota_source_id = 456U;
+    provoice_call.channel = 4U;
+    provoice_call.frequency_hz = 853000000;
+    int rc = 0;
+    rc |= expect_int_eq("seed ProVoice canonical call",
+                        dsd_call_state_observe(state, &provoice_call, DSD_CALL_BOUNDARY_BEGIN), 1);
 
     dsd_app_command_submit(DSD_APP_CMD_DMR_RESET, NULL, 0);
     dsd_app_command_submit(DSD_APP_CMD_M17_TX_TOGGLE, NULL, 0);
@@ -1625,7 +1634,6 @@ test_ui_protocol_reset_and_mode_toggles(void) {
     dsd_app_command_submit(DSD_APP_CMD_PROVOICE_MODE_TOGGLE, NULL, 0);
     int applied = dsd_app_drain_cmds(opts, state);
 
-    int rc = 0;
     rc |= expect_int_eq("protocol reset command drain count", applied, 4);
     rc |= expect_int_eq("DMR rest channel reset", state->dmr_rest_channel, -1);
     rc |= expect_int_eq("DMR MFID reset", state->dmr_mfid, -1);
@@ -1648,8 +1656,11 @@ test_ui_protocol_reset_and_mode_toggles(void) {
     rc |= expect_int_eq("ProVoice P25 CC reset", (int)state->p25_cc_freq, 0);
     rc |= expect_int_eq("ProVoice trunk CC reset", (int)state->trunk_cc_freq, 0);
     rc |= expect_int_eq("ProVoice tuned flag reset", opts->trunk_is_tuned, 0);
-    rc |= expect_int_eq("ProVoice last TG reset", state->lasttg, 0);
-    rc |= expect_int_eq("ProVoice last source reset", state->lastsrc, 0);
+    dsd_call_snapshot ended_call = {0};
+    rc |= expect_int_eq("ProVoice canonical call retained", dsd_call_state_get(state, 0U, &ended_call), 1);
+    rc |= expect_int_eq("ProVoice canonical call ended", ended_call.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("ProVoice ended identity retained",
+                      ended_call.ota_target_id == 123U && ended_call.ota_source_id == 456U);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1935,6 +1946,20 @@ test_ui_file_capture_commands_manage_handles(void) {
     rc |= expect_int_eq("queued WAV toggles remove temp files", count_directory_entries(wav_dir), 0);
 #endif
 
+    dsd_app_command_submit(DSD_APP_CMD_SYMCAP_SAVE, NULL, 0);
+    applied = dsd_app_drain_cmds(opts, state);
+    rc |= expect_int_eq("symbol capture start command drains", applied, 1);
+    rc |= expect_true("symbol capture start opens handle", opts->symbol_out_f != NULL);
+    rc |= expect_int_eq("symbol capture start event category",
+                        state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
+    char auto_sym_path[sizeof opts->symbol_out_file] = {0};
+    DSD_SNPRINTF(auto_sym_path, sizeof auto_sym_path, "%s", opts->symbol_out_file);
+    if (opts->symbol_out_f) {
+        fclose(opts->symbol_out_f);
+        opts->symbol_out_f = NULL;
+    }
+    (void)remove(auto_sym_path);
+
     FILE* sym_fp = dsd_fopen_private(sym_path, "wb");
     if (!sym_fp) {
         DSD_FPRINTF(stderr, "FAIL: symbol capture stop setup failed for %s\n", sym_path);
@@ -1949,6 +1974,8 @@ test_ui_file_capture_commands_manage_handles(void) {
         rc |= expect_true("symbol capture stop closes handle", opts->symbol_out_f == NULL);
         rc |= expect_true("symbol capture stop stages replay input path", strcmp(opts->audio_in_dev, sym_path) == 0);
         rc |= expect_int_eq("symbol capture stop clears auto flag", opts->symbol_out_file_is_auto, 0);
+        rc |= expect_int_eq("symbol capture stop event category",
+                            state->event_history_s[0].Event_History_Items[1].category, DSD_EVENT_CATEGORY_SYSTEM);
     }
 
     free_test_runtime(&runtime);

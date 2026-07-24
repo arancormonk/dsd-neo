@@ -11,8 +11,10 @@
  * decrypt-key gating, and soft-decision RS reliability ordering.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_check_ldu.h>
@@ -33,6 +35,19 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+static void
+seed_p25_call(dsd_state* state, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
@@ -701,7 +716,7 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     state.aes_key_segments[0] = 4U;
     state.dmr_alias_format[0] = 0x02;
     state.dmr_alias_block_len[0] = 2;
-    state.lastsrc = 77;
+    seed_p25_call(&state, 0U, 77U);
 
     ldu2_decode_post_fec_fields(&state, &frame);
     ldu2_print_decode_result(&frame);
@@ -726,6 +741,27 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     rc |= expect_int("alias policy source", (int)g_last_policy_source, (int)DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
     rc |=
         expect_int("alias last upsert mode", (int)g_last_policy_upsert_mode, (int)DSD_TG_POLICY_UPSERT_ADD_IF_MISSING);
+    return rc;
+}
+
+static int
+test_ldu2_alias_without_canonical_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_hook_counters();
+    state.dmr_alias_format[0] = 0x02;
+    state.dmr_alias_block_len[0] = 1;
+    state.data_block_counter[0] = 1;
+    DSD_MEMCPY(state.dmr_alias_block_segment[0][0][0], "TEST", 4U);
+
+    ldu2_maybe_finalize_lsd_alias(&opts, &state);
+
+    rc |= expect_int("alias without call skips policy", g_policy_make_calls, 0);
+    rc |= expect_int("alias without call resets format", state.dmr_alias_format[0], 0);
     return rc;
 }
 
@@ -884,7 +920,7 @@ test_ldu2_encrypted_trunk_lockout_state(void) {
     state.event_history_s = g_event_history;
     state.payload_algid = 0xAA;
     state.payload_keyid = 0x2A2A;
-    state.lasttg = 2468;
+    seed_p25_call(&state, 2468U, 0U);
     frame.algidhex = 0xAA;
     frame.kidhex = 0x2A2A;
 
@@ -920,6 +956,7 @@ main(void) {
     rc |= test_ldu2_consume_trailing_status_feeds_classifier();
     rc |= test_ldu2_capture_lsd_reads_soft_octets_and_updates_counters();
     rc |= test_ldu2_decode_key_reporting_and_lsd_alias_state();
+    rc |= test_ldu2_alias_without_canonical_call();
     rc |= test_ldu2_nondefinitive_metadata_preserves_prior_tuple();
     rc |= test_ldu2_decode_post_fec_rejects_malformed_ess_bits();
     rc |= test_ldu2_key_reporting_preserves_user_unmute();

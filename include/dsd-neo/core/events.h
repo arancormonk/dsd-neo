@@ -13,9 +13,14 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_EVENTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_EVENTS_H_H
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+#include <dsd-neo/platform/threading.h>
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
@@ -26,6 +31,35 @@ extern "C" {
 
 void init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop);
 void push_event_history(Event_History_I* event_struct);
+
+/** Opaque guard for serializing event-history mutations with telemetry snapshots. */
+typedef struct {
+    void* opaque;
+} dsd_event_history_transaction;
+
+static inline void
+dsd_event_history_transaction_begin(dsd_state* state, dsd_event_history_transaction* transaction) {
+    if (transaction == NULL) {
+        return;
+    }
+    transaction->opaque = state != NULL ? state->state_ext[DSD_STATE_EXT_CORE_CALL_STATE] : NULL;
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+    if (transaction->opaque != NULL) {
+        (void)dsd_mutex_lock((dsd_mutex_t*)transaction->opaque);
+    }
+#endif
+}
+
+static inline void
+dsd_event_history_transaction_end(dsd_event_history_transaction* transaction) {
+    if (transaction == NULL || transaction->opaque == NULL) {
+        return;
+    }
+#ifdef DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+    (void)dsd_mutex_unlock((dsd_mutex_t*)transaction->opaque);
+#endif
+    transaction->opaque = NULL;
+}
 
 static inline void
 dsd_event_history_mark_dirty(Event_History_I* event_struct) {
@@ -83,9 +117,28 @@ dsd_event_history_item_set_message(Event_History* item, dsd_event_severity sever
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
+void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
+int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                               const char* detail);
+/** Commit an informational call notice without call-end alerts, WAV rotation, or slot-identity reset. */
+int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                             const dsd_call_snapshot* call, const char* detail);
+int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
+/* Copy telemetry atomically, copying history slots only when forced or when their source revision changed. */
+int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
+                                              const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]);
+int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]);
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
-void watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string,
-                             uint8_t slot);
+int dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                               const char* notice);
+/** Commit a data notice with GPS owned by the new event, leaving the active row's staged payload unchanged. */
+int dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                        const dsd_call_observation* observation, const char* notice, const char* gps);
+/** Commit an informational system notice without attributing it to radio traffic. */
+int dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice);
+int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
+int dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps);
+int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text);
 
 #ifdef __cplusplus
 }
