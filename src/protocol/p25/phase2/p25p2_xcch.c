@@ -11,6 +11,7 @@
  *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/protocol/p25/p25p2_mac_parse.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -32,8 +34,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
-
-static const char* P25P2_EMPTY_CALL_STRING = "                     ";
 
 static int
 p25p2_xcch_slot_valid(int slot) {
@@ -142,36 +142,24 @@ p25p2_xcch_get_slot_mi(const dsd_state* state, int slot) {
 
 static int
 p25p2_xcch_get_slot_tg(const dsd_state* state, int slot) {
-    return (slot == 0) ? state->lasttg : state->lasttgR;
+    dsd_call_snapshot call;
+    if (!p25p2_xcch_slot_valid(slot) || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0
+        || (call.phase != DSD_CALL_PHASE_ACTIVE && call.phase != DSD_CALL_PHASE_ENDED)
+        || call.ota_target_id > INT_MAX) {
+        return 0;
+    }
+    return (int)call.ota_target_id;
 }
 
 static int
 p25p2_xcch_get_slot_src(const dsd_state* state, int slot) {
-    return (slot == 0) ? state->lastsrc : state->lastsrcR;
-}
-
-static void
-p25p2_xcch_set_slot_tg(dsd_state* state, int slot, int tg) {
-    if (slot == 0) {
-        state->lasttg = tg;
-    } else {
-        state->lasttgR = tg;
+    dsd_call_snapshot call;
+    if (!p25p2_xcch_slot_valid(slot) || dsd_call_state_get(state, (uint8_t)slot, &call) <= 0
+        || (call.phase != DSD_CALL_PHASE_ACTIVE && call.phase != DSD_CALL_PHASE_ENDED)
+        || call.ota_source_id > INT_MAX) {
+        return 0;
     }
-}
-
-static void
-p25p2_xcch_store_active_identity(dsd_state* state, int slot, const struct p25p2_mac_voice_identity* identity) {
-    if (!state || !identity || !p25p2_xcch_slot_valid(slot)) {
-        return;
-    }
-
-    p25p2_xcch_set_slot_tg(state, slot, identity->is_group ? identity->tg : identity->dst);
-    if (slot == 0) {
-        state->lastsrc = identity->src;
-    } else {
-        state->lastsrcR = identity->src;
-    }
-    state->gi[slot] = identity->is_group ? 0 : 1;
+    return (int)call.ota_source_id;
 }
 
 static int
@@ -180,54 +168,9 @@ p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, con
     if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
         const int accepted = p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src,
                                                      identity.is_group, identity.svc_bits);
-        if (!accepted) {
-            // A companion slot can retain the traffic carrier after this slot
-            // is rejected. Preserve the denied identity so later ESS updates
-            // cannot evaluate the preceding allowed call and reopen audio.
-            p25p2_xcch_store_active_identity(state, slot, &identity);
-        }
         return accepted;
     }
     return p25_sm_emit_active(opts, state, slot);
-}
-
-static void
-p25p2_xcch_set_slot_src_if_nonzero(dsd_state* state, int slot, uint32_t src) {
-    if (src == 0) {
-        return;
-    }
-
-    if (slot == 0) {
-        state->lastsrc = (int)src;
-    } else {
-        state->lastsrcR = (int)src;
-    }
-}
-
-static void
-p25p2_xcch_store_ptt_identity(const dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot) {
-    const uint32_t src = p25p2_xcch_src_from_mac(mac);
-    const int tg = p25p2_xcch_tg_from_mac(mac);
-
-    p25p2_xcch_set_slot_src_if_nonzero(state, slot, src);
-
-    // MAC_PTT only carries a 16-bit group-address field. For a retained
-    // private assignment, keep the 24-bit destination restored by the state
-    // machine rather than replacing it with that group-address field.
-    const int private_trunk_assignment =
-        opts && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->gi[slot] == 1;
-    if (!private_trunk_assignment) {
-        p25p2_xcch_set_slot_tg(state, slot, tg);
-    }
-}
-
-static void
-p25p2_xcch_clear_slot_source(dsd_state* state, int slot) {
-    if (slot == 0) {
-        state->lastsrc = 0;
-    } else {
-        state->lastsrcR = 0;
-    }
 }
 
 static void
@@ -302,11 +245,10 @@ p25p2_xcch_handle_mac_hangtime_slot(dsd_opts* opts, dsd_state* state, int slot) 
 }
 
 static void
-p25p2_xcch_blank_slot_call_string(dsd_state* state, int slot) {
+p25p2_xcch_blank_slot_call_string(const dsd_state* state, int slot) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
-    DSD_SNPRINTF(state->call_string[slot], sizeof(state->call_string[slot]), "%s", P25P2_EMPTY_CALL_STRING);
 }
 
 static void
@@ -317,9 +259,6 @@ p25p2_xcch_clear_slot_idle_metadata(dsd_state* state, uint8_t slot, int clear_sl
 
     p25p2_xcch_blank_slot_call_string(state, slot);
     (void)clear_slot_ids;
-    p25p2_xcch_clear_slot_source(state, slot);
-    state->p25_call_is_packet[slot] = 0;
-    state->p25_service_options_valid[slot] = 0;
     if (slot == 0) {
         state->dmr_so = 0;
     } else {
@@ -413,8 +352,6 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
     }
 
     DSD_FPRINTF(stderr, "\n VCH %d - ", slot + 1);
-    p25p2_xcch_store_ptt_identity(opts, state, mac, slot);
-
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", src);
 
@@ -445,7 +382,6 @@ p25p2_xcch_handle_end_slot(dsd_opts* opts, dsd_state* state, int slot, int clear
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
     DSD_FPRINTF(stderr, "SRC %d ", p25p2_xcch_get_slot_src(state, slot));
 
-    p25p2_xcch_clear_slot_source(state, slot);
     p25p2_xcch_close_slot_mbe_out(opts, state, slot);
 
     if (clear_call_string) {
@@ -574,7 +510,6 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         // A companion slot can keep the traffic carrier tuned after this slot
         // is rejected. Preserve the denied identity so a later ESS decision
         // cannot evaluate the preceding allowed call and reopen audio.
-        p25p2_xcch_store_ptt_identity(opts, state, smac, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -677,7 +612,6 @@ p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
     if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0, (int)p25p2_xcch_src_from_mac(fmac), 1,
                               P25_SM_SVC_UNKNOWN)) {
-        p25p2_xcch_store_ptt_identity(opts, state, fmac, slot);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
@@ -730,7 +664,6 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
     p25p2_xcch_reset_idle_slot_facch(state, slot);
-    p25p2_xcch_clear_slot_source(state, slot);
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);

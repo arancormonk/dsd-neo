@@ -12,6 +12,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -80,16 +81,17 @@ dsd_audio_p25_patch_member_active(const dsd_state* state, uint32_t ota_target, u
 
 static int
 dsd_audio_p25_policy_tg_valid_for_slot(const dsd_state* state, int slot, uint32_t ota_target) {
-    if (!dsd_audio_state_is_p25(state) || slot < 0 || slot > 1) {
+    if (!state || slot < 0 || slot > 1) {
         return 0;
     }
 
-    int raw_target = (slot == 0) ? state->lasttg : state->lasttgR;
-    if (raw_target <= 0 || (uint32_t)raw_target != ota_target) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_P25(call.protocol) || call.ota_target_id != ota_target || call.policy_target_id > UINT32_MAX) {
         return 0;
     }
 
-    return dsd_audio_p25_patch_member_active(state, ota_target, state->p25_policy_tg[slot]);
+    return dsd_audio_p25_patch_member_active(state, ota_target, (uint32_t)call.policy_target_id);
 }
 
 static uint32_t
@@ -98,19 +100,15 @@ dsd_audio_group_source_id(const dsd_state* state, unsigned long tg) {
     if (!state) {
         return 0;
     }
-    if (state->lasttg > 0 && state->p25_policy_tg[0] == id
-        && dsd_audio_p25_policy_tg_valid_for_slot(state, 0, (uint32_t)state->lasttg)) {
-        return (uint32_t)state->lastsrc;
-    }
-    if (state->lasttgR > 0 && state->p25_policy_tg[1] == id
-        && dsd_audio_p25_policy_tg_valid_for_slot(state, 1, (uint32_t)state->lasttgR)) {
-        return (uint32_t)state->lastsrcR;
-    }
-    if (state->lasttg >= 0 && (uint32_t)state->lasttg == id) {
-        return state->lastsrc;
-    }
-    if (state->lasttgR >= 0 && (uint32_t)state->lasttgR == id) {
-        return state->lastsrcR;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+            || call.ota_source_id > UINT32_MAX) {
+            continue;
+        }
+        if (call.ota_target_id == id || call.policy_target_id == id) {
+            return (uint32_t)call.ota_source_id;
+        }
     }
     return 0;
 }
@@ -121,16 +119,13 @@ dsd_audio_group_source_id_for_slot(const dsd_state* state, int slot, uint32_t ot
         return dsd_audio_group_source_id(state, policy_tg);
     }
 
-    int raw_target = (slot == 0) ? state->lasttg : state->lasttgR;
-    int raw_source = (slot == 0) ? state->lastsrc : state->lastsrcR;
-    if (raw_source <= 0) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_source_id > UINT32_MAX) {
         return 0;
     }
-    if (raw_target >= 0 && (uint32_t)raw_target == ota_target) {
-        return (uint32_t)raw_source;
-    }
-    if (raw_target >= 0 && (uint32_t)raw_target == policy_tg) {
-        return (uint32_t)raw_source;
+    if (call.ota_target_id == ota_target || call.policy_target_id == policy_tg) {
+        return (uint32_t)call.ota_source_id;
     }
     return dsd_audio_group_source_id(state, policy_tg);
 }
@@ -140,7 +135,10 @@ dsd_audio_p25_policy_target_for_slot(const dsd_state* state, int slot, uint32_t 
     if (!dsd_audio_p25_policy_tg_valid_for_slot(state, slot, ota_target)) {
         return ota_target;
     }
-    return state->p25_policy_tg[slot];
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.policy_target_id <= UINT32_MAX
+               ? (uint32_t)call.policy_target_id
+               : ota_target;
 }
 
 static uint32_t
@@ -148,13 +146,11 @@ dsd_audio_p25_policy_target_for_group(const dsd_state* state, uint32_t ota_targe
     if (!dsd_audio_state_is_p25(state)) {
         return ota_target;
     }
-    if (state->lasttg > 0 && (uint32_t)state->lasttg == ota_target
-        && dsd_audio_p25_policy_tg_valid_for_slot(state, 0, ota_target)) {
-        return state->p25_policy_tg[0];
-    }
-    if (state->lasttgR > 0 && (uint32_t)state->lasttgR == ota_target
-        && dsd_audio_p25_policy_tg_valid_for_slot(state, 1, ota_target)) {
-        return state->p25_policy_tg[1];
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        uint32_t policy_target = dsd_audio_p25_policy_target_for_slot(state, slot, ota_target);
+        if (policy_target != ota_target) {
+            return policy_target;
+        }
     }
     return ota_target;
 }
@@ -282,8 +278,6 @@ dsd_p25p2_media_decision_allows_audio(const dsd_tg_policy_decision* decision) {
 int
 dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int slot, int alg) {
     dsd_tg_policy_decision decision;
-    int raw_target = 0;
-    int raw_source = 0;
     uint32_t target = 0;
     uint32_t source = 0;
 
@@ -294,11 +288,14 @@ dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state, int
         return 0;
     }
 
-    raw_target = (slot == 0) ? state->lasttg : state->lasttgR;
-    raw_source = (slot == 0) ? state->lastsrc : state->lastsrcR;
-    target = (raw_target > 0) ? (uint32_t)raw_target : 0u;
-    source = (raw_source > 0) ? (uint32_t)raw_source : 0u;
-    if (state->gi[slot] == 1) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_target_id > UINT32_MAX || call.ota_source_id > UINT32_MAX) {
+        return 0;
+    }
+    target = (uint32_t)call.ota_target_id;
+    source = (uint32_t)call.ota_source_id;
+    if (call.kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         if (dsd_tg_policy_evaluate_private_call(opts, state, source, target, 0, 0, &decision) == 0) {
             return dsd_p25p2_media_decision_allows_audio(&decision);
         }
@@ -384,19 +381,44 @@ dsd_audio_record_slot_allows_audio(const dsd_opts* opts, const dsd_state* state,
 }
 
 static int
+dsd_audio_record_policy_evaluate(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                 uint32_t ota_target, uint32_t policy_target, uint32_t source_id,
+                                 dsd_tg_policy_decision* decision) {
+    if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        return dsd_tg_policy_evaluate_private_call(opts, state, source_id, ota_target, 0, 0, decision);
+    }
+    return dsd_tg_policy_evaluate_group_call(opts, state, policy_target, source_id, 0, 0, decision);
+}
+
+static uint32_t
+dsd_audio_record_policy_target(const dsd_state* state, const dsd_call_snapshot* call, int slot, uint32_t ota_target) {
+    if (DSD_SYNC_IS_P25(call->protocol)) {
+        return dsd_audio_p25_policy_target_for_slot(state, slot, ota_target);
+    }
+    if (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX) {
+        return (uint32_t)call->policy_target_id;
+    }
+    return ota_target;
+}
+
+static int
 dsd_audio_record_policy_blocks(const dsd_opts* opts, const dsd_state* state, int slot) {
     dsd_tg_policy_decision decision;
-    unsigned long tg = 0;
-    uint32_t source_id = 0;
 
     if (!opts || !state) {
         return 1;
     }
 
-    tg = (slot == 1) ? (unsigned long)state->lasttgR : (unsigned long)state->lasttg;
-    tg = (unsigned long)dsd_audio_p25_policy_target_for_slot(state, slot, (uint32_t)tg);
-    source_id = (slot == 1) ? state->lastsrcR : state->lastsrc;
-    if (dsd_tg_policy_evaluate_group_call(opts, state, (uint32_t)tg, source_id, 0, 0, &decision) != 0) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.ota_target_id > UINT32_MAX || call.ota_source_id > UINT32_MAX) {
+        return 0;
+    }
+    const uint32_t ota_target = (uint32_t)call.ota_target_id;
+    const uint32_t policy_target = dsd_audio_record_policy_target(state, &call, slot, ota_target);
+    const uint32_t source_id = (uint32_t)call.ota_source_id;
+    int rc = dsd_audio_record_policy_evaluate(opts, state, &call, ota_target, policy_target, source_id, &decision);
+    if (rc != 0) {
         return 0;
     }
 

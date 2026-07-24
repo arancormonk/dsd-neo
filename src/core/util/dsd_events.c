@@ -12,6 +12,7 @@
 *-----------------------------------------------------------------------------*/
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -22,13 +23,14 @@
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
-#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "call_state_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 
@@ -228,81 +230,6 @@ watchdog_event_is_data_event(const Event_History* item) {
                && item->subtype == DSD_EVENT_SUBTYPE_DMR_DATA_BURST);
 }
 
-static int
-watchdog_event_is_m17_sync(int synctype) {
-    return (synctype == DSD_SYNC_M17_STR_POS || synctype == DSD_SYNC_M17_STR_NEG || synctype == DSD_SYNC_M17_LSF_POS
-            || synctype == DSD_SYNC_M17_LSF_NEG);
-}
-
-static uint32_t
-watchdog_event_source_ysf(const dsd_state* state) {
-    uint32_t source_id = 0;
-    if (strncmp(state->ysf_src, "          ", 10) != 0) {
-        for (uint8_t i = 0; i < 11; i++) {
-            source_id += state->ysf_src[i];
-        }
-    }
-    return source_id;
-}
-
-static uint32_t
-watchdog_event_source_dstar(const dsd_state* state) {
-    if (strncmp(state->dstar_src, "        ", 8) == 0) {
-        return 0;
-    }
-    uint32_t source_id = 0;
-    for (uint8_t i = 0; i < 12; i++) {
-        source_id += state->dstar_src[i];
-    }
-    return source_id;
-}
-
-static uint32_t
-watchdog_event_source_dpmr(const dsd_state* state) {
-    if (strncmp(state->dpmr_caller_id, "      ", 6) == 0) {
-        return 0;
-    }
-    uint32_t source_id = 0;
-    for (uint8_t i = 0; i < 20; i++) {
-        source_id += state->dpmr_caller_id[i];
-    }
-    return source_id;
-}
-
-static uint32_t
-watchdog_event_source_id(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
-    uint32_t source_id = (slot == 0) ? state->lastsrc : state->lastsrcR;
-    if (slot != 0) {
-        return source_id;
-    }
-
-    if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-        return state->nxdn_last_rid;
-    }
-
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
-        return watchdog_event_source_ysf(state);
-    }
-
-    if (watchdog_event_is_m17_sync(state->lastsynctype)) {
-        return (uint32_t)state->m17_src;
-    }
-
-    if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
-        return watchdog_event_source_dstar(state);
-    }
-
-    if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
-        return watchdog_event_source_dpmr(state);
-    }
-
-    if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
-        return (opts->trunk_is_tuned == 1) ? state->lastsrc : 0;
-    }
-
-    return source_id;
-}
-
 static void
 watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot) {
     if (opts->static_wav_file != 0) {
@@ -324,12 +251,10 @@ watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event
 }
 
 static void
-watchdog_event_reset_post_push(dsd_state* state, uint8_t slot) {
+watchdog_event_reset_post_push(dsd_state* state) {
     DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
     DSD_MEMSET(state->dstar_gps, 0, sizeof(state->dstar_gps));
     DSD_MEMSET(state->dstar_txt, 0, sizeof(state->dstar_txt));
-    uint8_t slot_idx = (slot >= 2) ? 1 : slot;
-    state->gi[slot_idx] = -1;
 }
 
 static void
@@ -341,46 +266,143 @@ watchdog_event_maybe_beep_call_end(dsd_opts* opts, dsd_state* state, uint8_t slo
 }
 
 static void
-watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
-                                        uint8_t swrite, int last_event_is_data) {
+watchdog_event_handle_source_transition_ex(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct,
+                                           uint8_t slot, uint8_t swrite, int last_event_is_data,
+                                           int reset_slot_identity, int call_end_side_effects) {
     if (opts->event_out_file[0] != 0) {
         write_event_to_log_file(opts, state, slot, swrite, event_struct->Event_History_Items[0].event_string);
     }
 
     event_struct->Event_History_Items[0].write = 1;
-    watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
+    if (call_end_side_effects) {
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
+    }
     push_event_history(event_struct);
     init_event_history(event_struct, 0, 1);
-    watchdog_event_reset_post_push(state, slot);
-    watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
+    (void)reset_slot_identity;
+    watchdog_event_reset_post_push(state);
+    if (call_end_side_effects) {
+        watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
+    }
+}
+
+static void
+watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
+                                        uint8_t swrite, int last_event_is_data, int reset_slot_identity) {
+    watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, swrite, last_event_is_data,
+                                               reset_slot_identity, 1);
+}
+
+static int
+watchdog_event_call_is_authoritative(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
+    if (call == NULL || call->epoch == 0U) {
+        return 0;
+    }
+    if (lifecycle == NULL || call->phase == DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    return call->phase == DSD_CALL_PHASE_ENDED && (lifecycle->epoch != call->epoch || !lifecycle->ended_committed);
+}
+
+static uint32_t
+watchdog_event_call_target_id(const dsd_call_snapshot* call) {
+    if (call->ota_target_id != 0U && call->ota_target_id <= UINT32_MAX) {
+        return (uint32_t)call->ota_target_id;
+    }
+    if (call->policy_target_id != 0U && call->policy_target_id <= UINT32_MAX) {
+        return (uint32_t)call->policy_target_id;
+    }
+    return 0U;
+}
+
+static int
+watchdog_event_history_matches_call(const Event_History* item, const dsd_call_snapshot* call) {
+    if (item == NULL || call == NULL || item->category != DSD_EVENT_CATEGORY_VOICE || item->systype != call->protocol) {
+        return 0;
+    }
+
+    const int expected_gi = call->kind == DSD_CALL_KIND_GROUP_VOICE     ? 0
+                            : call->kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1
+                                                                        : -1;
+    if (expected_gi < 0 || item->gi != expected_gi) {
+        return 0;
+    }
+
+    const uint32_t target_id = watchdog_event_call_target_id(call);
+    if (item->target_id != 0U && item->target_id != target_id) {
+        return 0;
+    }
+    return item->source_id == 0U || (call->ota_source_id <= UINT32_MAX && item->source_id == call->ota_source_id);
+}
+
+static void
+watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                     dsd_call_event_lifecycle* lifecycle) {
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    const int epoch_changed = lifecycle->epoch != call->epoch;
+    if (!epoch_changed) {
+        return;
+    }
+
+    const Event_History* current = &event_struct->Event_History_Items[0];
+    const int has_content = watchdog_event_item_has_content(current);
+    const int promotes_current = lifecycle->epoch == 0U && watchdog_event_history_matches_call(current, call);
+    if (has_content && !promotes_current) {
+        const int is_data = watchdog_event_is_data_event(current);
+        watchdog_event_handle_source_transition(opts, state, event_struct, slot,
+                                                watchdog_event_should_write_slot(state), is_data, 0);
+    } else if (has_content) {
+        init_event_history(event_struct, 0, 1);
+    }
+
+    lifecycle->epoch = call->epoch;
+    lifecycle->ended_committed = 0U;
+    lifecycle->notice_epoch = 0U;
+    lifecycle->notice_target_id = 0U;
+    lifecycle->notice_kind = DSD_CALL_KIND_UNKNOWN;
+    lifecycle->notice_handled = 0U;
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA
+        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
+        beeper(opts, state, slot, 40, 86, 3);
+    }
+}
+
+static void
+watchdog_event_history_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                            dsd_call_event_lifecycle* lifecycle) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    const Event_History* last_event = &event_struct->Event_History_Items[0];
+    const uint8_t swrite = watchdog_event_should_write_slot(state);
+    const int last_event_forces_history = watchdog_event_is_explicit_data_event(last_event);
+    const int last_event_is_data = watchdog_event_is_data_event(last_event);
+    const int last_event_has_content = watchdog_event_item_has_content(last_event);
+    if (last_event_forces_history && last_event_has_content) {
+        watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data, 1);
+        return;
+    }
+    if (lifecycle != NULL && watchdog_event_call_is_authoritative(call, lifecycle)) {
+        watchdog_event_history_authoritative(opts, state, slot, call, lifecycle);
+        return;
+    }
 }
 
 // run once per loop to check for and push and update event history
 void
 watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    Event_History_I* event_struct = &state->event_history_s[slot];
-    const Event_History* last_event = &event_struct->Event_History_Items[0];
-    uint8_t swrite = watchdog_event_should_write_slot(state);
-    uint32_t last_source_id = last_event->source_id;
-    int last_event_forces_history = watchdog_event_is_explicit_data_event(last_event);
-    int last_event_is_data = watchdog_event_is_data_event(last_event);
-    int last_event_has_content = watchdog_event_item_has_content(last_event);
-    uint32_t source_id = watchdog_event_source_id(opts, state, slot);
-
-    //call alert beep when new call detected
-    if (last_source_id == 0 && source_id != 0
-        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
-        beeper(opts, state, slot, 40, 86, 3);
-    }
-
-    if (last_event_forces_history && last_event_has_content) {
-        watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
         return;
     }
-
-    if (source_id != last_source_id && last_source_id != 0) {
-        watchdog_event_handle_source_transition(opts, state, event_struct, slot, swrite, last_event_is_data);
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
     }
+    dsd_call_state_ext_lock(ext);
+    watchdog_event_history_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot]);
+    dsd_call_state_ext_unlock(ext);
 }
 
 //similar to above, but constantly testing and checking the most recent event only
@@ -389,6 +411,9 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 typedef struct {
     dsd_event_severity severity;
     dsd_event_category category;
+    int protocol;
+    dsd_call_kind kind;
+    dsd_call_crypto_state crypto;
     uint32_t source_id;
     uint32_t target_id;
     char src_str[200];
@@ -432,31 +457,6 @@ static const watchdog_event_edacs_flag k_watchdog_event_edacs_flags[] = {
     {0x200, "FLEET_", "FLEET "},
     {0x01, "Voice_", "Voice "},
 };
-
-static void
-watchdog_event_set_sanitized_ascii_id(char* dst, size_t dst_sz, const char* src, size_t src_len) {
-    if (dst == NULL || src == NULL || dst_sz == 0) {
-        return;
-    }
-
-    DSD_MEMSET(dst, 0, dst_sz);
-    size_t max_copy = src_len;
-    if (max_copy > dst_sz - 1) {
-        max_copy = dst_sz - 1;
-    }
-
-    for (size_t i = 0; i < max_copy; i++) {
-        uint8_t c = (uint8_t)src[i];
-        if (c == 0) {
-            break;
-        }
-        if (c > 0x20 && c < 0x7F) {
-            dst[i] = (char)c;
-        } else {
-            dst[i] = '_';
-        }
-    }
-}
 
 static void
 watchdog_event_str_append(char* dst, size_t dst_sz, const char* src) {
@@ -527,32 +527,34 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History* item) {
 }
 
 static void
-watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
+watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                 watchdog_event_current_ctx* ctx) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->severity = DSD_EVENT_SEVERITY_INFO;
     ctx->category = DSD_EVENT_CATEGORY_VOICE;
+    ctx->protocol = DSD_SYNC_NONE;
+    ctx->kind = DSD_CALL_KIND_UNKNOWN;
+    ctx->subtype = slot == 0U ? state->dmrburstL : state->dmrburstR;
+    ctx->mfid = slot == 0U ? state->dmr_fid : state->dmr_fidR;
 
-    if (slot == 0) {
-        ctx->source_id = state->lastsrc;
-        ctx->target_id = state->lasttg;
-        ctx->subtype = state->dmrburstL;
-        ctx->mfid = state->dmr_fid;
-        ctx->svc_opts = state->dmr_so;
-        ctx->enc = (ctx->svc_opts >> 6) & 1;
-        ctx->alg_id = state->payload_algid;
-        ctx->key_id = (uint16_t)state->payload_keyid;
-        ctx->mi = state->payload_mi;
-    } else {
-        ctx->source_id = state->lastsrcR;
-        ctx->target_id = state->lasttgR;
-        ctx->subtype = state->dmrburstR;
-        ctx->mfid = state->dmr_fidR;
-        ctx->svc_opts = state->dmr_soR;
-        ctx->enc = (ctx->svc_opts >> 6) & 1;
-        ctx->alg_id = state->payload_algidR;
-        ctx->key_id = (uint16_t)state->payload_keyidR;
-        ctx->mi = state->payload_miR;
+    if (!call || call->epoch == 0U) {
+        return;
     }
+    ctx->protocol = call->protocol;
+    ctx->kind = call->kind;
+    ctx->category = call->kind == DSD_CALL_KIND_DATA ? DSD_EVENT_CATEGORY_DATA : DSD_EVENT_CATEGORY_VOICE;
+    ctx->crypto = call->crypto;
+    ctx->source_id = call->ota_source_id <= UINT32_MAX ? (uint32_t)call->ota_source_id : 0U;
+    ctx->target_id = watchdog_event_call_target_id(call);
+    ctx->svc_opts = call->service_options;
+    ctx->enc = call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED
+               || call->crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
+    ctx->alg_id = call->algid;
+    ctx->key_id = call->kid;
+    ctx->mi = call->mi;
+    ctx->channel = call->channel;
+    DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
+    DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
     ctx->sys_id1 = state->p2_wacn;
     ctx->sys_id2 = state->p2_sysid;
@@ -571,7 +573,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_
         DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "P25_%03X", ctx->sys_id3);
     }
 
-    if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+    if (DSD_SYNC_IS_DMR(ctx->protocol)) {
         ctx->sys_id1 = state->dmr_t3_syscode;
         ctx->sys_id2 = state->dmr_color_code;
         if (ctx->sys_id1) {
@@ -582,64 +584,8 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, watchdog_
     }
 }
 
-static int
-watchdog_event_p25_algid_is_encrypted(uint8_t alg_id) {
-    return alg_id != 0U && alg_id != 0x80U;
-}
-
-static int
-watchdog_event_p25_has_current_voice_alg(const dsd_state* state) {
-    if (state == NULL) {
-        return 0;
-    }
-    if (DSD_SYNC_IS_P25P2(state->lastsynctype)) {
-        return 1;
-    }
-    if (!DSD_SYNC_IS_P25P1(state->lastsynctype)) {
-        return 0;
-    }
-    return state->lastp25type == 1 || state->lastp25type == 2;
-}
-
-static int
-watchdog_event_p25_has_current_service_options(const dsd_state* state, uint8_t slot) {
-    if (state == NULL || !DSD_SYNC_IS_P25(state->lastsynctype)) {
-        return 0;
-    }
-    return state->p25_service_options_valid[slot & 1U] != 0 ? 1 : 0;
-}
-
-static void
-watchdog_event_current_normalize_p25_crypto(const dsd_state* state, uint8_t slot, watchdog_event_current_ctx* ctx) {
-    if (state == NULL || ctx == NULL || !DSD_SYNC_IS_P25(state->lastsynctype)) {
-        return;
-    }
-
-    if (!watchdog_event_p25_has_current_service_options(state, slot)) {
-        ctx->svc_opts = 0;
-        ctx->enc = 0;
-    }
-
-    if (watchdog_event_p25_algid_is_encrypted(ctx->alg_id) && watchdog_event_p25_has_current_voice_alg(state)
-        && p25_crypto_metadata_is_confirmed_encrypted(state, slot & 1U)) {
-        ctx->enc = 1;
-        return;
-    }
-
-    ctx->alg_id = 0;
-    ctx->key_id = 0;
-    ctx->mi = 0;
-}
-
 static void
 watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->source_id = state->nxdn_last_rid;
-    ctx->target_id = state->nxdn_last_tg;
-    if (state->nxdn_cipher_type != 0) {
-        ctx->enc = 1;
-    }
-    ctx->alg_id = state->nxdn_cipher_type;
-    ctx->key_id = state->nxdn_key;
     ctx->sys_id1 = state->nxdn_location_site_code;
     ctx->sys_id2 = state->nxdn_location_sys_code;
     ctx->sys_id3 = state->nxdn_last_ran;
@@ -654,54 +600,35 @@ watchdog_event_current_apply_nxdn(const dsd_state* state, watchdog_event_current
 
 static void
 watchdog_event_current_apply_ysf(dsd_state* state, Event_History* item, watchdog_event_current_ctx* ctx) {
-    ctx->source_id = watchdog_event_source_ysf(state);
     watchdog_event_set_ysf_text_message(state, item);
 
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "YSF");
-    watchdog_event_set_sanitized_ascii_id(ctx->src_str, sizeof(ctx->src_str), state->ysf_src, 10);
-    watchdog_event_set_sanitized_ascii_id(ctx->tgt_str, sizeof(ctx->tgt_str), state->ysf_tgt, 10);
 }
 
 static void
 watchdog_event_current_apply_m17(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->target_id = (uint32_t)state->m17_dst;
-    ctx->source_id = (uint32_t)state->m17_src;
-    ctx->sys_id1 = state->m17_can;
+    ctx->sys_id1 = ctx->svc_opts & 0xFU;
 
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "M17_CAN_%d", ctx->sys_id1);
-    DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", state->m17_src_csd);
-    DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", state->m17_dst_csd);
+    (void)state;
 }
 
 static void
 watchdog_event_current_apply_dstar(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->source_id = watchdog_event_source_dstar(state);
-
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", "DSTAR");
-    watchdog_event_set_sanitized_ascii_id(ctx->src_str, sizeof(ctx->src_str), state->dstar_src, 12);
-    watchdog_event_set_sanitized_ascii_id(ctx->tgt_str, sizeof(ctx->tgt_str), state->dstar_dst, 8);
+    (void)state;
 }
 
 static void
 watchdog_event_current_apply_dpmr(const dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->source_id = watchdog_event_source_dpmr(state);
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "DPMR_CC_%d", state->dpmr_color_code);
-    DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", state->dpmr_caller_id);
-    DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", state->dpmr_target_id);
 }
 
 static void
-watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watchdog_event_current_ctx* ctx) {
-    ctx->source_id = 0;
-    if (opts->trunk_is_tuned == 1) {
-        ctx->source_id = state->lastsrc;
-        ctx->channel = state->edacs_tuned_lcn;
-    }
-
+watchdog_event_current_apply_edacs(const dsd_state* state, watchdog_event_current_ctx* ctx) {
     ctx->sys_id1 = state->edacs_site_id;
     ctx->sys_id2 = state->edacs_area_code;
     ctx->sys_id3 = state->edacs_sys_id;
-    ctx->svc_opts = state->edacs_vc_call_type;
 
     char sup_str[200];
     watchdog_event_build_edacs_sup_str(ctx->svc_opts, 1, sup_str, sizeof(sup_str));
@@ -710,14 +637,14 @@ watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watch
     watchdog_event_str_append(ctx->sysid_string, sizeof(ctx->sysid_string), sup_str);
 
     if (state->ea_mode == 0) {
-        int afs = state->lasttg;
+        int afs = (int)ctx->target_id;
         int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
         int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
         int s = afs & state->edacs_s_mask;
 
         DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%03d_AFS_%02d_%02d%01d", afs, a, f, s);
-        if (state->lastsrc != 0x800 && state->lastsrc != 0) {
-            DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "LID_%d", state->lastsrc);
+        if (ctx->source_id != 0U) {
+            DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "LID_%u", ctx->source_id);
         } else {
             DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "LID_UNK");
         }
@@ -725,30 +652,29 @@ watchdog_event_current_apply_edacs(const dsd_opts* opts, dsd_state* state, watch
 }
 
 static void
-watchdog_event_current_apply_slot0_overrides(const dsd_opts* opts, dsd_state* state, Event_History* item,
-                                             watchdog_event_current_ctx* ctx) {
-    if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
+watchdog_event_current_apply_protocol_metadata(dsd_state* state, Event_History* item, watchdog_event_current_ctx* ctx) {
+    if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
         watchdog_event_current_apply_nxdn(state, ctx);
     }
 
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
+    if (DSD_SYNC_IS_YSF(ctx->protocol)) {
         watchdog_event_current_apply_ysf(state, item, ctx);
     }
 
-    if (watchdog_event_is_m17_sync(state->lastsynctype)) {
+    if (DSD_SYNC_IS_M17(ctx->protocol)) {
         watchdog_event_current_apply_m17(state, ctx);
     }
 
-    if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
+    if (DSD_SYNC_IS_DSTAR(ctx->protocol)) {
         watchdog_event_current_apply_dstar(state, ctx);
     }
 
-    if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
+    if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
         watchdog_event_current_apply_dpmr(state, ctx);
     }
 
-    if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
-        watchdog_event_current_apply_edacs(opts, state, ctx);
+    if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
+        watchdog_event_current_apply_edacs(state, ctx);
     }
 }
 
@@ -775,13 +701,13 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
                                    const watchdog_event_current_ctx* ctx, time_t now) {
     item->write = 0;
     dsd_event_history_item_set_metadata(item, ctx->severity, ctx->category);
-    if (state->lastsynctype != DSD_SYNC_NONE) {
-        item->systype = state->lastsynctype;
+    if (ctx->protocol != DSD_SYNC_NONE) {
+        item->systype = ctx->protocol;
     } else {
         item->systype = 39;
     }
     item->subtype = ctx->subtype;
-    item->gi = state->gi[slot];
+    item->gi = ctx->kind == DSD_CALL_KIND_GROUP_VOICE ? 0 : ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : -1;
     item->sys_id1 = ctx->sys_id1;
     item->sys_id2 = ctx->sys_id2;
     item->sys_id3 = ctx->sys_id3;
@@ -806,40 +732,31 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", ctx->s_name);
     DSD_SNPRINTF(item->t_mode, sizeof(item->t_mode), "%s", ctx->t_mode);
     DSD_SNPRINTF(item->s_mode, sizeof(item->s_mode), "%s", ctx->s_mode);
+    (void)state;
+    (void)slot;
 }
 
 static void
-watchdog_event_current_build_event_ysf(const dsd_state* state, const char* datestr, const char* timestr,
+watchdog_event_current_build_event_text_ids(const watchdog_event_current_ctx* ctx, const char* datestr,
+                                            const char* timestr, const char* sys_string, char* event_string,
+                                            size_t event_size) {
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, ctx->tgt_str,
+                 ctx->src_str);
+}
+
+static void
+watchdog_event_current_build_event_m17(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, state->ysf_tgt,
-                 state->ysf_src);
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02u;", datestr, timestr, sys_string,
+                 ctx->tgt_str, ctx->src_str, ctx->sys_id1);
 }
 
 static void
-watchdog_event_current_build_event_m17(const dsd_state* state, const char* datestr, const char* timestr,
-                                       const char* sys_string, char* event_string, size_t event_size) {
-    if (state->m17_dst == 0xFFFFFFFFFFFFULL) {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr, sys_string,
-                     "BROADCAST", state->m17_src_str, state->m17_can);
-    } else {
-        DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s CAN: %02d;", datestr, timestr, sys_string,
-                     state->m17_dst_str, state->m17_src_str, state->m17_can);
-    }
-}
-
-static void
-watchdog_event_current_build_event_dstar(const dsd_state* state, const char* datestr, const char* timestr,
-                                         const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %s SRC: %s ", datestr, timestr, sys_string, state->dstar_dst,
-                 state->dstar_src);
-}
-
-static void
-watchdog_event_current_build_event_dpmr(const dsd_state* state, const char* datestr, const char* timestr,
+watchdog_event_current_build_event_dpmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                         const char* sys_string, char* event_string, size_t event_size) {
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %02d; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
-                 state->dpmr_color_code, state->dpmr_target_id, state->dpmr_caller_id);
-    if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s CC: %02u; TGT: %s; SRC: %s; ", datestr, timestr, sys_string,
+                 ctx->channel, ctx->tgt_str, ctx->src_str);
+    if (ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "Scrambler Enc; ");
     }
 }
@@ -858,7 +775,7 @@ watchdog_event_current_build_event_edacs(const dsd_state* state, const watchdog_
         return;
     }
 
-    int afs = state->lasttg;
+    int afs = (int)ctx->target_id;
     int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;
     int f = (afs >> state->edacs_f_shift) & state->edacs_f_mask;
     int s = afs & state->edacs_s_mask;
@@ -867,8 +784,8 @@ watchdog_event_current_build_event_edacs(const dsd_state* state, const watchdog_
 
     char lid_str[20];
     DSD_MEMSET(lid_str, 0, sizeof(lid_str));
-    if (state->lastsrc != 0 && state->lastsrc != 0x800) {
-        DSD_SNPRINTF(lid_str, sizeof(lid_str), "LID: %05d;", state->lastsrc);
+    if (ctx->source_id != 0U) {
+        DSD_SNPRINTF(lid_str, sizeof(lid_str), "LID: %05u;", ctx->source_id);
     } else {
         DSD_SNPRINTF(lid_str, sizeof(lid_str), "LID: __UNK;");
     }
@@ -878,9 +795,8 @@ watchdog_event_current_build_event_edacs(const dsd_state* state, const watchdog_
 }
 
 static void
-watchdog_event_current_build_event_dmr(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
-                                       const char* datestr, const char* timestr, const char* sys_string,
-                                       char* event_string, size_t event_size) {
+watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
+                                       const char* sys_string, char* event_string, size_t event_size) {
     if (ctx->sys_id1) {
         DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; CC: %02d; SYS: %X; ", datestr, timestr,
                      sys_string, ctx->target_id, ctx->source_id, ctx->sys_id2, ctx->sys_id1);
@@ -908,9 +824,9 @@ watchdog_event_current_build_event_dmr(const dsd_state* state, uint8_t slot, con
         watchdog_event_str_append(event_string, event_size, "OVCM; ");
     }
 
-    if (state->gi[slot] == 0) {
+    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
         watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (state->gi[slot] == 1) {
+    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         watchdog_event_str_append(event_string, event_size, "Private; ");
     }
 
@@ -926,9 +842,8 @@ watchdog_event_current_build_event_dmr(const dsd_state* state, uint8_t slot, con
 }
 
 static void
-watchdog_event_current_build_event_p25(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
-                                       const char* datestr, const char* timestr, const char* sys_string,
-                                       char* event_string, size_t event_size) {
+watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
+                                       const char* sys_string, char* event_string, size_t event_size) {
     if (ctx->sys_id1) {
         DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %03X; NET_STS: %05X:%03X:%d.%d; ",
                      datestr, timestr, sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3, ctx->sys_id1,
@@ -942,21 +857,22 @@ watchdog_event_current_build_event_p25(const dsd_state* state, uint8_t slot, con
         char ess_str[30];
         DSD_SNPRINTF(ess_str, sizeof(ess_str), "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
         watchdog_event_str_append(event_string, event_size, ess_str);
-    } else if (ctx->enc) {
+    } else if (ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED
+               || ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "ENC; ");
     }
     if (ctx->svc_opts & 0x80) {
         watchdog_event_str_append(event_string, event_size, "Emergency; ");
     }
-    if (state->gi[slot] == 0) {
+    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
         watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (state->gi[slot] == 1) {
+    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         watchdog_event_str_append(event_string, event_size, "Private; ");
     }
 }
 
 static void
-watchdog_event_current_build_event_nxdn(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
+watchdog_event_current_build_event_nxdn(const dsd_state* state, const watchdog_event_current_ctx* ctx,
                                         const char* datestr, const char* timestr, const char* sys_string,
                                         char* event_string, size_t event_size) {
     if (ctx->sys_id1) {
@@ -987,36 +903,31 @@ watchdog_event_current_build_event_nxdn(const dsd_state* state, uint8_t slot, co
         watchdog_event_str_append(event_string, event_size, ess_str);
     }
 
-    if (state->gi[slot] == 0) {
+    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
         watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (state->gi[slot] == 1) {
+    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         watchdog_event_str_append(event_string, event_size, "Private; ");
     }
 }
 
 static void
-watchdog_event_current_build_event_string(const dsd_state* state, uint8_t slot, const watchdog_event_current_ctx* ctx,
+watchdog_event_current_build_event_string(const dsd_state* state, const watchdog_event_current_ctx* ctx,
                                           const char* datestr, const char* timestr, const char* sys_string,
                                           char* event_string, size_t event_size) {
-    if (DSD_SYNC_IS_YSF(state->lastsynctype)) {
-        watchdog_event_current_build_event_ysf(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (state->lastsynctype == DSD_SYNC_M17_LSF_POS || state->lastsynctype == DSD_SYNC_M17_LSF_NEG) {
-        watchdog_event_current_build_event_m17(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_DSTAR(state->lastsynctype)) {
-        watchdog_event_current_build_event_dstar(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
-        watchdog_event_current_build_event_dpmr(state, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_EDACS(state->lastsynctype)) {
+    if (DSD_SYNC_IS_YSF(ctx->protocol) || DSD_SYNC_IS_DSTAR(ctx->protocol)) {
+        watchdog_event_current_build_event_text_ids(ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_M17(ctx->protocol)) {
+        watchdog_event_current_build_event_m17(ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
+        watchdog_event_current_build_event_dpmr(ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
         watchdog_event_current_build_event_edacs(state, ctx, datestr, timestr, sys_string, event_string, event_size);
-    } else if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
-        watchdog_event_current_build_event_dmr(state, slot, ctx, datestr, timestr, sys_string, event_string,
-                                               event_size);
-    } else if (DSD_SYNC_IS_P25(state->lastsynctype)) {
-        watchdog_event_current_build_event_p25(state, slot, ctx, datestr, timestr, sys_string, event_string,
-                                               event_size);
-    } else if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
-        watchdog_event_current_build_event_nxdn(state, slot, ctx, datestr, timestr, sys_string, event_string,
-                                                event_size);
+    } else if (DSD_SYNC_IS_DMR(ctx->protocol)) {
+        watchdog_event_current_build_event_dmr(ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
+        watchdog_event_current_build_event_p25(ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
+        watchdog_event_current_build_event_nxdn(state, ctx, datestr, timestr, sys_string, event_string, event_size);
     }
 }
 
@@ -1036,27 +947,75 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
     }
 }
 
-void
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    if (!opts || !state || !state->event_history_s || slot > 1U) {
+static int
+watchdog_event_current_args_valid(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
+    return opts != NULL && state != NULL && state->event_history_s != NULL && slot <= 1U;
+}
+
+static int
+watchdog_event_current_skip_ended(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
+    if (!call || !lifecycle || call->phase != DSD_CALL_PHASE_ENDED) {
+        return 0;
+    }
+    return lifecycle->epoch == call->epoch && lifecycle->ended_committed;
+}
+
+static void
+watchdog_event_commit_candidate(Event_History_I* event_struct, const Event_History* candidate) {
+    // The candidate starts as an exact byte copy of the current row, so padding bytes remain identical.
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c)
+    if (memcmp(candidate, &event_struct->Event_History_Items[0], sizeof(*candidate)) != 0) {
+        DSD_MEMCPY(&event_struct->Event_History_Items[0], candidate, sizeof(*candidate));
+        dsd_event_history_mark_dirty(event_struct);
+    }
+}
+
+static void
+watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                              dsd_call_event_lifecycle* lifecycle, Event_History_I* event_struct, int finalize_ended) {
+    if (!finalize_ended || !call || !lifecycle) {
         return;
     }
+    if (call->phase != DSD_CALL_PHASE_ENDED || lifecycle->epoch != call->epoch || lifecycle->ended_committed) {
+        return;
+    }
+    if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+        watchdog_event_handle_source_transition((dsd_opts*)opts, state, event_struct, slot,
+                                                watchdog_event_should_write_slot(state),
+                                                call->kind == DSD_CALL_KIND_DATA, 1);
+    } else {
+        init_event_history(event_struct, 0, 1);
+    }
+    lifecycle->ended_committed = 1U;
+}
+
+static void
+watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                            dsd_call_event_lifecycle* lifecycle, int finalize_ended) {
+    if (!watchdog_event_current_args_valid(opts, state, slot)) {
+        return;
+    }
+
+    const int authoritative = watchdog_event_call_is_authoritative(call, lifecycle);
+    if (!authoritative) {
+        return;
+    }
+    if (watchdog_event_current_skip_ended(call, lifecycle)) {
+        return;
+    }
+    const dsd_call_snapshot* effective_call = call;
 
     Event_History_I* event_struct = &state->event_history_s[slot];
     Event_History candidate;
     DSD_MEMCPY(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate));
 
     watchdog_event_current_ctx ctx;
-    watchdog_event_current_init_base(state, slot, &ctx);
+    watchdog_event_current_init_base(state, slot, effective_call, &ctx);
 
-    if (slot == 0) {
-        watchdog_event_current_apply_slot0_overrides(opts, state, &candidate, &ctx);
-    }
-
-    watchdog_event_current_normalize_p25_crypto(state, slot, &ctx);
+    watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
 
-    const char* sys_string = dsd_synctype_to_string(state->lastsynctype);
+    const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
     char timestr[9];
     char datestr[11];
@@ -1068,20 +1027,306 @@ watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
     char event_string[2000];
     DSD_MEMSET(event_string, 0, sizeof(event_string));
-    watchdog_event_current_build_event_string(state, slot, &ctx, datestr, timestr, sys_string, event_string,
+    watchdog_event_current_build_event_string(state, &ctx, datestr, timestr, sys_string, event_string,
                                               sizeof(event_string));
     watchdog_event_current_append_policy_labels(&ctx, event_string, sizeof(event_string));
 
     DSD_SNPRINTF(candidate.event_string, sizeof(candidate.event_string), "%s", event_string);
 
-    // The candidate starts as an exact byte copy of the current row, so padding bytes remain identical.
-    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison,cert-exp42-c,cert-flp37-c)
-    if (memcmp(&candidate, &event_struct->Event_History_Items[0], sizeof(candidate)) != 0) {
-        DSD_MEMCPY(&event_struct->Event_History_Items[0], &candidate, sizeof(candidate));
-        dsd_event_history_mark_dirty(event_struct);
-    }
+    watchdog_event_commit_candidate(event_struct, &candidate);
+    watchdog_event_finalize_ended(opts, state, slot, effective_call, lifecycle, event_struct, finalize_ended);
 
     /* stack buffers; no free */
+}
+
+void
+watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    watchdog_event_current_impl(opts, state, slot, &ext->calls.slots[slot], &ext->events[slot], 1);
+    dsd_call_state_ext_unlock(ext);
+}
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    if (!opts || !state || !state->event_history_s || slot > 1U) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    watchdog_event_history_impl(opts, state, slot, call, lifecycle);
+    watchdog_event_current_impl(opts, state, slot, call, lifecycle, 1);
+    dsd_call_state_ext_unlock(ext);
+}
+
+static void
+watchdog_event_lock_if_present(const dsd_call_state_ext* ext) {
+    if (ext) {
+        dsd_call_state_ext_lock(ext);
+    }
+}
+
+static void
+watchdog_event_unlock_if_present(const dsd_call_state_ext* ext) {
+    if (ext) {
+        dsd_call_state_ext_unlock(ext);
+    }
+}
+
+static uint32_t
+watchdog_event_notice_target(const dsd_call_snapshot* call) {
+    return watchdog_event_call_target_id(call);
+}
+
+static int
+watchdog_event_notice_already_handled(const dsd_call_event_lifecycle* lifecycle, const dsd_call_snapshot* call) {
+    return lifecycle != NULL && lifecycle->notice_handled && lifecycle->notice_epoch == call->epoch
+           && lifecycle->notice_target_id == watchdog_event_notice_target(call)
+           && lifecycle->notice_kind == (uint8_t)call->kind;
+}
+
+static int
+watchdog_event_notice_matches_canonical(const dsd_call_snapshot* canonical, const dsd_call_snapshot* call) {
+    return canonical != NULL && canonical->epoch == call->epoch && canonical->phase == call->phase
+           && canonical->kind == call->kind
+           && watchdog_event_notice_target(canonical) == watchdog_event_notice_target(call);
+}
+
+static void
+watchdog_event_notice_mark_handled(dsd_call_event_lifecycle* lifecycle, const dsd_call_snapshot* call) {
+    if (lifecycle == NULL) {
+        return;
+    }
+    lifecycle->notice_epoch = call->epoch;
+    lifecycle->notice_target_id = watchdog_event_notice_target(call);
+    lifecycle->notice_kind = (uint8_t)call->kind;
+    lifecycle->notice_handled = 1U;
+}
+
+static int
+watchdog_event_notice_matches_history(const Event_History_I* event_struct, const dsd_call_snapshot* call,
+                                      const char* detail) {
+    if (event_struct == NULL || call == NULL || detail == NULL) {
+        return 0;
+    }
+    const Event_History* previous = &event_struct->Event_History_Items[1];
+    const int expected_gi = call->kind == DSD_CALL_KIND_GROUP_VOICE     ? 0
+                            : call->kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1
+                                                                        : previous->gi;
+    return previous->target_id == watchdog_event_notice_target(call) && previous->gi == expected_gi
+           && strncmp(previous->internal_str, detail, sizeof(previous->internal_str)) == 0;
+}
+
+static int
+watchdog_event_notice_already_committed(const dsd_call_state_ext* ext, const dsd_call_event_lifecycle* lifecycle,
+                                        const Event_History_I* event_struct, const dsd_call_snapshot* call,
+                                        const char* detail) {
+    if (watchdog_event_notice_already_handled(lifecycle, call)) {
+        return 1;
+    }
+    return ext == NULL && watchdog_event_notice_matches_history(event_struct, call, detail);
+}
+
+static int
+dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                const char* detail, int finalize_call) {
+    if (!opts || !state || !state->event_history_s || !call || call->epoch == 0U || !detail || slot > 1U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    watchdog_event_lock_if_present(ext);
+    dsd_call_event_lifecycle* lifecycle = ext ? &ext->events[slot] : NULL;
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    if (watchdog_event_notice_already_committed(ext, lifecycle, event_struct, call, detail)) {
+        watchdog_event_unlock_if_present(ext);
+        return 0;
+    }
+
+    dsd_call_event_lifecycle* canonical_lifecycle = NULL;
+    if (ext != NULL && watchdog_event_notice_matches_canonical(&ext->calls.slots[slot], call)) {
+        canonical_lifecycle = lifecycle;
+        watchdog_event_history_authoritative(opts, state, slot, call, canonical_lifecycle);
+    }
+    watchdog_event_current_impl(opts, state, slot, call, canonical_lifecycle, 0);
+    DSD_SNPRINTF(event_struct->Event_History_Items[0].internal_str,
+                 sizeof(event_struct->Event_History_Items[0].internal_str), "%s", detail);
+    dsd_event_history_mark_dirty(event_struct);
+    watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
+                                               call->kind == DSD_CALL_KIND_DATA, finalize_call, finalize_call);
+    watchdog_event_notice_mark_handled(lifecycle, call);
+    if (canonical_lifecycle != NULL && call->phase == DSD_CALL_PHASE_ENDED) {
+        canonical_lifecycle->ended_committed = 1U;
+    }
+    watchdog_event_unlock_if_present(ext);
+    return 1;
+}
+
+int
+dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                           const char* detail) {
+    return dsd_event_emit_call_notice_impl(opts, state, slot, call, detail, 1);
+}
+
+int
+dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                         const char* detail) {
+    return dsd_event_emit_call_notice_impl(opts, state, slot, call, detail, 0);
+}
+
+typedef enum {
+    DSD_EVENT_ENRICH_ALIAS,
+    DSD_EVENT_ENRICH_GPS,
+    DSD_EVENT_ENRICH_TEXT,
+} dsd_event_enrichment_kind;
+
+static int
+dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
+                       dsd_event_enrichment_kind kind) {
+    if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U || !value) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    if (call->epoch != epoch) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    const uint8_t history_index = lifecycle->epoch == epoch && lifecycle->ended_committed ? 1U : 0U;
+    Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
+    if (kind == DSD_EVENT_ENRICH_ALIAS) {
+        DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
+        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+    } else if (kind == DSD_EVENT_ENRICH_GPS) {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+    } else {
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
+    }
+    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias) {
+    return dsd_event_enrich_epoch(state, slot, epoch, alias, DSD_EVENT_ENRICH_ALIAS);
+}
+
+int
+dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps) {
+    return dsd_event_enrich_epoch(state, slot, epoch, gps, DSD_EVENT_ENRICH_GPS);
+}
+
+int
+dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text) {
+    return dsd_event_enrich_epoch(state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
+}
+
+int
+dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]) {
+    if (!state || !out) {
+        return -1;
+    }
+    if (!state->event_history_s) {
+        DSD_MEMSET(out, 0, sizeof(Event_History_I) * 2U);
+        return 0;
+    }
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (ext) {
+        dsd_call_state_ext_lock(ext);
+    }
+    DSD_MEMCPY(out, state->event_history_s, sizeof(Event_History_I) * 2U);
+    if (ext) {
+        dsd_call_state_ext_unlock(ext);
+    }
+    return 1;
+}
+
+static int
+dsd_event_history_copy_incremental_locked(const dsd_state* src, Event_History_I event_history[2],
+                                          const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]) {
+    if (src->event_history_s == NULL) {
+        DSD_MEMSET(event_history, 0, sizeof(Event_History_I) * 2U);
+        return 0;
+    }
+    for (size_t slot = 0; slot < 2U; slot++) {
+        const uint64_t revision = src->event_history_s[slot].revision;
+        if (force_copy || source_revisions == NULL || source_revisions[slot] != revision) {
+            DSD_MEMCPY(&event_history[slot], &src->event_history_s[slot], sizeof(Event_History_I));
+            copied[slot] = 1U;
+        }
+    }
+    return 1;
+}
+
+int
+dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
+                                          const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]) {
+    if (!dst || !src || !event_history || !copied) {
+        return -1;
+    }
+    copied[0] = 0U;
+    copied[1] = 0U;
+    const dsd_call_state_ext* src_ext = dsd_call_state_ext_peek(src);
+    if (dst == src) {
+        if (src_ext) {
+            dsd_call_state_ext_lock(src_ext);
+        }
+        const int copied_history =
+            dsd_event_history_copy_incremental_locked(src, event_history, source_revisions, force_copy, copied);
+        if (src_ext) {
+            dsd_call_state_ext_unlock(src_ext);
+        }
+        return copied_history;
+    }
+    dsd_call_state_ext* dst_ext = NULL;
+    if (src_ext) {
+        dst_ext = dsd_call_state_ext_get(dst, 1);
+        if (!dst_ext) {
+            (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);
+        }
+        dsd_call_state_ext_lock(src_ext);
+        if (dst_ext) {
+            dsd_call_state_ext_lock(dst_ext);
+            dst_ext->calls = src_ext->calls;
+            dst_ext->recent = src_ext->recent;
+            DSD_MEMCPY(dst_ext->events, src_ext->events, sizeof(dst_ext->events));
+            DSD_MEMCPY(dst_ext->epoch_sequence, src_ext->epoch_sequence, sizeof(dst_ext->epoch_sequence));
+        }
+    } else {
+        (void)dsd_state_ext_set(dst, DSD_STATE_EXT_CORE_CALL_STATE, NULL, NULL);
+    }
+
+    const int copied_history =
+        dsd_event_history_copy_incremental_locked(src, event_history, source_revisions, force_copy, copied);
+    if (dst_ext) {
+        dsd_call_state_ext_unlock(dst_ext);
+    }
+    if (src_ext) {
+        dsd_call_state_ext_unlock(src_ext);
+    }
+    return dst_ext || !src_ext ? copied_history : -1;
+}
+
+int
+dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]) {
+    uint8_t copied[2];
+    return dsd_event_state_copy_snapshot_incremental(dst, src, event_history, NULL, 1, copied);
 }
 
 void
@@ -1090,6 +1335,9 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
         return;
     }
 
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     Event_History_I* event_struct = &state->event_history_s[slot];
     init_event_history(event_struct, 0, 1);
 
@@ -1111,51 +1359,133 @@ watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot)
 
     DSD_SNPRINTF(item->event_string, sizeof item->event_string, "%s %s %s", datestr, timestr, status_string);
     dsd_event_history_mark_dirty(event_struct);
+    dsd_event_history_transaction_end(&transaction);
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
-    state->event_history_s[slot].Event_History_Items[0].write = 0;
-    dsd_event_history_item_set_metadata(&state->event_history_s[slot].Event_History_Items[0], DSD_EVENT_SEVERITY_INFO,
-                                        DSD_EVENT_CATEGORY_DATA);
-    state->event_history_s[slot].Event_History_Items[0].systype = state->lastsynctype;
-    state->event_history_s[slot].Event_History_Items[0].subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
-    state->event_history_s[slot].Event_History_Items[0].gi = state->gi[slot];
-    state->event_history_s[slot].Event_History_Items[0].enc = 0;
-    state->event_history_s[slot].Event_History_Items[0].enc_alg = 0;
-    state->event_history_s[slot].Event_History_Items[0].enc_key = 0;
-    state->event_history_s[slot].Event_History_Items[0].mi = 0;
-    state->event_history_s[slot].Event_History_Items[0].svc = 0;
-    state->event_history_s[slot].Event_History_Items[0].source_id = src;
-    state->event_history_s[slot].Event_History_Items[0].target_id = dst;
-    state->event_history_s[slot].Event_History_Items[0].channel = 0;
-    state->event_history_s[slot].Event_History_Items[0].event_time = time(NULL);
+static void
+dsd_event_copy_data_payload(Event_History* dst, const Event_History* src) {
+    DSD_MEMCPY(dst->pdu, src->pdu, sizeof(dst->pdu));
+    DSD_SNPRINTF(dst->gps_s, sizeof(dst->gps_s), "%s", src->gps_s);
+    DSD_SNPRINTF(dst->text_message, sizeof(dst->text_message), "%s", src->text_message);
+}
+
+static void
+dsd_event_clear_data_payload(Event_History* item) {
+    DSD_MEMSET(item->pdu, 0, sizeof(item->pdu));
+    item->gps_s[0] = '\0';
+    item->text_message[0] = '\0';
+}
+
+static int
+dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                                const char* notice, const char* gps, int consume_staged_payload) {
+    if (opts == NULL || state == NULL || state->event_history_s == NULL || observation == NULL || notice == NULL
+        || slot > 1U || observation->slot != slot || observation->kind != DSD_CALL_KIND_DATA) {
+        return -1;
+    }
+
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History active;
+    DSD_MEMCPY(&active, &event_struct->Event_History_Items[0], sizeof(active));
+    init_event_history(event_struct, 0, 1);
+
+    Event_History* item = &event_struct->Event_History_Items[0];
+    item->write = 1;
+    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
+    item->systype = observation->protocol;
+    item->subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
+    item->gi = -1;
+    item->source_id = observation->ota_source_id <= UINT32_MAX ? (uint32_t)observation->ota_source_id : 0U;
+    item->target_id = observation->ota_target_id <= UINT32_MAX ? (uint32_t)observation->ota_target_id : 0U;
+    item->channel = observation->channel;
+    item->event_time = time(NULL);
+    DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
+    DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
+    if (consume_staged_payload) {
+        dsd_event_copy_data_payload(item, &active);
+        dsd_event_clear_data_payload(&active);
+    } else {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
+    }
 
     char timestr[9];
     char datestr[11];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
+    DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s %s %s", datestr, timestr, notice);
 
-    char event_string[2000];
-    DSD_MEMSET(event_string, 0, sizeof(event_string));
-    DSD_SNPRINTF(event_string, sizeof event_string, "%s %s ", datestr, timestr);
-    {
-        size_t rem = sizeof(event_string) - strlen(event_string) - 1;
-        if (rem > 0) {
-            DSD_STRNCAT(event_string, data_string, rem);
-        }
+    if (opts->event_out_file[0] != '\0') {
+        write_event_to_log_file(opts, state, slot, 0U, item->event_string);
     }
-    DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].event_string,
-                 sizeof state->event_history_s[slot].Event_History_Items[0].event_string, "%s",
-                 event_string); // could change this to a strncpy to prevent potential overflow
-    dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    push_event_history(event_struct);
+    DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
+    dsd_event_history_mark_dirty(event_struct);
+    dsd_event_history_transaction_end(&transaction);
 
-    dsd_frame_logf(opts, "FRAME DATA slot=%d src=%u dst=%u %s", slot + 1, src, dst, data_string ? data_string : "");
+    dsd_frame_logf(opts, "FRAME DATA slot=%d src=%llu dst=%llu %s", slot + 1,
+                   (unsigned long long)observation->ota_source_id, (unsigned long long)observation->ota_target_id,
+                   notice);
 
-    /* stack buffers; no free */
-
-    //call alert on data calls
     if (dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_DATA)) {
         beeper(opts, state, slot, 80, 20, 3);
     }
+    return 0;
+}
+
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, notice, NULL, 1);
+}
+
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    if (gps == NULL) {
+        return -1;
+    }
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, notice, gps, 0);
+}
+
+int
+dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const char* notice) {
+    if (opts == NULL || state == NULL || state->event_history_s == NULL || notice == NULL || slot > 1U) {
+        return -1;
+    }
+
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History active;
+    DSD_MEMCPY(&active, &event_struct->Event_History_Items[0], sizeof(active));
+    init_event_history(event_struct, 0, 1);
+
+    Event_History* item = &event_struct->Event_History_Items[0];
+    item->write = 1;
+    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
+    item->systype = DSD_SYNC_NONE;
+    item->subtype = -1;
+    item->gi = -1;
+    item->event_time = time(NULL);
+
+    char timestr[9];
+    char datestr[11];
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
+    DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s %s %s", datestr, timestr, notice);
+
+    if (opts->event_out_file[0] != '\0') {
+        write_event_to_log_file(opts, state, slot, 0U, item->event_string);
+    }
+    push_event_history(event_struct);
+    DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
+    dsd_event_history_mark_dirty(event_struct);
+    dsd_event_history_transaction_end(&transaction);
+
+    dsd_frame_logf(opts, "FRAME SYSTEM slot=%d %s", slot + 1, notice);
+    return 0;
 }

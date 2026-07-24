@@ -11,10 +11,12 @@
  * without depending on live TSBK dibit capture or terminal text formatting.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
@@ -85,9 +87,25 @@ enum { TEST_TSBK_BYTES_PER_BLOCK = 12 };
 static uint8_t g_candidate_bytes[P25_12_MAX_CANDIDATES][TEST_TSBK_BYTES_PER_BLOCK];
 static uint8_t g_soft_llr_bytes[TEST_TSBK_BYTES_PER_BLOCK];
 
+static int
+recent_activity(dsd_state* state, dsd_recent_activity_entry* entry) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        DSD_MEMSET(entry, 0, sizeof(*entry));
+        return 0;
+    }
+    *entry = recent.entries[0];
+    return entry->notice[0] != '\0';
+}
+
 uint64_t
 dsd_time_monotonic_ns(void) {
     return 41000000000ULL;
+}
+
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
 }
 
 void
@@ -517,6 +535,7 @@ read_capture_file(const char* path, char* out, size_t out_sz) {
     }
     FILE* f = fopen(path, "rb");
     if (!f) {
+        (void)remove(path);
         return -1;
     }
     const size_t max_read = out_sz - 1;
@@ -526,10 +545,12 @@ read_capture_file(const char* path, char* out, size_t out_sz) {
     }
     if (n < max_read && ferror(f) != 0) {
         (void)fclose(f);
+        (void)remove(path);
         return -1;
     }
     out[n] = '\0';
     (void)fclose(f);
+    (void)remove(path);
     return 0;
 }
 
@@ -1110,7 +1131,8 @@ test_standard_osp_data_channel_metadata_and_dispatch(void) {
     rc |= expect_int("osp data channel no extra group data callbacks", g_group_data_grant_count, 1);
     rc |= expect_int("osp data channel no extra indiv data callbacks", g_indiv_data_grant_count, 1);
     rc |= expect_int("osp data channel no mac callbacks", g_mac_count, 0);
-    rc |= expect_int("osp data channel no active text", state.active_channel[0][0], 0);
+    dsd_recent_activity_entry activity;
+    rc |= expect_int("osp data channel no recent voice activity", recent_activity(&state, &activity), 0);
 
     tsbk_decode_ctx_t ctx;
     unsigned long long pdu[24] = {0};
@@ -1440,12 +1462,19 @@ test_mfid90_grant_seeds_trunk_state(void) {
     rc |= expect_int("grant tg", g_last_grant_tg, 0x4567);
     rc |= expect_int("grant src", g_last_grant_src, 0x010203);
     rc |= expect_int("grant provenance", g_last_grant_provenance, P25_SM_GRANT_PROVENANCE_ASSIGNMENT);
-    rc |= expect_int("active channel set", strstr(state.active_channel[0], "1234/1234") != NULL, 1);
+    dsd_recent_activity_entry activity;
+    rc |= expect_int("grant activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("grant activity kind", activity.observation.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_int("grant activity channel", (int)activity.observation.channel, 0x1234);
+    rc |= expect_int("grant activity target", (int)activity.observation.ota_target_id, 0x4567);
+    rc |= expect_int("grant activity source", (int)activity.observation.ota_source_id, 0x010203);
+    rc |= expect_int("grant activity notice", strstr(activity.notice, "MFID90 GRG Grant: 1234") != NULL, 1);
 
     reset_calls();
     g_channel_freq = 0;
     tsbk_handle_mfid90_grant(&opts, &state, tsbk);
     rc |= expect_int("zero freq skips grant", g_grant_count, 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -1477,7 +1506,12 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     rc |= expect_int("grant update last tg", g_last_grant_tg, 0x7788);
     rc |= expect_int("grant update source is zero", g_last_grant_src, 0);
     rc |= expect_int("grant update provenance", g_last_grant_provenance, P25_SM_GRANT_PROVENANCE_UPDATE);
-    rc |= expect_int("grant update active channel", strstr(state.active_channel[0], "1122/1122") != NULL, 1);
+    dsd_recent_activity_entry activity;
+    rc |= expect_int("grant update activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("grant update activity kind", activity.observation.kind, DSD_CALL_KIND_GROUP_VOICE);
+    rc |= expect_int("grant update activity channel", (int)activity.observation.channel, 0x1122);
+    rc |= expect_int("grant update activity target", (int)activity.observation.ota_target_id, 0x3344);
+    rc |= expect_int("grant update activity notice", strstr(activity.notice, "MFID90 GRG Upd: 1122") != NULL, 1);
 
     tsbk[2] = 0x00;
     tsbk[3] = 0x00;
@@ -1491,6 +1525,7 @@ test_mfid90_grant_update_trunk_dispatch(void) {
     g_channel_freq = 0;
     tsbk_handle_mfid90_grant_update(&opts, &state, tsbk);
     rc |= expect_int("zero translated freq skips update grants", g_grant_count, 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -1519,8 +1554,11 @@ test_mfid90_queued_and_deny_callbacks(void) {
     int rc = 0;
     rc |= expect_int("queued callback count", (int)state.p25_sm_queued_count, 1);
     rc |= expect_int("queued deny count", (int)state.p25_sm_deny_count, 0);
-    rc |= expect_int("queued active label", strstr(state.active_channel[0], "MOT QUEUED") != NULL, 1);
-    rc |= expect_int("queued info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
+    dsd_recent_activity_entry activity;
+    rc |= expect_int("queued activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("queued activity kind", activity.observation.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_int("queued active label", strstr(activity.notice, "MOT QUEUED") != NULL, 1);
+    rc |= expect_int("queued info label", strstr(activity.notice, "Info: 123456") != NULL, 1);
 
     uint8_t deny[TSBK_BYTES_PER_BLOCK] = {0};
     deny[0] = 0x07;
@@ -1536,9 +1574,10 @@ test_mfid90_queued_and_deny_callbacks(void) {
     tsbk_handle_mfid90(&opts, &state, deny);
     rc |= expect_int("deny callback count", (int)state.p25_sm_deny_count, 1);
     rc |= expect_int("deny queued count", (int)state.p25_sm_queued_count, 0);
-    rc |= expect_int("deny active label", strstr(state.active_channel[0], "MOT DENY") != NULL, 1);
-    rc |= expect_int("deny reason label", strstr(state.active_channel[0], "Site Access Denial") != NULL, 1);
-    rc |= expect_int("deny no info without flag", strstr(state.active_channel[0], "Info:") == NULL, 1);
+    rc |= expect_int("deny activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("deny active label", strstr(activity.notice, "MOT DENY") != NULL, 1);
+    rc |= expect_int("deny reason label", strstr(activity.notice, "Site Access Denial") != NULL, 1);
+    rc |= expect_int("deny no info without flag", strstr(activity.notice, "Info:") == NULL, 1);
 
     uint8_t deny_aii[TSBK_BYTES_PER_BLOCK] = {0};
     deny_aii[0] = 0x07;
@@ -1556,7 +1595,9 @@ test_mfid90_queued_and_deny_callbacks(void) {
     state.p25_sm_deny_count = 0;
     tsbk_handle_mfid90(&opts, &state, deny_aii);
     rc |= expect_int("deny aii callback count", (int)state.p25_sm_deny_count, 1);
-    rc |= expect_int("deny aii info label", strstr(state.active_channel[0], "Info: 123456") != NULL, 1);
+    rc |= expect_int("deny aii activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("deny aii info label", strstr(activity.notice, "Info: 123456") != NULL, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -1583,10 +1624,14 @@ test_mfid90_ack_display_only(void) {
     rc |= expect_int("ack no queued callback", (int)state.p25_sm_queued_count, 0);
     rc |= expect_int("ack no deny callback", (int)state.p25_sm_deny_count, 0);
     rc |= expect_int("ack no grant", g_grant_count, 0);
-    rc |= expect_int("ack active label", strstr(state.active_channel[0], "MOT ACK") != NULL, 1);
-    rc |= expect_int("ack service label", strstr(state.active_channel[0], "Service: 04") != NULL, 1);
-    rc |= expect_int("ack source label", strstr(state.active_channel[0], "Source: 66051") != NULL, 1);
-    rc |= expect_int("ack target label", strstr(state.active_channel[0], "Target: 263430") != NULL, 1);
+    dsd_recent_activity_entry activity;
+    rc |= expect_int("ack activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("ack activity kind", activity.observation.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_int("ack active label", strstr(activity.notice, "MOT ACK") != NULL, 1);
+    rc |= expect_int("ack service label", strstr(activity.notice, "Service: 04") != NULL, 1);
+    rc |= expect_int("ack source label", strstr(activity.notice, "Source: 66051") != NULL, 1);
+    rc |= expect_int("ack target label", strstr(activity.notice, "Target: 263430") != NULL, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -1613,9 +1658,13 @@ test_mfid90_tdma_data_channel_display_only(void) {
     rc |= expect_int("tdma data last channel", g_last_process_channel, 0x803E);
     rc |= expect_int("tdma data no grant", g_grant_count, 0);
     rc |= expect_int("tdma data no seed", g_seed_count, 0);
-    rc |= expect_int("tdma data active label", strstr(state.active_channel[0], "MOT TDMA Data") != NULL, 1);
-    rc |= expect_int("tdma data downlink label", strstr(state.active_channel[0], "3060/3060") != NULL, 1);
-    rc |= expect_int("tdma data uplink label", strstr(state.active_channel[0], "803E/803E") != NULL, 1);
+    dsd_recent_activity_entry activity;
+    rc |= expect_int("tdma data activity set", recent_activity(&state, &activity), 1);
+    rc |= expect_int("tdma data activity kind", activity.observation.kind, DSD_CALL_KIND_DATA);
+    rc |= expect_int("tdma data active label", strstr(activity.notice, "MOT TDMA Data") != NULL, 1);
+    rc |= expect_int("tdma data downlink label", strstr(activity.notice, "3060") != NULL, 1);
+    rc |= expect_int("tdma data uplink label", strstr(activity.notice, "803E") != NULL, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

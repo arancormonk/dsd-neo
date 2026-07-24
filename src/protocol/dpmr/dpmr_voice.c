@@ -20,8 +20,10 @@
 
 #include <dsd-neo/core/ambe_interleave.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
@@ -177,14 +179,6 @@ dpmr_decode_cch_frames(dsd_state* state, dpmr_voice_ctx_t* ctx) {
 }
 
 static void DSD_ATTR_USED
-dpmr_extract_previous_ids(const dsd_state* state, char called_id[8], char calling_id[8]) {
-    dsd_strncpy_s(called_id, 8, (const char*)state->dPMRVoiceFS2Frame.CalledID, 7);
-    called_id[7] = '\0';
-    dsd_strncpy_s(calling_id, 8, (const char*)state->dPMRVoiceFS2Frame.CallingID, 7);
-    calling_id[7] = '\0';
-}
-
-static void DSD_ATTR_USED
 dpmr_extract_superframe_part(const dpmr_voice_ctx_t* ctx, dpmr_superframe_part* part) {
     uint32_t first_half = convert_bits_into_output(&ctx->CCHDataHammingCorrected[0][2], 12);
     uint32_t second_half = convert_bits_into_output(&ctx->CCHDataHammingCorrected[1][2], 12);
@@ -207,31 +201,52 @@ dpmr_ids_are_strong(const dpmr_superframe_part* part) {
 }
 
 static void
+dpmr_publish_identity_fragment(dsd_state* state, uint32_t id_value, int target) {
+    char identity[8];
+    dpmr_convert_air_interface_id(id_value, identity);
+    int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
+    if (!DSD_SYNC_IS_DPMR(protocol)) {
+        protocol = DSD_SYNC_DPMR_FS2_POS;
+    }
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    if (target) {
+        dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), identity,
+                      sizeof(observation.target_text) - 1U);
+    } else {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_DPMR(call.protocol)) {
+            dsd_strncpy_s(observation.target_text, sizeof(observation.target_text), call.target_text,
+                          sizeof(observation.target_text) - 1U);
+        }
+        dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), identity,
+                      sizeof(observation.source_text) - 1U);
+    }
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+}
+
+static void
 dpmr_update_called_id(dsd_opts* opts, dsd_state* state, uint32_t id_value, int id_is_strong) {
-    char called_id[8];
-    dpmr_convert_air_interface_id(id_value, called_id);
-    state->dPMRVoiceFS2Frame.CalledIDOk = id_is_strong ? 1U : 0U;
-    dsd_strncpy_s((char*)state->dPMRVoiceFS2Frame.CalledID, sizeof(state->dPMRVoiceFS2Frame.CalledID), called_id,
-                  sizeof(state->dPMRVoiceFS2Frame.CalledID) - 1);
-    state->dPMRVoiceFS2Frame.CalledID[sizeof(state->dPMRVoiceFS2Frame.CalledID) - 1] = '\0';
+    if (id_is_strong) {
+        dpmr_publish_identity_fragment(state, id_value, 1);
+    }
     opts->dPMR_next_part_of_superframe = 2;
 }
 
 static void
 dpmr_update_calling_id(dsd_opts* opts, dsd_state* state, uint32_t id_value, int id_is_strong) {
-    char calling_id[8];
-    dpmr_convert_air_interface_id(id_value, calling_id);
-    state->dPMRVoiceFS2Frame.CallingIDOk = id_is_strong ? 1U : 0U;
-    dsd_strncpy_s((char*)state->dPMRVoiceFS2Frame.CallingID, sizeof(state->dPMRVoiceFS2Frame.CallingID), calling_id,
-                  sizeof(state->dPMRVoiceFS2Frame.CallingID) - 1);
-    state->dPMRVoiceFS2Frame.CallingID[sizeof(state->dPMRVoiceFS2Frame.CallingID) - 1] = '\0';
+    if (id_is_strong) {
+        dpmr_publish_identity_fragment(state, id_value, 0);
+    }
     opts->dPMR_next_part_of_superframe = 1;
 }
 
 static void
-dpmr_mark_unknown_superframe_part(dsd_opts* opts, dsd_state* state) {
-    state->dPMRVoiceFS2Frame.CalledIDOk = 0;
-    state->dPMRVoiceFS2Frame.CallingIDOk = 0;
+dpmr_mark_unknown_superframe_part(dsd_opts* opts) {
     if (opts->dPMR_next_part_of_superframe == 1) {
         opts->dPMR_next_part_of_superframe = 2;
     } else if (opts->dPMR_next_part_of_superframe == 2) {
@@ -254,37 +269,34 @@ dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superfr
         dpmr_update_calling_id(opts, state, part->id_value, id_is_strong);
         return;
     }
-    dpmr_mark_unknown_superframe_part(opts, state);
+    dpmr_mark_unknown_superframe_part(opts);
 }
 
 void
-dpmr_print_ids(dsd_state* state, const char called_id[8], const char calling_id[8]) {
+dpmr_print_ids(dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
     DSD_FPRINTF(stderr, "\n");
-    if (state->dPMRVoiceFS2Frame.CalledIDOk) {
+    if (call.target_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        DSD_FPRINTF(stderr, " TG=%s", called_id);
+        DSD_FPRINTF(stderr, " TG=%s", call.target_text);
         DSD_FPRINTF(stderr, "%s", KNRM);
-        DSD_SNPRINTF(state->dpmr_target_id, sizeof state->dpmr_target_id, "%s", called_id);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, " TG=(CRC ERR)");
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 
-    if (state->dPMRVoiceFS2Frame.CallingIDOk) {
+    if (call.source_text[0] != '\0') {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        DSD_FPRINTF(stderr, " Src=%s", calling_id);
+        DSD_FPRINTF(stderr, " Src=%s", call.source_text);
         DSD_FPRINTF(stderr, "%s", KNRM);
-        if (state->dPMRVoiceFS2Frame.CalledIDOk) {
-            DSD_SNPRINTF(state->dpmr_caller_id, sizeof state->dpmr_caller_id, "%s", calling_id);
-        }
         if (state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1)) {
             DSD_FPRINTF(stderr, "%s", KGRN);
             DSD_FPRINTF(stderr, " Channel Code=%02d", (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
             DSD_FPRINTF(stderr, "%s", KNRM);
-            if (state->dPMRVoiceFS2Frame.CalledIDOk) {
-                state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
-            }
+            state->dpmr_color_code = (int)state->dPMRVoiceFS2Frame.ColorCode[0];
         }
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
@@ -308,6 +320,34 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->R, 5U));
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
+}
+
+void
+dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
+    dsd_call_observation observation = {
+        .protocol = state->synctype,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .channel =
+            state->dPMRVoiceFS2Frame.ColorCode[0] == (unsigned int)(-1) ? 0U : state->dPMRVoiceFS2Frame.ColorCode[0],
+        .service_options = (uint16_t)((state->dPMRVoiceFS2Frame.Version[0] << 8U)
+                                      | (state->dPMRVoiceFS2Frame.CommunicationMode[0] << 4U)
+                                      | state->dPMRVoiceFS2Frame.CommsFormat[0]),
+        .emergency = (uint8_t)(state->dPMRVoiceFS2Frame.EmergencyPriority[0] != 0U),
+        .has_service_metadata = 1U,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+
+    dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1U,
+    };
+    if (state->dPMRVoiceFS2Frame.Version[0] == 3U) {
+        crypto.classification = state->R != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED;
+        crypto.audio_permitted = state->R != 0U;
+    }
+    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+    dsd_event_sync_slot(opts, state, 0U);
 }
 
 void
@@ -358,8 +398,6 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_voice_ctx_t ctx;
     dpmr_superframe_part part;
     uint32_t PartOfSuperFrame = 0;
-    char CalledID[8] = {0};
-    char CallingID[8] = {0};
     UNUSED(PartOfSuperFrame);
 
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
@@ -377,9 +415,9 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_decode_cch_frames(state, &ctx);
     dpmr_extract_superframe_part(&ctx, &part);
     dpmr_update_superframe_part(opts, state, &part);
-    dpmr_extract_previous_ids(state, CalledID, CallingID);
-    dpmr_print_ids(state, CalledID, CallingID);
+    dpmr_print_ids(state);
     dpmr_print_scrambler_state(opts, state);
+    dpmr_publish_call(opts, state);
     dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
     DSD_FPRINTF(stderr, "\n");
 

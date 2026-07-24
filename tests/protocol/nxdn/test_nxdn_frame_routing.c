@@ -143,6 +143,11 @@ dsd_time_monotonic_ns(void) {
     return 42000000000ULL;
 }
 
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
 dsd_nxdn_variant
 dsd_frame_sync_active_nxdn_variant(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;

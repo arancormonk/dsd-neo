@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/audio_filters.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -1226,8 +1227,6 @@ no_carrier_reset_floating_gain_if_needed(const dsd_opts* opts, dsd_state* state)
 static void
 no_carrier_reset_nxdn_scan_markers(dsd_state* state) {
     state->nxdn_last_ran = -1;
-    state->nxdn_last_rid = 0;
-    state->nxdn_last_tg = 0;
 }
 
 static dsd_trunk_tune_result
@@ -1398,8 +1397,6 @@ no_carrier_clear_stale_p25_return_hints_after_generic_activity(const dsd_opts* o
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
-    state->p25_call_is_packet[0] = 0;
-    state->p25_call_is_packet[1] = 0;
 }
 
 static int
@@ -1470,6 +1467,12 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
 
 static void
 no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
     opts->trunk_is_tuned = 0;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
@@ -1481,8 +1484,6 @@ no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(state->p25_p2_rekey, 0, sizeof(state->p25_p2_rekey));
-    state->p25_call_is_packet[0] = 0;
-    state->p25_call_is_packet[1] = 0;
 }
 
 static dsd_trunk_tune_result
@@ -1769,7 +1770,7 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
 
     if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
         no_carrier_clear_voice_tune_state(opts, state);
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+        (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
 }
@@ -1825,12 +1826,6 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
     if (opts->trunk_enable != 0) {
         return;
     }
-    state->lasttg = 0;
-    state->lastsrc = 0;
-    state->lasttgR = 0;
-    state->lastsrcR = 0;
-    state->gi[0] = -1;
-    state->gi[1] = -1;
     state->p25_vc_freq[0] = 0;
     state->p25_vc_freq[1] = 0;
     state->dmr_rest_channel = -1;
@@ -1848,14 +1843,7 @@ no_carrier_reset_non_trunk_fields_if_needed(const dsd_opts* opts, dsd_state* sta
 
 static void
 no_carrier_reset_last_call_display(dsd_state* state) {
-    state->lasttg = 0;
-    state->lastsrc = 0;
-    state->lasttgR = 0;
-    state->lastsrcR = 0;
-    state->gi[0] = -1;
-    state->gi[1] = -1;
-    state->nxdn_last_rid = 0;
-    state->nxdn_last_tg = 0;
+    UNUSED(state);
 }
 
 static void
@@ -1971,7 +1959,6 @@ no_carrier_reset_nxdn_alias_state(dsd_state* state) {
     state->nxdn_alias_arib_total_segments = 0;
     state->nxdn_alias_arib_seen_mask = 0;
     DSD_MEMSET(state->nxdn_alias_arib_segments, 0, sizeof(state->nxdn_alias_arib_segments));
-    state->nxdn_call_type[0] = '\0';
 }
 
 static void
@@ -2018,8 +2005,6 @@ no_carrier_reset_dmr_misc_state(dsd_state* state) {
     DSD_MEMSET(state->dmr_embedded_gps, 0, sizeof(state->dmr_embedded_gps));
     DSD_MEMSET(state->dmr_lrrp_gps, 0, sizeof(state->dmr_lrrp_gps));
     DSD_MEMSET(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
-    state->generic_talker_alias_src[0] = 0;
-    state->generic_talker_alias_src[1] = 0;
 }
 
 static void
@@ -2086,30 +2071,18 @@ no_carrier_clear_stale_follow_state_if_needed(dsd_opts* opts, dsd_state* state, 
         state->dmr_branding[0] = '\0';
         state->dmr_site_parms[0] = '\0';
         opts->trunk_is_tuned = 0;
-        DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+        (void)dsd_recent_activity_clear_all(state);
     }
 }
 
 static void
 no_carrier_reset_call_strings_and_dpmr(dsd_opts* opts, dsd_state* state) {
-    set_spaces(state->call_string[0], 21);
-    set_spaces(state->call_string[1], 21);
     opts->dPMR_next_part_of_superframe = 0;
-    state->dPMRVoiceFS2Frame.CalledIDOk = 0;
-    state->dPMRVoiceFS2Frame.CallingIDOk = 0;
-    DSD_MEMSET(state->dPMRVoiceFS2Frame.CalledID, 0, 8);
-    DSD_MEMSET(state->dPMRVoiceFS2Frame.CallingID, 0, 8);
     DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, 8);
-    set_spaces(state->dpmr_caller_id, 6);
-    set_spaces(state->dpmr_target_id, 6);
 }
 
 static void
 no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
-    set_spaces(state->ysf_tgt, 10);
-    set_spaces(state->ysf_src, 10);
-    set_spaces(state->ysf_upl, 10);
-    set_spaces(state->ysf_dnl, 10);
     set_spaces(state->ysf_rm1, 5);
     set_spaces(state->ysf_rm2, 5);
     set_spaces(state->ysf_rm3, 5);
@@ -2119,12 +2092,18 @@ no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
     state->ysf_fi = 9;
     state->ysf_cm = 9;
 
-    set_spaces(state->dstar_rpt1, 8);
-    set_spaces(state->dstar_rpt2, 8);
-    set_spaces(state->dstar_dst, 8);
-    set_spaces(state->dstar_src, 8);
     set_spaces(state->dstar_txt, 8);
     set_spaces(state->dstar_gps, 8);
+}
+
+static void
+no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        const uint8_t call_slot = (uint8_t)slot;
+        if (dsd_call_state_end(state, call_slot, 0.0) > 0) {
+            dsd_event_sync_slot(opts, state, call_slot);
+        }
+    }
 }
 
 static void
@@ -2141,13 +2120,7 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     state->m17_bert_bits = 0;
     state->m17_bert_errors = 0;
     state->m17_bert_resyncs = 0;
-    state->m17_dst = 0;
-    state->m17_src = 0;
     state->m17_can = 0;
-    DSD_MEMSET(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
-    DSD_MEMSET(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
-    state->m17_dst_str[0] = '\0';
-    state->m17_src_str[0] = '\0';
     state->m17_enc = 0;
     state->m17_enc_st = 0;
     state->m17_payload_decrypted = 0;
@@ -2196,6 +2169,7 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
 
     no_carrier_step_scanner_mode_if_needed(opts, state, now);
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
+    no_carrier_finalize_canonical_calls(opts, state);
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
@@ -2299,11 +2273,16 @@ live_scanner_emit_start_history(dsd_state* state) {
     }
 
     watchdog_event_status(state, "Any decoded voice calls or data calls display here;", 0);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     push_event_history(&state->event_history_s[0]);
     init_event_history(&state->event_history_s[0], 0, 1);
+    dsd_event_history_transaction_end(&transaction);
     watchdog_event_status(state, "DSD-neo Started and Event History Initialized;", 0);
+    dsd_event_history_transaction_begin(state, &transaction);
     push_event_history(&state->event_history_s[0]);
     init_event_history(&state->event_history_s[0], 0, 1);
+    dsd_event_history_transaction_end(&transaction);
 }
 
 static void
@@ -2449,10 +2428,8 @@ dsd_engine_cleanup_codec2(dsd_state* state) {
 
 static void
 dsd_engine_cleanup_watchdog_snapshots(dsd_opts* opts, dsd_state* state) {
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
-    watchdog_event_history(opts, state, 1);
-    watchdog_event_current(opts, state, 1);
+    dsd_event_sync_slot(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 1);
 }
 
 static void

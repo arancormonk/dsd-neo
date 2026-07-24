@@ -18,6 +18,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
@@ -194,6 +195,7 @@ dmr_expect_close(double actual, double expected, double tolerance, const char* g
 
 static void
 dmr_setup_fixture(const dmr_grant_case* grant) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     DSD_MEMSET(&g_ctx, 0, sizeof(g_ctx));
@@ -217,6 +219,7 @@ dmr_setup_fixture(const dmr_grant_case* grant) {
 
 static void
 dmr_setup_blank_fixture(void) {
+    dsd_state_ext_free_all(&g_state);
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
     DSD_MEMSET(&g_state, 0, sizeof(g_state));
     DSD_MEMSET(&g_ctx, 0, sizeof(g_ctx));
@@ -844,6 +847,7 @@ main(void) {
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    dsd_state_ext_free_all(&g_state);
     if (rc == 0) {
         printf("DMR_T3_SM_RETURN_TO_CC_MATRIX: OK\n");
     }

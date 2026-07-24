@@ -11,6 +11,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -73,6 +74,21 @@ reset_state(dsd_state* st) {
     }
     dsd_state_ext_free_all(st);
     DSD_MEMSET(st, 0, sizeof(*st));
+}
+
+static int
+seed_call(dsd_state* st, uint8_t slot, int protocol, dsd_call_kind kind, uint64_t ota_target, uint64_t policy_target,
+          uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = ota_target,
+        .policy_target_id = policy_target,
+        .ota_source_id = source,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_BEGIN);
 }
 
 int
@@ -194,7 +210,8 @@ main(void) {
     // Case 4: Mono per-call recording gate respects block mode.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
-    st->lasttg = 500UL;
+    rc |= expect_eq("case4-call",
+                    seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 500U, 500U, 501U), 1);
     st->dmr_encL = 0;
     rc |= expect_eq("case4-seed-a", seed_policy_group(st, 500U, "B", "REC-BLOCK"), 0);
     {
@@ -206,7 +223,8 @@ main(void) {
     // Case 4b: record=off blocks recording while audio remains allowed.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
-    st->lasttg = 520UL;
+    rc |= expect_eq("case4b-call",
+                    seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 520U, 520U, 521U), 1);
     st->dmr_encL = 0;
     rc |= expect_eq("case4b-append", append_policy_group(st, 520U, "A", "REC-OFF", 1, 0, 1), 0);
     {
@@ -221,7 +239,8 @@ main(void) {
     // Case 4c: Matching TG hold overrides explicit media-off policy; non-match blocks.
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
-    st->lasttg = 530UL;
+    rc |= expect_eq("case4c-call",
+                    seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 530U, 530U, 531U), 1);
     st->dmr_encL = 0;
     rc |= expect_eq("case4c-append", append_policy_group(st, 530U, "A", "MEDIA-OFF", 0, 0, 0), 0);
     {
@@ -244,8 +263,10 @@ main(void) {
     reset_state(st);
     opts->trunk_use_allow_list = 1;
     st->currentslot = 1;
-    st->lasttg = 600UL;
-    st->lasttgR = 601UL;
+    rc |= expect_eq("case5-left-call",
+                    seed_call(st, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 600U, 600U, 602U), 1);
+    rc |= expect_eq("case5-right-call",
+                    seed_call(st, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 601U, 601U, 603U), 1);
     st->dmr_encL = 1;
     st->dmr_encR = 0;
     rc |= expect_eq("case5-seed-a", seed_policy_group(st, 601U, "A", "RIGHT-ONLY"), 0);
@@ -260,7 +281,8 @@ main(void) {
     reset_state(st);
     opts->trunk_use_allow_list = 1;
     st->currentslot = 1;
-    st->lasttgR = 611UL;
+    rc |= expect_eq("case5b-call",
+                    seed_call(st, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 611U, 611U, 612U), 1);
     st->dmr_encR = 1;
     rc |= expect_eq("case5b-seed-a", seed_policy_group(st, 611U, "A", "ENC-RIGHT"), 0);
     {
@@ -290,9 +312,8 @@ main(void) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
     rc |= expect_eq("case7-seed-b", seed_policy_group(st, 700U, "B", "HELD-BLOCKED"), 0);
-    st->lasttg = 700;
-    st->lastsrc = 701;
-    st->gi[0] = 0;
+    rc |=
+        expect_eq("case7-call", seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 700U, 700U, 701U), 1);
     st->tg_hold = 700U;
     st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     rc |= expect_eq("case7-held-decode", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
@@ -304,12 +325,12 @@ main(void) {
     reset_state(st);
     opts->trunk_use_allow_list = 1;
     rc |= expect_eq("case8-seed-src", seed_policy_group(st, 9002U, "A", "SRC-ALLOW"), 0);
-    st->gi[0] = 1;
-    st->lasttg = 9001;
-    st->lastsrc = 9002;
+    rc |= expect_eq("case8-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_PRIVATE_VOICE, 9001U, 9001U, 9002U), 1);
     st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     rc |= expect_eq("case8-src-allow", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
-    st->lastsrc = 9003;
+    rc |= expect_eq("case8-new-source",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_PRIVATE_VOICE, 9001U, 9001U, 9003U), 1);
     rc |= expect_eq("case8-unknown-private-block", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
     st->tg_hold = 9003U;
     rc |= expect_eq("case8-source-hold", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 1);
@@ -318,9 +339,12 @@ main(void) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     reset_state(st);
     opts->trunk_use_allow_list = 1;
-    st->gi[0] = 0;
+    st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_eq("case9-anon-group-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, 0U, 0U), 1);
     rc |= expect_eq("case9-unknown-group-allowlist", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
-    st->gi[0] = 1;
+    rc |= expect_eq("case9-anon-private-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_PRIVATE_VOICE, 0U, 0U, 0U), 1);
     rc |= expect_eq("case9-unknown-private-allowlist", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
 
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -332,9 +356,9 @@ main(void) {
     reset_state(st);
     opts->trunk_use_allow_list = 1;
     rc |= expect_eq("case9-seed-source", seed_policy_group(st, 9200U, "A", "SRC-ALLOW"), 0);
-    st->lastsrc = 9200;
-    st->lasttg = 0;
-    st->gi[0] = 0;
+    st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_eq("case9-source-only-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 0U, 0U, 9200U), 1);
     rc |= expect_eq("case9-target-zero-gi-unset", dsd_p25p2_decode_audio_allowed(opts, st, 0, 0), 0);
 
     // Case 10: P25 patch-member policy targets are only honored while the OTA SG still owns the active member.
@@ -344,10 +368,8 @@ main(void) {
     rc |= expect_eq("case10-seed-member", seed_policy_group(st, 9401U, "A", "PATCH-MEMBER"), 0);
     st->synctype = DSD_SYNC_P25P2_POS;
     st->currentslot = 0;
-    st->gi[0] = 0;
-    st->lasttg = 9400;
-    st->lastsrc = 777001;
-    st->p25_policy_tg[0] = 9401U;
+    rc |= expect_eq("case10-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9400U, 9401U, 777001U), 1);
     st->p25_p2_audio_allowed[0] = 1U;
     st->p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     seed_active_patch_member(st, 9400U, 9401U);
@@ -375,10 +397,8 @@ main(void) {
     rc |= expect_eq("case10b-seed-member", seed_policy_group(st, 9501U, "A", "OTHER-PATCH-MEMBER"), 0);
     st->synctype = DSD_SYNC_P25P2_POS;
     st->currentslot = 0;
-    st->gi[0] = 0;
-    st->lasttg = 9502;
-    st->lastsrc = 777002;
-    st->p25_policy_tg[0] = 9501U;
+    rc |= expect_eq("case10b-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9502U, 9501U, 777002U), 1);
     st->p25_p2_audio_allowed[0] = 1U;
     seed_active_patch_member(st, 9500U, 9501U);
     {
@@ -397,12 +417,10 @@ main(void) {
     opts->trunk_use_allow_list = 1;
     rc |= expect_eq("case10c-seed-right-member", seed_policy_group(st, 9602U, "A", "RIGHT-PATCH-MEMBER"), 0);
     st->synctype = DSD_SYNC_P25P2_POS;
-    st->lasttg = 9600;
-    st->lasttgR = 9600;
-    st->lastsrc = 777003;
-    st->lastsrcR = 777004;
-    st->p25_policy_tg[0] = 9601U;
-    st->p25_policy_tg[1] = 9602U;
+    rc |= expect_eq("case10c-left-call",
+                    seed_call(st, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9600U, 9601U, 777003U), 1);
+    rc |= expect_eq("case10c-right-call",
+                    seed_call(st, 1U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 9600U, 9602U, 777004U), 1);
     st->p25_patch_count = 1;
     st->p25_patch_sgid[0] = 9600U;
     st->p25_patch_is_patch[0] = 1U;

@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
@@ -65,20 +66,26 @@ alias_slot_index(uint8_t slot) {
 }
 
 static int
-alias_current_call_matches(const dsd_state* state, uint8_t slot, uint32_t src, uint32_t tg) {
-    if (!state || !state->event_history_s || src == 0) {
+alias_current_call_snapshot(const dsd_state* state, uint8_t slot, uint32_t src, uint32_t tg, dsd_call_snapshot* out) {
+    if (!state || !out || src == 0) {
         return 0;
     }
 
     uint8_t slot_idx = alias_slot_index(slot);
-    const Event_History* ev = &state->event_history_s[slot_idx].Event_History_Items[0];
-    if (ev->source_id != src) {
+    if (dsd_call_state_get(state, slot_idx, out) <= 0 || out->phase != DSD_CALL_PHASE_ACTIVE
+        || out->ota_source_id != src) {
         return 0;
     }
-    if (tg != 0 && ev->target_id != 0 && ev->target_id != tg) {
+    if (tg != 0 && out->ota_target_id != 0U && out->ota_target_id != tg && out->policy_target_id != tg) {
         return 0;
     }
     return 1;
+}
+
+static int
+alias_current_call_matches(const dsd_state* state, uint8_t slot, uint32_t src, uint32_t tg) {
+    dsd_call_snapshot call;
+    return alias_current_call_snapshot(state, slot, src, tg, &call);
 }
 
 static p25_apx_alias_rx_state_t*
@@ -460,11 +467,12 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
 
     DSD_SNPRINTF(fqs, sizeof fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
     uint8_t slot_idx = alias_slot_index(slot);
-    int current_call_match = alias_current_call_matches(state, slot, rid, 0);
+    dsd_call_snapshot call;
+    int current_call_match = alias_current_call_snapshot(state, slot, rid, 0, &call);
     if (current_call_match) {
-        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s; %s", str, fqs);
-        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
+        char alias[500];
+        DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
+        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, alias);
     }
 
     if (current_call_match
@@ -733,12 +741,16 @@ static void
 l3h_alias_resolve_src_tg(const dsd_state* state, uint8_t slot, uint32_t* tsrc, uint32_t* ttg) {
     *tsrc = 0;
     *ttg = 0;
-    if (slot == 0) {
-        *tsrc = state->lastsrc;
-        *ttg = state->lasttg;
-    } else if (slot == 1) {
-        *tsrc = state->lastsrcR;
-        *ttg = state->lasttgR;
+    dsd_call_snapshot call;
+    uint8_t slot_idx = alias_slot_index(slot);
+    if (dsd_call_state_get(state, slot_idx, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        if (call.ota_source_id <= UINT32_MAX) {
+            *tsrc = (uint32_t)call.ota_source_id;
+        }
+        uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+        if (target <= UINT32_MAX) {
+            *ttg = (uint32_t)target;
+        }
     }
 }
 
@@ -806,11 +818,10 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(str, ptr + 1, "%s", ttemp);
 
     uint8_t slot_idx = alias_slot_index(slot);
-    int current_call_match = alias_current_call_matches(state, slot, tsrc, ttg);
+    dsd_call_snapshot call;
+    int current_call_match = alias_current_call_snapshot(state, slot, tsrc, ttg, &call);
     if (current_call_match) {
-        DSD_SNPRINTF(state->event_history_s[slot_idx].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[slot_idx].Event_History_Items[0].alias), "%s", str);
-        dsd_event_history_mark_dirty(&state->event_history_s[slot_idx]);
+        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, str);
         if (save_policy) {
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
@@ -832,7 +843,6 @@ void
 tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
                                 const uint8_t* input) {
 
-    UNUSED(slot);
     uint8_t alias[24];
     DSD_MEMSET(alias, 0, sizeof(alias));
     for (int16_t i = 0; i < len; i++) {
@@ -845,13 +855,16 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
         }
     }
 
-    uint32_t rid = state->lastsrc;
+    dsd_call_snapshot call;
+    uint8_t slot_idx = alias_slot_index(slot);
+    uint32_t rid = dsd_call_state_get(state, slot_idx, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                           && call.ota_source_id <= UINT32_MAX
+                       ? (uint32_t)call.ota_source_id
+                       : 0U;
     uint16_t nac = state->nac;
 
-    if (state->event_history_s[slot].Event_History_Items[0].source_id == rid) {
-        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s", alias);
-        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    if (rid != 0U) {
+        (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, (const char*)alias);
     }
 
     if (rid != 0) {
@@ -1081,14 +1094,6 @@ dmr_talker_alias_decode_utf16(const uint8_t* bits, uint16_t end, char* alias_str
     }
 }
 
-static uint32_t
-dmr_talker_alias_source_for_slot(const dsd_state* state, uint8_t slot) {
-    if (slot == 0) {
-        return state->lastsrc;
-    }
-    return state->lastsrcR;
-}
-
 //Decode partial or completed alias
 void
 dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t block_num, uint8_t char_size,
@@ -1112,14 +1117,10 @@ dmr_talker_alias_lc_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8
     }
 
     //assign to string for event history and ncurses display
-    uint32_t source = dmr_talker_alias_source_for_slot(state, slot);
-
-    if (state->event_history_s[slot].Event_History_Items[0].source_id == source) {
-        DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].alias,
-                     sizeof(state->event_history_s[slot].Event_History_Items[0].alias), "%s; ", alias_string);
-        dsd_event_history_mark_dirty(&state->event_history_s[slot]);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+        char alias[500];
+        DSD_SNPRINTF(alias, sizeof(alias), "%s; ", alias_string);
+        (void)dsd_event_enrich_alias(state, slot, call.epoch, alias);
     }
-    DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "Talker Alias: %s; ",
-                 alias_string);
-    state->generic_talker_alias_src[slot] = source;
 }

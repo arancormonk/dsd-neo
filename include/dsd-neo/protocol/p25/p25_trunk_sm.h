@@ -639,6 +639,7 @@ p25_sm_ev_ptt(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_PTT;
     ev.slot = slot;
+    ev.svc_bits = P25_SM_SVC_UNKNOWN;
     return ev;
 }
 
@@ -659,6 +660,7 @@ p25_sm_ev_active(int slot) {
     p25_sm_event_t ev = {0};
     ev.type = P25_SM_EV_ACTIVE;
     ev.slot = slot;
+    ev.svc_bits = P25_SM_SVC_UNKNOWN;
     return ev;
 }
 

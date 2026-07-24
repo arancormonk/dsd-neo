@@ -21,29 +21,32 @@ static int g_group_calls;
 static int g_indiv_calls;
 static long g_last_freq;
 static int g_last_lpcn;
+static int g_last_slot;
 static int g_last_target;
 static int g_last_source;
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sm_emit_group_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int tg, int src) {
+dmr_sm_emit_group_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int tg, int src) {
     (void)opts;
     (void)state;
     g_group_calls++;
     g_last_freq = freq_hz;
     g_last_lpcn = lpcn;
+    g_last_slot = slot;
     g_last_target = tg;
     g_last_source = src;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sm_emit_indiv_grant(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int dst, int src) {
+dmr_sm_emit_indiv_grant_slot(dsd_opts* opts, dsd_state* state, long freq_hz, int lpcn, int slot, int dst, int src) {
     (void)opts;
     (void)state;
     g_indiv_calls++;
     g_last_freq = freq_hz;
     g_last_lpcn = lpcn;
+    g_last_slot = slot;
     g_last_target = dst;
     g_last_source = src;
 }
@@ -62,6 +65,7 @@ reset_grant_spy(void) {
     g_indiv_calls = 0;
     g_last_freq = 0;
     g_last_lpcn = 0;
+    g_last_slot = -1;
     g_last_target = 0;
     g_last_source = 0;
 }
@@ -134,6 +138,7 @@ test_parse_and_handle_group_grant(void) {
     assert(g_indiv_calls == 0);
     assert(g_last_freq == 851012500L);
     assert(g_last_lpcn == 0x2A5);
+    assert(g_last_slot == 1);
     assert(g_last_target == 0x123456);
     assert(g_last_source == 0x654321);
 }
@@ -154,6 +159,7 @@ test_handle_individual_and_ignored_paths(void) {
     result.opcode = 48U;
     result.freq_hz = 935000000L;
     result.lpcn = 123U;
+    result.lcn = 1U;
     result.target = 77U;
     result.source = 88U;
     dmr_csbk_handle(&result, &opts, &state);
@@ -161,6 +167,7 @@ test_handle_individual_and_ignored_paths(void) {
     assert(g_indiv_calls == 1);
     assert(g_last_freq == 935000000L);
     assert(g_last_lpcn == 123);
+    assert(g_last_slot == 1);
     assert(g_last_target == 77);
     assert(g_last_source == 88);
 

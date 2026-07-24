@@ -9,6 +9,7 @@
  * disabled.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -17,7 +18,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -235,8 +235,13 @@ test_extended_private_resolves_retained_identity(void) {
     rc |= expect_eq_int("extended private SM call kind", sm->slots[0].is_group, 0);
     rc |= expect_eq_int("extended private service options", state.dmr_so, svc);
     rc |= expect_eq_int("extended private SM service options", sm->slots[0].svc_bits, svc);
-    rc |= expect_eq_int("extended private emergency classification", strstr(state.call_string[0], "Emergency") != NULL,
-                        1);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("extended private canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("extended private canonical target", (int)call.ota_target_id, target);
+    rc |= expect_eq_int("extended private canonical source", (int)call.ota_source_id, source);
+    rc |= expect_eq_int("extended private canonical kind", call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= expect_eq_int("extended private emergency classification", call.emergency, 1);
+    rc |= expect_eq_int("extended private canonical service options", call.service_options, svc);
     rc |= expect_eq_int("extended private voice active", sm->slots[0].voice_active, 1);
     dsd_state_ext_free_all(&state);
     return rc;
@@ -335,7 +340,9 @@ test_telephone_after_missed_boundary_drops_old_source(void) {
     rc |= expect_eq_int("telephone missed-boundary no release", g_returns, 0);
     rc |= expect_eq_int("telephone missed-boundary target", sm->slots[0].dst, target);
     rc |= expect_eq_int("telephone missed-boundary source unknown", sm->slots[0].src, 0);
-    rc |= expect_eq_int("telephone missed-boundary decoder source cleared", state.lastsrc, 0);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("telephone missed-boundary canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("telephone missed-boundary canonical source cleared", (int)call.ota_source_id, 0);
     rc |= expect_eq_int("telephone missed-boundary call kind", sm->slots[0].is_group, 0);
     rc |= expect_eq_int("telephone missed-boundary voice active", sm->slots[0].voice_active, 1);
     dsd_state_ext_free_all(&state);
@@ -357,7 +364,6 @@ test_rejected_lcw_stops_post_processing(int format) {
         opts.trunk_tune_private_calls = 0;
     }
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
-    DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "stale traffic banner");
 
     DSD_MEMSET(lcw, 0, sizeof(lcw));
     set_bits_msb(lcw, 0, 8, (unsigned)format);
@@ -376,7 +382,9 @@ test_rejected_lcw_stops_post_processing(int format) {
     rc |= expect_eq_int("rejected LCW released once", g_returns, 1);
     rc |= expect_eq_int("rejected LCW crypto remains reset", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_eq_int("rejected LCW crypto timer remains reset", sm->slots[0].crypto_attempt_m > 0.0, 0);
-    rc |= expect_eq_int("rejected LCW banner remains blank", strcmp(state.call_string[0], "                     "), 0);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("rejected LCW canonical retained", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_eq_int("rejected LCW canonical remains ended", call.phase, DSD_CALL_PHASE_ENDED);
     dsd_state_ext_free_all(&state);
     return rc;
 }

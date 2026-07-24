@@ -12,6 +12,7 @@
  * (eg SPEED/HEADING) or fail when IPv4 options are present.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -37,6 +38,7 @@ static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
 static uint8_t g_datacall_slot;
 static char g_datacall_text[512];
+static char g_datacall_gps[256];
 
 static void
 reset_spies(void) {
@@ -46,6 +48,7 @@ reset_spies(void) {
     g_datacall_dst = 0;
     g_datacall_slot = 0;
     DSD_MEMSET(g_datacall_text, 0, sizeof(g_datacall_text));
+    DSD_MEMSET(g_datacall_gps, 0, sizeof(g_datacall_gps));
 }
 
 // Minimal stubs for direct link with dmr_pdu.c
@@ -63,9 +66,11 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
-    (void)state;
     (void)input;
     g_lip_calls++;
+    uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
+    DSD_SNPRINTF(state->dmr_embedded_gps[slot], sizeof(state->dmr_embedded_gps[slot]), "%s",
+                 "LIP: 41.500000, -87.250000");
 }
 
 void
@@ -77,15 +82,25 @@ decode_cellocator(dsd_opts* opts, dsd_state* state, uint8_t* input, int len) {
     (void)len;
 }
 
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
     g_datacall_calls++;
-    g_datacall_src = src;
-    g_datacall_dst = dst;
+    g_datacall_src = observation->ota_source_id;
+    g_datacall_dst = observation->ota_target_id;
     g_datacall_slot = slot;
-    DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", str ? str : "");
+    DSD_SNPRINTF(g_datacall_text, sizeof(g_datacall_text), "%s", notice ? notice : "");
+    return 0;
+}
+
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    (void)dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+    DSD_SNPRINTF(g_datacall_gps, sizeof(g_datacall_gps), "%s", gps ? gps : "");
+    return 0;
 }
 
 int
@@ -97,7 +112,7 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 }
 
 // Under test
-void decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
+int decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input);
 void dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PDU);
 void utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input);
@@ -555,6 +570,7 @@ main(void) {
             rc |= 1;
         }
         rc |= expect_has_substr(g_datacall_text, "SRC: 11:2", "compressed extended source summary");
+        rc |= expect_has_substr(g_datacall_gps, "41.500000", "compressed LIP event GPS");
     }
 
     // Case 9: compressed UDP guards short/null PDUs without emitting datacalls.
@@ -643,6 +659,10 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Truncated UDP;", "truncated udp label");
         rc |= expect_has_substr(g_datacall_text, "Truncated UDP;", "truncated udp datacall");
+        if (g_datacall_calls != 1U) {
+            DSD_FPRINTF(stderr, "truncated udp datacall count mismatch: %u\n", g_datacall_calls);
+            rc |= 1;
+        }
     }
 
     // Case 14: ICMP destination-unreachable with an attached IPv4 message recursively decodes the attachment.

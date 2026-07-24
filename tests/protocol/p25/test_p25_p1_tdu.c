@@ -7,16 +7,17 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -96,8 +97,8 @@ p25_status_accum_classify(dsd_state* state) {
 void
 p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
     ++g_sm_tdu_calls;
+    assert(dsd_call_state_end(state, 0, 0.0) >= 0);
 }
 
 void
@@ -128,20 +129,29 @@ static void
 seed_active_call_state(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof *opts);
     DSD_MEMSET(state, 0, sizeof *state);
-    DSD_SNPRINTF(state->call_string[0], sizeof state->call_string[0], "%s", "active slot 0");
-    DSD_SNPRINTF(state->call_string[1], sizeof state->call_string[1], "%s", "active slot 1");
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1201,
+        .policy_target_id = 1201,
+        .ota_source_id = 24002,
+        .service_options = 0x81,
+        .emergency = 1,
+        .priority = 1,
+        .has_service_metadata = 1U,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) >= 0);
     state->currentslot = 1;
     state->payload_miP = 0x112233445566ULL;
     state->payload_algid = 0x80;
     state->payload_keyid = 0x1234;
     state->p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
-    state->p25_call_emergency[0] = 1;
-    state->p25_call_priority[0] = 1;
-    state->p25_call_is_packet[0] = 1;
 }
 
 static void
 assert_common_tdu_state(const dsd_opts* opts, const dsd_state* state) {
+    dsd_call_snapshot call;
     (void)opts;
     assert(state->p25_p1_duid_tdu == 1U);
     assert(state->currentslot == 0);
@@ -154,16 +164,18 @@ assert_common_tdu_state(const dsd_opts* opts, const dsd_state* state) {
     assert(g_last_status_add_value == g_status_symbol);
     assert(g_status_classify_calls == 1);
     assert(g_sm_tdu_calls == 1);
-    assert(strcmp(state->call_string[0], "                     ") == 0);
-    assert(strcmp(state->call_string[1], "                     ") == 0);
+    assert(dsd_call_state_get(state, 0, &call) == 1);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
+    assert(call.ota_target_id == 1201U);
+    assert(call.ota_source_id == 24002U);
+    assert(call.emergency == 1U);
+    assert(call.priority == 1U);
     assert(state->p25_p1_last_tdu_m > 0.0);
     assert(state->payload_miP == 0);
     assert(state->payload_algid == 0);
     assert(state->payload_keyid == 0);
     assert(state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(state->p25_call_emergency[0] == 0);
-    assert(state->p25_call_priority[0] == 0);
-    assert(state->p25_call_is_packet[0] == 0);
 }
 
 static void

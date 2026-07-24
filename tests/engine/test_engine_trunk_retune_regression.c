@@ -24,7 +24,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -78,6 +77,31 @@ static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
 static int g_trunk_scan_active_p25_cqpsk_enable = 0;
 static int g_trunk_scan_active_p25_target = 0;
 static int g_runtime_config_is_set = 0;
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+    (void)state;
+    (void)slot;
+    (void)observed_m;
+    return 0;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_recent_activity_clear_all(dsd_state* state) {
+    (void)state;
+    return 0;
+}
+
 static int g_tune_generation_advance_calls = 0;
 static uint64_t g_tune_request_next = 0U;
 static uint64_t g_tune_request_pending = 0U;
@@ -405,10 +429,6 @@ main(void) {
     state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state->last_cc_sync_time = 0;
     state->last_cc_sync_time_m = 0.0;
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "left active");
-    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "right active");
-    DSD_SNPRINTF(state->active_channel[0], sizeof(state->active_channel[0]), "%s", "Active Ch: 1234 TG: 56;");
-    DSD_SNPRINTF(state->active_channel[1], sizeof(state->active_channel[1]), "%s", "Active Ch: 5678 TG: 90;");
 
     /* DMR/GFSK-ish demod settings should remain unchanged on DMR return. */
     state->samplesPerSymbol = 17;
@@ -428,10 +448,6 @@ main(void) {
     assert(state->p25_p2_audio_allowed[1] == 0);
     assert(state->p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
     assert(state->p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(strcmp(state->call_string[0], "                     ") == 0);
-    assert(strcmp(state->call_string[1], "                     ") == 0);
-    assert(state->active_channel[0][0] == '\0');
-    assert(state->active_channel[1][0] == '\0');
 
     /* Critical regression check: DMR return must still issue a retune to CC. */
     assert(g_setfreq_calls == 1);

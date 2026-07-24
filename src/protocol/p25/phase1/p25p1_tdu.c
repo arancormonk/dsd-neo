@@ -53,8 +53,6 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     }
 
     //reset some strings -- since its a tdu, blank out any call strings, only want during actual call
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     "); //21 spaces
-    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     "); //21 spaces
 
     //reset gain
     if (opts->floating_point == 1) {
@@ -78,9 +76,5 @@ processTDU(dsd_opts* opts, dsd_state* state) {
     p25_crypto_reset_slot(state, 0);
 
     // Clear call flags for single-carrier channel
-    state->p25_call_emergency[0] = 0;
-    state->p25_call_priority[0] = 0;
-    state->p25_call_is_packet[0] = 0;
     state->dmr_so = 0;
-    state->p25_service_options_valid[0] = 0;
 }

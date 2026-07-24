@@ -2,6 +2,7 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -49,20 +50,26 @@ provoice_read_raw_bits(provoice_reader* reader, int count) {
 
 static void
 provoice_print_call_info(const dsd_opts* opts, const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return;
+    }
+    const unsigned long long target = (unsigned long long)call.ota_target_id;
+    const unsigned long long source = (unsigned long long)call.ota_source_id;
     if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->ea_mode == 1) {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        if (state->lasttg > 100000) {
-            DSD_FPRINTF(stderr, " Site: %lld Target: %d Source: %d LCN: %d ", state->edacs_site_id,
-                        state->lasttg - 100000, state->lastsrc, state->edacs_tuned_lcn);
+        if (target > 100000ULL) {
+            DSD_FPRINTF(stderr, " Site: %lld Target: %llu Source: %llu LCN: %d ", state->edacs_site_id,
+                        target - 100000ULL, source, state->edacs_tuned_lcn);
         } else {
-            DSD_FPRINTF(stderr, " Site: %lld Group: %d Source: %d LCN: %d ", state->edacs_site_id, state->lasttg,
-                        state->lastsrc, state->edacs_tuned_lcn);
+            DSD_FPRINTF(stderr, " Site: %lld Group: %llu Source: %llu LCN: %d ", state->edacs_site_id, target, source,
+                        state->edacs_tuned_lcn);
         }
         DSD_FPRINTF(stderr, "%s", KNRM);
     } else if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && state->ea_mode == 0) {
         DSD_FPRINTF(stderr, "%s", KGRN);
-        DSD_FPRINTF(stderr, " Site: %lld AFS: %d-%d LCN: %d ", state->edacs_site_id, (state->lastsrc >> 7) & 0xF,
-                    state->lastsrc & 0x7F, state->edacs_tuned_lcn);
+        DSD_FPRINTF(stderr, " Site: %lld AFS: %llu-%llu LCN: %d ", state->edacs_site_id, (target >> 7U) & 0xFULL,
+                    target & 0x7FULL, state->edacs_tuned_lcn);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
 }

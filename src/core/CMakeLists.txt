@@ -1,5 +1,10 @@
 add_library(dsd-neo_core)
 
+target_compile_definitions(
+    dsd-neo_core
+    PUBLIC DSD_NEO_EVENT_HISTORY_TRANSACTIONS
+)
+
 target_sources(
     dsd-neo_core
     PRIVATE
@@ -22,6 +27,7 @@ target_sources(
         util/bit_packing.c
         util/dsd_init.c
         util/dsd_events.c
+        util/call_state.c
         util/edacs_afs.c
         util/dsd_alias.c
         util/talkgroup_policy.c

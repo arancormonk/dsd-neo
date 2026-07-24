@@ -19,6 +19,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -555,12 +556,6 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
         }
     }
     state->tgcount = 0;
-    state->lasttg = 0;
-    state->lastsrc = 0;
-    state->lasttgR = 0;
-    state->lastsrcR = 0;
-    state->gi[0] = -1;
-    state->gi[1] = -1;
     state->eh_index = 0;
     state->eh_slot = 2;
     state->nac = 0;
@@ -676,11 +671,6 @@ init_state_protocol_defaults_a(dsd_state* state) {
     DSD_MEMSET(state->p25_nb_entries, 0, sizeof(state->p25_nb_entries));
     state->p25_src_nid = 0;
     // Clear P25 call flags
-    state->p25_call_emergency[0] = state->p25_call_emergency[1] = 0;
-    state->p25_call_priority[0] = state->p25_call_priority[1] = 0;
-    state->p25_call_is_packet[0] = state->p25_call_is_packet[1] = 0;
-    state->p25_service_options_valid[0] = state->p25_service_options_valid[1] = 0;
-    state->p25_policy_tg[0] = state->p25_policy_tg[1] = 0;
 
     // Initialize P25 Phase 1 metrics counters (also reset on retune)
     state->p25_p1_fec_ok = 0;
@@ -705,12 +695,9 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->debug_mode = 0;
 
     state->nxdn_last_ran = -1;
-    state->nxdn_last_rid = 0;
-    state->nxdn_last_tg = 0;
     state->nxdn_cipher_type = 0;
     state->nxdn_key = 0;
     state->nxdn_pn95_seed = 228;
-    state->nxdn_call_type[0] = '\0';
     state->payload_miN = 0;
 
     state->dpmr_color_code = -1;
@@ -882,6 +869,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_p1_soft_combined_ok = 0;
     state->p25_p2_active_slot = -1;
     state->p25_p1_identity_pending = 0;
+    state->p25_p1_identity_epoch_started = 0;
     state->p25_p1_hdu_crypto_fresh = 0;
     DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     DSD_MEMSET(state->p25_p2_media_rejected, 0, sizeof(state->p25_p2_media_rejected));
@@ -912,15 +900,13 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     init_state_p25_encrypted_call_cache_defaults(state);
 
     //edacs - may need to make these user configurable instead for stability on non-ea systems
-    state->ea_mode = -1; //init on -1, 0 is standard, 1 is ea
-    state->edacs_vc_call_type = 0;
+    state->ea_mode = -1;   //init on -1, 0 is standard, 1 is ea
     state->esk_mask = 0x0; //esk mask value
     state->edacs_site_id = 0;
     state->edacs_sys_id = 0;
     state->edacs_area_code = 0;
     state->edacs_lcn_count = 0;
     state->edacs_cc_lcn = 0;
-    state->edacs_vc_lcn = 0;
     state->edacs_tuned_lcn = -1;
     state->edacs_a_bits = 4;   //  Agency Significant Bits
     state->edacs_f_bits = 4;   //   Fleet Significant Bits
@@ -945,7 +931,6 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->rtl_fsk_reacquire_last_sync_m = 0.0;
     state->rtl_fsk_reacquire_gap_start_m = 0.0;
     state->rtl_fsk_reacquire_last_request_m = 0.0;
-    state->last_active_time = time(NULL);
     state->last_t3_tune_time = time(NULL);
     state->is_con_plus = 0;
 }
@@ -989,8 +974,6 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     state->keyloader = 0; //keyloader off
 
     //Remus DMR End Call Alert Beep
-    state->dmr_end_alert[0] = 0;
-    state->dmr_end_alert[1] = 0;
 
     state->dmr_branding[0] = '\0';
     state->dmr_branding_sub[0] = '\0';
@@ -1023,53 +1006,31 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     DSD_MEMSET(state->dmr_alias_block_segment, 0, sizeof(state->dmr_alias_block_segment));
     DSD_MEMSET(state->dmr_embedded_gps, 0, sizeof(state->dmr_embedded_gps));
     DSD_MEMSET(state->dmr_lrrp_gps, 0, sizeof(state->dmr_lrrp_gps));
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
 }
 
 static void
 init_state_string_and_m17_defaults(dsd_state* state) {
     //Generic Talker Alias String
     DSD_MEMSET(state->generic_talker_alias, 0, sizeof(state->generic_talker_alias));
-    state->generic_talker_alias_src[0] = 0;
-    state->generic_talker_alias_src[1] = 0;
-
-    //REMUS! multi-purpose call_string
-    set_spaces(state->call_string[0], 21);
-    set_spaces(state->call_string[1], 21);
 
     //late entry mi fragments
     DSD_MEMSET(state->late_entry_mi_fragment, 0, sizeof(state->late_entry_mi_fragment));
 
-    state->dPMRVoiceFS2Frame.CalledIDOk = 0;
-    state->dPMRVoiceFS2Frame.CallingIDOk = 0;
-    DSD_MEMSET(state->dPMRVoiceFS2Frame.CalledID, 0, 8);
-    DSD_MEMSET(state->dPMRVoiceFS2Frame.CallingID, 0, 8);
     DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, 8);
 
-    set_spaces(state->dpmr_caller_id, 6);
-    set_spaces(state->dpmr_target_id, 6);
-
     //YSF Fusion Call Strings
-    set_spaces(state->ysf_tgt, 10); //10 spaces
-    set_spaces(state->ysf_src, 10); //10 spaces
-    set_spaces(state->ysf_upl, 10); //10 spaces
-    set_spaces(state->ysf_dnl, 10); //10 spaces
-    set_spaces(state->ysf_rm1, 5);  //5 spaces
-    set_spaces(state->ysf_rm2, 5);  //5 spaces
-    set_spaces(state->ysf_rm3, 5);  //5 spaces
-    set_spaces(state->ysf_rm4, 5);  //5 spaces
+    set_spaces(state->ysf_rm1, 5); //5 spaces
+    set_spaces(state->ysf_rm2, 5); //5 spaces
+    set_spaces(state->ysf_rm3, 5); //5 spaces
+    set_spaces(state->ysf_rm4, 5); //5 spaces
     DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
 
     //DSTAR Call Strings
-    set_spaces(state->dstar_rpt1, 8); //8 spaces
-    set_spaces(state->dstar_rpt2, 8); //8 spaces
-    set_spaces(state->dstar_dst, 8);  //8 spaces
-    set_spaces(state->dstar_src, 8);  //8 spaces
-    set_spaces(state->dstar_txt, 8);  //8 spaces
-    set_spaces(state->dstar_gps, 8);  //8 spaces
+    set_spaces(state->dstar_txt, 8); //8 spaces
+    set_spaces(state->dstar_gps, 8); //8 spaces
 
     //M17 Storage
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
@@ -1091,16 +1052,10 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     DSD_MEMSET(state->m17sms, 0, sizeof(state->m17sms));
     state->m17dat[0] = '\0';
 
-    state->m17_dst = 0;
-    state->m17_src = 0;
     state->m17_can = 0;      //can value that was decoded from signal
     state->m17_can_en = -1;  //can value supplied to the encoding side
     state->m17_rate = 48000; //sampling rate for audio input
     state->m17_vox = 0;      //vox mode enabled on M17 encoder
-    DSD_MEMSET(state->m17_dst_csd, 0, sizeof(state->m17_dst_csd));
-    DSD_MEMSET(state->m17_src_csd, 0, sizeof(state->m17_src_csd));
-    state->m17_dst_str[0] = '\0';
-    state->m17_src_str[0] = '\0';
 
     state->m17_enc = 0;
     state->m17_enc_st = 0;
@@ -1170,6 +1125,7 @@ initState(dsd_state* state) {
     init_state_nxdn_and_dmr_defaults(state);
     init_state_string_and_m17_defaults(state);
     init_state_codec2_and_events(state);
+    (void)dsd_call_state_ensure(state);
 
 } //init_state
 

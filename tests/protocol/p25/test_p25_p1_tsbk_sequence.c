@@ -365,6 +365,11 @@ dsd_time_monotonic_ns(void) {
     return 1000000000ULL;
 }
 
+uint64_t
+dsd_time_monotonic_ms(void) {
+    return dsd_time_monotonic_ns() / 1000000U;
+}
+
 static int
 expect_eq_int(const char* tag, int got, int want) {
     if (got != want) {

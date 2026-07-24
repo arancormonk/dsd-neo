@@ -6,7 +6,9 @@
 /* Focused tests for P25 trunk SM timing, carrier reuse, and CC-hunt behaviors. */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -27,6 +29,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -365,7 +368,10 @@ main(void) {
     s4.payload_keyid = 0x1234;
     s4.payload_miP = 0x1122334455667788ULL;
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
-    assert(s4_history[0].revision == 1U);
+    assert(s4_history[0].revision > 0U);
+    assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 1234") != NULL);
+    dsd_call_snapshot lockout_call;
+    assert(dsd_call_state_get(&s4, 0U, &lockout_call) <= 0 || lockout_call.phase != DSD_CALL_PHASE_ACTIVE);
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);
@@ -378,10 +384,45 @@ main(void) {
     }
     assert(enc_cache_seen == 1);
     // re-emit should not create a runtime policy block
+    const uint64_t first_lockout_revision = s4_history[0].revision;
     p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
+    assert(s4_history[0].revision == first_lockout_revision);
+    assert(s4_history[0].Event_History_Items[2].internal_str[0] == '\0');
     dsd_tg_policy_lookup lockout_lookup;
     assert(dsd_tg_policy_lookup_id(&s4, 1234U, &lockout_lookup) == 0);
     assert(lockout_lookup.match == DSD_TG_POLICY_MATCH_NONE);
+
+    dsd_call_observation old_call = {0};
+    old_call.protocol = DSD_SYNC_P25P1_POS;
+    old_call.slot = 0U;
+    old_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    old_call.ota_target_id = 2222U;
+    old_call.policy_target_id = 2222U;
+    old_call.ota_source_id = 3333U;
+    old_call.observed_m = 1.0;
+    assert(dsd_call_state_observe(&s4, &old_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 2222, 0x40, 1);
+    assert(dsd_call_state_get(&s4, 0U, &lockout_call) == 1);
+    assert(lockout_call.phase == DSD_CALL_PHASE_ENDED);
+    assert(lockout_call.ota_target_id == 2222U);
+    dsd_call_context_snapshot lockout_context;
+    assert(dsd_call_context_copy_snapshot(&s4, &lockout_context) == 1);
+    assert(lockout_context.events[0].epoch == lockout_call.epoch);
+    assert(lockout_context.events[0].ended_committed == 1U);
+    assert(s4_history[0].Event_History_Items[1].target_id == 2222U);
+    assert(s4_history[0].Event_History_Items[2].target_id == 1234U);
+    assert(s4_history[0].Event_History_Items[3].target_id == 0U);
+    const uint64_t ended_lockout_revision = s4_history[0].revision;
+    assert(dsd_call_state_end(&s4, 0U, 2.0) == 0);
+    dsd_event_sync_slot(&o4, &s4, 0U);
+    assert(s4_history[0].revision == ended_lockout_revision);
+    assert(s4_history[0].Event_History_Items[2].target_id == 1234U);
+    s4.lastsynctype = DSD_SYNC_P25P1_POS;
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 5678, 0x40, 1);
+    assert(s4_history[0].Event_History_Items[1].target_id == 5678U);
+    assert(s4_history[0].Event_History_Items[1].source_id == 0U);
+    assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 5678") != NULL);
+    dsd_state_ext_free_all(&s4);
 
     // 4) NAC mismatch uses the latched expected CC NAC, not mutable state->p2_cc.
     static dsd_opts o5;
@@ -1608,6 +1649,53 @@ main(void) {
     assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
+    // A same-route grant update received during active voice must refresh the
+    // canonical service metadata even when the clear/encrypted classification
+    // does not change and no later ACTIVE event supplies the new options.
+    static dsd_opts o19m;
+    static dsd_state s19m;
+    DSD_MEMSET(&o19m, 0, sizeof(o19m));
+    DSD_MEMSET(&s19m, 0, sizeof(s19m));
+    o19m.trunk_enable = 1;
+    o19m.trunk_tune_group_calls = 1;
+    o19m.trunk_tune_enc_calls = 1;
+    s19m.p25_cc_freq = 851000000;
+    setup_tdma_iden(&s19m, 2);
+
+    p25_sm_ctx_t ctx19m;
+    p25_sm_init_ctx(&ctx19m, &o19m, &s19m);
+    g_result_tune_to_freq_result = DSD_TRUNK_TUNE_RESULT_OK;
+    g_result_hook_commits_decoder_state = 1;
+    g_result_tune_to_freq_calls = 0;
+
+    p25_sm_event_t metadata_grant = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5801, 6801, 0x00);
+    p25_sm_event(&ctx19m, &o19m, &s19m, &metadata_grant);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19m.grant_count == 1U);
+    p25_sm_event_t metadata_active = p25_sm_ev_active(0);
+    p25_sm_event(&ctx19m, &o19m, &s19m, &metadata_active);
+    assert(ctx19m.slots[0].voice_active == 1);
+
+    dsd_call_snapshot metadata_call;
+    assert(dsd_call_state_get(&s19m, 0U, &metadata_call) == 1);
+    assert(metadata_call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(metadata_call.service_options == 0x00U);
+    const uint64_t metadata_epoch = metadata_call.epoch;
+
+    p25_sm_event_t metadata_update = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5801, 6801, 0x87);
+    p25_sm_event(&ctx19m, &o19m, &s19m, &metadata_update);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19m.grant_count == 1U);
+    assert(ctx19m.slots[0].svc_bits == 0x87);
+    assert(dsd_call_state_get(&s19m, 0U, &metadata_call) == 1);
+    assert(metadata_call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(metadata_call.epoch == metadata_epoch);
+    assert(metadata_call.service_options == 0x87U);
+    assert(metadata_call.has_service_metadata == 1U);
+    assert(metadata_call.emergency == 1U);
+    assert(metadata_call.priority == 7U);
+    dsd_state_ext_free_all(&s19m);
+
     // A regroup KAS transition to explicit KEY=0 must replace an already
     // decryptable crypto stream even when the duplicate grant retains ENC.
     static dsd_opts o19k;
@@ -2463,12 +2551,8 @@ main(void) {
     s24.payload_keyidR = 0x5678;
     s24.dmr_so = 0x40;
     s24.dmr_soR = 0x41;
-    s24.p25_service_options_valid[0] = 1;
-    s24.p25_service_options_valid[1] = 1;
     s24.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     s24.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    s24.p25_policy_tg[0] = 6201;
-    s24.p25_policy_tg[1] = 6202;
 
     dsd_tg_policy_call_route active_route = {6201U, 7201U, 851125000L, 1, 0, 0};
     dsd_tg_policy_decision active_decision = {0};
@@ -2481,6 +2565,22 @@ main(void) {
     candidate_decision.tune_allowed = 1;
     candidate_decision.preempt_requested = 1;
     assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 1);
+
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_observation stale_call = {
+            .protocol = DSD_SYNC_P25P2_POS,
+            .slot = (uint8_t)slot,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 6201U + slot,
+            .policy_target_id = 6201U + slot,
+            .ota_source_id = 7201U + slot,
+            .frequency_hz = 851125000L,
+            .service_options = (uint16_t)(0x40U + (unsigned int)slot),
+            .has_service_metadata = 1U,
+            .observed_m = 1.0 + slot,
+        };
+        assert(dsd_call_state_observe(&s24, &stale_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    }
 
     g_result_return_to_cc_calls = 0;
     p25_sm_release(&ctx24, &o24, &s24, "external-return-stale-context");
@@ -2498,10 +2598,16 @@ main(void) {
     assert(s24.payload_algid == 0 && s24.payload_algidR == 0);
     assert(s24.payload_keyid == 0 && s24.payload_keyidR == 0);
     assert(s24.dmr_so == 0 && s24.dmr_soR == 0);
-    assert(s24.p25_service_options_valid[0] == 0 && s24.p25_service_options_valid[1] == 0);
     assert(s24.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN && s24.p25_crypto_state[1] == DSD_P25_CRYPTO_UNKNOWN);
-    assert(s24.p25_policy_tg[0] == 0 && s24.p25_policy_tg[1] == 0);
     assert(dsd_tg_policy_should_preempt(&o24, &s24, &candidate_route, &candidate_decision, 10.0) == 0);
+    dsd_call_snapshot released_call;
+    assert(dsd_call_state_get(&s24, 0U, &released_call) == 1);
+    assert(released_call.phase == DSD_CALL_PHASE_ENDED);
+    assert(released_call.policy_target_id == 6201U && released_call.service_options == 0x40U);
+    assert(dsd_call_state_get(&s24, 1U, &released_call) == 1);
+    assert(released_call.phase == DSD_CALL_PHASE_ENDED);
+    assert(released_call.policy_target_id == 6202U && released_call.service_options == 0x41U);
+    dsd_state_ext_free_all(&s24);
 
     install_trunk_tuning_hooks();
 

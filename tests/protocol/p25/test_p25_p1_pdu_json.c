@@ -8,6 +8,8 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/state_fwd.h>
 
 #include <errno.h>
 #include <limits.h>
@@ -27,7 +29,6 @@
 
 typedef struct dsdneoRuntimeConfig dsdneoRuntimeConfig;
 typedef struct dsd_opts dsd_opts;
-typedef struct dsd_state dsd_state;
 void dsd_neo_config_init(void);
 const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
@@ -35,17 +36,21 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 void p25_test_p1_pdu_data_decode(const unsigned char* input, int len);
 
 static int g_utf8_calls = 0;
+static int g_data_notice_calls = 0;
 
 // Stubs referenced by PDU data path
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* str, uint8_t slot) {
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
-    (void)src;
-    (void)dst;
-    (void)str;
+    (void)observation->ota_source_id;
+    (void)observation->ota_target_id;
+    (void)notice;
     (void)slot;
+    g_data_notice_calls++;
+    return 0;
 }
 
 void
@@ -59,6 +64,14 @@ watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 watchdog_event_current(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+}
+
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
@@ -94,16 +107,18 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     }
 
     DSD_FPRINTF(stderr, "$GPRMC,123519");
+    const dsd_call_observation observation = dsd_call_observation_data(0, slot, 0U, 0U);
+    (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, slot, &observation, "NMEA");
     return 1;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
-    (void)opts;
-    (void)state;
     (void)len;
     (void)input;
+    const dsd_call_observation observation = dsd_call_observation_data(0, 0U, 0U, 0U);
+    return dsd_event_emit_data_notice(opts, state, 0U, &observation, "IP") == 0;
 }
 
 static int
@@ -342,7 +357,20 @@ main(void) {
         p25_test_p1_pdu_data_decode(pdu, total_len);
     }
 
-    // Case 8: SAP 4 packet data with the optional 2-octet SNDCP packet header.
+    // Case 8: SAP 0 unconfirmed packet data delegates its one notice to the IP decoder.
+    {
+        uint8_t pdu[64];
+        DSD_MEMSET(pdu, 0, sizeof(pdu));
+        pdu[0] = 0x10; // fmt=16, io=0
+        pdu[1] = 0;    // SAP 0
+        pdu[2] = 0x32; // MFID
+        pdu[6] = 0x02;
+        pdu[12] = 0x45; // start of IPv4 payload passed to decode_ip_pdu
+        int total_len = 12 + 20 + 4;
+        p25_test_p1_pdu_data_decode(pdu, total_len);
+    }
+
+    // Case 9: SAP 4 packet data with the optional 2-octet SNDCP packet header.
     {
         uint8_t pdu[96];
         DSD_MEMSET(pdu, 0, sizeof(pdu));
@@ -406,6 +434,7 @@ main(void) {
     rc |= expect_str_contains("SAP6 deactivate output", buf, "Deactivate:This NSAPI");
     rc |= expect_str_contains("SAP48 NMEA output", buf, "$GPRMC,123519");
     rc |= expect_eq_int("SAP48 NMEA avoids UTF8 fallback", g_utf8_calls, 0);
+    rc |= expect_eq_int("one data notice per PDU", g_data_notice_calls, 9);
     free(buf);
 
     (void)remove(cap.path);

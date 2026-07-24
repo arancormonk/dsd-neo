@@ -9,12 +9,15 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -50,6 +53,37 @@ write_bits_u64(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
         const size_t shift = (nbits - 1U) - i;
         bits[start + i] = (uint8_t)((value >> shift) & 1U);
     }
+}
+
+static void
+seed_voice_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+}
+
+static void
+assert_call(const dsd_state* state, uint8_t slot, dsd_call_phase phase, dsd_call_kind kind, uint64_t target,
+            uint64_t source) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, slot, &call) > 0);
+    assert(call.phase == phase);
+    assert(call.kind == kind);
+    assert(call.ota_target_id == target);
+    assert(call.policy_target_id == target);
+    assert(call.ota_source_id == source);
+}
+
+static void
+assert_no_active_call(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
 }
 
 static void
@@ -181,6 +215,7 @@ static int s_scan_activity_encrypted = 0;
 static int s_scan_activity_data_call = 0;
 static int s_tune_to_cc_calls = 0;
 static long int s_tune_to_cc_freq = 0;
+static int s_return_to_cc_calls = 0;
 
 static void
 capture_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
@@ -209,6 +244,17 @@ capture_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps,
     (void)ted_sps;
     s_tune_to_cc_calls++;
     s_tune_to_cc_freq = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+capture_return_to_cc_ending_calls(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    s_return_to_cc_calls++;
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        (void)dsd_call_state_end(state, (uint8_t)slot, 0.0);
+    }
+    opts->trunk_is_tuned = 0;
     return DSD_TRUNK_TUNE_RESULT_OK;
 }
 
@@ -268,11 +314,13 @@ capture_regular_flco(uint8_t type, char* out, size_t out_size) {
     int rc = dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         (void)remove(cap.path);
+        dsd_state_ext_free_all(&state);
         return -1;
     }
 
     rc = read_file_to_buffer(cap.path, out, out_size);
     (void)remove(cap.path);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -303,14 +351,17 @@ capture_ms_direct_flco(char* out, size_t out_size) {
     int rc = dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         (void)remove(cap.path);
+        dsd_state_ext_free_all(&state);
         return -1;
     }
 
     rc = read_file_to_buffer(cap.path, out, out_size);
     (void)remove(cap.path);
     if (irr != 0U) {
+        dsd_state_ext_free_all(&state);
         return -1;
     }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -349,14 +400,17 @@ capture_hytera_basic_key_output(unsigned int slot, uint8_t segment_count, char* 
     int rc = dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         (void)remove(cap.path);
+        dsd_state_ext_free_all(&state);
         return -1;
     }
 
     rc = read_file_to_buffer(cap.path, out, out_size);
     (void)remove(cap.path);
     if (irr != 0U) {
+        dsd_state_ext_free_all(&state);
         return -1;
     }
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -428,6 +482,67 @@ test_kirisun_flco_sets_late_entry_mode(void) {
 }
 
 static void
+test_flco_canonical_crypto_uses_algorithm_aware_keys(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.payload_algid = 0x24;
+    state.payload_keyid = 0x12;
+    state.aes_key_loaded[0] = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.payload_algid = 0x24;
+    state.payload_keyid = 0x13;
+    state.R = 0x123456789AULL;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    assert(call.audio_permitted == 0U);
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.K = 42U;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x10U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.K1 = 0x12345U;
+    irr = 0U;
+    build_regular_flco(bits, 0x00U, 0x68U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_hytera_enhanced_flco_uses_secondary_checksum(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -495,7 +610,6 @@ test_hytera_flco_scan_hook_uses_final_call_type(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 0;
-    state.gi[0] = 0;
 
     s_scan_activity_calls = 0;
     s_scan_activity_is_private = 0;
@@ -511,13 +625,15 @@ test_hytera_flco_scan_hook_uses_final_call_type(void) {
     clear_scan_hooks();
 
     assert(irr == 0);
-    assert(state.gi[0] == 1);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 1001U, 2002U);
     assert(s_scan_activity_calls == 1);
     assert(s_scan_activity_is_private == 1);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
 seed_td_lc_slot(dsd_opts* opts, dsd_state* state, unsigned int slot) {
+    dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
 
@@ -527,8 +643,6 @@ seed_td_lc_slot(dsd_opts* opts, dsd_state* state, unsigned int slot) {
     if (slot == 0U) {
         state->dmr_fid = 0x68;
         state->dmr_so = 0x40;
-        state->lasttg = 1001;
-        state->lastsrc = 2002;
         state->payload_algid = 0x22;
         state->payload_keyid = 0x33;
         state->payload_mi = 0x123456789AULL;
@@ -536,13 +650,13 @@ seed_td_lc_slot(dsd_opts* opts, dsd_state* state, unsigned int slot) {
     } else {
         state->dmr_fidR = 0x68;
         state->dmr_soR = 0x40;
-        state->lasttgR = 3003;
-        state->lastsrcR = 4004;
         state->payload_algidR = 0x44;
         state->payload_keyidR = 0x55;
         state->payload_miR = 0xABCDEF0123ULL;
         state->aout_gainR = 2.0f;
     }
+    seed_voice_call(state, (uint8_t)slot, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
+                    slot == 0U ? 2002U : 4004U);
 
     state->dmr_alias_block_len[slot] = 7;
     state->dmr_alias_char_size[slot] = 1;
@@ -558,8 +672,6 @@ assert_td_lc_slot_reset(const dsd_state* state, unsigned int slot) {
     if (slot == 0U) {
         assert(state->dmr_fid == 0);
         assert(state->dmr_so == 0);
-        assert(state->lasttg == 0);
-        assert(state->lastsrc == 0);
         assert(state->payload_algid == 0);
         assert(state->payload_keyid == 0);
         assert(state->payload_mi == 0);
@@ -567,8 +679,6 @@ assert_td_lc_slot_reset(const dsd_state* state, unsigned int slot) {
     } else {
         assert(state->dmr_fidR == 0);
         assert(state->dmr_soR == 0);
-        assert(state->lasttgR == 0);
-        assert(state->lastsrcR == 0);
         assert(state->payload_algidR == 0);
         assert(state->payload_keyidR == 0);
         assert(state->payload_miR == 0);
@@ -582,6 +692,8 @@ assert_td_lc_slot_reset(const dsd_state* state, unsigned int slot) {
     assert(state->dmr_pdu_sf[slot][0] == 0);
     assert(strcmp(state->dmr_embedded_gps[slot], "") == 0);
     assert(strcmp(state->dmr_lrrp_gps[slot], "") == 0);
+    assert_call(state, (uint8_t)slot, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
+                slot == 0U ? 2002U : 4004U);
 }
 
 static void
@@ -603,6 +715,7 @@ test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 1U);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -621,12 +734,10 @@ test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(irr == 0);
     assert(state.dmr_rest_channel == 9);
-    assert(state.lasttg == 0x123456U);
-    assert(state.lastsrc == 0xBEEFU);
-    assert(state.gi[0] == 0);
-    assert(strcmp(state.call_string[0], "   Group             ") == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 0x123456U, 0xBEEFU);
 
     irr = 0;
+    dsd_state_ext_free_all(&state);
     DSD_MEMSET(&state, 0, sizeof(state));
     state.currentslot = 1;
     build_regular_flco(bits, 0x07U, 0x10U, 0x00U, 0x654321U, 0xC0DEU);
@@ -635,10 +746,8 @@ test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(irr == 0);
     assert(state.dmr_rest_channel == 3);
-    assert(state.lasttgR == 0x654321U);
-    assert(state.lastsrcR == 0xC0DEU);
-    assert(state.gi[1] == 1);
-    assert(strcmp(state.call_string[1], " Private             ") == 0);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 0x654321U, 0xC0DEU);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -665,8 +774,7 @@ test_hytera_xpt_alert_records_free_lcn_and_targets(void) {
     assert(strcmp(state.dmr_branding, "  Hytera") == 0);
     assert(strcmp(state.dmr_branding_sub, "XPT ") == 0);
     assert(strcmp(state.dmr_site_parms, "Free LCN - 6 ") == 0);
-    assert(state.lasttg == 0);
-    assert(state.lastsrc == 0);
+    assert_no_active_call(&state, 0U);
 }
 
 static void
@@ -823,6 +931,51 @@ test_encrypted_flco_lockout_inserts_policy_and_event_history(void) {
 }
 
 static void
+test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0U;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    opts.trunk_is_tuned = 1;
+    state.currentslot = 0;
+    state.trunk_cc_freq = 851250000L;
+    state.trunk_vc_freq[0] = 852000000L;
+    state.trunk_vc_freq[1] = 852000000L;
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+
+    dmr_sm_init(&opts, &state);
+    dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+    s_return_to_cc_calls = 0;
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .return_to_cc_request = capture_return_to_cc_ending_calls,
+    });
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+    assert(irr == 0U);
+    assert(s_return_to_cc_calls == 1);
+    assert(opts.trunk_is_tuned == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    assert_call(&state, 1U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+    dsd_state_ext_free_all(&state);
+}
+
+static void
 test_encrypted_flco_allowed_tuning_skips_lockout_policy(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -944,8 +1097,8 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     state.tg_hold = 99U;
-    state.lasttg = 11;
-    state.lasttgR = 22;
+    seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 11U, 101U);
+    seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 22U, 202U);
     state.dmrburstL = 16;
     state.dmrburstR = 16;
     state.trunk_vc_freq[0] = 852000000L;
@@ -971,6 +1124,7 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     assert(opts.trunk_is_tuned == 0);
     assert(state.trunk_vc_freq[0] == 0);
     assert(state.p25_vc_freq[0] == 0);
+    dsd_state_ext_free_all(&state);
 }
 
 int
@@ -981,6 +1135,7 @@ main(void) {
     test_ms_direct_flco_reports_internal_slot_one();
     test_hytera_basic_key_output_uses_segment_count();
     test_kirisun_flco_sets_late_entry_mode();
+    test_flco_canonical_crypto_uses_algorithm_aware_keys();
     test_hytera_enhanced_flco_uses_secondary_checksum();
     test_flco_scan_hook_reports_encrypted_service_option();
     test_hytera_flco_scan_hook_uses_final_call_type();
@@ -992,6 +1147,7 @@ main(void) {
     test_cach_completed_fragment_crc_error_reports_voice_payload_context();
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
+    test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_activity_uses_each_slot_value();

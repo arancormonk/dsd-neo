@@ -6,9 +6,11 @@
 /* Verify policy-backed P25 grant filtering behavior in the trunk SM path. */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -61,6 +63,15 @@ expect_true(const char* tag, int cond) {
         return 1;
     }
     return 0;
+}
+
+static int
+active_call_matches(const dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t ota_target,
+                    uint64_t policy_target, uint64_t source) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.kind == kind
+           && call.ota_target_id == ota_target && call.policy_target_id == policy_target
+           && call.ota_source_id == source;
 }
 
 static int
@@ -217,10 +228,11 @@ main(void) {
                                    .svc_bits = 0x00,
                                    .is_group = 1});
     rc |= expect_true("patch member hold tunes supergroup", st.p25_sm_tune_count == before + 1);
-    rc |= expect_true("patch member hold stores policy tg", st.p25_policy_tg[0] == 1401U);
     st.synctype = DSD_SYNC_P25P1_POS;
-    st.lasttg = 1400;
-    st.lastsrc = 2400;
+    p25_sm_event_t patch_hold_active = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &patch_hold_active);
+    rc |= expect_true("patch member hold canonical policy target",
+                      active_call_matches(&st, 0U, DSD_CALL_KIND_GROUP_VOICE, 1400U, 1401U, 2400U));
     int enc = 1;
     rc |= expect_true("patch member hold audio gate call", dsd_audio_group_gate_mono(&opts, &st, 1400, enc, &enc) == 0);
     rc |= expect_true("patch member hold audio gate opens", enc == 0);
@@ -242,11 +254,11 @@ main(void) {
                                    .svc_bits = 0x00,
                                    .is_group = 1});
     rc |= expect_true("patch member allowlist tunes supergroup", st.p25_sm_tune_count == before + 1);
-    rc |= expect_true("patch member allowlist policy tg", st.p25_policy_tg[0] == 1403U);
     st.synctype = DSD_SYNC_P25P2_POS;
-    st.lasttg = 1402;
-    st.lastsrc = 2402;
-    st.gi[0] = 0;
+    p25_sm_event_t patch_allow_active = p25_sm_ev_active(0);
+    p25_sm_event(p25_sm_get_ctx(), &opts, &st, &patch_allow_active);
+    rc |= expect_true("patch member allowlist canonical policy target",
+                      active_call_matches(&st, 0U, DSD_CALL_KIND_GROUP_VOICE, 1402U, 1403U, 2402U));
     rc |= expect_true("patch member allowlist p2 media gate", dsd_p25p2_decode_audio_allowed(&opts, &st, 0, 0) == 1);
 
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
@@ -802,7 +814,7 @@ main(void) {
                                    .is_group = 1});
     rc |= expect_true("patch member preempt reuses carrier",
                       st.p25_sm_tune_count == before && p25_sm_get_ctx()->vc_tg == 1502);
-    rc |= expect_true("patch member preempt policy tg", st.p25_policy_tg[0] == 1502U);
+    rc |= expect_true("patch member preempt policy target", p25_sm_get_ctx()->slots[0].target_id == 1502);
 
     // Same-frequency TDMA grants update one slot without clearing the other slot's patch policy mapping.
     {
@@ -835,11 +847,12 @@ main(void) {
                                        .is_group = 1});
         p25_sm_ctx_t* dual_ctx = p25_sm_get_ctx();
         unsigned dual_tunes_after_slot1 = dual_st.p25_sm_tune_count;
-        rc |= expect_true("dual slot1 policy tg stored", dual_st.p25_policy_tg[1] == 1602U);
         rc |= expect_true("dual slot1 grant context",
                           dual_ctx->slots[1].grant_active && dual_ctx->slots[1].target_id == 1602);
-        dual_ctx->slots[1].voice_active = 1;
-        dual_ctx->slots[1].last_active_m = 1.0;
+        p25_sm_event_t dual_slot1_active = p25_sm_ev_active(1);
+        p25_sm_event(dual_ctx, &dual_opts, &dual_st, &dual_slot1_active);
+        rc |= expect_true("dual slot1 canonical policy target",
+                          active_call_matches(&dual_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 1601U, 1602U, 2601U));
         dual_st.p25_p2_audio_allowed[1] = 1;
 
         p25_sm_event(p25_sm_get_ctx(), &dual_opts, &dual_st,
@@ -852,8 +865,9 @@ main(void) {
                                        .is_group = 1});
         rc |= expect_true("dual slot0 same-carrier no retune", dual_st.p25_sm_tune_count == dual_tunes_after_slot1);
         rc |= expect_true("dual slot0 same-carrier active slot", dual_st.p25_p2_active_slot == 0);
-        rc |= expect_true("dual slot0 policy tg stored", dual_st.p25_policy_tg[0] == 1502U);
-        rc |= expect_true("dual slot1 policy tg preserved", dual_st.p25_policy_tg[1] == 1602U);
+        rc |= expect_true("dual slot0 grant policy target", dual_ctx->slots[0].target_id == 1502);
+        rc |= expect_true("dual slot1 canonical policy target preserved",
+                          active_call_matches(&dual_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 1601U, 1602U, 2601U));
         rc |= expect_true("dual slot1 active preserved",
                           dual_ctx->slots[1].voice_active == 1 && dual_ctx->slots[1].target_id == 1602);
         rc |= expect_true("dual slot0 grant context",
@@ -890,6 +904,7 @@ main(void) {
         rc |= expect_true("dual moved target clears old slot", dual_ctx->slots[0].grant_active == 0);
         rc |= expect_true("dual moved target stores new slot",
                           dual_ctx->slots[1].grant_active && dual_ctx->slots[1].target_id == 1701);
+        dsd_state_ext_free_all(&dual_st);
     }
 
     // Group TG IDs and individual RID destinations are separate namespaces.
@@ -922,8 +937,10 @@ main(void) {
         rc |= expect_true("namespace private slot0 stored",
                           namespace_ctx->slots[0].grant_active && namespace_ctx->slots[0].target_id == 1234
                               && namespace_ctx->slots[0].is_group == 0 && namespace_ctx->slots[0].dst == 1234);
-        namespace_ctx->slots[0].voice_active = 1;
-        namespace_ctx->slots[0].last_active_m = 1.0;
+        p25_sm_event_t namespace_private_active = p25_sm_ev_active(0);
+        p25_sm_event(namespace_ctx, &namespace_opts, &namespace_st, &namespace_private_active);
+        rc |= expect_true("namespace private canonical call",
+                          active_call_matches(&namespace_st, 0U, DSD_CALL_KIND_PRIVATE_VOICE, 1234U, 1234U, 4234U));
         namespace_st.p25_p2_audio_allowed[0] = 1;
 
         p25_sm_event(p25_sm_get_ctx(), &namespace_opts, &namespace_st,
@@ -943,11 +960,13 @@ main(void) {
         rc |= expect_true("namespace group slot stored",
                           namespace_ctx->slots[1].grant_active && namespace_ctx->slots[1].target_id == 1234
                               && namespace_ctx->slots[1].is_group == 1 && namespace_ctx->slots[1].ota_tg == 1234);
+        dsd_state_ext_free_all(&namespace_st);
     }
 
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_MIN_DWELL_MS");
     (void)dsd_unsetenv("DSD_NEO_TG_PREEMPT_COOLDOWN_MS");
 
+    dsd_state_ext_free_all(&st);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }

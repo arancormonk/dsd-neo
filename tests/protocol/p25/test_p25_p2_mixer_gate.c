@@ -9,11 +9,14 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -74,6 +77,19 @@ fill_f32_frame(float frame[160], float value) {
     for (int i = 0; i < 160; i++) {
         frame[i] = value;
     }
+}
+
+static int
+seed_group_call(dsd_state* state, uint8_t slot, uint64_t target) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = slot,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }
 
 static void
@@ -261,8 +277,8 @@ run_fs4_clear_plus_blocked_mono_case(int clear_slot, int matching_hold) {
     st.p25_crypto_state[clear_slot] = DSD_P25_CRYPTO_CLEAR;
     st.p25_crypto_state[clear_slot ^ 1] = DSD_P25_CRYPTO_BLOCKED;
     if (matching_hold) {
-        st.lasttg = 100;
-        st.lasttgR = 100;
+        rc |= expect_eq("mono seed left call", seed_group_call(&st, 0U, 100), 1);
+        rc |= expect_eq("mono seed right call", seed_group_call(&st, 1U, 100), 1);
         st.tg_hold = 100;
     }
 
@@ -279,6 +295,7 @@ run_fs4_clear_plus_blocked_mono_case(int clear_slot, int matching_hold) {
     if (copied == 0) {
         rc |= expect_true("mono clear sample audible", out[0] > 0.0f);
     }
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 
@@ -339,8 +356,8 @@ run_ss18_clear_plus_blocked_hold_case(int clear_slot) {
     opts.slot1_on = 1;
     opts.slot2_on = 1;
     opts.trunk_tune_enc_calls = 0;
-    st.lasttg = 100;
-    st.lasttgR = 100;
+    rc |= expect_eq("ss18 seed left call", seed_group_call(&st, 0U, 100), 1);
+    rc |= expect_eq("ss18 seed right call", seed_group_call(&st, 1U, 100), 1);
     st.tg_hold = 100;
     st.dmrburstL = 21;
     st.dmrburstR = 21;
@@ -363,6 +380,7 @@ run_ss18_clear_plus_blocked_hold_case(int clear_slot) {
         rc |= expect_eq("ss18 hold left output", out[0], (clear_slot == 0) ? 100 : 0);
         rc |= expect_eq("ss18 hold right output", out[1], (clear_slot == 1) ? 100 : 0);
     }
+    dsd_state_ext_free_all(&st);
     return rc;
 }
 

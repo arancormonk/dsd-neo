@@ -3,8 +3,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -75,6 +78,66 @@ p25_crypto_set_state(dsd_state* state, int slot, dsd_p25_crypto_state crypto_sta
     if (!p25_crypto_audio_ready(state, slot)) {
         state->p25_p2_audio_allowed[slot] = 0;
     }
+}
+
+static dsd_call_crypto_state
+p25_crypto_canonical_classification(dsd_p25_crypto_state crypto_state) {
+    switch (crypto_state) {
+        case DSD_P25_CRYPTO_CLEAR: return DSD_CALL_CRYPTO_CLEAR;
+        case DSD_P25_CRYPTO_ENCRYPTED_PENDING: return DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+        case DSD_P25_CRYPTO_DECRYPTABLE: return DSD_CALL_CRYPTO_DECRYPTABLE;
+        case DSD_P25_CRYPTO_BLOCKED: return DSD_CALL_CRYPTO_ENCRYPTED;
+        default: return DSD_CALL_CRYPTO_UNKNOWN;
+    }
+}
+
+static int
+p25_crypto_phase1_protocol(const dsd_state* state) {
+    if (DSD_SYNC_IS_P25P1(state->synctype)) {
+        return state->synctype;
+    }
+    return DSD_SYNC_IS_P25P1(state->lastsynctype) ? state->lastsynctype : DSD_SYNC_P25P1_POS;
+}
+
+static int
+p25_crypto_ensure_phase1_call(dsd_state* state) {
+    dsd_call_snapshot call;
+    const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (active && DSD_SYNC_IS_P25P1(call.protocol)
+        && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
+        return 0;
+    }
+
+    int64_t frequency_hz = state->p25_vc_freq[0];
+    if (frequency_hz == 0) {
+        frequency_hz = state->trunk_vc_freq[0];
+    }
+    const dsd_call_observation observation = {
+        .protocol = p25_crypto_phase1_protocol(state),
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .frequency_hz = frequency_hz,
+    };
+    const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+    if (began && state->p25_p1_identity_pending) {
+        state->p25_p1_identity_epoch_started = 1;
+    }
+    return began;
+}
+
+static void
+p25_crypto_publish_canonical(const dsd_opts* opts, dsd_state* state, int slot) {
+    if (!state || !p25_crypto_slot_valid(slot)) {
+        return;
+    }
+    dsd_call_crypto_update update = {
+        .classification = p25_crypto_canonical_classification(state->p25_crypto_state[slot]),
+        .algid = (uint8_t)p25_crypto_slot_algid(state, slot),
+        .kid = (uint16_t)p25_crypto_slot_keyid(state, slot),
+        .mi = p25_crypto_slot_mi(state, slot),
+        .audio_permitted = (uint8_t)(p25_crypto_audio_permitted(opts, state, slot) ? 1 : 0),
+    };
+    (void)dsd_call_state_update_crypto(state, (uint8_t)slot, &update);
 }
 
 static void
@@ -164,7 +227,10 @@ p25_crypto_p1_clear_conflict(dsd_state* state) {
 
 static int
 p25_crypto_p1_has_explicit_clear_service(const dsd_state* state) {
-    return state && state->p25_service_options_valid[0] != 0 && (state->dmr_so & 0x40U) == 0;
+    dsd_call_snapshot call;
+    return state && dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_P25P1(call.protocol) && call.has_service_metadata != 0U
+           && (call.service_options & 0x40U) == 0;
 }
 
 static int
@@ -234,7 +300,12 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     if (reset_stream) {
         p25_crypto_reset_stream_state(state, phase, slot);
     }
+    const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(state) : 0;
     p25_crypto_set_state(state, slot, resolved);
+    p25_crypto_publish_canonical(opts, state, slot);
+    if (began_phase1_call && opts) {
+        dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    }
 
     if ((resolved == DSD_P25_CRYPTO_DECRYPTABLE || resolved == DSD_P25_CRYPTO_BLOCKED) && opts) {
         p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);
@@ -253,7 +324,6 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
         slot = 0;
         state->p25_p1_hdu_crypto_fresh = 0;
         state->dmr_so = svc_bits >= 0 ? (unsigned int)svc_bits : 0U;
-        state->p25_service_options_valid[0] = svc_bits >= 0 ? 1U : 0U;
     }
 
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
@@ -264,6 +334,7 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     const int service_options_clear = svc_bits >= 0 && (svc_bits & 0x40) == 0;
     p25_crypto_set_state(
         state, slot, (force_clear || service_options_clear) ? DSD_P25_CRYPTO_CLEAR : DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_crypto_publish_canonical(NULL, state, slot);
     state->p25_p2_audio_allowed[slot] = 0;
 }
 
@@ -283,6 +354,7 @@ p25_crypto_mark_encrypted_pending(dsd_state* state, int slot) {
     }
 
     p25_crypto_set_state(state, slot, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_crypto_publish_canonical(NULL, state, slot);
     dsd_mbe_purge_slot_audio(state, slot);
 }
 
@@ -294,6 +366,7 @@ p25_crypto_p1_defer_clear_conflict(dsd_state* state, int svc_bits) {
 
     p25_crypto_p1_arm_conflict(state, state->payload_algid, state->payload_keyid);
     p25_crypto_set_state(state, 0, DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    p25_crypto_publish_canonical(NULL, state, 0);
     dsd_mbe_purge_slot_audio(state, 0);
     return 1;
 }
@@ -352,5 +425,6 @@ p25_crypto_block_pending(dsd_state* state, int slot) {
         return;
     }
     p25_crypto_set_state(state, slot, DSD_P25_CRYPTO_BLOCKED);
+    p25_crypto_publish_canonical(NULL, state, slot);
     dsd_mbe_purge_slot_audio(state, slot);
 }

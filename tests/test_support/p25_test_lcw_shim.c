@@ -7,9 +7,11 @@
  * Test-only helper to invoke the LCW decoder with minimal state.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <stdint.h>
@@ -40,7 +42,15 @@ p25_test_invoke_lcw(const unsigned char* lcw_bits, int len, int enable_retune, l
     }
 
     state->p25_cc_freq = cc_freq;
-    state->lastsrc = lastsrc;
+    if (lastsrc > 0) {
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+            .ota_source_id = (uint64_t)lastsrc,
+        };
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    }
     state->p25_iden_fdma[1].chan_type = 1;
     state->p25_iden_fdma[1].chan_spac = 100;
     state->p25_iden_fdma[1].base_freq = 851000000 / 5;

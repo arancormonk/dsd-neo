@@ -23,6 +23,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/bp.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -908,14 +909,7 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
             DSD_MEMSET(event_str, 0, sizeof(event_str));
             DSD_SNPRINTF(event_str, sizeof(event_str), "DSD-neo Dibit Capture File Rotated: %s;",
                          opts->symbol_out_file);
-            watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
-            dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0],
-                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
-            dsd_event_history_mark_dirty(&state->event_history_s[0]);
-            state->lastsrc =
-                0; //this could wipe a call, but usually on TDMA cc's, slot 1 is the control channel, so may never be set when this is run
-            watchdog_event_history(opts, state, 0);
-            watchdog_event_current(opts, state, 0);
+            (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
 
             opts->symbol_out_file_creation_time = time(NULL);
         }
@@ -1484,6 +1478,9 @@ typedef struct {
     uint16_t ks_idx_i;
     int imbe_counter;
     int ambe2_counter;
+    dsd_call_kind kind;
+    uint32_t source_id;
+    uint32_t target_id;
 } sdrtrunk_json_context;
 
 static char*
@@ -1510,14 +1507,15 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->ks_idx_i = 808;
     ctx->imbe_counter = 0;
     ctx->ambe2_counter = 0;
+    ctx->kind = DSD_CALL_KIND_VOICE;
+    ctx->source_id = 0U;
+    ctx->target_id = 0U;
 }
 
 static void
 sdrtrunk_json_reset_event_state(dsd_state* state) {
     state->dmr_color_code = 0;
-    state->lastsrc = 0;
-    state->lasttg = 0;
-    state->gi[0] = -1;
+    (void)dsd_call_state_end(state, 0U, 0.0);
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
 }
@@ -1560,9 +1558,9 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
         state->payload_algid = ctx->alg_id;
         ctx->rc4_db = 256;
         ctx->rc4_mod = 9;
-        if (state->keyloader == 1 && state->lasttg != 0 && state->lasttg < 0x1FFFF
-            && state->rkey_array[state->lasttg] != 0) {
-            state->R = state->rkey_array[state->lasttg];
+        if (state->keyloader == 1 && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU
+            && state->rkey_array[ctx->target_id] != 0) {
+            state->R = state->rkey_array[ctx->target_id];
         }
         if (ctx->alg_id == 0x21 && state->R != 0 && state->payload_mi != 0) {
             uint8_t iv64[8] = {0};
@@ -1647,7 +1645,7 @@ sdrtrunk_json_handle_protocol(dsd_opts* opts, dsd_state* state, const char* toke
 }
 
 static int
-sdrtrunk_json_handle_call_type(dsd_state* state, const char* token, char** str_saveptr) {
+sdrtrunk_json_handle_call_type(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
     if (strncmp("call_type", token, 9) != 0) {
         return 0;
     }
@@ -1656,7 +1654,7 @@ sdrtrunk_json_handle_call_type(dsd_state* state, const char* token, char** str_s
     if (!value) {
         return 1;
     }
-    state->gi[0] = (strncmp("GROUP", value, 5) == 0) ? 0 : 1;
+    ctx->kind = (strncmp("GROUP", value, 5) == 0) ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
     DSD_FPRINTF(stderr, "\n Call Type: %s", value);
     return 1;
 }
@@ -1679,12 +1677,12 @@ sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_j
 }
 
 static int
-sdrtrunk_json_handle_to_from(dsd_state* state, const char* token, char** str_saveptr) {
+sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, char** str_saveptr) {
     if (strncmp("to", token, 2) == 0) {
         char* value = sdrtrunk_json_next_value(str_saveptr);
         if (value) {
             uint32_t parsed = 0;
-            state->lasttg = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
+            ctx->target_id = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
             DSD_FPRINTF(stderr, "\n To: %s", value);
         }
         return 1;
@@ -1693,7 +1691,7 @@ sdrtrunk_json_handle_to_from(dsd_state* state, const char* token, char** str_sav
         char* value = sdrtrunk_json_next_value(str_saveptr);
         if (value) {
             uint32_t parsed = 0;
-            state->lastsrc = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
+            ctx->source_id = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
             DSD_FPRINTF(stderr, "\n From: %s", value);
         }
         return 1;
@@ -1913,8 +1911,11 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     long event_seconds = 0;
     (void)dsd_parse_long_strict(time_str, 10, 0L, LONG_MAX, &event_seconds);
     time_t event_time = (time_t)event_seconds;
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     state->event_history_s[0].Event_History_Items[0].event_time = event_time;
     dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
 
     char timestr[9];
     char datestr[11];
@@ -1928,19 +1929,46 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
 }
 
 static void
+sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
+    if (!state || !ctx || state->synctype == DSD_SYNC_NONE) {
+        return;
+    }
+    const dsd_call_observation observation = {
+        .protocol = state->synctype,
+        .slot = 0U,
+        .kind = ctx->kind,
+        .ota_target_id = ctx->target_id,
+        .policy_target_id = ctx->target_id,
+        .ota_source_id = ctx->source_id,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    const dsd_call_crypto_update crypto = {
+        .classification = ctx->is_enc == 0U         ? DSD_CALL_CRYPTO_CLEAR
+                          : ctx->ks_available != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE
+                                                    : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = ctx->alg_id,
+        .kid = ctx->key_id,
+        .mi = state->payload_mi,
+        .audio_permitted = (uint8_t)(ctx->is_enc == 0U || ctx->ks_available != 0U),
+    };
+    (void)dsd_call_state_update_crypto(state, 0U, &crypto);
+}
+
+static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
                             char** str_saveptr) {
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_protocol(opts, state, token, str_saveptr, ctx);
-    (void)sdrtrunk_json_handle_call_type(state, token, str_saveptr);
+    (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
     sdrtrunk_json_apply_forced_algid(state, ctx);
-    (void)sdrtrunk_json_handle_to_from(state, token, str_saveptr);
+    (void)sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_mi(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
+    sdrtrunk_json_publish_call(state, ctx);
 }
 
 void
@@ -1955,8 +1983,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     sdrtrunk_json_context_init(&ctx);
     sdrtrunk_json_reset_event_state(state);
     sdrtrunk_json_reset_crypto_state(state);
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
 
     size_t source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
     source_str[source_size] = '\0';
@@ -1981,8 +2008,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
     free(source_str);
     source_str = NULL;
-    watchdog_event_history(opts, state, 0);
-    watchdog_event_current(opts, state, 0);
+    dsd_event_sync_slot(opts, state, 0);
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);
     }

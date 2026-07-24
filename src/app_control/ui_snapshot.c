@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -11,6 +12,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "snapshot_internal.h"
@@ -24,7 +26,7 @@ static dsd_trunk_cc_candidates g_pub_cc_candidates;
 static dsd_trunk_cc_candidates g_consume_cc_candidates;
 static int g_have = 0;
 static dsd_mutex_t g_mu;
-static atomic_int g_mu_init = 0;
+static atomic_int g_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
 static unsigned long long g_pub_seq = 0;
 static unsigned long long g_consume_seq = 0;
 static uint64_t g_pub_eh_seq[2] = {0};
@@ -126,10 +128,16 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
 
 static void
 ensure_mu_init(void) {
-    int expected = 0;
-    if (atomic_compare_exchange_strong(&g_mu_init, &expected, 1)) {
-        dsd_mutex_init(&g_mu);
+    if (atomic_load(&g_mu_state) == 2) {
+        return;
     }
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_mu_state, &expected, 1)) {
+        (void)dsd_mutex_init(&g_mu);
+        atomic_store(&g_mu_state, 2);
+        return;
+    }
+    while (atomic_load(&g_mu_state) != 2) {}
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -162,14 +170,15 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     dsd_mutex_lock(&g_mu);
     ui_snapshot_copy_render_state(&g_pub, state);
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
-    // Deep copy pointer-backed UI data (event history for 2 slots) only when its revision changes.
+    // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
         const int force_copy = !g_have || !g_pub_eh_present || g_pub_eh_source != state->event_history_s;
+        uint8_t copied[2] = {0U, 0U};
+        (void)dsd_event_state_copy_snapshot_incremental(&g_pub, state, g_pub_eh, g_pub_eh_source_revision, force_copy,
+                                                        copied);
         for (size_t slot = 0; slot < 2U; slot++) {
-            const uint64_t source_revision = state->event_history_s[slot].revision;
-            if (force_copy || g_pub_eh_source_revision[slot] != source_revision) {
-                DSD_MEMCPY(&g_pub_eh[slot], &state->event_history_s[slot], sizeof(Event_History_I));
-                g_pub_eh_source_revision[slot] = source_revision;
+            if (copied[slot]) {
+                g_pub_eh_source_revision[slot] = g_pub_eh[slot].revision;
                 g_pub_eh_seq[slot]++;
                 UI_SNAPSHOT_COUNT_SOURCE_COPY(slot);
             }
@@ -178,6 +187,7 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
         g_pub_eh_present = 1;
         g_pub.event_history_s = g_pub_eh;
     } else {
+        (void)dsd_call_state_copy_to_state(&g_pub, state);
         g_pub_eh_source = NULL;
         g_pub_eh_present = 0;
         g_pub.event_history_s = NULL;
@@ -198,6 +208,7 @@ dsd_app_get_latest_snapshot(void) {
     if (g_consume_seq != g_pub_seq) {
         ui_snapshot_copy_render_state(&g_consume, &g_pub);
         ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
+        (void)dsd_call_state_copy_to_state(&g_consume, &g_pub);
         g_consume_seq = g_pub_seq;
     }
     // Deep copy event history only when the published history changed.

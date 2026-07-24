@@ -8,8 +8,11 @@
  * force trunk state-machine release before ESS has identified the ALGID.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -109,6 +112,19 @@ expect_eq(const char* tag, int got, int want) {
     return 0;
 }
 
+static int
+seed_call(dsd_state* state, uint8_t slot, dsd_call_kind kind, uint64_t target) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = slot,
+        .kind = kind,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
+}
+
 static void
 setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     DSD_MEMSET(opts, 0, sizeof *opts);
@@ -121,8 +137,9 @@ setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     state->currentslot = 0;
     state->p25_vc_cqpsk_pref = -1;
     state->p25_vc_cqpsk_override = -1;
-    state->lasttg = 1234;
-    state->lasttgR = 5678;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+    (void)seed_call(state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234);
+    (void)seed_call(state, 1U, DSD_CALL_KIND_GROUP_VOICE, 5678);
 
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
     *ctx = p25_sm_get_ctx();
@@ -133,7 +150,7 @@ setup_tuned_tdma(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t** ctx) {
     (*ctx)->t_voice_m = 1.0;
     for (int slot = 0; slot < 2; slot++) {
         p25_sm_slot_ctx_t* slot_ctx = &(*ctx)->slots[slot];
-        const int tg = slot == 0 ? (int)state->lasttg : (int)state->lasttgR;
+        const int tg = slot == 0 ? 1234 : 5678;
         slot_ctx->grant_active = 1;
         slot_ctx->freq_hz = (*ctx)->vc_freq_hz;
         slot_ctx->channel = 0x2000 | slot;
@@ -166,6 +183,7 @@ test_pre_ess_single_slot_stays_tuned(void) {
     rc |= expect_eq("pre-ess single slot: pending crypto state", state.p25_crypto_state[0],
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_eq("pre-ess single slot: deadline started", ctx->slots[0].crypto_attempt_m > 0.0, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -197,6 +215,7 @@ test_clear_voice_to_encrypted_restarts_deadline(void) {
     process_2V(&opts, &state);
     rc |= expect_eq("clear-to-encrypted: repeated SVC keeps deadline",
                     fabs(ctx->slots[0].crypto_attempt_m - started_m) <= 1.0e-9, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -225,6 +244,7 @@ test_pre_ess_opposite_clear_slot_stays_tuned(void) {
     rc |= expect_eq("opposite clear slot: locked gate closed", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_eq("opposite clear slot: pending crypto state", state.p25_crypto_state[1],
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -238,8 +258,8 @@ test_clear_regroup_override_survives_voice_burst(void) {
     state.dmr_so = 0x40;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[0] = 1;
-    p25_patch_update(&state, state.lasttg, /*is_patch*/ 1, /*active*/ 1);
-    p25_patch_set_kas(&state, state.lasttg, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
+    p25_patch_update(&state, 1234, /*is_patch*/ 1, /*active*/ 1);
+    p25_patch_set_kas(&state, 1234, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
 
     process_2V(&opts, &state);
 
@@ -247,6 +267,7 @@ test_clear_regroup_override_survives_voice_burst(void) {
     rc |= expect_eq("clear regroup: crypto remains clear", state.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     rc |= expect_eq("clear regroup: audio gate remains open", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("clear regroup: voice activity emitted", ctx->slots[0].voice_active, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -257,8 +278,7 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
     p25_sm_ctx_t* ctx = NULL;
     setup_tuned_tdma(&opts, &state, &ctx);
     state.currentslot = 0;
-    state.gi[0] = 1;
-    state.lasttg = 0x123456;
+    (void)seed_call(&state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, 0x123456);
     state.dmr_so = 0x40;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
     state.p25_p2_audio_allowed[0] = 1;
@@ -272,6 +292,7 @@ test_private_voice_ignores_regroup_clear_key_collision(void) {
                     DSD_P25_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_eq("private patch collision: audio gate closed", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("private patch collision: voice activity suppressed", ctx->slots[0].voice_active, 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -301,6 +322,7 @@ test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
     rc |= expect_eq("encrypted follow voice frame marks activity", ctx->slots[0].voice_active, 1);
     rc |= expect_eq("encrypted follow voice frame keeps media muted", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("encrypted follow voice frame stays tuned", ctx->state == P25_SM_TUNED, 1);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

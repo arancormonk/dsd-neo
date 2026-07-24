@@ -11,9 +11,12 @@
  * repetition, and rate 3/4 bit-assembly behavior without live dibit input.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_12.h>
 #include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -21,8 +24,6 @@
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -187,6 +188,31 @@ expect_u8(const char* tag, uint8_t got, uint8_t want) {
     return 0;
 }
 
+static int
+seed_active_voice_call(dsd_state* state, uint32_t target, uint32_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .observed_m = 1.0,
+    };
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static int
+expect_active_voice_call(const char* tag, const dsd_state* state, uint32_t target, uint32_t source) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.ota_target_id != target
+        || call.ota_source_id != source) {
+        DSD_FPRINTF(stderr, "%s: canonical voice call was not preserved\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
 static void
 reset_dispatch_counters(void) {
     g_pdu_header_calls = 0;
@@ -244,10 +270,15 @@ test_prepare_state_resets_mpdu_frame_context(void) {
     state.s_l4[0][0] = 11;
     state.s_r4[0][0] = 12;
     state.currentslot = 1;
-    state.last_active_time = time(NULL) - 10;
-    DSD_SNPRINTF(state.call_string[0], sizeof(state.call_string[0]), "%s", "left");
-    DSD_SNPRINTF(state.call_string[1], sizeof(state.call_string[1]), "%s", "right");
-    DSD_SNPRINTF(state.active_channel[0], sizeof(state.active_channel[0]), "%s", "active");
+    const dsd_call_observation activity = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 77U,
+        .channel = 1U,
+    };
+    (void)dsd_recent_activity_publish(&state, 0U, &activity, "stale activity", 1U);
+    (void)seed_active_voice_call(&state, 77U, 88U);
     reset_dispatch_counters();
 
     p25_mpdu_prepare_state(&opts, &state);
@@ -261,9 +292,11 @@ test_prepare_state_resets_mpdu_frame_context(void) {
     rc |= expect_int("slot preference set", opts.slot_preference, 2);
     rc |= expect_int("current slot reset", state.currentslot, 0);
     rc |= expect_int("status accumulator started", g_status_ensure_started_calls, 1);
-    rc |= expect_int("left call string padded", strcmp(state.call_string[0], "                     "), 0);
-    rc |= expect_int("right call string padded", strcmp(state.call_string[1], "                     "), 0);
-    rc |= expect_int("stale active channel cleared", state.active_channel[0][0], 0);
+    rc |= expect_active_voice_call("MPDU prepare preserves voice", &state, 77U, 88U);
+    dsd_recent_activity_snapshot recent;
+    rc |= expect_int("recent activity snapshot", dsd_recent_activity_copy_snapshot(&state, &recent), 1);
+    rc |= expect_int("stale recent activity expired", (int)recent.entries[0].updated_m_ms, 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -373,6 +406,13 @@ static int
 test_decode_blocks_use_candidates_or_fallback_and_pack_crc_bits(void) {
     P25MpduContext ctx;
     int rc = 0;
+
+    g_mbf34_candidate_count = 0;
+    g_mbf34_fallback_calls = 0;
+    p25_mpdu_decode_r34_block(NULL, 1);
+    p25_mpdu_decode_r34_block(&ctx, 0);
+    p25_mpdu_decode_r34_block(&ctx, P25_MPDU_MAX_BLOCKS + 1);
+    rc |= expect_int("invalid r34 block ignored", g_mbf34_fallback_calls, 0);
 
     p25_mpdu_context_init(&ctx);
     DSD_MEMSET(g_soft_candidates, 0, sizeof(g_soft_candidates));
@@ -591,8 +631,7 @@ test_rate12_payload_crc_dispatch_and_cleanup(void) {
     p25_mpdu_context_init(&ctx);
     ctx.blks = 1;
     ctx.err[1] = -2;
-    state.lasttg = 100;
-    state.lastsrc = 200;
+    (void)seed_active_voice_call(&state, 100U, 200U);
     DSD_MEMCPY(ctx.mpdu_byte + P25_MPDU_R12_BYTES, payload, sizeof(payload));
     reset_dispatch_counters();
 
@@ -600,20 +639,17 @@ test_rate12_payload_crc_dispatch_and_cleanup(void) {
     rc |= expect_int("rate12 crc ok", ctx.err[1], 0);
     rc |= expect_int("rate12 data dispatch", g_pdu_data_calls, 1);
     rc |= expect_int("rate12 data len", g_last_pdu_data_len, 24);
-    rc |= expect_int("rate12 clears tg", state.lasttg, 0);
-    rc |= expect_int("rate12 clears src", state.lastsrc, 0);
+    rc |= expect_active_voice_call("rate12 preserves voice", &state, 100U, 200U);
 
     p25_mpdu_context_init(&ctx);
     ctx.blks = 0;
     ctx.err[1] = -2;
-    state.lasttg = 300;
-    state.lastsrc = 400;
+    (void)seed_active_voice_call(&state, 300U, 400U);
     reset_dispatch_counters();
     p25_mpdu_handle_rate12(&opts, &state, &ctx);
     rc |= expect_int("rate12 zero-block crc ok", ctx.err[1], 0);
     rc |= expect_int("rate12 zero-block no data dispatch", g_pdu_data_calls, 0);
-    rc |= expect_int("rate12 zero-block clears tg", state.lasttg, 0);
-    rc |= expect_int("rate12 zero-block clears src", state.lastsrc, 0);
+    rc |= expect_active_voice_call("rate12 zero-block preserves voice", &state, 300U, 400U);
 
     p25_mpdu_context_init(&ctx);
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -621,31 +657,30 @@ test_rate12_payload_crc_dispatch_and_cleanup(void) {
     ctx.err[1] = -2;
     ctx.mpdu_byte[P25_MPDU_R12_BYTES] = 0x55;
     opts.aggressive_framesync = 1;
-    state.lasttg = 500;
-    state.lastsrc = 600;
+    (void)seed_active_voice_call(&state, 500U, 600U);
     reset_dispatch_counters();
     p25_mpdu_handle_rate12(&opts, &state, &ctx);
     rc |= expect_int("rate12 bad crc aggressive suppresses dispatch", g_pdu_data_calls, 0);
     rc |= expect_int("rate12 bad crc preserved", ctx.err[1] != 0, 1);
-    rc |= expect_int("rate12 bad crc aggressive clears tg", state.lasttg, 0);
+    rc |= expect_active_voice_call("rate12 bad CRC aggressive preserves voice", &state, 500U, 600U);
 
     p25_mpdu_context_init(&ctx);
     ctx.blks = 1;
     ctx.err[1] = -2;
     ctx.mpdu_byte[P25_MPDU_R12_BYTES] = 0x56;
     opts.aggressive_framesync = 0;
-    state.lasttg = 700;
-    state.lastsrc = 800;
+    (void)seed_active_voice_call(&state, 700U, 800U);
     reset_dispatch_counters();
     p25_mpdu_handle_rate12(&opts, &state, &ctx);
     rc |= expect_int("rate12 bad crc relaxed dispatches", g_pdu_data_calls, 1);
     rc |= expect_int("rate12 bad crc relaxed len", g_last_pdu_data_len, 24);
-    rc |= expect_int("rate12 bad crc relaxed clears src", state.lastsrc, 0);
+    rc |= expect_active_voice_call("rate12 bad CRC relaxed preserves voice", &state, 700U, 800U);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
 static int
-test_rate34_dispatch_reconstructs_payload_and_clears_last_call(void) {
+test_rate34_dispatch_reconstructs_payload_and_preserves_active_call(void) {
     static dsd_opts opts;
     static dsd_state state;
     P25MpduContext ctx;
@@ -662,8 +697,7 @@ test_rate34_dispatch_reconstructs_payload_and_clears_last_call(void) {
     for (int byte_idx = 0; byte_idx < P25_MPDU_R34_BYTES; byte_idx++) {
         ctx.r34bytes[byte_idx] = (uint8_t)(0x20 + byte_idx);
     }
-    state.lasttg = 900;
-    state.lastsrc = 901;
+    (void)seed_active_voice_call(&state, 900U, 901U);
     reset_dispatch_counters();
 
     p25_mpdu_dispatch_payload(&opts, &state, &ctx);
@@ -674,8 +708,8 @@ test_rate34_dispatch_reconstructs_payload_and_clears_last_call(void) {
     rc |= expect_int("rate34 data len", g_last_pdu_data_len, 28);
     rc |= expect_u8("rate34 first reconstructed payload", ctx.mpdu_byte[P25_MPDU_R12_BYTES], ctx.r34bytes[2]);
     rc |= expect_u8("rate34 last block byte", ctx.mpdu_byte[P25_MPDU_R12_BYTES + 15], ctx.r34bytes[17]);
-    rc |= expect_int("rate34 clears tg", state.lasttg, 0);
-    rc |= expect_int("rate34 clears src", state.lastsrc, 0);
+    rc |= expect_active_voice_call("rate34 preserves voice", &state, 900U, 901U);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -759,9 +793,7 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     g_mbf34_fallback_calls = 0;
     g_get_dibit_soft_calls = 0;
     g_status_add_calls = 0;
-    state.lasttg = 77;
-    state.lastsrc = 88;
-    state.last_active_time = time(NULL);
+    (void)seed_active_voice_call(&state, 77U, 88U);
     reset_dispatch_counters();
 
     processMPDU(&opts, &state);
@@ -773,8 +805,7 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     rc |= expect_int("process header dispatch", g_pdu_header_calls, 1);
     rc |= expect_int("process no data dispatch for zero block", g_pdu_data_calls, 0);
     rc |= expect_int("process fec ok", (int)state.p25_p1_fec_ok, 1);
-    rc |= expect_int("process clears tg", state.lasttg, 0);
-    rc |= expect_int("process clears src", state.lastsrc, 0);
+    rc |= expect_active_voice_call("process MPDU preserves voice", &state, 77U, 88U);
     rc |= expect_int("process classifies status", g_status_classify_calls, 1);
 
     p25_mpdu_context_init(&probe);
@@ -785,6 +816,7 @@ test_process_mpdu_zero_block_header_orchestration(void) {
     rc |= expect_u8("stored header rep byte", probe.hdr_rep_bytes[0][3], header[3]);
     p25_mpdu_store_header_rep(&probe, P25_MPDU_HEADER_REPS);
     rc |= expect_int("out-of-range header rep ignored", probe.hdr_rep_crc[0], 0);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
@@ -803,7 +835,7 @@ main(void) {
     rc |= test_rate34_zero_block_crc_and_multiblock_reconstruction();
     rc |= test_decode_header_if_usable_dispatch_gate();
     rc |= test_rate12_payload_crc_dispatch_and_cleanup();
-    rc |= test_rate34_dispatch_reconstructs_payload_and_clears_last_call();
+    rc |= test_rate34_dispatch_reconstructs_payload_and_preserves_active_call();
     rc |= test_trunking_payload_crc_dispatch();
     rc |= test_process_mpdu_zero_block_header_orchestration();
     return rc;

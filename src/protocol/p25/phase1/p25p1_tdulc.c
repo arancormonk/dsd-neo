@@ -286,11 +286,7 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
     state->currentslot = 0;
     p25_sm_emit_tdu(opts, state);
 
-    state->p25_call_emergency[0] = 0;
-    state->p25_call_priority[0] = 0;
-    state->p25_call_is_packet[0] = 0;
     state->dmr_so = 0;
-    state->p25_service_options_valid[0] = 0;
 
     char dodeca_data[6][12];
     char dodeca_parity[6][12];
@@ -320,8 +316,6 @@ processTDULC(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, "%s\n", KNRM);
     }
     tdulc_print_lcw_payload(opts, LCW_bytes);
-    DSD_SNPRINTF(state->call_string[0], sizeof(state->call_string[0]), "%s", "                     ");
-    DSD_SNPRINTF(state->call_string[1], sizeof(state->call_string[1]), "%s", "                     ");
     if (opts->floating_point == 1) {
         state->aout_gain = opts->audio_gain;
     }

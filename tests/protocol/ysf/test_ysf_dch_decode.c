@@ -9,8 +9,11 @@
 #include <dsd-neo/core/bit_packing.h>
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
@@ -42,6 +45,24 @@ static int g_process_mbe_call_count;
 static int g_process_mbe_synctype[5];
 static int g_process_mbe_ambe_nonnull[5];
 static int g_mbe_inbound_errs2[5];
+
+static void
+begin_test_ysf_call(dsd_state* state) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_YSF_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+}
+
+static dsd_call_snapshot
+get_test_ysf_call(const dsd_state* state) {
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    return call;
+}
 
 int
 // NOLINTNEXTLINE(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -291,6 +312,23 @@ make_fich_bits_for_vd_type2(uint8_t fich_bits[48]) {
 }
 
 static void
+make_fich_bits_for_terminator(uint8_t fich_bits[48]) {
+    DSD_MEMSET(fich_bits, 0, 48U);
+    set_bits_msb(fich_bits, 0U, 2U, 2U);  // fi: terminator communication channel
+    set_bits_msb(fich_bits, 4U, 2U, 0U);  // cm: group/CQ
+    set_bits_msb(fich_bits, 6U, 2U, 0U);  // bn
+    set_bits_msb(fich_bits, 8U, 2U, 0U);  // bt
+    set_bits_msb(fich_bits, 10U, 3U, 0U); // fn
+    set_bits_msb(fich_bits, 13U, 3U, 0U); // ft
+    set_bits_msb(fich_bits, 18U, 3U, 1U); // mr
+    set_bits_msb(fich_bits, 21U, 1U, 0U); // vp
+    set_bits_msb(fich_bits, 22U, 2U, 0U); // dt: V/D Type 1
+    set_bits_msb(fich_bits, 24U, 1U, 0U); // st
+    set_bits_msb(fich_bits, 25U, 7U, 0U); // sc
+    append_ysf_crc(fich_bits);
+}
+
+static void
 encode_fich_input(const uint8_t fich_bits[48], int corrupt_payload_crc, int corrupt_golay, uint8_t input[100]) {
     uint8_t encoded_words[96];
     uint8_t source_bits[48];
@@ -378,13 +416,15 @@ test_dch_csd1_tracks_destination_and_source(void) {
     const char payload[] = "DESTCALL01SRCCALL02";
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, 20U, bits);
 
     ysf_dch_decode(&state, 0, 0, 0, 0, 0, bits);
 
-    assert(strcmp(state.ysf_tgt, "DESTCALL01") == 0);
-    assert(strcmp(state.ysf_src, "SRCCALL02") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DESTCALL01") == 0);
+    assert(strcmp(call.source_text, "SRCCALL02") == 0);
 }
 
 static void
@@ -393,21 +433,26 @@ test_dch_rid_mode_preserves_target_and_source_state(void) {
     uint8_t bits[160];
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits("DSTR1SRCR2FULLSRC003", 20U, bits);
 
     ysf_dch_decode(&state, 0, 0, 0, 0, 1, bits);
 
-    assert(strcmp(state.ysf_tgt, "DSTR1SRCR2") == 0);
-    assert(strcmp(state.ysf_src, "FULLSRC003") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DSTR1SRCR2") == 0);
+    assert(strcmp(call.source_text, "FULLSRC003") == 0);
+    const uint64_t first_epoch = call.epoch;
 
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits("RID01RID02", 10U, bits);
 
     ysf_dch_decode2(&state, 0, 0, 0, 5, 1, bits);
 
-    assert(strcmp(state.ysf_tgt, "RID01RID02") == 0);
-    assert(strcmp(state.ysf_src, "FULLSRC003") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "RID01RID02") == 0);
+    assert(call.source_text[0] == '\0');
+    assert(call.epoch != first_epoch);
 }
 
 static void
@@ -417,13 +462,15 @@ test_dch_csd2_tracks_uplink_and_downlink(void) {
     const char payload[] = "UPLINK0001DOWNLINK02";
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     DSD_MEMSET(bits, 0, sizeof(bits));
     pack_bytes_to_bits(payload, 20U, bits);
 
     ysf_dch_decode(&state, 1, 0, 0, 0, 0, bits);
 
-    assert(strcmp(state.ysf_upl, "UPLINK0001") == 0);
-    assert(strcmp(state.ysf_dnl, "DOWNLINK02") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.route_text[0], "UPLINK0001") == 0);
+    assert(strcmp(call.route_text[1], "DOWNLINK02") == 0);
 }
 
 static void
@@ -455,22 +502,27 @@ test_dch2_tracks_destination_source_links_and_remarks(void) {
     uint8_t bits[80];
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
 
     pack_bytes_to_bits("DEST2CALL3", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 0, 5, 0, bits);
-    assert(strcmp(state.ysf_tgt, "DEST2CALL3") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DEST2CALL3") == 0);
 
     pack_bytes_to_bits("SRC2CALL45", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 1, 5, 0, bits);
-    assert(strcmp(state.ysf_src, "SRC2CALL45") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "SRC2CALL45") == 0);
 
     pack_bytes_to_bits("UP2CALL678", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 2, 5, 0, bits);
-    assert(strcmp(state.ysf_upl, "UP2CALL678") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.route_text[0], "UP2CALL678") == 0);
 
     pack_bytes_to_bits("DN2CALL901", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 3, 5, 0, bits);
-    assert(strcmp(state.ysf_dnl, "DN2CALL901") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.route_text[1], "DN2CALL901") == 0);
 
     pack_bytes_to_bits("RM1AARM2BB", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 4, 5, 0, bits);
@@ -572,19 +624,20 @@ test_ysf_conv_dch_decodes_valid_csd1_and_rejects_crc_error(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     encode_dch_payload_to_input("DCHDST0001DCHSRC0002", 20U, input, 176U, 9U, 0);
 
     assert(ysf_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == 0);
-    assert(strcmp(state.ysf_tgt, "DCHDST0001") == 0);
-    assert(strcmp(state.ysf_src, "DCHSRC0002") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DCHDST0001") == 0);
+    assert(strcmp(call.source_text, "DCHSRC0002") == 0);
 
-    DSD_SNPRINTF(state.ysf_tgt, sizeof(state.ysf_tgt), "%s", "UNCHANGED");
-    DSD_SNPRINTF(state.ysf_src, sizeof(state.ysf_src), "%s", "UNCHANGED");
     encode_dch_payload_to_input("BADDST0001BADSRC0002", 20U, input, 176U, 9U, 1);
 
     assert(ysf_conv_dch(&opts, &state, 0, 0, 0, 0, 0, input) == -2);
-    assert(strcmp(state.ysf_tgt, "UNCHANGED") == 0);
-    assert(strcmp(state.ysf_src, "UNCHANGED") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "DCHDST0001") == 0);
+    assert(strcmp(call.source_text, "DCHSRC0002") == 0);
 }
 
 static void
@@ -595,16 +648,18 @@ test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    begin_test_ysf_call(&state);
     encode_dch_payload_to_input("DCH2SRC789", 10U, input, 96U, 5U, 0);
 
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == 0);
-    assert(strcmp(state.ysf_src, "DCH2SRC789") == 0);
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "DCH2SRC789") == 0);
 
-    DSD_SNPRINTF(state.ysf_src, sizeof(state.ysf_src), "%s", "UNCHANGED");
     encode_dch_payload_to_input("DCH2BAD789", 10U, input, 96U, 5U, 1);
 
     assert(ysf_conv_dch2(&opts, &state, 0, 0, 1, 5, 0, input) == -2);
-    assert(strcmp(state.ysf_src, "UNCHANGED") == 0);
+    call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "DCH2SRC789") == 0);
 }
 
 static void
@@ -637,10 +692,13 @@ test_process_ysf_full_rate_data_routes_fich_and_dch_state(void) {
     assert(state.ysf_fi == 0U);
     assert(state.ysf_dt == 1U);
     assert(state.ysf_cm == 0U);
-    assert(strcmp(state.ysf_tgt, "PYSFDST001") == 0);
-    assert(strcmp(state.ysf_src, "PYSFSRC002") == 0);
-    assert(strcmp(state.ysf_upl, "PYSFUPL003") == 0);
-    assert(strcmp(state.ysf_dnl, "PYSFDNL004") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_DATA);
+    assert(strcmp(call.target_text, "PYSFDST001") == 0);
+    assert(strcmp(call.source_text, "PYSFSRC002") == 0);
+    assert(strcmp(call.route_text[0], "PYSFUPL003") == 0);
+    assert(strcmp(call.route_text[1], "PYSFDNL004") == 0);
 }
 
 static void
@@ -680,8 +738,61 @@ test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state(void) {
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 0U);
     assert(state.ysf_cm == 0U);
-    assert(strcmp(state.ysf_tgt, "VD1DST0001") == 0);
-    assert(strcmp(state.ysf_src, "VD1SRC0002") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.target_text, "VD1DST0001") == 0);
+    assert(strcmp(call.source_text, "VD1SRC0002") == 0);
+}
+
+static void
+test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    state.synctype = DSD_SYNC_YSF_NEG;
+
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    processYSF(&opts, &state);
+
+    dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.protocol == DSD_SYNC_YSF_NEG);
+    const uint64_t first_epoch = call.epoch;
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+
+    encode_fich_input(fich_bits, 1, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    processYSF(&opts, &state);
+
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    assert(g_process_mbe_call_count == 4);
+    for (size_t i = 0U; i < 4U; i++) {
+        assert(g_process_mbe_synctype[i] == DSD_SYNC_NXDN_POS);
+    }
+    call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != first_epoch);
+    assert(call.protocol == DSD_SYNC_YSF_NEG);
+    assert(call.kind == DSD_CALL_KIND_VOICE);
+    dsd_state_ext_free_all(&state);
 }
 
 static void
@@ -724,10 +835,56 @@ test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     assert(state.debug_audio_errors == 3);
     assert(state.ysf_fi == 1U);
     assert(state.ysf_dt == 2U);
-    assert(strcmp(state.ysf_src, "VD2SRC4444") == 0);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(strcmp(call.source_text, "VD2SRC4444") == 0);
     assert(strcmp(state.err_str, "========") == 0);
     assert(state.f_l[0] == 5.0F);
     assert(state.f_l[159] == 5.0F);
+}
+
+static void
+test_process_ysf_terminator_enriches_identity_before_call_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    state.event_history_s = event_history;
+    init_event_history(&event_history[0], 0U, 255U);
+    init_event_history(&event_history[1], 0U, 255U);
+    begin_test_ysf_call(&state);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+
+    make_fich_bits_for_terminator(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch0, dch1);
+
+    processYSF(&opts, &state);
+
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    const dsd_call_snapshot call = get_test_ysf_call(&state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(strcmp(call.target_text, "TERMDST001") == 0);
+    assert(strcmp(call.source_text, "TERMSRC002") == 0);
+    assert(strcmp(call.route_text[0], "TERMUPL003") == 0);
+    assert(strcmp(call.route_text[1], "TERMDNL004") == 0);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    assert(strcmp(committed->tgt_str, "TERMDST001") == 0);
+    assert(strcmp(committed->src_str, "TERMSRC002") == 0);
 }
 
 int
@@ -744,7 +901,9 @@ main(void) {
     test_ysf_conv_dch2_decodes_valid_source_and_rejects_crc_error();
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
+    test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
+    test_process_ysf_terminator_enriches_identity_before_call_end();
     return 0;
 }
 

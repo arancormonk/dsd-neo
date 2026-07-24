@@ -8,9 +8,11 @@
  * 4-state model: IDLE, ON_CC, TUNED, HUNTING
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -67,6 +69,69 @@ reset_test_state(void) {
     g_opts.trunk_tune_group_calls = 1;
     g_opts.verbose = 0;
     g_state.p25_cc_freq = 851000000; // Fake CC freq
+}
+
+static int
+canonical_call_is(uint8_t slot, dsd_call_phase phase, dsd_call_kind kind, uint64_t target, uint64_t source) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(&g_state, slot, &call) > 0 && call.phase == phase && call.kind == kind
+           && call.ota_target_id == target && call.policy_target_id == target && call.ota_source_id == source;
+}
+
+static int
+canonical_slot_is_active(uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(&g_state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+static int
+canonical_call_has_service(uint8_t slot, uint16_t service_options, uint8_t emergency, uint8_t priority) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(&g_state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.service_options == service_options && call.emergency == emergency && call.priority == priority;
+}
+
+static int
+canonical_call_set_service(uint8_t slot, uint16_t service_options) {
+    dsd_call_snapshot call = {0};
+    const int found = dsd_call_state_get(&g_state, slot, &call);
+    if (found <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    const dsd_call_observation observation = {
+        .protocol = call.protocol,
+        .slot = slot,
+        .kind = call.kind,
+        .ota_target_id = call.ota_target_id,
+        .policy_target_id = call.policy_target_id,
+        .ota_source_id = call.ota_source_id,
+        .channel = call.channel,
+        .frequency_hz = call.frequency_hz,
+        .service_options = service_options,
+        .emergency = (uint8_t)((service_options & 0x80U) != 0U),
+        .priority = (uint8_t)(service_options & 0x07U),
+        .has_service_metadata = 1U,
+        .observed_m = dsd_time_now_monotonic_s(),
+    };
+    return dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0;
+}
+
+static int
+canonical_call_begin_p1(uint64_t target, uint64_t source, uint16_t service_options) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+        .service_options = service_options,
+        .emergency = (uint8_t)((service_options & 0x80U) != 0U),
+        .priority = (uint8_t)(service_options & 0x07U),
+        .has_service_metadata = 1U,
+        .observed_m = dsd_time_now_monotonic_s(),
+    };
+    return dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }
 
 static void
@@ -206,7 +271,8 @@ test_private_ptt_preserves_grant_identity(void) {
     ev = p25_sm_ev_ptt_call(0, 0, 0, 0x010203, 1, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (!ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].dst != 0xABCDEF
-        || ctx.slots[0].target_id != 0xABCDEF || g_state.gi[0] != 1 || g_state.lasttg != 0xABCDEF) {
+        || ctx.slots[0].target_id != 0xABCDEF
+        || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 0xABCDEF, 0x010203)) {
         DSD_FPRINTF(stderr, "FAIL: Zero-address MAC_PTT did not retain the private grant identity\n");
         return 1;
     }
@@ -217,8 +283,8 @@ test_private_ptt_preserves_grant_identity(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].voice_active || ctx.slots[0].is_group || ctx.slots[0].dst != 0xABCDEF
         || ctx.slots[0].target_id != 0xABCDEF || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN
-        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || g_state.gi[0] != 1
-        || g_state.lasttg != 0xABCDEF) {
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+        || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_PRIVATE_VOICE, 0xABCDEF, 0x010203)) {
         DSD_FPRINTF(stderr, "FAIL: Nonzero MAC_PTT group field replaced the private grant identity\n");
         return 1;
     }
@@ -254,8 +320,8 @@ test_authoritative_group_replaces_private_identity(void) {
     ev = p25_sm_ev_active_call(0, 0x2345, 0, 0x040506, 1, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (!ctx.slots[0].voice_active || !ctx.slots[0].is_group || ctx.slots[0].ota_tg != 0x2345 || ctx.slots[0].dst != 0
-        || ctx.slots[0].target_id != 0x2345 || ctx.slots[0].src != 0x040506 || g_state.gi[0] != 0
-        || g_state.lasttg != 0x2345 || g_state.lastsrc != 0x040506) {
+        || ctx.slots[0].target_id != 0x2345 || ctx.slots[0].src != 0x040506
+        || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 0x2345, 0x040506)) {
         DSD_FPRINTF(stderr, "FAIL: Authoritative group ACTIVE retained the preceding private identity\n");
         return 1;
     }
@@ -275,7 +341,8 @@ test_inband_zero_source_preserves_grant_identity(void) {
         p25_sm_event(&ctx, &g_opts, &g_state, &ev);
         ev = use_active ? p25_sm_ev_active_call(0, 1000, 0, 0, 1, 0) : p25_sm_ev_ptt_call(0, 1000, 0, 0, 1, 0);
         p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-        if (!ctx.slots[0].voice_active || ctx.slots[0].src != 123 || g_state.lastsrc != 123) {
+        if (!ctx.slots[0].voice_active || ctx.slots[0].src != 123
+            || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1000, 123)) {
             DSD_FPRINTF(stderr, "FAIL: Source-less in-band identity discarded the grant RID\n");
             return 1;
         }
@@ -360,8 +427,9 @@ test_source_less_identity_change_does_not_inherit_rid(void) {
         ev = p25_sm_ev_active_call(0, cases[i].tg, cases[i].dst, 0, cases[i].is_group, 0);
         p25_sm_event(&ctx, &g_opts, &g_state, &ev);
         const int target = cases[i].is_group ? cases[i].tg : cases[i].dst;
+        const dsd_call_kind kind = cases[i].is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
         if (!ctx.slots[0].voice_active || ctx.slots[0].target_id != target || ctx.slots[0].is_group != cases[i].is_group
-            || ctx.slots[0].src != 0 || g_state.lastsrc != 0) {
+            || ctx.slots[0].src != 0 || !canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, kind, (uint64_t)target, 0U)) {
             DSD_FPRINTF(stderr, "FAIL: Source-less changed identity case %zu inherited the preceding RID\n", i);
             return 1;
         }
@@ -546,7 +614,10 @@ test_p1_fresh_hdu_survives_missed_terminator(void) {
     const int algid = 0x81;
     const int keyid = 0x5678;
     const uint64_t mi = UINT64_C(0x1112131415161718);
-    g_state.p25_call_emergency[0] = 1;
+    if (!canonical_call_set_service(0U, 0x80)) {
+        DSD_FPRINTF(stderr, "FAIL: Could not seed stale emergency metadata on the canonical call\n");
+        return 1;
+    }
     g_state.p25_p1_identity_pending = 1;
     g_state.p25_p1_hdu_crypto_fresh = 1;
     if (p25_crypto_resolve(NULL, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 2000)
@@ -557,11 +628,12 @@ test_p1_fresh_hdu_survives_missed_terminator(void) {
 
     ev = p25_sm_ev_active_call(0, 2000, 0, 456, 1, 0x40);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    dsd_call_snapshot call;
     if (ctx.state != P25_SM_TUNED || !ctx.slots[0].voice_active || ctx.slots[0].ota_tg != 2000
         || ctx.slots[0].src != 456 || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_DECRYPTABLE
         || g_state.payload_algid != algid || g_state.payload_keyid != keyid || g_state.payload_miP != mi
         || !p25_crypto_audio_permitted(&g_opts, &g_state, 0) || g_state.p25_p1_hdu_crypto_fresh
-        || g_state.p25_call_emergency[0]) {
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.emergency) {
         DSD_FPRINTF(stderr, "FAIL: Identity change after missed terminator discarded fresh HDU crypto\n");
         return 1;
     }
@@ -800,7 +872,7 @@ test_p1_follow_mode_does_not_clear_conflict_after_encrypted_lcw(void) {
 
     p25_sm_event_t ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x44);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.slots[0].svc_bits != 0x44 || g_state.dmr_so != 0x44 || !g_state.p25_service_options_valid[0]
+    if (ctx.slots[0].svc_bits != 0x44 || g_state.dmr_so != 0x44 || !canonical_call_has_service(0U, 0x44, 0U, 4U)
         || !g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
         DSD_FPRINTF(stderr, "FAIL: Encrypted LCW did not replace the clear conflict service options\n");
         return 1;
@@ -831,7 +903,6 @@ test_p1_clear_conflict_restarts_deadline(void) {
     ev = p25_sm_ev_active_call(0, 3069, 0, 4009646, 1, 0x04);
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
     g_state.dmr_so = 0x04;
-    g_state.p25_service_options_valid[0] = 1;
 
     if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
                            3069)
@@ -873,7 +944,7 @@ test_p1_grant_hdu_conflict_survives_first_active(void) {
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 3069, 4009646, 0x04);
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
-    if (ctx->state != P25_SM_TUNED || g_state.dmr_so != 0x04 || !g_state.p25_service_options_valid[0]
+    if (ctx->state != P25_SM_TUNED || ctx->slots[0].svc_bits != 0x04 || g_state.dmr_so != 0x04
         || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
         DSD_FPRINTF(stderr, "FAIL: Clear Phase 1 grant did not retain service options for HDU reconciliation\n");
         return 1;
@@ -883,8 +954,9 @@ test_p1_grant_hdu_conflict_survives_first_active(void) {
     const int keyid = 0x0064;
     const uint64_t mi = UINT64_C(0x0102030405060708);
     g_state.p25_p1_hdu_crypto_fresh = 1;
-    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 3069)
-            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+    if (!canonical_call_begin_p1(3069U, 4009646U, 0x04U)
+        || p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, algid, keyid, mi, 3069)
+               != DSD_P25_CRYPTO_ENCRYPTED_PENDING
         || !g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m <= 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Conflicting HDU did not enter Phase 1 quarantine after a clear grant\n");
         return 1;
@@ -923,9 +995,10 @@ test_p1_follow_mode_preserves_grant_conflict_deadline(void) {
     p25_sm_event(ctx, &g_opts, &g_state, &ev);
 
     g_state.p25_p1_hdu_crypto_fresh = 1;
-    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
-                           3069)
-            != DSD_P25_CRYPTO_ENCRYPTED_PENDING
+    if (!canonical_call_begin_p1(3069U, 4009646U, 0x04U)
+        || p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0xA0, 0x0064, UINT64_C(0x0102030405060708),
+                              3069)
+               != DSD_P25_CRYPTO_ENCRYPTED_PENDING
         || !g_state.p25_p1_crypto_conflict.active || ctx->slots[0].crypto_attempt_m <= 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Encrypted-follow fixture did not start the grant conflict deadline\n");
         return 1;
@@ -1065,17 +1138,134 @@ test_conventional_end_is_follower_noop(void) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     const double now_m = dsd_time_now_monotonic_s();
+    dsd_call_snapshot call;
 
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0) || dsd_call_state_get(&g_state, 0U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional SACCH fixture did not publish an active canonical call\n");
+        return 1;
+    }
     if (!p25_sm_emit_end_call_at(&g_opts, &g_state, 0, 1000, 123, now_m)) {
         DSD_FPRINTF(stderr, "FAIL: Conventional SACCH END was rejected by the trunk follower\n");
+        return 1;
+    }
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional SACCH END did not finalize the canonical call\n");
+        return 1;
+    }
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 1, 2000, 0, 456, 1, 0) || dsd_call_state_get(&g_state, 1U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional FACCH fixture did not publish an active canonical call\n");
         return 1;
     }
     if (p25_sm_emit_facch_end_call_at(&g_opts, &g_state, 1, 2000, 456, now_m) != P25_SM_END_APPLIED) {
         DSD_FPRINTF(stderr, "FAIL: Conventional FACCH END was rejected by the trunk follower\n");
         return 1;
     }
+    if (dsd_call_state_get(&g_state, 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional FACCH END did not finalize the canonical call\n");
+        return 1;
+    }
     if (ctx->state != P25_SM_IDLE || g_return_requests != 0) {
         DSD_FPRINTF(stderr, "FAIL: Conventional END follower no-op changed trunk state\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_conventional_anonymous_activity_waits_for_identity(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_call_snapshot call;
+
+    if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0x85)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional stale-identity fixture did not publish its first epoch\n");
+        return 1;
+    }
+    const uint64_t first_epoch = call.epoch;
+
+    p25_sm_emit_tdu(&g_opts, &g_state);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || call.epoch != first_epoch) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional TDU did not finish the stale-identity fixture\n");
+        return 1;
+    }
+    const uint64_t ended_revision = call.revision;
+
+    if (!p25_sm_emit_active(&g_opts, &g_state, 0) || dsd_call_state_get(&g_state, 0U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ENDED || call.epoch != first_epoch || call.revision != ended_revision) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous conventional activity reopened the completed canonical identity\n");
+        return 1;
+    }
+
+    if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 2000, 0, 456, 1, 0x82)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.epoch != first_epoch + 1U || call.ota_target_id != 2000U || call.ota_source_id != 456U) {
+        DSD_FPRINTF(stderr, "FAIL: Identified conventional follow-up did not open exactly one correct epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_conventional_anonymous_activity_preserves_service_options(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    g_state.dmr_so = 0x85;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_call_snapshot call;
+
+    if (!p25_sm_emit_active_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0x85)
+        || !p25_sm_emit_active(&g_opts, &g_state, 0) || !p25_sm_emit_ptt(&g_opts, &g_state, 0)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 1U
+        || call.service_options != 0x85U || !call.emergency || call.priority != 5U) {
+        DSD_FPRINTF(stderr, "FAIL: Anonymous conventional activity cleared service options or rotated the epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_conventional_unknown_service_stays_unconfirmed(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    dsd_call_snapshot call;
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.has_service_metadata != 0U || call.service_options != 0U || call.emergency != 0U
+        || call.priority != 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional unknown service options were recorded as confirmed metadata\n");
+        return 1;
+    }
+
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0x85)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.has_service_metadata == 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional stale-service fixture did not publish confirmed metadata\n");
+        return 1;
+    }
+    const uint64_t first_epoch = call.epoch;
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 2000, 0, 456, 1, P25_SM_SVC_UNKNOWN)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || call.epoch != first_epoch + 1U || call.ota_target_id != 2000U || call.ota_source_id != 456U
+        || call.has_service_metadata != 0U || call.service_options != 0U || call.emergency != 0U
+        || call.priority != 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional unknown BEGIN inherited service metadata from a prior epoch\n");
         return 1;
     }
     return 0;
@@ -1666,10 +1856,6 @@ test_tdma_end_identity_and_order_guards(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     ev = p25_sm_ev_ptt(1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    g_state.lasttg = 1000;
-    g_state.lastsrc = 101;
-    g_state.lasttgR = 2000;
-    g_state.lastsrcR = 202;
     g_state.p25_p2_audio_allowed[0] = 1;
     g_state.p25_p2_audio_allowed[1] = 1;
 
@@ -1727,8 +1913,6 @@ test_tdma_end_identity_and_order_guards(void) {
     ctx.slots[1].src = 303;
     ctx.slots[1].is_group = 1;
     ctx.slots[1].last_grant_m = ctx.slots[1].last_end_m + 1.0;
-    g_state.lasttgR = 3000;
-    g_state.lastsrcR = 303;
     const double before_new_grant = ctx.slots[1].last_grant_m - 0.001;
     ev = p25_sm_ev_end_call_at(1, 3000, 303, before_new_grant);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
@@ -1936,13 +2120,13 @@ test_inband_policy_reject_preserves_tdma_companion(void) {
     ev = p25_sm_ev_active_call(0, 1001, 0, 303, 1, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || ctx.slots[0].grant_active || ctx.slots[0].voice_active
-        || g_state.p25_p2_audio_allowed[0] || g_state.p25_policy_tg[0] != 0) {
+        || g_state.p25_p2_audio_allowed[0] || canonical_slot_is_active(0U)) {
         DSD_FPRINTF(stderr, "FAIL: Rejected slot was not cleared without releasing its TDMA carrier\n");
         return 1;
     }
     if (!ctx.slots[1].grant_active || !ctx.slots[1].voice_active || ctx.slots[1].target_id != 2000
-        || ctx.slots[1].src != 202 || !g_state.p25_p2_audio_allowed[1] || g_state.lasttgR != 2000
-        || g_state.lastsrcR != 202) {
+        || ctx.slots[1].src != 202 || !g_state.p25_p2_audio_allowed[1]
+        || !canonical_call_is(1U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 2000, 202)) {
         DSD_FPRINTF(stderr, "FAIL: Policy rejection changed the allowed TDMA companion\n");
         return 1;
     }
@@ -2011,9 +2195,6 @@ test_tdma_enc_respects_media_policy(void) {
     ev = p25_sm_ev_ptt(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    g_state.lasttg = 1001;
-    g_state.lastsrc = 123;
-    g_state.gi[0] = 0;
     g_state.aes_key_loaded[0] = 1;
     g_state.aes_key_segments[0] = 4U;
     g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
@@ -2039,9 +2220,6 @@ test_tdma_enc_respects_media_policy(void) {
     ev = p25_sm_ev_ptt(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    g_state.lasttg = 2001;
-    g_state.lastsrc = 123;
-    g_state.gi[0] = 0;
     g_state.aes_key_loaded[0] = 1;
     g_state.aes_key_segments[0] = 4U;
     g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
@@ -2071,9 +2249,6 @@ test_tdma_enc_respects_media_policy(void) {
     ev = p25_sm_ev_ptt(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    g_state.lasttg = 3000;
-    g_state.lastsrc = 123;
-    g_state.gi[0] = 0;
     g_state.aes_key_loaded[0] = 1;
     g_state.aes_key_segments[0] = 4U;
     g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
@@ -2122,6 +2297,9 @@ main(void) {
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
+    fail += test_conventional_anonymous_activity_waits_for_identity();
+    fail += test_conventional_anonymous_activity_preserves_service_options();
+    fail += test_conventional_unknown_service_stays_unconfirmed();
     fail += test_end_clears_voice();
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += test_tdma_idle_ends_voice_with_newer_grant();

@@ -11,8 +11,10 @@
  * soft-decision RS reliability ordering independent of live IMBE collection.
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
@@ -31,6 +33,19 @@
 #include "dsd-neo/protocol/p25/p25p1_soft.h"
 
 #define SOFTID 1
+
+static void
+seed_p25_call(dsd_state* state, uint64_t target, uint64_t source) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = target,
+        .policy_target_id = target,
+        .ota_source_id = source,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+}
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -662,7 +677,7 @@ test_ldu1_softid_alias_state(void) {
 
     state.dmr_alias_format[0] = 0x02;
     state.dmr_alias_block_len[0] = 2;
-    state.lastsrc = 1357;
+    seed_p25_call(&state, 0U, 1357U);
     state.payload_algid = 0x80;
     ctx.lsd_hex1 = 0x41;
     ctx.lsd_hex2 = 0x42;
@@ -697,7 +712,7 @@ test_ldu1_softid_alias_state(void) {
     reset_hook_counters();
     state.dmr_alias_format[0] = 0x02;
     state.dmr_alias_block_len[0] = 2;
-    state.lastsrc = 2468;
+    seed_p25_call(&state, 0U, 2468U);
     state.payload_algid = 0xAA;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     opts.trunk_tune_enc_calls = 0;
@@ -719,7 +734,7 @@ test_ldu1_softid_alias_state(void) {
     reset_hook_counters();
     state.dmr_alias_format[0] = 0x02;
     state.dmr_alias_block_len[0] = 2;
-    state.lastsrc = 3069;
+    seed_p25_call(&state, 0U, 3069U);
     state.payload_algid = 0xA0;
     state.payload_keyid = 0x0064;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;

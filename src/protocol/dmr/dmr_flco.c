@@ -12,6 +12,8 @@
 
 #include <dsd-neo/core/bit_packing.h>
 
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
@@ -19,6 +21,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -39,7 +42,6 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 
-static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 static void dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]);
 static inline int dmr_slot_is_known(const dsd_state* state);
 static inline void dmr_print_slot_tag(const dsd_state* state);
@@ -276,7 +278,6 @@ dmr_flco_handle_cap_plus(dmr_flco_ctx* ctx) {
         (void)convert_bits_into_output(&ctx->lc_bits[48], 4);
         ctx->restchannel = (int)convert_bits_into_output(&ctx->lc_bits[52], 4);
         ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
-        ctx->state->gi[ctx->slot] = (ctx->flco == 0x07) ? 1 : 0;
     }
 }
 
@@ -499,8 +500,6 @@ static void
 dmr_flco_reset_td_lc_slot0(dmr_flco_ctx* ctx) {
     ctx->state->dmr_fid = 0;
     ctx->state->dmr_so = 0;
-    ctx->state->lasttg = 0;
-    ctx->state->lastsrc = 0;
     ctx->state->payload_algid = 0;
     ctx->state->payload_mi = 0;
     ctx->state->payload_keyid = 0;
@@ -520,8 +519,6 @@ static void
 dmr_flco_reset_td_lc_slot1(dmr_flco_ctx* ctx) {
     ctx->state->dmr_fidR = 0;
     ctx->state->dmr_soR = 0;
-    ctx->state->lasttgR = 0;
-    ctx->state->lastsrcR = 0;
     ctx->state->payload_algidR = 0;
     ctx->state->payload_miR = 0;
     ctx->state->payload_keyidR = 0;
@@ -542,19 +539,80 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     if (ctx->state->currentslot == 0) {
         ctx->state->dmr_fid = ctx->fid;
         ctx->state->dmr_so = ctx->so;
-        ctx->state->lasttg = ctx->target;
-        ctx->state->lastsrc = ctx->source;
     }
     if (ctx->state->currentslot == 1) {
         ctx->state->dmr_fidR = ctx->fid;
         ctx->state->dmr_soR = ctx->so;
-        ctx->state->lasttgR = ctx->target;
-        ctx->state->lastsrcR = ctx->source;
     }
     if (ctx->opts->trunk_is_tuned == 1) {
         dsd_mark_vc_sync(ctx->state);
         dsd_mark_cc_sync(ctx->state);
     }
+}
+
+static dsd_call_kind
+dmr_flco_call_kind(const dmr_flco_ctx* ctx) {
+    if (ctx->flco == 0x03 || ctx->flco == 0x05 || ctx->flco == 0x07 || ctx->flco == 0x23) {
+        return DSD_CALL_KIND_PRIVATE_VOICE;
+    }
+    return DSD_CALL_KIND_GROUP_VOICE;
+}
+
+static int
+dmr_flco_voice_protocol(const dsd_state* state) {
+    if (DSD_SYNC_IS_DMR(state->synctype)) {
+        return state->synctype;
+    }
+    if (DSD_SYNC_IS_DMR(state->lastsynctype)) {
+        return state->lastsynctype;
+    }
+    return DSD_SYNC_DMR_BS_VOICE_POS;
+}
+
+static void
+dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
+    const int encrypted = (ctx->so & 0x40U) != 0U;
+    const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
+    const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
+    const uint64_t mi = ctx->slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
+    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
+    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
+                                    : dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
+    const dsd_call_crypto_update crypto = {
+        .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
+                          : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
+                                     : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = algid,
+        .kid = kid,
+        .mi = mi,
+        .audio_permitted = (uint8_t)(!encrypted || has_key),
+    };
+    (void)dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto);
+}
+
+static void
+dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
+    if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    const dsd_call_observation observation = {
+        .protocol = dmr_flco_voice_protocol(ctx->state),
+        .slot = ctx->slot,
+        .kind = dmr_flco_call_kind(ctx),
+        .ota_target_id = ctx->target,
+        .policy_target_id = ctx->target,
+        .ota_source_id = ctx->source,
+        .channel = (uint32_t)(ctx->state->dmr_vc_lsn > 0 ? ctx->state->dmr_vc_lsn : ctx->state->dmr_vc_lcn),
+        .frequency_hz = ctx->state->trunk_vc_freq[ctx->slot],
+        .service_options = ctx->so,
+        .emergency = (uint8_t)((ctx->so & 0x80U) != 0U),
+        .priority = (uint8_t)(ctx->so & 0x03U),
+        .has_service_metadata = 1U,
+    };
+    const dsd_call_boundary boundary = ctx->type == 1U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
+    (void)dsd_call_state_observe(ctx->state, &observation, boundary);
+    dmr_flco_publish_crypto(ctx);
+    dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
 }
 
 static int
@@ -576,6 +634,9 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
     }
 
     if (ctx->type == 2) {
+        if (dsd_call_state_end(ctx->state, ctx->slot, 0.0) > 0) {
+            dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+        }
         if (ctx->state->currentslot == 0) {
             dmr_flco_reset_td_lc_slot0(ctx);
         }
@@ -606,51 +667,27 @@ dmr_flco_print_regular_header(dmr_flco_ctx* ctx) {
 }
 
 static void
-dmr_flco_print_call_class(dmr_flco_ctx* ctx) {
+dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
     if (ctx->fid == 0x68) {
-        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
-                     " Hytera  ");
-        if (ctx->flco == 0x00) {
-            ctx->state->gi[ctx->slot] = 0;
-        } else if (ctx->flco == 0x03) {
-            ctx->state->gi[ctx->slot] = 1;
-        }
     } else if (ctx->flco == 0x4 || ctx->flco == 0x5 || ctx->flco == 0x7 || ctx->flco == 0x23) {
-        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]), "%s", "");
         DSD_FPRINTF(stderr, "Cap+ ");
         if (ctx->flco == 0x4) {
-            DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
-                         "   Group ");
             DSD_FPRINTF(stderr, "Group ");
-            ctx->state->gi[ctx->slot] = 0;
         } else {
-            DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
-                         " Private ");
             DSD_FPRINTF(stderr, "Private ");
-            ctx->state->gi[ctx->slot] = 1;
         }
     } else if (ctx->flco == 0x3) {
-        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
-                     " Private ");
         DSD_FPRINTF(stderr, "Private ");
-        ctx->state->gi[ctx->slot] = 1;
     } else {
-        DSD_SNPRINTF(ctx->state->call_string[ctx->slot_idx], sizeof(ctx->state->call_string[ctx->slot_idx]),
-                     "   Group ");
         DSD_FPRINTF(stderr, "Group ");
-        ctx->state->gi[ctx->slot] = 0;
     }
 }
 
 static void
-dmr_flco_print_emergency_flag(dmr_flco_ctx* ctx) {
+dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
     if (ctx->so & 0x80) {
-        dsd_append(ctx->state->call_string[ctx->slot_idx], sizeof ctx->state->call_string[ctx->slot_idx],
-                   " Emergency  ");
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "Emergency ");
-    } else {
-        dsd_append(ctx->state->call_string[ctx->slot], sizeof ctx->state->call_string[ctx->slot], "            ");
     }
 }
 
@@ -709,10 +746,13 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     char gn[50] = {0};
     dmr_flco_prepare_enc_lockout_labels(ctx, &lo, gm, sizeof(gm), gn, sizeof(gn));
     if (ctx->target != 0 && lo == 0) {
+        dsd_event_history_transaction transaction;
+        dsd_event_history_transaction_begin(ctx->state, &transaction);
         DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
                      sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
                      "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
         dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
+        dsd_event_history_transaction_end(&transaction);
         watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
     }
     dmr_flco_emit_enc_lockout_action(ctx, gm, gn);
@@ -755,11 +795,9 @@ dmr_flco_print_branding(dmr_flco_ctx* ctx) {
     }
     if (ctx->fid == 0x68 && ctx->flco == 0x00) {
         DSD_FPRINTF(stderr, "Group ");
-        ctx->state->gi[ctx->slot] = 0;
     }
     if (ctx->fid == 0x68 && ctx->flco == 0x03) {
         DSD_FPRINTF(stderr, "Private ");
-        ctx->state->gi[ctx->slot] = 1;
     }
     if (ctx->is_kenwood_sc) {
         DSD_FPRINTF(stderr, "Kenwood Scrambler ");
@@ -939,10 +977,6 @@ dmr_flco_print_extended_keys(const dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_finalize(dmr_flco_ctx* ctx) {
-    if (ctx->type == 2) {
-        DSD_SNPRINTF(ctx->state->call_string[ctx->slot], sizeof(ctx->state->call_string[ctx->slot]), "%s",
-                     "                     ");
-    }
     if (ctx->unk == 1 || ctx->pf == 1) {
         DSD_FPRINTF(stderr, " FLCO=0x%02X FID=0x%02X ", ctx->flco, ctx->fid);
         DSD_FPRINTF(stderr, "%s", KNRM);
@@ -982,9 +1016,13 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     if (regular_state > 0) {
         dmr_flco_print_regular_header(&ctx);
         dmr_flco_print_call_class(&ctx);
-        dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, ctx.target, ctx.source, state->gi[ctx.slot],
+        const int is_private = dmr_flco_call_kind(&ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
+        dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, ctx.target, ctx.source, is_private,
                                                       (ctx.so & 0x40U) != 0U, 0);
         dmr_flco_print_emergency_flag(&ctx);
+        if (ctx.type != 2U && ctx.CRCCorrect == 1U) {
+            dmr_flco_publish_voice(&ctx);
+        }
         dmr_flco_apply_enc_lockout(&ctx);
         dmr_flco_print_service_options(&ctx);
         dmr_flco_print_branding(&ctx);
@@ -1366,7 +1404,17 @@ dmr_slco_cap_plus_busy(const dsd_state* state) {
 
 static int
 dmr_slco_tg_hold_not_on_slot(const dsd_state* state) {
-    return (state->tg_hold != (uint32_t)state->lasttg) && (state->tg_hold != (uint32_t)state->lasttgR);
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+            continue;
+        }
+        const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+        if (target == (uint64_t)state->tg_hold) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static void
@@ -1489,16 +1537,4 @@ dmr_slco(dsd_opts* opts, dsd_state* state, uint8_t slco_bits[]) {
 
     dmr_slco_print_completed_block(opts, data.slco, slco_bytes);
     DSD_FPRINTF(stderr, "%s", KNRM);
-}
-
-static inline void
-dsd_append(char* dst, size_t dstsz, const char* src) {
-    if (!dst || !src || dstsz == 0) {
-        return;
-    }
-    size_t len = strlen(dst);
-    if (len >= dstsz) {
-        return;
-    }
-    DSD_SNPRINTF(dst + len, dstsz - len, "%s", src);
 }

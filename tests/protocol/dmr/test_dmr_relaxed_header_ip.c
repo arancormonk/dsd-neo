@@ -7,6 +7,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -50,6 +51,7 @@ static uint32_t g_datacall_last_src;
 static uint32_t g_datacall_last_dst;
 static uint8_t g_datacall_last_slot;
 static char g_datacall_last_text[256];
+static char g_datacall_last_gps[256];
 static unsigned int g_lip_calls;
 static unsigned int g_nmea_calls;
 static uint32_t g_nmea_last_src;
@@ -88,48 +90,53 @@ expect_contains(const char* tag, const char* got, const char* want) {
 
 // Provide local stubs to avoid pulling full core/audio deps during link
 void
-watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     (void)slot;
 }
 
-void
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    (void)opts;
-    (void)state;
-    (void)slot;
-}
-
-void
-watchdog_event_datacall(dsd_opts* opts, dsd_state* state, uint32_t src, uint32_t dst, char* data_string, uint8_t slot) {
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
     (void)opts;
     (void)state;
     g_datacall_calls++;
-    g_datacall_last_src = src;
-    g_datacall_last_dst = dst;
+    g_datacall_last_src = observation->ota_source_id;
+    g_datacall_last_dst = observation->ota_target_id;
     g_datacall_last_slot = slot;
-    DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", data_string ? data_string : "");
+    DSD_SNPRINTF(g_datacall_last_text, sizeof(g_datacall_last_text), "%s", notice ? notice : "");
+    return 0;
+}
+
+int
+dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                    const dsd_call_observation* observation, const char* notice, const char* gps) {
+    (void)dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+    DSD_SNPRINTF(g_datacall_last_gps, sizeof(g_datacall_last_gps), "%s", gps ? gps : "");
+    return 0;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 lip_protocol_decoder(dsd_opts* opts, dsd_state* state, uint8_t* input) {
     (void)opts;
-    (void)state;
     (void)input;
     g_lip_calls++;
+    DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
+                 "LIP: 41.500000, -87.250000");
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 nmea_iec_61162_1(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int type) {
     (void)opts;
-    (void)state;
     (void)input;
     g_nmea_calls++;
     g_nmea_last_src = src;
     g_nmea_last_type = type;
+    DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot], sizeof(state->dmr_embedded_gps[state->currentslot]), "%s",
+                 "GPS: (41.500000, -87.250000)");
 }
 
 // Stubs to avoid linking runtime/core
@@ -214,7 +221,7 @@ des_ofb_keystream_output(unsigned long long int mi, unsigned long long int key_u
     (void)nblocks;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     (void)opts;
@@ -222,6 +229,7 @@ decode_ip_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, uint8_t* input) {
     g_decode_ip_calls++;
     g_decode_ip_last_len = len;
     g_decode_ip_first_byte = input ? input[0] : 0U;
+    return 1;
 }
 
 void
@@ -495,6 +503,7 @@ reset_datacall_spy(void) {
     g_datacall_last_dst = 0;
     g_datacall_last_slot = 0;
     DSD_MEMSET(g_datacall_last_text, 0, sizeof(g_datacall_last_text));
+    DSD_MEMSET(g_datacall_last_gps, 0, sizeof(g_datacall_last_gps));
     g_lip_calls = 0;
     g_nmea_calls = 0;
     g_nmea_last_src = 0;
@@ -576,8 +585,6 @@ test_udt_iso7_single_block_dispatches_text_event(void) {
     assert(strstr(state.event_history_s[0].Event_History_Items[0].text_message, "HELLO") != NULL);
     assert(state.data_header_dd_format[0] == 0U);
     assert(state.data_header_bit_padding[0] == 0U);
-    assert(state.lastsrc == 0);
-    assert(state.lasttg == 0);
     assert(state.data_header_valid[0] == 0);
     assert(state.data_header_format[0] == 7);
 }
@@ -661,11 +668,13 @@ test_udt_text_and_dispatch_formats(void) {
     assert(g_nmea_last_src == 0x000222U);
     assert(g_nmea_last_type == 1);
     assert(strstr(g_datacall_last_text, "NMEA") != NULL);
+    assert(strstr(g_datacall_last_gps, "41.500000") != NULL);
 
     build_udt_flag_block(block, 0U);
     run_udt_single_block(0x0BU, block, NULL);
     assert(g_lip_calls == 1U);
     assert(strstr(g_datacall_last_text, "LIP") != NULL);
+    assert(strstr(g_datacall_last_gps, "41.500000") != NULL);
 }
 
 static void
@@ -710,8 +719,6 @@ test_udt_binary_addressing_reserved_and_slot1_paths(void) {
     run_udt_single_block_on_slot(0x04U, block, 1U, &state_copy);
     assert(g_datacall_calls == 1U);
     assert(g_datacall_last_slot == 1U);
-    assert(state_copy.lastsrcR == 0);
-    assert(state_copy.lasttgR == 0);
     assert(strstr(state_copy.event_history_s[1].Event_History_Items[0].text_message, "SLOT1") != NULL);
 }
 

@@ -16,12 +16,14 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dsd-neo/core/call_state.h"
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/core/synctype_ids.h"
 #include "dsd-neo/core/talkgroup_policy.h"
 #include "dsd-neo/platform/timing.h"
 #include "dsd-neo/protocol/p25/p25_crypto.h"
@@ -754,7 +756,14 @@ test_hdu_encrypted_trunk_lockout_state(void) {
     g_sm_ctx.slots[0].grant_active = 1;
     g_sm_ctx.slots[0].voice_active = 1;
     DSD_SNPRINTF(opts.event_out_file, sizeof(opts.event_out_file), "%s", "events.log");
-    state.lasttg = 1234;
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1234U,
+        .policy_target_id = 1234U,
+    };
+    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     g_lookup_label = "Secure TG";
 
     hdu_handle_good_decode(&opts, &state, 0xAA, 0x2A2A, 0xAABBCCDDULL, 0x10203040ULL, 0ULL);

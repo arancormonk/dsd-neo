@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
@@ -1545,12 +1546,16 @@ current_cc_freq(const dsd_state* state) {
 
 static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
     DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
     DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-    DSD_MEMSET(state->active_channel, 0, sizeof(state->active_channel));
+    (void)dsd_recent_activity_clear_all(state);
     dmr_reset_blocks(opts, state);
-    state->lasttg = state->lasttgR = 0;
-    state->lastsrc = state->lastsrcR = 0;
     state->payload_algid = state->payload_algidR = 0;
     state->payload_keyid = state->payload_keyidR = 0;
     state->payload_mi = state->payload_miR = state->payload_miP = state->payload_miN = 0;
@@ -2835,6 +2840,26 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
 }
 
 static int
+apply_cmd_lockout_resolve_target(const dsd_state* state, const struct dsd_app_command* c, uint8_t* slot_out,
+                                 uint32_t* target_out) {
+    uint8_t slot = 0U;
+    if (c->n >= 1) {
+        DSD_MEMCPY(&slot, c->data, 1U);
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot & 1U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+    if (target == 0U || target > UINT32_MAX) {
+        return 0;
+    }
+    *slot_out = slot;
+    *target_out = (uint32_t)target;
+    return 1;
+}
+
+static int
 apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (!state) {
         return (c && c->id == DSD_APP_CMD_LOCKOUT_SLOT) ? 1 : 0;
@@ -2842,21 +2867,19 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     if (c->id != DSD_APP_CMD_LOCKOUT_SLOT) {
         return 0;
     }
-    uint8_t slot = 0;
+    uint8_t slot = 0U;
+    uint32_t target = 0U;
     dsd_tg_policy_entry lockout_entry;
     char metadata[16];
     int upsert_rc = 0;
-    if (c->n >= 1) {
-        DSD_MEMCPY(&slot, c->data, 1);
-    }
     if (opts->frame_provoice == 1) {
         return 1;
     }
-    int tg = (slot == 0) ? state->lasttg : state->lasttgR;
-    if (tg == 0) {
+    if (!apply_cmd_lockout_resolve_target(state, c, &slot, &target)) {
         return 1;
     }
-    if (dsd_tg_policy_make_exact_entry((uint32_t)tg, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &lockout_entry)
+    int tg = (int)target;
+    if (dsd_tg_policy_make_exact_entry(target, "B", "LOCKOUT", DSD_TG_POLICY_SOURCE_USER_LOCKOUT, &lockout_entry)
         != 0) {
         return 1;
     }
@@ -2868,13 +2891,14 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     }
 
     int eh_slot = (slot == 0) ? 0 : 1;
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
     DSD_SNPRINTF(state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  sizeof state->event_history_s[eh_slot].Event_History_Items[0].internal_str,
                  "Target: %d; has been locked out; User Lock Out.", tg);
     dsd_event_history_mark_dirty(&state->event_history_s[eh_slot]);
+    dsd_event_history_transaction_end(&transaction);
     watchdog_event_current(opts, state, eh_slot);
-    DSD_SNPRINTF(state->call_string[eh_slot], sizeof state->call_string[eh_slot], "%s",
-                 "                     "); // 21 spaces
 
     DSD_SNPRINTF(metadata, sizeof(metadata), "%02X",
                  (unsigned int)((slot == 0) ? state->payload_algid : state->payload_algidR));
@@ -2892,6 +2916,38 @@ apply_cmd_lockout_slot(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     return UI_CMD_APPLY_COMPLETED;
 }
 
+static void
+apply_cmd_m17_tx_toggle(const dsd_opts* opts, dsd_state* state) {
+    if (opts->m17encoder != 1) {
+        return;
+    }
+    state->m17encoder_tx = (state->m17encoder_tx == 0) ? 1 : 0;
+    if (state->m17encoder_tx == 0) {
+        state->m17encoder_eot = 1;
+    }
+}
+
+static void
+apply_cmd_provoice_mode_toggle(dsd_opts* opts, dsd_state* state) {
+    if (opts->frame_provoice != 1) {
+        return;
+    }
+    state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
+    state->edacs_site_id = 0;
+    state->edacs_lcn_count = 0;
+    state->edacs_cc_lcn = 0;
+    state->edacs_tuned_lcn = -1;
+    state->p25_cc_freq = 0;
+    state->trunk_cc_freq = 0;
+    opts->trunk_is_tuned = 0;
+    const double ended_m = dsd_time_now_monotonic_s();
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+            dsd_event_sync_slot(opts, state, (uint8_t)slot);
+        }
+    }
+}
+
 static int
 apply_cmd_provoice_m17(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
@@ -2899,12 +2955,7 @@ apply_cmd_provoice_m17(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
             if (!state) {
                 return 1;
             }
-            if (opts->m17encoder == 1) {
-                state->m17encoder_tx = (state->m17encoder_tx == 0) ? 1 : 0;
-                if (state->m17encoder_tx == 0) {
-                    state->m17encoder_eot = 1;
-                }
-            }
+            apply_cmd_m17_tx_toggle(opts, state);
             return 1;
         case DSD_APP_CMD_PROVOICE_ESK_TOGGLE:
             if (!state) {
@@ -2918,20 +2969,7 @@ apply_cmd_provoice_m17(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
             if (!state) {
                 return 1;
             }
-            if (opts->frame_provoice == 1) {
-                state->ea_mode = (state->ea_mode == 0) ? 1 : 0;
-                state->edacs_site_id = 0;
-                state->edacs_lcn_count = 0;
-                state->edacs_cc_lcn = 0;
-                state->edacs_vc_lcn = 0;
-                state->edacs_tuned_lcn = -1;
-                state->edacs_vc_call_type = 0;
-                state->p25_cc_freq = 0;
-                state->trunk_cc_freq = 0;
-                opts->trunk_is_tuned = 0;
-                state->lasttg = 0;
-                state->lastsrc = 0;
-            }
+            apply_cmd_provoice_mode_toggle(opts, state);
             return 1;
         default: return 0;
     }
@@ -2963,13 +3001,8 @@ ui_cmd_handle_symcap_save(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (state && state->event_history_s) {
         char event_str[2000] = {0};
         DSD_SNPRINTF(event_str, sizeof event_str, "DSD-neo Dibit Capture File Started: %s;", opts->symbol_out_file);
-        watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
-        dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0], DSD_EVENT_SEVERITY_INFO,
-                                            DSD_EVENT_CATEGORY_SYSTEM);
-        dsd_event_history_mark_dirty(&state->event_history_s[0]);
-        state->lastsrc = 0;
-        watchdog_event_history(opts, state, 0);
-        watchdog_event_current(opts, state, 0);
+        (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
+        dsd_event_sync_slot(opts, state, 0);
     }
     opts->symbol_out_file_creation_time = time(NULL);
     opts->symbol_out_file_is_auto = 1;
@@ -2985,13 +3018,8 @@ ui_cmd_handle_symcap_stop(dsd_opts* opts, dsd_state* state, const struct dsd_app
         if (state && state->event_history_s) {
             char event_str[2000] = {0};
             DSD_SNPRINTF(event_str, sizeof event_str, "DSD-neo Dibit Capture File  Closed: %s;", opts->symbol_out_file);
-            watchdog_event_datacall(opts, state, 0xFFFFFF, 0xFFFFFF, event_str, 0);
-            dsd_event_history_item_set_metadata(&state->event_history_s[0].Event_History_Items[0],
-                                                DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_SYSTEM);
-            dsd_event_history_mark_dirty(&state->event_history_s[0]);
-            state->lastsrc = 0;
-            watchdog_event_history(opts, state, 0);
-            watchdog_event_current(opts, state, 0);
+            (void)dsd_event_emit_system_notice(opts, state, 0U, event_str);
+            dsd_event_sync_slot(opts, state, 0);
         }
     }
     opts->symbol_out_file_is_auto = 0;

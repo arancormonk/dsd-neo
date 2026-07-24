@@ -21,10 +21,11 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
@@ -40,6 +41,7 @@
 #include <dsd-neo/ui/panels.h>
 #include <dsd-neo/ui/ui_async.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -196,32 +198,6 @@ ui_update_sync_and_edacs_tree(const dsd_state* state) {
     // Keep the last detected sync type available while carrier state changes.
     if (state->synctype != DSD_SYNC_NONE) {
         ncurses_last_synctype = state->synctype;
-    }
-
-    //EDACS Channel Tree
-    if (DSD_SYNC_IS_EDACS(ncurses_last_synctype) && state->carrier == 1) {
-
-        if (state->edacs_vc_lcn != -1) {
-            edacs_channel_tree[state->edacs_vc_lcn][0] = ncurses_last_synctype;
-            edacs_channel_tree[state->edacs_vc_lcn][1] = state->edacs_vc_lcn;
-            edacs_channel_tree[state->edacs_vc_lcn][2] = state->lasttg;
-            //EDACS standard does not provide source LIDs on channel update messages; instead, for the sake of display, let's
-            //assume the prior source for a given LCN is still accurate, unless we have an updated one provided (or the call
-            //type has changed under us).
-            //
-            //If you MUST have perfectly-accurate source LIDs, look at the logged CC messages yourself - incorrect source LIDs
-            //may be displayed if we miss an initial call channel assignment.
-            if (state->ea_mode == 1
-                || (state->lastsrc != 0
-                    || edacs_channel_tree[state->edacs_vc_lcn][4] != (unsigned long long)state->edacs_vc_call_type)) {
-                edacs_channel_tree[state->edacs_vc_lcn][3] = state->lastsrc;
-            }
-            if (state->ea_mode == 0 && state->lastsrc == 0x800) { //this was from a grant update, so set this to 0
-                edacs_channel_tree[state->edacs_vc_lcn][3] = 0;
-            }
-            edacs_channel_tree[state->edacs_vc_lcn][4] = state->edacs_vc_call_type;
-            edacs_channel_tree[state->edacs_vc_lcn][5] = time(NULL);
-        }
     }
 }
 
@@ -1709,17 +1685,32 @@ ui_render_event_history_section(const dsd_state* state) {
     attroff(COLOR_PAIR(4)); //cyan for history
 }
 
+static int
+ui_active_call_snapshot(const dsd_state* state, uint8_t slot, dsd_call_snapshot* call) {
+    if (call == NULL) {
+        return 0;
+    }
+    DSD_MEMSET(call, 0, sizeof(*call));
+    if (dsd_call_state_get(state, slot, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    DSD_MEMSET(call, 0, sizeof(*call));
+    return 0;
+}
+
 static void
 ui_render_call_info_dstar(dsd_state* state) {
     //DSTAR
     if (DSD_SYNC_IS_DSTAR(ncurses_last_synctype)) {
         printw("| %s ", dsd_synctype_to_string(ncurses_last_synctype));
         printw("\n");
-        printw("| RPT2: %s", state->dstar_rpt2);
-        printw(" RPT1: %s", state->dstar_rpt1);
+        dsd_call_snapshot call;
+        (void)ui_active_call_snapshot(state, 0U, &call);
+        printw("| RPT2: %s", call.route_text[1][0] != '\0' ? call.route_text[1] : "unknown");
+        printw(" RPT1: %s", call.route_text[0][0] != '\0' ? call.route_text[0] : "unknown");
         printw("\n");
-        printw("| DEST: %s", state->dstar_dst);
-        printw("  SRC: %s", state->dstar_src);
+        printw("| DEST: %s", call.target_text[0] != '\0' ? call.target_text : "unknown");
+        printw("  SRC: %s", call.source_text[0] != '\0' ? call.source_text : "unknown");
         printw("\n");
         printw("| TEXT: %s", state->dstar_txt);
         printw("\n");
@@ -1776,30 +1767,32 @@ ui_render_call_info_m17(dsd_state* state) {
         printw("| ");
 
         printw("DST: ");
-        const uint8_t dst_kind = m17_address_classify(state->m17_dst);
+        dsd_call_snapshot call;
+        (void)ui_active_call_snapshot(state, 0U, &call);
+        const uint8_t dst_kind = m17_address_classify(call.ota_target_id);
         if (dst_kind == M17_ADDRESS_BROADCAST_KIND) {
             printw("BROADCAST ");
         } else if (dst_kind == M17_ADDRESS_EXTENDED) {
-            printw("EXTENDED (%012llx) ", state->m17_dst);
+            printw("EXTENDED (%012llx) ", (unsigned long long)call.ota_target_id);
         } else if (dst_kind == M17_ADDRESS_RESERVED) {
-            printw("RESERVED (%012llx) ", state->m17_dst);
+            printw("RESERVED (%012llx) ", (unsigned long long)call.ota_target_id);
         } else {
-            printw("%s", state->m17_dst_str);
+            printw("%s", call.target_text[0] != '\0' ? call.target_text : "unknown");
         }
 
         printw("\n");
         printw("| ");
 
         printw("SRC: ");
-        const uint8_t src_kind = m17_address_classify(state->m17_src);
+        const uint8_t src_kind = m17_address_classify(call.ota_source_id);
         if (src_kind == M17_ADDRESS_BROADCAST_KIND) {
             printw("UNKNOWN FFFFFFFFFFFF");
         } else if (src_kind == M17_ADDRESS_EXTENDED) {
-            printw("EXTENDED (%012llx)", state->m17_src);
+            printw("EXTENDED (%012llx)", (unsigned long long)call.ota_source_id);
         } else if (src_kind == M17_ADDRESS_RESERVED) {
-            printw("RESERVED (%012llx)", state->m17_src);
+            printw("RESERVED (%012llx)", (unsigned long long)call.ota_source_id);
         } else {
-            printw("%s", state->m17_src_str);
+            printw("%s", call.source_text[0] != '\0' ? call.source_text : "unknown");
         }
 
         printw("\n");
@@ -1817,71 +1810,59 @@ ui_render_call_info_m17(dsd_state* state) {
 }
 
 static void
-ui_render_call_info_ysf(dsd_state* state) {
-    //YSF
-    if (DSD_SYNC_IS_YSF(ncurses_last_synctype)) {
-        printw("| ");
-        printw("Fusion - ");
-        //insert data type and frame information
-        if (state->ysf_dt == 0) {
-            printw("V/D1 ");
-        }
-        if (state->ysf_dt == 1) {
-            printw("DATA ");
-        }
-        if (state->ysf_dt == 2) {
-            printw("V/D2 ");
-        }
-        if (state->ysf_dt == 3) {
-            printw("VWFR ");
-        }
-        printw(" ");
-        if (state->ysf_cm == 0) {
-            printw("Group/CQ ");
-        }
-        if (state->ysf_cm == 3) {
-            printw("Private  ");
-        }
-        if (state->ysf_cm == 1) {
-            printw("Radio ID ");
-        }
-        if (state->ysf_cm == 2) {
-            printw("Reserved ");
-        }
-
-        if (state->ysf_fi == 0) {
-            printw("HC ");
-        }
-        if (state->ysf_fi == 1) {
-            printw("CC ");
-        }
-        if (state->ysf_fi == 2) {
-            printw("TC ");
-        }
-        if (state->ysf_fi == 3) {
-            printw("XX ");
-        }
-
-        printw("\n");
-        printw("| ");
-        //NOTE: In Radio ID Mode, the DST will be split on Destination and Source Radio ID values
-        printw("DST: %s ", state->ysf_tgt);
-        printw("SRC: %s ", state->ysf_src);
-        printw("\n");
-        printw("| ");
-        printw("UPL: %s ", state->ysf_upl);
-        printw("DNL: %s ", state->ysf_dnl);
-        printw("\n");
-        printw("| ");
-        printw("RM1: %s ", state->ysf_rm1);
-        printw("RM2: %s ", state->ysf_rm2);
-        printw("\n");
-        printw("| ");
-        printw("RM3: %s ", state->ysf_rm3);
-        printw("RM4: %s ", state->ysf_rm4);
-
-        printw("\n");
+ui_print_ysf_data_type(uint8_t data_type) {
+    static const char* const labels[] = {"V/D1 ", "DATA ", "V/D2 ", "VWFR "};
+    if (data_type < 4U) {
+        printw("%s", labels[data_type]);
     }
+}
+
+static void
+ui_print_ysf_call_mode(uint8_t call_mode) {
+    static const char* const labels[] = {"Group/CQ ", "Radio ID ", "Reserved ", "Private  "};
+    if (call_mode < 4U) {
+        printw("%s", labels[call_mode]);
+    }
+}
+
+static void
+ui_print_ysf_frame_information(uint8_t frame_information) {
+    static const char* const labels[] = {"HC ", "CC ", "TC ", "XX "};
+    if (frame_information < 4U) {
+        printw("%s", labels[frame_information]);
+    }
+}
+
+static void
+ui_print_ysf_call_routes(const dsd_state* state) {
+    dsd_call_snapshot call;
+    (void)ui_active_call_snapshot(state, 0U, &call);
+    printw("| DST: %s SRC: %s \n", call.target_text[0] != '\0' ? call.target_text : "unknown",
+           call.source_text[0] != '\0' ? call.source_text : "unknown");
+    printw("| UPL: %s DNL: %s \n", call.route_text[0][0] != '\0' ? call.route_text[0] : "unknown",
+           call.route_text[1][0] != '\0' ? call.route_text[1] : "unknown");
+}
+
+static void
+ui_print_ysf_remarks(const dsd_state* state) {
+    printw("| RM1: %s RM2: %s \n", state->ysf_rm1, state->ysf_rm2);
+    printw("| RM3: %s RM4: %s\n", state->ysf_rm3, state->ysf_rm4);
+}
+
+static void
+ui_render_call_info_ysf(const dsd_state* state) {
+    if (!DSD_SYNC_IS_YSF(ncurses_last_synctype)) {
+        return;
+    }
+
+    printw("| Fusion - ");
+    ui_print_ysf_data_type(state->ysf_dt);
+    printw(" ");
+    ui_print_ysf_call_mode(state->ysf_cm);
+    ui_print_ysf_frame_information(state->ysf_fi);
+    printw("\n");
+    ui_print_ysf_call_routes(state);
+    ui_print_ysf_remarks(state);
 }
 
 static int
@@ -1906,19 +1887,60 @@ ui_channel_label_is_locked(const dsd_opts* opts, const dsd_state* state, const c
 }
 
 static void
+ui_render_recent_activity_entry(const dsd_opts* opts, const dsd_state* state, const char* text) {
+    size_t cursor = 0U;
+    size_t rendered = 0U;
+    ui_target_token token;
+    int found_target = 0;
+    while (ui_target_token_next(text, &cursor, &token)) {
+        found_target = 1;
+        if (token.begin > rendered) {
+            printw("%.*s", (int)(token.begin - rendered), text + rendered);
+        }
+        char target_text[48];
+        const size_t target_length = token.end - token.begin;
+        DSD_SNPRINTF(target_text, sizeof(target_text), "%.*s", (int)target_length, text + token.begin);
+        int locked = ui_channel_label_is_locked(opts, state, target_text);
+        if (opts && opts->trunk_tune_data_calls == 0 && strstr(text, "Data") != NULL) {
+            locked = 1;
+        }
+        if (locked) {
+            attron(COLOR_PAIR(2));
+        } else {
+            attron(COLOR_PAIR(4));
+        }
+        printw("%s", target_text);
+        attron(COLOR_PAIR(4));
+        rendered = token.end;
+    }
+    if (!found_target && opts && opts->trunk_tune_data_calls == 0 && strstr(text, "Data") != NULL) {
+        attron(COLOR_PAIR(2));
+        printw("%s", text);
+        attron(COLOR_PAIR(4));
+        return;
+    }
+    if (text[rendered] != '\0') {
+        printw("%s", text + rendered);
+    }
+}
+
+static void
 ui_render_active_channel_list(const dsd_opts* opts, const dsd_state* state, unsigned int max_channels) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        return;
+    }
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
     for (unsigned int i = 0; i < max_channels; i++) {
-        if (state->active_channel[i][0] == '\0') {
+        const char* text = recent.entries[i].notice;
+        if (text[0] == '\0') {
             continue;
         }
-        const char* s = state->active_channel[i];
-        if (ui_channel_label_is_locked(opts, state, s)) {
-            attron(COLOR_PAIR(2));
-            printw("%s", s);
-            attron(COLOR_PAIR(4));
-        } else {
-            printw("%s", s);
+        if (recent.entries[i].updated_m_ms != 0U && now_ms >= recent.entries[i].updated_m_ms
+            && now_ms - recent.entries[i].updated_m_ms > DSD_RECENT_ACTIVITY_TTL_MS) {
+            continue;
         }
+        ui_render_recent_activity_entry(opts, state, text);
     }
     if (state->carrier == 1) {
         attron(COLOR_PAIR(3));
@@ -1975,23 +1997,24 @@ ui_render_nxdn_site_line(const dsd_state* state, int idas) {
 
 static void
 ui_render_nxdn_tgt_src_line(const dsd_state* state) {
+    dsd_call_snapshot call;
+    (void)ui_active_call_snapshot(state, 0U, &call);
+    const unsigned long target = call.ota_target_id <= ULONG_MAX ? (unsigned long)call.ota_target_id : 0UL;
+    const unsigned long source = call.ota_source_id <= ULONG_MAX ? (unsigned long)call.ota_source_id : 0UL;
     printw("| ");
-    printw("TGT: [%5d] ", state->nxdn_last_tg);
-    printw("SRC: [%5d] ", state->nxdn_last_rid);
+    printw("TGT: [%5lu] ", target);
+    printw("SRC: [%5lu] ", source);
     printw("Alias: [%s]", state->generic_talker_alias[0]);
     {
         char group_mode[8];
         char group_name[50];
-        if (ui_lookup_group_label(state, (unsigned long)state->nxdn_last_tg, group_mode, sizeof(group_mode), group_name,
-                                  sizeof(group_name))) {
+        if (ui_lookup_group_label(state, target, group_mode, sizeof(group_mode), group_name, sizeof(group_name))) {
             printw("TG: ");
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
             printw("[%s] ", group_mode);
         }
-        if (state->nxdn_last_rid != state->nxdn_last_tg
-            && ui_lookup_group_label(state, (unsigned long)state->nxdn_last_rid, NULL, 0, group_name,
-                                     sizeof(group_name))) {
+        if (source != target && ui_lookup_group_label(state, source, NULL, 0, group_name, sizeof(group_name))) {
             attron(COLOR_PAIR(4));
             printw(" [%s]", group_name);
         }
@@ -2000,7 +2023,10 @@ ui_render_nxdn_tgt_src_line(const dsd_state* state) {
         }
     }
     if (state->carrier == 1) {
-        printw(" %s ", state->nxdn_call_type);
+        const char* kind = call.kind == DSD_CALL_KIND_GROUP_VOICE     ? "Group Call"
+                           : call.kind == DSD_CALL_KIND_PRIVATE_VOICE ? "Private Call"
+                                                                      : "Voice Call";
+        printw(" %s ", kind);
     }
 }
 
@@ -2098,7 +2124,10 @@ ui_render_call_info_dpmr(const dsd_opts* opts, dsd_state* state) {
     //dPMR
     if (DSD_SYNC_IS_DPMR(ncurses_last_synctype)) {
         printw("| DCC: [%i] ", state->dpmr_color_code);
-        printw("TGT: [%s] SRC: [%s] ", state->dpmr_target_id, state->dpmr_caller_id);
+        dsd_call_snapshot call;
+        (void)ui_active_call_snapshot(state, 0U, &call);
+        printw("TGT: [%s] SRC: [%s] ", call.target_text[0] != '\0' ? call.target_text : "unknown",
+               call.source_text[0] != '\0' ? call.source_text : "unknown");
         printw("\n| ");
         if (state->dPMRVoiceFS2Frame.Version[0] == 3) {
             attron(COLOR_PAIR(2));
@@ -2127,7 +2156,6 @@ ui_render_edacs_site_header(const dsd_opts* opts, dsd_state* state) {
         printw("| Monitoring CC - LCN [%02d]\n", state->edacs_cc_lcn);
     } else {
         printw("| Monitoring VC - LCN [%02d]\n", state->edacs_tuned_lcn);
-        edacs_channel_tree[state->edacs_tuned_lcn][5] = time(NULL);
     }
     printw("| SITE [%03lld][%02llX]", state->edacs_site_id, state->edacs_site_id);
     printw((state->ea_mode == 1) ? " Extended Addressing" : " Standard/Networked");
@@ -2135,128 +2163,18 @@ ui_render_edacs_site_header(const dsd_opts* opts, dsd_state* state) {
     printw("\n");
 }
 
-static int
-ui_get_edacs_call_color(const dsd_state* state, int lcn) {
-    if (lcn == state->edacs_cc_lcn) {
-        return 0;
-    }
-    time_t age = time(NULL) - edacs_channel_tree[lcn][5];
-    if (age < 2) {
-        return 3;
-    }
-    if (age < 5) {
-        return 2;
-    }
-    return 0;
-}
-
 static void
-ui_render_edacs_call_flags_ea(unsigned long long flags) {
-    if ((flags & EDACS_IS_TEST_CALL) == 0) {
-        printw(((flags & EDACS_IS_DIGITAL) == 0) ? " [Ana]" : " [Dig]");
-    }
-    if ((flags & EDACS_IS_EMERGENCY) != 0) {
-        printw("[EM]");
-    }
-}
-
-static void
-ui_render_edacs_call_flags_standard(unsigned long long flags) {
-    if ((flags & EDACS_IS_TEST_CALL) == 0) {
-        printw(((flags & EDACS_IS_DIGITAL) == 0) ? " [Ana]" : " [Dig]");
-    }
-    if ((flags & EDACS_IS_AGENCY_CALL) != 0) {
-        printw("[A]");
-    }
-    if ((flags & EDACS_IS_FLEET_CALL) != 0) {
-        printw("[F]");
-    }
-    if ((flags & EDACS_IS_EMERGENCY) != 0) {
-        printw("[EM]");
-    }
-}
-
-static void
-ui_render_edacs_extended_call_body(int lcn, unsigned long long flags) {
-    unsigned long long tgt = edacs_channel_tree[lcn][2];
-    unsigned long long src = edacs_channel_tree[lcn][3];
-
-    if ((flags & EDACS_IS_VOICE) == 0) {
-        printw(" TGT [  DATA  ] SRC [%8lld] Data", src);
-        return;
-    }
-
-    if ((flags & EDACS_IS_GROUP) != 0) {
-        printw(" TGT [%8lld] SRC [%8lld]", tgt, src);
-    } else if ((flags & EDACS_IS_INDIVIDUAL) != 0) {
-        printw(" TGT [%8lld] SRC [%8lld] I-Call", tgt, src);
-    } else if ((flags & EDACS_IS_ALL_CALL) != 0) {
-        printw(" TGT [ SYSTEM ] SRC [%8lld] All-Call", src);
-    } else if ((flags & EDACS_IS_INTERCONNECT) != 0) {
-        printw(" TGT [ SYSTEM ] SRC [%8lld] Interconnect", src);
-    } else if ((flags & EDACS_IS_TEST_CALL) != 0) {
-        printw(" TGT [ SYSTEM ] SRC [ SYSTEM ] Test Call");
-    } else {
-        printw(" Unknown call type");
-    }
-    ui_render_edacs_call_flags_ea(flags);
-}
-
-static void
-ui_render_edacs_standard_voice_body(const dsd_state* state, int lcn, unsigned long long flags, int a, int f, int s) {
-    const int afs_len = getAfsStringLength(state);
-    unsigned long long tgt = edacs_channel_tree[lcn][2];
-    unsigned long long src = edacs_channel_tree[lcn][3];
-
-    if ((flags & EDACS_IS_GROUP) != 0) {
-        char afs_str[8];
-        getAfsString(state, afs_str, a, f, s);
-        printw(" TGT [%6lld][%s] SRC [%5lld]", tgt, afs_str, src);
-    } else if ((flags & EDACS_IS_INDIVIDUAL) != 0) {
-        printw((afs_len == 6) ? " TGT [%6lld][ UNIT ] SRC [%5lld] I-Call" : " TGT [%6lld][  UNIT ] SRC [%5lld] I-Call",
-               tgt, src);
-    } else if ((flags & EDACS_IS_ALL_CALL) != 0) {
-        printw((afs_len == 6) ? " TGT [    SYSTEM    ] SRC [%5lld] All-Call"
-                              : " TGT [     SYSTEM    ] SRC [%5lld] All-Call",
-               src);
-    } else if ((flags & EDACS_IS_INTERCONNECT) != 0) {
-        printw((afs_len == 6) ? " TGT [    SYSTEM    ] SRC [%5lld] Interconnect"
-                              : " TGT [     SYSTEM    ] SRC [%5lld] Interconnect",
-               src);
-    } else if ((flags & EDACS_IS_TEST_CALL) != 0) {
-        printw((afs_len == 6) ? " TGT [    SYSTEM    ] SRC [ SYS ] Test Call"
-                              : " TGT [     SYSTEM    ] SRC [ SYS ] Test Call");
-    } else {
-        printw(" Unknown call type");
-    }
-    ui_render_edacs_call_flags_standard(flags);
-}
-
-static void
-ui_render_edacs_standard_call_body(const dsd_state* state, int lcn, unsigned long long flags, int a, int f, int s) {
-    if ((flags & EDACS_IS_VOICE) != 0) {
-        ui_render_edacs_standard_voice_body(state, lcn, flags, a, f, s);
-        return;
-    }
-    if (getAfsStringLength(state) == 6) {
-        printw(" TGT [     DATA     ] SRC [%5lld] Data", edacs_channel_tree[lcn][3]);
-    } else {
-        printw(" TGT [      DATA     ] SRC [%5lld] Data", edacs_channel_tree[lcn][3]);
-    }
-}
-
-static void
-ui_render_edacs_channel_label(const dsd_state* state, int lcn) {
+ui_render_edacs_channel_label(const dsd_state* state, const dsd_call_observation* observation) {
     char group_mode[8];
     char group_name[50];
     int label_found = 0;
-    if (edacs_channel_tree[lcn][2] != 0) {
-        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[lcn][2], group_mode,
-                                            sizeof(group_mode), group_name, sizeof(group_name));
+    if (observation->ota_target_id != 0U && observation->ota_target_id <= UINT32_MAX) {
+        label_found = ui_lookup_group_label(state, (unsigned long)observation->ota_target_id, group_mode,
+                                            sizeof group_mode, group_name, sizeof group_name);
     }
-    if (!label_found && edacs_channel_tree[lcn][3] != 0) {
-        label_found = ui_lookup_group_label(state, (unsigned long)edacs_channel_tree[lcn][3], group_mode,
-                                            sizeof(group_mode), group_name, sizeof(group_name));
+    if (!label_found && observation->ota_source_id != 0U && observation->ota_source_id <= UINT32_MAX) {
+        label_found = ui_lookup_group_label(state, (unsigned long)observation->ota_source_id, group_mode,
+                                            sizeof group_mode, group_name, sizeof group_name);
     }
     if (label_found) {
         printw(" [%s]", group_name);
@@ -2265,12 +2183,8 @@ ui_render_edacs_channel_label(const dsd_state* state, int lcn) {
 }
 
 static void
-ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn) {
-    int a = (edacs_channel_tree[lcn][2] >> state->edacs_a_shift) & state->edacs_a_mask;
-    int f = (edacs_channel_tree[lcn][2] >> state->edacs_f_shift) & state->edacs_f_mask;
-    int s = edacs_channel_tree[lcn][2] & state->edacs_s_mask;
-    unsigned long long flags = edacs_channel_tree[lcn][4];
-
+ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn,
+                        const dsd_recent_activity_snapshot* recent) {
     printw("| - LCN [%02d][%.06lf] MHz", lcn, (double)state->trunk_lcn_freq[lcn - 1] / 1000000);
     if (lcn == state->edacs_cc_lcn) {
         attron(COLOR_PAIR(1));
@@ -2278,24 +2192,15 @@ ui_render_edacs_lcn_row(const dsd_opts* opts, const dsd_state* state, int lcn) {
         attroff(COLOR_PAIR(1));
     }
 
-    int call_color = ui_get_edacs_call_color(state, lcn);
-    if (call_color == 3) {
-        attron(COLOR_PAIR(3));
-    } else if (call_color == 2) {
-        attron(COLOR_PAIR(2));
-    }
-    if (call_color != 0) {
-        if (state->ea_mode == 1) {
-            ui_render_edacs_extended_call_body(lcn, flags);
-        } else {
-            ui_render_edacs_standard_call_body(state, lcn, flags, a, f, s);
-        }
-        ui_render_edacs_channel_label(state, lcn);
-        if (call_color == 3) {
-            attroff(COLOR_PAIR(3));
-        } else if (call_color == 2) {
-            attroff(COLOR_PAIR(2));
-        }
+    const dsd_recent_activity_entry* entry = recent != NULL ? &recent->entries[lcn] : NULL;
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    if (entry != NULL && entry->notice[0] != '\0'
+        && (entry->updated_m_ms == 0U || now_ms < entry->updated_m_ms
+            || now_ms - entry->updated_m_ms <= DSD_RECENT_ACTIVITY_TTL_MS)) {
+        attron(COLOR_PAIR(4));
+        printw(" ");
+        ui_render_recent_activity_entry(opts, state, entry->notice);
+        ui_render_edacs_channel_label(state, &entry->observation);
     }
 
     if (lcn == state->edacs_tuned_lcn && (opts->trunk_is_tuned == 1)) {
@@ -2313,8 +2218,11 @@ ui_render_call_info_edacs(const dsd_opts* opts, dsd_state* state) {
 
     attroff(COLOR_PAIR(3));
     ui_render_edacs_site_header(opts, state);
+    dsd_recent_activity_snapshot recent;
+    DSD_MEMSET(&recent, 0, sizeof recent);
+    (void)dsd_recent_activity_copy_snapshot(state, &recent);
     for (int i = 1; i <= state->edacs_lcn_count; i++) {
-        ui_render_edacs_lcn_row(opts, state, i);
+        ui_render_edacs_lcn_row(opts, state, i, &recent);
     }
     if (state->carrier == 1) {
         attron(COLOR_PAIR(3));
@@ -2418,10 +2326,10 @@ ui_render_call_info_patches(const dsd_state* state) {
 typedef struct {
     int slot_no;
     int burst;
-    int lasttg;
-    int lastsrc;
-    int p25_call_emergency;
-    int p25_call_priority;
+    int target;
+    int source;
+    int call_emergency;
+    int call_priority;
     int payload_algid;
     int payload_keyid;
     unsigned long long payload_mi_dmr;
@@ -2429,13 +2337,16 @@ typedef struct {
     unsigned int dmr_so;
     unsigned int dmr_fid;
     unsigned long long rc4_key;
-    const char* call_banner;
+    char call_banner[64];
     const char* embedded_gps;
     const char* lrrp_gps;
     const char* talker_alias;
     int aes_loaded;
     unsigned long long aes_a2;
     unsigned long long aes_a4;
+    int canonical_p25;
+    int canonical_active;
+    dsd_call_snapshot call;
 } ui_slot_view;
 
 typedef struct {
@@ -2444,29 +2355,104 @@ typedef struct {
     int show_crypto_status;
 } ui_slot_render_flags;
 
+static void
+ui_fill_slot_decoder_state(const dsd_state* state, int slot_idx, ui_slot_view* slot) {
+    slot->slot_no = slot_idx + 1;
+    if (slot_idx == 0) {
+        slot->burst = state->dmrburstL;
+        slot->payload_algid = state->payload_algid;
+        slot->payload_keyid = state->payload_keyid;
+        slot->payload_mi_dmr = state->payload_mi;
+        slot->payload_mi_p25 = state->payload_miP;
+        slot->dmr_so = state->dmr_so;
+        slot->dmr_fid = state->dmr_fid;
+        slot->rc4_key = state->R;
+    } else {
+        slot->burst = state->dmrburstR;
+        slot->payload_algid = state->payload_algidR;
+        slot->payload_keyid = state->payload_keyidR;
+        slot->payload_mi_dmr = state->payload_miR;
+        slot->payload_mi_p25 = state->payload_miN;
+        slot->dmr_so = state->dmr_soR;
+        slot->dmr_fid = state->dmr_fidR;
+        slot->rc4_key = state->RR;
+    }
+    slot->embedded_gps = state->dmr_embedded_gps[slot_idx];
+    slot->lrrp_gps = state->dmr_lrrp_gps[slot_idx];
+    slot->talker_alias = state->generic_talker_alias[slot_idx];
+    slot->aes_loaded = state->aes_key_loaded[slot_idx];
+    slot->aes_a2 = state->A2[slot_idx];
+    slot->aes_a4 = state->A4[slot_idx];
+}
+
+static int
+ui_call_snapshot_has_p25_context(const dsd_state* state, const dsd_call_snapshot* call) {
+    return DSD_SYNC_IS_P25(state->synctype) || DSD_SYNC_IS_P25(state->lastsynctype)
+           || (call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call->protocol));
+}
+
+static uint32_t
+ui_call_snapshot_target(const dsd_call_snapshot* call) {
+    if (call->ota_target_id != 0U) {
+        return call->ota_target_id;
+    }
+    if (call->policy_target_id != 0U) {
+        return call->policy_target_id;
+    }
+    return call->ota_target_id;
+}
+
+static int
+ui_canonical_p25_burst(const dsd_call_snapshot* call, int legacy_burst) {
+    if (ui_burst_is_active_p25_call(legacy_burst)) {
+        return legacy_burst;
+    }
+    if (call->kind == DSD_CALL_KIND_DATA) {
+        return 6;
+    }
+    return DSD_SYNC_IS_P25P2(call->protocol) ? 21 : 26;
+}
+
+static void
+ui_apply_canonical_call_slot(ui_slot_view* slot, const dsd_call_snapshot* call) {
+    slot->call = *call;
+    slot->canonical_active = 1;
+    slot->canonical_p25 = DSD_SYNC_IS_P25(call->protocol);
+    if (slot->canonical_p25) {
+        slot->burst = ui_canonical_p25_burst(call, slot->burst);
+    }
+    slot->target = call->ota_target_id <= INT_MAX ? (int)ui_call_snapshot_target(call) : 0;
+    slot->source = call->ota_source_id <= INT_MAX ? (int)call->ota_source_id : 0;
+    slot->call_emergency = call->emergency;
+    slot->call_priority = call->priority;
+    slot->payload_algid = call->algid;
+    slot->payload_keyid = call->kid;
+    slot->payload_mi_p25 = call->mi;
+    const char* kind = "Voice";
+    if (call->kind == DSD_CALL_KIND_GROUP_VOICE) {
+        kind = "Group";
+    } else if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        kind = "Private";
+    } else if (call->kind == DSD_CALL_KIND_DATA) {
+        kind = "Data";
+    }
+    DSD_SNPRINTF(slot->call_banner, sizeof slot->call_banner, " %s%s%s", kind, call->emergency ? " Emergency" : "",
+                 call->crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? " Encrypted" : "");
+}
+
 static ui_slot_view
 ui_build_slot_view(const dsd_state* state, int slot_idx) {
     ui_slot_view slot;
-    slot.slot_no = slot_idx + 1;
-    slot.burst = (slot_idx == 0) ? state->dmrburstL : state->dmrburstR;
-    slot.lasttg = (slot_idx == 0) ? state->lasttg : state->lasttgR;
-    slot.lastsrc = (slot_idx == 0) ? state->lastsrc : state->lastsrcR;
-    slot.p25_call_emergency = state->p25_call_emergency[slot_idx];
-    slot.p25_call_priority = state->p25_call_priority[slot_idx];
-    slot.payload_algid = (slot_idx == 0) ? state->payload_algid : state->payload_algidR;
-    slot.payload_keyid = (slot_idx == 0) ? state->payload_keyid : state->payload_keyidR;
-    slot.payload_mi_dmr = (slot_idx == 0) ? state->payload_mi : state->payload_miR;
-    slot.payload_mi_p25 = (slot_idx == 0) ? state->payload_miP : state->payload_miN;
-    slot.dmr_so = (slot_idx == 0) ? state->dmr_so : state->dmr_soR;
-    slot.dmr_fid = (slot_idx == 0) ? state->dmr_fid : state->dmr_fidR;
-    slot.rc4_key = (slot_idx == 0) ? state->R : state->RR;
-    slot.call_banner = state->call_string[slot_idx];
-    slot.embedded_gps = state->dmr_embedded_gps[slot_idx];
-    slot.lrrp_gps = state->dmr_lrrp_gps[slot_idx];
-    slot.talker_alias = state->generic_talker_alias[slot_idx];
-    slot.aes_loaded = state->aes_key_loaded[slot_idx];
-    slot.aes_a2 = state->A2[slot_idx];
-    slot.aes_a4 = state->A4[slot_idx];
+    DSD_MEMSET(&slot, 0, sizeof(slot));
+    ui_fill_slot_decoder_state(state, slot_idx, &slot);
+    dsd_call_state_snapshot calls;
+    if (dsd_call_state_copy_snapshot(state, &calls) > 0) {
+        const dsd_call_snapshot* call = &calls.slots[slot_idx];
+        slot.call = *call;
+        if (call->phase == DSD_CALL_PHASE_ACTIVE) {
+            ui_apply_canonical_call_slot(&slot, call);
+        }
+    }
     return slot;
 }
 
@@ -2507,6 +2493,15 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     }
 }
 
+static unsigned long
+ui_active_call_source(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    if (!ui_active_call_snapshot(state, slot, &call) || call.ota_source_id > ULONG_MAX) {
+        return 0UL;
+    }
+    return (unsigned long)call.ota_source_id;
+}
+
 static void
 ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
     char callsign[7] = {0};
@@ -2522,7 +2517,7 @@ ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
         printw("FREQ: %.06lf MHz", (double)f / 1000000);
     }
-    ui_render_p25_talker_alias(state, (unsigned long)state->lastsrc, 0);
+    ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
 }
 
 static void
@@ -2557,8 +2552,8 @@ ui_render_p25_dmr_header_p25p2(const dsd_opts* opts, dsd_state* state) {
     }
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
     ui_render_p25p2_parameter_status(state);
-    ui_render_p25_talker_alias(state, (unsigned long)state->lastsrc, 0);
-    ui_render_p25_talker_alias(state, (unsigned long)state->lastsrcR, 1);
+    ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
+    ui_render_p25_talker_alias(state, ui_active_call_source(state, 1U), 1);
 }
 
 static void
@@ -2575,30 +2570,41 @@ ui_render_p25_dmr_header(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+static int
+ui_slot_has_colored_ids(const dsd_state* state, const ui_slot_view* slot) {
+    return state->carrier == 1 && slot->target > 0 && slot->source > 0;
+}
+
+static void
+ui_set_slot_render_flags(const dsd_state* state, const ui_slot_view* slot, ui_slot_render_flags* flags) {
+    const int canonical_p25_context = ui_call_snapshot_has_p25_context(state, &slot->call) && slot->burst != 25;
+    flags->show_ids = canonical_p25_context ? slot->canonical_p25 : slot->canonical_active;
+    flags->show_p25_vxtra = slot->canonical_p25 || ui_burst_has_p25_crypto_metadata(slot->burst);
+    flags->show_crypto_status = slot->canonical_p25 || slot->burst == 16 || flags->show_p25_vxtra;
+}
+
 static void
 ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_slot_render_flags* flags) {
     printw("| SLOT %d - ", slot->slot_no);
-    if (slot->burst < 16 && state->carrier == 1 && slot->lasttg > 0 && slot->lastsrc > 0) {
+    const int colored_ids = ui_slot_has_colored_ids(state, slot);
+    if (slot->burst < 16 && colored_ids) {
         attron(COLOR_PAIR(2));
     }
 
-    flags->show_ids = ui_burst_is_active_call(slot->burst);
-    flags->show_p25_vxtra = ui_burst_has_p25_crypto_metadata(slot->burst);
-    flags->show_crypto_status = slot->burst == 16 || flags->show_p25_vxtra;
-
+    ui_set_slot_render_flags(state, slot, flags);
     if (flags->show_ids) {
-        printw("TGT: [%8i] SRC: [%8i] ", slot->lasttg, slot->lastsrc);
-        if (slot->p25_call_emergency) {
+        printw("TGT: [%8i] SRC: [%8i] ", slot->target, slot->source);
+        if (slot->call_emergency) {
             printw("[EM] ");
         }
-        if (slot->p25_call_priority > 0) {
-            printw("[PR:%d] ", slot->p25_call_priority);
+        if (slot->call_priority > 0) {
+            printw("[PR:%d] ", slot->call_priority);
         }
     } else {
         printw("TGT: [        ] SRC: [        ] ");
     }
 
-    if (slot->burst != 16 && state->carrier == 1 && slot->lasttg > 0 && slot->lastsrc > 0) {
+    if (slot->burst != 16 && colored_ids) {
         attroff(COLOR_PAIR(2));
         attron(COLOR_PAIR(3));
     }
@@ -2743,27 +2749,37 @@ ui_render_slot_named_crypto_details(const ui_slot_view* slot, int show_crypto_st
     (void)ui_render_slot_named_crypto_vendor(slot, show_keys);
 }
 
-static void
-ui_render_slot_vxtra_line(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot,
-                          const ui_slot_render_flags* flags) {
-    printw("| V XTRA | ");
+static int
+ui_slot_has_basic_privacy(const ui_slot_view* slot) {
+    return slot->burst == 16 && slot->payload_algid == 0 && (slot->dmr_so & 0x40);
+}
 
-    if (slot->burst == 16 && slot->payload_algid == 0 && (slot->dmr_so & 0x40)) {
+static int
+ui_slot_has_motorola_basic_privacy(const dsd_state* state, const ui_slot_view* slot) {
+    return ui_slot_has_basic_privacy(slot) && state->K > 0 && slot->dmr_fid == 0x10;
+}
+
+static int
+ui_slot_has_hytera_basic_privacy(const dsd_state* state, const ui_slot_view* slot) {
+    return ui_slot_has_basic_privacy(slot) && state->H > 0 && slot->dmr_fid == 0x68;
+}
+
+static void
+ui_render_slot_basic_privacy(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot) {
+    if (ui_slot_has_basic_privacy(slot)) {
         attron(COLOR_PAIR(5));
         printw(" **BP** ");
         attroff(COLOR_PAIR(5));
         attron(COLOR_PAIR(3));
     }
-    if (slot->burst == 16 && slot->payload_algid == 0 && state->K > 0 && slot->dmr_fid == 0x10
-        && (slot->dmr_so & 0x40)) {
+    if (ui_slot_has_motorola_basic_privacy(state, slot)) {
         attron(COLOR_PAIR(1));
         char key_text[16];
         printw("BP Key: %s ", dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->K, 3U));
         attroff(COLOR_PAIR(1));
         attron(COLOR_PAIR(3));
     }
-    if (slot->burst == 16 && slot->payload_algid == 0 && state->H > 0 && slot->dmr_fid == 0x68
-        && (slot->dmr_so & 0x40)) {
+    if (ui_slot_has_hytera_basic_privacy(state, slot)) {
         attron(COLOR_PAIR(1));
         char key_text[17];
         printw("Hytera BP Key: %s ",
@@ -2771,7 +2787,13 @@ ui_render_slot_vxtra_line(const dsd_opts* opts, const dsd_state* state, const ui
         attroff(COLOR_PAIR(1));
         attron(COLOR_PAIR(3));
     }
+}
 
+static void
+ui_render_slot_vxtra_line(const dsd_opts* opts, const dsd_state* state, const ui_slot_view* slot,
+                          const ui_slot_render_flags* flags) {
+    printw("| V XTRA | ");
+    ui_render_slot_basic_privacy(opts, state, slot);
     ui_render_slot_p25_dmr_alg_details(slot, flags->show_p25_vxtra);
     ui_render_slot_named_crypto_details(slot, flags->show_crypto_status, opts->show_keys);
     printw("\n");
@@ -2793,7 +2815,7 @@ ui_render_slot_group_label(const dsd_state* state, const ui_slot_view* slot, int
 
     char group_mode[8];
     char group_name[50];
-    if (ui_lookup_group_label(state, (unsigned long)slot->lasttg, group_mode, sizeof(group_mode), group_name,
+    if (ui_lookup_group_label(state, (unsigned long)slot->target, group_mode, sizeof(group_mode), group_name,
                               sizeof(group_name))) {
         attron(COLOR_PAIR(4));
         printw(" [%s]", group_name);
@@ -2852,7 +2874,20 @@ ui_render_p25_dmr_tuned_freq_line(const dsd_opts* opts, const dsd_state* state) 
 
     printw("|        | ");
     if (opts->trunk_is_tuned == 1) {
-        long int vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
+        long int vc = 0;
+        dsd_call_state_snapshot calls;
+        if (dsd_call_state_copy_snapshot(state, &calls) > 0) {
+            for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+                if (calls.slots[slot].phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(calls.slots[slot].protocol)
+                    && calls.slots[slot].frequency_hz > 0) {
+                    vc = (long int)calls.slots[slot].frequency_hz;
+                    break;
+                }
+            }
+        }
+        if (vc == 0) {
+            vc = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
+        }
         if (vc == 0) {
             vc = ui_guess_active_vc_freq(state);
         }

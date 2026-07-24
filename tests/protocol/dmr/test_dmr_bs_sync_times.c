@@ -306,16 +306,10 @@ dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* sta
 }
 
 void
-watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     (void)opts;
     (void)state;
     g_history_calls[slot & 1U]++;
-}
-
-void
-watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
-    (void)opts;
-    (void)state;
     g_current_calls[slot & 1U]++;
 }
 

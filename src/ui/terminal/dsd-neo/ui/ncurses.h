@@ -28,9 +28,6 @@ void dsd_terminal_close(void);
 
 uint8_t dsd_terminal_handle_input(dsd_opts* opts, dsd_state* state, int c);
 
-/* Shared EDACS channel occupancy map used across ncurses UI modules. */
-extern unsigned long long int edacs_channel_tree[33][6];
-
 #ifdef __cplusplus
 }
 #endif
