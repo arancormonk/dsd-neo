@@ -442,6 +442,18 @@ test_dmr_mono_override_terminal_reporting(void) {
     ui_render_audio_decode_section(&opts, &state, 0);
     assert(strstr(g_printw_capture, "Slot 2 (2)") == NULL);
 
+    state.dmr_mono_slot = 1;
+    state.errs = 0x01;
+    state.errs2 = 0x02;
+    state.errsR = 0x0A;
+    state.errs2R = 0x0B;
+    opts.slot1_on = 1;
+    opts.slot2_on = 0;
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("[A][B] Off");
+    assert(strstr(g_printw_capture, "[1][2] On") == NULL);
+
     opts.frame_p25p2 = 1;
     ncurses_last_synctype = DSD_SYNC_P25P2_POS;
     reset_printw_capture();

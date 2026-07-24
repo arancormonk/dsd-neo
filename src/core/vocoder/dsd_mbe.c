@@ -1663,10 +1663,17 @@ static int
 mbe_post_allow_mono_wav(const dsd_opts* opts, const dsd_state* state) {
     const int slot = (state->currentslot == 1) ? 1 : 0;
     const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
-    if ((dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, slot)) || (!dmr_mono_active && slot != 0)
-        || opts->static_wav_file != 0 || (slot == 0 && opts->wav_out_f == NULL)
-        || (slot == 1 && opts->wav_out_fR == NULL)
-        || (mbe_post_stereo_active(opts, state) && !mbe_post_dmr_mono_active(opts, state))) {
+    if (opts->static_wav_file != 0) {
+        return 0;
+    }
+    if (dmr_mono_active) {
+        if (!mbe_dmr_output_slot_enabled(opts, state, slot)) {
+            return 0;
+        }
+    } else if (slot != 0 || mbe_post_stereo_active(opts, state)) {
+        return 0;
+    }
+    if ((slot == 0 ? opts->wav_out_f : opts->wav_out_fR) == NULL) {
         return 0;
     }
     int allow_wav = 0;

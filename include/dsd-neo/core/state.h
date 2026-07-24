@@ -634,7 +634,7 @@ struct dsd_state {
     int dpmr_color_code;
 
     short int dmr_stereo;    //need state variable for upsample function
-    short int dmr_mono_slot; //mono output slot: 0=TS1/left, 1=TS2/right
+    short int dmr_mono_slot; //mono output slot: -1=unknown, 0=TS1/left, 1=TS2/right
     short int dmr_ms_mode;
     unsigned int dmrburstL;
     unsigned int dmrburstR;

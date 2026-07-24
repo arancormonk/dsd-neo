@@ -403,18 +403,18 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
         state->dmrburstL = 16;
         vc = ctx->vc1;
         DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
+        dmr_sm_emit_voice_sync(opts, state, 0);
         if (dmr_bs_output_slot_enabled(opts, state, 0) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
-        dmr_sm_emit_voice_sync(opts, state, 0);
     } else {
         state->dmrburstR = 16;
         vc = ctx->vc2;
         DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
+        dmr_sm_emit_voice_sync(opts, state, 1);
         if (dmr_bs_output_slot_enabled(opts, state, 1) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
             openMbeOutFileR(opts, state);
         }
-        dmr_sm_emit_voice_sync(opts, state, 1);
     }
 
     if (opts->inverted_dmr == 0) {

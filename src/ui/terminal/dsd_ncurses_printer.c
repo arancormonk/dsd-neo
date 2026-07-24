@@ -1034,25 +1034,29 @@ ui_render_audio_decode_levels(const dsd_opts* opts, const dsd_state* state, int 
 }
 
 static void
-ui_render_voice_error_single_slot(const dsd_opts* opts, const dsd_state* state, int is_p25_active) {
+ui_render_voice_error_single_slot(const dsd_opts* opts, const dsd_state* state, int is_p25_active, int slot) {
+    const int errs = slot == 1 ? state->errsR : state->errs;
+    const int errs2 = slot == 1 ? state->errs2R : state->errs2;
+    const int slot_on = slot == 1 ? opts->slot2_on : opts->slot1_on;
+
     if (!is_p25_active) {
         ui_print_label_pad("Voice Error");
-        printw("[%X][%X]", state->errs & 0xF, state->errs2 & 0xF);
+        printw("[%X][%X]", errs & 0xF, errs2 & 0xF);
         double avgv = 0.0;
         if (compute_p25p1_voice_avg_err(state, &avgv)) {
             printw(" Avg:%4.1f%%", avgv);
         }
         /* Keep slot toggle state at the end, as before */
-        if (opts->slot1_on == 0) {
+        if (slot_on == 0) {
             printw(" Off");
         }
-        if (opts->slot1_on == 1) {
+        if (slot_on == 1) {
             printw(" On");
         }
         printw("\n");
     } else {
         /* P25 active: show only slot toggle state, no error counters */
-        ui_print_kv_line("Slot 1 (1)", "[%s]", (opts->slot1_on == 1) ? "On" : "Off");
+        ui_print_kv_line(slot == 1 ? "Slot 2 (2)" : "Slot 1 (1)", "[%s]", slot_on == 1 ? "On" : "Off");
     }
 }
 
@@ -1114,7 +1118,8 @@ ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level
     const int dmr_mono_override_active = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(ncurses_last_synctype);
 
     if (opts->dmr_stereo == 0 || dmr_mono_override_active) {
-        ui_render_voice_error_single_slot(opts, state, is_p25_active);
+        const int mono_slot = dmr_mono_override_active && state->dmr_mono_slot == 1 ? 1 : 0;
+        ui_render_voice_error_single_slot(opts, state, is_p25_active, mono_slot);
     } else {
         ui_render_voice_error_dual_slot(opts, state, is_p25_active);
     }
