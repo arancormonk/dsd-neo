@@ -438,7 +438,8 @@ jobs:
 
       - name: Install Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
-        run: python -m pip install --require-hashes -r .github/requirements/semgrep.txt
+        # Semgrep currently pins a vulnerable MCP SDK release. The hashed lock overrides that pin with the patched SDK.
+        run: python -m pip install --no-deps --require-hashes -r .github/requirements/semgrep.txt
 
       - name: Run Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'

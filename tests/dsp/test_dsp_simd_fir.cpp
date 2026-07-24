@@ -468,8 +468,7 @@ run_direct_fixed_hb_case(const char* backend, complex_hb_backend_fn fn, const fl
                     tap_name, TapsLen, ch_len);
         return 1;
     }
-    // nosemgrep: dsd-neo.no-floating-point-equality-in-tests -- Exact sentinel detects any output write.
-    if (len_simd == 0 && out_simd[0] != kOutputSentinel) {
+    if (len_simd == 0 && !arrays_close(out_simd, &kOutputSentinel, 1, 0.0f)) {
         DSD_FPRINTF(stderr, "  FAIL: %s %s %d-tap zero-output block mutated output\n", backend,
                     fixed_buffer_mode_name(mode), TapsLen);
         return 1;
@@ -639,9 +638,9 @@ test_direct_hb_cascade(const char* backend, complex_hb_backend_fn fn) {
                                                           hist_i_ref[stage].data(), hist_q_ref[stage].data(),
                                                           tap_sets[stage], taps_len);
         bool histories_exact = true;
-        const int input_pairs = (int)current_simd.size() >> 1;
+        const int stage_input_pairs = (int)current_simd.size() >> 1;
         for (int k = 0; k < hist_len; k++) {
-            const int rel = input_pairs - hist_len + k;
+            const int rel = stage_input_pairs - hist_len + k;
             histories_exact = histories_exact && hist_i_simd[stage][(size_t)k] == current_simd[(size_t)rel * 2U]
                               && hist_q_simd[stage][(size_t)k] == current_simd[(size_t)rel * 2U + 1U]
                               && hist_i_ref[stage][(size_t)k] == current_ref[(size_t)rel * 2U]

@@ -673,7 +673,9 @@ dmr_flco_print_regular_header(dmr_flco_ctx* ctx) {
 static void
 dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
     if (ctx->fid == 0x68) {
-    } else if (ctx->flco == 0x4 || ctx->flco == 0x5 || ctx->flco == 0x7 || ctx->flco == 0x23) {
+        return;
+    }
+    if (ctx->flco == 0x4 || ctx->flco == 0x5 || ctx->flco == 0x7 || ctx->flco == 0x23) {
         DSD_FPRINTF(stderr, "Cap+ ");
         if (ctx->flco == 0x4) {
             DSD_FPRINTF(stderr, "Group ");

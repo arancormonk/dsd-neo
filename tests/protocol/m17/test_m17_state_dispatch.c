@@ -1406,7 +1406,7 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     uint8_t mpkt_frame[80];
     uint8_t app[2U + M17_META_BYTES];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
-    Event_History_I event_history[2];
+    static Event_History_I event_history[2];
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(app, 0, sizeof(app));
@@ -1533,7 +1533,7 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     dsd_state* state = &g_state;
     uint8_t app[2U + M17_META_BYTES];
     uint8_t expected_text[M17_TEXT_BLOCK_BYTES];
-    Event_History_I event_history[2];
+    static Event_History_I event_history[2];
     static const char text[M17_TEXT_BLOCK_BYTES] = {'R', 'F', '-', 'P', 'K', 'T', '-', 'O', 'K', 0, 0, 0, 0};
     dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -2031,7 +2031,7 @@ test_packet_encoder_monitors_lsf_with_canonical_viterbi(void) {
     dsd_state* state = &g_state;
     uint8_t expected_lsf[TEST_M17_LSF_BITS];
     uint8_t expected_packed[M17_LSF_BYTES];
-    Event_History_I event_history[2];
+    static Event_History_I event_history[2];
     dsd_state_ext_free_all(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
