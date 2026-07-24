@@ -415,6 +415,35 @@ test_input_source_helpers(void) {
 }
 
 static void
+test_dmr_mono_override_terminal_reporting(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.frame_dmr = 1;
+    opts.dmr_stereo = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "/tmp/mbe");
+    ncurses_last_synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    reset_printw_capture();
+    ui_render_file_output_status(&opts);
+    assert(strstr(g_printw_capture, "Writing MBE data files") == NULL);
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("Slot 2 (2)");
+
+    opts.dmr_mono = 1;
+    reset_printw_capture();
+    ui_render_file_output_status(&opts);
+    assert_capture_contains("| Writing MBE data files to directory /tmp/mbe");
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert(strstr(g_printw_capture, "Slot 2 (2)") == NULL);
+}
+
+static void
 test_basic_input_source_rendering(void) {
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1074,6 +1103,7 @@ test_live_protocol_panels_ignore_ended_call_identity(void) {
 int
 main(void) {
     test_input_source_helpers();
+    test_dmr_mono_override_terminal_reporting();
     test_basic_input_source_rendering();
     test_rtl_and_soapy_input_source_rendering();
     test_rtl_auto_ppm_status_rendering();

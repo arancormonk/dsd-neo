@@ -414,6 +414,20 @@ test_compatibility_short_options_use_current_facilities(void) {
         test_rc = 1;
     }
 
+    char* argv_nm_fs[] = {arg0, arg_nm, arg_fs, NULL};
+    exit_rc = -1;
+    rc = dsd_parse_args(3, argv_nm_fs, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || opts->frame_dmr != 1 || opts->dmr_mono != 1 || opts->dmr_stereo != 1
+        || state->dmr_stereo != 1 || opts->pulse_digi_rate_out != 8000 || opts->pulse_digi_out_channels != 2
+        || strcmp(opts->output_name, "DMR") != 0) {
+        DSD_FPRINTF(stderr,
+                    "expected -nm -fs to preserve the single-slot DMR override, got rc=%d frame=%d mono=%d "
+                    "stereo=%d state_stereo=%d rate=%d channels=%d output=%s\n",
+                    rc, opts->frame_dmr, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo, opts->pulse_digi_rate_out,
+                    opts->pulse_digi_out_channels, opts->output_name);
+        test_rc = 1;
+    }
+
     char arg_fa[] = "-fa";
     char* argv_fa_nm[] = {arg0, arg_fa, arg_nm, NULL};
     exit_rc = -1;
@@ -428,6 +442,19 @@ test_compatibility_short_options_use_current_facilities(void) {
         test_rc = 1;
     }
 
+    char* argv_nm_fa[] = {arg0, arg_nm, arg_fa, NULL};
+    exit_rc = -1;
+    rc = dsd_parse_args(3, argv_nm_fa, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || opts->frame_dmr != 1 || opts->frame_p25p2 != 1 || opts->dmr_mono != 1
+        || opts->dmr_stereo != 1 || state->dmr_stereo != 1 || opts->pulse_digi_out_channels != 2) {
+        DSD_FPRINTF(stderr,
+                    "expected -nm -fa to preserve shared TDMA routing, got rc=%d dmr=%d p25p2=%d mono=%d stereo=%d "
+                    "state_stereo=%d channels=%d\n",
+                    rc, opts->frame_dmr, opts->frame_p25p2, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo,
+                    opts->pulse_digi_out_channels);
+        test_rc = 1;
+    }
+
     char arg_ft[] = "-ft";
     char* argv_ft_nm[] = {arg0, arg_ft, arg_nm, NULL};
     exit_rc = -1;
@@ -436,6 +463,19 @@ test_compatibility_short_options_use_current_facilities(void) {
         || opts->dmr_stereo != 1 || state->dmr_stereo != 1 || opts->pulse_digi_out_channels != 2) {
         DSD_FPRINTF(stderr,
                     "expected -ft -nm to preserve shared TDMA routing, got rc=%d dmr=%d p25p2=%d mono=%d stereo=%d "
+                    "state_stereo=%d channels=%d\n",
+                    rc, opts->frame_dmr, opts->frame_p25p2, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo,
+                    opts->pulse_digi_out_channels);
+        test_rc = 1;
+    }
+
+    char* argv_nm_ft[] = {arg0, arg_nm, arg_ft, NULL};
+    exit_rc = -1;
+    rc = dsd_parse_args(3, argv_nm_ft, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE || opts->frame_dmr != 1 || opts->frame_p25p2 != 1 || opts->dmr_mono != 1
+        || opts->dmr_stereo != 1 || state->dmr_stereo != 1 || opts->pulse_digi_out_channels != 2) {
+        DSD_FPRINTF(stderr,
+                    "expected -nm -ft to preserve shared TDMA routing, got rc=%d dmr=%d p25p2=%d mono=%d stereo=%d "
                     "state_stereo=%d channels=%d\n",
                     rc, opts->frame_dmr, opts->frame_p25p2, opts->dmr_mono, opts->dmr_stereo, state->dmr_stereo,
                     opts->pulse_digi_out_channels);

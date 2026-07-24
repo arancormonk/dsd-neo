@@ -555,7 +555,8 @@ ui_render_file_output_status(const dsd_opts* opts) {
         printw("| M17 UDP IP Frame Output: %s:%d \n", opts->m17_hostname, opts->m17_portno);
     }
 
-    if (opts->mbe_out_dir[0] != 0 && opts->dmr_stereo == 0) {
+    const int dmr_mono_override_active = opts->frame_dmr == 1 && opts->dmr_mono == 1;
+    if (opts->mbe_out_dir[0] != 0 && (opts->dmr_stereo == 0 || dmr_mono_override_active)) {
         printw("| Writing MBE data files to directory %s\n", opts->mbe_out_dir);
     }
 
@@ -1110,12 +1111,11 @@ ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level
     int is_p25p1_active = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
     int is_p25p2_active = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     int is_p25_active = is_p25p1_active || is_p25p2_active;
+    const int dmr_mono_override_active = opts->frame_dmr == 1 && opts->dmr_mono == 1;
 
-    if (opts->dmr_stereo == 0) {
+    if (opts->dmr_stereo == 0 || dmr_mono_override_active) {
         ui_render_voice_error_single_slot(opts, state, is_p25_active);
-    }
-
-    if (opts->dmr_stereo == 1) {
+    } else {
         ui_render_voice_error_dual_slot(opts, state, is_p25_active);
     }
     ui_print_hr();

@@ -1942,6 +1942,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }                                                                                                              \
         case 'n': {                                                                                                    \
             if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
+                cli_dmr_mono_override_seen = 1;                                                                        \
                 opts->dmr_mono = 1;                                                                                    \
                 LOG_INFO("NOTICE: DMR single-slot mono decoder enabled.\n");                                           \
                 break;                                                                                                 \
@@ -2568,11 +2569,15 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     dsdneoUserDecodeMode cli_decode_timing_mode = DSDCFG_MODE_AUTO;
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
+    int cli_dmr_mono_override_seen = 0;
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:O^Nj"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
+    }
+    if (cli_dmr_mono_override_seen) {
+        opts->dmr_mono = 1;
     }
     if (cli_decode_timing_seen && dsd_opts_source_uses_effective_input_rate(opts)) {
         int timing_rate_hz = dsd_opts_effective_input_rate(opts);
