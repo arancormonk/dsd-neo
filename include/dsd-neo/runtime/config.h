@@ -568,6 +568,8 @@ typedef struct dsdneoUserConfig {
     /* [mode] */
     int has_mode;
     dsdneoUserDecodeMode decode_mode;
+    int has_dmr_mono;
+    int dmr_mono;
     int has_demod;
     dsdneoUserDemodPath demod_path;
 

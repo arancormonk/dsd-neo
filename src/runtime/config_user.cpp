@@ -888,6 +888,9 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (decode_name) {
         DSD_FPRINTF(out, "decode = \"%s\"\n", decode_name);
     }
+    if (cfg->has_dmr_mono) {
+        DSD_FPRINTF(out, "dmr_mono = %s\n", ini_bool(cfg->dmr_mono));
+    }
     if (cfg->has_demod) {
         switch (cfg->demod_path) {
             case DSDCFG_DEMOD_AUTO: DSD_FPRINTF(out, "demod = \"auto\"\n"); break;
@@ -1191,6 +1194,9 @@ static void
 apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
     if (cfg->has_mode) {
         (void)dsd_apply_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
+    }
+    if (cfg->has_dmr_mono) {
+        opts->dmr_mono = cfg->dmr_mono ? 1 : 0;
     }
 }
 
@@ -1507,6 +1513,8 @@ static void
 snapshot_mode_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_mode = 1;
     cfg->decode_mode = dsd_infer_decode_mode_preset(opts);
+    cfg->has_dmr_mono = 1;
+    cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
 }
 
 static void

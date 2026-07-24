@@ -57,6 +57,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"mode", "decode", "Decode mode preset", "auto",
      "auto|p25p1|p25p2|dmr|dmr_mono|nxdn48|nxdn96|x2tdma|ysf|dstar|edacs_pv|dpmr|m17|tdma|analog", DSDCFG_TYPE_ENUM, 0,
      0},
+    {"mode", "dmr_mono", "Enable the DMR single-slot mono decoder without changing the decode preset", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "demod", "Demodulator path (auto/C4FM/GFSK/QPSK)", "auto", "auto|c4fm|gfsk|qpsk", DSDCFG_TYPE_ENUM, 0, 0},
 
     /* [trunking] section */

@@ -377,6 +377,12 @@ apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* va
         if (user_config_parse_decode_mode_value(val, &mode) == 0) {
             cfg->decode_mode = mode;
         }
+    } else if (strcmp(key_lc, "dmr_mono") == 0) {
+        int enabled = 0;
+        cfg->has_dmr_mono = 1;
+        if (user_config_parse_bool_value(val, &enabled) == 0) {
+            cfg->dmr_mono = enabled;
+        }
     } else if (strcmp(key_lc, "demod") == 0) {
         dsdneoUserDemodPath path = DSDCFG_DEMOD_UNSET;
         cfg->has_demod = 1;

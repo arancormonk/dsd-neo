@@ -80,6 +80,7 @@ allow_list = true
 
 [mode]
 decode = "auto"             # auto / p25p1 / p25p2 / dmr / nxdn48 / ...
+dmr_mono = false             # true enables the single-slot DMR decoder
 ```
 
 ---
@@ -316,6 +317,7 @@ small subset is exposed as config keys for convenience (for example
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `decode` | ENUM | Decode mode preset | `auto` |
+| `dmr_mono` | BOOL | Enable the single-slot DMR decoder without changing `decode` | `false` |
 | `demod` | ENUM | Demodulator path | `auto` |
 
 **[trunking] section:**
@@ -511,6 +513,11 @@ Supported values: `auto`, `p25p1`, `p25p2`, `dmr`, `dmr_mono`, `nxdn48`,
 Persisted compatibility values `p25p1_only`, `p25p2_only`, `edacs`,
 `provoice`, and `analog_monitor` are translated to their canonical modes when
 read. Generated configurations always use the canonical values above.
+
+The independent `dmr_mono = true` key preserves the CLI `-nm` override without
+changing the selected frame mask. This allows shared presets such as `auto` and
+`tdma` to use the single-slot DMR decoder while retaining their non-DMR
+candidates.
 
 `decode = "auto"` preserves the protocol candidates already established by
 initialization and any active configuration/profile overlay; it does not replace
