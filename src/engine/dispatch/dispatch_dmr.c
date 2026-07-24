@@ -74,6 +74,7 @@ dmr_bootstrap_mono(dsd_opts* opts, dsd_state* state) {
         state->dmr_stereo = 0;
         return;
     }
+    state->dmr_mono_slot = 0;
     state->dmr_stereo = 0;
     dmr_bootstrap_ms_if_enabled(opts, state);
 }

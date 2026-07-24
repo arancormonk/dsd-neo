@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
@@ -88,6 +89,14 @@ typedef struct {
     uint8_t internalslot;
     char timestr[9];
 } dmr_bs_bootstrap_ctx;
+
+static int
+dmr_bs_output_slot_enabled(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (opts->dmr_mono != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
+        return 1;
+    }
+    return state->dmr_mono_slot == slot;
+}
 
 /*
  * Mark dmrBS helper roots used by the public decoder entrypoint. CodeQL's
@@ -394,7 +403,7 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
         state->dmrburstL = 16;
         vc = ctx->vc1;
         DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
+        if (dmr_bs_output_slot_enabled(opts, state, 0) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
         dmr_sm_emit_voice_sync(opts, state, 0);
@@ -402,7 +411,7 @@ prepare_dmr_bs_voice_slot(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ct
         state->dmrburstR = 16;
         vc = ctx->vc2;
         DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
+        if (dmr_bs_output_slot_enabled(opts, state, 1) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
             openMbeOutFileR(opts, state);
         }
         dmr_sm_emit_voice_sync(opts, state, 1);
@@ -750,12 +759,12 @@ prepare_dmr_bs_bootstrap_slot_output(dsd_opts* opts, dsd_state* state, uint8_t i
                                      char polarity[3]) {
     if (internalslot == 0) {
         DSD_SNPRINTF(light, 18, "%s", " [SLOT1]  slot2  ");
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
+        if (dmr_bs_output_slot_enabled(opts, state, 0) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
     } else {
         DSD_SNPRINTF(light, 18, "%s", "  slot1  [SLOT2] ");
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
+        if (dmr_bs_output_slot_enabled(opts, state, 1) && (opts->mbe_out_dir[0] != 0) && (opts->mbe_out_fR == NULL)) {
             openMbeOutFileR(opts, state);
         }
     }

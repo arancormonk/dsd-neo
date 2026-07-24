@@ -580,6 +580,16 @@ test_dmr_slot_mute_and_duplication_helpers(void) {
     rc |= expect_int("dmr mono left remains active", encL, 0);
     rc |= expect_int("dmr mono inactive right ignores key unmute", encR, 1);
 
+    state.dmr_stereo = 1;
+    state.dmr_mono_slot = 1;
+    state.dmr_encL = 0;
+    state.dmr_encR = 0;
+    state.baofeng_ap = 1;
+    dsd_dmr_init_slot_mute_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("trunked dmr mono mutes adjacent left", encL, 1);
+    rc |= expect_int("trunked dmr mono keeps granted right active", encR, 0);
+    state.baofeng_ap = 0;
+
     float a[320] = {0};
     float b[320] = {0};
     float c[320] = {0};
@@ -659,6 +669,16 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     rc |= expect_int("ss3 tg hold left unmutes left", encL, 0);
     rc |= expect_int("ss3 tg hold left enables slot1", opts.slot1_on, 1);
     rc |= expect_int("ss3 tg hold left preference", opts.slot_preference, 0);
+
+    opts.dmr_mono = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 1;
+    encL = 0;
+    encR = 0;
+    dsd_dmr_apply_mono_slot_gate(&opts, &state, &encL, &encR);
+    rc |= expect_int("ss3 trunked mono remutes adjacent held left", encL, 1);
+    rc |= expect_int("ss3 trunked mono leaves granted right unmuted", encR, 0);
+    opts.dmr_mono = 0;
 
     encL = 1;
     encR = 1;

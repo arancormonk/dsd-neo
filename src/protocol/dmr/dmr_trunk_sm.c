@@ -131,6 +131,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     if (state) {
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
+        state->dmr_mono_slot = 0;
         state->p25_sm_release_count++;
     }
 
@@ -197,6 +198,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     ctx->vc_identity_published = 0;
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
+    state->dmr_mono_slot = (ctx->vc_slot == 1) ? 1 : 0;
 
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;

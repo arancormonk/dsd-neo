@@ -38,6 +38,8 @@ DSD_AUDIO2_INTERNAL void dsd_audio_maybe_reset_output_ring_left(dsd_state* state
 DSD_AUDIO2_INTERNAL void dsd_audio_maybe_reset_output_ring_right(dsd_state* state);
 DSD_AUDIO2_INTERNAL void dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL,
                                                       int* encR);
+DSD_AUDIO2_INTERNAL void dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* encL,
+                                                      int* encR);
 DSD_AUDIO2_INTERNAL void dsd_duplicate_active_float_slot_to_stereo(float* a, float* b, float* c, int encL, int encR,
                                                                    int* outL, int* outR);
 DSD_AUDIO2_INTERNAL void dsd_dmr_ss3_init_enc_flags(const dsd_state* state, int* encL, int* encR);

@@ -1729,7 +1729,7 @@ test_process_mbe_frame_hard_dmr_left_stages_audio(void) {
 }
 
 static int
-test_process_mbe_frame_trunked_mono_bs_fallback_routes_slot2(void) {
+test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot(void) {
     int rc = 0;
     static dsd_opts opts;
     static dsd_state state;
@@ -1745,6 +1745,7 @@ test_process_mbe_frame_trunked_mono_bs_fallback_routes_slot2(void) {
     char ambe_fr[4][24] = {{0}};
     char ambe_d[49] = {0};
     float expected_audio[160] = {0};
+    float silent_audio[160] = {0};
     char expected_err_str[96] = {0};
     int expected_errs = -1;
     int expected_errs2 = -1;
@@ -1772,18 +1773,25 @@ test_process_mbe_frame_trunked_mono_bs_fallback_routes_slot2(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.floating_point = 1;
     opts.dmr_mono = 1;
-    opts.dmr_stereo = 0;
+    opts.dmr_stereo = 1;
     opts.dmr_stereo_wav = 1;
     opts.wav_out_f = wav_out_l;
     opts.wav_out_fR = wav_out_r;
     init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.currentslot = 1;
     state.dmr_stereo = 1;
+    state.dmr_mono_slot = 1;
 
+    state.currentslot = 0;
     processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
 
-    rc |= expect_eq_int("dmr-bs-fallback keeps slot1 errs", state.errs, 0);
+    rc |= expect_eq_int("dmr-bs-fallback adjacent slot muted", state.dmr_encL, 1);
+    rc |= expect_eq_mem("dmr-bs-fallback adjacent slot not staged", state.f_l, silent_audio, sizeof(silent_audio));
+    rc |= expect_eq_int("dmr-bs-fallback adjacent slot debug errors", state.debug_audio_errors, 0);
+
+    state.currentslot = 1;
+    processMbeFrame(&opts, &state, NULL, ambe_fr, NULL);
+
     rc |= expect_eq_int("dmr-bs-fallback errs", state.errsR, expected_errs);
     rc |= expect_eq_int("dmr-bs-fallback errs2", state.errs2R, expected_errs2);
     rc |= expect_eq_int("dmr-bs-fallback status", strcmp(state.err_strR, expected_err_str), 0);
@@ -2707,7 +2715,7 @@ main(void) {
     rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_hard_dmr_left_stages_audio();
-    rc |= test_process_mbe_frame_trunked_mono_bs_fallback_routes_slot2();
+    rc |= test_process_mbe_frame_trunked_mono_bs_fallback_gates_to_granted_slot();
     rc |= test_process_mbe_frame_dmr_rc4_transforms_left_and_right_slots();
     rc |= test_process_mbe_frame_dmr_reverse_mute_preserves_p25_override();
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();

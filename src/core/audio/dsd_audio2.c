@@ -346,17 +346,25 @@ dmr_forced_privacy_unmute_enabled(const dsd_state* state) {
 }
 
 DSD_AUDIO2_INTERNAL void
+dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
+    if (opts->dmr_mono != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
+        return;
+    }
+    if (state->dmr_mono_slot == 1) {
+        *encL = 1;
+    } else {
+        *encR = 1;
+    }
+}
+
+DSD_AUDIO2_INTERNAL void
 dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
     const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
-    const int inactive_mono_right = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_stereo == 0;
     int l_is_enc = state->dmr_encL != 0;
     int r_is_enc = state->dmr_encR != 0;
     *encL = (forced_dmr_privacy || !l_is_enc || opts->dmr_mute_encL == 0) ? 0 : 1;
-    if (inactive_mono_right) {
-        *encR = 1;
-    } else {
-        *encR = (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) ? 0 : 1;
-    }
+    *encR = (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) ? 0 : 1;
+    dsd_dmr_apply_mono_slot_gate(opts, state, encL, encR);
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -818,6 +826,7 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     // Apply whitelist/TG-hold gating shared with other mixers.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
+    dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
 
     //run autogain on the f_ buffers
     agf(opts, state, state->f_l4[0], 0);
@@ -1047,6 +1056,7 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
+    dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
     dsd_hpf_short_triplet_if_enabled(opts, state);
     dsd_dmr_apply_stereo_output_policy_ss3(opts, state, encL, encR);
 

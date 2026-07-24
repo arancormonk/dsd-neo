@@ -807,6 +807,19 @@ mbe_slot_apply_straight_ks_right(dsd_state* state, char ambe_d[49]) {
     }
 }
 
+static int
+mbe_post_dmr_mono_active(const dsd_opts* opts, const dsd_state* state) {
+    return opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype);
+}
+
+static int
+mbe_dmr_output_slot_enabled(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (!mbe_post_dmr_mono_active(opts, state)) {
+        return 1;
+    }
+    return state->dmr_mono_slot == slot;
+}
+
 static void
 mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_process_result* ambe_result) {
     int ret = mbe_processAmbe2450Dataf(state->audio_out_temp_buf, ambe_result, ambe_d, state->cur_mp, state->prev_mp,
@@ -817,7 +830,8 @@ mbe_finalize_slot_left(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_pr
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
     }
-    if (opts->mbe_out_f != NULL && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)) {
+    if (mbe_dmr_output_slot_enabled(opts, state, 0) && opts->mbe_out_f != NULL
+        && (state->dmr_encL == 0 || opts->dmr_mute_encL == 0)) {
         saveAmbe2450Data(opts, state, ambe_d);
     }
 }
@@ -832,7 +846,8 @@ mbe_finalize_slot_right(dsd_opts* opts, dsd_state* state, char ambe_d[49], mbe_p
     if (dsd_frame_detail_enabled(opts)) {
         PrintAMBEData(opts, state, ambe_d);
     }
-    if (opts->mbe_out_fR != NULL && (state->dmr_encR == 0 || opts->dmr_mute_encR == 0)) {
+    if (mbe_dmr_output_slot_enabled(opts, state, 1) && opts->mbe_out_fR != NULL
+        && (state->dmr_encR == 0 || opts->dmr_mute_encR == 0)) {
         saveAmbe2450DataR(opts, state, ambe_d);
     }
 }
@@ -1498,18 +1513,18 @@ mbe_post_left_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fram
 }
 
 static int
-mbe_post_dmr_mono_active(const dsd_opts* opts, const dsd_state* state) {
-    return opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_stereo == 0;
-}
-
-static int
 mbe_post_stereo_active(const dsd_opts* opts, const dsd_state* state) {
     return opts->dmr_stereo == 1 || (DSD_SYNC_IS_DMR(state->synctype) && state->dmr_stereo == 1);
 }
 
 static void
 mbe_post_left_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if ((!mbe_post_dmr_mono_active(opts, state) && !mbe_post_stereo_active(opts, state)) || state->currentslot != 0) {
+    const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
+    if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 0)) {
+        state->dmr_encL = 1;
+        return;
+    }
+    if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 0) {
         return;
     }
 
@@ -1545,11 +1560,12 @@ mbe_post_right_apply_decryptability(dsd_state* state, const mbe_frame_ctx_t* fra
 
 static void
 mbe_post_right_audio(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    if (mbe_post_dmr_mono_active(opts, state)) {
+    const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
+    if (dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, 1)) {
         state->dmr_encR = 1;
         return;
     }
-    if (!mbe_post_stereo_active(opts, state) || state->currentslot != 1) {
+    if ((!dmr_mono_active && !mbe_post_stereo_active(opts, state)) || state->currentslot != 1) {
         return;
     }
 
@@ -1645,7 +1661,11 @@ mbe_post_mono_left_audio(const dsd_opts* opts, dsd_state* state) {
 
 static int
 mbe_post_allow_mono_wav(const dsd_opts* opts, const dsd_state* state) {
-    if (opts->static_wav_file != 0 || opts->wav_out_f == NULL
+    const int slot = (state->currentslot == 1) ? 1 : 0;
+    const int dmr_mono_active = mbe_post_dmr_mono_active(opts, state);
+    if ((dmr_mono_active && !mbe_dmr_output_slot_enabled(opts, state, slot)) || (!dmr_mono_active && slot != 0)
+        || opts->static_wav_file != 0 || (slot == 0 && opts->wav_out_f == NULL)
+        || (slot == 1 && opts->wav_out_fR == NULL)
         || (mbe_post_stereo_active(opts, state) && !mbe_post_dmr_mono_active(opts, state))) {
         return 0;
     }
@@ -1679,7 +1699,11 @@ mbe_post_wav_outputs(dsd_opts* opts, dsd_state* state) {
     }
 
     if (mbe_post_allow_mono_wav(opts, state)) {
-        writeSynthesizedVoice(opts, state);
+        if (mbe_post_dmr_mono_active(opts, state) && state->dmr_mono_slot == 1) {
+            writeSynthesizedVoiceR(opts, state);
+        } else {
+            writeSynthesizedVoice(opts, state);
+        }
     }
     if (mbe_post_allow_stereo_slot_wav(opts, state, 0)) {
         writeSynthesizedVoice(opts, state);

@@ -441,6 +441,14 @@ test_dmr_mono_override_terminal_reporting(void) {
     reset_printw_capture();
     ui_render_audio_decode_section(&opts, &state, 0);
     assert(strstr(g_printw_capture, "Slot 2 (2)") == NULL);
+
+    opts.frame_p25p2 = 1;
+    ncurses_last_synctype = DSD_SYNC_P25P2_POS;
+    reset_printw_capture();
+    ui_render_audio_decode_section(&opts, &state, 0);
+    assert_capture_contains("*Preferred (3)");
+
+    ncurses_last_synctype = DSD_SYNC_NONE;
 }
 
 static void

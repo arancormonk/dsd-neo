@@ -174,6 +174,7 @@ test_grant_identity_seeds_matching_voice_slot(void) {
     dmr_sm_emit_group_grant_slot(&opts, &state, 855012500L, 0x245, 1, 3101, 4202);
     assert(ctx->state == DMR_SM_TUNED);
     assert(ctx->vc_slot == 1);
+    assert(state.dmr_mono_slot == 1);
 
     dsd_call_snapshot call;
     dmr_sm_emit_voice_sync(&opts, &state, 0);

@@ -189,6 +189,7 @@ test_ms_voice_routes_to_single_slot_bootstrap(void) {
     assert(ms_bootstrap_calls == 1);
     assert(bs_bootstrap_calls == 0);
     assert(state.dmr_stereo == 0);
+    assert(state.dmr_mono_slot == 0);
 }
 
 static void
@@ -204,6 +205,7 @@ test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap(void) {
     opts.dmr_stereo = 1;
     opts.trunk_enable = 1;
     state.dmr_stereo = 1;
+    state.dmr_mono_slot = 1;
     state.synctype = DSD_SYNC_DMR_BS_VOICE_NEG;
     dsd_dispatch_handle_dmr(&opts, &state);
 
@@ -214,6 +216,7 @@ test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap(void) {
     assert(bs_bootstrap_stereo == 1);
     assert(ms_bootstrap_calls == 0);
     assert(state.dmr_stereo == 0);
+    assert(state.dmr_mono_slot == 1);
 }
 
 static void
