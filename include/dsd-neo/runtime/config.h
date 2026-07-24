@@ -514,7 +514,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_MODE_DPMR,
     DSDCFG_MODE_M17,
     DSDCFG_MODE_TDMA,
-    DSDCFG_MODE_ANALOG
+    DSDCFG_MODE_ANALOG,
+    DSDCFG_MODE_DMR_MONO
 } dsdneoUserDecodeMode;
 
 typedef enum DSD_ATTR_PACKED {
@@ -567,6 +568,8 @@ typedef struct dsdneoUserConfig {
     /* [mode] */
     int has_mode;
     dsdneoUserDecodeMode decode_mode;
+    int has_dmr_mono;
+    int dmr_mono;
     int has_demod;
     dsdneoUserDemodPath demod_path;
 

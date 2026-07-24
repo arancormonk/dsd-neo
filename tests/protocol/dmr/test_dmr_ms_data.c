@@ -485,6 +485,25 @@ test_ms_voice_cycle_processes_frames_and_cleans_mode_state(void) {
 }
 
 static void
+test_ms_voice_cycle_plays_float_on_one_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    load_voice_stream();
+
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+
+    dmrMS(&opts, &state);
+
+    assert(g_process_mbe_calls == 15);
+    assert(g_play_fs3_calls == 5);
+    assert(g_play_ss3_calls == 0);
+}
+
+static void
 test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -518,12 +537,35 @@ test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle(void) {
     assert(state.directmode == 0);
 }
 
+static void
+test_ms_bootstrap_plays_short_on_one_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int payload[90];
+    reset_fixture();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_state(&state, payload);
+    load_voice_stream();
+
+    opts.floating_point = 0;
+    opts.pulse_digi_out_channels = 1;
+    opts.dmr_le = 2;
+
+    dmrMSBootstrap(&opts, &state);
+
+    assert(g_process_mbe_calls == 18);
+    assert(g_play_fs3_calls == 0);
+    assert(g_play_ss3_calls == 6);
+}
+
 int
 main(void) {
     test_ms_data_collects_payload_and_cleans_state();
     test_ms_data_applies_inversion_to_cached_and_live_halves();
     test_ms_voice_cycle_processes_frames_and_cleans_mode_state();
+    test_ms_voice_cycle_plays_float_on_one_channel();
     test_ms_bootstrap_uses_cached_payload_then_enters_voice_cycle();
+    test_ms_bootstrap_plays_short_on_one_channel();
     DSD_FPRINTF(stdout, "DMR_MS_DATA: OK\n");
     return 0;
 }

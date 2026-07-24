@@ -211,10 +211,12 @@ dmr_ms_process_audio_frames(dsd_opts* opts, dsd_state* state, dmr_ms_voice_frame
 
 static void
 dmr_ms_play_voice(dsd_opts* opts, dsd_state* state) {
-    if (opts->floating_point == 0 && opts->pulse_digi_out_channels == 2) {
-        playSynthesizedVoiceSS3(opts, state);
+    if (opts->pulse_digi_out_channels != 1 && opts->pulse_digi_out_channels != 2) {
+        return;
     }
-    if (opts->floating_point == 1 && opts->pulse_digi_out_channels == 2) {
+    if (opts->floating_point == 0) {
+        playSynthesizedVoiceSS3(opts, state);
+    } else if (opts->floating_point == 1) {
         playSynthesizedVoiceFS3(opts, state);
     }
 }

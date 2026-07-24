@@ -21,6 +21,7 @@ int dsd_dispatch_matches_dmr(int synctype);
 void dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state);
 
 static int bs_bootstrap_calls;
+static int bs_bootstrap_stereo;
 static int close_left_calls;
 static int close_right_calls;
 static int data_sync_calls;
@@ -31,6 +32,7 @@ static int open_left_calls;
 static void
 reset_calls(void) {
     bs_bootstrap_calls = 0;
+    bs_bootstrap_stereo = 0;
     close_left_calls = 0;
     close_right_calls = 0;
     data_sync_calls = 0;
@@ -63,8 +65,8 @@ closeMbeOutFileR(dsd_opts* opts, dsd_state* state) {
 void
 dmrBSBootstrap(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
     bs_bootstrap_calls++;
+    bs_bootstrap_stereo = state->dmr_stereo;
 }
 
 void
@@ -169,6 +171,55 @@ test_bs_voice_routes_to_mono_bootstrap(void) {
 }
 
 static void
+test_ms_voice_routes_to_single_slot_bootstrap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
+    state.dmr_stereo = 1;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    dsd_dispatch_handle_dmr(&opts, &state);
+
+    assert(strcmp(state.slot1light, " slot1 ") == 0);
+    assert(strcmp(state.slot2light, " slot2 ") == 0);
+    assert(ms_bootstrap_calls == 1);
+    assert(bs_bootstrap_calls == 0);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_mono_slot == 0);
+}
+
+static void
+test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "out");
+    opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.dmr_stereo = 1;
+    state.dmr_mono_slot = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_NEG;
+    dsd_dispatch_handle_dmr(&opts, &state);
+
+    assert(strcmp(state.slot1light, " slot1 ") == 0);
+    assert(strcmp(state.slot2light, " slot2 ") == 0);
+    assert(open_left_calls == 0);
+    assert(bs_bootstrap_calls == 1);
+    assert(bs_bootstrap_stereo == 1);
+    assert(ms_bootstrap_calls == 0);
+    assert(state.dmr_stereo == 0);
+    assert(state.dmr_mono_slot == 1);
+}
+
+static void
 test_stereo_voice_routes_by_synctype(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -241,6 +292,8 @@ main(void) {
     test_synctype_helpers();
     test_branding_update();
     test_bs_voice_routes_to_mono_bootstrap();
+    test_ms_voice_routes_to_single_slot_bootstrap();
+    test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap();
     test_stereo_voice_routes_by_synctype();
     test_ms_data_routes_to_ms_data();
     test_bs_data_routes_to_data_sync();

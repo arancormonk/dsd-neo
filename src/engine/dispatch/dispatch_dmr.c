@@ -67,8 +67,26 @@ dmr_bootstrap_ms_if_enabled(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
+dmr_bootstrap_mono(dsd_opts* opts, dsd_state* state) {
+    if (opts->trunk_enable == 1 && DSD_SYNC_IS_DMR_BS(state->synctype)) {
+        state->dmr_stereo = 1;
+        dmrBSBootstrap(opts, state);
+        state->dmr_stereo = 0;
+        return;
+    }
+    state->dmr_mono_slot = 0;
+    state->dmr_stereo = 0;
+    dmr_bootstrap_ms_if_enabled(opts, state);
+}
+
+static void
 dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
+    if (opts->dmr_mono == 1) {
+        dmr_set_slot_lights(state);
+        dmr_bootstrap_mono(opts, state);
+        return;
+    }
     if (opts->dmr_stereo == 0 && state->synctype < DSD_SYNC_DMR_MS_VOICE) {
         dmr_set_slot_lights(state);
         dmr_bootstrap_ms_if_enabled(opts, state);

@@ -94,6 +94,7 @@ decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
         o->mod_qpsk = 0;
         s->rf_mod = 0;
         o->dmr_stereo = 1;
+        o->dmr_mono = 0;
         o->pulse_digi_rate_out = 8000;
         o->pulse_digi_out_channels = 2;
     }
@@ -119,6 +120,7 @@ decode_mode_apply_p25p1(dsd_opts* o, dsd_state* s) {
     o->mod_qpsk = 0;
     o->mod_gfsk = 0;
     s->rf_mod = 0;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->ssize = 36;
@@ -147,6 +149,7 @@ decode_mode_apply_p25p2(dsd_opts* o, dsd_state* s) {
     s->rf_mod = 1;
     o->dmr_stereo = 1;
     s->dmr_stereo = 0;
+    o->dmr_mono = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "P25p2");
 }
 
@@ -171,9 +174,21 @@ decode_mode_apply_dmr(dsd_opts* o, dsd_state* s) {
         s->rf_mod = 2;
     }
     o->dmr_stereo = 1;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 2;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DMR");
+}
+
+static void
+decode_mode_apply_dmr_mono(dsd_opts* o, dsd_state* s) {
+    decode_mode_apply_dmr(o, s);
+    o->dmr_stereo = 0;
+    s->dmr_stereo = 0;
+    o->dmr_mono = 1;
+    o->pulse_digi_rate_out = 8000;
+    o->pulse_digi_out_channels = 2;
+    DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DMR-Mono");
 }
 
 static void
@@ -198,6 +213,7 @@ decode_mode_apply_nxdn48(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         s->dmr_stereo = 0;
+        o->dmr_mono = 0;
     }
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
@@ -226,6 +242,7 @@ decode_mode_apply_nxdn96(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         s->dmr_stereo = 0;
+        o->dmr_mono = 0;
     }
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
@@ -252,6 +269,7 @@ decode_mode_apply_x2tdma(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = (p == DSD_DECODE_PRESET_PROFILE_INTERACTIVE) ? 1 : 2;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "X2-TDMA");
 }
@@ -273,6 +291,7 @@ decode_mode_apply_ysf(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
     o->mod_qpsk = 0;
     o->mod_gfsk = 0;
     s->rf_mod = 0;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     if (p != DSD_DECODE_PRESET_PROFILE_CONFIG) {
         o->dmr_stereo = 0;
@@ -301,6 +320,7 @@ decode_mode_apply_dstar(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     s->rf_mod = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DSTAR");
@@ -330,6 +350,7 @@ decode_mode_apply_edacs_pv(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "EDACS/PV");
 }
@@ -356,6 +377,7 @@ decode_mode_apply_dpmr(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "dPMR");
 }
@@ -380,6 +402,7 @@ decode_mode_apply_m17(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->dmr_stereo = 0;
     o->use_cosine_filter = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "M17");
@@ -404,6 +427,7 @@ decode_mode_apply_tdma(dsd_opts* o, dsd_state* s) {
     o->mod_gfsk = 0;
     s->rf_mod = 0;
     o->dmr_stereo = 1;
+    o->dmr_mono = 0;
     o->pulse_digi_rate_out = 8000;
     o->pulse_digi_out_channels = 2;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "TDMA");
@@ -426,6 +450,7 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     o->pulse_digi_out_channels = 1;
     o->dmr_stereo = 0;
     s->dmr_stereo = 0;
+    o->dmr_mono = 0;
     s->rf_mod = 0;
     o->monitor_input_audio = 1;
     o->analog_only = 1;
@@ -460,6 +485,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         case DSDCFG_MODE_P25P1: decode_mode_apply_p25p1(opts, state); return 0;
         case DSDCFG_MODE_P25P2: decode_mode_apply_p25p2(opts, state); return 0;
         case DSDCFG_MODE_DMR: decode_mode_apply_dmr(opts, state); return 0;
+        case DSDCFG_MODE_DMR_MONO: decode_mode_apply_dmr_mono(opts, state); return 0;
         case DSDCFG_MODE_DSTAR: decode_mode_apply_dstar(opts, state); return 0;
         case DSDCFG_MODE_EDACS_PV: decode_mode_apply_edacs_pv(opts, state); return 0;
         case DSDCFG_MODE_DPMR: decode_mode_apply_dpmr(opts, state); return 0;
@@ -506,6 +532,10 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
     mask |= ((unsigned)(opts->frame_provoice != 0) << 8);
     mask |= ((unsigned)(opts->frame_ysf != 0) << 9);
     mask |= ((unsigned)(opts->frame_m17 != 0) << 10);
+
+    if (mask == DSD_MODE_BIT_DMR && opts->dmr_mono == 1) {
+        return DSDCFG_MODE_DMR_MONO;
+    }
 
     static const struct {
         unsigned mask;

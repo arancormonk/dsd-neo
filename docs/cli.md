@@ -230,8 +230,7 @@ Notes
 
 - `-g <num>` Digital output gain. `0` = auto; `1` ≈ 2%; `50` = 100%
 - `-n <num>` Analog output gain (0–100%)
-- `-nm` Compatibility spelling for the retired DMR mono override. It is accepted without changing the active preset;
-  DMR uses the current mixer, and the removed mono decoder is not reactivated.
+- `-nm` Enable the DMR single-slot mono decoder without changing the active decode preset.
 - `-z <0|1|2>` TDMA slot preference (0 = slot 1, 1 = slot 2, 2 = auto)
 - `-8` Monitor the source audio (helpful when mixing analog/digital)
 - `-V <0|1|2|3>` TDMA voice synthesis (0 = off; 1 = slot 1; 2 = slot 2; 3 = both; default 3)
@@ -243,7 +242,7 @@ Notes
 - Auto: `-fa`
 - Passive analog monitor: `-fA`
 - Trunking helper: `-ft` (P25p1 CC + P25p1/p2/DMR voice)
-- DMR simplex (BS/MS): `-fs`; `-fr` remains accepted as an alias for the same current DMR preset/mixer
+- DMR simplex (BS/MS): `-fs` uses the dual-slot decoder; `-fr` uses the single-slot mono decoder
 - P25 Phase 1 only: `-f1`
 - P25 Phase 2 only (6000 sps): `-f2`
 - D‑STAR: `-fd`

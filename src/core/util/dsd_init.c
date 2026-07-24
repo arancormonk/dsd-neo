@@ -238,6 +238,7 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
 #endif
     opts->payload = 0;
     opts->inverted_dpmr = 0;
+    opts->dmr_mono = 0;
     opts->dmr_stereo = 1;
     opts->aggressive_framesync = 1;
     /* DMR: strict CRC gating by default (use -F to relax, like other protocols). */
@@ -732,9 +733,10 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->hytera_key_segments = 0U;
     state->M = 0; // Force key priority over settings from fid/so
 
-    state->dmr_stereo = 0; //1, or 0?
-    state->dmrburstL = 17; //initialize at higher value than possible
-    state->dmrburstR = 17; //17 in char array is set for ERR
+    state->dmr_stereo = 0;    //1, or 0?
+    state->dmr_mono_slot = 0; //single-slot DMR defaults to TS1
+    state->dmrburstL = 17;    //initialize at higher value than possible
+    state->dmrburstR = 17;    //17 in char array is set for ERR
     state->dmr_so = 0;
     state->dmr_soR = 0;
     state->dmr_fid = 0;

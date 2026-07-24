@@ -569,6 +569,27 @@ test_dmr_slot_mute_and_duplication_helpers(void) {
     rc |= expect_int("forced privacy unmutes left", encL, 0);
     rc |= expect_int("forced privacy keeps right unmuted", encR, 0);
 
+    state.baofeng_ap = 0;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    state.dmr_stereo = 0;
+    state.dmr_encL = 0;
+    state.dmr_encR = 1;
+    opts.dmr_mono = 1;
+    opts.dmr_mute_encR = 0;
+    dsd_dmr_init_slot_mute_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("dmr mono left remains active", encL, 0);
+    rc |= expect_int("dmr mono inactive right ignores key unmute", encR, 1);
+
+    state.dmr_stereo = 1;
+    state.dmr_mono_slot = 1;
+    state.dmr_encL = 0;
+    state.dmr_encR = 0;
+    state.baofeng_ap = 1;
+    dsd_dmr_init_slot_mute_flags(&opts, &state, &encL, &encR);
+    rc |= expect_int("trunked dmr mono mutes adjacent left", encL, 1);
+    rc |= expect_int("trunked dmr mono keeps granted right active", encR, 0);
+    state.baofeng_ap = 0;
+
     float a[320] = {0};
     float b[320] = {0};
     float c[320] = {0};
@@ -649,6 +670,16 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     rc |= expect_int("ss3 tg hold left enables slot1", opts.slot1_on, 1);
     rc |= expect_int("ss3 tg hold left preference", opts.slot_preference, 0);
 
+    opts.dmr_mono = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 1;
+    encL = 0;
+    encR = 0;
+    dsd_dmr_apply_mono_slot_gate(&opts, &state, &encL, &encR);
+    rc |= expect_int("ss3 trunked mono remutes adjacent held left", encL, 1);
+    rc |= expect_int("ss3 trunked mono leaves granted right unmuted", encR, 0);
+    opts.dmr_mono = 0;
+
     encL = 1;
     encR = 1;
     opts.slot2_on = 0;
@@ -673,6 +704,37 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
     opts.slot2_on = 0;
     dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, 0, 0);
     rc |= expect_int("ss3 slot1 only copies left to right", state.s_r4[0][1], 55);
+
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    opts.dmr_mono = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmrburstL = 16;
+    state.dmrburstR = 16;
+    state.dmr_mono_slot = 1;
+    state.s_l4[0][0] = 11;
+    state.s_r4[0][0] = 77;
+    encL = 0;
+    encR = 0;
+    dsd_dmr_apply_mono_slot_gate(&opts, &state, &encL, &encR);
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, encL, encR);
+    rc |= expect_int("ss3 mono slot2 duplicates right to left with dual voice", state.s_l4[0][0], 77);
+    rc |= expect_int("ss3 mono slot2 preserves right with dual voice", state.s_r4[0][0], 77);
+
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    state.dmr_mono_slot = 0;
+    state.s_l4[0][0] = 88;
+    state.s_r4[0][0] = 22;
+    encL = 0;
+    encR = 0;
+    dsd_dmr_apply_mono_slot_gate(&opts, &state, &encL, &encR);
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, encL, encR);
+    rc |= expect_int("ss3 mono slot1 preserves left with dual voice", state.s_l4[0][0], 88);
+    rc |= expect_int("ss3 mono slot1 duplicates left to right with dual voice", state.s_r4[0][0], 88);
 
     return rc;
 }
@@ -806,6 +868,54 @@ test_fs4_mono_mixer_averages_available_unmuted_slots(void) {
 }
 
 static int
+test_short_dmr_mono_honors_slot_controls_and_one_channel_output(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_gate_capture();
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.dmr_mono = 1;
+    opts.pulse_digi_out_channels = 2;
+    opts.slot1_on = 0;
+    opts.slot2_on = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 0;
+    state.s_l4[0][0] = 111;
+
+    int rc = 0;
+    reset_sink_capture();
+    playSynthesizedVoiceSS3(&opts, &state);
+    rc |= expect_int("ss3 mono muted selected slot1 skips output", g_udp_blast_calls, 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.slot1_on = 1;
+    opts.slot2_on = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 1;
+    state.s_r4[0][0] = 222;
+    reset_sink_capture();
+    playSynthesizedVoiceSS3(&opts, &state);
+    rc |= expect_int("ss3 mono muted selected slot2 skips output", g_udp_blast_calls, 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 0;
+    state.s_l4[2][0] = 333;
+    state.s_r4[2][0] = 999;
+    reset_sink_capture();
+    playSynthesizedVoiceSS3(&opts, &state);
+    rc |= expect_int("ss3 mono one-channel output calls", g_udp_blast_calls, 3);
+    rc |= expect_size("ss3 mono one-channel output bytes", g_udp_blast_bytes, 160U * sizeof(short));
+    rc |= expect_int("ss3 mono one-channel selected sample", ((const short*)g_udp_blast_data)[0], 333);
+    return rc;
+}
+
+static int
 test_float_playback_orchestrators_emit_expected_blocks(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -925,6 +1035,52 @@ test_float_playback_orchestrators_emit_expected_blocks(void) {
     rc |= expect_float("fs3 resets left block", state.f_l4[0][0], 0.0f);
 
     DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 2;
+    opts.dmr_mono = 1;
+    opts.dmr_mute_encR = 0;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    state.dmr_encL = 0;
+    state.dmr_encR = 1;
+    state.f_l4[0][0] = 0.25f;
+    state.f_l4[1][0] = 0.5f;
+    state.f_l4[2][0] = -0.25f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS3(&opts, &state);
+    const float* dmr_mono_stereo = (const float*)g_udp_blast_data;
+    rc |= expect_int("dmr mono stereo output calls", g_udp_blast_calls, 3);
+    rc |= expect_size("dmr mono stereo output bytes", g_udp_blast_bytes, 320U * sizeof(float));
+    rc |= expect_float("dmr mono stereo left sample", dmr_mono_stereo[0], -0.25f);
+    rc |= expect_float("dmr mono stereo duplicates right sample", dmr_mono_stereo[1], -0.25f);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.pulse_digi_out_channels = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 0;
+    state.f_l4[2][0] = -0.5f;
+    state.f_r4[2][0] = 0.75f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS3(&opts, &state);
+    const float* dmr_mono_left = (const float*)g_udp_blast_data;
+    rc |= expect_int("dmr mono one-channel slot1 output calls", g_udp_blast_calls, 3);
+    rc |= expect_size("dmr mono one-channel slot1 output bytes", g_udp_blast_bytes, 160U * sizeof(float));
+    rc |= expect_float("dmr mono one-channel excludes slot2", dmr_mono_left[0], -0.5f);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_mono_slot = 1;
+    state.f_l4[2][0] = -0.25f;
+    state.f_r4[2][0] = 0.625f;
+    reset_sink_capture();
+    playSynthesizedVoiceFS3(&opts, &state);
+    const float* dmr_mono_right = (const float*)g_udp_blast_data;
+    rc |= expect_int("dmr mono one-channel slot2 output calls", g_udp_blast_calls, 3);
+    rc |= expect_float("dmr mono one-channel excludes slot1", dmr_mono_right[0], 0.625f);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.dmr_mono = 0;
+    opts.dmr_mute_encR = 1;
     state.dmr_encL = 1;
     state.dmr_encR = 1;
     reset_sink_capture();
@@ -991,6 +1147,7 @@ main(void) {
     rc |= test_p25p2_encrypted_lockout_slot_helper();
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
     rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
+    rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();
     rc |= test_audio_gate_target_preserves_p25_ota_identity();
     rc |= test_silent_s16_helper();

@@ -346,12 +346,25 @@ dmr_forced_privacy_unmute_enabled(const dsd_state* state) {
 }
 
 DSD_AUDIO2_INTERNAL void
+dsd_dmr_apply_mono_slot_gate(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
+    if (opts->dmr_mono != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
+        return;
+    }
+    if (state->dmr_mono_slot == 1) {
+        *encL = 1;
+    } else {
+        *encR = 1;
+    }
+}
+
+DSD_AUDIO2_INTERNAL void
 dsd_dmr_init_slot_mute_flags(const dsd_opts* opts, const dsd_state* state, int* encL, int* encR) {
     const int forced_dmr_privacy = dmr_forced_privacy_unmute_enabled(state);
     int l_is_enc = state->dmr_encL != 0;
     int r_is_enc = state->dmr_encR != 0;
     *encL = (forced_dmr_privacy || !l_is_enc || opts->dmr_mute_encL == 0) ? 0 : 1;
     *encR = (forced_dmr_privacy || !r_is_enc || opts->dmr_mute_encR == 0) ? 0 : 1;
+    dsd_dmr_apply_mono_slot_gate(opts, state, encL, encR);
 }
 
 DSD_AUDIO2_INTERNAL void
@@ -370,6 +383,21 @@ dsd_duplicate_active_float_slot_to_stereo(float* a, float* b, float* c, int encL
             c[i + 0] = c[i + 1];
         }
         *outL = 0;
+    }
+}
+
+static void
+dsd_mix_mono_from_slots_s16(const short* left, const short* right, size_t n, int l_on, int r_on, short* mono_out) {
+    for (size_t i = 0; i < n; i++) {
+        if (l_on && r_on) {
+            mono_out[i] = (short)(((int)left[i] + (int)right[i]) / 2);
+        } else if (l_on) {
+            mono_out[i] = left[i];
+        } else if (r_on) {
+            mono_out[i] = right[i];
+        } else {
+            mono_out[i] = 0;
+        }
     }
 }
 
@@ -584,6 +612,9 @@ dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, 
     if (encR != 0) {
         return 0;
     }
+    if (opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_mono_slot == 1) {
+        return 1;
+    }
     if (opts->slot1_on == 0 && opts->slot2_on == 1) {
         return 1;
     }
@@ -600,6 +631,9 @@ static int
 dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL) {
     if (encL != 0) {
         return 0;
+    }
+    if (opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_mono_slot != 1) {
+        return 1;
     }
     if (opts->slot1_on == 1 && opts->slot2_on == 0) {
         return 1;
@@ -813,6 +847,7 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
 
     // Apply whitelist/TG-hold gating shared with other mixers.
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
+    dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
 
     //run autogain on the f_ buffers
     agf(opts, state, state->f_l4[0], 0);
@@ -832,9 +867,6 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         goto FS3_END;
     }
 
-    // If only one slot is active, duplicate to both channels for stereo sinks.
-    dsd_duplicate_active_float_slot_to_stereo(stereo_samp1, stereo_samp2, stereo_samp3, encL, encR, &encL, &encR);
-
     if (opts->pulse_digi_out_channels == 1) {
         float mono1[160], mono2[160], mono3[160];
         DSD_MEMSET(mono1, 0, sizeof(mono1));
@@ -848,6 +880,8 @@ playSynthesizedVoiceFS3(dsd_opts* opts, dsd_state* state) {
         const float* mono_blocks[] = {mono1, mono2, mono3};
         dsd_output_float_blocks(opts, state, mono_blocks, 3, 160, 1, 0);
     } else {
+        // If only one slot is active, duplicate to both channels for stereo sinks.
+        dsd_duplicate_active_float_slot_to_stereo(stereo_samp1, stereo_samp2, stereo_samp3, encL, encR, &encL, &encR);
         const float* stereo_blocks[] = {stereo_samp1, stereo_samp2, stereo_samp3};
         dsd_output_float_blocks(opts, state, stereo_blocks, 3, 160, 2, 0);
     }
@@ -1042,15 +1076,10 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     (void)dsd_audio_group_gate_dual(opts, state, TGL, TGR, encL, encR, &encL, &encR);
 
     dsd_dmr_apply_tg_hold_and_slot_preference_ss3(opts, state, TGL, TGR, &encL, &encR);
+    dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
+    dsd_dmr_apply_mono_slot_gate(opts, state, &encL, &encR);
     dsd_hpf_short_triplet_if_enabled(opts, state);
     dsd_dmr_apply_stereo_output_policy_ss3(opts, state, encL, encR);
-
-    //check this last
-    if (opts->slot1_on == 0 && opts->slot2_on == 0) //both slots are hard off, disable playback
-    {
-        encL = 1;
-        encR = 1;
-    }
 
     //at this point, if both channels are still flagged as enc, then we can skip all playback/writing functions
     if (encL && encR) {
@@ -1061,8 +1090,19 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     audio_mix_interleave_stereo_s16(state->s_l4[1], state->s_r4[1], 160, 0, 0, stereo_samp2);
     audio_mix_interleave_stereo_s16(state->s_l4[2], state->s_r4[2], 160, 0, 0, stereo_samp3);
 
-    const short* stereo_blocks[] = {stereo_samp1, stereo_samp2, stereo_samp3};
-    dsd_output_s16_blocks(opts, state, stereo_blocks, 3, 160, 2, 0);
+    if (opts->pulse_digi_out_channels == 1) {
+        short mono1[160], mono2[160], mono3[160];
+        int l_on = !encL;
+        int r_on = !encR;
+        dsd_mix_mono_from_slots_s16(state->s_l4[0], state->s_r4[0], 160, l_on, r_on, mono1);
+        dsd_mix_mono_from_slots_s16(state->s_l4[1], state->s_r4[1], 160, l_on, r_on, mono2);
+        dsd_mix_mono_from_slots_s16(state->s_l4[2], state->s_r4[2], 160, l_on, r_on, mono3);
+        const short* mono_blocks[] = {mono1, mono2, mono3};
+        dsd_output_s16_blocks(opts, state, mono_blocks, 3, 160, 1, 0);
+    } else {
+        const short* stereo_blocks[] = {stereo_samp1, stereo_samp2, stereo_samp3};
+        dsd_output_s16_blocks(opts, state, stereo_blocks, 3, 160, 2, 0);
+    }
 
     if (opts->wav_out_f != NULL && opts->static_wav_file == 1) {
         dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_samp1, 320, "processAudioDMRstereo3v2 block1");

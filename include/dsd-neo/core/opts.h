@@ -264,6 +264,7 @@ struct dsd_opts {
     dsd_frontend_terminal_display_opts frontend_terminal_display;
     short int mbe_out;  //flag for mbe out, don't attempt fclose more than once
     short int mbe_outR; //flag for mbe out, don't attempt fclose more than once
+    short int dmr_mono; //select the DMR single-slot decoder and mono audio path
     short int dmr_stereo;
     short int lrrp_file_output;
     short int dmr_mute_encL;

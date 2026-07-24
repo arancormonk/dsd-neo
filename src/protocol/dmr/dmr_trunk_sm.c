@@ -131,6 +131,7 @@ do_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     if (state) {
         state->trunk_vc_freq[0] = 0;
         state->trunk_vc_freq[1] = 0;
+        state->dmr_mono_slot = 0;
         state->p25_sm_release_count++;
     }
 
@@ -197,6 +198,7 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
     ctx->vc_identity_published = 0;
     ctx->t_tune_m = now_m;
     ctx->t_voice_m = 0.0;
+    state->dmr_mono_slot = ctx->vc_slot;
 
     for (int s = 0; s < 2; s++) {
         ctx->slots[s].voice_active = 0;
@@ -217,6 +219,19 @@ handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_e
 }
 
 static void
+update_voice_sync_state(dmr_sm_ctx_t* ctx, dsd_state* state, int slot, double now_m) {
+    if (!state) {
+        return;
+    }
+
+    state->last_vc_sync_time_m = now_m;
+    if (ctx->state == DMR_SM_TUNED && ctx->vc_slot < 0) {
+        ctx->vc_slot = slot;
+        state->dmr_mono_slot = slot;
+    }
+}
+
+static void
 handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx) {
         return;
@@ -229,9 +244,7 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
 
-    if (state) {
-        state->last_vc_sync_time_m = now_m;
-    }
+    update_voice_sync_state(ctx, state, s, now_m);
 
     if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0
         && (ctx->vc_slot < 0 || ctx->vc_slot == s)) {

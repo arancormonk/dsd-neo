@@ -245,11 +245,11 @@ struct decode_mode_alias_map_t {
 } // namespace
 
 static const decode_mode_name_map_t k_decode_mode_names[] = {
-    {DSDCFG_MODE_AUTO, "auto"},         {DSDCFG_MODE_P25P1, "p25p1"},   {DSDCFG_MODE_P25P2, "p25p2"},
-    {DSDCFG_MODE_DMR, "dmr"},           {DSDCFG_MODE_NXDN48, "nxdn48"}, {DSDCFG_MODE_NXDN96, "nxdn96"},
-    {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},       {DSDCFG_MODE_DSTAR, "dstar"},
-    {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},     {DSDCFG_MODE_M17, "m17"},
-    {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
+    {DSDCFG_MODE_AUTO, "auto"},     {DSDCFG_MODE_P25P1, "p25p1"},       {DSDCFG_MODE_P25P2, "p25p2"},
+    {DSDCFG_MODE_DMR, "dmr"},       {DSDCFG_MODE_DMR_MONO, "dmr_mono"}, {DSDCFG_MODE_NXDN48, "nxdn48"},
+    {DSDCFG_MODE_NXDN96, "nxdn96"}, {DSDCFG_MODE_X2TDMA, "x2tdma"},     {DSDCFG_MODE_YSF, "ysf"},
+    {DSDCFG_MODE_DSTAR, "dstar"},   {DSDCFG_MODE_EDACS_PV, "edacs_pv"}, {DSDCFG_MODE_DPMR, "dpmr"},
+    {DSDCFG_MODE_M17, "m17"},       {DSDCFG_MODE_TDMA, "tdma"},         {DSDCFG_MODE_ANALOG, "analog"},
 };
 
 /* Read-only compatibility spellings are translated directly to the current decode-mode enum. Canonical config
@@ -888,6 +888,9 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (decode_name) {
         DSD_FPRINTF(out, "decode = \"%s\"\n", decode_name);
     }
+    if (cfg->has_dmr_mono) {
+        DSD_FPRINTF(out, "dmr_mono = %s\n", ini_bool(cfg->dmr_mono));
+    }
     if (cfg->has_demod) {
         switch (cfg->demod_path) {
             case DSDCFG_DEMOD_AUTO: DSD_FPRINTF(out, "demod = \"auto\"\n"); break;
@@ -1191,6 +1194,9 @@ static void
 apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state) {
     if (cfg->has_mode) {
         (void)dsd_apply_decode_mode_preset(cfg->decode_mode, DSD_DECODE_PRESET_PROFILE_CONFIG, opts, state);
+    }
+    if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
+        opts->dmr_mono = cfg->dmr_mono ? 1 : 0;
     }
 }
 
@@ -1507,6 +1513,8 @@ static void
 snapshot_mode_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_mode = 1;
     cfg->decode_mode = dsd_infer_decode_mode_preset(opts);
+    cfg->has_dmr_mono = 1;
+    cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
 }
 
 static void

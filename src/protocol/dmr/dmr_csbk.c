@@ -2432,7 +2432,7 @@ dmr_cspdu_xpt_try_tune(dsd_opts* opts, dsd_state* state, const uint8_t t_tg[18],
         }
 
         DSD_FPRINTF(stderr, "\n LSN/TG to tune to: %d - %d", slot_idx + 1, tg);
-        dmr_sm_emit_group_grant(opts, state, state->trunk_chan_map[slot_idx + 1], 0, tg, 0);
+        dmr_sm_emit_group_grant_slot(opts, state, state->trunk_chan_map[slot_idx + 1], 0, slot_idx & 1, tg, 0);
         break;
     }
 }

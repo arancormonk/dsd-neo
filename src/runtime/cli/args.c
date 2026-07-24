@@ -1942,9 +1942,9 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
         }                                                                                                              \
         case 'n': {                                                                                                    \
             if (optarg[0] == 'm' && optarg[1] == '\0') {                                                               \
-                /* Accept the retired mono override without changing the active preset. DMR presets already select     \
-                 * the current dual-slot mixer; non-DMR audio routing must remain untouched. */                        \
-                LOG_INFO("NOTICE: -nm compatibility alias accepted; DMR uses the current preset mixer.\n");            \
+                cli_dmr_mono_override_seen = 1;                                                                        \
+                opts->dmr_mono = 1;                                                                                    \
+                LOG_INFO("NOTICE: DMR single-slot mono decoder enabled.\n");                                           \
                 break;                                                                                                 \
             }                                                                                                          \
             double parsed_ga = 0.0;                                                                                    \
@@ -2065,7 +2065,13 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                     case '2': LOG_INFO("NOTICE: Decoding only P25 Phase 2 frames.\n"); break;                          \
                     case 's': LOG_INFO("NOTICE: Decoding only DMR frames.\n"); break;                                  \
                     case 'r':                                                                                          \
-                        LOG_INFO("NOTICE: -fr compatibility alias uses the current DMR dual-slot mixer.\n");           \
+                        opts->dmr_stereo = 0;                                                                          \
+                        state->dmr_stereo = 0;                                                                         \
+                        opts->dmr_mono = 1;                                                                            \
+                        opts->pulse_digi_rate_out = 8000;                                                              \
+                        opts->pulse_digi_out_channels = 2;                                                             \
+                        DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "DMR-Mono");                  \
+                        LOG_INFO("NOTICE: Decoding DMR with the single-slot mono decoder.\n");                         \
                         break;                                                                                         \
                     case 'i': LOG_INFO("NOTICE: Decoding only NXDN48 frames.\n"); break;                               \
                     case 'n': LOG_INFO("NOTICE: Decoding only NXDN96 frames.\n"); break;                               \
@@ -2097,6 +2103,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2137,6 +2144,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2187,6 +2195,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2229,6 +2238,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2261,6 +2271,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 opts->pulse_digi_rate_out = 8000;                                                                      \
                 opts->pulse_digi_out_channels = 1;                                                                     \
                 opts->dmr_stereo = 0;                                                                                  \
+                opts->dmr_mono = 0;                                                                                    \
                 state->dmr_stereo = 0;                                                                                 \
                 DSD_SNPRINTF(opts->output_name, sizeof opts->output_name, "%s", "EDACS/PV");                           \
                 LOG_INFO("NOTICE: Setting symbol rate to 9600 / second\n");                                            \
@@ -2558,11 +2569,15 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
     dsdneoUserDecodeMode cli_decode_timing_mode = DSDCFG_MODE_AUTO;
     int cli_manual_timing_sps = 0;
     int cli_manual_timing_center = 0;
+    int cli_dmr_mono_override_seen = 0;
     while ((c = getopt(argc, argv,
                        "~yhaepPqs:t:v:z:i:o:d:c:g:n:w:B:C:R:f:m:x:A:S:M:G:D:L:V:U:YK:b:H:X:Q:WrlZTF@:!:01:2:345:6:7:_:"
                        "89:Ek:I:J:O^Nj"))
            != -1) {
         DSD_PARSE_SHORT_OPTS_SWITCH_BLOCK();
+    }
+    if (cli_dmr_mono_override_seen) {
+        opts->dmr_mono = 1;
     }
     if (cli_decode_timing_seen && dsd_opts_source_uses_effective_input_rate(opts)) {
         int timing_rate_hz = dsd_opts_effective_input_rate(opts);
