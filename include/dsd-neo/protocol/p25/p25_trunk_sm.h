@@ -63,6 +63,8 @@ enum {
     // Grant decoder sentinel for opcodes that do not carry service options.
     // Passing svc_bits=0 explicitly clears the service option.
     P25_SM_SVC_UNKNOWN = -1,
+    // Exact MAC_PTT octets 1-17, excluding the SACCH/FACCH transport header.
+    P25_SM_PTT_SIGNATURE_BYTES = 17,
 };
 
 typedef enum {
@@ -95,22 +97,24 @@ typedef enum {
 
 typedef struct {
     p25_sm_event_type_e type;
-    int slot;                                   // 0 or 1 for TDMA, -1 for P1/N/A
-    int channel;                                // 16-bit channel number (for GRANT)
-    long freq_hz;                               // Frequency in Hz (for GRANT)
-    int tg;                                     // Talkgroup (for GRANT/PTT/END, 0 if individual or unavailable)
-    int src;                                    // Source RID (for GRANT/PTT/END, 0 if unavailable)
-    int dst;                                    // Destination RID (for individual GRANT)
-    int svc_bits;                               // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
-    int is_group;                               // 1 for group grant, 0 for individual
-    p25_sm_grant_provenance_e grant_provenance; // Initial assignment or continuing assignment update
-    int algid;                                  // Algorithm ID (for ENC event)
-    int keyid;                                  // Key ID (for ENC event)
-    int data_call_override;                     // 0=infer from svc_bits, 1=force data, -1=force non-data
-    int identity_valid;                         // 1 when PTT/ACTIVE carries a decoded call identity
-    int facch;                                  // 1 when END was decoded from valid FACCH
-    int crypto_new_epoch;                       // 1 when CRYPTO_PENDING must start a fresh deadline
-    double observed_m;                          // Optional monotonic timestamp when the event was observed
+    int slot;                                          // 0 or 1 for TDMA, -1 for P1/N/A
+    int channel;                                       // 16-bit channel number (for GRANT)
+    long freq_hz;                                      // Frequency in Hz (for GRANT)
+    int tg;                                            // Talkgroup (for GRANT/PTT/END, 0 if individual or unavailable)
+    int src;                                           // Source RID (for GRANT/PTT/END, 0 if unavailable)
+    int dst;                                           // Destination RID (for individual GRANT)
+    int svc_bits;                                      // Service options (for GRANT), or P25_SM_SVC_UNKNOWN when absent
+    int is_group;                                      // 1 for group grant, 0 for individual
+    p25_sm_grant_provenance_e grant_provenance;        // Initial assignment or continuing assignment update
+    int algid;                                         // Algorithm ID (for ENC event)
+    int keyid;                                         // Key ID (for ENC event)
+    int data_call_override;                            // 0=infer from svc_bits, 1=force data, -1=force non-data
+    int identity_valid;                                // 1 when PTT/ACTIVE carries a decoded call identity
+    int facch;                                         // 1 when PTT/END was decoded from valid FACCH
+    int crypto_new_epoch;                              // 1 when CRYPTO_PENDING must start a fresh deadline
+    double observed_m;                                 // Optional monotonic timestamp when the event was observed
+    uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES]; // Optional exact MAC octets 1-17 for PTT
+    int ptt_signature_valid;                           // 1 when ptt_signature and observed_m are authoritative
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -154,6 +158,9 @@ typedef struct {
     double facch_end_m;      // Monotonic timestamp of the first qualifying FACCH END_PTT
     int facch_end_tg;        // Identity carried by the qualifying FACCH END_PTT
     int facch_end_src;
+    uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES]; // Last accepted raw P25P2 MAC_PTT signature
+    double ptt_last_seen_m;                            // Last observation of that PTT, including retransmissions
+    int ptt_signature_valid;                           // 1 while no accepted call boundary/replacement intervened
 } p25_sm_slot_ctx_t;
 
 typedef struct {
