@@ -724,6 +724,49 @@ test_history_and_sort_helpers(void) {
 }
 
 static void
+test_history_color_pair_policy(void) {
+    static const struct {
+        uint8_t severity;
+        uint8_t category;
+        uint8_t legacy_pair;
+        short expected_pair;
+    } cases[] = {
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_UNKNOWN, 7U, 7},
+        {DSD_EVENT_SEVERITY_DEBUG, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 4},
+        {DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_STATUS, 2U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_VOICE, 2U, 3},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_DATA, 2U, 4},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_CONTROL, 2U, 1},
+        {DSD_EVENT_SEVERITY_UNKNOWN, DSD_EVENT_CATEGORY_SYSTEM, 2U, 4},
+        {DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_VOICE, 2U, 3},
+        {DSD_EVENT_SEVERITY_DEBUG, DSD_EVENT_CATEGORY_CONTROL, 2U, 1},
+        {DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 1},
+        {DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_VOICE, 3U, 1},
+        {DSD_EVENT_SEVERITY_WARNING, DSD_EVENT_CATEGORY_DATA, 3U, 1},
+        {DSD_EVENT_SEVERITY_ERROR, DSD_EVENT_CATEGORY_UNKNOWN, 3U, 2},
+        {DSD_EVENT_SEVERITY_ERROR, DSD_EVENT_CATEGORY_CONTROL, 3U, 2},
+        {DSD_EVENT_SEVERITY_ERROR, DSD_EVENT_CATEGORY_SYSTEM, 3U, 2},
+        {UINT8_MAX, DSD_EVENT_CATEGORY_VOICE, 3U, 3},
+        {UINT8_MAX, UINT8_MAX, 3U, 4},
+        {DSD_EVENT_SEVERITY_INFO, UINT8_MAX, 3U, 4},
+        {DSD_EVENT_SEVERITY_WARNING, UINT8_MAX, 3U, 1},
+        {DSD_EVENT_SEVERITY_ERROR, UINT8_MAX, 3U, 2},
+    };
+
+    assert(ui_history_color_pair_for_event(NULL) == 4);
+    for (size_t i = 0U; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        Event_History item;
+        DSD_MEMSET(&item, 0, sizeof(item));
+        item.severity = cases[i].severity;
+        item.category = cases[i].category;
+        item.color_pair = cases[i].legacy_pair;
+        assert(ui_history_color_pair_for_event(&item) == cases[i].expected_pair);
+    }
+}
+
+static void
 test_history_viewport_helpers(void) {
     int draw_footer = 1;
     ui_history_render_ctx ctx;
@@ -1130,6 +1173,7 @@ main(void) {
     test_demod_symbol_rate_helpers();
     test_input_level_policy();
     test_history_and_sort_helpers();
+    test_history_color_pair_policy();
     test_history_viewport_helpers();
     test_hytera_key_format_helper();
     test_edacs_tree_update_helpers();

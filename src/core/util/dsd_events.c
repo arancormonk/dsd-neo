@@ -1377,10 +1377,21 @@ dsd_event_clear_data_payload(Event_History* item) {
 }
 
 static int
-dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
-                                const char* notice, const char* gps, int consume_staged_payload) {
+dsd_event_data_notice_args_valid(const dsd_opts* opts, const dsd_state* state, uint8_t slot,
+                                 const dsd_call_observation* observation, dsd_event_category category,
+                                 const char* notice) {
     if (opts == NULL || state == NULL || state->event_history_s == NULL || observation == NULL || notice == NULL
         || slot > 1U || observation->slot != slot || observation->kind != DSD_CALL_KIND_DATA) {
+        return 0;
+    }
+    return category == DSD_EVENT_CATEGORY_DATA || category == DSD_EVENT_CATEGORY_CONTROL;
+}
+
+static int
+dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                                dsd_event_category category, const char* notice, const char* gps,
+                                int consume_staged_payload) {
+    if (!dsd_event_data_notice_args_valid(opts, state, slot, observation, category, notice)) {
         return -1;
     }
 
@@ -1394,7 +1405,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 
     Event_History* item = &event_struct->Event_History_Items[0];
     item->write = 1;
-    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, DSD_EVENT_CATEGORY_DATA);
+    dsd_event_history_item_set_metadata(item, DSD_EVENT_SEVERITY_INFO, category);
     item->systype = observation->protocol;
     item->subtype = DSD_EVENT_SUBTYPE_EXPLICIT_DATA;
     item->gi = -1;
@@ -1436,18 +1447,33 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
 }
 
 int
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, NULL, 1);
+}
+
+int
 dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                            const char* notice) {
-    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, notice, NULL, 1);
+    return dsd_event_emit_data_notice_classified(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA, notice);
+}
+
+int
+dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                               const dsd_call_observation* observation, dsd_event_category category,
+                                               const char* notice, const char* gps) {
+    if (gps == NULL) {
+        return -1;
+    }
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps, 0);
 }
 
 int
 dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                     const dsd_call_observation* observation, const char* notice, const char* gps) {
-    if (gps == NULL) {
-        return -1;
-    }
-    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, notice, gps, 0);
+    return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA,
+                                                          notice, gps);
 }
 
 int

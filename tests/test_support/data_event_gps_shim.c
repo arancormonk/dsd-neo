@@ -7,11 +7,29 @@
 #include <dsd-neo/core/events.h>
 #include <stdint.h>
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state.h"
 #include "dsd-neo/core/state_fwd.h"
+
+int
+dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                      const dsd_call_observation* observation, dsd_event_category category,
+                                      const char* notice) {
+    (void)category;
+    return dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+}
+
+int
+dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                               const dsd_call_observation* observation, dsd_event_category category,
+                                               const char* notice, const char* gps) {
+    (void)category;
+    (void)gps;
+    return dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+}
 
 int
 dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                     const dsd_call_observation* observation, const char* notice, const char* gps) {
-    (void)gps;
-    return dsd_event_emit_data_notice(opts, state, slot, observation, notice);
+    return dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, observation, DSD_EVENT_CATEGORY_DATA,
+                                                          notice, gps);
 }

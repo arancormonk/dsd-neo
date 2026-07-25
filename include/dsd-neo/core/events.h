@@ -129,9 +129,28 @@ int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* s
                                               const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]);
 int dsd_event_state_copy_snapshot(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2]);
 void watchdog_event_status(dsd_state* state, const char* status_string, uint8_t slot);
+/**
+ * Commit a data/control notice using neutral event metadata.
+ *
+ * Only DSD_EVENT_CATEGORY_DATA and DSD_EVENT_CATEGORY_CONTROL are accepted.
+ * Invalid categories are rejected without changing event history.
+ */
+int dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                          const dsd_call_observation* observation, dsd_event_category category,
+                                          const char* notice);
+/**
+ * Commit a data/control notice with GPS owned by the new event, leaving the active row's staged payload unchanged.
+ *
+ * Only DSD_EVENT_CATEGORY_DATA and DSD_EVENT_CATEGORY_CONTROL are accepted.
+ * Invalid categories or a NULL GPS value are rejected without changing event history.
+ */
+int dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                                   const dsd_call_observation* observation, dsd_event_category category,
+                                                   const char* notice, const char* gps);
+/** Commit a data notice. Equivalent to dsd_event_emit_data_notice_classified() with the DATA category. */
 int dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                                const char* notice);
-/** Commit a data notice with GPS owned by the new event, leaving the active row's staged payload unchanged. */
+/** Commit a data notice with GPS. Equivalent to the classified GPS API with the DATA category. */
 int dsd_event_emit_data_notice_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                         const dsd_call_observation* observation, const char* notice, const char* gps);
 /** Commit an informational system notice without attributing it to radio traffic. */

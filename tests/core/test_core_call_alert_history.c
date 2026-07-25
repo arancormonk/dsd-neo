@@ -293,6 +293,44 @@ expect_str_eq(const char* label, const char* got, const char* want) {
 }
 
 static int
+event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
+    return lhs->write == rhs->write && lhs->color_pair == rhs->color_pair && lhs->severity == rhs->severity
+           && lhs->category == rhs->category && lhs->systype == rhs->systype && lhs->subtype == rhs->subtype
+           && lhs->sys_id1 == rhs->sys_id1 && lhs->sys_id2 == rhs->sys_id2 && lhs->sys_id3 == rhs->sys_id3
+           && lhs->sys_id4 == rhs->sys_id4 && lhs->sys_id5 == rhs->sys_id5 && lhs->gi == rhs->gi && lhs->enc == rhs->enc
+           && lhs->enc_alg == rhs->enc_alg && lhs->enc_key == rhs->enc_key && lhs->mi == rhs->mi && lhs->svc == rhs->svc
+           && lhs->source_id == rhs->source_id && lhs->target_id == rhs->target_id
+           && memcmp(lhs->src_str, rhs->src_str, sizeof lhs->src_str) == 0
+           && memcmp(lhs->tgt_str, rhs->tgt_str, sizeof lhs->tgt_str) == 0
+           && memcmp(lhs->t_name, rhs->t_name, sizeof lhs->t_name) == 0
+           && memcmp(lhs->s_name, rhs->s_name, sizeof lhs->s_name) == 0
+           && memcmp(lhs->t_mode, rhs->t_mode, sizeof lhs->t_mode) == 0
+           && memcmp(lhs->s_mode, rhs->s_mode, sizeof lhs->s_mode) == 0 && lhs->channel == rhs->channel
+           && lhs->event_time == rhs->event_time && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
+           && memcmp(lhs->sysid_string, rhs->sysid_string, sizeof lhs->sysid_string) == 0
+           && memcmp(lhs->alias, rhs->alias, sizeof lhs->alias) == 0
+           && memcmp(lhs->gps_s, rhs->gps_s, sizeof lhs->gps_s) == 0
+           && memcmp(lhs->text_message, rhs->text_message, sizeof lhs->text_message) == 0
+           && memcmp(lhs->event_string, rhs->event_string, sizeof lhs->event_string) == 0
+           && memcmp(lhs->internal_str, rhs->internal_str, sizeof lhs->internal_str) == 0;
+}
+
+static int
+event_histories_equal(const Event_History_I lhs[2], const Event_History_I rhs[2]) {
+    for (size_t slot = 0U; slot < 2U; slot++) {
+        if (lhs[slot].revision != rhs[slot].revision) {
+            return 0;
+        }
+        for (size_t item = 0U; item < 255U; item++) {
+            if (!event_history_item_equal(&lhs[slot].Event_History_Items[item], &rhs[slot].Event_History_Items[item])) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static int
 append_policy_label(dsd_state* state, uint32_t id, const char* mode, const char* name) {
     dsd_tg_policy_entry row;
     if (dsd_tg_policy_make_exact_entry(id, mode, name, DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
@@ -519,6 +557,85 @@ test_data_notice_preserves_decoded_payload_fields(void) {
 }
 
 static int
+test_classified_control_notice_preserves_data_notice_behavior(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_DATA;
+
+    Event_History* decoded = &event_history[0].Event_History_Items[0];
+    decoded->pdu[0] = 0x56U;
+    decoded->pdu[1] = 0x78U;
+    DSD_SNPRINTF(decoded->text_message, sizeof(decoded->text_message), "%s", "registration payload");
+    DSD_SNPRINTF(decoded->gps_s, sizeof(decoded->gps_s), "%s", "staged location");
+    const uint64_t revision_before = event_history[0].revision;
+
+    const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 1234U, 5678U);
+    assert(
+        dsd_event_emit_data_notice_classified(&opts, &state, 0U, &observation, DSD_EVENT_CATEGORY_CONTROL, "MNIS ARS;")
+        == 0);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    const Event_History* current = &event_history[0].Event_History_Items[0];
+    int rc = 0;
+    rc |= expect_int("classified control category", committed->category, DSD_EVENT_CATEGORY_CONTROL);
+    rc |= expect_int("classified control severity", committed->severity, DSD_EVENT_SEVERITY_INFO);
+    rc |= expect_int("classified control source", (int)committed->source_id, 1234);
+    rc |= expect_int("classified control target", (int)committed->target_id, 5678);
+    rc |= expect_int("classified control first payload byte", committed->pdu[0], 0x56);
+    rc |= expect_int("classified control second payload byte", committed->pdu[1], 0x78);
+    rc |= expect_str_eq("classified control text payload", committed->text_message, "registration payload");
+    rc |= expect_str_eq("classified control GPS payload", committed->gps_s, "staged location");
+    rc |= expect_has_substr("classified control notice", committed->event_string, "MNIS ARS;");
+    rc |= expect_int("classified control clears staged PDU", current->pdu[0], 0);
+    rc |= expect_int("classified control clears staged text", current->text_message[0], '\0');
+    rc |= expect_int("classified control clears staged GPS", current->gps_s[0], '\0');
+    rc |= expect_u64("classified control revision behavior", event_history[0].revision, revision_before + 3U);
+    rc |= expect_int("classified control emits data alert", g_beeper_count, 1);
+    rc |= expect_int("classified control uses data tone", g_last_beeper_id, 80);
+    rc |= expect_int("classified control emits frame log", g_frame_log_count, 1);
+    rc |= expect_has_substr("classified control frame log text", g_last_frame_log, "MNIS ARS;");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_classified_data_notice_rejects_invalid_categories_without_mutation(void) {
+    static const dsd_event_category invalid_categories[] = {
+        DSD_EVENT_CATEGORY_UNKNOWN,
+        DSD_EVENT_CATEGORY_STATUS,
+        DSD_EVENT_CATEGORY_VOICE,
+        DSD_EVENT_CATEGORY_SYSTEM,
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    static Event_History_I before[2];
+    reset_fixture(&opts, &state, event_history);
+
+    event_history[0].Event_History_Items[0].pdu[0] = 0xABU;
+    DSD_SNPRINTF(event_history[0].Event_History_Items[0].text_message,
+                 sizeof(event_history[0].Event_History_Items[0].text_message), "%s", "staged text");
+    DSD_MEMCPY(before, event_history, sizeof(before));
+    const dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 1234U, 5678U);
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(invalid_categories) / sizeof(invalid_categories[0]); i++) {
+        rc |= expect_int("invalid classified category rejected",
+                         dsd_event_emit_data_notice_classified(&opts, &state, 0U, &observation, invalid_categories[i],
+                                                               "Rejected notice;"),
+                         -1);
+        rc |= expect_int("invalid classified category leaves history unchanged",
+                         event_histories_equal(before, event_history), 1);
+    }
+    rc |= expect_int("invalid classified category emits no alert", g_beeper_count, 0);
+    rc |= expect_int("invalid classified category emits no frame log", g_frame_log_count, 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_data_notice_with_gps_owns_payload_without_consuming_active_row(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -547,6 +664,22 @@ test_data_notice_with_gps_owns_payload_without_consuming_active_row(void) {
     rc |= expect_int("explicit GPS preserves active PDU", current->pdu[0], 0xAB);
     rc |= expect_str_eq("explicit GPS preserves active text", current->text_message, "active call text");
     rc |= expect_str_eq("explicit GPS preserves active GPS", current->gps_s, "active call GPS");
+
+    reset_fixture(&opts, &state, event_history);
+    active = &event_history[0].Event_History_Items[0];
+    active->pdu[0] = 0xCDU;
+    DSD_SNPRINTF(active->text_message, sizeof(active->text_message), "%s", "control-active text");
+    assert(dsd_event_emit_data_notice_classified_with_gps(&opts, &state, 0U, &observation, DSD_EVENT_CATEGORY_CONTROL,
+                                                          "Control GPS;", "42.000000 -88.000000")
+           == 0);
+
+    committed = &event_history[0].Event_History_Items[1];
+    current = &event_history[0].Event_History_Items[0];
+    rc |= expect_int("classified GPS event category", committed->category, DSD_EVENT_CATEGORY_CONTROL);
+    rc |= expect_str_eq("classified GPS event payload", committed->gps_s, "42.000000 -88.000000");
+    rc |= expect_int("classified GPS event does not inherit active PDU", committed->pdu[0], 0);
+    rc |= expect_int("classified GPS preserves active PDU", current->pdu[0], 0xCD);
+    rc |= expect_str_eq("classified GPS preserves active text", current->text_message, "control-active text");
     return rc;
 }
 
@@ -1380,6 +1513,35 @@ test_canonical_call_lifecycle_is_epoch_driven(void) {
 }
 
 static int
+test_canonical_voice_category_is_protocol_neutral(void) {
+    static const int protocols[] = {
+        DSD_SYNC_P25P1_POS, DSD_SYNC_P25P2_POS,        DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_DMR_MS_VOICE,
+        DSD_SYNC_NXDN_POS,  DSD_SYNC_X2TDMA_VOICE_POS, DSD_SYNC_PROVOICE_POS,     DSD_SYNC_EDACS_POS,
+        DSD_SYNC_YSF_POS,   DSD_SYNC_DSTAR_VOICE_POS,  DSD_SYNC_DPMR_FS1_POS,     DSD_SYNC_M17_STR_POS,
+    };
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof(protocols) / sizeof(protocols[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        rc |= expect_int("canonical voice starts",
+                         observe_test_call(&state, 0U, protocols[i], DSD_CALL_KIND_GROUP_VOICE, 1000U + i, 2000U + i,
+                                           0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                         1);
+        watchdog_event_current(&opts, &state, 0U);
+
+        const Event_History* current = &event_history[0].Event_History_Items[0];
+        rc |= expect_int("canonical voice protocol metadata", current->systype, protocols[i]);
+        rc |= expect_int("canonical voice severity metadata", current->severity, DSD_EVENT_SEVERITY_INFO);
+        rc |= expect_int("canonical voice category metadata", current->category, DSD_EVENT_CATEGORY_VOICE);
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
 test_provisional_voice_identity_does_not_commit_zero_row(void) {
     static const int protocols[] = {
         DSD_SYNC_P25P1_POS,       DSD_SYNC_P25P2_POS,    DSD_SYNC_DMR_BS_VOICE_POS,
@@ -1418,6 +1580,8 @@ test_provisional_voice_identity_does_not_commit_zero_row(void) {
         const Event_History* prior = &event_history[0].Event_History_Items[1];
         rc |= expect_int("specialized current row has target", (int)current->target_id, (int)(1000U + i));
         rc |= expect_int("specialized current row has source", (int)current->source_id, (int)(2000U + i));
+        rc |= expect_int("canonical voice row has protocol-neutral category", current->category,
+                         DSD_EVENT_CATEGORY_VOICE);
         rc |= expect_int("specialization does not commit provisional row", prior->event_string[0], '\0');
         rc |= expect_int("specialization does not repeat start alert", g_beeper_count, 1);
 
@@ -1689,6 +1853,8 @@ main(void) {
     rc |= test_data_only_data_call_emits_one_data_alert();
     rc |= test_data_call_emits_frame_log_record();
     rc |= test_data_notice_preserves_decoded_payload_fields();
+    rc |= test_classified_control_notice_preserves_data_notice_behavior();
+    rc |= test_classified_data_notice_rejects_invalid_categories_without_mutation();
     rc |= test_data_notice_with_gps_owns_payload_without_consuming_active_row();
     rc |= test_system_notice_is_not_attributed_as_radio_data();
     rc |= test_status_event_is_not_data_call_or_frame_log();
@@ -1710,6 +1876,7 @@ main(void) {
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
+    rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_late_source_enriches_matching_canonical_call();
