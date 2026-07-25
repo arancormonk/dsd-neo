@@ -295,43 +295,35 @@ dmr_dheader_handle_udt(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint
 }
 
 static void
-dmr_dheader_handle_response(uint8_t slot, const dmr_dheader_fields* f) {
-    char rsp_string[200];
-    DSD_MEMSET(rsp_string, 0, sizeof(rsp_string));
-    DSD_SNPRINTF(rsp_string, sizeof(rsp_string), "DATA RESP TGT: %d; SRC: %d; ", f->target, f->source);
+dmr_dheader_format_response(char* summary, size_t summary_size, const dmr_dheader_fields* f) {
+    char outcome[80];
+    DSD_MEMSET(outcome, 0, sizeof(outcome));
     if (f->r_class == 0 && f->r_type == 1) {
-        dsd_append(rsp_string, sizeof rsp_string, "ACK - Success");
+        DSD_SNPRINTF(outcome, sizeof(outcome), "%s", "ACK - Success");
+    } else if (f->r_class == 1 && f->r_type <= 6) {
+        static const char* const nack_reasons[] = {
+            "Illegal Format", "Packet CRC ERR", "Memory Full",  "FSN Out of Seq",
+            "Undeliverable",  "PKT Out of Seq", "Invalid User",
+        };
+        DSD_SNPRINTF(outcome, sizeof(outcome), "NACK - %s", nack_reasons[f->r_type]);
+    } else if (f->r_class == 2 && f->r_type == 0) {
+        DSD_SNPRINTF(outcome, sizeof(outcome), "%s", "SACK - Retry");
+    } else {
+        DSD_SNPRINTF(outcome, sizeof(outcome), "UNKNOWN - Class %u Type %u", (unsigned)f->r_class, (unsigned)f->r_type);
     }
-    if (f->r_class == 1) {
-        dsd_append(rsp_string, sizeof rsp_string, "NACK - ");
-        if (f->r_type == 0) {
-            dsd_append(rsp_string, sizeof rsp_string, "Illegal Format");
-        }
-        if (f->r_type == 1) {
-            dsd_append(rsp_string, sizeof rsp_string, "Packet CRC ERR");
-        }
-        if (f->r_type == 2) {
-            dsd_append(rsp_string, sizeof rsp_string, "Memory Full");
-        }
-        if (f->r_type == 3) {
-            dsd_append(rsp_string, sizeof rsp_string, "FSN Out of Seq");
-        }
-        if (f->r_type == 4) {
-            dsd_append(rsp_string, sizeof rsp_string, "Undeliverable");
-        }
-        if (f->r_type == 5) {
-            dsd_append(rsp_string, sizeof rsp_string, "PKT Out of Seq");
-        }
-        if (f->r_type == 6) {
-            dsd_append(rsp_string, sizeof rsp_string, "Invalid User");
-        }
-    }
-    if (f->r_class == 2) {
-        dsd_append(rsp_string, sizeof rsp_string, "SACK - Retry");
-    }
-    UNUSED(f->r_status);
-    UNUSED(slot);
-    DSD_FPRINTF(stderr, "\n %s", rsp_string);
+    DSD_SNPRINTF(summary, summary_size, "DATA RESP SAP: %02u [%s]; TGT: %u; SRC: %u; %s; STATUS: %u", (unsigned)f->sap,
+                 f->sap_string, (unsigned)f->target, (unsigned)f->source, outcome, (unsigned)f->r_status);
+}
+
+static void
+dmr_dheader_handle_response(dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_dheader_fields* f) {
+    char summary[256];
+    DSD_MEMSET(summary, 0, sizeof(summary));
+    dmr_dheader_format_response(summary, sizeof(summary), f);
+    state->dmr_lrrp_gps[slot][0] = '\0';
+    DSD_FPRINTF(stderr, "\n %s", summary);
+    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, f->source, f->target);
+    (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, DSD_EVENT_CATEGORY_CONTROL, summary);
 }
 
 static void
@@ -545,7 +537,7 @@ dmr_dheader_handle_by_format(dsd_opts* opts, dsd_state* state, uint8_t dheader[]
                              const dmr_dheader_fields* f) {
     switch (f->dpf) {
         case 0: dmr_dheader_handle_udt(opts, state, dheader, slot, f); break;
-        case 1: dmr_dheader_handle_response(slot, f); break;
+        case 1: dmr_dheader_handle_response(opts, state, slot, f); break;
         case 2:
         case 3: dmr_dheader_handle_unconfirmed_or_confirmed(state, slot, f); break;
         case 13:

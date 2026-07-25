@@ -11,6 +11,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/fec/rs_12_9.h>
@@ -47,6 +48,7 @@ static unsigned int g_udp_comp_calls;
 static uint16_t g_udp_comp_last_len;
 static uint8_t g_udp_comp_first_byte;
 static unsigned int g_datacall_calls;
+static int g_datacall_last_protocol;
 static uint32_t g_datacall_last_src;
 static uint32_t g_datacall_last_dst;
 static uint8_t g_datacall_last_slot;
@@ -104,6 +106,7 @@ dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t 
     (void)opts;
     (void)state;
     g_datacall_calls++;
+    g_datacall_last_protocol = observation->protocol;
     g_datacall_last_src = observation->ota_source_id;
     g_datacall_last_dst = observation->ota_target_id;
     g_datacall_last_slot = slot;
@@ -508,6 +511,7 @@ reset_datacall_spy(void) {
     g_udp_comp_last_len = 0;
     g_udp_comp_first_byte = 0;
     g_datacall_calls = 0;
+    g_datacall_last_protocol = DSD_SYNC_NONE;
     g_datacall_last_src = 0;
     g_datacall_last_dst = 0;
     g_datacall_last_slot = 0;
@@ -978,29 +982,50 @@ test_irrecoverable_header_resets_data_state(void) {
     assert(strcmp(state.dmr_lrrp_gps[1], "") == 0);
 }
 
+static size_t
+count_substring(const char* haystack, const char* needle) {
+    size_t count = 0;
+    size_t needle_len = strlen(needle);
+    if (needle_len == 0U) {
+        return 0U;
+    }
+    while ((haystack = strstr(haystack, needle)) != NULL) {
+        count++;
+        haystack += needle_len;
+    }
+    return count;
+}
+
 static int
-check_response_header_nack_reason(uint8_t r_type, const char* expected) {
+check_response_header_event(uint8_t r_class, uint8_t r_type, uint8_t status, const char* outcome) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t dheader[12];
     uint8_t bits[196];
     char output[2048];
+    char expected[256];
     dsd_test_capture_stderr cap;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(dheader, 0, sizeof(dheader));
     DSD_MEMSET(bits, 0, sizeof(bits));
-    state.currentslot = 0;
+    reset_datacall_spy();
+    state.currentslot = 1;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     opts.aggressive_framesync = 1;
     set_bits(bits, 4, 1U, 4); // DPF=1, response packet
     set_bits(bits, 8, 4U, 4); // SAP=4, IP based
     set_bits(bits, 16, 0x000123U, 24);
     set_bits(bits, 40, 0x000456U, 24);
-    set_bits(bits, 72, 1U, 2); // NACK class
+    set_bits(bits, 72, r_class, 2);
     set_bits(bits, 74, r_type, 3);
+    set_bits(bits, 77, status, 3);
+    DSD_SNPRINTF(state.dmr_lrrp_gps[1], sizeof(state.dmr_lrrp_gps[1]), "%s", "stale gps");
+    DSD_SNPRINTF(expected, sizeof(expected), "DATA RESP SAP: 04 [IP Based]; TGT: 291; SRC: 1110; %s; STATUS: %u",
+                 outcome, (unsigned)status);
 
-    if (dsd_test_capture_stderr_begin(&cap, "dmr_header_response_nack") != 0) {
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_header_response_event") != 0) {
         return 1;
     }
     dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
@@ -1010,18 +1035,98 @@ check_response_header_nack_reason(uint8_t r_type, const char* expected) {
     }
     (void)remove(cap.path);
 
-    assert(state.data_header_format[0] == 1);
-    assert(state.data_header_valid[0] == 1);
-    assert(strcmp(state.dmr_lrrp_gps[0], "") == 0);
-    return expect_contains("response-nack", output, expected);
+    assert(state.data_header_format[1] == 1);
+    assert(state.data_header_valid[1] == 1);
+    assert(state.data_header_sap[1] == 4);
+    assert(strcmp(state.dmr_lrrp_gps[1], "") == 0);
+    assert(g_datacall_calls == 1U);
+    assert(g_datacall_last_protocol == DSD_SYNC_DMR_BS_DATA_POS);
+    assert(g_datacall_last_slot == 1U);
+    assert(g_datacall_last_src == 0x000456U);
+    assert(g_datacall_last_dst == 0x000123U);
+    assert(g_datacall_last_category == DSD_EVENT_CATEGORY_CONTROL);
+    assert(strcmp(g_datacall_last_text, expected) == 0);
+    assert(count_substring(output, expected) == 1U);
+    return 0;
 }
 
 static int
-test_response_header_reports_nack_reason(void) {
+test_response_headers_emit_control_events(void) {
+    static const struct {
+        uint8_t r_class;
+        uint8_t r_type;
+        uint8_t status;
+        const char* outcome;
+    } cases[] = {
+        {0U, 1U, 0U, "ACK - Success"},         {1U, 0U, 1U, "NACK - Illegal Format"},
+        {1U, 1U, 2U, "NACK - Packet CRC ERR"}, {1U, 2U, 3U, "NACK - Memory Full"},
+        {1U, 3U, 4U, "NACK - FSN Out of Seq"}, {1U, 4U, 5U, "NACK - Undeliverable"},
+        {1U, 5U, 6U, "NACK - PKT Out of Seq"}, {1U, 6U, 7U, "NACK - Invalid User"},
+        {2U, 0U, 3U, "SACK - Retry"},          {3U, 7U, 6U, "UNKNOWN - Class 3 Type 7"},
+    };
+
     int rc = 0;
-    rc |= check_response_header_nack_reason(1U, "NACK - Packet CRC ERR");
-    rc |= check_response_header_nack_reason(2U, "NACK - Memory Full");
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        rc |= check_response_header_event(cases[i].r_class, cases[i].r_type, cases[i].status, cases[i].outcome);
+    }
     return rc;
+}
+
+static void
+set_response_header_bits(uint8_t bits[196]) {
+    DSD_MEMSET(bits, 0, 196U);
+    set_bits(bits, 4, 1U, 4); // DPF=1, response packet
+    set_bits(bits, 8, 4U, 4); // SAP=4, IP based
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 72, 0U, 2); // ACK class
+    set_bits(bits, 74, 1U, 3); // ACK success
+    set_bits(bits, 77, 5U, 3);
+}
+
+static void
+test_response_header_event_acceptance_gates(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    set_response_header_bits(bits);
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts.aggressive_framesync = 1;
+
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/0);
+    assert(g_datacall_calls == 0U);
+
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/1);
+    assert(g_datacall_calls == 0U);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts.aggressive_framesync = 0;
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/0);
+    assert(g_datacall_calls == 1U);
+    assert(g_datacall_last_category == DSD_EVENT_CATEGORY_CONTROL);
+    assert(strcmp(state.dmr_lrrp_gps[0], "") == 0);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts.aggressive_framesync = 1;
+    opts.dmr_crc_relaxed_default = 1;
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/0, /*IrrecoverableErrors=*/0);
+    assert(g_datacall_calls == 1U);
+    assert(g_datacall_last_category == DSD_EVENT_CATEGORY_CONTROL);
+    assert(strcmp(state.dmr_lrrp_gps[0], "") == 0);
 }
 
 static void
@@ -1174,7 +1279,8 @@ main(int argc, char** argv) {
     test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
     test_irrecoverable_header_resets_data_state();
-    rc |= test_response_header_reports_nack_reason();
+    rc |= test_response_headers_emit_control_events();
+    test_response_header_event_acceptance_gates();
     test_short_data_defined_sets_blocks_and_confirmed_flag();
     test_short_data_raw_padding_and_packet_poc_isolation();
     test_motorola_encryption_header_updates_payload_state();
