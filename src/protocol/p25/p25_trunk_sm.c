@@ -5477,10 +5477,20 @@ p25_sm_finish_conventional_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
 }
 
 static int
+p25_sm_voice_start_lacks_trunk_assignment(const p25_sm_ctx_t* ctx, const dsd_opts* opts) {
+    return ctx && opts && opts->trunk_enable == 1 && ctx->state != P25_SM_TUNED;
+}
+
+static int
 p25_sm_emit_voice_start_event(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, const char* why) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     if (!ctx->initialized) {
         p25_sm_init_ctx(ctx, opts, state);
+    }
+    if (p25_sm_voice_start_lacks_trunk_assignment(ctx, opts)) {
+        p25_sm_diagf(opts, state, ctx, "voice_start_ignored", "reason=no-trunk-assignment kind=%s slot=%d tg=%d src=%d",
+                     why, ev->slot, ev->tg, ev->src);
+        return 0;
     }
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     const double observed_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_time_now_monotonic_s();

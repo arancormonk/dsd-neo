@@ -282,11 +282,14 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     MAC[6] = 0x02;
     MAC[7] = 0x03;
 
-    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    sm->state = P25_SM_TUNED;
+    sm->vc_is_tdma = 1;
     process_MAC_VPDU(&opts, &state, 0, MAC);
 
     DSD_SNPRINTF(label, sizeof label, "%s no grant dispatch", tag);
-    rc |= expect_eq_long(label, p25_sm_get_ctx()->grant_count, 0);
+    rc |= expect_eq_long(label, sm->grant_count, 0);
     DSD_SNPRINTF(label, sizeof label, "%s no retune", tag);
     rc |= expect_eq_long(label, opts.trunk_is_tuned, 1);
     dsd_call_snapshot call = {0};

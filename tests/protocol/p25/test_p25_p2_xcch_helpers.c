@@ -962,7 +962,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstL = 21;
     g_voice_event_accept = 0;
-    fill_mac(mac, 0x80, 0, 303, 1001);
+    fill_mac(mac, 0x84, 0x2468, 303, 1001);
 
     p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
     rc |= expect_int("rejected sacch ptt emitted", g_ptt_count[0], 1);
@@ -970,6 +970,11 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected sacch ptt gate closed", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("rejected sacch ptt companion gate preserved", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("rejected sacch ptt burst cleared", (int)state.dmrburstL, 0);
+    rc |= expect_int("rejected sacch ptt no crypto", g_enc_count[0], 0);
+    rc |= expect_int("rejected sacch ptt no lfsr", g_lfsr_count[0], 0);
+    rc |= expect_int("rejected sacch ptt no algid", state.payload_algid, 0);
+    rc |= expect_int("rejected sacch ptt no keyid", state.payload_keyid, 0);
+    rc |= expect_u64("rejected sacch ptt no mi", state.payload_miP, 0U);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -978,7 +983,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstR = 21;
     g_voice_event_accept = 0;
-    fill_mac(mac, 0x80, 0, 404, 2001);
+    fill_mac(mac, 0x84, 0x1357, 404, 2001);
 
     p25p2_xcch_handle_facch_mac_ptt(&opts, &state, 1, 0, 0, mac);
     rc |= expect_int("rejected facch ptt emitted", g_ptt_count[1], 1);
@@ -986,6 +991,11 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected facch ptt companion gate preserved", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_int("rejected facch ptt gate closed", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("rejected facch ptt burst cleared", (int)state.dmrburstR, 0);
+    rc |= expect_int("rejected facch ptt no crypto", g_enc_count[1], 0);
+    rc |= expect_int("rejected facch ptt no lfsr", g_lfsr_count[1], 0);
+    rc |= expect_int("rejected facch ptt no algid", state.payload_algidR, 0);
+    rc |= expect_int("rejected facch ptt no keyid", state.payload_keyidR, 0);
+    rc |= expect_u64("rejected facch ptt no mi", state.payload_miN, 0U);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

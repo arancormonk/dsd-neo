@@ -749,6 +749,71 @@ test_conventional_raw_ptt_retransmissions_coalesce(void) {
 }
 
 static int
+test_trunked_late_voice_is_rejected_after_encryption_lockout(void) {
+    static Event_History_I event_history[2];
+    reset_test_state();
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    init_event_history(&event_history[0], 0, 255);
+    init_event_history(&event_history[1], 0, 255);
+    g_state.event_history_s = event_history;
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 20601, 618620, 0);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    const uint64_t mi = UINT64_C(0xE83FF2906EA8F0D1);
+    const double first_m = dsd_time_now_monotonic_s();
+    make_ptt_signature(signature, mi, 0x84, 0x026C, 618620, 20601);
+    if (!p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 20601, 0, 618620, 1, P25_SM_SVC_UNKNOWN, signature,
+                                       first_m, 0)
+        || p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x84, 0x026C, mi, 20601)
+               != DSD_P25_CRYPTO_BLOCKED) {
+        DSD_FPRINTF(stderr, "FAIL: Late encrypted PTT fixture did not reach lockout\n");
+        return 1;
+    }
+
+    dsd_call_snapshot locked_call = {0};
+    if (ctx->state != P25_SM_ON_CC || g_opts.trunk_is_tuned != 0 || g_return_requests != 1
+        || dsd_call_state_get(&g_state, 0U, &locked_call) <= 0 || locked_call.phase != DSD_CALL_PHASE_ENDED
+        || locked_call.ota_target_id != 20601U || locked_call.ota_source_id != 618620U || ctx->slots[0].grant_active
+        || ctx->slots[0].voice_active || ctx->slots[0].ptt_signature_valid || g_state.payload_algid != 0
+        || g_state.payload_keyid != 0 || g_state.payload_miP != 0U
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN || g_state.p25_p2_audio_allowed[0] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Encryption lockout did not leave an ended call on the control channel\n");
+        return 1;
+    }
+
+    const uint64_t history_revision = event_history[0].revision;
+    if (p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 20601, 0, 618620, 1, P25_SM_SVC_UNKNOWN, signature,
+                                      first_m + 0.1, 1)
+            != 0
+        || p25_sm_emit_active_call(&g_opts, &g_state, 0, 20601, 0, 618620, 1, 0x40) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Late trunked voice was accepted without a traffic assignment\n");
+        return 1;
+    }
+
+    dsd_call_snapshot after_late_voice = {0};
+    if (dsd_call_state_get(&g_state, 0U, &after_late_voice) <= 0 || after_late_voice.revision != locked_call.revision
+        || after_late_voice.epoch != locked_call.epoch || after_late_voice.phase != DSD_CALL_PHASE_ENDED
+        || after_late_voice.crypto != locked_call.crypto || after_late_voice.algid != locked_call.algid
+        || after_late_voice.kid != locked_call.kid || after_late_voice.mi != locked_call.mi
+        || event_history[0].revision != history_revision || ctx->state != P25_SM_ON_CC || g_opts.trunk_is_tuned != 0
+        || g_return_requests != 1 || ctx->slots[0].grant_active || ctx->slots[0].voice_active
+        || ctx->slots[0].ptt_signature_valid || g_state.payload_algid != 0 || g_state.payload_keyid != 0
+        || g_state.payload_miP != 0U || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN
+        || g_state.p25_p2_audio_allowed[0] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Late trunked voice reopened or mutated the locked-out call\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_source_less_identity_change_does_not_inherit_rid(void) {
     const struct {
         int tg;
@@ -2633,6 +2698,7 @@ main(void) {
     fail += test_raw_ptt_boundary_invalidation();
     fail += test_raw_ptt_markers_are_slot_local();
     fail += test_conventional_raw_ptt_retransmissions_coalesce();
+    fail += test_trunked_late_voice_is_rejected_after_encryption_lockout();
     fail += test_source_less_identity_change_does_not_inherit_rid();
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_pending_crypto_uses_classification_deadline();

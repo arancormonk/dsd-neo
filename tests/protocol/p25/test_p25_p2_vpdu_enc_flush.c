@@ -141,6 +141,11 @@ main(void) {
     opts.trunk_enable = 1;
     opts.trunk_is_tuned = 1;
     opts.trunk_tune_enc_calls = 0;
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &st);
+    sm->state = P25_SM_TUNED;
+    sm->vc_is_tdma = 1;
+    sm->vc_freq_hz = 851500000;
 
     // Scenario 1: other slot active. ENC should gate only current slot and not release.
     st.currentslot = 0;             // so VPDU slot=0 for FACCH
@@ -259,7 +264,7 @@ main(void) {
     st.currentslot = 0;
     p25_crypto_reset_slot(&st, 0);
     p25_crypto_reset_slot(&st, 1);
-    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    sm = p25_sm_get_ctx();
     p25_sm_init_ctx(sm, &opts, &st);
     sm->state = P25_SM_TUNED;
     sm->vc_is_tdma = 1;
