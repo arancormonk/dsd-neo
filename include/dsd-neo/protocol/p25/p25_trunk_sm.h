@@ -111,6 +111,7 @@ typedef struct {
     int data_call_override;                            // 0=infer from svc_bits, 1=force data, -1=force non-data
     int identity_valid;                                // 1 when PTT/ACTIVE carries a decoded call identity
     int decoded_voice;                                 // 1 when ACTIVE was emitted for decoded voice frames
+    int source_optional;                               // 1 when the voice structure has no subscriber source field
     int facch;                                         // 1 when PTT/END was decoded from valid FACCH
     int crypto_new_epoch;                              // 1 when CRYPTO_PENDING must start a fresh deadline
     double observed_m;                                 // Optional monotonic timestamp when the event was observed
@@ -487,6 +488,19 @@ int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, 
                             int svc_bits);
 
 /**
+ * @brief Emit an identity-bearing ACTIVE with explicit source-field provenance.
+ *
+ * Telephone-interconnect voice structures identify a private call without a
+ * subscriber source field. Set source_optional only for those structures so a
+ * source-less standard private voice repeat remains eligible for post-END
+ * suppression.
+ *
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_active_call_ex(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                               int svc_bits, int source_optional);
+
+/**
  * @brief Emit END event for a slot.
  */
 void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
@@ -707,6 +721,13 @@ p25_sm_ev_active_call(int slot, int tg, int dst, int src, int is_group, int svc_
     ev.is_group = is_group ? 1 : 0;
     ev.svc_bits = svc_bits;
     ev.identity_valid = 1;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_active_call_ex(int slot, int tg, int dst, int src, int is_group, int svc_bits, int source_optional) {
+    p25_sm_event_t ev = p25_sm_ev_active_call(slot, tg, dst, src, is_group, svc_bits);
+    ev.source_optional = source_optional ? 1 : 0;
     return ev;
 }
 

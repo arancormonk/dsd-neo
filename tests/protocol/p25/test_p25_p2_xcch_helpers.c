@@ -49,6 +49,7 @@ static int g_active_dst[2];
 static int g_active_src[2];
 static int g_active_is_group[2];
 static int g_active_svc[2];
+static int g_active_source_optional[2];
 static int g_voice_identity_result;
 static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
@@ -261,6 +262,12 @@ p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
 int
 p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
                         int svc_bits) {
+    return p25_sm_emit_active_call_ex(opts, state, slot, tg, dst, src, is_group, svc_bits, 0);
+}
+
+int
+p25_sm_emit_active_call_ex(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                           int svc_bits, int source_optional) {
     const int accepted = p25_sm_emit_active(opts, state, slot);
     if (slot >= 0 && slot <= 1) {
         g_active_tg[slot] = tg;
@@ -268,6 +275,7 @@ p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
         g_active_src[slot] = src;
         g_active_is_group[slot] = is_group;
         g_active_svc[slot] = svc_bits;
+        g_active_source_optional[slot] = source_optional;
     }
     if (accepted) {
         const dsd_call_observation observation = {
@@ -524,6 +532,7 @@ reset_stubs(void) {
     DSD_MEMSET(g_active_src, 0, sizeof(g_active_src));
     DSD_MEMSET(g_active_is_group, 0, sizeof(g_active_is_group));
     DSD_MEMSET(g_active_svc, 0, sizeof(g_active_svc));
+    DSD_MEMSET(g_active_source_optional, 0, sizeof(g_active_source_optional));
     g_voice_identity_result = 0;
     DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
     DSD_MEMSET(g_end_count, 0, sizeof(g_end_count));
@@ -1039,12 +1048,14 @@ test_rejected_voice_events_keep_media_closed(void) {
     g_voice_identity.dst = 2001;
     g_voice_identity.src = 0;
     g_voice_identity.is_group = 0;
+    g_voice_identity.source_optional = 1;
 
     p25p2_xcch_handle_facch_mac_active(&opts, &state, 1, mac);
     rc |= expect_int("rejected facch telephone active emitted", g_active_count[1], 1);
     rc |= expect_int("rejected facch telephone active records denied target", g_active_dst[1], 2001);
     rc |= expect_int("rejected facch telephone active clears absent source", g_active_src[1], 0);
     rc |= expect_int("rejected facch telephone active records private type", g_active_is_group[1], 0);
+    rc |= expect_int("rejected facch telephone active records source optional", g_active_source_optional[1], 1);
     rc |= expect_int("rejected facch telephone active latches media rejection", state.p25_p2_media_rejected[1], 1);
     rc |= expect_int("rejected facch telephone active companion gate preserved", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_int("rejected facch telephone active gate closed", state.p25_p2_audio_allowed[1], 0);
@@ -1168,6 +1179,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch active identity src", g_active_src[1], 0x123456);
     rc |= expect_int("sacch active identity group", g_active_is_group[1], 1);
     rc |= expect_int("sacch active identity svc", g_active_svc[1], 0x81);
+    rc |= expect_int("sacch active identity source required", g_active_source_optional[1], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1361,6 +1373,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch active identity src", g_active_src[1], 0x654321);
     rc |= expect_int("facch active identity group", g_active_is_group[1], 0);
     rc |= expect_int("facch active identity svc", g_active_svc[1], 0x42);
+    rc |= expect_int("facch active identity source required", g_active_source_optional[1], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

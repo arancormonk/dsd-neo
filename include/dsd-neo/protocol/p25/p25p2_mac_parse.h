@@ -49,6 +49,7 @@ struct p25p2_mac_voice_identity {
     int src;
     int is_group;
     int svc_bits;
+    int source_optional;
 };
 
 struct p25p2_iden_update {

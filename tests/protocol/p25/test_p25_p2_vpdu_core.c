@@ -362,6 +362,26 @@ test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
     rc |= expect_true("expired gvcu new epoch", after.epoch != before.epoch);
     dsd_state_ext_free_all(&state);
 
+    // A zero local release delay must not disable the short protocol window
+    // for END-adjacent GVCU repeats when the companion TDMA slot retains the
+    // shared carrier.
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_hangtime = 0.0f;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    rc |= expect_true("zero hangtime gvcu fixture begin",
+                      dsd_call_state_observe(&state, &ended, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect_true("zero hangtime gvcu fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+    rc |= expect_true("zero hangtime gvcu fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
+
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_true("zero hangtime gvcu canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("zero hangtime gvcu remains ended", after.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_long("zero hangtime gvcu epoch preserved", (long)after.epoch, (long)before.epoch);
+    dsd_state_ext_free_all(&state);
+
     return rc;
 }
 

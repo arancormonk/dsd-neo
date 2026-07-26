@@ -58,6 +58,8 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #define VPDU_LABEL_UNUSED
 #endif
 
+#define P25P2_VPDU_END_REPEAT_WINDOW_S 1.0
+
 static void
 p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
@@ -171,15 +173,20 @@ p25p2_vpdu_source_names_subscriber(uint64_t source) {
 }
 
 static int
-p25p2_vpdu_call_end_is_in_hangtime(const dsd_opts* opts, const dsd_call_snapshot* call) {
+p25p2_vpdu_call_end_is_in_repeat_window(const dsd_opts* opts, const dsd_call_snapshot* call) {
     if (!call || call->ended_m <= 0.0) {
         return 0;
     }
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
     const double hangtime_s =
         sm && sm->initialized ? sm->config.hangtime_s : (opts ? (double)opts->trunk_hangtime : 0.0);
+    // Local hangtime controls carrier release, not how long END-adjacent
+    // SACCH/FACCH copies can repeat. Keep a short protocol window even for
+    // -t 0 when the companion TDMA slot retains the shared carrier.
+    const double repeat_window_s =
+        hangtime_s > P25P2_VPDU_END_REPEAT_WINDOW_S ? hangtime_s : P25P2_VPDU_END_REPEAT_WINDOW_S;
     const double now_m = dsd_time_now_monotonic_s();
-    return hangtime_s > 0.0 && now_m >= call->ended_m && (now_m - call->ended_m) <= hangtime_s;
+    return now_m >= call->ended_m && (now_m - call->ended_m) <= repeat_window_s;
 }
 
 static int
@@ -195,7 +202,7 @@ p25p2_vpdu_observation_repeats_ended_call(const dsd_opts* opts, const dsd_state*
     if (p25p2_vpdu_source_names_subscriber(source) && call.ota_source_id != source) {
         return 0;
     }
-    if (!p25p2_vpdu_call_end_is_in_hangtime(opts, &call)) {
+    if (!p25p2_vpdu_call_end_is_in_repeat_window(opts, &call)) {
         return 0;
     }
     // A grant newer than the last stop re-validates the assignment: the same

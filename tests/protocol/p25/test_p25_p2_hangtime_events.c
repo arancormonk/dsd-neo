@@ -371,9 +371,9 @@ test_source_less_different_target_opens_call(void) {
     return rc;
 }
 
-/* Telephone-interconnect voice has no subscriber source field. A source-less
- * private ACTIVE must therefore open a new epoch even when its target matches
- * the private assignment that just completed. */
+/* Standard Unit-to-Unit Voice User carries a subscriber source field, so a
+ * zeroed post-END repeat remains hangtime. Telephone-interconnect voice has
+ * no source field and must be allowed to open a new epoch for the same target. */
 static int
 test_source_optional_private_voice_opens_call(void) {
     int rc = 0;
@@ -389,6 +389,13 @@ test_source_optional_private_voice_opens_call(void) {
     event_ticks();
 
     dsd_call_snapshot call = {0};
+    rc |= expect("standard private repeat exists", dsd_call_state_get(&g_state, 0U, &call) > 0);
+    rc |= expect("standard private repeat stays ended", call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect("standard private repeat keeps epoch", call.epoch == ended_epoch);
+
+    (void)p25_sm_emit_active_call_ex(&g_opts, &g_state, 0, 0, TEST_PRIVATE_TARGET, 0, 0, 0x00, 1);
+    event_ticks();
+
     rc |= expect("source-optional private call exists", dsd_call_state_get(&g_state, 0U, &call) > 0);
     rc |= expect("source-optional private active", call.phase == DSD_CALL_PHASE_ACTIVE);
     rc |= expect("source-optional private identity", call.kind == DSD_CALL_KIND_PRIVATE_VOICE
@@ -401,6 +408,53 @@ test_source_optional_private_voice_opens_call(void) {
     rc |= expect("decoded voice keeps private target", dsd_call_state_get(&g_state, 0U, &call) > 0
                                                            && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
                                                            && call.ota_target_id == TEST_PRIVATE_TARGET);
+    return rc;
+}
+
+/* The VPDU observer can legitimately begin the next same-identity epoch after
+ * hangtime expires while a companion slot retains the carrier. Its following
+ * MAC_ACTIVE must not be mistaken for the preceding slot-local END. */
+static int
+test_fresh_vpdu_epoch_not_suppressed(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma();
+
+    transmit_clear(0x11, TEST_SRC);
+    end_transmission(TEST_SRC);
+    const uint64_t ended_epoch = slot0_epoch();
+
+    const dsd_call_observation vpdu = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = TEST_TG,
+        .policy_target_id = TEST_TG,
+        .ota_source_id = TEST_SRC,
+        .service_options = 0x00U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect("fresh vpdu begins call", dsd_call_state_observe(&g_state, &vpdu, DSD_CALL_BOUNDARY_CONTINUE) > 0);
+    p25_crypto_begin_voice_call(&g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x00, 0);
+    g_state.p25_p2_audio_allowed[0] = 1;
+
+    const uint64_t vpdu_epoch = slot0_epoch();
+    rc |= expect("fresh vpdu advances epoch", vpdu_epoch != ended_epoch);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    dsd_call_snapshot call = {0};
+    rc |= expect("fresh vpdu active accepted", ctx->slots[0].voice_active == 1);
+    rc |= expect("fresh vpdu epoch coalesced", dsd_call_state_get(&g_state, 0U, &call) > 0
+                                                   && call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == vpdu_epoch);
+    rc |= expect("fresh vpdu clear crypto preserved", g_state.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    rc |= expect("fresh vpdu clear audio preserved", g_state.p25_p2_audio_allowed[0] == 1);
+
+    (void)p25_sm_emit_decoded_voice(&g_opts, &g_state, 0);
+    event_ticks();
+    rc |= expect("fresh vpdu decoded voice stays clear", g_state.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    rc |= expect("fresh vpdu decoded voice stays audible", g_state.p25_p2_audio_allowed[0] == 1);
     return rc;
 }
 
@@ -504,6 +558,7 @@ main(void) {
     rc |= test_source_bearing_announcement_opens_call();
     rc |= test_source_less_different_target_opens_call();
     rc |= test_source_optional_private_voice_opens_call();
+    rc |= test_fresh_vpdu_epoch_not_suppressed();
     rc |= test_decoded_voice_opens_late_entry();
     rc |= test_post_end_ptt_does_not_inherit_stale_source();
     rc |= test_conventional_announcements();

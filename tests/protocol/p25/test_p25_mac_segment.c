@@ -409,6 +409,7 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("group voice src", identity.src, 0x123456);
     rc |= expect_int("group voice type", identity.is_group, 1);
     rc |= expect_int("group voice service", identity.svc_bits, 0x81);
+    rc |= expect_int("group voice source required", identity.source_optional, 0);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x30;
@@ -426,6 +427,7 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("private voice src", identity.src, 0x654321);
     rc |= expect_int("private voice type", identity.is_group, 0);
     rc |= expect_int("private voice service", identity.svc_bits, 0x42);
+    rc |= expect_int("private voice source required", identity.source_optional, 0);
 
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x03;
@@ -441,6 +443,7 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("telephone voice src", identity.src, 0);
     rc |= expect_int("telephone voice type", identity.is_group, 0);
     rc |= expect_int("telephone voice service", identity.svc_bits, 0x44);
+    rc |= expect_int("telephone voice source optional", identity.source_optional, 1);
 
     for (int mfid = 0; mfid <= 1; mfid++) {
         DSD_MEMSET(mac, 0, sizeof(mac));
