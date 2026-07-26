@@ -2730,24 +2730,39 @@ p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
 }
 
 static int
+p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
+    if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
+        return 1;
+    }
+    return ev->is_group ? (slot_ctx->ota_tg != ev->tg) : (slot_ctx->dst != ev->dst);
+}
+
+static int
 p25_voice_start_is_post_end_announcement(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
                                          const p25_sm_event_t* input) {
     // Phase 2 hangtime keeps repeating the group announcement (MAC_ACTIVE /
-    // GVCU / regroup voice) with no talker after MAC_END_PTT. A MAC_PTT,
-    // decoded voice, or an announcement that names a source is evidence of a
-    // new transmission; everything else merely retains the carrier. Phase 1
-    // is exempt because its source-less ACTIVE reports decoded voice awaiting
-    // LCW identity.
+    // GVCU / regroup voice) with no talker after MAC_END_PTT. Suppress only an
+    // anonymous ACTIVE or a source-less group announcement that still names
+    // the completed assignment. A fresh grant, changed target, source-optional
+    // private voice, decoded voice, or named source is evidence of a new
+    // transmission. Phase 1 is exempt because its source-less ACTIVE reports
+    // decoded voice awaiting LCW identity.
     if (!ctx || !ctx->vc_is_tdma || !slot_ctx || !input || input->type != P25_SM_EV_ACTIVE) {
         return 0;
     }
-    if (input->decoded_voice) {
+    if (input->decoded_voice || p25_source_id_known(input->src)) {
         return 0;
     }
     if (!p25_voice_start_follows_completed_epoch(slot_ctx)) {
         return 0;
     }
-    return !p25_source_id_known(input->src);
+    if (slot_ctx->last_grant_m > slot_ctx->last_stop_m) {
+        return 0;
+    }
+    if (!input->identity_valid) {
+        return 1;
+    }
+    return input->is_group && !p25_voice_start_target_changed(slot_ctx, input);
 }
 
 static void
@@ -2780,14 +2795,6 @@ p25_voice_start_assignment_source_is_fresh(const p25_sm_slot_ctx_t* slot_ctx) {
         return 0;
     }
     return !p25_voice_start_follows_completed_epoch(slot_ctx) || slot_ctx->last_grant_m > slot_ctx->last_stop_m;
-}
-
-static int
-p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
-    if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
-        return 1;
-    }
-    return ev->is_group ? (slot_ctx->ota_tg != ev->tg) : (slot_ctx->dst != ev->dst);
 }
 
 static int

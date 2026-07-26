@@ -31,8 +31,9 @@
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define TEST_TG  40602
-#define TEST_SRC 600205
+#define TEST_TG             40602
+#define TEST_SRC            600205
+#define TEST_PRIVATE_TARGET 700205
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -75,6 +76,7 @@ reset_test_state(void) {
     g_opts.trunk_enable = 1;
     g_opts.trunk_hangtime = 2.0f;
     g_opts.trunk_tune_group_calls = 1;
+    g_opts.trunk_tune_private_calls = 1;
     g_state.p25_cc_freq = 851000000;
     g_state.lastsynctype = DSD_SYNC_P25P2_POS;
     g_state.synctype = DSD_SYNC_P25P2_POS;
@@ -147,31 +149,47 @@ slot0_matches(dsd_call_phase phase, uint64_t source) {
 }
 
 static void
-start_tuned_tdma(void) {
+start_tuned_tdma_call(int target, int src, int is_group) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     g_state.trunk_chan_map[0x1234] = 851500000;
     g_state.p25_chan_tdma_explicit[1] = 2;
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     g_opts.trunk_is_tuned = 1;
-    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 851500000, TEST_TG, TEST_SRC, 0);
+    p25_sm_event_t grant = is_group ? p25_sm_ev_group_grant(0x1234, 851500000, target, src, 0)
+                                    : p25_sm_ev_indiv_grant(0x1234, 851500000, target, src, 0);
     p25_sm_event(ctx, &g_opts, &g_state, &grant);
 }
 
 static void
-transmit_clear(uint8_t signature_fill, int src) {
+start_tuned_tdma(void) {
+    start_tuned_tdma_call(TEST_TG, TEST_SRC, 1);
+}
+
+static void
+transmit_clear_call(uint8_t signature_fill, int target, int src, int is_group) {
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
     make_signature(signature, signature_fill);
-    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, src, 1, P25_SM_SVC_UNKNOWN, signature,
-                                        dsd_time_now_monotonic_s(), 0);
-    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, TEST_TG);
+    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, is_group ? target : 0, is_group ? 0 : target, src,
+                                        is_group, P25_SM_SVC_UNKNOWN, signature, dsd_time_now_monotonic_s(), 0);
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, target);
+    event_ticks();
+}
+
+static void
+transmit_clear(uint8_t signature_fill, int src) {
+    transmit_clear_call(signature_fill, TEST_TG, src, 1);
+}
+
+static void
+end_transmission_call(int target, int src, int is_group) {
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, is_group ? target : 0, src, dsd_time_now_monotonic_s());
+    p25_crypto_reset_slot(&g_state, 0);
     event_ticks();
 }
 
 static void
 end_transmission(int src) {
-    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, src, dsd_time_now_monotonic_s());
-    p25_crypto_reset_slot(&g_state, 0);
-    event_ticks();
+    end_transmission_call(TEST_TG, src, 1);
 }
 
 /* Hangtime announcements after an explicit end must not begin a canonical
@@ -246,6 +264,70 @@ test_source_bearing_announcement_opens_call(void) {
 
     rc |= expect("late entry opens call", slot0_matches(DSD_CALL_PHASE_ACTIVE, 777001U));
     rc |= expect("late entry new epoch", slot0_epoch() != ended_epoch);
+    return rc;
+}
+
+/* A source-less announcement for a different group is a new call, not
+ * hangtime signaling for the completed assignment. */
+static int
+test_source_less_different_target_opens_call(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma();
+
+    transmit_clear(0x11, TEST_SRC);
+    end_transmission(TEST_SRC);
+    const uint64_t ended_epoch = slot0_epoch();
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG + 1, 0, 0, 1, 0x00);
+    event_ticks();
+
+    dsd_call_snapshot call = {0};
+    rc |= expect("source-less changed target call exists", dsd_call_state_get(&g_state, 0U, &call) > 0);
+    rc |= expect("source-less changed target active", call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect("source-less changed target identity", call.kind == DSD_CALL_KIND_GROUP_VOICE
+                                                            && call.ota_target_id == (uint64_t)(TEST_TG + 1)
+                                                            && call.ota_source_id == 0U);
+    rc |= expect("source-less changed target new epoch", call.epoch != ended_epoch);
+    rc |= expect("source-less changed target clears hangtime", ctx->t_hangtime_m == 0.0);
+    (void)p25_sm_emit_decoded_voice(&g_opts, &g_state, 0);
+    event_ticks();
+    rc |= expect("decoded voice keeps changed target",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.ota_target_id == (uint64_t)(TEST_TG + 1));
+    return rc;
+}
+
+/* Telephone-interconnect voice has no subscriber source field. A source-less
+ * private ACTIVE must therefore open a new epoch even when its target matches
+ * the private assignment that just completed. */
+static int
+test_source_optional_private_voice_opens_call(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma_call(TEST_PRIVATE_TARGET, TEST_SRC, 0);
+
+    transmit_clear_call(0x11, TEST_PRIVATE_TARGET, TEST_SRC, 0);
+    end_transmission_call(TEST_PRIVATE_TARGET, TEST_SRC, 0);
+    const uint64_t ended_epoch = slot0_epoch();
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, 0, TEST_PRIVATE_TARGET, 0, 0, 0x00);
+    event_ticks();
+
+    dsd_call_snapshot call = {0};
+    rc |= expect("source-optional private call exists", dsd_call_state_get(&g_state, 0U, &call) > 0);
+    rc |= expect("source-optional private active", call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect("source-optional private identity", call.kind == DSD_CALL_KIND_PRIVATE_VOICE
+                                                         && call.ota_target_id == TEST_PRIVATE_TARGET
+                                                         && call.ota_source_id == 0U);
+    rc |= expect("source-optional private new epoch", call.epoch != ended_epoch);
+    rc |= expect("source-optional private clears hangtime", ctx->t_hangtime_m == 0.0);
+    (void)p25_sm_emit_decoded_voice(&g_opts, &g_state, 0);
+    event_ticks();
+    rc |= expect("decoded voice keeps private target", dsd_call_state_get(&g_state, 0U, &call) > 0
+                                                           && call.kind == DSD_CALL_KIND_PRIVATE_VOICE
+                                                           && call.ota_target_id == TEST_PRIVATE_TARGET);
     return rc;
 }
 
@@ -329,6 +411,8 @@ main(void) {
     int rc = 0;
     rc |= test_hangtime_announcements_do_not_mint_epochs();
     rc |= test_source_bearing_announcement_opens_call();
+    rc |= test_source_less_different_target_opens_call();
+    rc |= test_source_optional_private_voice_opens_call();
     rc |= test_decoded_voice_opens_late_entry();
     rc |= test_post_end_ptt_does_not_inherit_stale_source();
     rc |= test_conventional_announcements();
