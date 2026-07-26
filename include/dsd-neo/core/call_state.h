@@ -172,6 +172,15 @@ typedef struct {
     dsd_recent_activity_entry entry;
 } dsd_recent_activity_transaction;
 
+/**
+ * @brief Family id the store uses to decide whether two observations describe the same call.
+ *
+ * Observations from different families always begin a new epoch. Callers that pre-judge an epoch
+ * boundary (to coalesce, suppress, or log one) must mirror this, or their decision will disagree
+ * with what dsd_call_state_observe() actually does.
+ */
+int dsd_call_state_protocol_family(int protocol);
+
 /** Ensure the canonical call-state extension and its transaction mutex exist. */
 int dsd_call_state_ensure(dsd_state* state);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);

@@ -92,14 +92,19 @@ slot0_matches(dsd_call_phase phase, uint64_t target, uint64_t source) {
 }
 
 static void
-start_tuned_tdma(void) {
+start_tuned_tdma_src(int grant_src) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     g_state.trunk_chan_map[0x1234] = 851500000;
     g_state.p25_chan_tdma_explicit[1] = 2;
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     g_opts.trunk_is_tuned = 1;
-    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 851500000, TEST_TG, TEST_SRC, 0);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 851500000, TEST_TG, grant_src, 0);
     p25_sm_event(ctx, &g_opts, &g_state, &grant);
+}
+
+static void
+start_tuned_tdma(void) {
+    start_tuned_tdma_src(TEST_SRC);
 }
 
 static void
@@ -212,16 +217,91 @@ test_post_end_source_less_ptt_does_not_inherit_talker(void) {
     return rc;
 }
 
+/* 0xFFFFFD is the fixed-network call-processing address and 0xFFFFFF is the
+ * all-subscribers broadcast address. Neither identifies a talker, so neither
+ * may be published as one -- but neither is evidence that the talker the grant
+ * already named has stopped, so a known assignment source must survive. */
 static int
 test_network_controller_source_is_not_a_talker(void) {
+    int rc = 0;
+    static const int controller_sources[] = {0xFFFFFD, 0xFFFFFF};
+
+    for (size_t i = 0U; i < sizeof(controller_sources) / sizeof(controller_sources[0]); i++) {
+        reset_test_state();
+        start_tuned_tdma_src(0);
+
+        rc |= expect("controller-source ACTIVE accepted",
+                     p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, controller_sources[i], 1, 0x00) > 0);
+        rc |= expect("controller source not published as talker", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));
+        rc |= expect("controller source not retained on slot", p25_sm_get_ctx()->slots[0].src == 0);
+    }
+    return rc;
+}
+
+/* A controller placeholder in MAC_ACTIVE says "the network sent this", not
+ * "the talker is gone". Erasing the subscriber the grant named would drop the
+ * only identity the call has. */
+static int
+test_controller_source_keeps_granted_talker(void) {
     int rc = 0;
     reset_test_state();
     start_tuned_tdma();
 
-    rc |= expect("controller-source ACTIVE accepted",
+    rc |= expect("granted-talker controller ACTIVE accepted",
                  p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, 0xFFFFFD, 1, 0x00) > 0);
-    rc |= expect("controller source removed from call", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));
-    rc |= expect("controller source removed from slot", p25_sm_get_ctx()->slots[0].src == 0);
+    rc |= expect("granted talker survives controller source",
+                 slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, (uint64_t)TEST_SRC));
+    rc |= expect("granted talker retained on slot", p25_sm_get_ctx()->slots[0].src == TEST_SRC);
+    return rc;
+}
+
+/* Telephone interconnect carries no source field at all, so src 0 means "none
+ * exists" rather than "not decoded" and must not inherit the grant's talker. */
+static int
+test_source_absent_active_does_not_inherit_talker(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma();
+
+    rc |= expect("source-absent ACTIVE accepted",
+                 p25_sm_emit_active_call_source_absent(&g_opts, &g_state, 0, TEST_TG, 0, 1, 0x00) > 0);
+    rc |= expect("source-absent ACTIVE keeps no talker", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));
+    return rc;
+}
+
+/* A source-less grant repeat is retention only while it re-describes the call
+ * that just ended. When the canonical slot holds a different call -- ended out
+ * of band, e.g. by a carrier drop, while the assignment moved on -- the repeat
+ * is fresh evidence and must open its own epoch instead of being dropped and
+ * having its crypto written onto the unrelated ended call. */
+static int
+test_assignment_repeat_does_not_borrow_mismatched_ended_call(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma_src(0);
+
+    // Park an unrelated ended call on the slot, with clear crypto.
+    const dsd_call_observation other_call = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = TEST_TG + 11,
+        .policy_target_id = TEST_TG + 11,
+        .service_options = 0x00U,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect("mismatch fixture begins", dsd_call_state_observe(&g_state, &other_call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect("mismatch fixture ends", dsd_call_state_end(&g_state, 0U, 0.0) > 0);
+    const uint64_t stale_epoch = slot0_epoch();
+
+    // A source-less ACTIVE for the assignment's own target.
+    rc |= expect("mismatch repeat accepted", p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, 0, 1, 0x00) > 0);
+
+    dsd_call_snapshot call;
+    rc |= expect("mismatch repeat opens its own call", dsd_call_state_get(&g_state, 0U, &call) > 0
+                                                           && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                           && call.ota_target_id == (uint64_t)TEST_TG);
+    rc |= expect("mismatch repeat starts new epoch", slot0_epoch() != stale_epoch);
     return rc;
 }
 
@@ -229,11 +309,14 @@ int
 main(void) {
     int rc = 0;
     rc |= test_same_identity_mac_active_reopens_call();
+    rc |= test_assignment_repeat_does_not_borrow_mismatched_ended_call();
     rc |= test_identity_decode_failure_still_reopens_call();
     rc |= test_conventional_same_identity_active_reopens_call();
     rc |= test_active_coalesces_with_live_vpdu_observation();
     rc |= test_post_end_source_less_ptt_does_not_inherit_talker();
     rc |= test_network_controller_source_is_not_a_talker();
+    rc |= test_controller_source_keeps_granted_talker();
+    rc |= test_source_absent_active_does_not_inherit_talker();
     dsd_state_ext_free_all(&g_state);
 
     if (rc == 0) {

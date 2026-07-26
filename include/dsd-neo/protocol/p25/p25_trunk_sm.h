@@ -116,6 +116,7 @@ typedef struct {
     int keyid;                                         // Key ID (for ENC event)
     int data_call_override;                            // 0=infer from svc_bits, 1=force data, -1=force non-data
     int identity_valid;                                // 1 when PTT/ACTIVE carries a decoded call identity
+    int source_absent;                                 // 1 when the message type carries no source by design
     int facch;                                         // 1 when PTT/END was decoded from valid FACCH
     int crypto_new_epoch;                              // 1 when CRYPTO_PENDING must start a fresh deadline
     double observed_m;                                 // Optional monotonic timestamp when the event was observed
@@ -482,6 +483,15 @@ int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, 
                             int svc_bits);
 
 /**
+ * @brief Emit an ACTIVE call whose message type carries no source field.
+ *
+ * See p25_sm_ev_active_call_source_absent(): the voice start must not inherit
+ * the preceding assignment's talker for these calls.
+ */
+int p25_sm_emit_active_call_source_absent(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int is_group,
+                                          int svc_bits);
+
+/**
  * @brief Emit END event for a slot.
  */
 void p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot);
@@ -695,6 +705,22 @@ p25_sm_ev_active_call(int slot, int tg, int dst, int src, int is_group, int svc_
     ev.is_group = is_group ? 1 : 0;
     ev.svc_bits = svc_bits;
     ev.identity_valid = 1;
+    return ev;
+}
+
+/**
+ * @brief ACTIVE call event whose message type carries no source field at all.
+ *
+ * Telephone Interconnect Voice Channel User is the case in practice: the
+ * landline leg has no subscriber source, so src 0 means "none exists" rather
+ * than "not decoded". Without that distinction the voice start would inherit
+ * the talker from the preceding assignment and attribute a landline call to
+ * whichever radio last held the channel.
+ */
+static inline p25_sm_event_t
+p25_sm_ev_active_call_source_absent(int slot, int tg, int dst, int is_group, int svc_bits) {
+    p25_sm_event_t ev = p25_sm_ev_active_call(slot, tg, dst, 0, is_group, svc_bits);
+    ev.source_absent = 1;
     return ev;
 }
 

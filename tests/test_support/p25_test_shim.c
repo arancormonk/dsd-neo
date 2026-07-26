@@ -376,6 +376,12 @@ p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int ch
 // Extended MAC VPDU test entry allowing LCCH flag and slot control.
 void
 p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot) {
+    p25_test_process_mac_vpdu_typed(type, P25_MAC_PDU_ACTIVE, mac_bytes, mac_len, is_lcch, currentslot);
+}
+
+void
+p25_test_process_mac_vpdu_typed(int type, int pdu_type, const unsigned char* mac_bytes, int mac_len, int is_lcch,
+                                int currentslot) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -391,7 +397,7 @@ p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_l
     for (int i = 0; i < n; i++) {
         MAC[i] = mac_bytes[i];
     }
-    process_MAC_VPDU(opts, state, type, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU(opts, state, type, (p25_mac_pdu_type)pdu_type, MAC);
     free(opts);
     p25_test_free_state(state);
 }

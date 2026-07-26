@@ -20,6 +20,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,9 +30,12 @@
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define TEST_TG    57111
-#define TEST_ALGID 0x84
-#define TEST_KEYID 0x023F
+#define TEST_TG     57111
+#define TEST_ALGID  0x84
+#define TEST_KEYID  0x023F
+// A talkgroup of its own: the encrypted-call cache that lockouts populate is not
+// cleared by reset_test_state(), so reusing TEST_TG would block a later grant.
+#define TEST_TG_ALT (TEST_TG + 100)
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -111,6 +115,38 @@ slot0_epoch(void) {
         return 0U;
     }
     return call.epoch;
+}
+
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+tune_group_grant(int tg) {
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    g_opts.trunk_is_tuned = 1;
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 851500000, tg, 0, 0x00);
+    p25_sm_event(ctx, &g_opts, &g_state, &grant);
 }
 
 static void
@@ -266,10 +302,88 @@ test_stale_same_key_ess_opens_conventional_call(void) {
     return rc;
 }
 
+/* The suppression window is measured from the last accepted repeat, not from
+ * the lockout instant. LDU2 carries the ESS every other LDU, so a lockout that
+ * holds the carrier through hangtime keeps re-resolving well past one second;
+ * a window anchored to the lockout would expire mid-hangtime and let the next
+ * repeat mint the phantom epoch this test file exists to prevent. */
+static int
+test_lockout_ess_window_slides_with_repeats(void) {
+    int rc = 0;
+    reset_test_state();
+
+    begin_identified_call();
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
+    event_ticks();
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+    rc |= expect("sliding fixture lockout recorded", g_state.p25_p1_lockout_epoch.valid != 0U);
+
+    // Four repeats, each 0.9 s after the previous one. Total elapsed since the
+    // lockout is 3.6 s, far past the 1.0 s window, yet no gap ever exceeds it.
+    for (int i = 0; i < 4; i++) {
+        g_state.p25_p1_lockout_epoch.recorded_m = dsd_time_now_monotonic_s() - 0.9;
+        (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID,
+                                 0x2000ULL + (unsigned long long)i, TEST_TG);
+        event_ticks();
+        rc |= expect("sliding repeat mints no epoch", slot0_epoch() == ended_epoch);
+    }
+
+    dsd_call_snapshot call;
+    rc |= expect("sliding repeats leave call ended",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect("sliding repeats commit one event", committed_event_count() == 1);
+    rc |= expect("sliding repeats emit no identity-less row", !committed_events_contain("TGT: 00000000"));
+    return rc;
+}
+
+/* p25_emit_enc_lockout_once_typed() only records the lockout epoch when it
+ * finalizes a matching call, but handle_enc() ends the slot unconditionally.
+ * A lockout whose kind does not match the canonical call -- a group lockout
+ * raised while the slot holds a private call -- must still leave the following
+ * ESS repeats with a suppression context. */
+static int
+test_non_matching_lockout_still_records_epoch(void) {
+    int rc = 0;
+    reset_test_state();
+    tune_group_grant(TEST_TG_ALT);
+    rc |= expect("non-matching fixture tuned", p25_sm_get_ctx()->state == P25_SM_TUNED);
+
+    // Put a private call on the slot so the group lockout below cannot match
+    // it: p25_lockout_get_call_context() compares kind as well as target, so
+    // it reports no match and the emit path alone records nothing.
+    const dsd_call_observation private_call = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = TEST_TG_ALT,
+        .policy_target_id = TEST_TG_ALT,
+        .service_options = 0x40U,
+        .has_service_metadata = 1U,
+    };
+    (void)dsd_call_state_observe(&g_state, &private_call, DSD_CALL_BOUNDARY_BEGIN);
+    const uint64_t private_epoch = slot0_epoch();
+
+    // The precondition handle_enc() checks before locking out.
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    p25_sm_emit_enc(&g_opts, &g_state, 0, TEST_ALGID, TEST_KEYID, TEST_TG_ALT);
+
+    dsd_call_snapshot call;
+    rc |= expect("non-matching lockout ends call",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect("non-matching lockout records epoch", g_state.p25_p1_lockout_epoch.valid != 0U);
+    rc |= expect("non-matching lockout records the ended epoch",
+                 g_state.p25_p1_lockout_epoch.call_epoch == private_epoch);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_lockout_ess_repeats_do_not_mint_epochs();
+    rc |= test_lockout_ess_window_slides_with_repeats();
+    rc |= test_non_matching_lockout_still_records_epoch();
     rc |= test_identity_pending_ess_still_opens_call();
     rc |= test_reused_key_after_new_assignment_opens_call();
     rc |= test_ess_after_cryptoless_end_still_opens_call();

@@ -152,8 +152,8 @@ call_state_effective_target_snapshot(const dsd_call_snapshot* snapshot) {
     return snapshot->ota_target_id != 0U ? snapshot->ota_target_id : snapshot->policy_target_id;
 }
 
-static int
-call_state_protocol_family(int protocol) {
+int
+dsd_call_state_protocol_family(int protocol) {
     if (DSD_SYNC_IS_P25P1(protocol)) {
         return 1;
     }
@@ -275,7 +275,7 @@ call_state_begin_specializes_provisional_voice(const dsd_call_snapshot* current,
     if (current->protocol == DSD_SYNC_NONE || observation->protocol == DSD_SYNC_NONE) {
         return 1;
     }
-    return call_state_protocol_family(current->protocol) == call_state_protocol_family(observation->protocol);
+    return dsd_call_state_protocol_family(current->protocol) == dsd_call_state_protocol_family(observation->protocol);
 }
 
 static int
@@ -289,7 +289,7 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
         return 1;
     }
     if (current->protocol != DSD_SYNC_NONE && observation->protocol != DSD_SYNC_NONE
-        && call_state_protocol_family(current->protocol) != call_state_protocol_family(observation->protocol)) {
+        && dsd_call_state_protocol_family(current->protocol) != dsd_call_state_protocol_family(observation->protocol)) {
         return 1;
     }
     const uint64_t old_target = call_state_effective_target_snapshot(current);
@@ -392,6 +392,24 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
 }
 
 static int
+call_state_crypto_target_accepts(const dsd_call_snapshot* snapshot, int include_ended) {
+    if (snapshot->epoch == 0U) {
+        return 0;
+    }
+    if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    return include_ended && snapshot->phase == DSD_CALL_PHASE_ENDED;
+}
+
+static int
+call_state_crypto_differs(const dsd_call_snapshot* snapshot, const dsd_call_crypto_update* update) {
+    return snapshot->crypto != update->classification || snapshot->algid != update->algid
+           || snapshot->kid != update->kid || snapshot->mi != update->mi
+           || snapshot->audio_permitted != (update->audio_permitted ? 1U : 0U);
+}
+
+static int
 call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update, int include_ended) {
     if (!state || !update || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
@@ -402,17 +420,28 @@ call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_u
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
-    if (snapshot->epoch == 0U
-        || (snapshot->phase != DSD_CALL_PHASE_ACTIVE && (!include_ended || snapshot->phase != DSD_CALL_PHASE_ENDED))) {
+    if (!call_state_crypto_target_accepts(snapshot, include_ended)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
+    }
+    if (!call_state_crypto_differs(snapshot, update)) {
+        // A retained ended call is re-described by every carrier repeat.
+        // Bumping the revision for an identical snapshot makes consumers that
+        // poll on revision churn once per repeat for no observable change.
+        dsd_call_state_ext_unlock(ext);
+        return 1;
     }
     snapshot->crypto = update->classification;
     snapshot->algid = update->algid;
     snapshot->kid = update->kid;
     snapshot->mi = update->mi;
     snapshot->audio_permitted = update->audio_permitted ? 1U : 0U;
-    snapshot->updated_m = call_state_observed_m(update->observed_m);
+    if (snapshot->phase == DSD_CALL_PHASE_ACTIVE) {
+        snapshot->updated_m = call_state_observed_m(update->observed_m);
+    }
+    // An ended call keeps the updated_m it had when it ended: moving it past
+    // ended_m would make a finished call look freshly updated to consumers
+    // that order by recency.
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);

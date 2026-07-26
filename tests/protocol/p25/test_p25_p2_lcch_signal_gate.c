@@ -93,7 +93,7 @@ main(void) {
     MAC[1] = 0x00; // SIGNAL
     MAC[2] = 0x00; // standard MFID
 
-    process_MAC_VPDU(&opts, &state, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /*FACCH*/, P25_MAC_PDU_SIGNAL, MAC);
 
     // Gates must remain unchanged by MAC_SIGNAL when on LCCH
     rc |= expect_eq("gate slot0", state.p25_p2_audio_allowed[0], 1);
@@ -106,7 +106,7 @@ main(void) {
     state.currentslot = 1;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
-    process_MAC_VPDU(&opts, &state, 1 /*SACCH*/, P25_MAC_PDU_ACTIVE, MAC);
+    process_MAC_VPDU(&opts, &state, 1 /*SACCH*/, P25_MAC_PDU_SIGNAL, MAC);
     rc |= expect_eq("gate slot0 (SACCH)", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("gate slot1 (SACCH)", state.p25_p2_audio_allowed[1], 1);
 

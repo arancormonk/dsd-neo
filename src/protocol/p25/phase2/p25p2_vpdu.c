@@ -134,13 +134,12 @@ p25p2_vpdu_is_encrypted_probe(const dsd_opts* opts, int service_options) {
            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0;
 }
 
+// Whether a voice-user block on this slot describes traffic this receiver is
+// actually following. Independent of the outer PDU type: it answers "may we
+// track this slot at all", not "is a transmission on the air right now".
 static int
-p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* state, int slot,
-                                     p25_mac_pdu_type pdu_type) {
+p25p2_vpdu_voice_is_addressable(const dsd_opts* opts, const dsd_state* state, int slot) {
     if (!state || state->p2_is_lcch == 1 || slot < 0 || slot > 1) {
-        return 0;
-    }
-    if (pdu_type == P25_MAC_PDU_IDLE || pdu_type == P25_MAC_PDU_HANGTIME) {
         return 0;
     }
     if (!opts || opts->trunk_enable != 1) {
@@ -150,6 +149,18 @@ p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* stat
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
     return opts->trunk_is_tuned == 1 && sm && sm->state == P25_SM_TUNED && sm->slots[slot].grant_active
            && !sm->slots[slot].data_call;
+}
+
+// Whether the outer PDU type makes this voice user positive evidence that a
+// transmission is on the air. IDLE and HANGTIME carry voice-user messages that
+// re-describe the call that just ended, so they must not drive a canonical
+// epoch. Both reference decoders draw the line at exactly these two types:
+// sdrtrunk routes IDLE/HANGTIME to continueState() instead of its traffic
+// channel call update, and op25 drains audio for them while still decoding the
+// embedded MAC messages.
+static int
+p25p2_vpdu_pdu_type_is_live_voice(p25_mac_pdu_type pdu_type) {
+    return pdu_type != P25_MAC_PDU_IDLE && pdu_type != P25_MAC_PDU_HANGTIME;
 }
 
 static void
@@ -173,8 +184,20 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
                          uint64_t source, int service_options, p25_mac_pdu_type pdu_type) {
     if (!state || slot < 0 || slot > 1 || target == 0U
         || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
-        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot, pdu_type)) {
+        || !p25p2_vpdu_voice_is_addressable(opts, state, slot)) {
         return 0;
+    }
+    if (!p25p2_vpdu_pdu_type_is_live_voice(pdu_type)) {
+        // Track the slot -- the caller's liveness timer and service options,
+        // and the crypto classification below -- but do not begin or continue
+        // a canonical epoch. Resurrecting the ended call here is what minted
+        // the phantom identity-less rows after MAC_END_PTT. Keeping the
+        // tracking separate from the epoch decision matters: the two were
+        // previously bundled behind one boolean, which silently let the slot
+        // liveness hold lapse during hangtime.
+        p25p2_vpdu_update_voice_crypto(state, slot, service_options, 0,
+                                       p25p2_vpdu_is_encrypted_probe(opts, service_options));
+        return 1;
     }
     const uint64_t subscriber_source = p25_source_id_is_subscriber(source) ? source : 0U;
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
@@ -498,14 +521,19 @@ static void
 p25p2_vpdu_emit_json(const p25p2_vpdu_ctx* ctx) {
     uint8_t mfid = (uint8_t)ctx->mac[2];
     uint8_t opcode = (uint8_t)ctx->mac[1];
+    // The tag names the outer MAC PDU type, which is a different namespace
+    // from the inner MAC message opcode also emitted here: PDU type 3 is IDLE
+    // while opcode 3 is Telephone Interconnect Voice Channel User. Deriving
+    // the tag from mac[1] labelled every row by the first MAC message instead,
+    // so a hangtime PDU carrying a Group Voice Channel User read as "PTT".
     const char* tag = NULL;
-    switch (opcode) {
-        case 0x0: tag = "SIGNAL"; break;
-        case 0x1: tag = "PTT"; break;
-        case 0x2: tag = "END"; break;
-        case 0x3: tag = "TELE"; break;
-        case 0x4: tag = "ACTIVE"; break;
-        case 0x6: tag = "HANGTIME"; break;
+    switch (ctx->pdu_type) {
+        case P25_MAC_PDU_SIGNAL: tag = "SIGNAL"; break;
+        case P25_MAC_PDU_PTT: tag = "PTT"; break;
+        case P25_MAC_PDU_END_PTT: tag = "END"; break;
+        case P25_MAC_PDU_IDLE: tag = "IDLE"; break;
+        case P25_MAC_PDU_ACTIVE: tag = "ACTIVE"; break;
+        case P25_MAC_PDU_HANGTIME: tag = "HANGTIME"; break;
         default: tag = "MAC"; break;
     }
     p25p2_emit_mac_json_if_enabled(ctx->state, ctx->type, mfid, opcode, ctx->slot, ctx->len_b, ctx->len_c, tag);
@@ -2898,17 +2926,17 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int live_voice =
+        const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
                                      (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
-        if (live_voice) {
+        if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
         p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
 
-        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
-            && opts->trunk_tune_enc_calls == 0) {
+        if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
+            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
             p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
@@ -2945,10 +2973,10 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int live_voice =
+        const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
                                      (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
-        if (live_voice) {
+        if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
@@ -2961,8 +2989,8 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         if (src != 0 && gr != 0) {
             p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
         }
-        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
-            && opts->trunk_tune_enc_calls == 0) {
+        if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
+            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
             p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
@@ -3422,17 +3450,17 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, " Group Voice");
-        const int live_voice =
+        const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
                                      (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
-        if (live_voice) {
+        if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = time(NULL);
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
         DSD_FPRINTF(stderr, (MAC[1 + len_a] == 0x21) ? " - Extended " : " - Abbreviated ");
 
-        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
-            && opts->trunk_tune_enc_calls == 0) {
+        if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
+            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
             p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
@@ -3481,16 +3509,16 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_svc_no_state(opts, svc);
         DSD_FPRINTF(stderr, " Unit to Unit Voice");
-        const int live_voice =
+        const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
                                      (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
-        if (live_voice) {
+        if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = time(NULL);
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
 
-        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
-            && opts->trunk_tune_enc_calls == 0) {
+        if (tracked_voice && p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type) && (svc & 0x40) && opts->trunk_enable == 1
+            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
             p25_sm_emit_crypto_pending(opts, state, slot & 1);
         }
     }

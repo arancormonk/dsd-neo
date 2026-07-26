@@ -56,6 +56,9 @@ int p25_test_decode_mbt_with_iden_nb(const unsigned char* mbt, int mbt_len, cons
 int p25_test_frequency_for(int iden, int type, int tdma, long base, int spac, int chan16, long map_override,
                            long* out_freq);
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
+/** As p25_test_process_mac_vpdu_ex(), with an explicit outer MAC PDU type (p25_mac_pdu_type). */
+void p25_test_process_mac_vpdu_typed(int type, int pdu_type, const unsigned char* mac_bytes, int mac_len, int is_lcch,
+                                     int currentslot);
 void p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len, int trunk_enable,
                                          long p25_cc_freq, int iden, int type, int tdma, long base, int spac);
 void p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, int trunk_enable, long p25_cc_freq,

@@ -139,8 +139,32 @@ p25_crypto_clear_phase1_lockout_epoch(dsd_state* state) {
     }
 }
 
+// Whether the recorded lockout still describes the carrier we are on: same
+// assignment generation, same frequency, and a repeat seen recently enough.
 static int
-p25_crypto_phase1_ess_continues_ended_call(const dsd_state* state) {
+p25_crypto_phase1_lockout_context_current(const dsd_state* state, double now_m) {
+    const dsd_p25_p1_lockout_epoch_state* locked = &state->p25_p1_lockout_epoch;
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    return locked->valid && locked->recorded_m > 0.0 && now_m >= locked->recorded_m
+           && (now_m - locked->recorded_m) <= P25_P1_LOCKOUT_ESS_REPEAT_WINDOW_S
+           && locked->grant_generation == (sm ? sm->grant_count : 0U)
+           && locked->frequency_hz == p25_crypto_phase1_carrier_frequency(state);
+}
+
+// Whether the canonical slot still holds the ended call the lockout recorded,
+// carrying the same key this ESS resolved.
+static int
+p25_crypto_phase1_lockout_call_matches(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || !DSD_SYNC_IS_P25P1(call.protocol) || call.epoch != state->p25_p1_lockout_epoch.call_epoch) {
+        return 0;
+    }
+    return call.algid != 0U && (int)call.algid == state->payload_algid && (int)call.kid == state->payload_keyid;
+}
+
+static int
+p25_crypto_phase1_ess_continues_ended_call(dsd_state* state) {
     // The encryption lockout ends the canonical call directly, without the
     // TDU path that arms p25_p1_identity_pending. ESS repeats that follow on
     // the same carrier (LDU2 every superframe until the release retunes)
@@ -150,21 +174,18 @@ p25_crypto_phase1_ess_continues_ended_call(const dsd_state* state) {
     if (state->p25_p1_identity_pending) {
         return 0;
     }
-    const dsd_p25_p1_lockout_epoch_state* locked = &state->p25_p1_lockout_epoch;
-    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
     const double now_m = dsd_time_now_monotonic_s();
-    if (!locked->valid || locked->recorded_m <= 0.0 || now_m < locked->recorded_m
-        || (now_m - locked->recorded_m) > P25_P1_LOCKOUT_ESS_REPEAT_WINDOW_S
-        || locked->grant_generation != (sm ? sm->grant_count : 0U)
-        || locked->frequency_hz != p25_crypto_phase1_carrier_frequency(state)) {
+    if (!p25_crypto_phase1_lockout_context_current(state, now_m) || !p25_crypto_phase1_lockout_call_matches(state)) {
         return 0;
     }
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
-        || !DSD_SYNC_IS_P25P1(call.protocol) || call.epoch != locked->call_epoch) {
-        return 0;
-    }
-    return call.algid != 0U && (int)call.algid == state->payload_algid && (int)call.kid == state->payload_keyid;
+    // Slide the window forward on every accepted repeat. Measuring from the
+    // lockout instant alone would expire mid-hangtime and let the next LDU2
+    // mint the phantom epoch anyway; measuring from the last accepted repeat
+    // keeps the suppression alive exactly as long as the carrier keeps
+    // re-describing the same ended call, and still lets a later transmission
+    // through once the ESS stops repeating for longer than the window.
+    state->p25_p1_lockout_epoch.recorded_m = now_m;
+    return 1;
 }
 
 static int

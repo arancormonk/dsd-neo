@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/threading.h>
 #include <stdint.h>
 #include <string.h>
@@ -134,6 +135,19 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
     stub_select_state((dsd_state*)state);
     *out = g_stub_calls[slot];
     return out->epoch != 0U ? 1 : 0;
+}
+
+int
+dsd_call_state_protocol_family(int protocol) {
+    // Mirrors the real store closely enough for the boundary decisions these
+    // stubs exercise: P25 Phase 1 and Phase 2 must land in different families.
+    if (DSD_SYNC_IS_P25P1(protocol)) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_P25P2(protocol)) {
+        return 2;
+    }
+    return protocol == DSD_SYNC_NONE ? 0 : 1000 + protocol;
 }
 
 int

@@ -50,6 +50,7 @@ static int g_active_dst[2];
 static int g_active_src[2];
 static int g_active_is_group[2];
 static int g_active_svc[2];
+static int g_active_source_absent[2];
 static int g_voice_identity_result;
 static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
@@ -288,6 +289,15 @@ p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     return accepted;
 }
 
+int
+p25_sm_emit_active_call_source_absent(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int is_group,
+                                      int svc_bits) {
+    if (slot >= 0 && slot <= 1) {
+        g_active_source_absent[slot] = 1;
+    }
+    return p25_sm_emit_active_call(opts, state, slot, tg, dst, 0, is_group, svc_bits);
+}
+
 void
 p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
@@ -507,6 +517,8 @@ reset_stubs(void) {
     g_crc16_result = 0;
     g_vpdu_count = 0;
     g_vpdu_type = -1;
+    // Sentinel: MAC_PTT carries no MAC message opcode, so process_MAC_VPDU()
+    // is never called with it and any observed value came from a real call.
     g_vpdu_pdu_type = P25_MAC_PDU_PTT;
     g_vpdu_entry_lasttg[0] = -1;
     g_vpdu_entry_lasttg[1] = -1;
@@ -528,6 +540,7 @@ reset_stubs(void) {
     DSD_MEMSET(g_active_src, 0, sizeof(g_active_src));
     DSD_MEMSET(g_active_is_group, 0, sizeof(g_active_is_group));
     DSD_MEMSET(g_active_svc, 0, sizeof(g_active_svc));
+    DSD_MEMSET(g_active_source_absent, 0, sizeof(g_active_source_absent));
     g_voice_identity_result = 0;
     DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
     DSD_MEMSET(g_end_count, 0, sizeof(g_end_count));
@@ -1050,6 +1063,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected facch telephone active emitted", g_active_count[1], 1);
     rc |= expect_int("rejected facch telephone active records denied target", g_active_dst[1], 2001);
     rc |= expect_int("rejected facch telephone active clears absent source", g_active_src[1], 0);
+    rc |= expect_int("rejected facch telephone active routes source-absent", g_active_source_absent[1], 1);
     rc |= expect_int("rejected facch telephone active records private type", g_active_is_group[1], 0);
     rc |= expect_int("rejected facch telephone active latches media rejection", state.p25_p2_media_rejected[1], 1);
     rc |= expect_int("rejected facch telephone active companion gate preserved", state.p25_p2_audio_allowed[0], 1);

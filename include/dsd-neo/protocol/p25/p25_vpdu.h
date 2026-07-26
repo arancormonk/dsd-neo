@@ -20,7 +20,19 @@
 extern "C" {
 #endif
 
-/** P25 Phase 2 MAC PDU type carried by an XCCH block. */
+/**
+ * @brief P25 Phase 2 MAC PDU type carried by an XCCH block.
+ *
+ * This is the outer PDU type and is a different namespace from the inner MAC
+ * message opcode: PDU type 3 is IDLE, while MAC opcode 3 is Telephone
+ * Interconnect Voice Channel User.
+ *
+ * PTT and END_PTT are listed for completeness against the standard but never
+ * reach process_MAC_VPDU(): those PDUs carry no MAC message opcode, so
+ * p25p2_xcch_handle_{sacch,facch}_mac_ptt/_mac_end raise the corresponding
+ * state-machine events directly. Treat them as unreachable there rather than
+ * as a case the voice-provenance gate has to rule on.
+ */
 typedef enum {
     P25_MAC_PDU_SIGNAL = 0,
     P25_MAC_PDU_PTT = 1,

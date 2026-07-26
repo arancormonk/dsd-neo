@@ -174,6 +174,10 @@ static int
 p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
     struct p25p2_mac_voice_identity identity;
     if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
+        if (identity.source_optional) {
+            return p25_sm_emit_active_call_source_absent(opts, state, slot, identity.tg, identity.dst,
+                                                         identity.is_group, identity.svc_bits);
+        }
         const int accepted = p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src,
                                                      identity.is_group, identity.svc_bits);
         return accepted;
