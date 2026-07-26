@@ -53,6 +53,14 @@ typedef struct {
     uint8_t active;
 } dsd_p25_p1_crypto_conflict_state;
 
+/** Phase 1 carrier/call epoch whose post-lockout ESS repeats may be ignored. */
+typedef struct {
+    uint64_t call_epoch;
+    int64_t frequency_hz;
+    uint32_t grant_generation;
+    uint8_t valid;
+} dsd_p25_p1_lockout_epoch_state;
+
 /** Phase 2 ESS identity change held until boundary voice has drained. */
 typedef struct {
     uint64_t mi;
@@ -681,6 +689,8 @@ struct dsd_state {
     int p25_p1_hdu_crypto_fresh;
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
     dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
+    // Exact carrier/canonical epoch ended by Phase 1 encryption lockout.
+    dsd_p25_p1_lockout_epoch_state p25_p1_lockout_epoch;
     // Sticky Phase 2 media rejection, cleared only after the slot receives an accepted assignment/activity.
     int p25_p2_media_rejected[2];
     // ESS identity changes staged until the paired-timeslot audio drain completes.

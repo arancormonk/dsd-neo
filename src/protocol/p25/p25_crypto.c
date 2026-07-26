@@ -100,6 +100,41 @@ p25_crypto_phase1_protocol(const dsd_state* state) {
     return DSD_SYNC_IS_P25P1(state->lastsynctype) ? state->lastsynctype : DSD_SYNC_P25P1_POS;
 }
 
+static int64_t
+p25_crypto_phase1_carrier_frequency(const dsd_state* state) {
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    if (sm && sm->initialized && !sm->vc_is_tdma && sm->vc_freq_hz != 0) {
+        return sm->vc_freq_hz;
+    }
+    if (state->p25_vc_freq[0] != 0) {
+        return state->p25_vc_freq[0];
+    }
+    return state->trunk_vc_freq[0];
+}
+
+void
+p25_crypto_note_phase1_lockout_epoch(dsd_state* state, uint64_t call_epoch) {
+    if (!state) {
+        return;
+    }
+    DSD_MEMSET(&state->p25_p1_lockout_epoch, 0, sizeof(state->p25_p1_lockout_epoch));
+    if (call_epoch == 0U) {
+        return;
+    }
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    state->p25_p1_lockout_epoch.call_epoch = call_epoch;
+    state->p25_p1_lockout_epoch.frequency_hz = p25_crypto_phase1_carrier_frequency(state);
+    state->p25_p1_lockout_epoch.grant_generation = sm ? sm->grant_count : 0U;
+    state->p25_p1_lockout_epoch.valid = 1U;
+}
+
+void
+p25_crypto_clear_phase1_lockout_epoch(dsd_state* state) {
+    if (state) {
+        DSD_MEMSET(&state->p25_p1_lockout_epoch, 0, sizeof(state->p25_p1_lockout_epoch));
+    }
+}
+
 static int
 p25_crypto_phase1_ess_continues_ended_call(const dsd_state* state) {
     // The encryption lockout ends the canonical call directly, without the
@@ -111,9 +146,15 @@ p25_crypto_phase1_ess_continues_ended_call(const dsd_state* state) {
     if (state->p25_p1_identity_pending) {
         return 0;
     }
+    const dsd_p25_p1_lockout_epoch_state* locked = &state->p25_p1_lockout_epoch;
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    if (!locked->valid || locked->grant_generation != (sm ? sm->grant_count : 0U)
+        || locked->frequency_hz != p25_crypto_phase1_carrier_frequency(state)) {
+        return 0;
+    }
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
-        || !DSD_SYNC_IS_P25P1(call.protocol)) {
+        || !DSD_SYNC_IS_P25P1(call.protocol) || call.epoch != locked->call_epoch) {
         return 0;
     }
     return call.algid != 0U && (int)call.algid == state->payload_algid && (int)call.kid == state->payload_keyid;
@@ -347,6 +388,7 @@ p25_crypto_begin_voice_call(dsd_state* state, dsd_p25_crypto_phase phase, int sl
     p25_crypto_p1_clear_conflict(state);
     if (phase == DSD_P25_CRYPTO_PHASE1) {
         slot = 0;
+        p25_crypto_clear_phase1_lockout_epoch(state);
         state->p25_p1_hdu_crypto_fresh = 0;
         state->dmr_so = svc_bits >= 0 ? (unsigned int)svc_bits : 0U;
     }

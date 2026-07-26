@@ -342,6 +342,84 @@ test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
     return rc;
 }
 
+/* A source-less conventional GVCU is hangtime only when it matches the
+ * canonical epoch that just ended. With no ended epoch, or an ended call for
+ * another target, it is the only available identity for a legitimate call. */
+static int
+test_source_less_conventional_voice_user_requires_matching_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    MAC[1] = 0x01; // Group Voice Channel User, abbreviated
+    MAC[2] = 0x00; // Clear service options
+    put_u16_ull(MAC, 3, 20601U);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+
+    dsd_call_snapshot call = {0};
+    rc |= expect_true("source-less conventional call exists", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_eq_long("source-less conventional call active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("source-less conventional target", (long)call.ota_target_id, 20601);
+    rc |= expect_eq_long("source-less conventional source unavailable", (long)call.ota_source_id, 0);
+    rc |= expect_true("source-less conventional timestamp", state.p25_p2_last_mac_active[0] != 0);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    const dsd_call_observation other = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 20600U,
+        .policy_target_id = 20600U,
+        .ota_source_id = 618620U,
+    };
+    rc |= expect_true("source-less different-target fixture begin",
+                      dsd_call_state_observe(&state, &other, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect_true("source-less different-target fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+
+    put_u24_ull(MAC, 5, 0xFFFFFFU);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_true("fixed-source different-target call exists", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_eq_long("fixed-source different-target active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("fixed-source different-target identity", (long)call.ota_target_id, 20601);
+    rc |= expect_eq_long("fixed-source network identity", (long)call.ota_source_id, 0xFFFFFF);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    dsd_call_observation matching = other;
+    matching.ota_target_id = 20601U;
+    matching.policy_target_id = 20601U;
+    rc |= expect_true("source-less matching fixture begin",
+                      dsd_call_state_observe(&state, &matching, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect_true("source-less matching fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+    rc |= expect_true("source-less matching fixture snapshot", dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t ended_epoch = call.epoch;
+
+    put_u24_ull(MAC, 5, 0U);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_true("source-less matching call preserved", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_eq_long("source-less matching remains ended", call.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_long("source-less matching epoch preserved", (long)call.epoch, (long)ended_epoch);
+    dsd_state_ext_free_all(&state);
+
+    return rc;
+}
+
 static void
 put_fqid_tail_ull(unsigned long long int* mac, int pos, unsigned wacn, unsigned sysid, unsigned source) {
     mac[pos + 0] = (unsigned long long int)((wacn >> 12) & 0xFFU);
@@ -1738,6 +1816,7 @@ run_cases(void) {
 
     rc |= test_lcch_voice_user_does_not_reopen_call();
     rc |= test_hangtime_sourced_voice_user_does_not_reopen_call();
+    rc |= test_source_less_conventional_voice_user_requires_matching_end();
 
     // Case 14: extended private voice (0x22) derives source from the SUID tail.
     {

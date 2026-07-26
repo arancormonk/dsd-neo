@@ -171,19 +171,16 @@ p25p2_vpdu_source_names_subscriber(uint64_t source) {
 }
 
 static int
-p25p2_vpdu_slot_call_active(const dsd_state* state, int slot) {
-    dsd_call_snapshot call;
-    return dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
-}
-
-static int
 p25p2_vpdu_observation_repeats_ended_call(const dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
                                           uint64_t source) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
         return 0;
     }
-    if (call.kind != kind || call.ota_target_id != target || call.ota_source_id != source) {
+    if (call.kind != kind || call.ota_target_id != target) {
+        return 0;
+    }
+    if (p25p2_vpdu_source_names_subscriber(source) && call.ota_source_id != source) {
         return 0;
     }
     // A grant newer than the last stop re-validates the assignment: the same
@@ -200,20 +197,13 @@ p25p2_vpdu_voice_observation_is_hangtime(dsd_opts* opts, const dsd_state* state,
                                          uint64_t target, uint64_t source, int source_optional) {
     // Telephone-interconnect voice identifies the live call by target and
     // service options but has no subscriber source field.
-    if (!source_optional && !p25p2_vpdu_source_names_subscriber(source) && !p25p2_vpdu_slot_call_active(state, slot)) {
-        // Hangtime repeats the group announcement with a zeroed source after
-        // MAC_END_PTT. Without a talker there is no transmission to observe;
-        // beginning a canonical epoch here surfaces a phantom SRC 0 event
-        // still classified encrypted-pending when the channel releases.
-        return 1;
-    }
-    if (p25p2_vpdu_source_names_subscriber(source)
-        && p25p2_vpdu_observation_repeats_ended_call(state, slot, kind, target, source)) {
+    if (!source_optional && p25p2_vpdu_observation_repeats_ended_call(state, slot, kind, target, source)) {
         // Delayed SACCH/hangtime copies of the announcement interleave with
-        // the repeated MAC_END_PTT and still name the talker whose
-        // transmission just ended. Resurrecting that identity as a fresh
-        // epoch duplicates the event row; a new transmission arrives as a
-        // MAC_PTT, a fresh grant, a changed identity, or decoded voice.
+        // the repeated MAC_END_PTT. They either still name the completed
+        // talker or zero the source while retaining the completed target.
+        // Resurrecting that matching identity as a fresh epoch duplicates the
+        // event row; an unmatched source-less conventional observation is a
+        // legitimate call and must remain available to decoded voice.
         dsd_p25_sm_logf(opts,
                         "event=voice_observation_suppressed reason=repeats-ended-call path=p2-vpdu "
                         "slot=%d tg=%llu src=%llu",

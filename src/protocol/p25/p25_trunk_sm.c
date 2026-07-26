@@ -4382,6 +4382,7 @@ p25_sm_init_ctx(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx, 0, sizeof(*ctx));
     ctx->vc_stale_regrant_probe_slot = -1;
     p25_p1_identity_clear(state);
+    p25_crypto_clear_phase1_lockout_epoch(state);
 
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
 
@@ -5988,6 +5989,9 @@ p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         char detail[160];
         DSD_SNPRINTF(detail, sizeof(detail), "Target: %d; has been locked out; Encryption Lock Out Enabled.", target);
         if (finalizes_call && p25_lockout_end_matching_call(state, slot, &call)) {
+            if (slot == 0U && DSD_SYNC_IS_P25P1(call.protocol)) {
+                p25_crypto_note_phase1_lockout_epoch(state, call.epoch);
+            }
             (void)dsd_event_emit_call_notice(opts, state, slot, &call, detail);
         } else {
             (void)dsd_event_emit_call_notice_nonfinalizing(opts, state, slot, &call, detail);

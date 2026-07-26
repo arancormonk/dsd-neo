@@ -190,6 +190,35 @@ test_identity_pending_ess_still_opens_call(void) {
     return rc;
 }
 
+/* A later assignment may legitimately reuse the same system ALGID/KID. The
+ * ended lockout epoch must not suppress ESS after the assignment generation
+ * advances, even if a fresh grant has already cleared identity_pending. */
+static int
+test_reused_key_after_new_assignment_opens_call(void) {
+    int rc = 0;
+    reset_test_state();
+
+    begin_identified_call();
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
+    event_ticks();
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+    rc |= expect("lockout epoch recorded", g_state.p25_p1_lockout_epoch.valid != 0U);
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    ctx->grant_count++;
+    g_state.p25_p1_identity_pending = 0;
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x6666ULL, TEST_TG);
+    event_ticks();
+
+    dsd_call_snapshot call;
+    rc |= expect("reused-key assignment opens call",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect("reused-key assignment starts new epoch", slot0_epoch() != ended_epoch);
+    return rc;
+}
+
 /* An ended call without recorded crypto is not a continuation context: a
  * fresh ESS observation must still open a call to hold its classification. */
 static int
@@ -217,6 +246,7 @@ main(void) {
     int rc = 0;
     rc |= test_lockout_ess_repeats_do_not_mint_epochs();
     rc |= test_identity_pending_ess_still_opens_call();
+    rc |= test_reused_key_after_new_assignment_opens_call();
     rc |= test_ess_after_cryptoless_end_still_opens_call();
 
     if (g_state.event_history_s != NULL) {
