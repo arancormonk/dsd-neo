@@ -9,6 +9,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -304,6 +305,7 @@ test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_hangtime = 2.0f;
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
@@ -339,6 +341,27 @@ test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
     rc |= expect_true("hangtime gvcu new talker epoch", after.epoch != before.epoch);
     dsd_state_ext_free_all(&state);
 
+    // Once actual hangtime has elapsed, the same identity is a legitimate
+    // later transmission even when its MAC_PTT was missed.
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_hangtime = 2.0f;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+    rc |=
+        expect_true("expired gvcu fixture begin", dsd_call_state_observe(&state, &ended, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect_true("expired gvcu fixture end", dsd_call_state_end(&state, 0U, dsd_time_now_monotonic_s() - 3.0) > 0);
+    rc |= expect_true("expired gvcu fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
+
+    put_u24_ull(MAC, 5, 618620U);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_true("expired gvcu call exists", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("expired gvcu phase", after.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("expired gvcu source", (long)after.ota_source_id, 618620);
+    rc |= expect_true("expired gvcu new epoch", after.epoch != before.epoch);
+    dsd_state_ext_free_all(&state);
+
     return rc;
 }
 
@@ -358,6 +381,7 @@ test_source_less_conventional_voice_user_requires_matching_end(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_hangtime = 2.0f;
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
@@ -373,6 +397,7 @@ test_source_less_conventional_voice_user_requires_matching_end(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_hangtime = 2.0f;
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
@@ -398,6 +423,7 @@ test_source_less_conventional_voice_user_requires_matching_end(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_hangtime = 2.0f;
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);

@@ -171,8 +171,20 @@ p25p2_vpdu_source_names_subscriber(uint64_t source) {
 }
 
 static int
-p25p2_vpdu_observation_repeats_ended_call(const dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
-                                          uint64_t source) {
+p25p2_vpdu_call_end_is_in_hangtime(const dsd_opts* opts, const dsd_call_snapshot* call) {
+    if (!call || call->ended_m <= 0.0) {
+        return 0;
+    }
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    const double hangtime_s =
+        sm && sm->initialized ? sm->config.hangtime_s : (opts ? (double)opts->trunk_hangtime : 0.0);
+    const double now_m = dsd_time_now_monotonic_s();
+    return hangtime_s > 0.0 && now_m >= call->ended_m && (now_m - call->ended_m) <= hangtime_s;
+}
+
+static int
+p25p2_vpdu_observation_repeats_ended_call(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
+                                          uint64_t target, uint64_t source) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
         return 0;
@@ -181,6 +193,9 @@ p25p2_vpdu_observation_repeats_ended_call(const dsd_state* state, int slot, dsd_
         return 0;
     }
     if (p25p2_vpdu_source_names_subscriber(source) && call.ota_source_id != source) {
+        return 0;
+    }
+    if (!p25p2_vpdu_call_end_is_in_hangtime(opts, &call)) {
         return 0;
     }
     // A grant newer than the last stop re-validates the assignment: the same
@@ -197,7 +212,7 @@ p25p2_vpdu_voice_observation_is_hangtime(dsd_opts* opts, const dsd_state* state,
                                          uint64_t target, uint64_t source, int source_optional) {
     // Telephone-interconnect voice identifies the live call by target and
     // service options but has no subscriber source field.
-    if (!source_optional && p25p2_vpdu_observation_repeats_ended_call(state, slot, kind, target, source)) {
+    if (!source_optional && p25p2_vpdu_observation_repeats_ended_call(opts, state, slot, kind, target, source)) {
         // Delayed SACCH/hangtime copies of the announcement interleave with
         // the repeated MAC_END_PTT. They either still name the completed
         // talker or zero the source while retaining the completed target.
