@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <errno.h>
@@ -280,6 +281,62 @@ test_lcch_voice_user_does_not_reopen_call(void) {
     rc |= expect_eq_long("conventional voice source", (long)conventional.ota_source_id, 618620);
     rc |= expect_eq_long("conventional voice service", state.dmr_so, 0x44);
     rc |= expect_true("conventional voice timestamp", state.p25_p2_last_mac_active[0] != 0);
+    dsd_state_ext_free_all(&state);
+
+    return rc;
+}
+
+/* Hangtime GVCU copies that still name the completed talker (delayed SACCH
+ * messages interleaved with the repeated MAC_END_PTT) must not resurrect the
+ * ended canonical call and duplicate its event row; a changed talker must
+ * still open a new call. */
+static int
+test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    MAC[1] = 0x01; // Group Voice Channel User, abbreviated
+    MAC[2] = 0x00; // Clear service options
+    put_u16_ull(MAC, 3, 20601U);
+    put_u24_ull(MAC, 5, 618620U);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+
+    const dsd_call_observation ended = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 20601U,
+        .policy_target_id = 20601U,
+        .ota_source_id = 618620U,
+    };
+    rc |=
+        expect_true("hangtime gvcu fixture begin", dsd_call_state_observe(&state, &ended, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect_true("hangtime gvcu fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+
+    dsd_call_snapshot before = {0};
+    rc |= expect_true("hangtime gvcu snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+
+    dsd_call_snapshot after = {0};
+    rc |= expect_true("hangtime gvcu canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("hangtime gvcu phase preserved", after.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_long("hangtime gvcu epoch preserved", (long)after.epoch, (long)before.epoch);
+    rc |= expect_eq_long("hangtime gvcu revision preserved", (long)after.revision, (long)before.revision);
+
+    // A different talker on the same group is a new transmission.
+    put_u24_ull(MAC, 5, 618777U);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    rc |= expect_true("hangtime gvcu new talker call", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("hangtime gvcu new talker phase", after.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("hangtime gvcu new talker source", (long)after.ota_source_id, 618777);
+    rc |= expect_true("hangtime gvcu new talker epoch", after.epoch != before.epoch);
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -1680,6 +1737,7 @@ run_cases(void) {
     rc |= run_sccb_full_cache_preservation_case();
 
     rc |= test_lcch_voice_user_does_not_reopen_call();
+    rc |= test_hangtime_sourced_voice_user_does_not_reopen_call();
 
     // Case 14: extended private voice (0x22) derives source from the SUID tail.
     {

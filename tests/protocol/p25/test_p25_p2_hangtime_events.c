@@ -247,6 +247,79 @@ test_hangtime_announcements_do_not_mint_epochs(void) {
     return rc;
 }
 
+/* MAC_END_PTT repeats several times at end of transmission, and delayed SACCH
+ * copies of the sourced group announcement interleave with those repeats still
+ * naming the talker whose transmission just completed. Re-announcing the
+ * completed talker must not resurrect the epoch, re-arm voice activity, or let
+ * the repeated END commit duplicate event-history rows. */
+static int
+test_same_source_announcement_after_end_is_hangtime(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma();
+
+    transmit_clear(0x11, TEST_SRC);
+    end_transmission(TEST_SRC);
+    rc |= expect("same-src fixture ended", slot0_matches(DSD_CALL_PHASE_ENDED, TEST_SRC));
+    const uint64_t ended_epoch = slot0_epoch();
+    rc |= expect("same-src fixture committed", committed_event_count() == 1);
+
+    for (int i = 0; i < 3; i++) {
+        (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+        event_ticks();
+        (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+        event_ticks();
+    }
+
+    rc |= expect("same-src stays ended", slot0_matches(DSD_CALL_PHASE_ENDED, TEST_SRC));
+    rc |= expect("same-src no phantom epoch", slot0_epoch() == ended_epoch);
+    rc |= expect("same-src single event", committed_event_count() == 1);
+    rc |= expect("same-src no enc rows", !committed_events_contain("ENC;"));
+
+    // A new PTT from the same talker is a real transmission and still opens.
+    transmit_clear(0x22, TEST_SRC);
+    rc |= expect("same-src rekey active", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_SRC));
+    rc |= expect("same-src rekey new epoch", slot0_epoch() != ended_epoch);
+    end_transmission(TEST_SRC);
+    rc |= expect("same-src two transmissions two events", committed_event_count() == 2);
+    return rc;
+}
+
+/* The traffic channel's GVCU observation begins the canonical epoch a moment
+ * before the SM's ACTIVE-driven voice start describes the same transmission;
+ * the start must fold into that epoch instead of minting a second one and
+ * pushing the first epoch's freshly built row as a duplicate event. */
+static int
+test_active_start_coalesces_with_traffic_observation(void) {
+    int rc = 0;
+    reset_test_state();
+    start_tuned_tdma();
+
+    const dsd_call_observation gvcu = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = TEST_TG,
+        .policy_target_id = TEST_TG,
+        .ota_source_id = TEST_SRC,
+        .has_service_metadata = 1U,
+    };
+    rc |= expect("coalesce fixture begins", dsd_call_state_observe(&g_state, &gvcu, DSD_CALL_BOUNDARY_CONTINUE) > 0);
+    const uint64_t observed_epoch = slot0_epoch();
+    event_ticks();
+
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+
+    rc |= expect("coalesce keeps epoch", slot0_epoch() == observed_epoch);
+    rc |= expect("coalesce stays active", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_SRC));
+    rc |= expect("coalesce no committed rows", committed_event_count() == 0);
+
+    end_transmission(TEST_SRC);
+    rc |= expect("coalesce single event on end", committed_event_count() == 1);
+    return rc;
+}
+
 /* An announcement that names a talker after the end is a real transmission
  * (late entry with a missed MAC_PTT) and must still open a call. */
 static int
@@ -403,6 +476,22 @@ test_conventional_announcements(void) {
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, 777002, 1, 0x00);
     event_ticks();
     rc |= expect("conventional late entry opens call", slot0_matches(DSD_CALL_PHASE_ACTIVE, 777002U));
+
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, 777002, dsd_time_now_monotonic_s());
+    event_ticks();
+    rc |= expect("conventional late entry ended", slot0_matches(DSD_CALL_PHASE_ENDED, 777002U));
+    const uint64_t late_epoch = slot0_epoch();
+
+    // Hangtime copies re-announcing the completed talker must not resurrect it.
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, 777002, 1, 0x00);
+    event_ticks();
+    rc |= expect("conventional same-src suppressed", slot0_matches(DSD_CALL_PHASE_ENDED, 777002U));
+    rc |= expect("conventional same-src epoch preserved", slot0_epoch() == late_epoch);
+
+    // A changed talker announced without a PTT is still a new transmission.
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, 777003, 1, 0x00);
+    event_ticks();
+    rc |= expect("conventional next talker opens call", slot0_matches(DSD_CALL_PHASE_ACTIVE, 777003U));
     return rc;
 }
 
@@ -410,6 +499,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_hangtime_announcements_do_not_mint_epochs();
+    rc |= test_same_source_announcement_after_end_is_hangtime();
+    rc |= test_active_start_coalesces_with_traffic_observation();
     rc |= test_source_bearing_announcement_opens_call();
     rc |= test_source_less_different_target_opens_call();
     rc |= test_source_optional_private_voice_opens_call();

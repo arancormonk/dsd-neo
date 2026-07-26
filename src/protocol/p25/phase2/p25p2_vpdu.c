@@ -18,6 +18,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -176,13 +177,27 @@ p25p2_vpdu_slot_call_active(const dsd_state* state, int slot) {
 }
 
 static int
-p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
-                         uint64_t source, int service_options, int source_optional) {
-    if (!state || slot < 0 || slot > 1 || target == 0U
-        || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
-        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot)) {
+p25p2_vpdu_observation_repeats_ended_call(const dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
+                                          uint64_t source) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
         return 0;
     }
+    if (call.kind != kind || call.ota_target_id != target || call.ota_source_id != source) {
+        return 0;
+    }
+    // A grant newer than the last stop re-validates the assignment: the same
+    // identity may legitimately begin a new transmission it was re-granted for.
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    if (sm && sm->slots[slot & 1].last_grant_m > sm->slots[slot & 1].last_stop_m) {
+        return 0;
+    }
+    return 1;
+}
+
+static int
+p25p2_vpdu_voice_observation_is_hangtime(dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
+                                         uint64_t target, uint64_t source, int source_optional) {
     // Telephone-interconnect voice identifies the live call by target and
     // service options but has no subscriber source field.
     if (!source_optional && !p25p2_vpdu_source_names_subscriber(source) && !p25p2_vpdu_slot_call_active(state, slot)) {
@@ -190,6 +205,33 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
         // MAC_END_PTT. Without a talker there is no transmission to observe;
         // beginning a canonical epoch here surfaces a phantom SRC 0 event
         // still classified encrypted-pending when the channel releases.
+        return 1;
+    }
+    if (p25p2_vpdu_source_names_subscriber(source)
+        && p25p2_vpdu_observation_repeats_ended_call(state, slot, kind, target, source)) {
+        // Delayed SACCH/hangtime copies of the announcement interleave with
+        // the repeated MAC_END_PTT and still name the talker whose
+        // transmission just ended. Resurrecting that identity as a fresh
+        // epoch duplicates the event row; a new transmission arrives as a
+        // MAC_PTT, a fresh grant, a changed identity, or decoded voice.
+        dsd_p25_sm_logf(opts,
+                        "event=voice_observation_suppressed reason=repeats-ended-call path=p2-vpdu "
+                        "slot=%d tg=%llu src=%llu",
+                        slot, (unsigned long long)target, (unsigned long long)source);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
+                         uint64_t source, int service_options, int source_optional) {
+    if (!state || slot < 0 || slot > 1 || target == 0U
+        || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
+        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot)) {
+        return 0;
+    }
+    if (p25p2_vpdu_voice_observation_is_hangtime(opts, state, slot, kind, target, source, source_optional)) {
         return 0;
     }
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
@@ -209,6 +251,8 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);
     if (began > 0) {
         state->generic_talker_alias[slot][0] = '\0';
+        dsd_p25_sm_logf(opts, "event=canonical_epoch_begin path=p2-vpdu slot=%d kind=%d tg=%llu src=%llu svc=%d", slot,
+                        (int)kind, (unsigned long long)target, (unsigned long long)source, service_options);
     }
     p25p2_vpdu_update_voice_crypto(state, slot, service_options, began, encrypted_probe);
     if (began >= 0 && opts) {
