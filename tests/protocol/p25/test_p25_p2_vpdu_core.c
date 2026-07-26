@@ -862,6 +862,12 @@ run_standard_mac_supplemental_display_cases(void) {
     rc |= expect_contains("0x03 telephone user active", recent_notice(&state, 0U), "TELE Target: 66051");
     const dsd_recent_activity_entry* telephone = recent_activity(&state, 0U);
     rc |= expect_true("0x03 telephone user activity timestamp", telephone && telephone->updated_m_ms != 0U);
+    dsd_call_snapshot telephone_call = {0};
+    rc |= expect_true("0x03 telephone canonical call", dsd_call_state_get(&state, 0U, &telephone_call) > 0);
+    rc |= expect_eq_long("0x03 telephone phase", telephone_call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("0x03 telephone kind", telephone_call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= expect_eq_long("0x03 telephone target", (long)telephone_call.ota_target_id, 66051);
+    rc |= expect_eq_long("0x03 telephone source unavailable", (long)telephone_call.ota_source_id, 0);
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);

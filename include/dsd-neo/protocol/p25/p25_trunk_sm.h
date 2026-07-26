@@ -110,6 +110,7 @@ typedef struct {
     int keyid;                                         // Key ID (for ENC event)
     int data_call_override;                            // 0=infer from svc_bits, 1=force data, -1=force non-data
     int identity_valid;                                // 1 when PTT/ACTIVE carries a decoded call identity
+    int decoded_voice;                                 // 1 when ACTIVE was emitted for decoded voice frames
     int facch;                                         // 1 when PTT/END was decoded from valid FACCH
     int crypto_new_epoch;                              // 1 when CRYPTO_PENDING must start a fresh deadline
     double observed_m;                                 // Optional monotonic timestamp when the event was observed
@@ -467,6 +468,16 @@ int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int
 int p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
+ * @brief Emit ACTIVE for decoded voice frames on a slot.
+ *
+ * Unlike a source-less MAC_ACTIVE announcement, decoded voice is evidence of
+ * a live transmission and may reopen a completed Phase 2 slot after a missed
+ * MAC_PTT.
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_decoded_voice(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
  * @brief Emit an ACTIVE event carrying an authoritative in-band call identity.
  *
  * Trunk-follow mode rejects the event when no traffic-channel assignment is active.
@@ -677,6 +688,13 @@ p25_sm_ev_active(int slot) {
     ev.type = P25_SM_EV_ACTIVE;
     ev.slot = slot;
     ev.svc_bits = P25_SM_SVC_UNKNOWN;
+    return ev;
+}
+
+static inline p25_sm_event_t
+p25_sm_ev_decoded_voice(int slot) {
+    p25_sm_event_t ev = p25_sm_ev_active(slot);
+    ev.decoded_voice = 1;
     return ev;
 }
 

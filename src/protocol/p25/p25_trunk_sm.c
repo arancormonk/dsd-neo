@@ -2469,6 +2469,15 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         .has_service_metadata = (uint8_t)p25_sm_svc_bits_valid(slot_ctx->svc_bits),
         .observed_m = observed_m,
     };
+    if (!new_epoch && observation.ota_source_id == 0U) {
+        // A continuing observation resurrects an ENDED slot as a fresh epoch
+        // inside the canonical store. Without a source it is hangtime carrier
+        // retention, not a transmission: refresh an active call only.
+        dsd_call_snapshot current;
+        if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE) {
+            return;
+        }
+    }
     const dsd_call_boundary boundary = new_epoch ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
     if (dsd_call_state_observe(state, &observation, boundary) >= 0) {
         p25_call_publish_crypto(opts, state, slot, observed_m);
@@ -2721,6 +2730,59 @@ p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
 }
 
 static int
+p25_voice_start_is_post_end_announcement(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
+                                         const p25_sm_event_t* input) {
+    // Phase 2 hangtime keeps repeating the group announcement (MAC_ACTIVE /
+    // GVCU / regroup voice) with no talker after MAC_END_PTT. A MAC_PTT,
+    // decoded voice, or an announcement that names a source is evidence of a
+    // new transmission; everything else merely retains the carrier. Phase 1
+    // is exempt because its source-less ACTIVE reports decoded voice awaiting
+    // LCW identity.
+    if (!ctx || !ctx->vc_is_tdma || !slot_ctx || !input || input->type != P25_SM_EV_ACTIVE) {
+        return 0;
+    }
+    if (input->decoded_voice) {
+        return 0;
+    }
+    if (!p25_voice_start_follows_completed_epoch(slot_ctx)) {
+        return 0;
+    }
+    return !p25_source_id_known(input->src);
+}
+
+static void
+p25_voice_start_protect_post_end_announcement(p25_sm_ctx_t* ctx, dsd_state* state, int slot, const p25_sm_event_t* ev,
+                                              double now_m) {
+    // Preserve the missed-PTT protection the announcement previously applied
+    // through a full voice start: expire the retained service options, keep
+    // audio closed, and hold classification at encrypted-pending until ESS
+    // proves a clear follow-up. The canonical call epoch is skipped entirely;
+    // with no talker there is no transmission to record.
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    slot_ctx->svc_bits = p25_sm_svc_bits_valid(ev->svc_bits) ? ev->svc_bits : P25_SM_SVC_UNKNOWN;
+    if (state) {
+        state->p25_p2_audio_allowed[slot] = 0;
+        const int svc_clear = p25_sm_svc_bits_valid(ev->svc_bits) && (ev->svc_bits & 0x40) == 0;
+        if (!svc_clear) {
+            p25_crypto_mark_encrypted_pending(state, slot);
+        }
+        slot_ctx->crypto_attempt_m = state->p25_crypto_state[slot] == DSD_P25_CRYPTO_ENCRYPTED_PENDING ? now_m : 0.0;
+    }
+}
+
+static int
+p25_voice_start_assignment_source_is_fresh(const p25_sm_slot_ctx_t* slot_ctx) {
+    // The retained source identifies the current assignment only until a
+    // transmission completes on it. After that, only a newer grant or an
+    // identity-bearing start re-validates it; inheriting it into the next
+    // epoch would attribute a new transmission to the previous talker.
+    if (!slot_ctx) {
+        return 0;
+    }
+    return !p25_voice_start_follows_completed_epoch(slot_ctx) || slot_ctx->last_grant_m > slot_ctx->last_stop_m;
+}
+
+static int
 p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
     if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
         return 1;
@@ -2759,7 +2821,7 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
     out->tg = slot_ctx->is_group ? slot_ctx->ota_tg : 0;
     out->dst = slot_ctx->is_group ? 0 : slot_ctx->dst;
     out->src = p25_voice_state_slot_src(state, slot);
-    if (!p25_source_id_known(out->src)) {
+    if (!p25_source_id_known(out->src) && p25_voice_start_assignment_source_is_fresh(slot_ctx)) {
         out->src = slot_ctx->src;
     }
 
@@ -2772,7 +2834,8 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
 
 static void
 p25_voice_start_preserve_assignment_source(const p25_sm_slot_ctx_t* slot_ctx, p25_sm_event_t* out) {
-    if (slot_ctx && out && !p25_source_id_known(out->src) && !p25_voice_start_target_changed(slot_ctx, out)) {
+    if (slot_ctx && out && !p25_source_id_known(out->src) && !p25_voice_start_target_changed(slot_ctx, out)
+        && p25_voice_start_assignment_source_is_fresh(slot_ctx)) {
         out->src = slot_ctx->src;
     }
 }
@@ -3153,6 +3216,19 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
 
     double now_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_time_now_monotonic_s();
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
+    if (p25_voice_start_is_post_end_announcement(ctx, &ctx->slots[s], ev)) {
+        // Hangtime announcements retain the carrier after MAC_END_PTT but are
+        // not a new transmission: do not mark voice active, begin a canonical
+        // call epoch, or restart crypto classification. With no ESS to follow,
+        // such an epoch would surface as a phantom SRC 0 event still
+        // classified encrypted-pending when the channel releases.
+        p25_sm_diagf(opts, state, ctx, "voice_activity_follower", "reason=post-end-announcement slot=%d tg=%d", s,
+                     ev->tg);
+        p25_sm_note_vc_decode_activity(ctx, opts, state, why, s, now_m);
+        ctx->vc_activity_seen = 1;
+        p25_voice_start_protect_post_end_announcement(ctx, state, s, ev, now_m);
+        return 1;
+    }
     int new_epoch = !ctx->slots[s].voice_active;
     if (!p25_voice_start_apply_event(ctx, opts, state, s, ev, now_m, &new_epoch)) {
         return 0;
@@ -5397,6 +5473,19 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         return 0;
     }
     const int slot = p25_sm_conventional_slot(ev);
+    if (ev->type == P25_SM_EV_ACTIVE && !ev->decoded_voice && !p25_source_id_known(ev->src)
+        && DSD_SYNC_IS_P25P2(p25_sm_conventional_protocol(state))) {
+        dsd_call_snapshot current;
+        const int slot_call_active =
+            dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE;
+        if (!slot_call_active) {
+            // Phase 2 source-less announcements after the transmission ended
+            // retain the repeater hangtime; they must not begin a canonical
+            // epoch. Phase 1 ACTIVE reports decoded voice and may open an
+            // anonymous call pending its LCW identity.
+            return 0;
+        }
+    }
     p25_sm_conventional_call_t call = {0};
     if (!p25_sm_conventional_resolve_call(state, ev, slot, &call)) {
         return 0;
@@ -5539,6 +5628,12 @@ int
 p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_active(slot);
     return p25_sm_emit_voice_start_event(opts, state, &ev, "active");
+}
+
+int
+p25_sm_emit_decoded_voice(dsd_opts* opts, dsd_state* state, int slot) {
+    p25_sm_event_t ev = p25_sm_ev_decoded_voice(slot);
+    return p25_sm_emit_voice_start_event(opts, state, &ev, "decoded-voice");
 }
 
 int
