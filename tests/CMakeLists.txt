@@ -4091,6 +4091,22 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_p2_mixer_gate PRIVATE dsd-neo_core)
 add_test(NAME P25_P2_MIXER_GATE COMMAND dsd-neo_test_p25_p2_mixer_gate)
 
+add_executable(
+    dsd-neo_test_p25_p2_ta_len_bounds
+    protocol/p25/test_p25_p2_ta_len_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_ta_len_bounds
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_ta_len_bounds
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_P2_TA_LEN_BOUNDS COMMAND dsd-neo_test_p25_p2_ta_len_bounds)
+
 # Additional targeted coverage tests
 add_executable(
     dsd-neo_test_p25_p2_vpdu_core
@@ -4253,6 +4269,7 @@ set(_DSD_NEO_P25_SHIM_TEST_TARGETS
     dsd-neo_test_p25_p1_tsbk_vpdu
     dsd-neo_test_p25_p1_tsbk_clamp
     dsd-neo_test_p25_p2_aach_cach_map
+    dsd-neo_test_p25_p2_ta_len_bounds
     dsd-neo_test_p25_p2_vpdu_core
     dsd-neo_test_p25_p2_vpdu_grants
     dsd-neo_test_p25_p2_vpdu_sequence
@@ -5186,6 +5203,23 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_dmr_discussion_231 PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_DISCUSSION_231 COMMAND dsd-neo_test_dmr_discussion_231)
+
+add_executable(
+    dsd-neo_test_dmr_block_type1_bounds
+    protocol/dmr/test_dmr_block_type1_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_block_type1_bounds
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_block_type1_bounds
+    PRIVATE dsd-neo_proto_dmr
+)
+add_test(
+    NAME DMR_BLOCK_TYPE1_BOUNDS
+    COMMAND dsd-neo_test_dmr_block_type1_bounds
+)
 
 add_executable(
     dsd-neo_test_dmr_ms_data

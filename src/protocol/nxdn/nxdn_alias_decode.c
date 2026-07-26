@@ -239,22 +239,32 @@ nxdn_alias_valid_arib_segment(uint8_t seg_num, uint8_t seg_total) {
 static int
 nxdn_alias_arib_pack_and_validate(const dsd_state* state, uint8_t seg_total, uint8_t packed[24], size_t* packed_len) {
     DSD_MEMSET(packed, 0, 24U);
-    *packed_len = (size_t)seg_total * 6U;
+    // Callers validate seg_total; restate the bound so packed[] and crc_bits[] stay in range even
+    // if that ever changes. Track the length locally: packed[] and *packed_len are both
+    // caller-owned, so reloading *packed_len after writing packed[] would lose the bound.
+    const size_t max_segments = sizeof(state->nxdn_alias_arib_segments) / sizeof(state->nxdn_alias_arib_segments[0]);
+    if (seg_total == 0U || (size_t)seg_total > max_segments) {
+        return 0;
+    }
+    const size_t packed_bytes = (size_t)seg_total * 6U;
+    *packed_len = packed_bytes;
     for (size_t s = 0U; s < (size_t)seg_total; s++) {
         DSD_MEMCPY(&packed[s * 6U], state->nxdn_alias_arib_segments[s], 6U);
     }
-    if (*packed_len < 4U) {
+    if (packed_bytes < 4U) {
         return 0;
     }
-    const size_t crc_byte_count = *packed_len - 4U;
+    const size_t crc_byte_count = packed_bytes - 4U;
     uint8_t crc_bits[20U * 8U];
-    unpack_byte_array_into_bit_array(packed, crc_bits, (int)crc_byte_count);
+    // Unpack the buffer's fixed capacity: only crc_byte_count * 8 bits are consumed below, and a
+    // variable length here lets the vectorizer speculate stores past crc_bits.
+    unpack_byte_array_into_bit_array(packed, crc_bits, (int)(sizeof(crc_bits) / 8U));
     uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[crc_byte_count]);
     uint32_t crc32_want = nxdn_crc32_bits(crc_bits, crc_byte_count * 8U);
     if (crc32_have != crc32_want) {
         return 0;
     }
-    *packed_len -= 4U;
+    *packed_len = crc_byte_count;
     return 1;
 }
 
