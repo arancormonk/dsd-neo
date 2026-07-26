@@ -4511,6 +4511,21 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_neighbor_table PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_NEIGHBOR_TABLE COMMAND dsd-neo_test_p25_neighbor_table)
 
+# P25p1 encryption lockout event lifecycle regression tests
+add_executable(
+    dsd-neo_test_p25_p1_lockout_events
+    protocol/p25/test_p25_p1_lockout_events.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_lockout_events
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_lockout_events
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(NAME P25_P1_LOCKOUT_EVENTS COMMAND dsd-neo_test_p25_p1_lockout_events)
+
 # P25p2 hangtime event lifecycle regression tests
 add_executable(
     dsd-neo_test_p25_p2_hangtime_events

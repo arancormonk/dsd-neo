@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -100,11 +101,33 @@ p25_crypto_phase1_protocol(const dsd_state* state) {
 }
 
 static int
+p25_crypto_phase1_ess_continues_ended_call(const dsd_state* state) {
+    // The encryption lockout ends the canonical call directly, without the
+    // TDU path that arms p25_p1_identity_pending. ESS repeats that follow on
+    // the same carrier (LDU2 every superframe until the release retunes)
+    // re-describe the transmission already recorded; beginning an
+    // identity-less epoch for them surfaces a phantom TGT 0 / SRC 0 event
+    // carrying the resolved ALG/KID when the channel releases.
+    if (state->p25_p1_identity_pending) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || !DSD_SYNC_IS_P25P1(call.protocol)) {
+        return 0;
+    }
+    return call.algid != 0U && (int)call.algid == state->payload_algid && (int)call.kid == state->payload_keyid;
+}
+
+static int
 p25_crypto_ensure_phase1_call(dsd_state* state) {
     dsd_call_snapshot call;
     const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     if (active && DSD_SYNC_IS_P25P1(call.protocol)
         && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
+        return 0;
+    }
+    if (p25_crypto_phase1_ess_continues_ended_call(state)) {
         return 0;
     }
 
@@ -304,6 +327,8 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     p25_crypto_set_state(state, slot, resolved);
     p25_crypto_publish_canonical(opts, state, slot);
     if (began_phase1_call && opts) {
+        dsd_p25_sm_logf(opts, "event=canonical_epoch_begin path=p1-crypto slot=%d algid=0x%02X keyid=0x%04X", slot,
+                        algid, keyid);
         dsd_event_sync_slot(opts, state, (uint8_t)slot);
     }
 
