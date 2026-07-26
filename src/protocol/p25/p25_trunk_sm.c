@@ -5588,17 +5588,24 @@ p25_sm_conventional_resolve_call(const dsd_state* state, const p25_sm_event_t* e
 }
 
 static int
-p25_sm_active_repeats_ended_call(const dsd_call_snapshot* ended, const p25_sm_event_t* ev) {
-    if (!ended || !ev || ended->phase != DSD_CALL_PHASE_ENDED || !ev->identity_valid || !p25_source_id_known(ev->src)) {
+p25_sm_active_matches_ended_call(const dsd_call_snapshot* ended, const p25_sm_event_t* ev) {
+    if (!ended || !ev || ended->phase != DSD_CALL_PHASE_ENDED || !DSD_SYNC_IS_P25P2(ended->protocol)
+        || !ev->identity_valid) {
         return 0;
     }
-    if (ended->ota_source_id != (uint64_t)(uint32_t)ev->src) {
-        return 0;
-    }
+
     if (ev->is_group) {
         return ended->kind == DSD_CALL_KIND_GROUP_VOICE && ended->ota_target_id == (uint64_t)(uint32_t)ev->tg;
     }
     return ended->kind == DSD_CALL_KIND_PRIVATE_VOICE && ended->ota_target_id == (uint64_t)(uint32_t)ev->dst;
+}
+
+static int
+p25_sm_active_repeats_ended_call(const dsd_call_snapshot* ended, const p25_sm_event_t* ev) {
+    if (!p25_sm_active_matches_ended_call(ended, ev) || !p25_source_id_known(ev->src)) {
+        return 0;
+    }
+    return ended->ota_source_id == (uint64_t)(uint32_t)ev->src;
 }
 
 static int
@@ -5613,10 +5620,9 @@ p25_sm_conventional_active_is_hangtime(dsd_opts* opts, const dsd_state* state, c
             return 0;
         }
         // Phase 2 source-less announcements after the transmission ended
-        // retain the repeater hangtime; they must not begin a canonical
-        // epoch. Phase 1 ACTIVE reports decoded voice and may open an
-        // anonymous call pending its LCW identity.
-        return !have_call || current.phase != DSD_CALL_PHASE_ACTIVE;
+        // retain the repeater hangtime only while naming that ended call.
+        // A changed target or call kind is a legitimate new transmission.
+        return have_call && p25_sm_active_matches_ended_call(&current, ev);
     }
     if (have_call && p25_sm_active_repeats_ended_call(&current, ev)) {
         // Delayed SACCH/hangtime copies of the announcement still name the

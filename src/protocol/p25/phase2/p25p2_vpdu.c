@@ -193,7 +193,8 @@ static int
 p25p2_vpdu_observation_repeats_ended_call(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
                                           uint64_t target, uint64_t source) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED) {
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || !DSD_SYNC_IS_P25P2(call.protocol)) {
         return 0;
     }
     if (call.kind != kind || call.ota_target_id != target) {

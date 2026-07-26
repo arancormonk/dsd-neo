@@ -527,6 +527,19 @@ test_conventional_announcements(void) {
     rc |= expect("conventional no phantom epoch", slot0_epoch() == tx_epoch);
     rc |= expect("conventional still ended", slot0_matches(DSD_CALL_PHASE_ENDED, TEST_SRC));
 
+    // A source-less identity for another target is a new call, not a repeat
+    // of the completed target's hangtime announcement.
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG + 1, 0, 0, 1, 0x00);
+    event_ticks();
+    dsd_call_snapshot changed_target = {0};
+    rc |= expect("conventional source-less changed target call",
+                 dsd_call_state_get(&g_state, 0U, &changed_target) > 0 && changed_target.phase == DSD_CALL_PHASE_ACTIVE
+                     && changed_target.kind == DSD_CALL_KIND_GROUP_VOICE
+                     && changed_target.ota_target_id == (uint64_t)(TEST_TG + 1) && changed_target.ota_source_id == 0U);
+    rc |= expect("conventional source-less changed target epoch", changed_target.epoch != tx_epoch);
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG + 1, 0, dsd_time_now_monotonic_s());
+    event_ticks();
+
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, 777002, 1, 0x00);
     event_ticks();
     rc |= expect("conventional late entry opens call", slot0_matches(DSD_CALL_PHASE_ACTIVE, 777002U));
