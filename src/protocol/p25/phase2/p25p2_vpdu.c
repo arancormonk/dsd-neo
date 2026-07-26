@@ -2110,6 +2110,10 @@ p25p2_vpdu_iter_block_19(p25p2_vpdu_ctx* ctx) {
         for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
             bytes[bi] = (uint8_t)MAC[len_a + bi];
         }
+        // len is an unvalidated over-the-air octet; bytes + 1 spans only sizeof(bytes) - 1 octets.
+        if (len > (uint8_t)(sizeof(bytes) - 1U)) {
+            len = (uint8_t)(sizeof(bytes) - 1U);
+        }
         unpack_byte_array_into_bit_array(bytes + 1, mac_bits, len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Header");
         apx_embedded_alias_header_phase2(opts, state, state->currentslot, mac_bits);
@@ -2147,6 +2151,10 @@ p25p2_vpdu_iter_block_20(p25p2_vpdu_ctx* ctx) {
         DSD_MEMSET(bytes, 0, sizeof(bytes));
         for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
             bytes[bi] = (uint8_t)MAC[len_a + bi];
+        }
+        // len is an unvalidated over-the-air octet; bytes + 1 spans only sizeof(bytes) - 1 octets.
+        if (len > (uint8_t)(sizeof(bytes) - 1U)) {
+            len = (uint8_t)(sizeof(bytes) - 1U);
         }
         unpack_byte_array_into_bit_array(bytes + 1, mac_bits, len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Blocks");

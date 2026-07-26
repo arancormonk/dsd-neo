@@ -1096,11 +1096,17 @@ dmr_block_type1_complete(const dmr_block_assembler_ctx* ctx) {
 
 static void
 dmr_block_type1_append_bytes(dmr_block_assembler_ctx* ctx, uint16_t* ctr_out) {
+    // data_byte_ctr only resets when a PDU completes, so a block counter that never reaches
+    // data_header_blocks lets it run past the superframe. Saturate rather than walk off the end.
+    const uint16_t cap = (uint16_t)sizeof(ctx->state->dmr_pdu_sf[ctx->slot]);
     uint16_t ctr = ctx->state->data_byte_ctr[ctx->slot];
-    for (int i = 0; i < ctx->block_len; i++) {
+    if (ctr > cap) {
+        ctr = cap;
+    }
+    for (int i = 0; i < ctx->block_len && ctr < cap; i++) {
         ctx->state->dmr_pdu_sf[ctx->slot][ctr++] = ctx->block_bytes[i];
     }
-    ctx->state->data_byte_ctr[ctx->slot] += ctx->block_len;
+    ctx->state->data_byte_ctr[ctx->slot] = ctr;
     *ctr_out = ctr;
 }
 
@@ -1148,6 +1154,14 @@ dmr_block_type1_pack_crc_bits(const dsd_state* state, uint8_t slot, uint8_t bloc
 static void
 dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr, int offset) {
     uint8_t slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
+
+    // Bound the byte count by whichever is tighter: the stored superframe or the bit buffer.
+    const uint16_t src_cap = (uint16_t)sizeof(ctx->state->dmr_pdu_sf[slot_idx]);
+    const uint16_t bits_cap = (uint16_t)(sizeof(ctx->dmr_pdu_sf_bits) / 8U);
+    const uint16_t cap = (src_cap < bits_cap) ? src_cap : bits_cap;
+    if (ctr > cap) {
+        ctr = cap;
+    }
 
     unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[slot_idx], ctx->dmr_pdu_sf_bits, ctr);
     ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
