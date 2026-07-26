@@ -5545,6 +5545,28 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     return accepted;
 }
 
+void
+p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+    if (slot < 0 || slot > 1) {
+        return;
+    }
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (!ctx->initialized) {
+        p25_sm_init_ctx(ctx, opts, state);
+    }
+
+    const double ended_m = observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
+    p25_ptt_marker_invalidate(ctx, slot);
+    ctx->slots[slot].voice_active = 0;
+    ctx->slots[slot].last_active_m = 0.0;
+    ctx->slots[slot].last_stop_m = ended_m;
+    if (state) {
+        (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
+    }
+    p25_call_end_slot(opts, state, slot, ended_m);
+    p25_sm_update_ui_mode(ctx, state);
+}
+
 int
 p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int src, double observed_m) {
     if (slot < 0 || slot > 1) {

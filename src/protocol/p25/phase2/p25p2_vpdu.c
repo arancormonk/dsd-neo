@@ -42,6 +42,7 @@
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
 #include "../p25_response_reason.h"
+#include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -3327,9 +3328,7 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
 
         dsd_p25p2_flush_partial_audio_slot(opts, state, released_slot);
         p25p2_vpdu_gate_slot_audio(state, eslot);
-        if (dsd_call_state_end(state, released_slot, dsd_time_now_monotonic_s()) > 0) {
-            dsd_event_sync_slot(opts, state, released_slot);
-        }
+        p25_sm_emit_mac_release(opts, state, released_slot, dsd_time_now_monotonic_s());
         p25_crypto_reset_slot(state, released_slot);
         other_audio = p25p2_vpdu_other_slot_audio_with_history(state, eslot, mac_hold, voice_hold);
         if (!other_audio) {

@@ -24,6 +24,11 @@ void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int targ
 int p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
                                   int svc_bits, const uint8_t signature[17], double observed_m, int facch);
 
+/**
+ * Apply a per-slot MAC Release boundary without releasing a retained carrier.
+ */
+void p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
+
 #ifdef __cplusplus
 }
 #endif
