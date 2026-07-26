@@ -286,6 +286,7 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     p25_sm_init_ctx(sm, &opts, &state);
     sm->state = P25_SM_TUNED;
     sm->vc_is_tdma = 1;
+    sm->slots[slot].grant_active = 1;
     process_MAC_VPDU(&opts, &state, 0, MAC);
 
     DSD_SNPRINTF(label, sizeof label, "%s no grant dispatch", tag);
@@ -324,6 +325,77 @@ run_standard_regroup_voice_user_case(int mfid, int slot, const char* tag) {
     rc |= expect_eq_long(label, (long)call.ota_target_id, 0x3456);
     DSD_SNPRINTF(label, sizeof label, "%s source", tag);
     rc |= expect_eq_long(label, (long)call.ota_source_id, 0x010203);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_rejected_tdma_slot_voice_user_does_not_reopen_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 1;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    state.dmr_so = 0x12U;
+    rc |= expect_true("rejected-slot voice user seed slot0",
+                      seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 20601U, 20601U, 618620U, 0x12U));
+    rc |= expect_true("rejected-slot voice user end slot0", dsd_call_state_end(&state, 0U, 0.0) > 0);
+    rc |= expect_true("rejected-slot voice user seed companion",
+                      seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 20700U, 20700U, 618621U, 0x20U));
+
+    dsd_call_snapshot slot0_before = {0};
+    dsd_call_snapshot slot1_before = {0};
+    rc |= expect_true("rejected-slot voice user snapshot slot0", copy_call(&state, 0U, &slot0_before));
+    rc |= expect_true("rejected-slot voice user snapshot slot1", copy_call(&state, 1U, &slot1_before));
+
+    p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    p25_sm_init_ctx(sm, &opts, &state);
+    sm->state = P25_SM_TUNED;
+    sm->vc_is_tdma = 1;
+    sm->vc_freq_hz = 851500000;
+    sm->slots[0].grant_active = 0;
+    sm->slots[1].grant_active = 1;
+    sm->slots[1].freq_hz = sm->vc_freq_hz;
+    sm->slots[1].target_id = 20700;
+    sm->slots[1].ota_tg = 20700;
+    sm->slots[1].is_group = 1;
+
+    MAC[1] = 0x01; // Group Voice Channel User, abbreviated
+    MAC[2] = 0x44; // Encrypted, priority 4
+    MAC[3] = 0x50;
+    MAC[4] = 0x79; // TG 20601
+    MAC[5] = 0x09;
+    MAC[6] = 0x70;
+    MAC[7] = 0x7C; // SRC 618620
+    process_MAC_VPDU(&opts, &state, 0, MAC);
+
+    dsd_call_snapshot slot0_after = {0};
+    dsd_call_snapshot slot1_after = {0};
+    rc |= expect_true("rejected-slot voice user preserved slot0", copy_call(&state, 0U, &slot0_after));
+    rc |= expect_true("rejected-slot voice user preserved companion", copy_call(&state, 1U, &slot1_after));
+    rc |= expect_eq_long("rejected-slot voice user slot0 phase", slot0_after.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_long("rejected-slot voice user slot0 revision", (long)slot0_after.revision,
+                         (long)slot0_before.revision);
+    rc |= expect_eq_long("rejected-slot voice user slot0 epoch", (long)slot0_after.epoch, (long)slot0_before.epoch);
+    rc |= expect_eq_long("rejected-slot voice user slot0 service", slot0_after.service_options,
+                         slot0_before.service_options);
+    rc |= expect_eq_long("rejected-slot voice user companion revision", (long)slot1_after.revision,
+                         (long)slot1_before.revision);
+    rc |= expect_eq_long("rejected-slot voice user carrier stays tuned", sm->state, P25_SM_TUNED);
+    rc |= expect_eq_long("rejected-slot voice user rejected grant stays clear", sm->slots[0].grant_active, 0);
+    rc |= expect_eq_long("rejected-slot voice user companion grant remains", sm->slots[1].grant_active, 1);
+    rc |= expect_eq_long("rejected-slot voice user service state preserved", state.dmr_so, 0x12);
+    rc |= expect_eq_long("rejected-slot voice user crypto state preserved", state.p25_crypto_state[0],
+                         DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_eq_long("rejected-slot voice user timestamp preserved", state.p25_p2_last_mac_active[0], 0);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -1357,6 +1429,7 @@ main(void) {
 
     rc |= run_standard_regroup_voice_user_case(0x00, 0, "0x90/mfid00");
     rc |= run_standard_regroup_voice_user_case(0x01, 1, "0x90/mfid01");
+    rc |= test_rejected_tdma_slot_voice_user_does_not_reopen_call();
     rc |= run_standard_regroup_voice_user_nonstandard_guard_case();
 
     // Case D6: Group Affiliation Response 0x68 accepts on low GAV bits, not status bits 5-6.

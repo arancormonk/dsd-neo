@@ -134,8 +134,8 @@ p25p2_vpdu_is_encrypted_probe(const dsd_opts* opts, int service_options) {
 }
 
 static int
-p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* state) {
-    if (!state || state->p2_is_lcch == 1) {
+p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (!state || state->p2_is_lcch == 1 || slot < 0 || slot > 1) {
         return 0;
     }
     if (!opts || opts->trunk_enable != 1) {
@@ -143,7 +143,8 @@ p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* stat
     }
 
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
-    return opts->trunk_is_tuned == 1 && sm && sm->state == P25_SM_TUNED;
+    return opts->trunk_is_tuned == 1 && sm && sm->state == P25_SM_TUNED && sm->slots[slot].grant_active
+           && !sm->slots[slot].data_call;
 }
 
 static void
@@ -167,7 +168,7 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
                          uint64_t source, int service_options) {
     if (!state || slot < 0 || slot > 1 || target == 0U
         || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
-        || !p25p2_vpdu_voice_has_live_provenance(opts, state)) {
+        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot)) {
         return 0;
     }
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
