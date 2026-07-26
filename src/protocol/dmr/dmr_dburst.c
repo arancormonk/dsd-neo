@@ -297,16 +297,24 @@ dmr_dburst_handle_bptc_crc(dmr_data_burst_ctx* ctx) {
 static void
 dmr_dburst_copy_bptc_outputs(dmr_data_burst_ctx* ctx) {
     uint32_t i;
+    // Bound the copy by the source remainder and the unpacked bit buffer so the span stays
+    // provable locally rather than relying on the burst profile table.
+    const uint8_t src_cap = (uint8_t)sizeof(ctx->bptc_data_bytes);
+    const uint8_t start = (ctx->pdu_start < src_cap) ? ctx->pdu_start : src_cap;
+    const uint8_t dst_cap = (uint8_t)(sizeof(ctx->bptc_data_bits) / 8U);
     uint8_t max_bytes = ctx->pdu_len;
-    uint8_t avail = (uint8_t)(sizeof(ctx->bptc_data_bytes) - ctx->pdu_start);
+    uint8_t avail = (uint8_t)(src_cap - start);
     if (max_bytes > avail) {
         max_bytes = avail;
     }
+    if (max_bytes > dst_cap) {
+        max_bytes = dst_cap;
+    }
 
-    unpack_byte_array_into_bit_array(ctx->bptc_data_bytes + ctx->pdu_start, ctx->bptc_data_bits, max_bytes);
+    unpack_byte_array_into_bit_array(ctx->bptc_data_bytes + start, ctx->bptc_data_bits, max_bytes);
 
     for (i = 0; i < max_bytes; i++) {
-        ctx->dmr_pdu[i] = ctx->bptc_data_bytes[i + ctx->pdu_start];
+        ctx->dmr_pdu[i] = ctx->bptc_data_bytes[i + start];
     }
     for (i = 0; i < ((uint32_t)max_bytes * 8U); i++) {
         ctx->dmr_pdu_bits[i] = ctx->bptc_data_bits[i];
@@ -590,7 +598,18 @@ dmr_dburst_handle_trellis(dmr_data_burst_ctx* ctx) {
     dmr_dburst_trellis_update_confirmed_crc(ctx);
 
     DSD_MEMSET(ctx->dmr_pdu_bits, 0, sizeof(ctx->dmr_pdu_bits));
-    unpack_byte_array_into_bit_array(trellis_return + ctx->pdu_start, ctx->dmr_pdu_bits, ctx->pdu_len);
+    // Same bounding as the BPTC path: keep the span within trellis_return and dmr_pdu_bits.
+    const uint8_t tr_cap = (uint8_t)sizeof(trellis_return);
+    const uint8_t start = (ctx->pdu_start < tr_cap) ? ctx->pdu_start : tr_cap;
+    const uint8_t bits_cap = (uint8_t)(sizeof(ctx->dmr_pdu_bits) / 8U);
+    uint8_t take = (uint8_t)(tr_cap - start);
+    if (take > ctx->pdu_len) {
+        take = ctx->pdu_len;
+    }
+    if (take > bits_cap) {
+        take = bits_cap;
+    }
+    unpack_byte_array_into_bit_array(trellis_return + start, ctx->dmr_pdu_bits, take);
 }
 
 static void
