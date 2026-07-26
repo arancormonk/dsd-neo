@@ -5205,6 +5205,23 @@ target_link_libraries(dsd-neo_test_dmr_discussion_231 PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_DISCUSSION_231 COMMAND dsd-neo_test_dmr_discussion_231)
 
 add_executable(
+    dsd-neo_test_dmr_block_type1_bounds
+    protocol/dmr/test_dmr_block_type1_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_block_type1_bounds
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_block_type1_bounds
+    PRIVATE dsd-neo_proto_dmr
+)
+add_test(
+    NAME DMR_BLOCK_TYPE1_BOUNDS
+    COMMAND dsd-neo_test_dmr_block_type1_bounds
+)
+
+add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ms.c
