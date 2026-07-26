@@ -146,6 +146,8 @@ main(void) {
     sm->state = P25_SM_TUNED;
     sm->vc_is_tdma = 1;
     sm->vc_freq_hz = 851500000;
+    sm->slots[0].grant_active = 1;
+    sm->slots[0].freq_hz = sm->vc_freq_hz;
 
     // Scenario 1: other slot active. ENC should gate only current slot and not release.
     st.currentslot = 0;             // so VPDU slot=0 for FACCH
