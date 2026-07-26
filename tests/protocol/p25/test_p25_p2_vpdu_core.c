@@ -221,6 +221,70 @@ put_u24_ull(unsigned long long int* mac, int pos, unsigned value) {
     mac[pos + 2] = (unsigned long long int)(value & 0xFFU);
 }
 
+static int
+test_lcch_voice_user_does_not_reopen_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int MAC[24] = {0};
+    int rc = 0;
+
+    MAC[1] = 0x01; // Group Voice Channel User, abbreviated
+    MAC[2] = 0x44; // Encrypted, priority 4
+    put_u16_ull(MAC, 3, 20601U);
+    put_u24_ull(MAC, 5, 618620U);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 0;
+    state.currentslot = 0;
+    state.p2_is_lcch = 1;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    state.dmr_so = 0x12U;
+    const dsd_call_observation ended = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 20601U,
+        .policy_target_id = 20601U,
+        .ota_source_id = 618620U,
+    };
+    rc |= expect_true("lcch voice fixture begin", dsd_call_state_observe(&state, &ended, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    rc |= expect_true("lcch voice fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+
+    dsd_call_snapshot before = {0};
+    rc |= expect_true("lcch voice fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+
+    dsd_call_snapshot after = {0};
+    rc |= expect_true("lcch voice canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("lcch voice phase preserved", after.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_long("lcch voice revision preserved", (long)after.revision, (long)before.revision);
+    rc |= expect_eq_long("lcch voice epoch preserved", (long)after.epoch, (long)before.epoch);
+    rc |= expect_eq_long("lcch voice service preserved", state.dmr_so, 0x12);
+    rc |= expect_eq_long("lcch voice crypto preserved", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_eq_long("lcch voice timestamp preserved", state.p25_p2_last_mac_active[0], 0);
+    rc |= expect_eq_long("lcch marker reset", state.p2_is_lcch, 0);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_P25P2_POS;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+
+    dsd_call_snapshot conventional = {0};
+    rc |= expect_true("conventional voice canonical call", dsd_call_state_get(&state, 0U, &conventional) > 0);
+    rc |= expect_eq_long("conventional voice phase", conventional.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("conventional voice target", (long)conventional.ota_target_id, 20601);
+    rc |= expect_eq_long("conventional voice source", (long)conventional.ota_source_id, 618620);
+    rc |= expect_eq_long("conventional voice service", state.dmr_so, 0x44);
+    rc |= expect_true("conventional voice timestamp", state.p25_p2_last_mac_active[0] != 0);
+    dsd_state_ext_free_all(&state);
+
+    return rc;
+}
+
 static void
 put_fqid_tail_ull(unsigned long long int* mac, int pos, unsigned wacn, unsigned sysid, unsigned source) {
     mac[pos + 0] = (unsigned long long int)((wacn >> 12) & 0xFFU);
@@ -1608,6 +1672,8 @@ run_cases(void) {
     rc |= run_deferred_sccb_resolution_case();
     rc |= run_deferred_adjacent_wacn_resolution_case();
     rc |= run_sccb_full_cache_preservation_case();
+
+    rc |= test_lcch_voice_user_does_not_reopen_call();
 
     // Case 14: extended private voice (0x22) derives source from the SUID tail.
     {

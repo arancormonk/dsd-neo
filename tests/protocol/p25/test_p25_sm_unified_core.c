@@ -10,6 +10,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -22,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -114,6 +116,44 @@ canonical_call_set_service(uint8_t slot, uint16_t service_options) {
         .observed_m = dsd_time_now_monotonic_s(),
     };
     return dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_CONTINUE) >= 0;
+}
+
+static void
+make_ptt_signature(uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES], uint64_t mi, int algid, int keyid, int src, int tg) {
+    for (int i = 0; i < 8; i++) {
+        signature[i] = (uint8_t)((mi >> (56 - i * 8)) & UINT64_C(0xFF));
+    }
+    signature[8] = 0x99U;
+    signature[9] = (uint8_t)algid;
+    signature[10] = (uint8_t)((keyid >> 8) & 0xFF);
+    signature[11] = (uint8_t)(keyid & 0xFF);
+    signature[12] = (uint8_t)((src >> 16) & 0xFF);
+    signature[13] = (uint8_t)((src >> 8) & 0xFF);
+    signature[14] = (uint8_t)(src & 0xFF);
+    signature[15] = (uint8_t)((tg >> 8) & 0xFF);
+    signature[16] = (uint8_t)(tg & 0xFF);
+}
+
+static p25_sm_event_t
+raw_ptt_event(int slot, int tg, int src, const uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES], double observed_m,
+              int facch) {
+    p25_sm_event_t ev = p25_sm_ev_ptt_call(slot, tg, 0, src, 1, 0);
+    DSD_MEMCPY(ev.ptt_signature, signature, sizeof(ev.ptt_signature));
+    ev.ptt_signature_valid = 1;
+    ev.observed_m = observed_m;
+    ev.facch = facch ? 1 : 0;
+    return ev;
+}
+
+static void
+start_tdma_fixture(p25_sm_ctx_t* ctx, int second_slot) {
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.trunk_chan_map[0x1235] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(second_slot ? 0x1235 : 0x1234, 851500000, second_slot ? 2000 : 1000,
+                                                 second_slot ? 456 : 123, 0);
+    p25_sm_event(ctx, &g_opts, &g_state, &grant);
 }
 
 static int
@@ -395,6 +435,379 @@ test_same_identity_ptt_starts_new_epoch_after_missed_end(void) {
     if (!ctx.slots[0].voice_active || fabs(ctx.slots[0].last_start_m - followup_start_m) > 1.0e-9
         || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR) {
         DSD_FPRINTF(stderr, "FAIL: Repeated same-identity ACTIVE opened another epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_raw_ptt_retransmissions_coalesce_history(void) {
+    static Event_History_I event_history[2];
+    reset_test_state();
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    init_event_history(&event_history[0], 0, 255);
+    init_event_history(&event_history[1], 0, 255);
+    g_state.event_history_s = event_history;
+
+    p25_sm_ctx_t ctx;
+    start_tdma_fixture(&ctx, 0);
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    const uint64_t mi = UINT64_C(0x0102030405060708);
+    make_ptt_signature(signature, mi, 0x80, 0x2468, 123, 1000);
+    const double first_m = dsd_time_now_monotonic_s() - 10.0;
+    p25_sm_event_t ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    dsd_call_snapshot call;
+    if (!canonical_call_is(0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1000, 123)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U || !ctx.slots[0].ptt_signature_valid) {
+        DSD_FPRINTF(stderr, "FAIL: Raw PTT retransmission fixture did not open its first epoch\n");
+        return 1;
+    }
+    const double first_start_m = ctx.slots[0].last_start_m;
+    if (p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0x2468, mi, 1000) != DSD_P25_CRYPTO_CLEAR
+        || dsd_event_enrich_alias(&g_state, 0U, call.epoch, "RETX-ALIAS") <= 0) {
+        DSD_FPRINTF(stderr, "FAIL: Raw PTT retransmission fixture did not seed crypto/alias metadata\n");
+        return 1;
+    }
+    dsd_event_sync_slot(&g_opts, &g_state, 0U);
+
+    signature[0] ^= 0x01U;  // Clear-call MI is not an epoch discriminator.
+    signature[8] ^= 0x02U;  // The remaining crypto synchronization octet is also non-authoritative.
+    signature[10] ^= 0x04U; // Neither is the clear-call KID.
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    signature[7] ^= 0x08U;
+    signature[11] ^= 0x10U;
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 1.2, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U
+        || fabs(ctx.slots[0].last_start_m - first_start_m) > 1.0e-9
+        || fabs(ctx.slots[0].ptt_last_seen_m - (first_m + 1.2)) > 1.0e-9
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_state.payload_algid != 0x80
+        || strcmp(g_state.generic_talker_alias[0], "RETX-ALIAS") != 0
+        || event_history[0].Event_History_Items[1].event_string[0] != '\0') {
+        DSD_FPRINTF(stderr, "FAIL: Matching clear PTTs inside the inclusive window rotated or cleared the epoch\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_end_call_at(0, 1000, 123, first_m + 1.3);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.slots[0].ptt_signature_valid || dsd_call_state_get(&g_state, 0U, &call) <= 0
+        || call.phase != DSD_CALL_PHASE_ENDED || call.epoch != 1U
+        || event_history[0].Event_History_Items[1].target_id != 1000U
+        || strcmp(event_history[0].Event_History_Items[1].alias, "RETX-ALIAS") != 0
+        || event_history[0].Event_History_Items[2].event_string[0] != '\0') {
+        DSD_FPRINTF(stderr, "FAIL: Retransmitted PTT epoch did not commit exactly one enriched history row\n");
+        return 1;
+    }
+
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 1.4, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 2U) {
+        DSD_FPRINTF(stderr, "FAIL: Accepted END did not permit an immediate same-signature epoch\n");
+        return 1;
+    }
+    const double boundary_start_m = ctx.slots[0].last_start_m;
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 2.400001, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 3U
+        || ctx.slots[0].last_start_m <= boundary_start_m
+        || event_history[0].Event_History_Items[1].target_id != 1000U) {
+        DSD_FPRINTF(stderr, "FAIL: Post-window identical PTT did not open and record a separate epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_raw_ptt_signature_changes_open_epochs(void) {
+    reset_test_state();
+    p25_sm_ctx_t ctx;
+    start_tdma_fixture(&ctx, 0);
+
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    make_ptt_signature(signature, UINT64_C(0x0102030405060708), 0x84, 0x1111, 123, 1000);
+    const double first_m = dsd_time_now_monotonic_s() - 10.0;
+    p25_sm_event_t ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U) {
+        return 1;
+    }
+    uint64_t expected_epoch = call.epoch;
+
+    signature[0] ^= 0x01U; // MI
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    expected_epoch++;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != expected_epoch) {
+        DSD_FPRINTF(stderr, "FAIL: Changed MI did not open a new PTT epoch\n");
+        return 1;
+    }
+
+    signature[9] = 0x89U; // ALGID
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    expected_epoch++;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != expected_epoch) {
+        DSD_FPRINTF(stderr, "FAIL: Changed ALGID did not open a new PTT epoch\n");
+        return 1;
+    }
+
+    signature[10] ^= 0x01U; // KID
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.3, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    expected_epoch++;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != expected_epoch) {
+        DSD_FPRINTF(stderr, "FAIL: Changed KID did not open a new PTT epoch\n");
+        return 1;
+    }
+
+    signature[14] = 124U; // Source identity
+    ev = raw_ptt_event(0, 1000, 124, signature, first_m + 0.4, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    expected_epoch++;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != expected_epoch || call.ota_source_id != 124U) {
+        DSD_FPRINTF(stderr, "FAIL: Changed PTT identity did not open a new epoch\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_raw_ptt_boundary_invalidation(void) {
+    const p25_sm_event_type_e boundaries[] = {P25_SM_EV_END, P25_SM_EV_IDLE, P25_SM_EV_HANGTIME};
+    for (size_t i = 0; i < sizeof(boundaries) / sizeof(boundaries[0]); i++) {
+        reset_test_state();
+        p25_sm_ctx_t ctx;
+        start_tdma_fixture(&ctx, 0);
+        uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+        make_ptt_signature(signature, UINT64_C(0x1112131415161718), 0x80, 0, 123, 1000);
+        const double first_m = dsd_time_now_monotonic_s() - 10.0;
+        p25_sm_event_t ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+        if (boundaries[i] == P25_SM_EV_END) {
+            ev = p25_sm_ev_end_call_at(0, 1000, 123, first_m + 0.1);
+        } else if (boundaries[i] == P25_SM_EV_IDLE) {
+            ev = p25_sm_ev_idle_at(0, first_m + 0.1);
+        } else {
+            ev = p25_sm_ev_hangtime(0);
+            ev.observed_m = first_m + 0.1;
+        }
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        if (ctx.slots[0].ptt_signature_valid) {
+            DSD_FPRINTF(stderr, "FAIL: Accepted boundary %d retained its PTT marker\n", (int)boundaries[i]);
+            return 1;
+        }
+
+        ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 1);
+        p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 2U) {
+            DSD_FPRINTF(stderr, "FAIL: Boundary %d suppressed an immediate same-signature PTT\n", (int)boundaries[i]);
+            return 1;
+        }
+    }
+
+    reset_test_state();
+    p25_sm_ctx_t ctx;
+    start_tdma_fixture(&ctx, 0);
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    make_ptt_signature(signature, UINT64_C(0x2122232425262728), 0x80, 0, 123, 1000);
+    const double first_m = dsd_time_now_monotonic_s() - 10.0;
+    p25_sm_event_t ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_release(&ctx, &g_opts, &g_state, "ptt-marker-test");
+    if (ctx.slots[0].ptt_signature_valid || ctx.state != P25_SM_ON_CC) {
+        DSD_FPRINTF(stderr, "FAIL: Retune/release retained a PTT marker\n");
+        return 1;
+    }
+    start_tdma_fixture(&ctx, 0);
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 2U) {
+        DSD_FPRINTF(stderr, "FAIL: Retune did not permit an immediate same-signature PTT\n");
+        return 1;
+    }
+
+    reset_test_state();
+    start_tdma_fixture(&ctx, 0);
+    make_ptt_signature(signature, UINT64_C(0x4142434445464748), 0x80, 0, 123, 1000);
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_end_call_at(0, 9999, 999, first_m + 0.1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].ptt_signature_valid) {
+        DSD_FPRINTF(stderr, "FAIL: Rejected stale boundary invalidated the PTT marker\n");
+        return 1;
+    }
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U) {
+        DSD_FPRINTF(stderr, "FAIL: Rejected stale boundary broke retransmission coalescing\n");
+        return 1;
+    }
+
+    reset_test_state();
+    start_tdma_fixture(&ctx, 0);
+    ctx.slots[0].svc_bits = P25_SM_SVC_UNKNOWN;
+    make_ptt_signature(signature, UINT64_C(0x5152535455565758), 0x80, 0, 123, 1000);
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+    ev.svc_bits = P25_SM_SVC_UNKNOWN;
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    p25_sm_event_t reassignment = p25_sm_ev_group_grant(0x1234, 851500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &reassignment);
+    if (ctx.slots[0].target_id != 2000 || ctx.slots[0].ptt_signature_valid) {
+        DSD_FPRINTF(stderr, "FAIL: Accepted call reassignment did not invalidate the PTT marker\n");
+        return 1;
+    }
+    make_ptt_signature(signature, UINT64_C(0x5152535455565758), 0x80, 0, 456, 2000);
+    ev = raw_ptt_event(0, 2000, 456, signature, first_m + 0.1, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 2U) {
+        DSD_FPRINTF(stderr, "FAIL: Reassignment suppressed an immediate replacement-call PTT\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_raw_ptt_markers_are_slot_local(void) {
+    reset_test_state();
+    p25_sm_ctx_t ctx;
+    start_tdma_fixture(&ctx, 0);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1235, 851500000, 2000, 456, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &grant);
+
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    make_ptt_signature(signature, UINT64_C(0x3132333435363738), 0x80, 0, 123, 1000);
+    const double first_m = dsd_time_now_monotonic_s() - 10.0;
+    p25_sm_event_t ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = raw_ptt_event(1, 2000, 456, signature, first_m + 0.1, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const double slot0_start_m = ctx.slots[0].last_start_m;
+    const double slot1_start_m = ctx.slots[1].last_start_m;
+
+    ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 1);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].ptt_signature_valid || !ctx.slots[1].ptt_signature_valid
+        || fabs(ctx.slots[0].last_start_m - slot0_start_m) > 1.0e-9
+        || fabs(ctx.slots[1].last_start_m - slot1_start_m) > 1.0e-9
+        || fabs(ctx.slots[0].ptt_last_seen_m - (first_m + 0.2)) > 1.0e-9
+        || fabs(ctx.slots[1].ptt_last_seen_m - (first_m + 0.1)) > 1.0e-9) {
+        DSD_FPRINTF(stderr, "FAIL: Identical PTT markers leaked across TDMA slots\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_conventional_raw_ptt_retransmissions_coalesce(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    g_state.synctype = DSD_SYNC_P25P2_POS;
+    g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    make_ptt_signature(signature, UINT64_C(0x6162636465666768), 0x80, 0, 123, 1000);
+    const double first_m = dsd_time_now_monotonic_s() - 10.0;
+    if (!p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN, signature, first_m,
+                                       0)) {
+        return 1;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 1U
+        || !ctx->slots[0].ptt_signature_valid) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional raw PTT did not start its first Phase 2 epoch\n");
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN, signature,
+                                       first_m + 0.5, 1)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U
+        || fabs(ctx->slots[0].ptt_last_seen_m - (first_m + 0.5)) > 1.0e-9) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional identical raw PTT rotated the active Phase 2 epoch\n");
+        return 1;
+    }
+
+    if (!p25_sm_emit_end_call_at(&g_opts, &g_state, 0, 1000, 123, first_m + 0.6) || ctx->slots[0].ptt_signature_valid
+        || !p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN, signature,
+                                          first_m + 0.7, 0)
+        || dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != 2U) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional Phase 2 END did not delimit the raw PTT epochs\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_trunked_late_voice_is_rejected_after_encryption_lockout(void) {
+    static Event_History_I event_history[2];
+    reset_test_state();
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    init_event_history(&event_history[0], 0, 255);
+    init_event_history(&event_history[1], 0, 255);
+    g_state.event_history_s = event_history;
+    g_opts.trunk_tune_enc_calls = 0;
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 20601, 618620, 0);
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    const uint64_t mi = UINT64_C(0xE83FF2906EA8F0D1);
+    const double first_m = dsd_time_now_monotonic_s();
+    make_ptt_signature(signature, mi, 0x84, 0x026C, 618620, 20601);
+    if (!p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 20601, 0, 618620, 1, P25_SM_SVC_UNKNOWN, signature,
+                                       first_m, 0)
+        || p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x84, 0x026C, mi, 20601)
+               != DSD_P25_CRYPTO_BLOCKED) {
+        DSD_FPRINTF(stderr, "FAIL: Late encrypted PTT fixture did not reach lockout\n");
+        return 1;
+    }
+
+    dsd_call_snapshot locked_call = {0};
+    if (ctx->state != P25_SM_ON_CC || g_opts.trunk_is_tuned != 0 || g_return_requests != 1
+        || dsd_call_state_get(&g_state, 0U, &locked_call) <= 0 || locked_call.phase != DSD_CALL_PHASE_ENDED
+        || locked_call.ota_target_id != 20601U || locked_call.ota_source_id != 618620U || ctx->slots[0].grant_active
+        || ctx->slots[0].voice_active || ctx->slots[0].ptt_signature_valid || g_state.payload_algid != 0
+        || g_state.payload_keyid != 0 || g_state.payload_miP != 0U
+        || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN || g_state.p25_p2_audio_allowed[0] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Encryption lockout did not leave an ended call on the control channel\n");
+        return 1;
+    }
+
+    const uint64_t history_revision = event_history[0].revision;
+    if (p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, 20601, 0, 618620, 1, P25_SM_SVC_UNKNOWN, signature,
+                                      first_m + 0.1, 1)
+            != 0
+        || p25_sm_emit_active_call(&g_opts, &g_state, 0, 20601, 0, 618620, 1, 0x40) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Late trunked voice was accepted without a traffic assignment\n");
+        return 1;
+    }
+
+    dsd_call_snapshot after_late_voice = {0};
+    if (dsd_call_state_get(&g_state, 0U, &after_late_voice) <= 0 || after_late_voice.revision != locked_call.revision
+        || after_late_voice.epoch != locked_call.epoch || after_late_voice.phase != DSD_CALL_PHASE_ENDED
+        || after_late_voice.crypto != locked_call.crypto || after_late_voice.algid != locked_call.algid
+        || after_late_voice.kid != locked_call.kid || after_late_voice.mi != locked_call.mi
+        || event_history[0].revision != history_revision || ctx->state != P25_SM_ON_CC || g_opts.trunk_is_tuned != 0
+        || g_return_requests != 1 || ctx->slots[0].grant_active || ctx->slots[0].voice_active
+        || ctx->slots[0].ptt_signature_valid || g_state.payload_algid != 0 || g_state.payload_keyid != 0
+        || g_state.payload_miP != 0U || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_UNKNOWN
+        || g_state.p25_p2_audio_allowed[0] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Late trunked voice reopened or mutated the locked-out call\n");
         return 1;
     }
     return 0;
@@ -2280,6 +2693,12 @@ main(void) {
     fail += test_authoritative_group_replaces_private_identity();
     fail += test_inband_zero_source_preserves_grant_identity();
     fail += test_same_identity_ptt_starts_new_epoch_after_missed_end();
+    fail += test_raw_ptt_retransmissions_coalesce_history();
+    fail += test_raw_ptt_signature_changes_open_epochs();
+    fail += test_raw_ptt_boundary_invalidation();
+    fail += test_raw_ptt_markers_are_slot_local();
+    fail += test_conventional_raw_ptt_retransmissions_coalesce();
+    fail += test_trunked_late_voice_is_rejected_after_encryption_lockout();
     fail += test_source_less_identity_change_does_not_inherit_rid();
     fail += test_p2_resolved_crypto_survives_pending_active();
     fail += test_pending_crypto_uses_classification_deadline();

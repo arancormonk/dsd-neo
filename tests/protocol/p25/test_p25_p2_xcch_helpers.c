@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/p25_p2_audio_ring.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
 
 static int g_audio_allow;
 static int g_crc12_result;
@@ -36,6 +37,11 @@ static int g_vpdu_grant_newer_slot;
 static int g_vpdu_enc_pending_slot;
 static unsigned long long int g_vpdu_mac[24];
 static int g_ptt_count[2];
+static uint8_t g_ptt_signatures[8][P25_SM_PTT_SIGNATURE_BYTES];
+static int g_ptt_metadata_count;
+static int g_ptt_metadata_slot[8];
+static int g_ptt_metadata_facch[8];
+static double g_ptt_metadata_observed_m[8];
 static int g_active_count[2];
 static int g_voice_event_accept;
 static int g_active_tg[2];
@@ -223,6 +229,23 @@ p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst
         (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
     }
     return accepted;
+}
+
+int
+p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                              int svc_bits, const uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES], double observed_m,
+                              int facch) {
+    if (g_ptt_metadata_count < 8) {
+        const int index = g_ptt_metadata_count;
+        if (signature) {
+            DSD_MEMCPY(g_ptt_signatures[index], signature, sizeof(g_ptt_signatures[index]));
+        }
+        g_ptt_metadata_slot[index] = slot;
+        g_ptt_metadata_facch[index] = facch;
+        g_ptt_metadata_observed_m[index] = observed_m;
+    }
+    g_ptt_metadata_count++;
+    return p25_sm_emit_ptt_call(opts, state, slot, tg, dst, src, is_group, svc_bits);
 }
 
 int
@@ -489,6 +512,11 @@ reset_stubs(void) {
     g_vpdu_enc_pending_slot = -1;
     DSD_MEMSET(g_vpdu_mac, 0, sizeof(g_vpdu_mac));
     DSD_MEMSET(g_ptt_count, 0, sizeof(g_ptt_count));
+    DSD_MEMSET(g_ptt_signatures, 0, sizeof(g_ptt_signatures));
+    g_ptt_metadata_count = 0;
+    DSD_MEMSET(g_ptt_metadata_slot, 0, sizeof(g_ptt_metadata_slot));
+    DSD_MEMSET(g_ptt_metadata_facch, 0, sizeof(g_ptt_metadata_facch));
+    DSD_MEMSET(g_ptt_metadata_observed_m, 0, sizeof(g_ptt_metadata_observed_m));
     DSD_MEMSET(g_active_count, 0, sizeof(g_active_count));
     g_voice_event_accept = 1;
     DSD_MEMSET(g_active_tg, 0, sizeof(g_active_tg));
@@ -540,6 +568,19 @@ expect_u64(const char* label, unsigned long long int got, unsigned long long int
     if (got != want) {
         DSD_FPRINTF(stderr, "FAIL: %s got 0x%016llX want 0x%016llX\n", label, got, want);
         return 1;
+    }
+    return 0;
+}
+
+static int
+expect_signature(const char* label, const uint8_t got[P25_SM_PTT_SIGNATURE_BYTES],
+                 const unsigned long long int mac[24]) {
+    for (int i = 0; i < P25_SM_PTT_SIGNATURE_BYTES; i++) {
+        const uint8_t want = (uint8_t)(mac[i + 1] & 0xFFULL);
+        if (got[i] != want) {
+            DSD_FPRINTF(stderr, "FAIL: %s byte %d got 0x%02X want 0x%02X\n", label, i, got[i], want);
+            return 1;
+        }
     }
     return 0;
 }
@@ -799,6 +840,58 @@ test_facch_public_dispatch_and_crc_gates(void) {
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch crc abort no vpdu", g_vpdu_count, 0);
     rc |= expect_int("facch crc abort no gate", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_int("facch crc abort no ptt marker", g_ptt_metadata_count, 0);
+
+    return rc;
+}
+
+static int
+test_ptt_signature_transport_equivalence_and_repeat_processing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    unsigned long long int mac[24];
+    int sacch_payload[180];
+    int facch_payload[156];
+    int rc = 0;
+
+    reset_stubs();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    fill_mac(mac, 0x84, 0x2468, 0x010203, 0x1234);
+    pack_payload_from_mac(sacch_payload, 180, mac, 0x1, 0, 0);
+    pack_payload_from_mac(facch_payload, 156, mac, 0x1, 0, 0);
+    state.A1[1] = 1;
+    state.A2[1] = 2;
+    state.A3[1] = 3;
+    state.A4[1] = 4;
+    state.aes_key_loaded[1] = 1;
+    state.aes_key_segments[1] = 4U;
+
+    state.currentslot = 0;
+    process_SACCH_MAC_PDU(&opts, &state, sacch_payload);
+    process_SACCH_MAC_PDU(&opts, &state, sacch_payload);
+    state.currentslot = 1;
+    process_FACCH_MAC_PDU(&opts, &state, facch_payload);
+    process_FACCH_MAC_PDU(&opts, &state, facch_payload);
+
+    rc |= expect_int("all PTT copies emitted", g_ptt_metadata_count, 4);
+    for (int i = 0; i < 4; i++) {
+        char label[64];
+        DSD_SNPRINTF(label, sizeof(label), "PTT signature copy %d", i);
+        rc |= expect_signature(label, g_ptt_signatures[i], mac);
+        rc |= expect_int("PTT metadata slot isolation", g_ptt_metadata_slot[i], 1);
+        if (g_ptt_metadata_observed_m[i] <= 0.0) {
+            DSD_FPRINTF(stderr, "FAIL: PTT metadata copy %d has no monotonic observation\n", i);
+            rc = 1;
+        }
+    }
+    rc |= expect_int("SACCH provenance first", g_ptt_metadata_facch[0], 0);
+    rc |= expect_int("SACCH provenance repeat", g_ptt_metadata_facch[1], 0);
+    rc |= expect_int("FACCH provenance first", g_ptt_metadata_facch[2], 1);
+    rc |= expect_int("FACCH provenance repeat", g_ptt_metadata_facch[3], 1);
+    rc |= expect_int("every PTT copy reaches crypto handling", g_enc_count[1], 4);
+    rc |= expect_int("every PTT copy reaches audio setup", g_lfsr_count[1], 4);
+    rc |= expect_int("repeated PTT leaves audio permitted", state.p25_p2_audio_allowed[1], 1);
 
     return rc;
 }
@@ -825,6 +918,14 @@ test_sacch_dispatch_and_lcch_crc_abort(void) {
     rc |= expect_int("sacch opposite slot tg", (int)call.ota_target_id, 0x3456);
     rc |= expect_int("sacch ptt emitted", g_ptt_count[1], 1);
     rc |= expect_int("sacch last active stamped", state.p25_p2_last_mac_active_m[1] > 0.0 ? 1 : 0, 1);
+
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    g_crc12_result = 1;
+    pack_payload_from_mac(payload, 180, mac, 0x1, 0, 0);
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("sacch crc abort no ptt marker", g_ptt_metadata_count, 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -861,7 +962,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstL = 21;
     g_voice_event_accept = 0;
-    fill_mac(mac, 0x80, 0, 303, 1001);
+    fill_mac(mac, 0x84, 0x2468, 303, 1001);
 
     p25p2_xcch_handle_sacch_mac_ptt(&opts, &state, 0, 0, 0, mac);
     rc |= expect_int("rejected sacch ptt emitted", g_ptt_count[0], 1);
@@ -869,6 +970,11 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected sacch ptt gate closed", state.p25_p2_audio_allowed[0], 0);
     rc |= expect_int("rejected sacch ptt companion gate preserved", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("rejected sacch ptt burst cleared", (int)state.dmrburstL, 0);
+    rc |= expect_int("rejected sacch ptt no crypto", g_enc_count[0], 0);
+    rc |= expect_int("rejected sacch ptt no lfsr", g_lfsr_count[0], 0);
+    rc |= expect_int("rejected sacch ptt no algid", state.payload_algid, 0);
+    rc |= expect_int("rejected sacch ptt no keyid", state.payload_keyid, 0);
+    rc |= expect_u64("rejected sacch ptt no mi", state.payload_miP, 0U);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -877,7 +983,7 @@ test_rejected_voice_events_keep_media_closed(void) {
     state.p25_p2_audio_allowed[1] = 1;
     state.dmrburstR = 21;
     g_voice_event_accept = 0;
-    fill_mac(mac, 0x80, 0, 404, 2001);
+    fill_mac(mac, 0x84, 0x1357, 404, 2001);
 
     p25p2_xcch_handle_facch_mac_ptt(&opts, &state, 1, 0, 0, mac);
     rc |= expect_int("rejected facch ptt emitted", g_ptt_count[1], 1);
@@ -885,6 +991,11 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected facch ptt companion gate preserved", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_int("rejected facch ptt gate closed", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("rejected facch ptt burst cleared", (int)state.dmrburstR, 0);
+    rc |= expect_int("rejected facch ptt no crypto", g_enc_count[1], 0);
+    rc |= expect_int("rejected facch ptt no lfsr", g_lfsr_count[1], 0);
+    rc |= expect_int("rejected facch ptt no algid", state.payload_algidR, 0);
+    rc |= expect_int("rejected facch ptt no keyid", state.payload_keyidR, 0);
+    rc |= expect_u64("rejected facch ptt no mi", state.payload_miN, 0U);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1428,6 +1539,7 @@ main(void) {
 
     rc |= test_slot_ptt_and_end_helpers();
     rc |= test_facch_public_dispatch_and_crc_gates();
+    rc |= test_ptt_signature_transport_equivalence_and_repeat_processing();
     rc |= test_sacch_dispatch_and_lcch_crc_abort();
     rc |= test_rejected_voice_events_keep_media_closed();
     rc |= test_sacch_end_idle_active_hangtime_dispatch();

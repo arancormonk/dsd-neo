@@ -278,6 +278,18 @@ main(void) {
     p25_sm_event_t slot1_grant = p25_sm_ev_group_grant((2 << 12) | 11, 0, 3456, 7890, 0);
     p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot0_grant);
     p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot1_grant);
+    const uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES] = {
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x99, 0x80, 0x12, 0x34, 0x00, 0x1A, 0x85, 0x09, 0x29,
+    };
+    const double ptt_m = dsd_time_now_monotonic_s() - 1.0;
+    p25_sm_event_t slot0_ptt = p25_sm_ev_ptt_call(0, 2345, 0, 6789, 1, 0);
+    DSD_MEMCPY(slot0_ptt.ptt_signature, ptt_signature, sizeof(slot0_ptt.ptt_signature));
+    slot0_ptt.ptt_signature_valid = 1;
+    slot0_ptt.observed_m = ptt_m;
+    p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot0_ptt);
+    slot0_ptt.observed_m = ptt_m + 0.5;
+    slot0_ptt.facch = 1;
+    p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot0_ptt);
     slot_state.p25_p2_audio_allowed[1] = 1;
     p25_sm_event_t slot1_active = p25_sm_ev_active(1);
     p25_sm_event(&slot_ctx, &slot_opts, &slot_state, &slot1_active);
@@ -338,6 +350,8 @@ main(void) {
     rc |= expect_contains(output, "reason=frame-sync-no-sync");
 #endif
     rc |= expect_contains(output, "event=voice_activity");
+    rc |= expect_contains(output, "event=ptt_retransmit");
+    rc |= expect_contains(output, "slot=0 tg=2345 src=6789 elapsed=0.500 provenance=facch");
     rc |= expect_contains(output, "kind=active slot=1");
     rc |= expect_contains(output, "target=3456 tg=3456 src=7890 grant=1");
     rc |= expect_contains(output, "event=voice_end_ignored");

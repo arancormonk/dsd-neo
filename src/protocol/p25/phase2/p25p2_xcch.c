@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
@@ -79,6 +80,13 @@ p25p2_xcch_src_from_mac(const unsigned long long int mac[24]) {
 static int
 p25p2_xcch_tg_from_mac(const unsigned long long int mac[24]) {
     return (int)((mac[16] << 8) | mac[17]);
+}
+
+static void
+p25p2_xcch_ptt_signature(const unsigned long long int mac[24], uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES]) {
+    for (int i = 0; i < P25_SM_PTT_SIGNATURE_BYTES; i++) {
+        signature[i] = (uint8_t)(mac[i + 1] & 0xFFULL);
+    }
 }
 
 static int
@@ -499,14 +507,19 @@ p25p2_xcch_handle_sacch_mac_signal(dsd_opts* opts, dsd_state* state, unsigned lo
 static void
 p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int smac[24]) {
+    const double ptt_observed_m = dsd_time_now_monotonic_s();
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    p25p2_xcch_ptt_signature(smac, signature);
+
     DSD_FPRINTF(stderr, " MAC_PTT ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
     state->p25_p2_last_mac_active[slot] = time(NULL);
-    state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
+    state->p25_p2_last_mac_active_m[slot] = ptt_observed_m;
 
-    if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0, (int)p25p2_xcch_src_from_mac(smac), 1,
-                              P25_SM_SVC_UNKNOWN)) {
+    if (!p25_sm_emit_ptt_call_metadata(opts, state, slot, p25p2_xcch_tg_from_mac(smac), 0,
+                                       (int)p25p2_xcch_src_from_mac(smac), 1, P25_SM_SVC_UNKNOWN, signature,
+                                       ptt_observed_m, 0)) {
         // A companion slot can keep the traffic carrier tuned after this slot
         // is rejected. Preserve the denied identity so a later ESS decision
         // cannot evaluate the preceding allowed call and reopen audio.
@@ -607,11 +620,19 @@ p25p2_xcch_handle_sacch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 static void
 p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, int mac_offset, int res,
                                 const unsigned long long int fmac[24]) {
+    const double ptt_observed_m = dsd_time_now_monotonic_s();
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    p25p2_xcch_ptt_signature(fmac, signature);
+
     DSD_FPRINTF(stderr, " MAC_PTT  ");
     DSD_FPRINTF(stderr, "%s", KGRN);
 
-    if (!p25_sm_emit_ptt_call(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0, (int)p25p2_xcch_src_from_mac(fmac), 1,
-                              P25_SM_SVC_UNKNOWN)) {
+    state->p25_p2_last_mac_active[slot] = time(NULL);
+    state->p25_p2_last_mac_active_m[slot] = ptt_observed_m;
+
+    if (!p25_sm_emit_ptt_call_metadata(opts, state, slot, p25p2_xcch_tg_from_mac(fmac), 0,
+                                       (int)p25p2_xcch_src_from_mac(fmac), 1, P25_SM_SVC_UNKNOWN, signature,
+                                       ptt_observed_m, 1)) {
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }

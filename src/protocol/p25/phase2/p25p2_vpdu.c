@@ -42,6 +42,7 @@
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
 #include "../p25_response_reason.h"
+#include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -132,6 +133,20 @@ p25p2_vpdu_is_encrypted_probe(const dsd_opts* opts, int service_options) {
            && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0;
 }
 
+static int
+p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* state, int slot) {
+    if (!state || state->p2_is_lcch == 1 || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (!opts || opts->trunk_enable != 1) {
+        return 1;
+    }
+
+    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
+    return opts->trunk_is_tuned == 1 && sm && sm->state == P25_SM_TUNED && sm->slots[slot].grant_active
+           && !sm->slots[slot].data_call;
+}
+
 static void
 p25p2_vpdu_update_voice_crypto(dsd_state* state, int slot, int service_options, int began, int encrypted_probe) {
     if (service_options < 0 || encrypted_probe) {
@@ -148,12 +163,13 @@ p25p2_vpdu_update_voice_crypto(dsd_state* state, int slot, int service_options, 
     }
 }
 
-static void
+static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
                          uint64_t source, int service_options) {
     if (!state || slot < 0 || slot > 1 || target == 0U
-        || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)) {
-        return;
+        || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
+        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot)) {
+        return 0;
     }
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
     const dsd_call_observation observation = {
@@ -177,6 +193,7 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     if (began >= 0 && opts) {
         dsd_event_sync_slot(opts, state, (uint8_t)slot);
     }
+    return began >= 0;
 }
 
 static int
@@ -2864,13 +2881,16 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        p25p2_vpdu_store_slot_svc(state, slot, svc);
-        p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                 (uint64_t)(uint32_t)src, svc);
+        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE,
+                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc);
+        if (live_voice) {
+            p25p2_vpdu_store_slot_svc(state, slot, svc);
+        }
         // Treat observed Super Group activity as an active patch (vendor-specific signaling may differ)
         p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
 
-        if ((svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
+            && opts->trunk_tune_enc_calls == 0) {
             p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
@@ -2907,9 +2927,11 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        p25p2_vpdu_store_slot_svc(state, slot, svc);
-        p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                 (uint64_t)(uint32_t)src, svc);
+        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE,
+                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc);
+        if (live_voice) {
+            p25p2_vpdu_store_slot_svc(state, slot, svc);
+        }
         p25_patch_update(state, gr, /*is_patch*/ 1, /*active*/ 1);
 
         uint32_t mfid90_wacn = (MAC[10 + len_a] << 16) | (MAC[11 + len_a] << 8) | (MAC[12 + len_a] & 0xF0);
@@ -2920,7 +2942,8 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         if (src != 0 && gr != 0) {
             p25_ga_add(state, (uint32_t)src, (uint16_t)gr);
         }
-        if ((svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
+            && opts->trunk_tune_enc_calls == 0) {
             p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
@@ -3327,9 +3350,7 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
 
         dsd_p25p2_flush_partial_audio_slot(opts, state, released_slot);
         p25p2_vpdu_gate_slot_audio(state, eslot);
-        if (dsd_call_state_end(state, released_slot, dsd_time_now_monotonic_s()) > 0) {
-            dsd_event_sync_slot(opts, state, released_slot);
-        }
+        p25_sm_emit_mac_release(opts, state, released_slot, dsd_time_now_monotonic_s());
         p25_crypto_reset_slot(state, released_slot);
         other_audio = p25p2_vpdu_other_slot_audio_with_history(state, eslot, mac_hold, voice_hold);
         if (!other_audio) {
@@ -3376,19 +3397,22 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
         }
 
         DSD_FPRINTF(stderr, "\n VCH %d - TG: %d; SRC: %d; ", slot + 1, gr, src);
-        state->p25_p2_last_mac_active[slot] = time(NULL);
         if (MAC[1 + len_a] == 0x21) {
             DSD_FPRINTF(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, src);
         }
 
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, " Group Voice");
-        p25p2_vpdu_store_slot_svc(state, slot, svc);
-        p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                 (uint64_t)(uint32_t)src, svc);
+        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE,
+                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc);
+        if (live_voice) {
+            state->p25_p2_last_mac_active[slot] = time(NULL);
+            p25p2_vpdu_store_slot_svc(state, slot, svc);
+        }
         DSD_FPRINTF(stderr, (MAC[1 + len_a] == 0x21) ? " - Extended " : " - Abbreviated ");
 
-        if ((svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
+            && opts->trunk_tune_enc_calls == 0) {
             p25p2_vpdu_handle_group_voice_enc_fallback(opts, state, slot, gr);
         }
     }
@@ -3431,18 +3455,21 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         }
 
         DSD_FPRINTF(stderr, "\n VCH %d - TGT: %d; SRC %d; ", slot + 1, gr, src);
-        state->p25_p2_last_mac_active[slot] = time(NULL);
         if (MAC[1 + len_a] == 0x22) {
             DSD_FPRINTF(stderr, "SUID: %08llX-%08d; ", src_suid >> 24, src);
         }
 
         p25p2_vpdu_print_svc_no_state(opts, svc);
         DSD_FPRINTF(stderr, " Unit to Unit Voice");
-        p25p2_vpdu_store_slot_svc(state, slot, svc);
-        p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
-                                 (uint64_t)(uint32_t)src, svc);
+        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE,
+                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc);
+        if (live_voice) {
+            state->p25_p2_last_mac_active[slot] = time(NULL);
+            p25p2_vpdu_store_slot_svc(state, slot, svc);
+        }
 
-        if ((svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1 && opts->trunk_tune_enc_calls == 0) {
+        if (live_voice && (svc & 0x40) && opts->trunk_enable == 1 && opts->trunk_is_tuned == 1
+            && opts->trunk_tune_enc_calls == 0) {
             p25_sm_emit_crypto_pending(opts, state, slot & 1);
         }
     }
@@ -4352,9 +4379,10 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n Telephone Interconnect Voice Channel User");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Timer [%0.1fs]", svc, target, (double)timer / 10.0);
     p25p2_vpdu_print_svc_with_slot_state(ctx->opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
-    p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
-    p25p2_vpdu_observe_voice(ctx->opts, state, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target, 0U,
-                             svc);
+    if (p25p2_vpdu_observe_voice(ctx->opts, state, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target,
+                                 0U, svc)) {
+        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
+    }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)target, 0U, 0U, 0, (uint16_t)svc,
                                  "TELE Target: %d Timer: %.1fs; ", target, (double)timer / 10.0);
 }
@@ -4892,12 +4920,13 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
 
     DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d Standard Group Regroup Voice", slot + 1, supergroup, source);
 
-    state->p25_p2_last_mac_active[slot] = time(NULL);
-    state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
     if (supergroup != 0) {
         p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
-        p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
-                                 (uint64_t)(uint32_t)source, -1);
+        if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
+                                     (uint64_t)(uint32_t)source, -1)) {
+            state->p25_p2_last_mac_active[slot] = time(NULL);
+            state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
+        }
     }
 }
 

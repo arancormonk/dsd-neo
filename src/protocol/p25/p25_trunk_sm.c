@@ -83,6 +83,20 @@ static atomic_int g_p25_sm_release_lock = 0;
 #define P25_VC_CQPSK_REACQUIRE_MIN_REMAINING_S 1.0
 #define P25_VC_CQPSK_REACQUIRE_HOLD_S          0.75
 #define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES  3U
+#define P25_PTT_RETRANSMIT_WINDOW_S            1.0
+#define P25_PTT_SIGNATURE_ALGID_INDEX          9
+#define P25_PTT_SIGNATURE_IDENTITY_INDEX       12
+
+static void
+p25_ptt_marker_invalidate(p25_sm_ctx_t* ctx, int slot) {
+    if (!ctx || slot < 0 || slot > 1) {
+        return;
+    }
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    DSD_MEMSET(slot_ctx->ptt_signature, 0, sizeof(slot_ctx->ptt_signature));
+    slot_ctx->ptt_last_seen_m = 0.0;
+    slot_ctx->ptt_signature_valid = 0;
+}
 
 static const char*
 p25_tune_result_name(dsd_trunk_tune_result result) {
@@ -1507,6 +1521,7 @@ p25_sm_clear_one_slot_activity(p25_sm_ctx_t* ctx, int slot) {
     if (!ctx || slot < 0 || slot > 1) {
         return;
     }
+    p25_ptt_marker_invalidate(ctx, slot);
     ctx->slots[slot].voice_active = 0;
     ctx->slots[slot].last_active_m = 0.0;
     ctx->slots[slot].last_start_m = 0.0;
@@ -2618,6 +2633,89 @@ p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
 }
 
 static int
+p25_ptt_signature_range_matches(const uint8_t lhs[P25_SM_PTT_SIGNATURE_BYTES],
+                                const uint8_t rhs[P25_SM_PTT_SIGNATURE_BYTES], int first) {
+    for (int i = first; i < P25_SM_PTT_SIGNATURE_BYTES; i++) {
+        if (lhs[i] != rhs[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+p25_ptt_signature_algid_is_clear(uint8_t algid) {
+    return algid == 0x00U || algid == 0x80U;
+}
+
+static int
+p25_ptt_signature_matches(const uint8_t lhs[P25_SM_PTT_SIGNATURE_BYTES],
+                          const uint8_t rhs[P25_SM_PTT_SIGNATURE_BYTES]) {
+    const uint8_t lhs_algid = lhs[P25_PTT_SIGNATURE_ALGID_INDEX];
+    const uint8_t rhs_algid = rhs[P25_PTT_SIGNATURE_ALGID_INDEX];
+    const int lhs_clear = p25_ptt_signature_algid_is_clear(lhs_algid);
+    const int rhs_clear = p25_ptt_signature_algid_is_clear(rhs_algid);
+
+    if (lhs_clear || rhs_clear) {
+        // MI and KID do not delimit a clear call. Some systems vary those
+        // fields across redundant MAC_PTT copies, so compare the normalized
+        // clear classification and the authoritative source/target identity.
+        return lhs_clear && rhs_clear && p25_ptt_signature_range_matches(lhs, rhs, P25_PTT_SIGNATURE_IDENTITY_INDEX);
+    }
+    return p25_ptt_signature_range_matches(lhs, rhs, 0);
+}
+
+static int
+p25_ptt_marker_matches(const p25_sm_ctx_t* ctx, int slot, const p25_sm_event_t* ev, double observed_m,
+                       double* out_elapsed_s) {
+    if (out_elapsed_s) {
+        *out_elapsed_s = 0.0;
+    }
+    if (!ctx || !ev || slot < 0 || slot > 1 || ev->type != P25_SM_EV_PTT || !ev->ptt_signature_valid
+        || ev->observed_m <= 0.0) {
+        return 0;
+    }
+
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    if (!slot_ctx->ptt_signature_valid || slot_ctx->ptt_last_seen_m <= 0.0
+        || !p25_ptt_signature_matches(slot_ctx->ptt_signature, ev->ptt_signature)) {
+        return 0;
+    }
+
+    const double elapsed_s = observed_m - slot_ctx->ptt_last_seen_m;
+    if (elapsed_s < 0.0 || elapsed_s > P25_PTT_RETRANSMIT_WINDOW_S) {
+        return 0;
+    }
+    if (out_elapsed_s) {
+        *out_elapsed_s = elapsed_s;
+    }
+    return 1;
+}
+
+static int
+p25_voice_ptt_is_retransmission(const p25_sm_ctx_t* ctx, int slot, const p25_sm_event_t* ev, double observed_m,
+                                double* out_elapsed_s) {
+    return ctx && ctx->vc_is_tdma && slot >= 0 && slot <= 1 && p25_voice_slot_epoch_active(&ctx->slots[slot])
+           && p25_ptt_marker_matches(ctx, slot, ev, observed_m, out_elapsed_s);
+}
+
+static void
+p25_voice_accept_ptt_marker(p25_sm_ctx_t* ctx, int slot, const p25_sm_event_t* ev, double observed_m) {
+    if (!ctx || !ev || slot < 0 || slot > 1 || ev->type != P25_SM_EV_PTT) {
+        return;
+    }
+    if (!ev->ptt_signature_valid || ev->observed_m <= 0.0) {
+        p25_ptt_marker_invalidate(ctx, slot);
+        return;
+    }
+
+    p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    DSD_MEMCPY(slot_ctx->ptt_signature, ev->ptt_signature, sizeof(slot_ctx->ptt_signature));
+    slot_ctx->ptt_last_seen_m = observed_m;
+    slot_ctx->ptt_signature_valid = 1;
+}
+
+static int
 p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
     return slot_ctx && slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
 }
@@ -2643,8 +2741,8 @@ p25_voice_start_is_p2_ptt(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev) {
 
 static int
 p25_voice_start_begins_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
-                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev) {
-    return p25_voice_start_is_p2_ptt(ctx, input) || !p25_voice_slot_epoch_active(slot_ctx)
+                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev, int ptt_retransmit) {
+    return (p25_voice_start_is_p2_ptt(ctx, input) && !ptt_retransmit) || !p25_voice_slot_epoch_active(slot_ctx)
            || p25_voice_start_target_changed(slot_ctx, call_ev) || p25_voice_start_source_changed(slot_ctx, call_ev);
 }
 
@@ -2766,12 +2864,12 @@ p25_p1_hdu_crypto_consume_identity(const p25_sm_ctx_t* ctx, dsd_state* state, co
 
 static p25_voice_start_changes_t
 p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
-                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev) {
+                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev, int ptt_retransmit) {
     p25_voice_start_changes_t changes = {0};
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
 
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
-    changes.new_epoch = p25_voice_start_begins_new_epoch(ctx, slot_ctx, input, call_ev);
+    changes.new_epoch = p25_voice_start_begins_new_epoch(ctx, slot_ctx, input, call_ev, ptt_retransmit);
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
     return changes;
 }
@@ -2867,6 +2965,9 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
     const int logical_slot = ctx->vc_is_tdma ? slot : 0;
 
+    if (changes->new_epoch) {
+        p25_ptt_marker_invalidate(ctx, slot);
+    }
     if (changes->new_epoch && slot_ctx->voice_active) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
         if (changes->preserve_crypto_classification) {
@@ -2898,7 +2999,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
 
 static int
 p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
-                               const p25_sm_event_t* input, double now_m, int* out_new_epoch) {
+                               const p25_sm_event_t* input, double now_m, int ptt_retransmit, int* out_new_epoch) {
     p25_sm_event_t call_ev;
     if (out_new_epoch) {
         *out_new_epoch = !ctx->slots[slot].voice_active;
@@ -2918,7 +3019,8 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
     }
 
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
-    p25_voice_start_changes_t changes = p25_voice_start_classify_changes(ctx, slot_ctx, input, &call_ev);
+    p25_voice_start_changes_t changes =
+        p25_voice_start_classify_changes(ctx, slot_ctx, input, &call_ev, ptt_retransmit);
     if (pending_p1_identity) {
         changes.requires_update = 1;
     }
@@ -3017,6 +3119,30 @@ p25_voice_start_wait_for_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_s
 }
 
 static int
+p25_voice_start_apply_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const p25_sm_event_t* ev,
+                            double now_m, int* out_new_epoch) {
+    double ptt_elapsed_s = 0.0;
+    const int ptt_retransmit = p25_voice_ptt_is_retransmission(ctx, slot, ev, now_m, &ptt_elapsed_s);
+    if (!p25_voice_start_apply_identity(ctx, opts, state, slot, ev, now_m, ptt_retransmit, out_new_epoch)) {
+        if (state && ctx->vc_is_tdma) {
+            state->p25_p2_media_rejected[slot] = 1;
+            state->p25_p2_audio_allowed[slot] = 0;
+        }
+        return 0;
+    }
+
+    p25_voice_accept_ptt_marker(ctx, slot, ev, now_m);
+    if (ptt_retransmit) {
+        p25_sm_diagf(opts, state, ctx, "ptt_retransmit", "slot=%d tg=%d src=%d elapsed=%.3f provenance=%s", slot,
+                     ev->tg, ev->src, ptt_elapsed_s, ev->facch ? "facch" : "sacch");
+    }
+    if (state && ctx->vc_is_tdma) {
+        state->p25_p2_media_rejected[slot] = 0;
+    }
+    return 1;
+}
+
+static int
 handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, const char* why) {
     if (!ctx || !ev) {
         return 0;
@@ -3025,18 +3151,11 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
         return 1;
     }
 
-    double now_m = dsd_time_now_monotonic_s();
+    double now_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_time_now_monotonic_s();
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
     int new_epoch = !ctx->slots[s].voice_active;
-    if (!p25_voice_start_apply_identity(ctx, opts, state, s, ev, now_m, &new_epoch)) {
-        if (state && ctx->vc_is_tdma) {
-            state->p25_p2_media_rejected[s] = 1;
-            state->p25_p2_audio_allowed[s] = 0;
-        }
+    if (!p25_voice_start_apply_event(ctx, opts, state, s, ev, now_m, &new_epoch)) {
         return 0;
-    }
-    if (state && ctx->vc_is_tdma) {
-        state->p25_p2_media_rejected[s] = 0;
     }
     const int reused = ctx->vc_activity_seen && new_epoch;
     if (new_epoch) {
@@ -3290,6 +3409,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
         return 0;
     }
 
+    p25_ptt_marker_invalidate(ctx, s);
     const double now_m = dsd_time_now_monotonic_s();
     const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
     const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
@@ -3463,6 +3583,7 @@ p25_voice_clear_slot_grant(p25_sm_ctx_t* ctx, dsd_state* state, int slot) {
     if (!ctx || !state || slot < 0 || slot > 1) {
         return;
     }
+    p25_ptt_marker_invalidate(ctx, slot);
     ctx->slots[slot].grant_active = 0;
     ctx->slots[slot].crypto_attempt_m = 0.0;
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
@@ -5270,15 +5391,15 @@ p25_sm_conventional_resolve_call(const dsd_state* state, const p25_sm_event_t* e
     return p25_sm_conventional_anonymous_call(state, slot, call);
 }
 
-static void
-p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
+static int
+p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, int ptt_retransmit) {
     if (!state || !ev) {
-        return;
+        return 0;
     }
     const int slot = p25_sm_conventional_slot(ev);
     p25_sm_conventional_call_t call = {0};
     if (!p25_sm_conventional_resolve_call(state, ev, slot, &call)) {
-        return;
+        return 0;
     }
     const int has_service_metadata = p25_sm_svc_bits_valid(ev->svc_bits);
     const int service_options = has_service_metadata ? ev->svc_bits : 0;
@@ -5296,13 +5417,68 @@ p25_sm_publish_conventional_voice(dsd_opts* opts, dsd_state* state, const p25_sm
         .has_service_metadata = (uint8_t)has_service_metadata,
     };
     dsd_call_boundary boundary = DSD_CALL_BOUNDARY_CONTINUE;
-    if (ev->identity_valid && ev->type == P25_SM_EV_PTT) {
+    if (ev->identity_valid && ev->type == P25_SM_EV_PTT && !ptt_retransmit) {
         boundary = DSD_CALL_BOUNDARY_BEGIN;
     }
     (void)dsd_call_state_observe(state, &observation, boundary);
     p25_call_publish_crypto(opts, state, slot, 0.0);
     (void)dsd_call_state_update_media(state, (uint8_t)slot, 1, 0.0);
     dsd_event_sync_slot(opts, state, (uint8_t)slot);
+    return 1;
+}
+
+static int
+p25_sm_conventional_ptt_is_retransmission(const p25_sm_ctx_t* ctx, const dsd_state* state, const p25_sm_event_t* ev,
+                                          double observed_m, double* out_elapsed_s) {
+    if (!ctx || !state || !ev || ev->type != P25_SM_EV_PTT || !ev->ptt_signature_valid || ev->slot < 0
+        || ev->slot > 1) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)ev->slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_P25P2(call.protocol)) {
+        return 0;
+    }
+    return p25_ptt_marker_matches(ctx, ev->slot, ev, observed_m, out_elapsed_s);
+}
+
+static void
+p25_sm_note_conventional_ptt(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, const p25_sm_event_t* ev,
+                             int slot, double observed_m, int ptt_retransmit, double ptt_elapsed_s) {
+    p25_voice_accept_ptt_marker(ctx, slot, ev, observed_m);
+    if (ptt_retransmit) {
+        p25_sm_diagf(opts, state, ctx, "ptt_retransmit", "slot=%d tg=%d src=%d elapsed=%.3f provenance=%s", slot,
+                     ev->tg, ev->src, ptt_elapsed_s, ev->facch ? "facch" : "sacch");
+    }
+}
+
+static void
+p25_sm_invalidate_conventional_replacement(p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
+                                           const dsd_call_snapshot* call_before, int had_call_before) {
+    dsd_call_snapshot call_after;
+    if (had_call_before && dsd_call_state_get(state, (uint8_t)slot, &call_after) > 0
+        && call_after.epoch != call_before->epoch) {
+        p25_ptt_marker_invalidate(ctx, slot);
+    }
+}
+
+static void
+p25_sm_finish_conventional_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                 int slot, double observed_m, int ptt_retransmit, double ptt_elapsed_s,
+                                 const dsd_call_snapshot* call_before, int had_call_before) {
+    if (!p25_sm_publish_conventional_voice(opts, state, ev, ptt_retransmit)) {
+        return;
+    }
+    if (ev->type == P25_SM_EV_PTT) {
+        p25_sm_note_conventional_ptt(ctx, opts, state, ev, slot, observed_m, ptt_retransmit, ptt_elapsed_s);
+        return;
+    }
+    p25_sm_invalidate_conventional_replacement(ctx, state, slot, call_before, had_call_before);
+}
+
+static int
+p25_sm_voice_start_lacks_trunk_assignment(const p25_sm_ctx_t* ctx, const dsd_opts* opts) {
+    return ctx && opts && opts->trunk_enable == 1 && ctx->state != P25_SM_TUNED;
 }
 
 static int
@@ -5311,10 +5487,24 @@ p25_sm_emit_voice_start_event(dsd_opts* opts, dsd_state* state, const p25_sm_eve
     if (!ctx->initialized) {
         p25_sm_init_ctx(ctx, opts, state);
     }
+    if (p25_sm_voice_start_lacks_trunk_assignment(ctx, opts)) {
+        p25_sm_diagf(opts, state, ctx, "voice_start_ignored", "reason=no-trunk-assignment kind=%s slot=%d tg=%d src=%d",
+                     why, ev->slot, ev->tg, ev->src);
+        return 0;
+    }
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
+    const double observed_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_time_now_monotonic_s();
+    double ptt_elapsed_s = 0.0;
+    const int ptt_retransmit = !trunk_assignment_active
+                               && p25_sm_conventional_ptt_is_retransmission(ctx, state, ev, observed_m, &ptt_elapsed_s);
+    dsd_call_snapshot call_before = {0};
+    const int conventional_slot = p25_sm_conventional_slot(ev);
+    const int had_call_before =
+        !trunk_assignment_active && state && dsd_call_state_get(state, (uint8_t)conventional_slot, &call_before) > 0;
     const int accepted = handle_voice_start(ctx, opts, state, ev, why);
     if (accepted && !trunk_assignment_active) {
-        p25_sm_publish_conventional_voice(opts, state, ev);
+        p25_sm_finish_conventional_voice(ctx, opts, state, ev, conventional_slot, observed_m, ptt_retransmit,
+                                         ptt_elapsed_s, &call_before, had_call_before);
     }
     return accepted;
 }
@@ -5328,6 +5518,20 @@ p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot) {
 int
 p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group, int svc_bits) {
     p25_sm_event_t ev = p25_sm_ev_ptt_call(slot, tg, dst, src, is_group, svc_bits);
+    return p25_sm_emit_voice_start_event(opts, state, &ev, "ptt");
+}
+
+int
+p25_sm_emit_ptt_call_metadata(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
+                              int svc_bits, const uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES], double observed_m,
+                              int facch) {
+    p25_sm_event_t ev = p25_sm_ev_ptt_call(slot, tg, dst, src, is_group, svc_bits);
+    if (signature && observed_m > 0.0) {
+        DSD_MEMCPY(ev.ptt_signature, signature, sizeof(ev.ptt_signature));
+        ev.ptt_signature_valid = 1;
+    }
+    ev.observed_m = observed_m;
+    ev.facch = facch ? 1 : 0;
     return p25_sm_emit_voice_start_event(opts, state, &ev, "ptt");
 }
 
@@ -5346,10 +5550,12 @@ p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
 
 void
 p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
-    const int trunk_assignment_active = p25_sm_get_ctx()->state == P25_SM_TUNED;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     p25_sm_event_t ev = p25_sm_ev_end(slot);
-    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+    p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
+        p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, 0.0);
     }
 }
@@ -5367,9 +5573,32 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     const int accepted = handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev);
     if (!trunk_assignment_active && accepted) {
+        p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, observed_m);
     }
     return accepted;
+}
+
+void
+p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+    if (slot < 0 || slot > 1) {
+        return;
+    }
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (!ctx->initialized) {
+        p25_sm_init_ctx(ctx, opts, state);
+    }
+
+    const double ended_m = observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
+    p25_ptt_marker_invalidate(ctx, slot);
+    ctx->slots[slot].voice_active = 0;
+    ctx->slots[slot].last_active_m = 0.0;
+    ctx->slots[slot].last_stop_m = ended_m;
+    if (state) {
+        (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
+    }
+    p25_call_end_slot(opts, state, slot, ended_m);
+    p25_sm_update_ui_mode(ctx, state);
 }
 
 int
@@ -5385,6 +5614,7 @@ p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     const int result = handle_facch_voice_end(ctx, opts, state, &ev);
     if (!trunk_assignment_active && result != P25_SM_END_IGNORED) {
+        p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, observed_m);
     }
     return result;
@@ -5392,40 +5622,48 @@ p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg
 
 void
 p25_sm_emit_idle(dsd_opts* opts, dsd_state* state, int slot) {
-    const int trunk_assignment_active = p25_sm_get_ctx()->state == P25_SM_TUNED;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     p25_sm_event_t ev = p25_sm_ev_idle(slot);
-    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+    p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
+        p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, 0.0);
     }
 }
 
 void
 p25_sm_emit_idle_at(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
-    const int trunk_assignment_active = p25_sm_get_ctx()->state == P25_SM_TUNED;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     p25_sm_event_t ev = p25_sm_ev_idle_at(slot, observed_m);
-    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+    p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
+        p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, observed_m);
     }
 }
 
 void
 p25_sm_emit_hangtime(dsd_opts* opts, dsd_state* state, int slot) {
-    const int trunk_assignment_active = p25_sm_get_ctx()->state == P25_SM_TUNED;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     p25_sm_event_t ev = p25_sm_ev_hangtime(slot);
-    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+    p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
+        p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, 0.0);
     }
 }
 
 void
 p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state) {
-    const int trunk_assignment_active = p25_sm_get_ctx()->state == P25_SM_TUNED;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
     p25_sm_event_t ev = p25_sm_ev_tdu();
-    p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
+    p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
+        p25_ptt_marker_invalidate(ctx, 0);
         p25_call_end_slot(opts, state, 0, 0.0);
     }
 }
