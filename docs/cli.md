@@ -329,8 +329,10 @@ Notes
   - P25 Talk Complete, TDU, TDULC, MAC_END_PTT, MAC_IDLE, and MAC_HANGTIME mark a transmission boundary. They close
     that slot's media and start or refresh the traffic-carrier inactivity timer without returning to the control
     channel. A follow-up PTT/ACTIVE on the retained carrier opens a clean call epoch without retuning.
-    Immediate identical Phase 2 MAC_PTT retransmissions within one second are coalesced into the active epoch;
-    a changed PTT, a later copy, or any intervening accepted boundary still opens a genuine follow-up epoch.
+    Immediate matching Phase 2 MAC_PTT retransmissions within one second are coalesced into the active epoch. Clear
+    calls are matched by their source/target identity because their MI and KID fields do not delimit a call; encrypted
+    calls retain exact crypto and identity matching. A later copy or any intervening accepted boundary still opens a
+    genuine follow-up epoch.
   - P25 returns immediately only for an explicit network/channel release, policy or encryption rejection, manual
     release, or physical carrier/sync loss. Otherwise the configured hang time expires before control-channel return.
   - `--p25-sm-log` distinguishes `transmission_end`, `traffic_hang`, `traffic_reuse`, `hang_expired`, and

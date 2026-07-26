@@ -84,6 +84,8 @@ static atomic_int g_p25_sm_release_lock = 0;
 #define P25_VC_CQPSK_REACQUIRE_HOLD_S          0.75
 #define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES  3U
 #define P25_PTT_RETRANSMIT_WINDOW_S            1.0
+#define P25_PTT_SIGNATURE_ALGID_INDEX          9
+#define P25_PTT_SIGNATURE_IDENTITY_INDEX       12
 
 static void
 p25_ptt_marker_invalidate(p25_sm_ctx_t* ctx, int slot) {
@@ -2631,14 +2633,36 @@ p25_voice_slot_epoch_active(const p25_sm_slot_ctx_t* slot_ctx) {
 }
 
 static int
-p25_ptt_signature_matches(const uint8_t lhs[P25_SM_PTT_SIGNATURE_BYTES],
-                          const uint8_t rhs[P25_SM_PTT_SIGNATURE_BYTES]) {
-    for (int i = 0; i < P25_SM_PTT_SIGNATURE_BYTES; i++) {
+p25_ptt_signature_range_matches(const uint8_t lhs[P25_SM_PTT_SIGNATURE_BYTES],
+                                const uint8_t rhs[P25_SM_PTT_SIGNATURE_BYTES], int first) {
+    for (int i = first; i < P25_SM_PTT_SIGNATURE_BYTES; i++) {
         if (lhs[i] != rhs[i]) {
             return 0;
         }
     }
     return 1;
+}
+
+static int
+p25_ptt_signature_algid_is_clear(uint8_t algid) {
+    return algid == 0x00U || algid == 0x80U;
+}
+
+static int
+p25_ptt_signature_matches(const uint8_t lhs[P25_SM_PTT_SIGNATURE_BYTES],
+                          const uint8_t rhs[P25_SM_PTT_SIGNATURE_BYTES]) {
+    const uint8_t lhs_algid = lhs[P25_PTT_SIGNATURE_ALGID_INDEX];
+    const uint8_t rhs_algid = rhs[P25_PTT_SIGNATURE_ALGID_INDEX];
+    const int lhs_clear = p25_ptt_signature_algid_is_clear(lhs_algid);
+    const int rhs_clear = p25_ptt_signature_algid_is_clear(rhs_algid);
+
+    if (lhs_clear || rhs_clear) {
+        // MI and KID do not delimit a clear call. Some systems vary those
+        // fields across redundant MAC_PTT copies, so compare the normalized
+        // clear classification and the authoritative source/target identity.
+        return lhs_clear && rhs_clear && p25_ptt_signature_range_matches(lhs, rhs, P25_PTT_SIGNATURE_IDENTITY_INDEX);
+    }
+    return p25_ptt_signature_range_matches(lhs, rhs, 0);
 }
 
 static int

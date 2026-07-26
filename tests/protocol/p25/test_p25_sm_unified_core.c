@@ -472,8 +472,13 @@ test_raw_ptt_retransmissions_coalesce_history(void) {
     }
     dsd_event_sync_slot(&g_opts, &g_state, 0U);
 
+    signature[0] ^= 0x01U;  // Clear-call MI is not an epoch discriminator.
+    signature[8] ^= 0x02U;  // The remaining crypto synchronization octet is also non-authoritative.
+    signature[10] ^= 0x04U; // Neither is the clear-call KID.
     ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    signature[7] ^= 0x08U;
+    signature[11] ^= 0x10U;
     ev = raw_ptt_event(0, 1000, 123, signature, first_m + 1.2, 1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.epoch != 1U
@@ -482,7 +487,7 @@ test_raw_ptt_retransmissions_coalesce_history(void) {
         || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR || g_state.payload_algid != 0x80
         || strcmp(g_state.generic_talker_alias[0], "RETX-ALIAS") != 0
         || event_history[0].Event_History_Items[1].event_string[0] != '\0') {
-        DSD_FPRINTF(stderr, "FAIL: Identical PTTs inside the inclusive window rotated or cleared the active epoch\n");
+        DSD_FPRINTF(stderr, "FAIL: Matching clear PTTs inside the inclusive window rotated or cleared the epoch\n");
         return 1;
     }
 
@@ -522,7 +527,7 @@ test_raw_ptt_signature_changes_open_epochs(void) {
     start_tdma_fixture(&ctx, 0);
 
     uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
-    make_ptt_signature(signature, UINT64_C(0x0102030405060708), 0x80, 0x1111, 123, 1000);
+    make_ptt_signature(signature, UINT64_C(0x0102030405060708), 0x84, 0x1111, 123, 1000);
     const double first_m = dsd_time_now_monotonic_s() - 10.0;
     p25_sm_event_t ev = raw_ptt_event(0, 1000, 123, signature, first_m, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
@@ -542,7 +547,7 @@ test_raw_ptt_signature_changes_open_epochs(void) {
         return 1;
     }
 
-    signature[9] = 0x84U; // ALGID
+    signature[9] = 0x89U; // ALGID
     ev = raw_ptt_event(0, 1000, 123, signature, first_m + 0.2, 1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     expected_epoch++;
