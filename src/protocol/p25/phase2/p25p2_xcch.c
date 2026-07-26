@@ -174,8 +174,8 @@ static int
 p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
     struct p25p2_mac_voice_identity identity;
     if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
-        const int accepted = p25_sm_emit_active_call_ex(opts, state, slot, identity.tg, identity.dst, identity.src,
-                                                        identity.is_group, identity.svc_bits, identity.source_optional);
+        const int accepted = p25_sm_emit_active_call(opts, state, slot, identity.tg, identity.dst, identity.src,
+                                                     identity.is_group, identity.svc_bits);
         return accepted;
     }
     return p25_sm_emit_active(opts, state, slot);
@@ -500,7 +500,7 @@ p25p2_xcch_handle_sacch_mac_signal(dsd_opts* opts, dsd_state* state, unsigned lo
         DSD_FPRINTF(stderr, "CRC16 ERR ");
     }
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 1, smac);
+    process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_SIGNAL, smac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -566,7 +566,7 @@ p25p2_xcch_handle_sacch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 1, smac);
+    process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_IDLE, smac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
@@ -583,7 +583,7 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 1, smac);
+    process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
 
     state->p25_p2_last_mac_active[slot] = time(NULL);
     state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
@@ -613,7 +613,7 @@ p25p2_xcch_handle_sacch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 
     DSD_FPRINTF(stderr, " MAC_HANGTIME ");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 1, smac);
+    process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_HANGTIME, smac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
@@ -688,7 +688,7 @@ p25p2_xcch_handle_facch_mac_idle(dsd_opts* opts, dsd_state* state, uint8_t slot,
 
     DSD_FPRINTF(stderr, " MAC_IDLE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 0, fmac);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_IDLE, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     p25_sm_emit_idle_at(opts, state, slot, idle_observed_m);
@@ -709,7 +709,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 0, fmac);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 
     if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
@@ -733,7 +733,7 @@ p25p2_xcch_handle_facch_mac_hangtime(dsd_opts* opts, dsd_state* state, unsigned 
 
     DSD_FPRINTF(stderr, " MAC_HANGTIME ");
     DSD_FPRINTF(stderr, "%s", KYEL);
-    process_MAC_VPDU(opts, state, 0, fmac);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_HANGTIME, fmac);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 

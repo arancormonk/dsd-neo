@@ -57,6 +57,7 @@ typedef struct {
 typedef struct {
     uint64_t call_epoch;
     int64_t frequency_hz;
+    double recorded_m;
     uint32_t grant_generation;
     uint8_t valid;
 } dsd_p25_p1_lockout_epoch_state;

@@ -151,6 +151,11 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
 }
 
 int
+dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+    return dsd_call_state_update_crypto(state, slot, update);
+}
+
+int
 dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m) {
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;

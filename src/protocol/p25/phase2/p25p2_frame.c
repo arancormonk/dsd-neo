@@ -758,7 +758,7 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
     if (opts && opts->trunk_tune_enc_calls == 0 && p25_crypto_companion_suppressed(state, slot)) {
         return;
     }
-    p25_sm_emit_decoded_voice(opts, state, slot);
+    p25_sm_emit_active(opts, state, slot);
     state->last_vc_sync_time = time(NULL);
     state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
 }

@@ -12,6 +12,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -166,10 +167,12 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]) {
+process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                 unsigned long long int MAC[24]) {
     (void)opts;
     (void)state;
     (void)type;
+    (void)pdu_type;
     (void)MAC;
 }
 

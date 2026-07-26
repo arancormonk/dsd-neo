@@ -58,8 +58,6 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #define VPDU_LABEL_UNUSED
 #endif
 
-#define P25P2_VPDU_END_REPEAT_WINDOW_S 1.0
-
 static void
 p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
@@ -137,8 +135,12 @@ p25p2_vpdu_is_encrypted_probe(const dsd_opts* opts, int service_options) {
 }
 
 static int
-p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* state, int slot) {
+p25p2_vpdu_voice_has_live_provenance(const dsd_opts* opts, const dsd_state* state, int slot,
+                                     p25_mac_pdu_type pdu_type) {
     if (!state || state->p2_is_lcch == 1 || slot < 0 || slot > 1) {
+        return 0;
+    }
+    if (pdu_type == P25_MAC_PDU_IDLE || pdu_type == P25_MAC_PDU_HANGTIME) {
         return 0;
     }
     if (!opts || opts->trunk_enable != 1) {
@@ -167,86 +169,14 @@ p25p2_vpdu_update_voice_crypto(dsd_state* state, int slot, int service_options, 
 }
 
 static int
-p25p2_vpdu_source_names_subscriber(uint64_t source) {
-    // 0 means unavailable; 0xFFFFFF is emitted by the fixed network equipment.
-    return source != 0U && source != 0xFFFFFFU;
-}
-
-static int
-p25p2_vpdu_call_end_is_in_repeat_window(const dsd_opts* opts, const dsd_call_snapshot* call) {
-    if (!call || call->ended_m <= 0.0) {
-        return 0;
-    }
-    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
-    const double hangtime_s =
-        sm && sm->initialized ? sm->config.hangtime_s : (opts ? (double)opts->trunk_hangtime : 0.0);
-    // Local hangtime controls carrier release, not how long END-adjacent
-    // SACCH/FACCH copies can repeat. Keep a short protocol window even for
-    // -t 0 when the companion TDMA slot retains the shared carrier.
-    const double repeat_window_s =
-        hangtime_s > P25P2_VPDU_END_REPEAT_WINDOW_S ? hangtime_s : P25P2_VPDU_END_REPEAT_WINDOW_S;
-    const double now_m = dsd_time_now_monotonic_s();
-    return now_m >= call->ended_m && (now_m - call->ended_m) <= repeat_window_s;
-}
-
-static int
-p25p2_vpdu_observation_repeats_ended_call(const dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
-                                          uint64_t target, uint64_t source) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
-        || !DSD_SYNC_IS_P25P2(call.protocol)) {
-        return 0;
-    }
-    if (call.kind != kind || call.ota_target_id != target) {
-        return 0;
-    }
-    if (p25p2_vpdu_source_names_subscriber(source) && call.ota_source_id != source) {
-        return 0;
-    }
-    if (!p25p2_vpdu_call_end_is_in_repeat_window(opts, &call)) {
-        return 0;
-    }
-    // A grant newer than the last stop re-validates the assignment: the same
-    // identity may legitimately begin a new transmission it was re-granted for.
-    const p25_sm_ctx_t* sm = p25_sm_get_ctx();
-    if (sm && sm->slots[slot & 1].last_grant_m > sm->slots[slot & 1].last_stop_m) {
-        return 0;
-    }
-    return 1;
-}
-
-static int
-p25p2_vpdu_voice_observation_is_hangtime(dsd_opts* opts, const dsd_state* state, int slot, dsd_call_kind kind,
-                                         uint64_t target, uint64_t source, int source_optional) {
-    // Telephone-interconnect voice identifies the live call by target and
-    // service options but has no subscriber source field.
-    if (!source_optional && p25p2_vpdu_observation_repeats_ended_call(opts, state, slot, kind, target, source)) {
-        // Delayed SACCH/hangtime copies of the announcement interleave with
-        // the repeated MAC_END_PTT. They either still name the completed
-        // talker or zero the source while retaining the completed target.
-        // Resurrecting that matching identity as a fresh epoch duplicates the
-        // event row; an unmatched source-less conventional observation is a
-        // legitimate call and must remain available to decoded voice.
-        dsd_p25_sm_logf(opts,
-                        "event=voice_observation_suppressed reason=repeats-ended-call path=p2-vpdu "
-                        "slot=%d tg=%llu src=%llu",
-                        slot, (unsigned long long)target, (unsigned long long)source);
-        return 1;
-    }
-    return 0;
-}
-
-static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
-                         uint64_t source, int service_options, int source_optional) {
+                         uint64_t source, int service_options, p25_mac_pdu_type pdu_type) {
     if (!state || slot < 0 || slot > 1 || target == 0U
         || (kind != DSD_CALL_KIND_GROUP_VOICE && kind != DSD_CALL_KIND_PRIVATE_VOICE)
-        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot)) {
+        || !p25p2_vpdu_voice_has_live_provenance(opts, state, slot, pdu_type)) {
         return 0;
     }
-    if (p25p2_vpdu_voice_observation_is_hangtime(opts, state, slot, kind, target, source, source_optional)) {
-        return 0;
-    }
+    const uint64_t subscriber_source = p25_source_id_is_subscriber(source) ? source : 0U;
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
     const dsd_call_observation observation = {
         .protocol = p25p2_vpdu_voice_protocol(state),
@@ -254,7 +184,7 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
         .kind = kind,
         .ota_target_id = target,
         .policy_target_id = p25p2_vpdu_voice_policy_target(state, slot, kind, target),
-        .ota_source_id = source,
+        .ota_source_id = subscriber_source,
         .service_options = svc,
         .emergency = (uint8_t)((svc & 0x80U) != 0U),
         .priority = (uint8_t)(svc & 0x07U),
@@ -265,7 +195,7 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     if (began > 0) {
         state->generic_talker_alias[slot][0] = '\0';
         dsd_p25_sm_logf(opts, "event=canonical_epoch_begin path=p2-vpdu slot=%d kind=%d tg=%llu src=%llu svc=%d", slot,
-                        (int)kind, (unsigned long long)target, (unsigned long long)source, service_options);
+                        (int)kind, (unsigned long long)target, (unsigned long long)subscriber_source, service_options);
     }
     p25p2_vpdu_update_voice_crypto(state, slot, service_options, began, encrypted_probe);
     if (began >= 0 && opts) {
@@ -545,6 +475,7 @@ typedef struct {
     dsd_opts* opts;
     dsd_state* state;
     int type;
+    p25_mac_pdu_type pdu_type;
     unsigned long long int* mac;
     struct p25p2_mac_result* mac_res;
     int len_a;
@@ -2967,8 +2898,9 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE,
-                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc, 0);
+        const int live_voice =
+            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
         if (live_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3013,8 +2945,9 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE,
-                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc, 0);
+        const int live_voice =
+            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
         if (live_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3489,8 +3422,9 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, " Group Voice");
-        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE,
-                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc, 0);
+        const int live_voice =
+            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
         if (live_voice) {
             state->p25_p2_last_mac_active[slot] = time(NULL);
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -3547,8 +3481,9 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_svc_no_state(opts, svc);
         DSD_FPRINTF(stderr, " Unit to Unit Voice");
-        const int live_voice = p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE,
-                                                        (uint64_t)(uint32_t)gr, (uint64_t)(uint32_t)src, svc, 0);
+        const int live_voice =
+            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
+                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type);
         if (live_voice) {
             state->p25_p2_last_mac_active[slot] = time(NULL);
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -4466,7 +4401,7 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Timer [%0.1fs]", svc, target, (double)timer / 10.0);
     p25p2_vpdu_print_svc_with_slot_state(ctx->opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
     if (p25p2_vpdu_observe_voice(ctx->opts, state, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target,
-                                 0U, svc, 1)) {
+                                 0U, svc, ctx->pdu_type)) {
         p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)target, 0U, 0U, 0, (uint16_t)svc,
@@ -5009,7 +4944,7 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
     if (supergroup != 0) {
         p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
-                                     (uint64_t)(uint32_t)source, -1, 0)) {
+                                     (uint64_t)(uint32_t)source, -1, ctx->pdu_type)) {
             state->p25_p2_last_mac_active[slot] = time(NULL);
             state->p25_p2_last_mac_active_m[slot] = dsd_time_now_monotonic_s();
         }
@@ -5619,14 +5554,15 @@ p25p2_vpdu_print_payload(const dsd_opts* opts, const unsigned long long int mac[
 }
 
 void
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
+process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                 unsigned long long int mac[24]) {
     unsigned long long int mac_octets[24] = {0};
     for (int bi = 0; bi < 24; bi++) {
         mac_octets[bi] = mac[bi] & 0xFFu;
     }
     const unsigned long long int* MAC = mac_octets;
-    //handle variable content MAC PDUs (Active, Idle, Hangtime, or Signal)
-    //use type to specify SACCH or FACCH, so we know if we should invert the currentslot when assigning ids etc
+    // Handle variable content MAC PDUs. Keep the outer PDU type distinct from
+    // the SACCH/FACCH transport so voice-user blocks retain their provenance.
 
     //b values - 0 = Unique TDMA Message,  1 Phase 1 OSP/ISP abbreviated
     // 2 = Manufacturer Message, 3 Phase 1 OSP/ISP extended/explicit
@@ -5645,6 +5581,7 @@ process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long 
         .opts = opts,
         .state = state,
         .type = type,
+        .pdu_type = pdu_type,
         .mac = mac_octets,
         .mac_res = &mac_res,
         .len_a = initial_len_a,

@@ -296,14 +296,13 @@ dmr_dburst_handle_bptc_crc(dmr_data_burst_ctx* ctx) {
 
 static void
 dmr_dburst_copy_bptc_outputs(dmr_data_burst_ctx* ctx) {
-    uint32_t i;
     // Bound the copy by the source remainder and the unpacked bit buffer so the span stays
     // provable locally rather than relying on the burst profile table.
-    const uint8_t src_cap = (uint8_t)sizeof(ctx->bptc_data_bytes);
-    const uint8_t start = (ctx->pdu_start < src_cap) ? ctx->pdu_start : src_cap;
-    const uint8_t dst_cap = (uint8_t)(sizeof(ctx->bptc_data_bits) / 8U);
-    uint8_t max_bytes = ctx->pdu_len;
-    uint8_t avail = (uint8_t)(src_cap - start);
+    const size_t src_cap = sizeof(ctx->bptc_data_bytes);
+    const size_t start = (size_t)ctx->pdu_start < src_cap ? (size_t)ctx->pdu_start : src_cap;
+    const size_t dst_cap = sizeof(ctx->bptc_data_bits) / 8U;
+    size_t max_bytes = ctx->pdu_len;
+    const size_t avail = src_cap - start;
     if (max_bytes > avail) {
         max_bytes = avail;
     }
@@ -311,12 +310,12 @@ dmr_dburst_copy_bptc_outputs(dmr_data_burst_ctx* ctx) {
         max_bytes = dst_cap;
     }
 
-    unpack_byte_array_into_bit_array(ctx->bptc_data_bytes + start, ctx->bptc_data_bits, max_bytes);
+    unpack_byte_array_into_bit_array(ctx->bptc_data_bytes + start, ctx->bptc_data_bits, (int)max_bytes);
 
-    for (i = 0; i < max_bytes; i++) {
+    for (size_t i = 0U; i < max_bytes; i++) {
         ctx->dmr_pdu[i] = ctx->bptc_data_bytes[i + start];
     }
-    for (i = 0; i < ((uint32_t)max_bytes * 8U); i++) {
+    for (size_t i = 0U; i < max_bytes * 8U; i++) {
         ctx->dmr_pdu_bits[i] = ctx->bptc_data_bits[i];
     }
 }
@@ -599,17 +598,17 @@ dmr_dburst_handle_trellis(dmr_data_burst_ctx* ctx) {
 
     DSD_MEMSET(ctx->dmr_pdu_bits, 0, sizeof(ctx->dmr_pdu_bits));
     // Same bounding as the BPTC path: keep the span within trellis_return and dmr_pdu_bits.
-    const uint8_t tr_cap = (uint8_t)sizeof(trellis_return);
-    const uint8_t start = (ctx->pdu_start < tr_cap) ? ctx->pdu_start : tr_cap;
-    const uint8_t bits_cap = (uint8_t)(sizeof(ctx->dmr_pdu_bits) / 8U);
-    uint8_t take = (uint8_t)(tr_cap - start);
-    if (take > ctx->pdu_len) {
+    const size_t tr_cap = sizeof(trellis_return);
+    const size_t start = (size_t)ctx->pdu_start < tr_cap ? (size_t)ctx->pdu_start : tr_cap;
+    const size_t bits_cap = sizeof(ctx->dmr_pdu_bits) / 8U;
+    size_t take = tr_cap - start;
+    if (take > (size_t)ctx->pdu_len) {
         take = ctx->pdu_len;
     }
     if (take > bits_cap) {
         take = bits_cap;
     }
-    unpack_byte_array_into_bit_array(trellis_return + start, ctx->dmr_pdu_bits, take);
+    unpack_byte_array_into_bit_array(trellis_return + start, ctx->dmr_pdu_bits, (int)take);
 }
 
 static void

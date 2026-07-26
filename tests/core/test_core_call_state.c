@@ -99,6 +99,37 @@ test_crypto_and_slot_isolation(dsd_state* state) {
 }
 
 static void
+test_retained_crypto_update(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    const dsd_call_observation observation = group_call(0U, 500U, 600U, 1.0);
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_end(state, 0U, 2.0) == 1);
+
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED,
+        .algid = 0x84U,
+        .kid = 0x1234U,
+        .mi = UINT64_C(0x1122334455667788),
+        .audio_permitted = 0U,
+        .observed_m = 3.0,
+    };
+    assert(dsd_call_state_update_retained_crypto(state, 0U, &crypto) == 1);
+
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(snapshot.phase == DSD_CALL_PHASE_ENDED);
+    assert(snapshot.crypto == DSD_CALL_CRYPTO_ENCRYPTED);
+    assert(snapshot.algid == 0x84U);
+    assert(snapshot.kid == 0x1234U);
+    assert(snapshot.mi == UINT64_C(0x1122334455667788));
+    assert(snapshot.audio_permitted == 0U);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
 test_recent_activity(dsd_state* state) {
     dsd_call_observation activity0 = group_call(0U, 100U, 9U, 1.0);
     dsd_call_observation activity1 = group_call(1U, 200U, 10U, 2.0);
@@ -456,6 +487,7 @@ main(void) {
     assert(state != NULL);
     test_epochs_and_late_identity(state);
     test_crypto_and_slot_isolation(state);
+    test_retained_crypto_update();
     test_recent_activity(state);
     test_snapshot_clone(state);
     test_voice_specialization_and_sparse_metadata();

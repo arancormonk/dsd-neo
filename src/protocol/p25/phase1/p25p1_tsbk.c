@@ -1033,7 +1033,7 @@ tsbk_dispatch_message(dsd_opts* opts, dsd_state* state, const tsbk_decode_ctx_t*
             return;
         }
         DSD_FPRINTF(stderr, "%s", KYEL);
-        process_MAC_VPDU(opts, state, 0, PDU);
+        process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_SIGNAL, PDU);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }

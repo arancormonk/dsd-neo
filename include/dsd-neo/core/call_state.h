@@ -176,6 +176,8 @@ typedef struct {
 int dsd_call_state_ensure(dsd_state* state);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
 int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
+/** Update crypto metadata on an existing active or retained ended epoch. */
+int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);

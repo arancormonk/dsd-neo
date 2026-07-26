@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
@@ -18,6 +19,8 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#define P25_P1_LOCKOUT_ESS_REPEAT_WINDOW_S 1.0
 
 static int
 p25_crypto_slot_valid(int slot) {
@@ -124,6 +127,7 @@ p25_crypto_note_phase1_lockout_epoch(dsd_state* state, uint64_t call_epoch) {
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
     state->p25_p1_lockout_epoch.call_epoch = call_epoch;
     state->p25_p1_lockout_epoch.frequency_hz = p25_crypto_phase1_carrier_frequency(state);
+    state->p25_p1_lockout_epoch.recorded_m = dsd_time_now_monotonic_s();
     state->p25_p1_lockout_epoch.grant_generation = sm ? sm->grant_count : 0U;
     state->p25_p1_lockout_epoch.valid = 1U;
 }
@@ -148,7 +152,10 @@ p25_crypto_phase1_ess_continues_ended_call(const dsd_state* state) {
     }
     const dsd_p25_p1_lockout_epoch_state* locked = &state->p25_p1_lockout_epoch;
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
-    if (!locked->valid || locked->grant_generation != (sm ? sm->grant_count : 0U)
+    const double now_m = dsd_time_now_monotonic_s();
+    if (!locked->valid || locked->recorded_m <= 0.0 || now_m < locked->recorded_m
+        || (now_m - locked->recorded_m) > P25_P1_LOCKOUT_ESS_REPEAT_WINDOW_S
+        || locked->grant_generation != (sm ? sm->grant_count : 0U)
         || locked->frequency_hz != p25_crypto_phase1_carrier_frequency(state)) {
         return 0;
     }

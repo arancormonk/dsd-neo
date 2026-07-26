@@ -391,7 +391,7 @@ p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_l
     for (int i = 0; i < n; i++) {
         MAC[i] = mac_bytes[i];
     }
-    process_MAC_VPDU(opts, state, type, MAC);
+    process_MAC_VPDU(opts, state, type, P25_MAC_PDU_ACTIVE, MAC);
     free(opts);
     p25_test_free_state(state);
 }
@@ -439,7 +439,7 @@ p25_test_invoke_mac_vpdu_with_state(const unsigned char* mac_bytes, int mac_len,
     unsigned long long int MAC[24] = {0};
     p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
     p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
-    process_MAC_VPDU(opts, state, 0, MAC);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, MAC);
     free(opts);
     p25_test_free_state(state);
 }
@@ -500,7 +500,7 @@ p25_test_invoke_mac_vpdu_capture(const unsigned char* mac_bytes, int mac_len, in
     for (int i = 0; i < n; i++) {
         MAC[i] = mac_bytes[i];
     }
-    process_MAC_VPDU(opts, state, 0, MAC);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     if (out_vc0) {
         *out_vc0 = state->p25_vc_freq[0];
@@ -530,7 +530,7 @@ p25_test_invoke_mac_vpdu_channel_cache(const unsigned char* mac_bytes, int mac_l
 
     unsigned long long int MAC[24] = {0};
     p25_test_copy_mac_bytes(MAC, mac_bytes, mac_len);
-    process_MAC_VPDU(opts, state, 0, MAC);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     p25_test_copy_channel_cache_outputs(state, channel_a, channel_b, out_freq_a, out_freq_b);
     free(opts);

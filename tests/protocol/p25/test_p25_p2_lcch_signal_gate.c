@@ -9,6 +9,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -19,9 +20,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-// Forward declaration for the MAC VPDU handler under test
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
 
 // Minimal stubs referenced by linked objects
 
@@ -95,7 +93,7 @@ main(void) {
     MAC[1] = 0x00; // SIGNAL
     MAC[2] = 0x00; // standard MFID
 
-    process_MAC_VPDU(&opts, &state, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     // Gates must remain unchanged by MAC_SIGNAL when on LCCH
     rc |= expect_eq("gate slot0", state.p25_p2_audio_allowed[0], 1);
@@ -108,7 +106,7 @@ main(void) {
     state.currentslot = 1;
     state.p25_p2_audio_allowed[0] = 1;
     state.p25_p2_audio_allowed[1] = 1;
-    process_MAC_VPDU(&opts, &state, 1 /*SACCH*/, MAC);
+    process_MAC_VPDU(&opts, &state, 1 /*SACCH*/, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_eq("gate slot0 (SACCH)", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_eq("gate slot1 (SACCH)", state.p25_p2_audio_allowed[1], 1);
 

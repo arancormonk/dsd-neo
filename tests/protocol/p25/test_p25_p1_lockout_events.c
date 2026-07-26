@@ -13,6 +13,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -241,6 +242,30 @@ test_ess_after_cryptoless_end_still_opens_call(void) {
     return rc;
 }
 
+/* Conventional receivers have neither a grant generation nor necessarily a
+ * populated carrier frequency. Bound the post-lockout ESS continuation by
+ * time so a later same-key transmission can still begin an epoch. */
+static int
+test_stale_same_key_ess_opens_conventional_call(void) {
+    int rc = 0;
+    reset_test_state();
+
+    begin_identified_call();
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    const uint64_t ended_epoch = slot0_epoch();
+    rc |= expect("stale fixture lockout recorded", g_state.p25_p1_lockout_epoch.valid != 0U);
+
+    g_state.p25_p1_lockout_epoch.recorded_m = dsd_time_now_monotonic_s() - 1.1;
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x7777ULL, TEST_TG);
+
+    dsd_call_snapshot call;
+    rc |= expect("stale same-key ESS opens call",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    rc |= expect("stale same-key ESS starts epoch", slot0_epoch() != ended_epoch);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -248,6 +273,7 @@ main(void) {
     rc |= test_identity_pending_ess_still_opens_call();
     rc |= test_reused_key_after_new_assignment_opens_call();
     rc |= test_ess_after_cryptoless_end_still_opens_call();
+    rc |= test_stale_same_key_ess_opens_conventional_call();
 
     if (g_state.event_history_s != NULL) {
         free(g_state.event_history_s);

@@ -31,6 +31,7 @@ static int g_crc12_result;
 static int g_crc16_result;
 static int g_vpdu_count;
 static int g_vpdu_type;
+static p25_mac_pdu_type g_vpdu_pdu_type;
 static int g_vpdu_entry_lasttg[2];
 static int g_vpdu_entry_lastsrc[2];
 static int g_vpdu_grant_newer_slot;
@@ -49,7 +50,6 @@ static int g_active_dst[2];
 static int g_active_src[2];
 static int g_active_is_group[2];
 static int g_active_svc[2];
-static int g_active_source_optional[2];
 static int g_voice_identity_result;
 static struct p25p2_mac_voice_identity g_voice_identity;
 static int g_end_count[2];
@@ -114,10 +114,12 @@ crc16_lb_bridge(const int* payload, int len) {
 }
 
 void
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
+process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                 unsigned long long int mac[24]) {
     (void)opts;
     g_vpdu_count++;
     g_vpdu_type = type;
+    g_vpdu_pdu_type = pdu_type;
     if (state) {
         for (uint8_t slot = 0U; slot < 2U; slot++) {
             dsd_call_snapshot call;
@@ -262,12 +264,6 @@ p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot) {
 int
 p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
                         int svc_bits) {
-    return p25_sm_emit_active_call_ex(opts, state, slot, tg, dst, src, is_group, svc_bits, 0);
-}
-
-int
-p25_sm_emit_active_call_ex(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
-                           int svc_bits, int source_optional) {
     const int accepted = p25_sm_emit_active(opts, state, slot);
     if (slot >= 0 && slot <= 1) {
         g_active_tg[slot] = tg;
@@ -275,7 +271,6 @@ p25_sm_emit_active_call_ex(dsd_opts* opts, dsd_state* state, int slot, int tg, i
         g_active_src[slot] = src;
         g_active_is_group[slot] = is_group;
         g_active_svc[slot] = svc_bits;
-        g_active_source_optional[slot] = source_optional;
     }
     if (accepted) {
         const dsd_call_observation observation = {
@@ -512,6 +507,7 @@ reset_stubs(void) {
     g_crc16_result = 0;
     g_vpdu_count = 0;
     g_vpdu_type = -1;
+    g_vpdu_pdu_type = P25_MAC_PDU_PTT;
     g_vpdu_entry_lasttg[0] = -1;
     g_vpdu_entry_lasttg[1] = -1;
     g_vpdu_entry_lastsrc[0] = -1;
@@ -532,7 +528,6 @@ reset_stubs(void) {
     DSD_MEMSET(g_active_src, 0, sizeof(g_active_src));
     DSD_MEMSET(g_active_is_group, 0, sizeof(g_active_is_group));
     DSD_MEMSET(g_active_svc, 0, sizeof(g_active_svc));
-    DSD_MEMSET(g_active_source_optional, 0, sizeof(g_active_source_optional));
     g_voice_identity_result = 0;
     DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
     DSD_MEMSET(g_end_count, 0, sizeof(g_end_count));
@@ -810,6 +805,7 @@ test_facch_public_dispatch_and_crc_gates(void) {
     rc |= expect_int("facch idle emitted", g_idle_count[1], 1);
     rc |= expect_int("facch idle vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch idle vpdu type", g_vpdu_type, 0);
+    rc |= expect_int("facch idle pdu type", g_vpdu_pdu_type, P25_MAC_PDU_IDLE);
     rc |= expect_int("facch idle vpdu entry src", g_vpdu_entry_lastsrc[1], 0x010203);
     rc |= expect_int("facch idle vpdu entry tg", g_vpdu_entry_lasttg[1], 77);
     rc |= expect_int("facch idle canonical snapshot", dsd_call_state_get(&state, 1U, &call) > 0, 1);
@@ -1055,7 +1051,6 @@ test_rejected_voice_events_keep_media_closed(void) {
     rc |= expect_int("rejected facch telephone active records denied target", g_active_dst[1], 2001);
     rc |= expect_int("rejected facch telephone active clears absent source", g_active_src[1], 0);
     rc |= expect_int("rejected facch telephone active records private type", g_active_is_group[1], 0);
-    rc |= expect_int("rejected facch telephone active records source optional", g_active_source_optional[1], 1);
     rc |= expect_int("rejected facch telephone active latches media rejection", state.p25_p2_media_rejected[1], 1);
     rc |= expect_int("rejected facch telephone active companion gate preserved", state.p25_p2_audio_allowed[0], 1);
     rc |= expect_int("rejected facch telephone active gate closed", state.p25_p2_audio_allowed[1], 0);
@@ -1127,6 +1122,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch idle emitted", g_idle_count[1], 1);
     rc |= expect_int("sacch idle vpdu", g_vpdu_count, 1);
     rc |= expect_int("sacch idle vpdu type", g_vpdu_type, 1);
+    rc |= expect_int("sacch idle pdu type", g_vpdu_pdu_type, P25_MAC_PDU_IDLE);
     rc |= expect_int("sacch idle burst", (int)state.dmrburstR, 24);
     rc |= expect_int("sacch idle gate clear", state.p25_p2_audio_allowed[1], 0);
     rc |= expect_int("sacch idle service clear", state.dmr_soR, 0);
@@ -1170,6 +1166,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     process_SACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("sacch active vpdu", g_vpdu_count, 1);
     rc |= expect_int("sacch active vpdu type", g_vpdu_type, 1);
+    rc |= expect_int("sacch active pdu type", g_vpdu_pdu_type, P25_MAC_PDU_ACTIVE);
     rc |= expect_int("sacch active gate", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("sacch active burst", (int)state.dmrburstR, 21);
     rc |= expect_int("sacch active does not re-emit enc", g_enc_count[1], 0);
@@ -1179,7 +1176,6 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch active identity src", g_active_src[1], 0x123456);
     rc |= expect_int("sacch active identity group", g_active_is_group[1], 1);
     rc |= expect_int("sacch active identity svc", g_active_svc[1], 0x81);
-    rc |= expect_int("sacch active identity source required", g_active_source_optional[1], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1200,6 +1196,7 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     process_SACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("sacch hangtime vpdu", g_vpdu_count, 1);
     rc |= expect_int("sacch hangtime vpdu type", g_vpdu_type, 1);
+    rc |= expect_int("sacch hangtime pdu type", g_vpdu_pdu_type, P25_MAC_PDU_HANGTIME);
     rc |= expect_int("sacch hangtime flush", g_flush_count, 1);
     rc |= expect_int("sacch hangtime flush slot", g_flush_slot, 1);
     rc |= expect_int("sacch hangtime flush before burst", g_flush_burst_r, 21);
@@ -1365,6 +1362,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch active emitted", g_active_count[1], 1);
     rc |= expect_int("facch active vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch active vpdu type", g_vpdu_type, 0);
+    rc |= expect_int("facch active pdu type", g_vpdu_pdu_type, P25_MAC_PDU_ACTIVE);
     rc |= expect_int("facch active gate", state.p25_p2_audio_allowed[1], 1);
     rc |= expect_int("facch active burst", (int)state.dmrburstR, 21);
     rc |= expect_int("facch active does not re-emit enc", g_enc_count[1], 0);
@@ -1373,7 +1371,6 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     rc |= expect_int("facch active identity src", g_active_src[1], 0x654321);
     rc |= expect_int("facch active identity group", g_active_is_group[1], 0);
     rc |= expect_int("facch active identity svc", g_active_svc[1], 0x42);
-    rc |= expect_int("facch active identity source required", g_active_source_optional[1], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1394,6 +1391,7 @@ test_facch_active_end_hangtime_and_invalid_slot_guards(void) {
     process_FACCH_MAC_PDU(&opts, &state, payload);
     rc |= expect_int("facch hangtime vpdu", g_vpdu_count, 1);
     rc |= expect_int("facch hangtime vpdu type", g_vpdu_type, 0);
+    rc |= expect_int("facch hangtime pdu type", g_vpdu_pdu_type, P25_MAC_PDU_HANGTIME);
     rc |= expect_int("facch hangtime flush", g_flush_count, 1);
     rc |= expect_int("facch hangtime flush slot", g_flush_slot, 1);
     rc |= expect_int("facch hangtime flush before burst", g_flush_burst_r, 21);

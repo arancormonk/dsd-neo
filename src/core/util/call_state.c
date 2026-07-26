@@ -391,8 +391,8 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     return begins_epoch;
 }
 
-int
-dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+static int
+call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update, int include_ended) {
     if (!state || !update || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
     }
@@ -402,7 +402,8 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
-    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE) {
+    if (snapshot->epoch == 0U
+        || (snapshot->phase != DSD_CALL_PHASE_ACTIVE && (!include_ended || snapshot->phase != DSD_CALL_PHASE_ENDED))) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -416,6 +417,16 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
     return 1;
+}
+
+int
+dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+    return call_state_update_crypto(state, slot, update, 0);
+}
+
+int
+dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+    return call_state_update_crypto(state, slot, update, 1);
 }
 
 int

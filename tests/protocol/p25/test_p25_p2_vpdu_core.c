@@ -9,7 +9,6 @@
  */
 
 #include <dsd-neo/core/call_state.h>
-#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -256,7 +255,7 @@ test_lcch_voice_user_does_not_reopen_call(void) {
 
     dsd_call_snapshot before = {0};
     rc |= expect_true("lcch voice fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     dsd_call_snapshot after = {0};
     rc |= expect_true("lcch voice canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
@@ -273,7 +272,7 @@ test_lcch_voice_user_does_not_reopen_call(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     dsd_call_snapshot conventional = {0};
     rc |= expect_true("conventional voice canonical call", dsd_call_state_get(&state, 0U, &conventional) > 0);
@@ -287,10 +286,8 @@ test_lcch_voice_user_does_not_reopen_call(void) {
     return rc;
 }
 
-/* Hangtime GVCU copies that still name the completed talker (delayed SACCH
- * messages interleaved with the repeated MAC_END_PTT) must not resurrect the
- * ended canonical call and duplicate its event row; a changed talker must
- * still open a new call. */
+/* GVCU is legal inside ACTIVE, IDLE, and HANGTIME PDUs. Only ACTIVE is live
+ * transmission evidence; IDLE/HANGTIME copies must not reopen an ended call. */
 static int
 test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
     static dsd_opts opts;
@@ -305,7 +302,6 @@ test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_hangtime = 2.0f;
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
@@ -324,62 +320,26 @@ test_hangtime_sourced_voice_user_does_not_reopen_call(void) {
 
     dsd_call_snapshot before = {0};
     rc |= expect_true("hangtime gvcu snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_HANGTIME, MAC);
 
     dsd_call_snapshot after = {0};
     rc |= expect_true("hangtime gvcu canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
     rc |= expect_eq_long("hangtime gvcu phase preserved", after.phase, DSD_CALL_PHASE_ENDED);
     rc |= expect_eq_long("hangtime gvcu epoch preserved", (long)after.epoch, (long)before.epoch);
     rc |= expect_eq_long("hangtime gvcu revision preserved", (long)after.revision, (long)before.revision);
+    rc |= expect_eq_long("hangtime gvcu crypto unchanged", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_eq_long("hangtime gvcu service unchanged", state.dmr_so, 0);
 
-    // A different talker on the same group is a new transmission.
-    put_u24_ull(MAC, 5, 618777U);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_true("hangtime gvcu new talker call", dsd_call_state_get(&state, 0U, &after) > 0);
-    rc |= expect_eq_long("hangtime gvcu new talker phase", after.phase, DSD_CALL_PHASE_ACTIVE);
-    rc |= expect_eq_long("hangtime gvcu new talker source", (long)after.ota_source_id, 618777);
-    rc |= expect_true("hangtime gvcu new talker epoch", after.epoch != before.epoch);
-    dsd_state_ext_free_all(&state);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_IDLE, MAC);
+    rc |= expect_true("idle gvcu canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("idle gvcu remains ended", after.phase, DSD_CALL_PHASE_ENDED);
+    rc |= expect_eq_long("idle gvcu epoch preserved", (long)after.epoch, (long)before.epoch);
 
-    // Once actual hangtime has elapsed, the same identity is a legitimate
-    // later transmission even when its MAC_PTT was missed.
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_hangtime = 2.0f;
-    state.currentslot = 0;
-    state.synctype = DSD_SYNC_P25P2_POS;
-    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-    rc |=
-        expect_true("expired gvcu fixture begin", dsd_call_state_observe(&state, &ended, DSD_CALL_BOUNDARY_BEGIN) > 0);
-    rc |= expect_true("expired gvcu fixture end", dsd_call_state_end(&state, 0U, dsd_time_now_monotonic_s() - 3.0) > 0);
-    rc |= expect_true("expired gvcu fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
-
-    put_u24_ull(MAC, 5, 618620U);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_true("expired gvcu call exists", dsd_call_state_get(&state, 0U, &after) > 0);
-    rc |= expect_eq_long("expired gvcu phase", after.phase, DSD_CALL_PHASE_ACTIVE);
-    rc |= expect_eq_long("expired gvcu source", (long)after.ota_source_id, 618620);
-    rc |= expect_true("expired gvcu new epoch", after.epoch != before.epoch);
-    dsd_state_ext_free_all(&state);
-
-    // A zero local release delay must not disable the short protocol window
-    // for END-adjacent GVCU repeats when the companion TDMA slot retains the
-    // shared carrier.
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_hangtime = 0.0f;
-    state.currentslot = 0;
-    state.synctype = DSD_SYNC_P25P2_POS;
-    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-    rc |= expect_true("zero hangtime gvcu fixture begin",
-                      dsd_call_state_observe(&state, &ended, DSD_CALL_BOUNDARY_BEGIN) > 0);
-    rc |= expect_true("zero hangtime gvcu fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
-    rc |= expect_true("zero hangtime gvcu fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
-
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_true("zero hangtime gvcu canonical preserved", dsd_call_state_get(&state, 0U, &after) > 0);
-    rc |= expect_eq_long("zero hangtime gvcu remains ended", after.phase, DSD_CALL_PHASE_ENDED);
-    rc |= expect_eq_long("zero hangtime gvcu epoch preserved", (long)after.epoch, (long)before.epoch);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    rc |= expect_true("active gvcu call exists", dsd_call_state_get(&state, 0U, &after) > 0);
+    rc |= expect_eq_long("active gvcu call active", after.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_eq_long("active gvcu source", (long)after.ota_source_id, 618620);
+    rc |= expect_true("active gvcu new epoch", after.epoch != before.epoch);
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -420,7 +380,7 @@ test_voice_user_protocol_change_opens_call(void) {
 
     dsd_call_snapshot before = {0};
     rc |= expect_true("protocol change fixture snapshot", dsd_call_state_get(&state, 0U, &before) > 0);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     dsd_call_snapshot after = {0};
     rc |= expect_true("protocol change p2 call exists", dsd_call_state_get(&state, 0U, &after) > 0);
@@ -433,9 +393,8 @@ test_voice_user_protocol_change_opens_call(void) {
     return rc;
 }
 
-/* A source-less conventional GVCU is hangtime only when it matches the
- * canonical epoch that just ended. With no ended epoch, or an ended call for
- * another target, it is the only available identity for a legitimate call. */
+/* A valid ACTIVE GVCU is live even without a source. Fixed-network controller
+ * values are normalized to an unavailable source rather than a subscriber. */
 static int
 test_source_less_conventional_voice_user_requires_matching_end(void) {
     static dsd_opts opts;
@@ -449,11 +408,10 @@ test_source_less_conventional_voice_user_requires_matching_end(void) {
 
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_hangtime = 2.0f;
     state.currentslot = 0;
     state.synctype = DSD_SYNC_P25P2_POS;
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     dsd_call_snapshot call = {0};
     rc |= expect_true("source-less conventional call exists", dsd_call_state_get(&state, 0U, &call) > 0);
@@ -461,54 +419,25 @@ test_source_less_conventional_voice_user_requires_matching_end(void) {
     rc |= expect_eq_long("source-less conventional target", (long)call.ota_target_id, 20601);
     rc |= expect_eq_long("source-less conventional source unavailable", (long)call.ota_source_id, 0);
     rc |= expect_true("source-less conventional timestamp", state.p25_p2_last_mac_active[0] != 0);
-    dsd_state_ext_free_all(&state);
 
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_hangtime = 2.0f;
-    state.currentslot = 0;
-    state.synctype = DSD_SYNC_P25P2_POS;
-    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-    const dsd_call_observation other = {
-        .protocol = DSD_SYNC_P25P2_POS,
-        .slot = 0U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 20600U,
-        .policy_target_id = 20600U,
-        .ota_source_id = 618620U,
-    };
-    rc |= expect_true("source-less different-target fixture begin",
-                      dsd_call_state_observe(&state, &other, DSD_CALL_BOUNDARY_BEGIN) > 0);
-    rc |= expect_true("source-less different-target fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
-
-    put_u24_ull(MAC, 5, 0xFFFFFFU);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_true("fixed-source different-target call exists", dsd_call_state_get(&state, 0U, &call) > 0);
-    rc |= expect_eq_long("fixed-source different-target active", call.phase, DSD_CALL_PHASE_ACTIVE);
-    rc |= expect_eq_long("fixed-source different-target identity", (long)call.ota_target_id, 20601);
-    rc |= expect_eq_long("fixed-source network identity", (long)call.ota_source_id, 0xFFFFFF);
-    dsd_state_ext_free_all(&state);
-
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_hangtime = 2.0f;
-    state.currentslot = 0;
-    state.synctype = DSD_SYNC_P25P2_POS;
-    p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-    dsd_call_observation matching = other;
-    matching.ota_target_id = 20601U;
-    matching.policy_target_id = 20601U;
-    rc |= expect_true("source-less matching fixture begin",
-                      dsd_call_state_observe(&state, &matching, DSD_CALL_BOUNDARY_BEGIN) > 0);
-    rc |= expect_true("source-less matching fixture end", dsd_call_state_end(&state, 0U, 0.0) > 0);
-    rc |= expect_true("source-less matching fixture snapshot", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_true("source-less conventional end", dsd_call_state_end(&state, 0U, 0.0) > 0);
     const uint64_t ended_epoch = call.epoch;
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    rc |= expect_true("source-less same-target call exists", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_eq_long("source-less same-target active", call.phase, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_true("source-less same-target new epoch", call.epoch != ended_epoch);
 
-    put_u24_ull(MAC, 5, 0U);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
-    rc |= expect_true("source-less matching call preserved", dsd_call_state_get(&state, 0U, &call) > 0);
-    rc |= expect_eq_long("source-less matching remains ended", call.phase, DSD_CALL_PHASE_ENDED);
-    rc |= expect_eq_long("source-less matching epoch preserved", (long)call.epoch, (long)ended_epoch);
+    rc |= expect_true("source-less second end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+    put_u24_ull(MAC, 5, 0xFFFFFDU);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    rc |= expect_true("controller-one call exists", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_eq_long("controller-one source unavailable", (long)call.ota_source_id, 0);
+
+    rc |= expect_true("controller-one end", dsd_call_state_end(&state, 0U, 0.0) > 0);
+    put_u24_ull(MAC, 5, 0xFFFFFFU);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+    rc |= expect_true("controller-two call exists", dsd_call_state_get(&state, 0U, &call) > 0);
+    rc |= expect_eq_long("controller-two source unavailable", (long)call.ota_source_id, 0);
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -597,7 +526,7 @@ run_sccb_candidate_case(const unsigned char* mac_bytes, int current_rfss, int cu
         MAC[i] = mac_bytes[i];
     }
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     int count = (cc != NULL) ? cc->count : 0;
@@ -683,7 +612,7 @@ run_bridged_sccb_zero_channel_b_case(void) {
     MAC[8] = 0x00;
     MAC[9] = 0x00;
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     const int count = (cc != NULL) ? cc->count : 0;
@@ -729,7 +658,7 @@ run_native_sccb_zero_channel_b_case(void) {
     MAC[8] = 0x00;
     MAC[9] = 0x01;
 
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     const int count = (cc != NULL) ? cc->count : 0;
@@ -783,7 +712,7 @@ run_deferred_sccb_resolution_case(void) {
     MAC[6] = 0x10;
     MAC[7] = 0x05;
     MAC[8] = 0x01;
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
     rc |= expect_eq_long("p2_sccb_deferred_initial_candidates", cc ? cc->count : 0, 0);
@@ -795,7 +724,7 @@ run_deferred_sccb_resolution_case(void) {
     for (int i = 0; i < 24; i++) {
         MAC[i] = iden_mac[i];
     }
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const long want = 851000000L + 10L * 100L * 125L;
     cc = dsd_trunk_cc_candidates_peek(state);
@@ -835,7 +764,7 @@ run_deferred_adjacent_wacn_resolution_case(void) {
     MAC[12] = 0xAB;
     MAC[13] = 0xCD;
     MAC[14] = 0xE0;
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq_long("p2_adj_deferred_initial_neighbors", state->p25_nb_count, 0);
     rc |= expect_eq_long("p2_adj_deferred_initial_pending", state->p25_pending_announcement_count, 1);
@@ -846,7 +775,7 @@ run_deferred_adjacent_wacn_resolution_case(void) {
     for (int i = 0; i < 24; i++) {
         MAC[i] = iden_mac[i];
     }
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const long want = 851000000L + 10L * 100L * 125L;
     rc |= expect_eq_long("p2_adj_deferred_pending_empty", state->p25_pending_announcement_count, 0);
@@ -889,7 +818,7 @@ run_p1_bridged_adjacent_unknown_sysid_case(void) {
     MAC[7] = 0x10;
     MAC[8] = 0x0A; /* CHAN-T 0x100A */
     MAC[9] = 0x01;
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const long want = 851000000L + 10L * 100L * 125L;
     rc |= expect_eq_long("p1_bridge_adjacent_neighbor_count", state->p25_nb_count, 1);
@@ -982,7 +911,7 @@ run_sccb_full_cache_preservation_case(void) {
     MAC[6] = 0x10;
     MAC[7] = 0x05;
     MAC[8] = 0x01;
-    process_MAC_VPDU(&opts, state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
 
     const long sccb_freq = 851000000 + 10 * 100 * 125;
     const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
@@ -1022,7 +951,7 @@ run_tdma_paging_and_sndcp_metadata_cases(void) {
     MAC[8] = 0xAB;
     MAC[9] = 0xCD;
     MAC[10] = 0xEF;
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_metadata_only_state("tdma 0x11 paging", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1034,7 +963,7 @@ run_tdma_paging_and_sndcp_metadata_cases(void) {
     put_u24_ull(MAC, 6, 0x040506);
     put_u24_ull(MAC, 9, 0x070809);
     put_u24_ull(MAC, 12, 0x0A0B0C);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_metadata_only_state("tdma 0x12 paging", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1045,7 +974,7 @@ run_tdma_paging_and_sndcp_metadata_cases(void) {
     MAC[3] = 0x12;
     MAC[4] = 0x34;
     put_u24_ull(MAC, 5, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_metadata_only_state("mac 0x52 sndcp request", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1057,7 +986,7 @@ run_tdma_paging_and_sndcp_metadata_cases(void) {
     MAC[4] = 0x45;
     MAC[5] = 0x67;
     put_u24_ull(MAC, 6, 0x654321);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_metadata_only_state("mac 0x53 sndcp response", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1065,7 +994,7 @@ run_tdma_paging_and_sndcp_metadata_cases(void) {
     DSD_MEMSET(MAC, 0, sizeof MAC);
     MAC[1] = 0x85;
     MAC[2] = 0x90;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_metadata_only_state("mfid90 0x85 no regroup alias", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1087,7 +1016,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[2] = 0x90;
     MAC[4] = 0x0A;
     put_u24_ull(MAC, 5, 0x010203);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0x03 telephone user active", recent_notice(&state, 0U), "TELE Target: 66051");
     const dsd_recent_activity_entry* telephone = recent_activity(&state, 0U);
     rc |= expect_true("0x03 telephone user activity timestamp", telephone && telephone->updated_m_ms != 0U);
@@ -1106,7 +1035,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[4] = 0x81;
     put_u24_ull(MAC, 5, 0x123456);
     put_u24_ull(MAC, 8, 0x654321);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0x4C RUM target", recent_notice(&state, 0U), "RUM Target: 1193046");
     rc |= expect_contains("0x4C RUM source", recent_notice(&state, 0U), "Source: 6636321");
     dsd_state_ext_free_all(&state);
@@ -1122,7 +1051,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[12] = 0x12;
     MAC[13] = 0x34;
     MAC[14] = 0x80;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0x5E RUM enhanced target", recent_notice(&state, 0U), "RUM-E Target: 66051");
     rc |= expect_contains("0x5E RUM enhanced tg", recent_notice(&state, 0U), "TG: 17767");
     dsd_state_ext_free_all(&state);
@@ -1135,7 +1064,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[3] = 0x43;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("p1 bridged 0x18 status target", recent_notice(&state, 0U), "STATUS Target: 703710");
     rc |= expect_contains("p1 bridged 0x18 status source", recent_notice(&state, 0U), "Source: 74565");
     rc |= expect_contains("p1 bridged 0x18 status codes", recent_notice(&state, 0U), "Unit: 21 User: 43");
@@ -1147,7 +1076,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x5A;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("p1 bridged 0x1A query target", recent_notice(&state, 0U), "Status Query Target: 703710");
     rc |= expect_contains("p1 bridged 0x1A query source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
@@ -1160,7 +1089,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[3] = 0xEF;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("p1 bridged 0x1C message target", recent_notice(&state, 0U), "MSG Target: 703710");
     rc |= expect_contains("p1 bridged 0x1C message source", recent_notice(&state, 0U), "Source: 74565");
     rc |= expect_contains("p1 bridged 0x1C message body", recent_notice(&state, 0U), "Message: BEEF");
@@ -1172,7 +1101,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x5F;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("p1 bridged 0x1F alert target", recent_notice(&state, 0U), "Call Alert Target: 703710");
     rc |= expect_contains("p1 bridged 0x1F alert source", recent_notice(&state, 0U), "Source: 74565");
     dsd_state_ext_free_all(&state);
@@ -1183,7 +1112,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0x6A;
     put_u24_ull(MAC, 4, 0x0ABCDE);
     put_u24_ull(MAC, 7, 0x012345);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("p1 bridged 0x2A affiliation target", recent_notice(&state, 0U),
                           "Group Affiliation Query Target: 703710");
     rc |= expect_contains("p1 bridged 0x2A affiliation source", recent_notice(&state, 0U), "Source: 74565");
@@ -1196,7 +1125,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[4] = 0x82;
     put_u24_ull(MAC, 5, 0x010203);
     put_fqid_tail_ull(MAC, 8, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xCC RUM extended target", recent_notice(&state, 0U), "RUM-X Target: 66051");
     rc |= expect_contains("0xCC RUM extended source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
@@ -1208,7 +1137,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[4] = 0x34;
     put_u24_ull(MAC, 5, 0x010203);
     put_fqid_tail_ull(MAC, 8, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xD8 status extended", recent_notice(&state, 0U), "STATUS-X Target: 66051");
     rc |= expect_contains("0xD8 status source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
@@ -1218,7 +1147,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0xDA;
     put_u24_ull(MAC, 2, 0x010203);
     put_fqid_tail_ull(MAC, 5, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xDA query extended", recent_notice(&state, 0U), "Status Query-X Target: 66051");
     rc |= expect_contains("0xDA query source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
@@ -1230,7 +1159,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[4] = 0xFE;
     put_u24_ull(MAC, 5, 0x010203);
     put_fqid_tail_ull(MAC, 8, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xDC message extended", recent_notice(&state, 0U), "MSG-X Target: 66051");
     rc |= expect_contains("0xDC message payload", recent_notice(&state, 0U), "Message: CAFE");
     dsd_state_ext_free_all(&state);
@@ -1240,7 +1169,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0xDF;
     put_u24_ull(MAC, 2, 0x010203);
     put_fqid_tail_ull(MAC, 5, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xDF alert extended", recent_notice(&state, 0U), "Call Alert-X Target: 66051");
     rc |= expect_contains("0xDF alert source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
@@ -1253,7 +1182,7 @@ run_standard_mac_supplemental_display_cases(void) {
     put_u24_ull(MAC, 5, 0x0BADF0);
     put_u24_ull(MAC, 8, 0x010203);
     put_fqid_tail_ull(MAC, 11, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xE4 extfunc target", recent_notice(&state, 0U), "EXTFUNC-X Target: 66051");
     rc |= expect_contains("0xE4 extfunc source", recent_notice(&state, 0U), "Source: 1122867");
     dsd_state_ext_free_all(&state);
@@ -1269,7 +1198,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[12] = 0xCD;
     MAC[13] = 0xE1;
     MAC[14] = 0x23;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xE5 extfunc lcch target", recent_notice(&state, 0U), "EXTFUNC-L Target: 66051");
     rc |= expect_contains("0xE5 extfunc lcch source", recent_notice(&state, 0U), "Source: ABCDE:123");
     dsd_state_ext_free_all(&state);
@@ -1279,7 +1208,7 @@ run_standard_mac_supplemental_display_cases(void) {
     MAC[1] = 0xEA;
     put_u24_ull(MAC, 2, 0x010203);
     put_fqid_tail_ull(MAC, 5, 0xABCDE, 0x123, 0x112233);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xEA affiliation query extended", recent_notice(&state, 0U),
                           "Group Affiliation Query-X Target: 66051");
     rc |= expect_contains("0xEA affiliation query source", recent_notice(&state, 0U), "Source: 1122867");
@@ -1306,7 +1235,7 @@ run_standard_mac_unit_to_unit_extended_cases(void) {
     MAC[5] = 0x05;
     put_fqid_tail_ull(MAC, 6, 0xABCDE, 0x123, 0xAABBCC);
     put_u24_ull(MAC, 13, 0x010203);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xC4 corrected target", recent_notice(&state, 0U), "TGT: 66051");
     rc |= expect_contains("0xC4 corrected source", recent_notice(&state, 0U), "SRC: 11189196");
     dsd_state_ext_free_all(&state);
@@ -1320,7 +1249,7 @@ run_standard_mac_unit_to_unit_extended_cases(void) {
     MAC[5] = 0x06;
     put_fqid_tail_ull(MAC, 6, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(MAC, 13, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xC6 update target", recent_notice(&state, 0U), "TGT: 4478310");
     rc |= expect_contains("0xC6 update source", recent_notice(&state, 0U), "SRC: 1122867");
     dsd_state_ext_free_all(&state);
@@ -1352,7 +1281,7 @@ run_group_affiliation_response_extended_case(void) {
     MAC[13] = 0x67; // source GID tail
     put_u24_ull(MAC, 14, 0x010203);
 
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("0xE8 affiliation active", recent_notice(&state, 0U), "AFF-X Target: 66051");
     rc |= expect_eq_long("0xE8 accepted aff count", state.p25_aff_count, 1);
     rc |= expect_eq_long("0xE8 accepted ga count", state.p25_ga_count, 1);
@@ -1424,7 +1353,7 @@ run_vendor_mac_display_only_cases(void) {
     MAC[7] = 0x18;
     MAC[8] = 0x72;
     MAC[9] = 0x09;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_vendor_display_only_state("moto 0x85 bsi", &opts, &state);
     dsd_state_ext_free_all(&state);
 
@@ -1439,7 +1368,7 @@ run_vendor_mac_display_only_cases(void) {
     MAC[11] = 0x09;
     put_u24_ull(MAC, 12, 0x070809);
     put_u24_ull(MAC, 15, 0x0A0B0C);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("moto 0x82 active radios label", recent_notice(&state, 0U), "MOT AGR 130");
     rc |= expect_contains("moto 0x82 active radios rid1", recent_notice(&state, 0U), "66051");
     rc |= expect_contains("moto 0x82 active radios rid4", recent_notice(&state, 0U), "658188");
@@ -1455,7 +1384,7 @@ run_vendor_mac_display_only_cases(void) {
     MAC[5] = 0x09;
     put_u24_ull(MAC, 6, 0x010203);
     put_u24_ull(MAC, 9, 0x040506);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("moto 0x8F active radios label", recent_notice(&state, 0U), "MOT AGR 143");
     rc |= expect_contains("moto 0x8F active radios status", recent_notice(&state, 0U), "Status: 80");
     rc |= expect_contains("moto 0x8F active radios rid2", recent_notice(&state, 0U), "263430");
@@ -1467,7 +1396,7 @@ run_vendor_mac_display_only_cases(void) {
     MAC[1] = 0xBF;
     MAC[2] = 0x90;
     MAC[3] = 0x03;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_contains("moto 0xBF feature marker", recent_notice(&state, 0U), "MOT AGR Feature Active");
     rc |= expect_vendor_display_only_state("moto 0xBF", &opts, &state);
     dsd_state_ext_free_all(&state);
@@ -1494,7 +1423,7 @@ run_vendor_mac_display_only_cases(void) {
     MAC[15] = 0x00;
     MAC[16] = 0x06;
     MAC[17] = 0x1C;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_eq_long("harris 0xAA gps calls", g_nmea_harris_calls, 1);
     rc |= expect_eq_long("harris 0xAA gps source", g_nmea_harris_src, 0x010203);
     rc |= expect_eq_long("harris 0xAA gps slot", g_nmea_harris_slot, 0);
@@ -1546,7 +1475,7 @@ run_standard_mac_multifragment_cases(void) {
     DSD_MEMSET(&state, 0, sizeof state);
     init_multifragment_continuation(cont, 10);
     put_u24_ull(cont, 3, 0x010203);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_true("orphan continuation does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
@@ -1557,12 +1486,12 @@ run_standard_mac_multifragment_cases(void) {
     put_u24_ull(base, 6, 0x010203);
     put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
     rc |= expect_true("base fragment does not mutate active state", recent_notice(&state, 0U)[0] == '\0');
 
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_contains("completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
     rc |= expect_contains("completed 0xD9 target", recent_notice(&state, 0U), "Target: 66051");
     rc |= expect_contains("completed 0xD9 source", recent_notice(&state, 0U), "Source: 4478310");
@@ -1577,18 +1506,18 @@ run_standard_mac_multifragment_cases(void) {
     put_u24_ull(base, 6, 0x010203);
     put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
 
     init_length_coded_tdma_segment(cont, 0x08U, 6);
     cont[3] = 0x88;
     cont[4] = 0x88;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_eq_long("null avoid zero bias keeps fragment active", state.p25_mac_frag[0].active, 1);
     rc |= expect_eq_long("null avoid zero bias does not append", state.p25_mac_frag[0].collected, 16);
 
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_contains("null avoid zero bias allows completion", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
@@ -1599,13 +1528,13 @@ run_standard_mac_multifragment_cases(void) {
     put_u24_ull(base, 6, 0x010203);
     put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(base, 16, 0x445566);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, base);
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, base);
     rc |= expect_eq_long("SACCH base ignores null padding active", state.p25_mac_frag[1].active, 1);
     rc |= expect_eq_long("SACCH base ignores null padding collected", state.p25_mac_frag[1].collected, 16);
 
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
-    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 1 /* SACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_contains("SACCH completed 0xD9 status label", recent_notice(&state, 0U), "STATUS-L");
     rc |= expect_eq_long("SACCH completed 0xD9 clears active", state.p25_mac_frag[1].active, 0);
     dsd_state_ext_free_all(&state);
@@ -1618,21 +1547,21 @@ run_standard_mac_multifragment_cases(void) {
     put_fqid_tail_ull(base, 9, 0xABCDE, 0x123, 0x112233);
     put_u24_ull(base, 16, 0x445566);
     state.currentslot = 0;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
     rc |= expect_eq_long("slot0 base active before slot1 continuation", state.p25_mac_frag[0].active, 1);
     rc |= expect_eq_long("slot0 base collected before slot1 continuation", state.p25_mac_frag[0].collected, 16);
 
     init_multifragment_continuation(cont, 10);
     put_fqid_tail_ull(cont, 3, 0x0BCDE, 0x234, 0x778899);
     state.currentslot = 1;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_eq_long("slot1 continuation does not append slot0", state.p25_mac_frag[0].collected, 16);
     rc |= expect_eq_long("slot1 continuation leaves slot0 active", state.p25_mac_frag[0].active, 1);
     rc |= expect_eq_long("slot1 continuation has no slot1 active", state.p25_mac_frag[1].active, 0);
     rc |= expect_true("slot1 continuation does not complete slot0", recent_notice(&state, 0U)[0] == '\0');
 
     state.currentslot = 0;
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_contains("slot0 continuation completes slot0", recent_notice(&state, 0U), "STATUS-L");
     dsd_state_ext_free_all(&state);
 
@@ -1653,8 +1582,8 @@ run_standard_mac_multifragment_cases(void) {
         put_u24_ull(cont, 3, 0x445566);
         put_fqid_tail_ull(cont, 6, 0x0BCDE, 0x234, 0x778899);
 
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
         rc |= expect_contains("completed multi-fragment opcode label", recent_notice(&state, 0U),
                               complete_cases[i].label);
         dsd_state_ext_free_all(&state);
@@ -1662,21 +1591,21 @@ run_standard_mac_multifragment_cases(void) {
 
     DSD_MEMSET(&state, 0, sizeof state);
     init_multifragment_base(base, 0xD9, 24);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
     init_multifragment_continuation(cont, 2); // invalid: no continuation payload after opcode/length bytes
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_true("invalid continuation clears without active state", recent_notice(&state, 0U)[0] == '\0');
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&state, 0, sizeof state);
     init_multifragment_base(base, 0x71, 255);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, base);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, base);
     for (int i = 0; i < 11; i++) {
         init_multifragment_continuation(cont, 23);
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     }
     init_multifragment_continuation(cont, 11);
-    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, cont);
+    process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, cont);
     rc |= expect_eq_long("max-length multi-fragment clears active", state.p25_mac_frag[0].active, 0);
     rc |= expect_eq_long("max-length multi-fragment clears collected", state.p25_mac_frag[0].collected, 0);
     rc |= expect_contains("max-length multi-fragment completes", recent_notice(&state, 0U), "AUTH-L");
@@ -1938,7 +1867,7 @@ run_cases(void) {
         MAC[14] = 0xBB;
         MAC[15] = 0xCC; // SUID tail source
 
-        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, MAC);
+        process_MAC_VPDU(&opts, &state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
         dsd_call_snapshot call = {0};
         rc |= expect_true("p2_private_ext canonical call", dsd_call_state_get(&state, 0U, &call) > 0);
         rc |= expect_eq_long("p2_private_ext_target", (long)call.ota_target_id, 0x012345);
