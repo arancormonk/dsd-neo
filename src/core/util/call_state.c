@@ -611,6 +611,21 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     // that fire while unsynced do not re-stamp ended_m: the reacquisition gap
     // stays anchored at the first end.
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE) {
+        // One exception: a terminator or EOT decoded after sync loss already ended the epoch is
+        // positive evidence that the transmission is over, and it must be able to retract the
+        // reacquisition permission that end granted. The fade is often the last thing heard
+        // before the terminator that explains it, so without this a second PTT on the same
+        // identity inside the gap folds into the terminated call's row. Only this one direction
+        // is allowed, and ended_m is deliberately left alone: the reason changes, the moment the
+        // transmission stopped does not.
+        if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED
+            && snapshot->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && reason == DSD_CALL_END_EXPLICIT) {
+            snapshot->end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+            snapshot->revision = call_state_next_nonzero(snapshot->revision);
+            ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+            dsd_call_state_ext_unlock(ext);
+            return 1;
+        }
         dsd_call_state_ext_unlock(ext);
         return 0;
     }

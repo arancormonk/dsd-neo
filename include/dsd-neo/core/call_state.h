@@ -264,7 +264,16 @@ int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_
 /** Update crypto metadata on an existing active or retained ended epoch. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
-/** End the active epoch, recording why it ended. */
+/**
+ * End the active epoch, recording why it ended.
+ *
+ * Returns non-zero when the call state changed -- either the epoch was ended, or an already
+ * sync-loss-ended epoch had its reason tightened to DSD_CALL_END_EXPLICIT by a terminator that
+ * decoded after the fade. The latter leaves ended_m untouched. Callers that gate
+ * dsd_event_sync_slot() on this result therefore let the event layer see the retracted
+ * reacquisition permission; callers that need "an active call was ended" specifically must
+ * check DSD_CALL_PHASE_ACTIVE themselves beforehand.
+ */
 int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
 /** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);

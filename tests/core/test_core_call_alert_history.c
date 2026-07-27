@@ -1739,6 +1739,114 @@ test_reacquired_transmission_commits_one_row(void) {
     return rc;
 }
 
+// A DMR fade at the tail of a transmission ends the epoch by sync loss; the terminator that
+// explains it decodes a moment later, after the epoch is already ENDED. That terminator is
+// positive evidence the transmission is over, so it has to retract the reacquisition permission
+// the sync-loss end granted -- otherwise a second PTT on the same identity inside the window
+// (a routine double-tap) folds into the terminated call's row and loses its START. The held
+// VOICE_END must also land at the terminator rather than waiting out the full window.
+static int
+test_terminator_after_sync_loss_end_blocks_reacquisition(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_int("call start alerts once", g_beeper_count, 1);
+
+    // The fade. noCarrier() ends the epoch; the VOICE_END is held because this could still be the
+    // middle of the transmission.
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync-loss end holds the END alert", g_beeper_count, 1);
+    rc |= expect_int("sync-loss end commits the row", committed_history_rows(&event_history[0]), 1);
+
+    // The Terminator-with-LC, arriving after the epoch already ended. dmr_flco_prepare_regular_state()
+    // reaches dsd_call_state_end() with the slot in ENDED, so the reason is tightened in place.
+    rc |= expect_int("terminator upgrades an already-ended epoch", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("terminator retires the held END immediately", g_beeper_count, 2);
+    {
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&state, 0U, &call) == 1);
+        rc |= expect_int("terminator leaves the epoch ENDED", (int)call.phase, (int)DSD_CALL_PHASE_ENDED);
+        rc |= expect_int("terminator clears the sync-loss reason", (int)call.end_reason, (int)DSD_CALL_END_EXPLICIT);
+    }
+
+    // Second PTT on the same TG/SRC, well inside DSD_CALL_REACQUIRE_GAP_S. Positive termination
+    // has already been decoded, so this is a new transmission and gets its own row and START.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("post-terminator PTT alerts its own START", g_beeper_count, 3);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("post-terminator PTT commits its own row", committed_history_rows(&event_history[0]), 2);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The upgrade above is one-directional. A sync loss that follows an explicit teardown must not be
+// able to re-arm reacquisition on an epoch that was already positively terminated, and no end
+// reason may restamp ended_m once the epoch is closed -- the repeated noCarrier() calls that fire
+// while unsynced would otherwise walk the reacquisition window forward indefinitely.
+static int
+test_end_reason_upgrade_is_one_directional(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+
+    dsd_call_snapshot after_explicit;
+    assert(dsd_call_state_get(&state, 0U, &after_explicit) == 1);
+
+    // Sync loss reported after the terminator: no-op, exactly as before.
+    int rc =
+        expect_int("sync loss after explicit end is a no-op", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 0);
+    // A repeated terminator is also a no-op: the reason already is EXPLICIT.
+    rc |= expect_int("repeated explicit end is a no-op", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 0);
+
+    dsd_call_snapshot after_repeats;
+    assert(dsd_call_state_get(&state, 0U, &after_repeats) == 1);
+    rc |= expect_int("explicit end reason survives a later sync loss", (int)after_repeats.end_reason,
+                     (int)DSD_CALL_END_EXPLICIT);
+    rc |=
+        expect_int("repeated ends do not restamp ended_m", after_repeats.ended_m == after_explicit.ended_m ? 1 : 0, 1);
+
+    // And the upgrade path itself must not restamp: the moment the transmission stopped is the
+    // fade, not the terminator that explained it.
+    reset_fixture(&opts, &state, event_history);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_call_snapshot after_fade;
+    assert(dsd_call_state_get(&state, 0U, &after_fade) == 1);
+    advance_test_clock(0.2);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_call_snapshot after_upgrade;
+    assert(dsd_call_state_get(&state, 0U, &after_upgrade) == 1);
+    rc |= expect_int("upgrade keeps ended_m anchored at the fade", after_upgrade.ended_m == after_fade.ended_m ? 1 : 0,
+                     1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // The reacquisition test above relies on the ending epoch naming a call. The inverse must not
 // coalesce: an identity-less epoch is compatible with every observation, so if it were allowed to
 // reacquire, the next unrelated call on the slot would be folded into its row and lose its START.
@@ -2961,6 +3069,8 @@ main(void) {
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
+    rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
+    rc |= test_end_reason_upgrade_is_one_directional();
     rc |= test_identityless_ended_epoch_does_not_reacquire();
     rc |= test_reacquired_stage_superseded_by_new_call_still_merges();
     rc |= test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row();

@@ -309,6 +309,19 @@ watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_
                                                reset_slot_identity, DSD_EVENT_END_FINAL);
 }
 
+// True when the epoch this slot holds a VOICE_END for has since been positively terminated: a
+// terminator or EOT decoded after the sync-loss end and tightened the reason to EXPLICIT. The
+// reacquisition window is what the alert was waiting on, and that permission is now retracted,
+// so there is nothing left to wait for.
+static int
+watchdog_event_end_is_positively_terminated(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
+    if (call == NULL || lifecycle == NULL || !lifecycle->end_alert_pending) {
+        return 0;
+    }
+    return call->phase == DSD_CALL_PHASE_ENDED && call->epoch != 0U && call->epoch == lifecycle->epoch
+           && call->end_reason == (uint8_t)DSD_CALL_END_EXPLICIT;
+}
+
 // Emit a VOICE_END alert that was held open across a possible reacquisition. `force` retires it
 // immediately -- used when a genuinely new call is about to start on the slot, so the previous
 // transmission's END is heard before the new one's START rather than interrupting it.
@@ -1537,7 +1550,12 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     watchdog_event_current_impl(opts, state, slot, call, lifecycle, 1);
     // This runs on every frame-sync pass, so it is also where a VOICE_END alert held open across
     // a possible reacquisition is finally emitted once that window has closed with no resumption.
-    watchdog_event_flush_pending_end_alert(opts, state, slot, lifecycle, 0);
+    // A terminator that decoded after the sync-loss end retracts the reacquisition permission by
+    // tightening the reason to EXPLICIT; the hold has nothing left to wait for, so it retires now
+    // rather than a further half second later. Read from canonical state rather than signalled
+    // from it: call_state.c does not know the event layer exists.
+    watchdog_event_flush_pending_end_alert(opts, state, slot, lifecycle,
+                                           watchdog_event_end_is_positively_terminated(call, lifecycle));
     dsd_call_state_ext_unlock(ext);
 }
 
