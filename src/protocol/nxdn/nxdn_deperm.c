@@ -200,7 +200,7 @@ nxdn_hard_fallback_decode(uint8_t* trellis_buf, size_t trellis_size, uint8_t* m_
     DSD_MEMSET(trellis_buf, 0, trellis_size);
     DSD_MEMSET(m_data, 0, m_data_bytes);
     trellis_decode(trellis_buf, depunc, chainback_bits);
-    pack_bit_array_into_byte_array(trellis_buf, m_data, (int)m_data_bytes);
+    dsd_pack_bits_to_bytes(trellis_buf, trellis_size, m_data, m_data_bytes, m_data_bytes);
 }
 
 static void
@@ -892,7 +892,7 @@ nxdn_decode_facch3_udch2_block_soft(const uint8_t* bits, const uint8_t* reliab, 
     nxdn_depermute_rel_u8(bits + offset, reliab + offset, 144U, PERM_16_9, deperm, deperm_rel);
     nxdn_depuncture_16_9_rel(deperm, deperm_rel, depunc, depunc_rel);
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 12);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 12);
 
     message->crc[block] = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
     message->check[block] = nxdn_facch_crc12_check_from_trellis(trellis_buf);
@@ -1115,7 +1115,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 12);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 12);
 
     crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
     check = nxdn_facch_crc12_check_from_trellis(trellis_buf);
@@ -1182,7 +1182,7 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
     DSD_MEMSET(m_data, 0, sizeof(m_data));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 4);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 4);
 
     crc = crc6(trellis_buf, 26);
     check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6U);
@@ -1310,7 +1310,7 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
     DSD_MEMSET(m_data, 0, sizeof(m_data));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 171);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 22);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 22);
 
     crc = crc16cac(trellis_buf, 171);
 
@@ -1349,7 +1349,7 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
     DSD_MEMSET(m_data, 0, sizeof(m_data));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 199);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 26);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 26);
 
     crc = nxdn_facch2_udch_crc15_payload_from_trellis(trellis_buf);
     check = nxdn_facch2_udch_crc15_check_from_trellis(trellis_buf);
@@ -1394,7 +1394,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     DSD_MEMSET(m_data, 0, sizeof(m_data));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 4);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 4);
 
     crc = crc7_scch(trellis_buf, 25);
     check = nxdn_scch_crc7_check_from_trellis(trellis_buf);
@@ -1459,7 +1459,7 @@ nxdn_deperm_sacch2_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[60]
     DSD_MEMSET(m_data, 0, sizeof(m_data));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 32);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 4);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 4);
 
     crc = crc6(trellis_buf, 26);
     check = (uint8_t)convert_bits_into_output(trellis_buf + 26, 6U);
@@ -1500,7 +1500,7 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
 
     nxdn_conv_decode_soft(depunc, depunc_rel, sizeof(depunc), m_data, 92);
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 12);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 12);
 
     crc = nxdn_facch_crc12_payload_from_trellis(trellis_buf);
     check = nxdn_facch_crc12_check_from_trellis(trellis_buf);

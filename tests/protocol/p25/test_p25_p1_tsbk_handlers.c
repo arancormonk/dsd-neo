@@ -301,10 +301,12 @@ p25_store_site_lra(dsd_state* state, uint8_t lra) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
+process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                 unsigned long long int mac[24]) {
     (void)opts;
     (void)state;
     (void)type;
+    (void)pdu_type;
     (void)mac;
     g_mac_count++;
 }

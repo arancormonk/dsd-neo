@@ -669,7 +669,8 @@ dmr_udt_prepare_context(dmr_udt_ctx* ctx, dsd_opts* opts, dsd_state* state, cons
     ctx->state = state;
     ctx->block_bytes = block_bytes;
     ctx->slot = state->currentslot;
-    unpack_byte_array_into_bit_array(block_bytes, ctx->cs_bits, 60);
+    // Contract: a UDT block_bytes run spans at least 60 octets.
+    dsd_unpack_bytes_to_bits(block_bytes, 60U, ctx->cs_bits, sizeof(ctx->cs_bits), 60U);
     udt_ig = ctx->cs_bits[0];
     udt_a = ctx->cs_bits[1];
     udt_res = (uint8_t)convert_bits_into_output(&ctx->cs_bits[2], 2);
@@ -1088,11 +1089,17 @@ dmr_block_type1_complete(const dmr_block_assembler_ctx* ctx) {
 
 static void
 dmr_block_type1_append_bytes(dmr_block_assembler_ctx* ctx, uint16_t* ctr_out) {
+    // data_byte_ctr only resets when a PDU completes, so a block counter that never reaches
+    // data_header_blocks lets it run past the superframe. Saturate rather than walk off the end.
+    const uint16_t cap = (uint16_t)sizeof(ctx->state->dmr_pdu_sf[ctx->slot]);
     uint16_t ctr = ctx->state->data_byte_ctr[ctx->slot];
-    for (int i = 0; i < ctx->block_len; i++) {
+    if (ctr > cap) {
+        ctr = cap;
+    }
+    for (int i = 0; i < ctx->block_len && ctr < cap; i++) {
         ctx->state->dmr_pdu_sf[ctx->slot][ctr++] = ctx->block_bytes[i];
     }
-    ctx->state->data_byte_ctr[ctx->slot] += ctx->block_len;
+    ctx->state->data_byte_ctr[ctx->slot] = ctr;
     *ctr_out = ctr;
 }
 
@@ -1141,10 +1148,21 @@ static void
 dmr_block_type1_update_crc(dmr_block_assembler_ctx* ctx, uint16_t ctr, int offset) {
     uint8_t slot_idx = (ctx->slot >= 2) ? 1 : ctx->slot;
 
-    unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[slot_idx], ctx->dmr_pdu_sf_bits, ctr);
+    // Bound the byte count by whichever is tighter: the stored superframe or the bit buffer.
+    const uint16_t src_cap = (uint16_t)sizeof(ctx->state->dmr_pdu_sf[slot_idx]);
+    const uint16_t bits_cap = (uint16_t)(sizeof(ctx->dmr_pdu_sf_bits) / 8U);
+    const uint16_t cap = (src_cap < bits_cap) ? src_cap : bits_cap;
+    if (ctr > cap) {
+        ctr = cap;
+    }
+
+    DSD_UNPACK_ARRAY_TO_BITS(ctx->state->dmr_pdu_sf[slot_idx], ctx->dmr_pdu_sf_bits, ctr);
     ctx->crc_extracted = dmr_block_type1_extract_crc32(ctx->state, slot_idx, ctr);
     dmr_block_type1_pack_crc_bits(ctx->state, ctx->slot, ctx->block_len, ctr, offset, ctx->dmr_pdu_sf_bits);
-    ctx->crc_computed = (uint32_t)ComputeCrc32Bit(ctx->dmr_pdu_sf_bits, (ctr * 8) - 32);
+    // NbData is uint32_t, so a ctr below the 4-octet CRC trailer would underflow into a
+    // ~4 billion element read. dmr_block_type1_extract_crc32() already guards the same way.
+    const uint32_t crc_bits = (ctr >= 4U) ? (uint32_t)(((uint32_t)ctr * 8U) - 32U) : 0U;
+    ctx->crc_computed = (uint32_t)ComputeCrc32Bit(ctx->dmr_pdu_sf_bits, crc_bits);
     if (ctx->crc_computed == ctx->crc_extracted
         || (ctx->state->data_header_format[ctx->slot] == 0xF && ctx->state->data_header_sap[ctx->slot] == 1)) {
         ctx->crc_correct = 1;
@@ -1419,9 +1437,15 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
         if (mbits < 16) {
             return;
         }
+        // blockcounter is a received count; mbc_block_bits only holds six blocks. Bound the
+        // copy locally. The tail stays zeroed, so well-formed PDUs are unchanged.
+        const int mbits_cap = (int)sizeof(mbc_block_bits);
+        if (mbits > mbits_cap) {
+            mbits = mbits_cap;
+        }
 
         DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
-        unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[ctx->slot], ctx->dmr_pdu_sf_bits, msg_bytes);
+        DSD_UNPACK_ARRAY_TO_BITS(ctx->state->dmr_pdu_sf[ctx->slot], ctx->dmr_pdu_sf_bits, msg_bytes);
         ctx->crc_extracted = dmr_block_extract_crc16(ctx->dmr_pdu_sf_bits, 96 * (1 + ctx->blockcounter));
         DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
         for (int i = 0; i < mbits; i++) {
@@ -1461,7 +1485,7 @@ dmr_block_type2_unpack_bits(dmr_block_assembler_ctx* ctx) {
     }
 
     DSD_MEMSET(ctx->dmr_pdu_sf_bits, 0, sizeof(ctx->dmr_pdu_sf_bits));
-    unpack_byte_array_into_bit_array(ctx->state->dmr_pdu_sf[ctx->slot], ctx->dmr_pdu_sf_bits, total_bytes);
+    DSD_UNPACK_ARRAY_TO_BITS(ctx->state->dmr_pdu_sf[ctx->slot], ctx->dmr_pdu_sf_bits, total_bytes);
     if (ctx->is_udt) {
         ctx->pf = ctx->dmr_pdu_sf_bits[73];
     }
@@ -1470,23 +1494,37 @@ dmr_block_type2_unpack_bits(dmr_block_assembler_ctx* ctx) {
 static void DSD_ATTR_USED
 dmr_block_type2_update_crc(dmr_block_assembler_ctx* ctx) {
     uint8_t mbc_block_bits[12 * 8 * 6];
+    // mbc_block_bits is sized for six blocks. ctx->blocks comes from the received data
+    // header and init_ctx only caps it at 127, so a malformed UDT header would drive the
+    // copy below - and the CRC read after it - well past the buffer. Bound both locally.
+    const int cap = (int)sizeof(mbc_block_bits);
     int limit = 12 * 8 * 3;
 
     ctx->mbc_crc_good[0] = ctx->state->data_block_crc_valid[ctx->slot][0];
     ctx->crc_extracted = dmr_block_extract_crc16(ctx->dmr_pdu_sf_bits, 96 * (1 + ctx->blocks));
     DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
-    for (int i = 0; i < limit; i++) {
+    for (int i = 0; i < limit && i < cap; i++) {
         mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
     }
     if (ctx->is_udt) {
         DSD_MEMSET(mbc_block_bits, 0, sizeof(mbc_block_bits));
         limit = 12 * 8 * ctx->blocks;
+        if (limit > cap) {
+            limit = cap;
+        }
         for (int i = 0; i < limit; i++) {
             mbc_block_bits[i] = ctx->dmr_pdu_sf_bits[i + 96];
         }
     }
 
-    ctx->crc_computed = dsd_crc_ccitt16_bits(mbc_block_bits, (size_t)((ctx->blocks * 96) - 16));
+    // The tail past `limit` is zeroed, so clamping at the buffer rather than at `limit`
+    // keeps well-formed PDUs (blocks <= 6) bit-identical to before.
+    size_t crc_bits = (size_t)ctx->blocks * 96U;
+    crc_bits = (crc_bits > 16U) ? (crc_bits - 16U) : 0U;
+    if (crc_bits > sizeof(mbc_block_bits)) {
+        crc_bits = sizeof(mbc_block_bits);
+    }
+    ctx->crc_computed = dsd_crc_ccitt16_bits(mbc_block_bits, crc_bits);
     if (ctx->crc_computed == ctx->crc_extracted) {
         ctx->mbc_crc_good[1] = 1;
     }
@@ -1547,8 +1585,13 @@ dmr_block_assembler_handle_type2(dmr_block_assembler_ctx* ctx) {
     if (ctx->state->data_block_counter[ctx->slot] > 4) {
         ctx->state->data_block_counter[ctx->slot] = 4;
     }
-    for (int i = 0; i < ctx->block_len; i++) {
-        ctx->state->dmr_pdu_sf[ctx->slot][i + (ctx->blockcounter * ctx->block_len)] = ctx->block_bytes[i];
+    // ctx->blockcounter was captured in init_ctx, before the clamp above, and it scales the
+    // store offset. A received counter of up to 255 blocks would walk past the superframe
+    // row, so bound the store here rather than trusting the clamp to have covered it.
+    const size_t row_cap = sizeof(ctx->state->dmr_pdu_sf[ctx->slot]);
+    const size_t base = (size_t)ctx->blockcounter * (size_t)ctx->block_len;
+    for (int i = 0; i < ctx->block_len && (base + (size_t)i) < row_cap; i++) {
+        ctx->state->dmr_pdu_sf[ctx->slot][base + (size_t)i] = ctx->block_bytes[i];
     }
 
     dmr_block_type2_set_lb_pf(ctx);

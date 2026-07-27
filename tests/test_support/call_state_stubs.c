@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/threading.h>
 #include <stdint.h>
 #include <string.h>
@@ -137,6 +138,19 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
 }
 
 int
+dsd_call_state_protocol_family(int protocol) {
+    // Mirrors the real store closely enough for the boundary decisions these
+    // stubs exercise: P25 Phase 1 and Phase 2 must land in different families.
+    if (DSD_SYNC_IS_P25P1(protocol)) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_P25P2(protocol)) {
+        return 2;
+    }
+    return protocol == DSD_SYNC_NONE ? 0 : 1000 + protocol;
+}
+
+int
 dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || update == NULL) {
         return -1;
@@ -148,6 +162,11 @@ dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_cryp
     g_stub_calls[slot].mi = update->mi;
     g_stub_calls[slot].audio_permitted = update->audio_permitted;
     return 0;
+}
+
+int
+dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update) {
+    return dsd_call_state_update_crypto(state, slot, update);
 }
 
 int

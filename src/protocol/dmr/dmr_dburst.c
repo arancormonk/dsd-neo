@@ -36,6 +36,9 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/** @brief Element count of the caller-owned info array (see dmr_data_burst_handler). */
+#define DMR_DBURST_INFO_BITS 196U
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -296,19 +299,22 @@ dmr_dburst_handle_bptc_crc(dmr_data_burst_ctx* ctx) {
 
 static void
 dmr_dburst_copy_bptc_outputs(dmr_data_burst_ctx* ctx) {
-    uint32_t i;
-    uint8_t max_bytes = ctx->pdu_len;
-    uint8_t avail = (uint8_t)(sizeof(ctx->bptc_data_bytes) - ctx->pdu_start);
-    if (max_bytes > avail) {
-        max_bytes = avail;
+    // Bound the copy by the source remainder and the unpacked bit buffer so the span stays
+    // provable locally rather than relying on the burst profile table.
+    const size_t src_cap = sizeof(ctx->bptc_data_bytes);
+    if ((size_t)ctx->pdu_start >= src_cap) {
+        return; // Nothing left to copy; keep the offset below the array so no one-past pointer forms.
     }
+    const size_t start = (size_t)ctx->pdu_start;
 
-    unpack_byte_array_into_bit_array(ctx->bptc_data_bytes + ctx->pdu_start, ctx->bptc_data_bits, max_bytes);
+    const size_t max_bytes =
+        dsd_unpack_bytes_to_bits(ctx->bptc_data_bytes + start, src_cap - start, ctx->bptc_data_bits,
+                                 sizeof(ctx->bptc_data_bits), (size_t)ctx->pdu_len);
 
-    for (i = 0; i < max_bytes; i++) {
-        ctx->dmr_pdu[i] = ctx->bptc_data_bytes[i + ctx->pdu_start];
+    for (size_t i = 0U; i < max_bytes; i++) {
+        ctx->dmr_pdu[i] = ctx->bptc_data_bytes[i + start];
     }
-    for (i = 0; i < ((uint32_t)max_bytes * 8U); i++) {
+    for (size_t i = 0U; i < max_bytes * 8U; i++) {
         ctx->dmr_pdu_bits[i] = ctx->bptc_data_bits[i];
     }
 }
@@ -395,7 +401,7 @@ dmr_dburst_trellis_candidate_metrics(dmr_data_burst_ctx* ctx, const uint8_t byte
     uint32_t cand_comp;
 
     DSD_MEMSET(ctx->dmr_pdu_bits, 0, sizeof(ctx->dmr_pdu_bits));
-    unpack_byte_array_into_bit_array(bytes18, ctx->dmr_pdu_bits, 18);
+    dsd_unpack_bytes_to_bits(bytes18, 18U, ctx->dmr_pdu_bits, sizeof(ctx->dmr_pdu_bits), 18U);
 
     *cand_dbsn = (uint8_t)convert_bits_into_output(&ctx->dmr_pdu_bits[0], 7);
     cand_ext = (uint32_t)convert_bits_into_output(&ctx->dmr_pdu_bits[7], 9) ^ ctx->crcmask;
@@ -581,7 +587,7 @@ dmr_dburst_handle_trellis(dmr_data_burst_ctx* ctx) {
         ctx->dmr_pdu[i] = trellis_return[i + ctx->pdu_start];
     }
 
-    unpack_byte_array_into_bit_array(trellis_return, ctx->dmr_pdu_bits, 18);
+    DSD_UNPACK_ARRAY_TO_BITS(trellis_return, ctx->dmr_pdu_bits, 18);
     if (ctx->state->data_conf_data[ctx->slot] == 1) {
         ctx->dbsn_for_seq = (uint8_t)convert_bits_into_output(&ctx->dmr_pdu_bits[0], 7);
         ctx->dbsn_valid = 1;
@@ -590,7 +596,11 @@ dmr_dburst_handle_trellis(dmr_data_burst_ctx* ctx) {
     dmr_dburst_trellis_update_confirmed_crc(ctx);
 
     DSD_MEMSET(ctx->dmr_pdu_bits, 0, sizeof(ctx->dmr_pdu_bits));
-    unpack_byte_array_into_bit_array(trellis_return + ctx->pdu_start, ctx->dmr_pdu_bits, ctx->pdu_len);
+    // Guard the offset so the remaining source span cannot underflow; the helper takes it from there.
+    const size_t tr_cap = sizeof(trellis_return);
+    const size_t start = (size_t)ctx->pdu_start < tr_cap ? (size_t)ctx->pdu_start : tr_cap;
+    dsd_unpack_bytes_to_bits(trellis_return + start, tr_cap - start, ctx->dmr_pdu_bits, sizeof(ctx->dmr_pdu_bits),
+                             (size_t)ctx->pdu_len);
 }
 
 static void
@@ -598,8 +608,13 @@ dmr_dburst_handle_full(dmr_data_burst_ctx* ctx) {
     ctx->crc_computed = 0;
     ctx->irrecoverable_errors = 0;
 
-    pack_bit_array_into_byte_array(ctx->info + ((size_t)ctx->pdu_start * 8u), ctx->dmr_pdu, 12 - ctx->pdu_start);
-    pack_bit_array_into_byte_array(ctx->info + 100, ctx->dmr_pdu + (12 - ctx->pdu_start), 12);
+    // ctx->info spans DMR_DBURST_INFO_BITS elements by contract; state the remaining span at each copy.
+    const size_t head_bytes = (size_t)ctx->pdu_start < 12U ? 12U - (size_t)ctx->pdu_start : 0U;
+    const size_t head_bits = (size_t)ctx->pdu_start * 8U;
+    const size_t head_avail = head_bits < DMR_DBURST_INFO_BITS ? DMR_DBURST_INFO_BITS - head_bits : 0U;
+    dsd_pack_bits_to_bytes(ctx->info + head_bits, head_avail, ctx->dmr_pdu, sizeof(ctx->dmr_pdu), head_bytes);
+    dsd_pack_bits_to_bytes(ctx->info + 100, DMR_DBURST_INFO_BITS - 100U, ctx->dmr_pdu + head_bytes,
+                           sizeof(ctx->dmr_pdu) - head_bytes, 12U);
 
     if (ctx->state->data_conf_data[ctx->slot] == 0) {
         ctx->crc_correct = 1;

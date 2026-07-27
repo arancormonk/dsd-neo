@@ -263,6 +263,41 @@ rules:
               }
           - pattern: DSD_SNPRINTF($DST, sizeof($DST), ...)
 
+  - id: dsd-neo.no-unbounded-byte-to-bit-unpack
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Unbounded bit/byte conversion. A three-argument helper trusts the length against both buffers,
+      which is how the P25 phase 2 talker alias and DMR type-1 assembly overflows reached the stack.
+      Use dsd_unpack_bytes_to_bits()/dsd_pack_bits_to_bytes() (or the DSD_UNPACK_ARRAY_TO_BITS /
+      DSD_PACK_ARRAY_TO_BYTES macros) so the span of both buffers is stated at the call.
+    paths:
+      # Production code only. Test fixtures build their inputs with local helpers whose
+      # bounds are compile-time constants, and a reintroduced removed helper is a link
+      # error there anyway.
+      include:
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /src/third_party/**
+        - /include/dsd-neo/core/bit_packing.h
+        - /src/core/util/bit_packing.c
+    pattern-either:
+      # The removed helpers, in case they are reintroduced by a copy-paste from upstream DSD.
+      - pattern: unpack_byte_array_into_bit_array(...)
+      - pattern: pack_bit_array_into_byte_array(...)
+      # The same shape under any name: source, destination, single length. A literal length is
+      # still unbounded with respect to the destination, so constant calls are rejected too.
+      - patterns:
+          - pattern-regex: \b\w*unpack_(byte|bytes)\w*\s*\(\s*[^;()]+,\s*[^;()]+,\s*[^;(),]+\s*\)
+          - pattern-not: dsd_unpack_bytes_to_bits(...)
+          - pattern-not: dsd_unpack_bytes_to_bits_truncating(...)
+      - patterns:
+          - pattern-regex: \b\w*pack_bit(s)?_\w*\s*\(\s*[^;()]+,\s*[^;()]+,\s*[^;(),]+\s*\)
+          - pattern-not: dsd_pack_bits_to_bytes(...)
+          - pattern-not: dsd_pack_bits_to_bytes_truncating(...)
+
   - id: dsd-neo.no-direct-third-party-include
     languages: [c, cpp]
     severity: ERROR

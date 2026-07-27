@@ -625,12 +625,13 @@ m17_decrypt_stream_payload(dsd_state* state, uint16_t frame_number, const uint8_
             return 0;
         }
         m17_aes_build_counter(state->m17_meta, frame_number, counter);
-        pack_bit_array_into_byte_array(input_bits, payload, (int)sizeof(payload));
+        // input_bits/output_bits span M17_STREAM_PAYLOAD_BITS elements by contract.
+        dsd_pack_bits_to_bytes(input_bits, M17_STREAM_PAYLOAD_BITS, payload, sizeof(payload), sizeof(payload));
         const dsd_aes_key_size key_size = (state->m17_enc_st == 0U)   ? DSD_AES_KEY_128
                                           : (state->m17_enc_st == 1U) ? DSD_AES_KEY_192
                                                                       : DSD_AES_KEY_256;
         aes_ctr_xcrypt_bytes(counter, key, payload, key_size, sizeof(payload));
-        unpack_byte_array_into_bit_array(payload, output_bits, (int)sizeof(payload));
+        dsd_unpack_bytes_to_bits(payload, sizeof(payload), output_bits, M17_STREAM_PAYLOAD_BITS, sizeof(payload));
         return 1;
     }
 
@@ -965,7 +966,9 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
     DSD_MEMSET(payload_bytes, 0, sizeof(payload_bytes));
     DSD_MEMSET(trellis_buf, 0, sizeof(trellis_buf));
     DSD_MEMSET(processed_payload, 0, M17_STREAM_PAYLOAD_BITS);
-    pack_bit_array_into_byte_array(payload, payload_bytes, (int)sizeof(payload_bytes));
+    // payload spans M17_STREAM_PAYLOAD_BITS elements by contract.
+    dsd_pack_bits_to_bytes(payload, M17_STREAM_PAYLOAD_BITS, payload_bytes, sizeof(payload_bytes),
+                           sizeof(payload_bytes));
     m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
 
     if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
@@ -1089,7 +1092,7 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
     CNXDNConvolution_chainback(m_data, 144);
 
     //144/8 = 18, last 4 (144-148) are trailing zeroes
-    unpack_byte_array_into_bit_array(m_data, trellis_buf, 18);
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, trellis_buf, 18);
 
     //load m_data into bits for either data packets or voice packets
     uint8_t payload[128];
@@ -1269,7 +1272,7 @@ m17_decode_bert_payload_bits(const uint8_t* m17_bits, uint8_t* bert_bits) {
         CNXDNConvolution_decode(s0, s1);
     }
     CNXDNConvolution_chainback(m_data, M17_BERT_PAYLOAD_BITS);
-    unpack_byte_array_into_bit_array(m_data, decoded_bits, (int)sizeof(m_data));
+    DSD_UNPACK_ARRAY_TO_BITS(m_data, decoded_bits, (int)sizeof(m_data));
     DSD_MEMCPY(bert_bits, decoded_bits, M17_BERT_PAYLOAD_BITS);
 }
 
@@ -1383,7 +1386,7 @@ m17_decode_lsf_soft_bits(const dsd_opts* opts, dsd_state* state, const uint16_t*
     DSD_MEMCPY(lsf_packed, lsf_bytes + 1, M17_LSF_BYTES);
 
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    unpack_byte_array_into_bit_array(lsf_packed, state->m17_lsf, M17_LSF_BYTES);
+    DSD_UNPACK_ARRAY_TO_BITS(lsf_packed, state->m17_lsf, M17_LSF_BYTES);
 
     const uint16_t crc_ext = (uint16_t)((lsf_packed[M17_LSF_LSD_BYTES] << 8) + lsf_packed[M17_LSF_LSD_BYTES + 1]);
     (void)m17_finalize_lsf_crc(opts, state, lsf_packed, crc_ext);

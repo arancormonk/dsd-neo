@@ -279,7 +279,7 @@ main(void) {
     {
         static const uint8_t msg[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
         uint8_t bits[sizeof(msg) * 8];
-        unpack_byte_array_into_bit_array(msg, bits, (int)sizeof(msg));
+        DSD_UNPACK_ARRAY_TO_BITS(msg, bits, (int)sizeof(msg));
         uint32_t crc = nxdn_crc32_bits(bits, sizeof(bits));
         rc |= expect_u32("crc-123456789", crc, 0x0376E6E7U);
     }
@@ -287,7 +287,7 @@ main(void) {
     {
         static const uint8_t msg[] = {'A', 'R', 'I', 'B', 'T', 'E', 'S', 'T'};
         uint8_t bits[sizeof(msg) * 8];
-        unpack_byte_array_into_bit_array(msg, bits, (int)sizeof(msg));
+        DSD_UNPACK_ARRAY_TO_BITS(msg, bits, (int)sizeof(msg));
         uint32_t crc = nxdn_crc32_bits(bits, sizeof(bits));
         rc |= expect_u32("crc-aribtest", crc, 0x84201F67U);
     }

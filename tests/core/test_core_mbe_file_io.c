@@ -509,11 +509,11 @@ test_bit_packing_helpers_roundtrip(void) {
 
     rc |= expect_u64("convert bits to output", convert_bits_into_output(bits, 16), 0xA55AULL);
 
-    pack_bit_array_into_byte_array(bits, packed, 2);
+    DSD_PACK_ARRAY_TO_BYTES(bits, packed, 2);
     rc |= expect_byte("pack byte 0", packed[0], want_bytes[0]);
     rc |= expect_byte("pack byte 1", packed[1], want_bytes[1]);
 
-    unpack_byte_array_into_bit_array(packed, unpacked, 2);
+    DSD_UNPACK_ARRAY_TO_BITS(packed, unpacked, 2);
     rc |= expect_u8_bits("unpack byte bits", unpacked, bits, sizeof bits);
 
     rc |= expect_u64("CRC-CCITT bit array", dsd_crc_ccitt16_bits(bits, sizeof bits), 0xE6CBU);

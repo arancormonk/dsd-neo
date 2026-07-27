@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -25,8 +26,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
 
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -166,13 +165,13 @@ main(void) {
     // Not testing ENC gating here; allow encrypted to ensure unknown-SVC paths do not block
     opts.trunk_tune_enc_calls = 1;
     unsigned int before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH path*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH path*/, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_true("group gating honored", st.p25_sm_tune_count == before);
 
     // Case B: group calls on -> tune occurs
     opts.trunk_tune_group_calls = 1;
     before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
     rc |= expect_true("group allowed tunes", st.p25_sm_tune_count == before + 1);
     p25_sm_release(p25_sm_get_ctx(), &opts, &st, "explicit-release");
     mark_cc_reacquired(&st);
@@ -198,14 +197,14 @@ main(void) {
     opts.trunk_tune_private_calls = 0;
     opts.trunk_tune_enc_calls = 1; // ensure ENC gating does not suppress UU grant
     before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0, MAC2);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC2);
     rc |= expect_true("private gating honored", st.p25_sm_tune_count == before);
 
     opts.trunk_is_tuned = 0;
     opts.trunk_tune_private_calls = 1;
     opts.trunk_tune_enc_calls = 1; // ensure ENC gating does not suppress UU grant
     before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0, MAC2);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC2);
     rc |= expect_true("private allowed tunes", st.p25_sm_tune_count == before + 1);
 
     // Case D: helper-path private allow-list behavior: unknown private IDs block.
@@ -215,14 +214,14 @@ main(void) {
     opts.trunk_use_allow_list = 1;
     opts.trunk_tune_private_calls = 1;
     before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0, MAC2);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC2);
     rc |= expect_true("private allow-list unknown blocked", st.p25_sm_tune_count == before);
 
     // Case E: helper-path private allow-list known target tunes.
     rc |= expect_true("seed private allow-list target", seed_exact(&st, 256, "A", "UU-ALLOW") == 0);
     opts.trunk_is_tuned = 0;
     before = st.p25_sm_tune_count;
-    process_MAC_VPDU(&opts, &st, 0, MAC3);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC3);
     rc |= expect_true("private allow-list known target tunes", st.p25_sm_tune_count == before + 1);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

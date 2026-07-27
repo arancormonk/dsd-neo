@@ -172,10 +172,21 @@ typedef struct {
     dsd_recent_activity_entry entry;
 } dsd_recent_activity_transaction;
 
+/**
+ * @brief Family id the store uses to decide whether two observations describe the same call.
+ *
+ * Observations from different families always begin a new epoch. Callers that pre-judge an epoch
+ * boundary (to coalesce, suppress, or log one) must mirror this, or their decision will disagree
+ * with what dsd_call_state_observe() actually does.
+ */
+int dsd_call_state_protocol_family(int protocol);
+
 /** Ensure the canonical call-state extension and its transaction mutex exist. */
 int dsd_call_state_ensure(dsd_state* state);
 int dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation, dsd_call_boundary boundary);
 int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
+/** Update crypto metadata on an existing active or retained ended epoch. */
+int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);

@@ -106,6 +106,12 @@ void p25_crypto_mark_encrypted_pending(dsd_state* state, int slot);
  */
 int p25_crypto_p1_defer_clear_conflict(dsd_state* state, int svc_bits);
 
+/** Record the exact Phase 1 carrier/canonical epoch ended by encryption lockout. */
+void p25_crypto_note_phase1_lockout_epoch(dsd_state* state, uint64_t call_epoch);
+
+/** Invalidate any Phase 1 post-lockout ESS continuation context. */
+void p25_crypto_clear_phase1_lockout_epoch(dsd_state* state);
+
 /**
  * Resolve definitive HDU/LDU2/MAC_PTT/ESS crypto metadata.
  *

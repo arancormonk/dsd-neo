@@ -293,7 +293,7 @@ p25_mbt_try_bridge_iden_updates(dsd_opts* opts, dsd_state* state, const uint8_t*
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, "\n Identifier Update (MBT bridged) OP:%02X -> MAC decode", fields->opcode);
-    process_MAC_VPDU(opts, state, 0, MAC);
+    process_MAC_VPDU(opts, state, 0, P25_MAC_PDU_SIGNAL, MAC);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 

@@ -21,6 +21,7 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
         state->payload_miP = 0ULL;
         state->p25_p1_identity_epoch_started = 0;
         state->p25_p1_hdu_crypto_fresh = 0;
+        p25_crypto_clear_phase1_lockout_epoch(state);
         DSD_MEMSET(&state->p25_p1_crypto_conflict, 0, sizeof(state->p25_p1_crypto_conflict));
     } else {
         state->payload_algidR = 0;

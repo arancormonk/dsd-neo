@@ -20,8 +20,37 @@
 extern "C" {
 #endif
 
-/** @brief Process a P25 MAC VPDU block of the given type. */
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]);
+/**
+ * @brief P25 Phase 2 MAC PDU type carried by an XCCH block.
+ *
+ * This is the outer PDU type and is a different namespace from the inner MAC
+ * message opcode: PDU type 3 is IDLE, while MAC opcode 3 is Telephone
+ * Interconnect Voice Channel User.
+ *
+ * PTT and END_PTT are listed for completeness against the standard but never
+ * reach process_MAC_VPDU(): those PDUs carry no MAC message opcode, so
+ * p25p2_xcch_handle_{sacch,facch}_mac_ptt/_mac_end raise the corresponding
+ * state-machine events directly. Treat them as unreachable there rather than
+ * as a case the voice-provenance gate has to rule on.
+ */
+typedef enum {
+    P25_MAC_PDU_SIGNAL = 0,
+    P25_MAC_PDU_PTT = 1,
+    P25_MAC_PDU_END_PTT = 2,
+    P25_MAC_PDU_IDLE = 3,
+    P25_MAC_PDU_ACTIVE = 4,
+    P25_MAC_PDU_HANGTIME = 6,
+} p25_mac_pdu_type;
+
+/**
+ * @brief Process a P25 MAC VPDU block.
+ *
+ * @param type SACCH (1) or FACCH/bridged Phase 1 (0) transport.
+ * @param pdu_type Outer Phase 2 MAC PDU type. Bridged Phase 1 callers use
+ *                 P25_MAC_PDU_SIGNAL because they have no Phase 2 wrapper.
+ */
+void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                      unsigned long long int mac[24]);
 
 #ifdef __cplusplus
 }

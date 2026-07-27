@@ -35,6 +35,9 @@ target_include_directories(
     dsd-neo_test_bit_packing
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# Arms the unexpected-truncation counter so a call site that understates a
+# buffer span shows up as a test failure instead of a quiet decode regression.
+target_compile_definitions(dsd-neo_test_bit_packing PRIVATE DSD_NEO_TEST_HOOKS)
 
 add_library(
     dsd-neo_test_p25_shims
@@ -2912,6 +2915,40 @@ else()
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 
+add_executable(dsd-neo_test_bit_packing_bounds core/test_bit_packing_bounds.c)
+target_include_directories(
+    dsd-neo_test_bit_packing_bounds
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_bit_packing_bounds
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_bit_packing_bounds
+    PRIVATE dsd-neo_test_bit_packing
+)
+add_test(NAME BIT_PACKING_BOUNDS COMMAND dsd-neo_test_bit_packing_bounds)
+
+# Negative compile test: the array macros must reject a decayed pointer. The
+# target is excluded from the default build and CTest asserts the build fails.
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    # Invoked as a bare compiler command rather than a CMake target: a target would put
+    # a deliberately uncompilable file into compile_commands.json, where clang-tidy and
+    # the other database-driven checks would treat the intended failure as a real error.
+    add_test(
+        NAME BIT_PACKING_ARRAY_MACRO_REJECTS_POINTER
+        COMMAND
+            ${CMAKE_C_COMPILER} -std=c11 -I${PROJECT_SOURCE_DIR}/include -c
+            ${CMAKE_CURRENT_SOURCE_DIR}/core/test_bit_packing_decay.c -o
+            ${CMAKE_CURRENT_BINARY_DIR}/bit_packing_decay.o
+    )
+    set_tests_properties(
+        BIT_PACKING_ARRAY_MACRO_REJECTS_POINTER
+        PROPERTIES WILL_FAIL TRUE
+    )
+endif()
+
 add_executable(dsd-neo_test_core_init_state core/test_core_init_state.c)
 target_include_directories(
     dsd-neo_test_core_init_state
@@ -4091,6 +4128,59 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_p2_mixer_gate PRIVATE dsd-neo_core)
 add_test(NAME P25_P2_MIXER_GATE COMMAND dsd-neo_test_p25_p2_mixer_gate)
 
+add_executable(
+    dsd-neo_test_p25_p2_ta_len_bounds
+    protocol/p25/test_p25_p2_ta_len_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_ta_len_bounds
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_ta_len_bounds
+    PRIVATE dsd-neo_proto_p25 dsd-neo_test_support
+)
+add_test(NAME P25_P2_TA_LEN_BOUNDS COMMAND dsd-neo_test_p25_p2_ta_len_bounds)
+
+add_executable(
+    dsd-neo_test_p25_p2_vpdu_bounds
+    protocol/p25/test_p25_p2_vpdu_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_vpdu_bounds
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+# Driving the real VPDU path reaches core GPS decoding, which resolves utf8_to_text
+# back in proto_dmr, so these archives are mutually dependent and need a link group.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_p2_vpdu_bounds
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_test_p25_shims
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_p2_vpdu_bounds
+        PRIVATE
+            dsd-neo_test_p25_shims
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            dsd-neo_test_support
+    )
+endif()
+add_test(NAME P25_P2_VPDU_BOUNDS COMMAND dsd-neo_test_p25_p2_vpdu_bounds)
+
 # Additional targeted coverage tests
 add_executable(
     dsd-neo_test_p25_p2_vpdu_core
@@ -4253,6 +4343,7 @@ set(_DSD_NEO_P25_SHIM_TEST_TARGETS
     dsd-neo_test_p25_p1_tsbk_vpdu
     dsd-neo_test_p25_p1_tsbk_clamp
     dsd-neo_test_p25_p2_aach_cach_map
+    dsd-neo_test_p25_p2_ta_len_bounds
     dsd-neo_test_p25_p2_vpdu_core
     dsd-neo_test_p25_p2_vpdu_grants
     dsd-neo_test_p25_p2_vpdu_sequence
@@ -4510,6 +4601,39 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_p25_neighbor_table PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_NEIGHBOR_TABLE COMMAND dsd-neo_test_p25_neighbor_table)
+
+# P25p1 encryption lockout event lifecycle regression tests
+add_executable(
+    dsd-neo_test_p25_p1_lockout_events
+    protocol/p25/test_p25_p1_lockout_events.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p1_lockout_events
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p1_lockout_events
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(NAME P25_P1_LOCKOUT_EVENTS COMMAND dsd-neo_test_p25_p1_lockout_events)
+
+# P25p2 hangtime event lifecycle regression tests
+add_executable(
+    dsd-neo_test_p25_p2_hangtime_events
+    protocol/p25/test_p25_p2_hangtime_events.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_hangtime_events
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_hangtime_events
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_HANGTIME_EVENTS
+    COMMAND dsd-neo_test_p25_p2_hangtime_events
+)
 
 # P25 Unified SM tests
 add_executable(
@@ -5186,6 +5310,40 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_dmr_discussion_231 PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_DISCUSSION_231 COMMAND dsd-neo_test_dmr_discussion_231)
+
+add_executable(
+    dsd-neo_test_dmr_block_type1_bounds
+    protocol/dmr/test_dmr_block_type1_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_block_type1_bounds
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_block_type1_bounds
+    PRIVATE dsd-neo_proto_dmr
+)
+add_test(
+    NAME DMR_BLOCK_TYPE1_BOUNDS
+    COMMAND dsd-neo_test_dmr_block_type1_bounds
+)
+
+add_executable(
+    dsd-neo_test_dmr_block_type2_bounds
+    protocol/dmr/test_dmr_block_type2_bounds.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_block_type2_bounds
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_block_type2_bounds
+    PRIVATE dsd-neo_proto_dmr
+)
+add_test(
+    NAME DMR_BLOCK_TYPE2_BOUNDS
+    COMMAND dsd-neo_test_dmr_block_type2_bounds
+)
 
 add_executable(
     dsd-neo_test_dmr_ms_data
@@ -7090,6 +7248,7 @@ target_link_libraries(dsd-neo_test_p25_status_symbol PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
 
 set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
+    dsd-neo_test_core_hytera_bp_silence
     dsd-neo_test_core_straight_keystream_validation
     dsd-neo_test_csi72
     dsd-neo_test_dmr_csbk_helpers
@@ -7161,9 +7320,12 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_p25_p2_vpdu_sequence
     dsd-neo_test_p25_queued_deny_response
     dsd-neo_test_pc4_tyt
+    dsd-neo_test_pc5_baofeng
     dsd-neo_test_provoice_process
     dsd-neo_test_protocol_p25_tier3_conformance
+    dsd-neo_test_rc2_retevis
     dsd-neo_test_ysf_dch_decode
+    dsd-neo_test_ysf_frame
 )
 foreach(_target IN LISTS _DSD_NEO_BIT_PACKING_TEST_TARGETS)
     target_link_libraries(${_target} PRIVATE dsd-neo_test_bit_packing)

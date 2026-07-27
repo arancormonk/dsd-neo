@@ -936,7 +936,8 @@ pack_ambe(const char* input, uint8_t* output, int len) {
 //unpack byte array with ambe data into a 49-bit bitwise array
 void
 unpack_ambe(const uint8_t* input, char* ambe) {
-    unpack_byte_array_into_bit_array(input, (uint8_t*)ambe, 6);
+    // Contract: input spans at least 7 octets, ambe at least 49 bit elements.
+    dsd_unpack_bytes_to_bits(input, 7U, (uint8_t*)ambe, 49U, 6U);
     ambe[48] = input[6] >> 7;
 }
 
@@ -1212,12 +1213,10 @@ sdrtrunk_build_voice_keystream_bits(const dsd_state* state, uint8_t alg_id, uint
     }
 
     DSD_MEMSET(out_bits, 0, out_bits_cap);
-    size_t unpack_bytes = SDRTRUNK_KS_BYTES - skip_bytes;
-    size_t max_unpack = out_bits_cap / 8;
-    if (unpack_bytes > max_unpack) {
-        unpack_bytes = max_unpack;
-    }
-    unpack_byte_array_into_bit_array(ks_bytes + skip_bytes, out_bits, (int)unpack_bytes);
+    // Filling whatever of the keystream fits the caller's buffer is the intent here.
+    const size_t unpack_bytes = SDRTRUNK_KS_BYTES - skip_bytes;
+    dsd_unpack_bytes_to_bits_truncating(ks_bytes + skip_bytes, sizeof(ks_bytes) - skip_bytes, out_bits, out_bits_cap,
+                                        unpack_bytes);
     return 1;
 }
 
