@@ -3,6 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+// LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
+// NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
+
 #define DSD_NEO_TEST_HOOKS 1
 
 #include <cassert>
@@ -184,3 +187,5 @@ main(void) {
     test_public_call_success_and_failure_paths();
     return 0;
 }
+
+// NOLINTEND(cert-dcl03-c,misc-static-assert)

@@ -22,7 +22,7 @@ jobs:
     name: repository guardrails
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install guardrail dependencies
         run: sudo apt-get update && sudo apt-get install -y ripgrep
@@ -38,7 +38,7 @@ jobs:
     name: shell/workflow lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run shell and workflow lint
         env:
@@ -65,7 +65,7 @@ jobs:
     name: cmake format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -84,7 +84,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.cmake_format_files != '0'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
@@ -121,7 +121,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -131,7 +131,7 @@ jobs:
       - name: Upload Gitleaks SARIF
         if: always() && hashFiles('.gitleaks.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4
         with:
           sarif_file: .gitleaks.sarif
 
@@ -153,7 +153,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -172,7 +172,7 @@ jobs:
 
       - name: Set up Python
         if: github.event_name != 'pull_request' || steps.changed.outputs.workflow_security_targets != '0'
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
           cache: pip
@@ -198,7 +198,7 @@ jobs:
       - name: Upload zizmor SARIF
         if: always() && hashFiles('.zizmor.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4
         with:
           sarif_file: .zizmor.sarif
 
@@ -221,7 +221,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -247,7 +247,7 @@ jobs:
       - name: Upload OSV SARIF
         if: always() && hashFiles('.osv-scanner.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@99df26d4f13ea111d4ec1a7dddef6063f76b97e9 # v4
+        uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4
         with:
           sarif_file: .osv-scanner.sarif
 
@@ -267,7 +267,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Review dependency changes
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4
         with:
@@ -278,7 +278,7 @@ jobs:
     name: warnings as errors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -329,7 +329,7 @@ jobs:
       ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -384,7 +384,7 @@ jobs:
       DSD_FUZZ_TIMEOUT: 20
       DSD_FUZZ_RSS_LIMIT_MB: 2048
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |

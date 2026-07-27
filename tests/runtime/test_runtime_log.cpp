@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
 // invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
+// LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
+// NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
 // NOLINTBEGIN(bugprone-unsafe-functions,cert-msc24-c,cert-msc33-c,clang-analyzer-unix.Errno,misc-use-internal-linkage)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
@@ -141,3 +143,4 @@ main(void) {
 }
 
 // NOLINTEND(bugprone-unsafe-functions,cert-msc24-c,cert-msc33-c,clang-analyzer-unix.Errno,misc-use-internal-linkage)
+// NOLINTEND(cert-dcl03-c,misc-static-assert)
