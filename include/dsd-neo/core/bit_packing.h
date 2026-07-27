@@ -100,11 +100,15 @@ size_t dsd_unpack_bytes_to_bits_truncating(const uint8_t* input, size_t input_ca
  * Guards the array convenience macros below against pointer decay, where
  * sizeof() would silently yield the pointer width instead of the buffer span.
  * Compilers without __typeof__ (MSVC) fall back to runtime bounds only.
+ *
+ * The width is negative for a pointer operand, which is what fails the build.
+ * The bit-field spells its signedness out because plain `int` leaves that
+ * implementation-defined for bit-fields.
  */
 #if !defined(__cplusplus) && (defined(__GNUC__) || defined(__clang__))
 #define DSD_MUST_BE_ARRAY(a)                                                                                           \
     (sizeof(struct {                                                                                                   \
-         int dsd_argument_is_not_an_array                                                                              \
+         signed int dsd_argument_is_not_an_array                                                                       \
              : (__builtin_types_compatible_p(__typeof__(a), __typeof__(&(a)[0])) ? -1 : 1);                            \
      })                                                                                                                \
      * 0U)
