@@ -124,6 +124,14 @@ int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, c
 int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                              const dsd_call_snapshot* call, const char* detail);
 int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
+/**
+ * Clear every history row on both slots and the per-slot commit bookkeeping with it.
+ *
+ * Callers must not hold an event-history transaction: this opens its own. Clearing the rows
+ * without clearing the bookkeeping would leave a reacquired transmission trying to merge into
+ * a row that no longer exists.
+ */
+void dsd_event_history_reset(dsd_state* state);
 /* Copy telemetry atomically, copying history slots only when forced or when their source revision changed. */
 int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
                                               const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]);

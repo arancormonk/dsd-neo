@@ -195,6 +195,18 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
     }
 }
 
+// Stands in for the core implementation, which also clears the per-slot commit bookkeeping
+// (covered by CORE_CALL_ALERT_HISTORY). This test only asserts the service delegates the reset.
+void
+dsd_event_history_reset(dsd_state* state) {
+    if (!state || !state->event_history_s) {
+        return;
+    }
+    for (uint8_t slot = 0; slot < 2U; slot++) {
+        init_event_history(&state->event_history_s[slot], 0, 255);
+    }
+}
+
 dsd_socket_t
 Connect(char* hostname, int portno) {
     (void)hostname;

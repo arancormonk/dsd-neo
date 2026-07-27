@@ -1469,7 +1469,9 @@ static void
 no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
     const double ended_m = dsd_time_now_monotonic_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+        // Carrier loss, not a terminator: the transmission may resume on the next
+        // burst that decodes, so the following epoch is allowed to reacquire it.
+        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_SYNC_LOSS) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
         }
     }
@@ -2100,7 +2102,8 @@ static void
 no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state) {
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         const uint8_t call_slot = (uint8_t)slot;
-        if (dsd_call_state_end(state, call_slot, 0.0) > 0) {
+        // Sync was lost rather than released; see no_carrier_clear_voice_tune_state().
+        if (dsd_call_state_end_ex(state, call_slot, 0.0, DSD_CALL_END_SYNC_LOSS) > 0) {
             dsd_event_sync_slot(opts, state, call_slot);
         }
     }

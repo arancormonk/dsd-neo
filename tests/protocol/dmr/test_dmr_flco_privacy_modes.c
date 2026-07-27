@@ -1221,8 +1221,26 @@ test_voice_lc_header_starts_epoch_and_embedded_lc_continues(void) {
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE);
     assert(call.epoch != second_epoch);
+    const uint64_t third_epoch = call.epoch;
+
+    // The same header replayed after a sync-loss end is that transmission being reacquired,
+    // not a new one, so the reopened epoch is tagged for the event layer to merge. The header
+    // passes BEGIN, which is exactly why the tagging cannot depend on the boundary token.
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != third_epoch);
+    assert(call.ota_target_id == 1001U);
+    assert(call.ota_source_id == 2002U);
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
+    assert(context.events[0].reacquired_epoch == call.epoch);
 
     assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
     dsd_state_ext_free_all(&state);
 }
 

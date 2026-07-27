@@ -50,6 +50,18 @@ typedef enum {
     DSD_CALL_CRYPTO_DECRYPTABLE,
 } dsd_call_crypto_state;
 
+/**
+ * Why a call epoch ended.
+ *
+ * Only DSD_CALL_END_SYNC_LOSS permits the next epoch on the slot to be treated as the same
+ * transmission being reacquired. EXPLICIT is the default so an unconverted call site produces a
+ * second history row -- a duplicate is recoverable, a deleted transmission is not.
+ */
+typedef enum {
+    DSD_CALL_END_EXPLICIT = 0,  /**< Terminator, EOT, release, teardown, or retune. */
+    DSD_CALL_END_SYNC_LOSS = 1, /**< Carrier or sync lost; the transmission may still resume. */
+} dsd_call_end_reason;
+
 typedef enum {
     DSD_CALL_BOUNDARY_CONTINUE = 0, /**< Merge compatible observations into the active call epoch. */
     /**
@@ -123,6 +135,7 @@ typedef struct {
     uint8_t algid;
     uint8_t audio_permitted;
     uint8_t media_active;
+    uint8_t end_reason; /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
@@ -149,21 +162,18 @@ typedef struct {
     uint64_t epoch;
     uint64_t notice_epoch;
     uint64_t notice_target_id;
-    /* Epoch reopened by a CONTINUE after the prior epoch ended. Only this
-     * reacquisition may coalesce with the row most recently committed. */
+    /* Epoch that reopened a sync-loss-ended epoch describing the same call. Only
+     * this reacquisition may merge into the row most recently committed. */
     uint64_t reacquired_epoch;
-    /* Identity of the row most recently committed for this slot, used to drop a
-     * commit that only repeats the transmission already in history. */
-    double commit_m;
-    uint32_t commit_source_id;
-    uint32_t commit_target_id;
+    /* Value of Event_History_I::push_seq right after this slot's last voice
+     * commit reached history. The retained row's current depth is
+     * 1 + (push_seq - committed_seq), so interleaved notice pushes cannot make
+     * the merge target the wrong row. */
+    uint64_t committed_seq;
+    uint8_t committed_valid;
     uint8_t ended_committed;
     uint8_t notice_kind;
     uint8_t notice_handled;
-    int8_t commit_protocol;
-    int8_t commit_gi;
-    uint8_t commit_category;
-    uint8_t commit_valid;
 } dsd_call_event_lifecycle_snapshot;
 
 /**
@@ -200,6 +210,9 @@ int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_
 /** Update crypto metadata on an existing active or retained ended epoch. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
+/** End the active epoch, recording why it ended. */
+int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
+/** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);

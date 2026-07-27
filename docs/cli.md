@@ -199,6 +199,12 @@ Windows console runs:
 - `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces. Grant traces identify initial
   assignments versus updates; post-call stale-update handling reports guard, validation-probe, and activity outcomes.
 
+Per-call WAVs are written per *segment*, not per history row. When sync is lost mid-transmission and the same call is
+reacquired within the reacquisition window, the Activity history keeps one row for the whole transmission while each
+segment still closes, names, and exports its own recording. A flapping call therefore appears as one history row
+referencing several recordings and several rdio uploads. Empty segments (44-byte WAVs) are deleted rather than exported,
+so brief flaps cost nothing.
+
 For rdio-scanner API uploads that should not persist on disk, use API-only mode with a RAM-backed per-call WAV directory
 and post-upload deletion, for example `-7 /dev/shm/dsd-neo-rdio -P --rdio-mode api --rdio-api-delete-after-upload`.
 Rdio API uploads do not follow HTTP redirects; use the final trusted HTTP/HTTPS endpoint directly.

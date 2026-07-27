@@ -22,7 +22,6 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -39,10 +38,6 @@ enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
     DSD_EVENT_SUBTYPE_EXPLICIT_DATA = INT8_MAX,
 };
-
-// Seconds within which a repeated voice commit is treated as the transmission
-// already in history rather than a new one.
-#define DSD_EVENT_COMMIT_REPEAT_WINDOW_S 1.0
 
 // Safe bounded copy helper that tolerates potential overlap
 static inline void
@@ -163,6 +158,7 @@ push_event_history(Event_History_I* event_struct) {
                        event_struct->Event_History_Items[i - 1].internal_str,
                        sizeof event_struct->Event_History_Items[i].internal_str);
     }
+    event_struct->push_seq++;
     dsd_event_history_mark_dirty(event_struct);
 }
 
@@ -298,76 +294,161 @@ watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_
                                                reset_slot_identity, 1);
 }
 
-static double
-watchdog_event_now_m(void) {
-    return (double)dsd_time_monotonic_ms() / 1000.0;
+// Depth of the row this slot last committed, or 0 when it can no longer be located.
+// push_event_history() copies row 0 into row 1, so immediately after a commit the row
+// sits at index 1 and every push since -- including interleaved data or system notices --
+// has pushed it one deeper.
+static uint8_t
+watchdog_event_committed_row_index(const Event_History_I* event_struct, const dsd_call_event_lifecycle* lifecycle) {
+    if (event_struct == NULL || lifecycle == NULL || !lifecycle->committed_valid) {
+        return 0U;
+    }
+    if (event_struct->push_seq < lifecycle->committed_seq) {
+        return 0U;
+    }
+    const uint64_t depth = 1U + (event_struct->push_seq - lifecycle->committed_seq);
+    return depth <= 254U ? (uint8_t)depth : 0U;
+}
+
+static int
+watchdog_event_text_is_empty(const char* text) {
+    return text == NULL || text[0] == '\0';
 }
 
 static void
-watchdog_event_note_commit(dsd_call_event_lifecycle* lifecycle, const Event_History* item, double now_m) {
-    if (lifecycle == NULL || item == NULL) {
+watchdog_event_merge_text(char* retained, const char* staged, size_t cap) {
+    if (watchdog_event_text_is_empty(retained) && !watchdog_event_text_is_empty(staged)) {
+        DSD_SNPRINTF(retained, cap, "%s", staged);
+    }
+}
+
+// Rank crypto knowledge so a later segment can upgrade the retained row but never
+// downgrade it: a segment that decoded the PI/ESS header knows more than the late-entry
+// segment that had to assume clear.
+static int
+watchdog_event_crypto_rank(const Event_History* item) {
+    if (item->enc == 0U) {
+        return item->enc_alg != 0U ? 1 : 0;
+    }
+    return item->enc_alg != 0U ? 3 : 2;
+}
+
+// Fold the staged row into the row already in history: this is the same transmission, and
+// everything the reacquired segment learned -- a late-decoded SRC, an alias, GPS, a text
+// message, the crypto header that finally arrived -- has to survive. Only ever adds
+// information; a known value is never replaced by an unknown one.
+static void
+watchdog_event_merge_staged_into(Event_History* retained, const Event_History* staged) {
+    if (retained->source_id == 0U && staged->source_id != 0U) {
+        retained->source_id = staged->source_id;
+    }
+    if (retained->target_id == 0U && staged->target_id != 0U) {
+        retained->target_id = staged->target_id;
+    }
+    if (retained->channel == 0U && staged->channel != 0U) {
+        retained->channel = staged->channel;
+    }
+    if (retained->gi < 0 && staged->gi >= 0) {
+        retained->gi = staged->gi;
+    }
+    watchdog_event_merge_text(retained->src_str, staged->src_str, sizeof(retained->src_str));
+    watchdog_event_merge_text(retained->tgt_str, staged->tgt_str, sizeof(retained->tgt_str));
+    watchdog_event_merge_text(retained->t_name, staged->t_name, sizeof(retained->t_name));
+    watchdog_event_merge_text(retained->s_name, staged->s_name, sizeof(retained->s_name));
+    watchdog_event_merge_text(retained->t_mode, staged->t_mode, sizeof(retained->t_mode));
+    watchdog_event_merge_text(retained->s_mode, staged->s_mode, sizeof(retained->s_mode));
+    watchdog_event_merge_text(retained->sysid_string, staged->sysid_string, sizeof(retained->sysid_string));
+    watchdog_event_merge_text(retained->alias, staged->alias, sizeof(retained->alias));
+    watchdog_event_merge_text(retained->gps_s, staged->gps_s, sizeof(retained->gps_s));
+    watchdog_event_merge_text(retained->text_message, staged->text_message, sizeof(retained->text_message));
+    watchdog_event_merge_text(retained->internal_str, staged->internal_str, sizeof(retained->internal_str));
+    if (watchdog_event_crypto_rank(staged) > watchdog_event_crypto_rank(retained)) {
+        retained->enc = staged->enc;
+        retained->enc_alg = staged->enc_alg;
+        retained->enc_key = staged->enc_key;
+        retained->mi = staged->mi;
+    }
+    if (retained->svc == 0U && staged->svc != 0U) {
+        retained->svc = staged->svc;
+    }
+    // Regenerated by the caller from the merged fields; leaving the first segment's string
+    // would hide a merged crypto or identity change from the UI and the event log.
+    retained->event_string[0] = '\0';
+}
+
+// The first segment already logged its line. A merge that materially changed the rendered row
+// gets a continuation line in the same shape as the " Talker Alias:" / " GPS:" lines; a merge
+// that changed nothing user-visible stays silent.
+static void
+watchdog_event_log_merge_continuation(const dsd_opts* opts, const char* event_string) {
+    if (opts->event_out_file[0] == '\0' || event_string[0] == '\0') {
         return;
     }
-    lifecycle->commit_m = now_m;
-    lifecycle->commit_protocol = item->systype;
-    lifecycle->commit_category = item->category;
-    lifecycle->commit_gi = item->gi;
-    lifecycle->commit_source_id = item->source_id;
-    lifecycle->commit_target_id = item->target_id;
-    lifecycle->commit_valid = 1U;
+    FILE* event_log_file = dsd_fopen_private(opts->event_out_file, "a");
+    if (event_log_file == NULL) {
+        return;
+    }
+    DSD_FPRINTF(event_log_file, " Reacquired: %s \n", event_string);
+    fflush(event_log_file);
+    fclose(event_log_file);
 }
 
-// One transmission can be closed and reopened several times: sync loss ends the
-// canonical call, the next burst that decodes opens a fresh epoch, and the end
-// of that epoch commits the same voice row again. Repeated headers do the same
-// on protocols that re-announce a running call. Drop a voice commit that only
-// restates the row committed moments ago for the same slot -- the transmission
-// is already in history, and a second copy is the duplicate users see.
-// Bounded by time so a genuine re-key still gets its own row, and limited to
-// voice so data and control notices are never coalesced.
+// True when the staged row may be folded into the row already committed for this slot: the
+// canonical layer flagged this epoch as one sync-loss-interrupted transmission being
+// reacquired, and both rows are voice. A data staged row never merges into a voice row.
 static int
-watchdog_event_commit_repeats_previous(const dsd_call_event_lifecycle* lifecycle, const Event_History* item,
-                                       double now_m) {
-    if (lifecycle == NULL || item == NULL || !lifecycle->commit_valid) {
+watchdog_event_staged_row_merges(const Event_History_I* event_struct, const dsd_call_event_lifecycle* lifecycle,
+                                 const Event_History* staged, uint8_t retained_index) {
+    if (lifecycle == NULL || lifecycle->epoch == 0U || lifecycle->reacquired_epoch != lifecycle->epoch) {
         return 0;
     }
-    if (lifecycle->epoch == 0U || lifecycle->reacquired_epoch != lifecycle->epoch) {
+    if (retained_index == 0U || staged->category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
-    if (item->category != DSD_EVENT_CATEGORY_VOICE || lifecycle->commit_category != DSD_EVENT_CATEGORY_VOICE) {
-        return 0;
-    }
-    if (item->source_id == 0U && item->target_id == 0U) {
-        return 0;
-    }
-    if (item->systype != lifecycle->commit_protocol || item->gi != lifecycle->commit_gi) {
-        return 0;
-    }
-    if (item->source_id != lifecycle->commit_source_id || item->target_id != lifecycle->commit_target_id) {
-        return 0;
-    }
-    return now_m >= lifecycle->commit_m && (now_m - lifecycle->commit_m) <= DSD_EVENT_COMMIT_REPEAT_WINDOW_S;
+    return event_struct->Event_History_Items[retained_index].category == DSD_EVENT_CATEGORY_VOICE;
 }
 
-// Commit the staged row unless it merely repeats the previous commit. Returns
-// non-zero when the row reached history.
+// Rebuild the merged row's user-legible string from its now-complete fields. Defined below,
+// beside the per-protocol builders it reuses.
+static void watchdog_event_rerender_row(const dsd_state* state, uint8_t slot, Event_History* item);
+
+// Commit the staged row, or merge it into the row this slot already committed when the
+// canonical layer says the two are the same transmission. Returns non-zero when a new row
+// reached history.
 static int
 watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
                                  dsd_call_event_lifecycle* lifecycle, int last_event_is_data, int reset_slot_identity) {
     const Event_History* staged = &event_struct->Event_History_Items[0];
-    const double now_m = watchdog_event_now_m();
-    if (watchdog_event_commit_repeats_previous(lifecycle, staged, now_m)) {
-        // The row is already in history, but this epoch can contain newly
-        // recorded audio. Finalize it before clearing the staged metadata so
-        // the next call cannot inherit the reacquired call's samples.
+    const uint8_t retained_index = watchdog_event_committed_row_index(event_struct, lifecycle);
+    if (watchdog_event_staged_row_merges(event_struct, lifecycle, staged, retained_index)) {
+        Event_History* retained = &event_struct->Event_History_Items[retained_index];
+        char rendered_before[sizeof(retained->event_string)];
+        copy_str_field(rendered_before, retained->event_string, sizeof(rendered_before));
+        watchdog_event_merge_staged_into(retained, staged);
+        watchdog_event_rerender_row(state, slot, retained);
+        if (retained->event_string[0] == '\0') {
+            // No builder covers this protocol, so keep what the row already displayed rather
+            // than blanking a committed row.
+            copy_str_field(retained->event_string, rendered_before, sizeof(retained->event_string));
+        } else if (strncmp(retained->event_string, rendered_before, sizeof(rendered_before)) != 0) {
+            watchdog_event_log_merge_continuation(opts, retained->event_string);
+        }
+        dsd_event_history_mark_dirty(event_struct);
+        // Rotate before the staged row is cleared: close_and_rename_wav_file() reads its
+        // rename metadata from Items[0]. Each segment therefore keeps its own recording;
+        // leaving the file open would let it absorb the next transmission's audio and be
+        // exported under that call's metadata instead.
         watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
         init_event_history(event_struct, 0, 1);
         watchdog_event_reset_post_push(state);
         return 0;
     }
-    watchdog_event_note_commit(lifecycle, staged, now_m);
     watchdog_event_handle_source_transition(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
                                             last_event_is_data, reset_slot_identity);
+    if (lifecycle != NULL) {
+        lifecycle->committed_seq = event_struct->push_seq;
+        lifecycle->committed_valid = 1U;
+    }
     return 1;
 }
 
@@ -438,7 +519,10 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
     lifecycle->notice_target_id = 0U;
     lifecycle->notice_kind = DSD_CALL_KIND_UNKNOWN;
     lifecycle->notice_handled = 0U;
-    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA
+    // A reacquired segment is the same transmission resuming, not a new one: beeping START
+    // again would leave a flapping call with several STARTs against its single END.
+    const int reacquired = lifecycle->reacquired_epoch == call->epoch;
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && call->kind != DSD_CALL_KIND_DATA && !reacquired
         && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_START)) {
         beeper(opts, state, slot, 40, 86, 3);
     }
@@ -1024,6 +1108,81 @@ watchdog_event_current_append_policy_labels(const watchdog_event_current_ctx* ct
     }
 }
 
+// Recover the render kind a row was built from. watchdog_event_current_update_item() folds kind
+// down to gi, and the per-protocol builders only ever test for group or private, so anything
+// else maps back to plain voice.
+static dsd_call_kind
+watchdog_event_row_kind(const Event_History* item) {
+    if (item->gi == 0) {
+        return DSD_CALL_KIND_GROUP_VOICE;
+    }
+    if (item->gi == 1) {
+        return DSD_CALL_KIND_PRIVATE_VOICE;
+    }
+    return DSD_CALL_KIND_VOICE;
+}
+
+// Rebuild the render context from a history row rather than from a live call snapshot. Used
+// when a reacquired segment merges into a row already in history: the row's fields have just
+// gained information and its event_string has to say so. Protocol metadata is read back from
+// the row instead of re-derived, so this cannot disturb live per-slot state the way
+// watchdog_event_current_apply_protocol_metadata() would.
+static void
+watchdog_event_ctx_from_row(const dsd_state* state, uint8_t slot, const Event_History* item,
+                            watchdog_event_current_ctx* ctx) {
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->severity = (dsd_event_severity)item->severity;
+    ctx->category = (dsd_event_category)item->category;
+    // Synctype ids are stored signed and negative sentinels are meaningful, so the widening
+    // must sign-extend; the cast is explicit to say so.
+    ctx->protocol = (int)item->systype;
+    ctx->kind = watchdog_event_row_kind(item);
+    ctx->subtype = (uint8_t)item->subtype;
+    ctx->mfid = slot == 0U ? state->dmr_fid : state->dmr_fidR;
+    ctx->source_id = item->source_id;
+    ctx->target_id = item->target_id;
+    ctx->svc_opts = item->svc;
+    ctx->enc = item->enc;
+    ctx->alg_id = item->enc_alg;
+    ctx->key_id = item->enc_key;
+    ctx->mi = item->mi;
+    ctx->channel = item->channel;
+    ctx->sys_id1 = item->sys_id1;
+    ctx->sys_id2 = item->sys_id2;
+    ctx->sys_id3 = item->sys_id3;
+    ctx->sys_id4 = item->sys_id4;
+    ctx->sys_id5 = item->sys_id5;
+    DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", item->sysid_string);
+    DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", item->src_str);
+    DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", item->tgt_str);
+    DSD_SNPRINTF(ctx->t_name, sizeof(ctx->t_name), "%s", item->t_name);
+    DSD_SNPRINTF(ctx->s_name, sizeof(ctx->s_name), "%s", item->s_name);
+    DSD_SNPRINTF(ctx->t_mode, sizeof(ctx->t_mode), "%s", item->t_mode);
+    DSD_SNPRINTF(ctx->s_mode, sizeof(ctx->s_mode), "%s", item->s_mode);
+    ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
+    ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
+}
+
+static void
+watchdog_event_rerender_row(const dsd_state* state, uint8_t slot, Event_History* item) {
+    watchdog_event_current_ctx ctx;
+    watchdog_event_ctx_from_row(state, slot, item, &ctx);
+
+    char timestr[9];
+    char datestr[11];
+    // The row's own timestamp, not the merge instant: it still describes the transmission
+    // that opened at the first commit.
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
+
+    char event_string[2000];
+    DSD_MEMSET(event_string, 0, sizeof(event_string));
+    watchdog_event_current_build_event_string(state, &ctx, datestr, timestr, dsd_synctype_to_string(ctx.protocol),
+                                              event_string, sizeof(event_string));
+    watchdog_event_current_append_policy_labels(&ctx, event_string, sizeof(event_string));
+    DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s", event_string);
+}
+
 static int
 watchdog_event_current_args_valid(const dsd_opts* opts, const dsd_state* state, uint8_t slot) {
     return opts != NULL && state != NULL && state->event_history_s != NULL && slot <= 1U;
@@ -1057,6 +1216,9 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         return;
     }
     if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+        // Either outcome puts this epoch's information into history -- a new row, or merged
+        // into the row the interrupted transmission already owns. The empty-staged-row branch
+        // has nothing to commit; enrichment resolves that case by push sequence and declines.
         (void)watchdog_event_commit_staged_row((dsd_opts*)opts, state, event_struct, slot, lifecycle,
                                                call->kind == DSD_CALL_KIND_DATA, 1);
     } else {
@@ -1241,8 +1403,14 @@ dsd_event_emit_call_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
                                                call->kind == DSD_CALL_KIND_DATA, finalize_call, finalize_call);
     watchdog_event_notice_mark_handled(lifecycle, call);
-    if (canonical_lifecycle != NULL && call->phase == DSD_CALL_PHASE_ENDED) {
-        canonical_lifecycle->ended_committed = 1U;
+    if (canonical_lifecycle != NULL) {
+        // This push carried the canonical epoch's row into history, so it becomes the row a
+        // reacquired segment merges into and the row enrichment targets.
+        canonical_lifecycle->committed_seq = event_struct->push_seq;
+        canonical_lifecycle->committed_valid = 1U;
+        if (call->phase == DSD_CALL_PHASE_ENDED) {
+            canonical_lifecycle->ended_committed = 1U;
+        }
     }
     watchdog_event_unlock_if_present(ext);
     return 1;
@@ -1283,7 +1451,17 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
-    const uint8_t history_index = lifecycle->epoch == epoch && lifecycle->ended_committed ? 1U : 0U;
+    // While the epoch is still staging, enrichment belongs on row 0. Once its row has been
+    // committed the row has to be located by push sequence: an interleaved data or system
+    // notice pushes it deeper than index 1.
+    uint8_t history_index = 0U;
+    if (lifecycle->epoch == epoch && lifecycle->ended_committed) {
+        history_index = watchdog_event_committed_row_index(&state->event_history_s[slot], lifecycle);
+        if (history_index == 0U) {
+            dsd_call_state_ext_unlock(ext);
+            return 0;
+        }
+    }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     if (kind == DSD_EVENT_ENRICH_ALIAS) {
         DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
@@ -1311,6 +1489,28 @@ dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char*
 int
 dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text) {
     return dsd_event_enrich_epoch(state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
+}
+
+void
+dsd_event_history_reset(dsd_state* state) {
+    if (state == NULL || state->event_history_s == NULL) {
+        return;
+    }
+    (void)dsd_call_state_ensure(state);
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    // The transaction already holds the call-state mutex that guards ext->events, so the rows
+    // and the bookkeeping that points into them are cleared together.
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    for (uint8_t slot = 0; slot < 2U; slot++) {
+        init_event_history(&state->event_history_s[slot], 0, 255);
+        if (ext != NULL) {
+            ext->events[slot].committed_seq = 0U;
+            ext->events[slot].committed_valid = 0U;
+            ext->events[slot].reacquired_epoch = 0U;
+        }
+    }
+    dsd_event_history_transaction_end(&transaction);
 }
 
 int

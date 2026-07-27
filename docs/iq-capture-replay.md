@@ -77,6 +77,24 @@ Replay uses `min(data_bytes, actual_file_size)` rounded down to sample alignment
 interrupted capture never finalized metadata (`data_bytes == 0`), replay falls back to the actual file size and still
 rounds down to sample alignment. Zero effective bytes are rejected for `--iq-replay`.
 
+## Replay Pacing And Decode-Time Windows
+
+`--iq-replay-rate realtime` pins the replay thread to `start + samples_written / sample_rate`, so air time and wall
+clock advance together. The default `fast` mode applies no pacing at all: throughput is bounded only by ring
+backpressure and decode speed, so a capture's worth of air time completes in considerably less wall-clock time.
+
+That matters because there is currently **no decode-derived clock** in the decoder. Protocol layers time call state
+against `dsd_time_now_monotonic_s()` (wall-clock monotonic), and any call site that passes `observed_m = 0.0` falls
+back to the same source. Under `fast` replay every wall-clock-measured interval in the canonical call state is
+therefore compressed relative to the air time it is meant to describe:
+
+- Gaps look shorter than they were, so the call reacquisition window (`DSD_CALL_REACQUIRE_GAP_S`, which decides
+  whether a sync-loss-interrupted transmission is one history row or two) coalesces more readily than it would live.
+- Hangtime and staleness timers in the trunking state machines expire later in air-time terms than they would live.
+
+Use `--iq-replay-rate realtime` when reproducing or asserting on any of that timing. The same caveat applies to
+non-`.bin` file input under `-r`/WAV replay, which is likewise unthrottled; only `.bin` symbol-capture replay is paced.
+
 ## Operational Limits
 
 - `--iq-capture` and `--iq-replay` are mutually exclusive in one invocation.

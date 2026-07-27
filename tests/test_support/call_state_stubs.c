@@ -181,15 +181,21 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
 }
 
 int
-dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
     }
     stub_select_state(state);
     const int ended = g_stub_calls[slot].phase == DSD_CALL_PHASE_ACTIVE;
     g_stub_calls[slot].phase = DSD_CALL_PHASE_ENDED;
+    g_stub_calls[slot].end_reason = (uint8_t)reason;
     (void)observed_m;
     return ended;
+}
+
+int
+dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+    return dsd_call_state_end_ex(state, slot, observed_m, DSD_CALL_END_EXPLICIT);
 }
 
 int
