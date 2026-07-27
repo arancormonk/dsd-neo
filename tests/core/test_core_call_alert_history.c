@@ -120,6 +120,7 @@ canonical_snapshot_reader(void* arg) {
 
 static int g_open_wav_count;
 static int g_close_wav_count;
+static SNDFILE* g_open_wav_result;
 static double g_observed_m;
 
 SNDFILE*
@@ -130,7 +131,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
     UNUSED(sample_rate);
     UNUSED(ext);
     g_open_wav_count++;
-    return NULL;
+    return g_open_wav_result;
 }
 
 SNDFILE*
@@ -203,6 +204,7 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I event_history[2]
     g_last_frame_log[0] = '\0';
     g_open_wav_count = 0;
     g_close_wav_count = 0;
+    g_open_wav_result = NULL;
     g_observed_m = 1.0;
 }
 
@@ -1658,8 +1660,11 @@ test_reacquired_transmission_commits_one_row(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
+    static max_align_t wav_sentinel;
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+    opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+    g_open_wav_result = (SNDFILE*)&wav_sentinel;
 
     for (int pass = 0; pass < 3; pass++) {
         assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
@@ -1674,6 +1679,38 @@ test_reacquired_transmission_commits_one_row(void) {
     rc |= expect_int("reacquired transmission emits one call end alert", g_beeper_count, 1);
     rc |= expect_int("reacquired transmission keeps committed target",
                      (int)event_history[0].Event_History_Items[1].target_id, 100);
+    rc |= expect_int("each reacquired segment finalizes its WAV", g_close_wav_count, 3);
+    rc |= expect_int("each reacquired segment opens a fresh WAV", g_open_wav_count, 3);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// An explicit BEGIN is positive evidence of a distinct transmission even when
+// it repeats the identity that was just committed.
+static int
+test_back_to_back_same_identity_calls_commit_two_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    for (int pass = 0; pass < 2; pass++) {
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                                 DSD_CALL_BOUNDARY_BEGIN)
+               == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+    }
+
+    int rc =
+        expect_int("back-to-back same-identity calls commit two rows", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_int("back-to-back calls each emit a call end alert", g_beeper_count, 2);
+    rc |= expect_int("newest same-identity row keeps target", (int)event_history[0].Event_History_Items[1].target_id,
+                     100);
+    rc |=
+        expect_int("prior same-identity row keeps target", (int)event_history[0].Event_History_Items[2].target_id, 100);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1968,6 +2005,7 @@ main(void) {
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
+    rc |= test_back_to_back_same_identity_calls_commit_two_rows();
     rc |= test_changed_identity_still_commits_its_own_row();
     rc |= test_repeated_data_notices_are_not_coalesced();
     rc |= test_late_source_enriches_matching_canonical_call();

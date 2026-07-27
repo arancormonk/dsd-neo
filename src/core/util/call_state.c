@@ -378,10 +378,15 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     dsd_call_snapshot* snapshot = &ext->calls.slots[observation->slot];
     const double now_m = call_state_observed_m(observation->observed_m);
     const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
+    const int reacquires_ended_epoch =
+        begins_epoch && snapshot->phase == DSD_CALL_PHASE_ENDED && boundary == DSD_CALL_BOUNDARY_CONTINUE;
     if (begins_epoch) {
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
         snapshot->epoch = ext->epoch_sequence[observation->slot];
+        if (reacquires_ended_epoch) {
+            ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
+        }
         snapshot->slot = observation->slot;
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;

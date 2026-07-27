@@ -149,6 +149,9 @@ typedef struct {
     uint64_t epoch;
     uint64_t notice_epoch;
     uint64_t notice_target_id;
+    /* Epoch reopened by a CONTINUE after the prior epoch ended. Only this
+     * reacquisition may coalesce with the row most recently committed. */
+    uint64_t reacquired_epoch;
     /* Identity of the row most recently committed for this slot, used to drop a
      * commit that only repeats the transmission already in history. */
     double commit_m;

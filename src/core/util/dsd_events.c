@@ -331,6 +331,9 @@ watchdog_event_commit_repeats_previous(const dsd_call_event_lifecycle* lifecycle
     if (lifecycle == NULL || item == NULL || !lifecycle->commit_valid) {
         return 0;
     }
+    if (lifecycle->epoch == 0U || lifecycle->reacquired_epoch != lifecycle->epoch) {
+        return 0;
+    }
     if (item->category != DSD_EVENT_CATEGORY_VOICE || lifecycle->commit_category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
@@ -354,7 +357,12 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
     const Event_History* staged = &event_struct->Event_History_Items[0];
     const double now_m = watchdog_event_now_m();
     if (watchdog_event_commit_repeats_previous(lifecycle, staged, now_m)) {
+        // The row is already in history, but this epoch can contain newly
+        // recorded audio. Finalize it before clearing the staged metadata so
+        // the next call cannot inherit the reacquired call's samples.
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
         init_event_history(event_struct, 0, 1);
+        watchdog_event_reset_post_push(state);
         return 0;
     }
     watchdog_event_note_commit(lifecycle, staged, now_m);

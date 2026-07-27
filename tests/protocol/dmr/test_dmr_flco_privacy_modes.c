@@ -1173,11 +1173,11 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     dsd_state_ext_free_all(&state);
 }
 
-// The voice LC header repeats through the start of a transmission for late
-// entry. Only the first copy may open a canonical epoch: a second epoch commits
-// the first one's freshly built row as a duplicate event.
+// Each Voice LC Header marks a transmission boundary, including a same-identity
+// re-key after a missed terminator. Embedded LCs re-describe the active call and
+// must remain in its epoch.
 static void
-test_repeated_voice_lc_header_keeps_one_epoch(void) {
+test_voice_lc_header_starts_epoch_and_embedded_lc_continues(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1197,25 +1197,26 @@ test_repeated_voice_lc_header_keeps_one_epoch(void) {
     assert(call.phase == DSD_CALL_PHASE_ACTIVE);
     const uint64_t first_epoch = call.epoch;
 
+    // An embedded LC continues the transmission described by the header.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch == first_epoch);
+
+    // A new header starts the next transmission even if its identity matches.
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.epoch == first_epoch);
-
-    // A header naming a different talker is the next transmission, not a repeat.
-    irr = 0;
-    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 3003U);
-    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
-    assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.epoch != first_epoch);
-    assert(call.ota_source_id == 3003U);
+    assert(call.ota_source_id == 2002U);
     const uint64_t second_epoch = call.epoch;
 
     // A header after the terminator opens the following transmission.
     assert(dsd_call_state_end(&state, 0U, 0.0) > 0);
     irr = 0;
-    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 3003U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.phase == DSD_CALL_PHASE_ACTIVE);
@@ -1229,7 +1230,7 @@ int
 main(void) {
     InitAllFecFunction();
 
-    test_repeated_voice_lc_header_keeps_one_epoch();
+    test_voice_lc_header_starts_epoch_and_embedded_lc_continues();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();
