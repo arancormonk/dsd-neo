@@ -1559,6 +1559,22 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     dsd_call_state_ext_unlock(ext);
 }
 
+void
+dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state || !state->event_history_s) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        watchdog_event_flush_pending_end_alert(opts, state, slot, &ext->events[slot], 1);
+    }
+    dsd_call_state_ext_unlock(ext);
+}
+
 static void
 watchdog_event_lock_if_present(const dsd_call_state_ext* ext) {
     if (ext) {
@@ -1764,14 +1780,15 @@ dsd_event_history_reset(dsd_state* state) {
     // The transaction already holds the call-state mutex that guards ext->events, so the rows
     // and the bookkeeping that points into them are cleared together.
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    for (uint8_t slot = 0; slot < 2U; slot++) {
+    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         init_event_history(&state->event_history_s[slot], 0, 255);
         if (ext != NULL) {
-            ext->events[slot].committed_seq = 0U;
-            ext->events[slot].committed_epoch = 0U;
-            ext->events[slot].committed_valid = 0U;
-            ext->events[slot].reacquired_epoch = 0U;
-            ext->events[slot].reacquired_from_epoch = 0U;
+            // epoch and ended_committed are deliberately left alone. They say which call the slot
+            // has already finished rendering, not which row it landed in: clearing them would
+            // make an ended-but-still-retained call look unrendered, and the next sync pass would
+            // commit it all over again -- resurrecting, in a freshly cleared history, the very row
+            // the operator just deleted.
+            dsd_call_state_invalidate_event_lifecycle(&ext->events[slot]);
         }
     }
     dsd_event_history_transaction_end(&transaction);

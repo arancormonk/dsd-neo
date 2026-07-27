@@ -715,6 +715,23 @@ dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot
     return 1;
 }
 
+void
+dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
+    if (lifecycle == NULL) {
+        return;
+    }
+    lifecycle->committed_seq = 0U;
+    lifecycle->committed_epoch = 0U;
+    lifecycle->committed_valid = 0U;
+    lifecycle->reacquired_epoch = 0U;
+    lifecycle->reacquired_from_epoch = 0U;
+    // A held VOICE_END describes a row that is going away. Firing it later would beep the end of
+    // a transmission the operator can no longer see.
+    lifecycle->end_alert_pending = 0U;
+    lifecycle->end_alert_due_m = 0.0;
+    DSD_MEMSET(&lifecycle->committed_env, 0, sizeof(lifecycle->committed_env));
+}
+
 int
 dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot) {
     if (!state || !snapshot) {
@@ -733,25 +750,18 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
             ext->epoch_sequence[slot] = snapshot->calls.slots[slot].epoch;
         }
         // The lifecycle is saved and restored per trunk-scan target while the event history
-        // itself is global, so a commit reference carried across a hop would point one
-        // target's merge at another target's row. Invalidate rather than relocate.
-        ext->events[slot].committed_seq = 0U;
-        ext->events[slot].committed_epoch = 0U;
-        ext->events[slot].committed_valid = 0U;
-        ext->events[slot].reacquired_epoch = 0U;
-        ext->events[slot].reacquired_from_epoch = 0U;
+        // itself is global, so a commit reference -- or a VOICE_END held on the global monotonic
+        // clock -- carried across a hop would describe one target's row while the other target is
+        // running. Invalidate rather than relocate.
+        dsd_call_state_invalidate_event_lifecycle(&ext->events[slot]);
         // Clearing the commit reference blocks the row merge but not the rest of reacquisition:
         // the monotonic clock is global, so a slot saved mid-fade would still satisfy the gap
         // test on the new target and suppress the first call's VOICE_START alert while seeding
         // it with the old target's identity. A restored end is a hop, never a resumable fade.
+        // This lives on the call snapshot rather than the lifecycle, so it stays here.
         if (ext->calls.slots[slot].phase == DSD_CALL_PHASE_ENDED) {
             ext->calls.slots[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
         }
-        // A held VOICE_END belongs to the target being left. Its deadline is on the global
-        // monotonic clock, so carrying it across would fire it against whatever call the new
-        // target happens to be running.
-        ext->events[slot].end_alert_pending = 0U;
-        ext->events[slot].end_alert_due_m = 0.0;
     }
     dsd_call_state_ext_unlock(ext);
     return 1;

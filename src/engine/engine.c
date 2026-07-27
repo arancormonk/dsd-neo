@@ -2526,6 +2526,12 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_watchdog_snapshots(opts, state);
     noCarrier(opts, state);
     dsd_engine_cleanup_watchdog_snapshots(opts, state);
+    // noCarrier() ended the slots as sync loss, so their VOICE_END alerts are being held against
+    // a reacquisition that can no longer happen. Retire them now, after the pass above has
+    // committed the rows and before audio output closes, or the last transmission of the session
+    // ends silently. Deliberately not inside the snapshot helper: its first call above runs while
+    // calls may still be active.
+    dsd_event_flush_pending_alerts(opts, state);
     dsd_engine_cleanup_close_wavs(opts, state);
     dsd_rdio_upload_shutdown();
 

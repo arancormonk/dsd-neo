@@ -3030,6 +3030,85 @@ test_call_context_snapshot_restores_committed_end(void) {
     return rc;
 }
 
+// A sync-loss VOICE_END is held for the length of the reacquisition window. At shutdown there is
+// no further audio to reacquire with, and the per-frame drain only fires once that window has
+// elapsed, so an end armed in the last half second before exit would never be heard. The
+// force-flush entry point the engine calls after its final snapshot pass has to retire it.
+static int
+test_pending_end_alert_is_flushed_at_shutdown(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    // Still held: the deadline is on the monotonic clock and has not passed.
+    int rc = expect_int("sync-loss end is still held before shutdown", g_beeper_count, 1);
+    dsd_event_flush_pending_alerts(&opts, &state);
+    rc |= expect_int("shutdown retires the held END", g_beeper_count, 2);
+    // Idempotent: the engine's cleanup path is not the only thing that may run at exit.
+    dsd_event_flush_pending_alerts(&opts, &state);
+    rc |= expect_int("shutdown flush does not double-beep", g_beeper_count, 2);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Clearing the event history destroys the rows the lifecycle points at. A VOICE_END held against
+// a reacquisition that will never come must go with them, or it beeps for a transmission the
+// operator can no longer see.
+static int
+test_history_reset_drops_pending_end_alert(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_int("sync-loss end is held before reset", g_beeper_count, 1);
+    rc |= expect_int("sync-loss end committed a row", committed_history_rows(&event_history[0]), 1);
+
+    dsd_event_history_reset(&state);
+    rc |= expect_int("reset clears the rows", committed_history_rows(&event_history[0]), 0);
+
+    // Neither the deadline passing nor an explicit flush may resurrect it.
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_event_flush_pending_alerts(&opts, &state);
+    rc |= expect_int("reset drops the held END with the rows it described", g_beeper_count, 1);
+
+    // The ended call must not be re-rendered into the cleared history either: the row the
+    // operator deleted stays deleted.
+    rc |= expect_int("reset does not resurrect the committed row", committed_history_rows(&event_history[0]), 0);
+
+    // The next call still behaves normally.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 500U, 900U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("call after reset alerts START", g_beeper_count, 2);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("call after reset commits its row", committed_history_rows(&event_history[0]), 1);
+    rc |=
+        expect_int("call after reset keeps its identity", (int)event_history[0].Event_History_Items[1].target_id, 500);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3071,6 +3150,8 @@ main(void) {
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();
+    rc |= test_pending_end_alert_is_flushed_at_shutdown();
+    rc |= test_history_reset_drops_pending_end_alert();
     rc |= test_identityless_ended_epoch_does_not_reacquire();
     rc |= test_reacquired_stage_superseded_by_new_call_still_merges();
     rc |= test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row();

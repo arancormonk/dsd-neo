@@ -125,6 +125,15 @@ int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, u
                                              const dsd_call_snapshot* call, const char* detail);
 int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
 /**
+ * Retire any VOICE_END alert still being held open against a possible reacquisition, on both
+ * slots, without waiting for its deadline.
+ *
+ * For callers that know no further audio can arrive -- shutdown being the only one today. The
+ * per-frame drain in dsd_event_sync_slot() only fires once the reacquisition window has elapsed,
+ * so an end armed in the last half second before exit would otherwise never be heard.
+ */
+void dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state);
+/**
  * Clear every history row on both slots and the per-slot commit bookkeeping with it.
  *
  * Callers must not hold an event-history transaction: this opens its own. Clearing the rows
