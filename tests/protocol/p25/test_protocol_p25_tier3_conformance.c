@@ -15,6 +15,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,9 +28,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-/* External entry point under test */
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
 
 static void
 mac_set_bits(unsigned long long MAC[24], int start_bit, int bit_count, uint64_t value) {
@@ -207,7 +205,7 @@ test_tsbk_0x3e_not_protection(void) {
     MAC[6] = 0xCD;
     MAC[7] = 0xEF;
 
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_prot_algid != 0 || st.p25_prot_kid != 0) {
         DSD_FPRINTF(stderr, "FAIL: test_tsbk_0x3e_not_protection: protection state changed ALGID=0x%02X KID=0x%04X\n",
@@ -239,7 +237,7 @@ test_time_date_state_stores_time_t(void) {
 
     unsigned long long MAC[24];
     build_time_date_mac(MAC, 1, 1, 0, 0, 0, 2025, 3, 15, 14, 30, 45);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_sys_time != expected) {
         DSD_FPRINTF(stderr, "FAIL: test_time_date_state_stores_time_t: UTC time_t mismatch, expected %ld, got %ld\n",
@@ -281,7 +279,7 @@ test_time_date_state_stores_offset(void) {
 
     unsigned long long MAC[24];
     build_time_date_mac(MAC, 0, 0, 1, 1, 330, 0, 0, 0, 0, 0, 0);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_sys_time_offset != -330) {
         DSD_FPRINTF(stderr, "FAIL: test_time_date_state_stores_offset: expected -330, got %d\n",
@@ -307,7 +305,7 @@ test_time_date_bridged_p1_survey_offset_layout(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&st, 0, sizeof(st));
     build_p1_bridged_time_date_offset_mac(MAC, 330, 1);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_sys_time_offset != 330 || st.p25_sys_time_offset_valid != 1) {
         DSD_FPRINTF(stderr, "FAIL: bridged P1 positive UTC offset expected +330, got %d valid %u\n",
@@ -318,7 +316,7 @@ test_time_date_bridged_p1_survey_offset_layout(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&st, 0, sizeof(st));
     build_p1_bridged_time_date_offset_mac(MAC, 0x800 | 330, 0);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_sys_time_offset != -330 || st.p25_sys_time_offset_valid != 1) {
         DSD_FPRINTF(stderr, "FAIL: bridged P1 negative UTC offset expected -330, got %d valid %u\n",
@@ -344,7 +342,7 @@ test_time_date_state_stores_utc_from_local_offset(void) {
 
     unsigned long long MAC[24];
     build_time_date_mac(MAC, 1, 1, 1, 0, 330, 2025, 3, 15, 14, 30, 45);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     const time_t expected = (time_t)1742029245;
     if (st.p25_sys_time != expected) {
@@ -387,7 +385,7 @@ test_vpdu_dispatch_0x75(void) {
     unsigned long long MAC[24];
     build_time_date_mac(MAC, 1, 1, 1, 0, 0, 2025, 1, 1, 0, 0, 0);
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_sys_time != (time_t)1735689600) {
         DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x75: p25_sys_time not updated correctly\n");
@@ -420,7 +418,7 @@ test_vpdu_dispatch_0x78(void) {
     MAC[8] = 0x56;
     MAC[9] = 0x07;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_sys_services_valid != 1 || st.p25_sys_services_available != 0xABCDEFU
         || st.p25_sys_services_supported != 0x123456U || st.p25_sys_services_request_priority != 0x07U) {
@@ -455,7 +453,7 @@ test_vpdu_dispatch_0x7a(void) {
     MAC[8] = 0x0A;
     MAC[9] = 0x01;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_site_lra_valid != 1 || st.p25_site_lra != 0xAB || st.p25_site_network_active_valid != 1
         || st.p25_site_network_active != 1 || st.p2_rfssid != 0x04 || st.p2_siteid != 0x05) {
@@ -497,7 +495,7 @@ test_vpdu_dispatch_0x7c_adjacent_validity(void) {
     MAC[8] = 0x0A;
     MAC[9] = 0x02;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_nb_count != 1 || st.p25_nb_entries[0].freq != 851125000L || st.p25_nb_entries[0].lra_valid != 1
         || st.p25_nb_entries[0].lra != 0xAB || st.p25_nb_entries[0].cfva_valid != 1
@@ -535,7 +533,7 @@ test_vpdu_dispatch_0x7e(void) {
     MAC[8] = 0x01;
     MAC[9] = 0x02;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_prot_algid != 0 || st.p25_prot_kid != 0) {
         DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7e: protection state changed ALGID=0x%02X KID=0x%04X\n",
@@ -578,7 +576,7 @@ test_vpdu_dispatch_0x7f(void) {
     MAC[8] = 0x34;
     MAC[9] = 0x56;
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     if (st.p25_prot_valid != 1) {
         DSD_FPRINTF(stderr, "FAIL: test_vpdu_dispatch_0x7f: p25_prot_valid expected 1, got %u\n", st.p25_prot_valid);

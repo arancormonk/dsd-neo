@@ -170,6 +170,7 @@ changed_sources=()
 changed_headers=()
 format_files=()
 semgrep_targets=()
+semgrep_full_scan=0
 cmake_format_files=()
 workflow_security_targets=()
 dependency_scan_targets=()
@@ -187,6 +188,11 @@ for p in "${changed_paths[@]}"; do
     src/* | include/* | apps/* | tests/* | tools/* | .github/workflows/*.yml | .github/workflows/*.yaml)
       semgrep_targets+=("$p")
       ;;
+  esac
+
+  # A rule edit can change the verdict on any file, so scan the whole tree.
+  case "$p" in
+    semgrep/*) semgrep_full_scan=1 ;;
   esac
 
   case "$p" in
@@ -285,7 +291,7 @@ echo "ci-changed-files: base=${BASE_REF} head=${HEAD_REF}"
 echo "ci-changed-files: changed=${#changed_paths[@]} format=${#format_files[@]}" \
   "tus=${#analysis_tus[@]} cppcheck=${#cppcheck_sources[@]} semgrep=${#semgrep_targets[@]}" \
   "cmake=${#cmake_format_files[@]} workflows=${#workflow_security_targets[@]}" \
-  "deps=${#dependency_scan_targets[@]}"
+  "deps=${#dependency_scan_targets[@]} semgrep_full=${semgrep_full_scan}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
@@ -295,6 +301,7 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     echo "analysis_tus=${#analysis_tus[@]}"
     echo "cppcheck_sources=${#cppcheck_sources[@]}"
     echo "semgrep_targets=${#semgrep_targets[@]}"
+    echo "semgrep_full_scan=${semgrep_full_scan}"
     echo "cmake_format_files=${#cmake_format_files[@]}"
     echo "workflow_security_targets=${#workflow_security_targets[@]}"
     echo "dependency_scan_targets=${#dependency_scan_targets[@]}"

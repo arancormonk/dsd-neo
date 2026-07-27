@@ -152,6 +152,7 @@ changed_headers=()
 format_files=()
 cmake_format_files=()
 semgrep_targets=()
+semgrep_full_scan=0
 shell_lint_targets=()
 workflow_lint_targets=()
 workflow_security_targets=()
@@ -168,6 +169,11 @@ for p in "${changed_paths[@]}"; do
     src/* | include/* | apps/* | tests/* | tools/* | .github/workflows/*.yml | .github/workflows/*.yaml)
       track_semgrep=1
       ;;
+  esac
+
+  # A rule edit can change the verdict on any file, so scan the whole tree.
+  case "$p" in
+    semgrep/*) semgrep_full_scan=1 ;;
   esac
 
   case "$p" in
@@ -437,7 +443,13 @@ if [[ ${#analysis_tus[@]} -gt 0 ]]; then
   fi
 fi
 
-if [[ ${#semgrep_targets[@]} -gt 0 ]]; then
+if [[ $semgrep_full_scan -eq 1 ]]; then
+  if command -v semgrep > /dev/null 2>&1; then
+    run_check "Semgrep strict (full tree; rules changed)" tools/semgrep.sh --strict
+  else
+    mark_missing_tool "semgrep" "Semgrep analysis"
+  fi
+elif [[ ${#semgrep_targets[@]} -gt 0 ]]; then
   if command -v semgrep > /dev/null 2>&1; then
     run_check "Semgrep strict (${#semgrep_targets[@]} path(s))" tools/semgrep.sh --strict -- "${semgrep_targets[@]}"
   else

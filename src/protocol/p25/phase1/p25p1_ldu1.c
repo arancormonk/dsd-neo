@@ -298,7 +298,7 @@ p25p1_ldu1_build_lcw_buffers(const uint8_t lcformat[9], const uint8_t mfid[9], c
         LCW_bytes[i + 2] = (uint8_t)convert_bits_into_output(&lcinfo[o], 8);
     }
 
-    unpack_byte_array_into_bit_array(LCW_bytes, LCW_bits, 9);
+    dsd_unpack_bytes_to_bits(LCW_bytes, 9U, LCW_bits, 72U, 9U);
 }
 
 static void

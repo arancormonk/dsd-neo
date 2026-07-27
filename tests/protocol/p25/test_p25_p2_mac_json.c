@@ -35,6 +35,12 @@ const dsdneoRuntimeConfig* dsd_neo_get_config(void);
 
 // Test shims: Phase 2 MAC VPDU entry points
 void p25_test_process_mac_vpdu_ex(int type, const unsigned char* mac_bytes, int mac_len, int is_lcch, int currentslot);
+void p25_test_process_mac_vpdu_typed(int type, int pdu_type, const unsigned char* mac_bytes, int mac_len, int is_lcch,
+                                     int currentslot);
+
+// Outer MAC PDU types (mirrors p25_mac_pdu_type; this test avoids decoder headers).
+#define TEST_MAC_PDU_IDLE     3
+#define TEST_MAC_PDU_HANGTIME 6
 
 // Stubs referenced by MAC VPDU path
 void
@@ -275,13 +281,26 @@ main(void) {
         p25_test_process_mac_vpdu_ex(1 /*SACCH*/, mac, 24, 0, 0);
     }
 
-    // Case C: LCCH labeling and TDMA 0x03 telephone user summary
+    // Case C: LCCH labeling. The summary names the outer MAC PDU type, which
+    // is a different namespace from the inner MAC message opcode also emitted:
+    // here opcode 0x03 is Telephone Interconnect Voice Channel User while PDU
+    // type 3 is IDLE, so the record must read op=3 with summary IDLE.
     {
         unsigned char mac[24];
         DSD_MEMSET(mac, 0, sizeof mac);
-        mac[1] = 0x03; // IDLE
+        mac[1] = 0x03; // MAC opcode: telephone interconnect voice channel user
         mac[2] = 0x00; // standard MFID
-        p25_test_process_mac_vpdu_ex(0 /*FACCH path*/, mac, 24, /*is_lcch*/ 1, /*slot*/ 0);
+        p25_test_process_mac_vpdu_typed(0 /*FACCH path*/, TEST_MAC_PDU_IDLE, mac, 24, /*is_lcch*/ 1, /*slot*/ 0);
+    }
+
+    // Case C2: a hangtime PDU carrying a Group Voice Channel User. Deriving the
+    // summary from mac[1] labelled this "PTT"; it must follow the PDU type.
+    {
+        unsigned char mac[24];
+        DSD_MEMSET(mac, 0, sizeof mac);
+        mac[1] = 0x01; // MAC opcode: group voice channel user, abbreviated
+        mac[2] = 0x00; // standard MFID
+        p25_test_process_mac_vpdu_typed(1 /*SACCH*/, TEST_MAC_PDU_HANGTIME, mac, 24, /*is_lcch*/ 0, /*slot*/ 0);
     }
 
     // Case D: FACCH MCO clamp beyond capacity (opcode with MCO=63 → clamp to lenB=16)
@@ -329,7 +348,8 @@ main(void) {
     rc |= expect_eq_int("FACCH clamp lenB", lenB, 16);
     rc |= expect_eq_int("FACCH clamp lenC", lenC, 0);
     rc |= expect_eq_int("FACCH clamp slot", slot, 1);
-    rc |= expect_json_record_summary(buf, "LCCH", 0x03, "TELE");
+    rc |= expect_json_record_summary(buf, "LCCH", 0x03, "IDLE");
+    rc |= expect_json_record_summary(buf, "SACCH", 0x01, "HANGTIME");
     free(buf);
 
     // First line should be Case A or earlier; specifically check LCCH label via reading first line after moving to start
@@ -344,7 +364,7 @@ main(void) {
     // Because multiple records were written, the first line may be from Case A. Ensure at least one LCCH record exists by
     // opening again and scanning briefly for LCCH; if not, accept first line checks for MCO-derived values.
     if (strcmp(fxch, "LCCH") == 0) {
-        rc |= expect_eq_str("LCCH summary", fsum, "TELE");
+        rc |= expect_eq_str("LCCH summary", fsum, "IDLE");
     } else {
         // Validate SACCH case was written correctly in the file by ensuring last record was FACCH and previous one was SACCH.
         // We already asserted FACCH clamp; here we do a weak check that first line had an xch field present.

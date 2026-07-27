@@ -14,6 +14,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,9 +26,6 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
-
-/* External entry point under test */
-void process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int MAC[24]);
 
 static dsd_state st;
 
@@ -143,7 +141,7 @@ test_que_rsp_field_extraction_known_payload(void) {
     // SVC=0x15, Reason=0x20, Addl=0x123456, Target=0xABCDEF (11259375)
     build_que_deny_mac(MAC, 0, 0x15, 0x20, 0x123456, 0xABCDEF);
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
@@ -176,7 +174,7 @@ test_deny_rsp_field_extraction_known_payload(void) {
     // SVC=0x3F, Reason=0xFF, Addl=0xFEDCBA, Target=0x000001
     build_que_deny_mac(MAC, 1, 0x3F, 0xFF, 0xFEDCBA, 0x000001);
 
-    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, MAC);
+    process_MAC_VPDU(&opts, &st, 0 /*FACCH*/, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
@@ -228,7 +226,7 @@ test_que_reason_code_lookup_all_known(void) {
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 0, 0x01, cases[i].code, 0, 12345);
-        process_MAC_VPDU(&opts, &st, 0, MAC);
+        process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
         if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
             DSD_FPRINTF(stderr, "FAIL: test_que_reason_code[0x%02X]: queued=%u deny=%u\n", cases[i].code,
@@ -298,7 +296,7 @@ test_deny_reason_code_lookup_all_known(void) {
 
         unsigned long long MAC[24];
         build_que_deny_mac(MAC, 1, 0x02, cases[i].code, 0, 54321);
-        process_MAC_VPDU(&opts, &st, 0, MAC);
+        process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
         if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
             DSD_FPRINTF(stderr, "FAIL: test_deny_reason_code[0x%02X]: queued=%u deny=%u\n", cases[i].code,
@@ -331,7 +329,7 @@ test_que_rsp_user_reason_range(void) {
     reset_test_state();
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0xAB, 0, 999);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
@@ -363,7 +361,7 @@ test_deny_rsp_user_reason_range(void) {
     reset_test_state();
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x99, 0, 888);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {
@@ -583,7 +581,7 @@ test_active_channel_que_format(void) {
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 0, 0x01, 0x40, 0, 67890);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (strstr(recent_notice(0U), "QUE") == NULL) {
@@ -609,7 +607,7 @@ test_active_channel_deny_format(void) {
 
     unsigned long long MAC[24];
     build_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 12345);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (strstr(recent_notice(0U), "DENY") == NULL) {
@@ -636,7 +634,7 @@ test_additional_info_indicator_controls_display(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     reset_test_state();
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 0);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
     if (strstr(recent_notice(0U), "Info:") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: displayed info without AII: '%s'\n",
                     recent_notice(0U));
@@ -646,7 +644,7 @@ test_additional_info_indicator_controls_display(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     reset_test_state();
     build_que_deny_mac_aii(MAC, 0, 0x01, 0x40, 0x123456, 777, 1);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
     if (strstr(recent_notice(0U), "Info: 123456") == NULL) {
         DSD_FPRINTF(stderr, "FAIL: test_additional_info_indicator: missing AII info: '%s'\n", recent_notice(0U));
         rc = 1;
@@ -666,7 +664,7 @@ test_motorola_queued_response_field_extraction(void) {
 
     unsigned long long MAC[24];
     build_moto_que_deny_mac(MAC, 0, 0x15, 0x42, 0x123456, 0xABCDEF, 1);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (st.p25_sm_queued_count != 1 || st.p25_sm_deny_count != 0) {
@@ -689,7 +687,7 @@ test_motorola_deny_response_field_extraction(void) {
 
     unsigned long long MAC[24];
     build_moto_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 0x000123, 0);
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     int rc = 0;
     if (st.p25_sm_deny_count != 1 || st.p25_sm_queued_count != 0) {

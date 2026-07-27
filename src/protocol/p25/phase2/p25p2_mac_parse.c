@@ -255,6 +255,7 @@ p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], cons
 
     out->dst = 0;
     out->is_group = 1;
+    out->source_optional = 0;
     return 1;
 }
 
@@ -272,6 +273,7 @@ p25p2_mac_telephone_voice_identity_segment(const unsigned long long mac[24], con
     out->src = 0;
     out->is_group = 0;
     out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
+    out->source_optional = 1;
     return 1;
 }
 
@@ -292,6 +294,7 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         }
         out->is_group = 1;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
+        out->source_optional = 0;
         return 1;
     }
 
@@ -307,6 +310,7 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         }
         out->is_group = 0;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
+        out->source_optional = 0;
         return 1;
     }
 
@@ -321,6 +325,7 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
                          | p25p2_mac_octet(mac, pos + 6));
         out->is_group = 1;
         out->svc_bits = -1;
+        out->source_optional = 0;
         return 1;
     }
 
@@ -341,6 +346,7 @@ p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], stru
     out->src = 0;
     out->is_group = 1;
     out->svc_bits = -1;
+    out->source_optional = 0;
     if (p25p2_mac_parse(type, mac, &result) != 0) {
         return -1;
     }

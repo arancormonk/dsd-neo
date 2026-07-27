@@ -237,28 +237,28 @@ nxdn_alias_valid_arib_segment(uint8_t seg_num, uint8_t seg_total) {
 }
 
 static int
-nxdn_alias_arib_pack_and_validate(const dsd_state* state, uint8_t seg_total, uint8_t packed[24], size_t* packed_len) {
-    DSD_MEMSET(packed, 0, 24U);
-    // Callers validate seg_total; restate the bound so packed[] and crc_bits[] stay in range even
-    // if that ever changes. Track the length locally: packed[] and *packed_len are both
-    // caller-owned, so reloading *packed_len after writing packed[] would lose the bound.
-    const size_t max_segments = sizeof(state->nxdn_alias_arib_segments) / sizeof(state->nxdn_alias_arib_segments[0]);
-    if (seg_total == 0U || (size_t)seg_total > max_segments) {
+nxdn_alias_arib_pack_and_validate(const dsd_state* state, uint8_t seg_total, uint8_t* packed, size_t packed_capacity,
+                                  size_t* packed_len) {
+    // One bit per bit of the CRC-covered prefix, sized from the widest assembly the segment store
+    // can hold so the two stay coupled if the segment count ever changes.
+    uint8_t crc_bits[(sizeof(state->nxdn_alias_arib_segments) - 4U) * 8U];
+    const size_t source_segments = sizeof(state->nxdn_alias_arib_segments) / sizeof(state->nxdn_alias_arib_segments[0]);
+    const size_t packed_segments = packed_capacity / 6U;
+    if (seg_total == 0U || (size_t)seg_total > source_segments || (size_t)seg_total > packed_segments) {
         return 0;
     }
+    DSD_MEMSET(packed, 0, packed_capacity);
+    // seg_total >= 1 keeps packed_bytes >= 6, so the 4-octet CRC trailer always fits.
     const size_t packed_bytes = (size_t)seg_total * 6U;
-    *packed_len = packed_bytes;
     for (size_t s = 0U; s < (size_t)seg_total; s++) {
         DSD_MEMCPY(&packed[s * 6U], state->nxdn_alias_arib_segments[s], 6U);
     }
-    if (packed_bytes < 4U) {
-        return 0;
-    }
     const size_t crc_byte_count = packed_bytes - 4U;
-    uint8_t crc_bits[20U * 8U];
-    // Unpack the buffer's fixed capacity: only crc_byte_count * 8 bits are consumed below, and a
-    // variable length here lets the vectorizer speculate stores past crc_bits.
-    unpack_byte_array_into_bit_array(packed, crc_bits, (int)(sizeof(crc_bits) / 8U));
+    // Unpack a length fixed with respect to the over-the-air segment count rather than
+    // crc_byte_count: a variable length here lets the vectorizer speculate stores past crc_bits.
+    // The helper clamps to the caller's buffer, and the guards above keep crc_byte_count within
+    // the converted count, so every bit the CRC consumes is written.
+    dsd_unpack_bytes_to_bits_truncating(packed, packed_capacity, crc_bits, sizeof(crc_bits), sizeof(crc_bits) / 8U);
     uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[crc_byte_count]);
     uint32_t crc32_want = nxdn_crc32_bits(crc_bits, crc_byte_count * 8U);
     if (crc32_have != crc32_want) {
@@ -426,7 +426,7 @@ nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* me
 
     uint8_t packed[24];
     size_t packed_len = 0U;
-    if (!nxdn_alias_arib_pack_and_validate(state, seg_total, packed, &packed_len)) {
+    if (!nxdn_alias_arib_pack_and_validate(state, seg_total, packed, sizeof(packed), &packed_len)) {
         // Reject mixed/invalid assemblies so stale segments cannot leak into published aliases.
         nxdn_alias_reset_arib(state);
         return;

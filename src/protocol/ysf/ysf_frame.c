@@ -114,9 +114,10 @@ dsd_ysf_soft_viterbi_decode(const uint8_t* dibits, size_t dibit_count, size_t de
         viterbi_decode_punctured(decoded, soft_bits, DSD_YSF_PUNCTURE_NONE, (uint16_t)input_bits,
                                  (uint16_t)(sizeof(DSD_YSF_PUNCTURE_NONE) / sizeof(DSD_YSF_PUNCTURE_NONE[0])));
 
-    unpack_byte_array_into_bit_array(decoded, temp_bits, (int)(decoded_bytes + 1U));
+    DSD_UNPACK_ARRAY_TO_BITS(decoded, temp_bits, (int)(decoded_bytes + 1U));
     DSD_MEMCPY(out_bits, temp_bits + offset_bits, output_bits);
-    pack_bit_array_into_byte_array(out_bits, out_bytes, (int)output_bytes);
+    // out_bits spans output_bits elements and out_bytes output_bytes octets by contract.
+    dsd_pack_bits_to_bytes(out_bits, output_bits, out_bytes, output_bytes, output_bytes);
     return error;
 }
 

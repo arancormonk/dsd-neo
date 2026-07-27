@@ -169,7 +169,7 @@ main(void) {
     MAC[5] = 0x00; // SRC high
     MAC[6] = 0x00; // SRC mid
     MAC[7] = 0x01; // SRC low
-    process_MAC_VPDU(&opts, &st, /*type FACCH*/ 0, MAC);
+    process_MAC_VPDU(&opts, &st, /*type FACCH*/ 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("slot0 muted", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("slot0 ring flushed", st.p25_p2_audio_ring_count[0], 0);
@@ -185,7 +185,7 @@ main(void) {
     st.p25_p2_audio_ring_count[1] = 0;
     g_return_to_cc_called = 0;
 
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("slot0 muted again", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("slot0 ring remains empty", st.p25_p2_audio_ring_count[0], 0);
@@ -214,7 +214,7 @@ main(void) {
     st.p25_p2_last_mac_active_m[1] = dsd_time_now_monotonic_s();
     g_return_to_cc_called = 0;
 
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("unit slot0 muted", st.p25_p2_audio_allowed[0], 0);
     rc |= expect_eq("unit slot0 ring flushed", st.p25_p2_audio_ring_count[0], 0);
@@ -237,13 +237,13 @@ main(void) {
     st.p25_p2_audio_allowed[0] = 0;
     st.p25_p2_audio_ring_count[0] = 0;
 
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("late clear regroup member classified", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
 
     st.p25_p2_audio_allowed[0] = 1;
     st.p25_p2_audio_ring_count[0] = 2;
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("clear regroup member remains clear", st.p25_crypto_state[0], DSD_P25_CRYPTO_CLEAR);
     rc |= expect_eq("clear regroup member gate remains open", st.p25_p2_audio_allowed[0], 1);
@@ -311,7 +311,7 @@ main(void) {
     g_return_to_cc_called = 0;
     reset_audio_capture();
 
-    process_MAC_VPDU(&opts, &st, 0, MAC);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
 
     rc |= expect_eq("MAC Release tail emitted", g_audio_capture_calls > 0, 1);
     rc |= expect_eq("MAC Release tail left sample", g_first_audio_block[0], 321);

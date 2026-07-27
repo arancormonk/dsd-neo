@@ -347,7 +347,7 @@ write_confirmed_crc9_bytes(uint8_t* bytes, uint8_t dbsn, uint16_t crc_mask) {
     uint8_t bits[144];
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_confirmed_crc9_payload(bits, dbsn, crc_mask);
-    pack_bit_array_into_byte_array(bits, bytes, 18);
+    dsd_pack_bits_to_bytes(bits, sizeof(bits), bytes, 18U, 18U);
 }
 
 static void

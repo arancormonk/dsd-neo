@@ -84,5 +84,35 @@ dsd_neo_add_fuzzer(
   FUZZ_PROTOCOL_P25P2_MAC
   fuzz_protocol_p25p2_mac.c
   protocol_p25p2_mac
-  dsd-neo_proto_p25
+)
+# Running the real VPDU path reaches core GPS decoding, which resolves utf8_to_text
+# back in proto_dmr, so these archives are mutually dependent and need a link group.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_fuzz_protocol_p25p2_mac
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_test_p25_shims
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_fuzz_protocol_p25p2_mac
+        PRIVATE
+            dsd-neo_test_p25_shims
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_core
+    )
+endif()
+
+dsd_neo_add_fuzzer(
+  dsd-neo_fuzz_protocol_dmr_block
+  FUZZ_PROTOCOL_DMR_BLOCK
+  fuzz_protocol_dmr_block.c
+  protocol_dmr_block
+  dsd-neo_proto_dmr
 )

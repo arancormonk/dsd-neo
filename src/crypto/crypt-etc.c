@@ -274,7 +274,7 @@ dmr_static_parse_bits(const char* hex_tok, uint32_t parsed_len, uint8_t out_bits
     if ((size_t)unpack_len > parsed_hex_bytes) {
         return dmr_static_spec_fail(err, err_cap, "hex bytes shorter than requested bit length");
     }
-    unpack_byte_array_into_bit_array(ks_bytes, ks_unpacked, unpack_len);
+    DSD_UNPACK_ARRAY_TO_BITS(ks_bytes, ks_unpacked, unpack_len);
     for (uint32_t i = 0; i < parsed_len; i++) {
         out_bits[i] = (uint8_t)(ks_unpacked[i] & 1U);
     }

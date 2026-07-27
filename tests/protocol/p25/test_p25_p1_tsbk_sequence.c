@@ -144,10 +144,12 @@ p25_status_accum_classify(dsd_state* state) {
 }
 
 void
-process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, unsigned long long int mac[24]) {
+process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
+                 unsigned long long int mac[24]) {
     (void)opts;
     (void)state;
     (void)type;
+    (void)pdu_type;
     if (g_mac_count < 3) {
         g_mac_group[g_mac_count] = (int)((mac[5] << 8) | mac[6]);
         g_mac_source[g_mac_count] = (int)((mac[7] << 16) | (mac[8] << 8) | mac[9]);

@@ -1033,7 +1033,7 @@ nxdn_dcall_apply_decryption(const dsd_opts* opts, dsd_state* state, const struct
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
         DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
         des_ofb_keystream_output(state->payload_mi, key, ks_bytes, nblocks);
-        unpack_byte_array_into_bit_array(ks_bytes, ks, nblocks * 8);
+        DSD_UNPACK_ARRAY_TO_BITS(ks_bytes, ks, (size_t)nblocks * 8U);
     } else if (state->payload_algid == 3 && aes_key_loaded == 1) {
         if (state->payload_mi != 0ULL) {
             nxdn_lfsr128_expand_iv_from_mi64((uint64_t)state->payload_mi, state->aes_ivR);
@@ -1045,7 +1045,7 @@ nxdn_dcall_apply_decryption(const dsd_opts* opts, dsd_state* state, const struct
         uint8_t ks_bytes[NXDN_DCALL_MAX_BYTES];
         DSD_MEMSET(ks_bytes, 0, sizeof(ks_bytes));
         aes_ofb_keystream_output(state->aes_ivR, aes_key, ks_bytes, DSD_AES_KEY_256, nblocks);
-        unpack_byte_array_into_bit_array(ks_bytes, ks, nblocks * 16);
+        DSD_UNPACK_ARRAY_TO_BITS(ks_bytes, ks, (size_t)nblocks * 16U);
     }
 
     for (int i = 0; i < ctx->total_bits; i++) {
@@ -1101,7 +1101,7 @@ nxdn_dcall_handle_reverse_gps(const dsd_opts* opts, dsd_state* state, const stru
     const int core_len = reverse_len - 4;
     uint8_t reverse_bits[NXDN_DCALL_MAX_BITS];
     DSD_MEMSET(reverse_bits, 0, sizeof(reverse_bits));
-    unpack_byte_array_into_bit_array(reverse_bytes, reverse_bits, core_len);
+    DSD_UNPACK_ARRAY_TO_BITS(reverse_bytes, reverse_bits, core_len);
     if (core_len >= 2 && (uint16_t)convert_bits_into_output(reverse_bits, 16) == 0xFFFCU) {
         nxdn_gps_report(opts, state, reverse_bits + 16, (uint32_t)state->dmr_lrrp_source[0]);
     }

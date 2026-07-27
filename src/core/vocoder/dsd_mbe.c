@@ -710,7 +710,8 @@ mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
         des_ofb_keystream_output(state->payload_miN, state->R, state->ks_octetL, 26);
         state->bit_counterL = 0;
-        unpack_byte_array_into_bit_array(state->ks_octetL + 8, state->ks_bitstreamL, 26 * 8);
+        dsd_unpack_bytes_to_bits(state->ks_octetL + 8, sizeof(state->ks_octetL) - 8U, state->ks_bitstreamL,
+                                 sizeof(state->ks_bitstreamL), (size_t)26U * 8U);
         state->nxdn_new_iv = 0;
     }
 
@@ -719,7 +720,8 @@ mbe_init_nxdn_cipher23_keystream(dsd_state* state) {
         DSD_MEMSET(state->ks_bitstreamL, 0, sizeof(state->ks_bitstreamL));
         aes_ofb_keystream_output(state->aes_iv, state->aes_key, state->ks_octetL, DSD_AES_KEY_256, 15);
         state->bit_counterL = 0;
-        unpack_byte_array_into_bit_array(state->ks_octetL + 16, state->ks_bitstreamL, 14 * 16);
+        dsd_unpack_bytes_to_bits(state->ks_octetL + 16, sizeof(state->ks_octetL) - 16U, state->ks_bitstreamL,
+                                 sizeof(state->ks_bitstreamL), (size_t)14U * 16U);
         state->nxdn_new_iv = 0;
     }
 }

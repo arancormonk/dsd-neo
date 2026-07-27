@@ -1864,6 +1864,40 @@ test_anonymous_followup_restarts_crypto_pending(void) {
 }
 
 static int
+test_source_less_duplicate_grant_republishes_crypto(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 0, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_active_call(0, 1000, 0, 0, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (!ctx.slots[0].voice_active || dsd_call_state_end(&g_state, 0U, 0.0) <= 0) {
+        DSD_FPRINTF(stderr, "FAIL: Source-less crypto republish fixture did not retain stale activity\n");
+        return 1;
+    }
+
+    g_state.payload_algid = 0x84;
+    g_state.payload_keyid = 0x1234;
+    g_state.payload_miP = UINT64_C(0x0102030405060708);
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    ev = p25_sm_ev_group_grant_update(0x1234, 851500000, 1000, 0, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED || call.algid != 0x84U
+        || call.kid != 0x1234U || call.mi != UINT64_C(0x0102030405060708) || call.crypto != DSD_CALL_CRYPTO_ENCRYPTED
+        || call.audio_permitted != 0U) {
+        DSD_FPRINTF(stderr, "FAIL: Source-less duplicate grant dropped the crypto republish\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_unassigned_companion_start_is_rejected(void) {
     reset_test_state();
     g_state.trunk_chan_map[0x1234] = 851500000;
@@ -2723,6 +2757,7 @@ main(void) {
     fail += test_tdma_boundaries_only_hang_after_last_assigned_voice();
     fail += test_tdma_idle_ends_voice_with_newer_grant();
     fail += test_anonymous_followup_restarts_crypto_pending();
+    fail += test_source_less_duplicate_grant_republishes_crypto();
     fail += test_unassigned_companion_start_is_rejected();
     fail += test_state_names();
     fail += test_config_defaults();
