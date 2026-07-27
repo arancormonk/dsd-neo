@@ -105,7 +105,12 @@ static void DSD_ATTR_USED
 dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     const double ended_m = dsd_time_now_monotonic_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        if (dsd_call_state_end(state, (uint8_t)slot, ended_m) > 0) {
+        // The state machine is leaving this voice channel by decision, not because the carrier
+        // went away, so nothing that follows on the control channel may be read as this
+        // transmission resuming. Spelled out rather than left to the default: the counterpart
+        // cleanup in no_carrier_clear_voice_tune_state() is reached only from noCarrier() and
+        // does classify its ends as sync loss, and the two must differ deliberately.
+        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_EXPLICIT) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
         }
     }

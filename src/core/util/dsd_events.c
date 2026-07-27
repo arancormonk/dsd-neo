@@ -163,41 +163,66 @@ push_event_history(Event_History_I* event_struct) {
     dsd_event_history_mark_dirty(event_struct);
 }
 
-void
-write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
-                        char* event_string) //pass completed event string here that is in the struct
-{
+// Optional per-row detail written as its own event-log line. Tracked across a merge so a
+// continuation can report exactly what the reacquired segment contributed.
+typedef struct {
+    uint8_t alias;
+    uint8_t gps;
+    uint8_t text_message;
+    uint8_t internal;
+} watchdog_event_merge_added;
 
-    //open log file
-    FILE* event_log_file;
-    event_log_file = dsd_fopen_private(opts->event_out_file, "a");
-
-    if (event_log_file != NULL) {
-        DSD_FPRINTF(event_log_file, "%s ", event_string);
+// One event-log entry: the rendered line, then whichever optional detail lines apply. A row's
+// first commit and a reacquired segment's continuation are the same entry shape, so they share
+// one writer and the log format keeps a single source of truth.
+//
+// `event_string` NULL suppresses the rendered line, for a continuation that only has new detail
+// to report. `prefix` marks the entry as a continuation. `selection` limits the detail lines to
+// what the caller just learned; NULL writes every non-empty one.
+static void
+watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrite, const char* prefix,
+                               const char* event_string, const Event_History* row,
+                               const watchdog_event_merge_added* selection) {
+    if (opts->event_out_file[0] == '\0') {
+        return;
+    }
+    FILE* event_log_file = dsd_fopen_private(opts->event_out_file, "a");
+    if (event_log_file == NULL) {
+        return;
+    }
+    if (event_string != NULL) {
+        DSD_FPRINTF(event_log_file, "%s%s ", prefix != NULL ? prefix : "", event_string);
         if (swrite == 1) {
             DSD_FPRINTF(event_log_file, "Slot %d; ", slot + 1);
         }
         DSD_FPRINTF(event_log_file, "\n");
-
-        if (state->event_history_s[slot].Event_History_Items[0].text_message[0] != '\0') {
-            DSD_FPRINTF(event_log_file, "%s \n", state->event_history_s[slot].Event_History_Items[0].text_message);
-        }
-        if (state->event_history_s[slot].Event_History_Items[0].alias[0] != '\0') {
-            DSD_FPRINTF(event_log_file, " Talker Alias: %s \n",
-                        state->event_history_s[slot].Event_History_Items[0].alias);
-        }
-        if (state->event_history_s[slot].Event_History_Items[0].gps_s[0] != '\0') {
-            DSD_FPRINTF(event_log_file, " GPS: %s \n", state->event_history_s[slot].Event_History_Items[0].gps_s);
-        }
-        if (state->event_history_s[slot].Event_History_Items[0].internal_str[0] != '\0') {
-            DSD_FPRINTF(event_log_file, " DSD-neo: %s \n",
-                        state->event_history_s[slot].Event_History_Items[0].internal_str);
-        }
-
-        //flush and close log file
-        fflush(event_log_file);
-        fclose(event_log_file);
     }
+    if (selection != NULL ? selection->text_message != 0U : row->text_message[0] != '\0') {
+        DSD_FPRINTF(event_log_file, "%s \n", row->text_message);
+    }
+    if (selection != NULL ? selection->alias != 0U : row->alias[0] != '\0') {
+        DSD_FPRINTF(event_log_file, " Talker Alias: %s \n", row->alias);
+    }
+    if (selection != NULL ? selection->gps != 0U : row->gps_s[0] != '\0') {
+        DSD_FPRINTF(event_log_file, " GPS: %s \n", row->gps_s);
+    }
+    if (selection != NULL ? selection->internal != 0U : row->internal_str[0] != '\0') {
+        DSD_FPRINTF(event_log_file, " DSD-neo: %s \n", row->internal_str);
+    }
+    fflush(event_log_file);
+    fclose(event_log_file);
+}
+
+void
+write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
+                        const char* event_string) //pass completed event string here that is in the struct
+{
+    // The rendered line comes from the caller while the optional detail lines come from the
+    // slot's staged row. The two are usually the same row and occasionally are not; preserved as
+    // it stands rather than unified, since callers rely on passing a line for an already-pushed
+    // row.
+    watchdog_event_write_log_entry(opts, slot, swrite, NULL, event_string,
+                                   &state->event_history_s[slot].Event_History_Items[0], NULL);
 }
 
 static uint8_t
@@ -408,15 +433,6 @@ watchdog_event_merge_text_progressive(char* retained, const char* staged, size_t
     return 1;
 }
 
-// Optional per-row detail the normal commit path writes as its own event-log line. Tracked across
-// a merge so the continuation can report exactly what the reacquired segment contributed.
-typedef struct {
-    uint8_t alias;
-    uint8_t gps;
-    uint8_t text_message;
-    uint8_t internal;
-} watchdog_event_merge_added;
-
 // Rank crypto knowledge so a later segment can upgrade the retained row but never
 // downgrade it: a segment that decoded the PI/ESS header knows more than the late-entry
 // segment that had to assume clear.
@@ -512,44 +528,19 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
 }
 
 // The first segment already logged its line, so a merge appends a continuation rather than a new
-// entry. It carries the same slot annotation and the same optional-detail lines a normal commit
-// writes through write_event_to_log_file(), so a reader can attribute the continuation to a slot
-// and nothing a reacquired segment decoded is visible in the UI but missing from the log.
+// entry. Same writer as a normal commit, so it carries the same slot annotation and the same
+// optional-detail lines: nothing a reacquired segment decoded is visible in the UI but missing
+// from the log. Only what this segment actually contributed is reported.
 static void
 watchdog_event_log_merge_continuation(const dsd_opts* opts, uint8_t slot, uint8_t swrite, const Event_History* retained,
-                                      const char* event_string, const watchdog_event_merge_added* added,
-                                      int rendered_changed) {
-    if (opts->event_out_file[0] == '\0') {
-        return;
-    }
+                                      const watchdog_event_merge_added* added, int rendered_changed) {
     if (!rendered_changed && !added->alias && !added->gps && !added->text_message && !added->internal) {
         return;
     }
-    FILE* event_log_file = dsd_fopen_private(opts->event_out_file, "a");
-    if (event_log_file == NULL) {
-        return;
-    }
-    if (rendered_changed && event_string[0] != '\0') {
-        DSD_FPRINTF(event_log_file, " Reacquired: %s ", event_string);
-        if (swrite == 1) {
-            DSD_FPRINTF(event_log_file, "Slot %d; ", slot + 1);
-        }
-        DSD_FPRINTF(event_log_file, "\n");
-    }
-    if (added->text_message) {
-        DSD_FPRINTF(event_log_file, "%s \n", retained->text_message);
-    }
-    if (added->alias) {
-        DSD_FPRINTF(event_log_file, " Talker Alias: %s \n", retained->alias);
-    }
-    if (added->gps) {
-        DSD_FPRINTF(event_log_file, " GPS: %s \n", retained->gps_s);
-    }
-    if (added->internal) {
-        DSD_FPRINTF(event_log_file, " DSD-neo: %s \n", retained->internal_str);
-    }
-    fflush(event_log_file);
-    fclose(event_log_file);
+    // A re-render that produced no string, or one identical to what the row already showed, has
+    // nothing new to say; the detail lines below may still.
+    const char* rendered = (rendered_changed && retained->event_string[0] != '\0') ? retained->event_string : NULL;
+    watchdog_event_write_log_entry(opts, slot, swrite, " Reacquired: ", rendered, retained, added);
 }
 
 // True when the staged row may be folded into the row already committed for this slot: the
@@ -575,8 +566,9 @@ watchdog_event_staged_row_merges(const Event_History_I* event_struct, const dsd_
 }
 
 // Rebuild the merged row's user-legible string from its now-complete fields. Returns non-zero
-// when a string could be produced. Defined below, beside the per-protocol builders it reuses.
-static int watchdog_event_rerender_row(const dsd_call_event_render_env* env, Event_History* item);
+// when a string could be produced, and sets *changed when that string differs from the one the
+// row already carried. Defined below, beside the per-protocol builders it reuses.
+static int watchdog_event_rerender_row(const dsd_call_event_render_env* env, Event_History* item, int* changed);
 
 // Commit the staged row, or merge it into the row this slot already committed when the
 // canonical layer says the two are the same transmission. Returns non-zero when a new row
@@ -589,17 +581,14 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
     const uint8_t retained_index = watchdog_event_committed_row_index(event_struct, lifecycle);
     if (watchdog_event_staged_row_merges(event_struct, lifecycle, staged, retained_index)) {
         Event_History* retained = &event_struct->Event_History_Items[retained_index];
-        char rendered_before[sizeof(retained->event_string)];
-        copy_str_field(rendered_before, retained->event_string, sizeof(rendered_before));
         watchdog_event_merge_added added;
         watchdog_event_merge_staged_into(retained, staged, &added);
         // Re-render against the environment the row was committed under, not the live decoder.
         // A protocol with no builder, or a row with no recoverable timestamp, keeps its string.
-        const int rerendered = watchdog_event_rerender_row(&lifecycle->committed_env, retained);
-        const int rendered_changed =
-            rerendered && strncmp(retained->event_string, rendered_before, sizeof(rendered_before)) != 0;
-        watchdog_event_log_merge_continuation(opts, slot, watchdog_event_should_write_slot(state), retained,
-                                              retained->event_string, &added, rendered_changed);
+        int rendered_changed = 0;
+        (void)watchdog_event_rerender_row(&lifecycle->committed_env, retained, &rendered_changed);
+        watchdog_event_log_merge_continuation(opts, slot, watchdog_event_should_write_slot(state), retained, &added,
+                                              rendered_changed);
         dsd_event_history_mark_dirty(event_struct);
         // The merged row is now this epoch's row too, so late enrichment for the reacquired
         // epoch resolves to it and the next segment in the chain has a valid merge target.
@@ -1402,9 +1391,12 @@ watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t dat
 }
 
 static int
-watchdog_event_rerender_row(const dsd_call_event_render_env* env, Event_History* item) {
+watchdog_event_rerender_row(const dsd_call_event_render_env* env, Event_History* item, int* changed) {
     char timestr[9];
     char datestr[11];
+    if (changed != NULL) {
+        *changed = 0;
+    }
     // The row's own timestamp, not the merge instant: it still describes the transmission
     // that opened at the first commit. Without a trustworthy one, leave the row as it stands
     // rather than restamping it with an invented time.
@@ -1422,6 +1414,11 @@ watchdog_event_rerender_row(const dsd_call_event_render_env* env, Event_History*
     watchdog_event_current_append_policy_labels(&ctx, event_string, sizeof(event_string));
     if (event_string[0] == '\0') {
         return 0;
+    }
+    // Compared here, against the buffer that already exists, so the caller does not have to keep
+    // a second full-size copy of the row's string alive across the merge.
+    if (changed != NULL) {
+        *changed = strncmp(item->event_string, event_string, sizeof(item->event_string)) != 0;
     }
     DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s", event_string);
     return 1;
@@ -1463,9 +1460,12 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     // alert is held until the reacquisition window closes. Each further segment re-arms it, and
     // the alert lands once the call really has stopped flapping. An explicit terminator is
     // unambiguous and alerts immediately.
-    const int deferred_end =
-        call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && call->kind != DSD_CALL_KIND_DATA
-        && dsd_call_alert_event_enabled(opts->call_alert, opts->call_alert_events, DSD_CALL_ALERT_EVENT_VOICE_END);
+    //
+    // This describes what happened on the air, so it is derived from the air alone. Whether the
+    // operator wants to hear the result is a separate question, answered where the beep is
+    // actually emitted -- folding the alert setting in here would make a disposition that other
+    // side effects hang off silently change with an unrelated preference.
+    const int deferred_end = call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && call->kind != DSD_CALL_KIND_DATA;
     const dsd_event_end_disposition disposition = deferred_end ? DSD_EVENT_END_DEFERRED : DSD_EVENT_END_FINAL;
     if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
         // Either outcome puts this epoch's information into history -- a new row, or merged
@@ -1591,8 +1591,8 @@ dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_call_state_ext_lock(ext);
-    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        watchdog_event_flush_pending_end_alert(opts, state, slot, &ext->events[slot], 1);
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        watchdog_event_flush_pending_end_alert(opts, state, (uint8_t)slot, &ext->events[slot], 1);
     }
     dsd_call_state_ext_unlock(ext);
 }
@@ -1802,7 +1802,7 @@ dsd_event_history_reset(dsd_state* state) {
     // The transaction already holds the call-state mutex that guards ext->events, so the rows
     // and the bookkeeping that points into them are cleared together.
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    for (uint8_t slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         init_event_history(&state->event_history_s[slot], 0, 255);
         if (ext != NULL) {
             // epoch and ended_committed are deliberately left alone. They say which call the slot

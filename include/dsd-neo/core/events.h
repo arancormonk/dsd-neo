@@ -114,7 +114,8 @@ dsd_event_history_item_set_message(Event_History* item, dsd_event_severity sever
     }
 }
 
-void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string);
+void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
+                             const char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);

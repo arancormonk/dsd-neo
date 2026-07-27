@@ -31,10 +31,11 @@ static const dsd_opts* g_write_opts = NULL;
 static dsd_state* g_write_state = NULL;
 static uint8_t g_write_slot = 0;
 static uint8_t g_write_swrite = 0;
-static char* g_write_event_string = NULL;
+static const char* g_write_event_string = NULL;
 
 static void
-fake_write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string) {
+fake_write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
+                             const char* event_string) {
     g_write_calls++;
     g_write_opts = opts;
     g_write_state = state;

@@ -12,6 +12,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -80,11 +81,18 @@ static int g_runtime_config_is_set = 0;
 
 int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
     (void)state;
     (void)slot;
     (void)observed_m;
+    (void)reason;
     return 0;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+    return dsd_call_state_end_ex(state, slot, observed_m, DSD_CALL_END_EXPLICIT);
 }
 
 void
