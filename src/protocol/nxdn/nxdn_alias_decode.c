@@ -256,13 +256,9 @@ nxdn_alias_arib_pack_and_validate(const dsd_state* state, uint8_t seg_total, uin
     const size_t crc_byte_count = packed_bytes - 4U;
     // Unpack a length fixed with respect to the over-the-air segment count rather than
     // crc_byte_count: a variable length here lets the vectorizer speculate stores past crc_bits.
-    // Bound it by the caller's buffer too, so the read stays in range for any capacity. The guards
-    // above keep crc_byte_count <= unpack_bytes, so every bit the CRC consumes is written.
-    size_t unpack_bytes = sizeof(crc_bits) / 8U;
-    if (packed_capacity < unpack_bytes) {
-        unpack_bytes = packed_capacity;
-    }
-    unpack_byte_array_into_bit_array(packed, crc_bits, (int)unpack_bytes);
+    // The helper clamps to the caller's buffer, and the guards above keep crc_byte_count within
+    // the converted count, so every bit the CRC consumes is written.
+    dsd_unpack_bytes_to_bits_truncating(packed, packed_capacity, crc_bits, sizeof(crc_bits), sizeof(crc_bits) / 8U);
     uint32_t crc32_have = nxdn_alias_read_u32_be(&packed[crc_byte_count]);
     uint32_t crc32_want = nxdn_crc32_bits(crc_bits, crc_byte_count * 8U);
     if (crc32_have != crc32_want) {

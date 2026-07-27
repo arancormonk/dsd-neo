@@ -58,6 +58,24 @@ static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 #define VPDU_LABEL_UNUSED
 #endif
 
+/** @brief Octets a MAC PDU actually carries. */
+#define P25P2_MAC_OCTETS         24
+
+/**
+ * @brief Staging span for the MAC octets handed to the block handlers.
+ *
+ * Handlers address fields as MAC[N + len_a] with a fixed N and a len_a taken from the
+ * received segment offset. Newer handlers bound that sum (see p25p2_vpdu_can_read), but
+ * many of the older ones index raw, so a segment offset near the end of the PDU could
+ * read past a bare 24-octet array. Staging into P25P2_MAC_OCTETS real octets followed by
+ * a zero-filled tail keeps every such read in range and yields the absent-field value.
+ * Well-formed PDUs never reach the tail.
+ *
+ * This is containment, not a substitute for bounding each handler; the remaining raw
+ * MAC[N + len_a] sites still deserve an audit.
+ */
+#define P25P2_MAC_STAGING_OCTETS (P25P2_MAC_OCTETS * 2)
+
 static void
 p25p2_vpdu_print_group_label(const dsd_state* state, uint32_t id) {
     char name[50];
@@ -2082,11 +2100,9 @@ p25p2_vpdu_iter_block_19(p25p2_vpdu_ctx* ctx) {
         for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
             bytes[bi] = (uint8_t)MAC[len_a + bi];
         }
-        // len is an unvalidated over-the-air octet; bytes + 1 spans only sizeof(bytes) - 1 octets.
-        if (len > (uint8_t)(sizeof(bytes) - 1U)) {
-            len = (uint8_t)(sizeof(bytes) - 1U);
-        }
-        unpack_byte_array_into_bit_array(bytes + 1, mac_bits, len);
+        // len is an unvalidated over-the-air octet; bytes + 1 spans only sizeof(bytes) - 1 octets,
+        // so a malformed length is truncated rather than trusted.
+        dsd_unpack_bytes_to_bits_truncating(bytes + 1, sizeof(bytes) - 1U, mac_bits, sizeof(mac_bits), len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Header");
         apx_embedded_alias_header_phase2(opts, state, state->currentslot, mac_bits);
     }
@@ -2124,11 +2140,9 @@ p25p2_vpdu_iter_block_20(p25p2_vpdu_ctx* ctx) {
         for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
             bytes[bi] = (uint8_t)MAC[len_a + bi];
         }
-        // len is an unvalidated over-the-air octet; bytes + 1 spans only sizeof(bytes) - 1 octets.
-        if (len > (uint8_t)(sizeof(bytes) - 1U)) {
-            len = (uint8_t)(sizeof(bytes) - 1U);
-        }
-        unpack_byte_array_into_bit_array(bytes + 1, mac_bits, len);
+        // len is an unvalidated over-the-air octet; bytes + 1 spans only sizeof(bytes) - 1 octets,
+        // so a malformed length is truncated rather than trusted.
+        dsd_unpack_bytes_to_bits_truncating(bytes + 1, sizeof(bytes) - 1U, mac_bits, sizeof(mac_bits), len);
         DSD_FPRINTF(stderr, "\n MFID90 (Moto) Talker Alias Blocks");
         apx_embedded_alias_blocks_phase2(opts, state, state->currentslot, mac_bits);
     }
@@ -2267,6 +2281,23 @@ BLOCK_END:
     ctx->iter_idx = i;
 }
 
+/**
+ * @brief Hex-dump MAC octets 4..len of a segment, bounded by the MAC array.
+ *
+ * Both len and len_a come from the wire, so the sum has to be checked against
+ * P25P2_MAC_OCTETS rather than len alone.
+ *
+ * @return Index one past the last octet printed, for the caller's iterator.
+ */
+static int
+p25p2_vpdu_dump_segment_octets(const unsigned long long int* MAC, int len_a, int len) {
+    int i = 4;
+    for (; i <= len && (i + len_a) < P25P2_MAC_OCTETS; i++) {
+        DSD_FPRINTF(stderr, "%02llX", MAC[i + len_a]);
+    }
+    return i;
+}
+
 static void
 p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
     const dsd_opts* opts VPDU_MAYBE_UNUSED = ctx->opts;
@@ -2299,25 +2330,24 @@ p25p2_vpdu_iter_block_24(p25p2_vpdu_ctx* ctx) {
             for (int bi = 0; bi < 24 && (len_a + bi) < 24; bi++) {
                 bytes[bi] = (uint8_t)MAC[len_a + bi];
             }
-            l3h_embedded_alias_decode(opts, state, slot, len, bytes);
+            // The decoder's len is the last readable index, not a count, so cap it at the
+            // last element of bytes rather than at its size.
+            const int16_t alias_last = (len > (int)(sizeof(bytes) - 1U)) ? (int16_t)(sizeof(bytes) - 1U) : (int16_t)len;
+            l3h_embedded_alias_decode(opts, state, slot, alias_last, bytes);
         }
 
         else if (MAC[1 + len_a]
                  == 0x81) //speculative based on the EDACS message that is also flushed with all F hex values
         {
             DSD_FPRINTF(stderr, "\n MFID A4 (Harris) Group Regroup Bitmap: ");
-            for (i = 4; i <= len; i++) {
-                DSD_FPRINTF(stderr, "%02llX", MAC[i + len_a]);
-            }
+            i = p25p2_vpdu_dump_segment_octets(MAC, len_a, len);
         }
 
         else {
             int res = MAC[3 + len_a] >> 6;
             DSD_FPRINTF(stderr, "\n MFID A4 (Harris); Res: %d; Len: %d; Opcode: %02llX; ", res, len,
                         MAC[1 + len_a] & 0x3F); //first two bits are the b0 and b1
-            for (i = 4; i <= len; i++) {
-                DSD_FPRINTF(stderr, "%02llX", MAC[i + len_a]);
-            }
+            i = p25p2_vpdu_dump_segment_octets(MAC, len_a, len);
         }
 
         //assign here so we don't read an extra opcode value, like MAC Release on FL-DCC-1 (0x31 opcode)
@@ -2448,7 +2478,8 @@ p25p2_vpdu_iter_block_27(p25p2_vpdu_ctx* ctx) {
 
         //dump entire payload
         DSD_FPRINTF(stderr, " Payload: ");
-        for (i = 4; i < len; i++) {
+        // Clamping len alone is not enough: len_a is an over-the-air offset into MAC[24].
+        for (i = 4; i < len && (i + len_a) < 24; i++) {
             DSD_FPRINTF(stderr, "%02llX", MAC[i + len_a]);
         }
 
@@ -5558,6 +5589,10 @@ p25p2_vpdu_select_segment(p25p2_vpdu_ctx* ctx, int index) {
     if (!ctx || !ctx->mac_res || index < 0 || index >= ctx->mac_res->segment_count) {
         return 0;
     }
+    // A segment offset must address a real octet; handlers add fixed field offsets to it.
+    if (ctx->mac_res->segments[index].offset < 0 || ctx->mac_res->segments[index].offset >= P25P2_MAC_OCTETS) {
+        return 0;
+    }
     ctx->len_a = ctx->mac_res->segments[index].offset;
     ctx->len_b = ctx->mac_res->segments[index].length;
     ctx->len_c = (index + 1 < ctx->mac_res->segment_count) ? ctx->mac_res->segments[index + 1].length : 0;
@@ -5584,8 +5619,8 @@ p25p2_vpdu_print_payload(const dsd_opts* opts, const unsigned long long int mac[
 void
 process_MAC_VPDU(dsd_opts* opts, dsd_state* state, int type, p25_mac_pdu_type pdu_type,
                  unsigned long long int mac[24]) {
-    unsigned long long int mac_octets[24] = {0};
-    for (int bi = 0; bi < 24; bi++) {
+    unsigned long long int mac_octets[P25P2_MAC_STAGING_OCTETS] = {0};
+    for (int bi = 0; bi < P25P2_MAC_OCTETS; bi++) {
         mac_octets[bi] = mac[bi] & 0xFFu;
     }
     const unsigned long long int* MAC = mac_octets;

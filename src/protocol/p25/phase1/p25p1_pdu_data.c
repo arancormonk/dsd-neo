@@ -598,7 +598,8 @@ p25_decode_es_header(const dsd_opts* opts, dsd_state* state, uint8_t* input, uin
 
     uint8_t bits[13 * 8];
     DSD_MEMSET(bits, 0, sizeof(bits));
-    unpack_byte_array_into_bit_array(input, bits, 13);
+    // Contract: input spans at least 13 octets for an ES header.
+    dsd_unpack_bytes_to_bits(input, 13U, bits, sizeof(bits), 13U);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     unsigned long long int mi = (unsigned long long int)convert_bits_into_output(bits, 64);
@@ -649,7 +650,8 @@ p25_decode_extended_address(dsd_opts* opts, dsd_state* state, const uint8_t* inp
 
     uint8_t bits[12 * 8];
     DSD_MEMSET(bits, 0, sizeof(bits));
-    unpack_byte_array_into_bit_array(input, bits, 12);
+    // Contract: input spans at least 12 octets for an extended address block.
+    dsd_unpack_bytes_to_bits(input, 12U, bits, sizeof(bits), 12U);
 
     uint8_t ea_sap = (uint8_t)convert_bits_into_output(bits + 10, 6);
     uint8_t ea_mfid = (uint8_t)convert_bits_into_output(bits + 16, 6);
@@ -961,7 +963,7 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
     if (payload[0] == (uint8_t)'$' || payload[0] == (uint8_t)'!') {
         uint8_t payload_bits[P25_PDU_MAX_DECODE_BYTES * 8];
         DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
-        unpack_byte_array_into_bit_array(payload, payload_bits, span);
+        dsd_unpack_bytes_to_bits(payload, (size_t)span, payload_bits, sizeof(payload_bits), (size_t)span);
 
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
         state->dmr_lrrp_source[slot] = pdu->source_id;

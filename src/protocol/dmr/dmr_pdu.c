@@ -377,7 +377,7 @@ dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spi
             decode_len = 127U;
         }
         DSD_MEMSET(bits, 0, sizeof(bits));
-        unpack_byte_array_into_bit_array(pdu + ptr, bits, (int)decode_len);
+        dsd_unpack_bytes_to_bits(pdu + ptr, len, bits, sizeof(bits), decode_len);
         uint8_t slot = (state->currentslot == 1) ? 1U : 0U;
         char previous_gps[sizeof(state->dmr_embedded_gps[slot])];
         DSD_SNPRINTF(previous_gps, sizeof(previous_gps), "%s", state->dmr_embedded_gps[slot]);
@@ -728,7 +728,7 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
                 decode_len = (uint16_t)(sizeof(bits) / 8U);
             }
             DSD_MEMSET(bits, 0, sizeof(bits));
-            unpack_byte_array_into_bit_array(payload, bits, (int)decode_len);
+            dsd_unpack_bytes_to_bits(payload, payload_len, bits, sizeof(bits), decode_len);
             lip_protocol_decoder(opts, state, bits);
             return 1;
         }

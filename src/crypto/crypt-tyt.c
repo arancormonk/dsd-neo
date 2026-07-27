@@ -43,7 +43,7 @@ tyt16_ambe2_codeword_keystream(const dsd_state* state, char ambe_fr[4][24], int 
     }
 
     //convert byte array into a bit array
-    unpack_byte_array_into_bit_array(ks_bytes, ks, 10);
+    DSD_UNPACK_ARRAY_TO_BITS(ks_bytes, ks, 10);
 
     //set ks idx position (-1)
     int idx = 0;
@@ -170,7 +170,7 @@ tyt_ep_aes_keystream_creation(dsd_state* state, const char* input, int show_keys
     aes_ofb_keystream_output(input_register, static_key, ks_bytes, DSD_AES_KEY_128, 1);
     uint8_t ks_bits[128];
     DSD_MEMSET(ks_bits, 0, sizeof(ks_bits));
-    unpack_byte_array_into_bit_array(ks_bytes, ks_bits, 16);
+    DSD_UNPACK_ARRAY_TO_BITS(ks_bytes, ks_bits, 16);
 
     pc4_tyt_set_static_keystream(ks_bits);
 

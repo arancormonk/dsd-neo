@@ -404,6 +404,76 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
+  avx512-lto-link:
+    # Reproduces the downstream AUR build failure from PR #261: GCC only emits the
+    # -Wstringop-overflow diagnostic when the target has AVX-512, and because it fires
+    # during LTO linking the full executable has to link, not just compile. Arch is used
+    # because it tracks the GCC release the reports come from.
+    #
+    # Deliberately non-required: -Wstringop-overflow is version- and vectorizer-sensitive,
+    # and the container is a rolling tag, so a GCC point release must not block unrelated
+    # PRs. Promote to required once it has been stable across a few releases.
+    name: gcc lto link (x86-64-v4)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            cmake ninja git pkgconf \
+            libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran \
+            codec2 rtl-sdr soapysdr curl
+
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Mark workspace as safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Report compiler version
+        run: gcc --version
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+          ldconfig
+
+      - name: Configure (Release + LTO + -march=x86-64-v4)
+        run: |
+          set -euxo pipefail
+          # HELP2MAN_FOUND is forced off: the man-page step runs the freshly built binary,
+          # which SIGILLs on a runner without AVX-512 and reads as a build failure.
+          cmake -S . -B build/avx512 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS="-march=x86-64-v4" \
+            -DCMAKE_CXX_FLAGS="-march=x86-64-v4" \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON \
+            -DDSD_WARNINGS_AS_ERRORS=ON \
+            -DBUILD_TESTING=OFF \
+            -DHELP2MAN_FOUND=HELP2MAN_FOUND-NOTFOUND
+
+      - name: Build and link (never executed)
+        run: |
+          set -euxo pipefail
+          # The link is the point: the diagnostic appears when LTO widens the copy loops.
+          # The resulting binary targets an ISA the runner lacks, so it is never run.
+          cmake --build build/avx512 -j
+          test -x build/avx512/apps/dsd-cli/dsd-neo
+
   semgrep:
     name: semgrep
     runs-on: ubuntu-latest
@@ -425,11 +495,11 @@ jobs:
             --no-header-expansion
 
       - name: Skip Semgrep
-        if: github.event_name == 'pull_request' && steps.changed.outputs.semgrep_targets == '0'
+        if: github.event_name == 'pull_request' && steps.changed.outputs.semgrep_targets == '0' && steps.changed.outputs.semgrep_full_scan != '1'
         run: echo "No changed paths for Semgrep."
 
       - name: Set up Python
-        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
@@ -437,17 +507,19 @@ jobs:
           cache-dependency-path: .github/requirements/semgrep.txt
 
       - name: Install Semgrep
-        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
         # Semgrep currently pins a vulnerable MCP SDK release. The hashed lock overrides that pin with the patched SDK.
         run: python -m pip install --no-deps --require-hashes -r .github/requirements/semgrep.txt
 
       - name: Run Semgrep
-        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0'
+        if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
         shell: bash
         env:
           DSD_SEMGREP_SARIF_OUT: .semgrep.sarif
+          SEMGREP_FULL_SCAN: ${{ steps.changed.outputs.semgrep_full_scan }}
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          # A rule edit can change the verdict on any file, so scan the whole tree.
+          if [[ "${{ github.event_name }}" == "pull_request" && "${SEMGREP_FULL_SCAN}" != "1" ]]; then
             mapfile -t targets < .ci/changed-files/semgrep_targets.txt
             tools/semgrep.sh --strict -- "${targets[@]}"
           else

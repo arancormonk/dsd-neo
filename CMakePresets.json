@@ -299,12 +299,18 @@
     {
       "name": "asan-ubsan-debug",
       "configurePreset": "asan-ubsan-debug",
-      "configuration": "Debug"
+      "configuration": "Debug",
+      "environment": {
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
     },
     {
       "name": "fuzz-asan-debug",
       "configurePreset": "fuzz-asan-debug",
-      "configuration": "Debug"
+      "configuration": "Debug",
+      "environment": {
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+      }
     },
     {
       "name": "tsan-debug",

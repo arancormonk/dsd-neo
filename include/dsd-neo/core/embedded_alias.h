@@ -38,6 +38,13 @@ void apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slo
                              const uint8_t* input, const uint8_t* decoded);
 
 void l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
+/**
+ * @brief Decode an L3Harris embedded talker alias.
+ *
+ * @param len   Index of the LAST readable octet of @p input, not a count. Callers must
+ *              cap it at the final element of their buffer.
+ * @param input Alias octets; must span at least @p len + 1 elements.
+ */
 void l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, const uint8_t* input);
 void tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
                                      const uint8_t* input);

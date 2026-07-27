@@ -80,6 +80,18 @@ main(void) {
     dmr_block_assembler(opts, state, block, 12, 0x06, 1);
     rc |= expect_eq_u32("desynchronised counter saturates", state->data_byte_ctr[0], cap);
 
+    /*
+     * A counter below the 4-octet CRC trailer used to underflow (ctr * 8) - 32 into a
+     * ~4 billion element read, because ComputeCrc32Bit() takes an unsigned length.
+     * Found by FUZZ_PROTOCOL_DMR_BLOCK; trips ASan without the guard.
+     */
+    for (uint16_t short_ctr = 0; short_ctr < 4U; short_ctr++) {
+        seed_incomplete_pdu(state, short_ctr);
+        state->data_block_counter[0] = 9; /* complete the PDU so the CRC pass runs */
+        state->data_header_blocks[0] = 9;
+        dmr_block_assembler(opts, state, block, 0, 0x06, 1);
+    }
+
     /* Repeated bursts keep saturating rather than wrapping the uint16 counter. */
     for (int i = 0; i < 64; i++) {
         state->data_block_counter[0] = 1;

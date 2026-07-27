@@ -97,7 +97,7 @@ csi72_ambe2_codeword_keystream(dsd_state* state, char ambe_fr[4][24]) {
     for (int i = 0; i < 9; i++) {
         ks_bytes[i] = state->csi_ee_key[8 - i];
     }
-    unpack_byte_array_into_bit_array(ks_bytes, ks_bits, 9);
+    DSD_UNPACK_ARRAY_TO_BITS(ks_bytes, ks_bits, 9);
 
     for (int8_t i = 0; i < 72; i++) {
         interleaved[i] ^= (char)ks_bits[71 - i];
