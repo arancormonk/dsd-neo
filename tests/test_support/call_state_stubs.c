@@ -186,11 +186,20 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
         return -1;
     }
     stub_select_state(state);
-    const int ended = g_stub_calls[slot].phase == DSD_CALL_PHASE_ACTIVE;
+    // Mirrors the production early-return: ending an already-ended epoch is a no-op, so the
+    // repeated sync-loss ends that fire while unsynced neither downgrade an explicit terminator's
+    // reason nor re-stamp ended_m and slide the reacquisition window. A stub that overwrote them
+    // would model the exact bug that guard exists to prevent.
+    if (g_stub_calls[slot].phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
     g_stub_calls[slot].phase = DSD_CALL_PHASE_ENDED;
     g_stub_calls[slot].end_reason = (uint8_t)reason;
-    (void)observed_m;
-    return ended;
+    // Stamped from the caller's timeline so a stub-linked test can drive the reacquisition
+    // window explicitly. No clock is read here: these targets deliberately link no timing
+    // backend, and a test that wants a window must supply both endpoints itself.
+    g_stub_calls[slot].ended_m = observed_m > 0.0 ? observed_m : 0.0;
+    return 1;
 }
 
 int

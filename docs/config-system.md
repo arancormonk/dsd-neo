@@ -359,6 +359,10 @@ small subset is exposed as config keys for convenience (for example
 | `end` | BOOL | Deprecated read alias for `voice_end` | `true` |
 | `data` | BOOL | Beep when a data call is logged | `true` |
 
+A transmission the decoder loses and regains is one call, so it beeps `voice_start` once at the
+start and `voice_end` once at the end. The end alert is held for roughly half a second after sync
+is lost, since the call may still resume; a terminator alerts immediately.
+
 **[recording] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|

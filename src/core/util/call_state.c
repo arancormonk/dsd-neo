@@ -339,8 +339,21 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
  * and coalescing is correspondingly more eager. Documented in docs/iq-capture-replay.md; use
  * --iq-replay-rate realtime to reproduce live timing. If an air-time clock is ever added, route
  * it through call_state_observed_m() rather than introducing a second clock here.
+ *
+ * The constant itself is DSD_CALL_REACQUIRE_GAP_S in <dsd-neo/core/call_state.h>; the event layer
+ * needs it to know how long to hold a VOICE_END alert open.
  */
-#define DSD_CALL_REACQUIRE_GAP_S 0.5
+
+// True when the slot names a call concretely enough for "the same call" to mean anything.
+// call_state_observation_changes_identity() only reports a *contradiction*, so a snapshot that
+// never learned an identity is compatible with every observation; reacquisition needs a positive
+// anchor or it would coalesce two unrelated transmissions.
+static int
+call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
+    return call_state_effective_target_snapshot(current) != 0U || current->ota_source_id != 0U
+           || call_state_text_is_known(current->source_text) || call_state_text_is_known(current->target_text)
+           || call_state_text_is_known(current->route_text[0]) || call_state_text_is_known(current->route_text[1]);
+}
 
 // True when this observation reopens an epoch that sync loss ended moments ago while describing
 // the same call -- one transmission the decoder lost and regained, not two transmissions. The
@@ -352,6 +365,12 @@ static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
                                   double now_m) {
     if (current->phase != DSD_CALL_PHASE_ENDED || current->end_reason != (uint8_t)DSD_CALL_END_SYNC_LOSS) {
+        return 0;
+    }
+    // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
+    // shape mark_vocoder_call_media() opens before any header decodes -- matches everything, and
+    // the next unrelated call on the slot would be folded into its row.
+    if (!call_state_snapshot_has_identity(current)) {
         return 0;
     }
     if (call_state_observation_changes_identity(current, observation)) {
@@ -462,9 +481,15 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
             ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
-        } else {
-            ext->events[observation->slot].reacquired_epoch = 0U;
+            // Which epoch was reopened. Whether a history row may actually be merged is the event
+            // layer's call -- it pairs this against the epoch its committed row belongs to -- but
+            // the identity seeding and the suppressed START above are canonical either way.
+            ext->events[observation->slot].reacquired_from_epoch = previous.epoch;
         }
+        // reacquired_epoch is deliberately not cleared here. It is compared against the epoch it
+        // names, and epoch ids only increase, so a stale value can never match a later epoch.
+        // Clearing it would disarm a reacquisition whose staged row is still waiting to flush,
+        // and that row would then be committed a second time.
         ext->events[observation->slot].ended_committed = 0U;
         ext->events[observation->slot].notice_epoch = 0U;
         ext->events[observation->slot].notice_target_id = 0U;
@@ -696,8 +721,22 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
         // itself is global, so a commit reference carried across a hop would point one
         // target's merge at another target's row. Invalidate rather than relocate.
         ext->events[slot].committed_seq = 0U;
+        ext->events[slot].committed_epoch = 0U;
         ext->events[slot].committed_valid = 0U;
         ext->events[slot].reacquired_epoch = 0U;
+        ext->events[slot].reacquired_from_epoch = 0U;
+        // Clearing the commit reference blocks the row merge but not the rest of reacquisition:
+        // the monotonic clock is global, so a slot saved mid-fade would still satisfy the gap
+        // test on the new target and suppress the first call's VOICE_START alert while seeding
+        // it with the old target's identity. A restored end is a hop, never a resumable fade.
+        if (ext->calls.slots[slot].phase == DSD_CALL_PHASE_ENDED) {
+            ext->calls.slots[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+        }
+        // A held VOICE_END belongs to the target being left. Its deadline is on the global
+        // monotonic clock, so carrying it across would fire it against whatever call the new
+        // target happens to be running.
+        ext->events[slot].end_alert_pending = 0U;
+        ext->events[slot].end_alert_due_m = 0.0;
     }
     dsd_call_state_ext_unlock(ext);
     return 1;

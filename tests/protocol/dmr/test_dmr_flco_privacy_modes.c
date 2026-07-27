@@ -34,8 +34,10 @@
 #include "test_support.h"
 
 int
-getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
-    (void)state;
+getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, int f, int s) {
+    (void)a_bits;
+    (void)f_bits;
+    (void)s_bits;
     return DSD_SNPRINTF(buffer, 16, "%02d-%03d", a, (f * 8) + s);
 }
 
