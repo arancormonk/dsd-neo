@@ -1638,6 +1638,94 @@ test_new_canonical_epoch_commits_prior_canonical_call(void) {
     return rc;
 }
 
+// Count committed rows (index 0 stages the call still in progress).
+static int
+committed_history_rows(const Event_History_I* history) {
+    int rows = 0;
+    for (int i = 1; i < 255; i++) {
+        if (history->Event_History_Items[i].event_string[0] != '\0') {
+            rows++;
+        }
+    }
+    return rows;
+}
+
+// Sync loss ends the canonical call mid-transmission; the next burst that
+// decodes opens a fresh epoch and its end commits the same row again. One
+// transmission must leave one row however many times it is closed and reopened.
+static int
+test_reacquired_transmission_commits_one_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    for (int pass = 0; pass < 3; pass++) {
+        assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                                 pass == 0 ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE)
+               >= 0);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+    }
+
+    int rc = expect_int("reacquired transmission commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("reacquired transmission emits one call end alert", g_beeper_count, 1);
+    rc |= expect_int("reacquired transmission keeps committed target",
+                     (int)event_history[0].Event_History_Items[1].target_id, 100);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The repeat guard must not swallow a different talker or a different target.
+static int
+test_changed_identity_still_commits_its_own_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("changed source commits its own row", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_int("newest row carries the new source", (int)event_history[0].Event_History_Items[1].source_id, 201);
+    rc |= expect_int("prior row keeps the first source", (int)event_history[0].Event_History_Items[2].source_id, 200);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Repeated data notices describe distinct receptions and are never coalesced.
+static int
+test_repeated_data_notices_are_not_coalesced(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+
+    assert(emit_test_data_notice(&opts, &state, 300U, 400U, "LRRP SRC: 300; (1.0, 2.0)", 0U) == 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(emit_test_data_notice(&opts, &state, 300U, 400U, "LRRP SRC: 300; (1.0, 2.0)", 0U) == 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("repeated data notices both reach history", committed_history_rows(&event_history[0]), 2);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_late_source_enriches_matching_canonical_call(void) {
     static dsd_opts opts;
@@ -1879,6 +1967,9 @@ main(void) {
     rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
+    rc |= test_reacquired_transmission_commits_one_row();
+    rc |= test_changed_identity_still_commits_its_own_row();
+    rc |= test_repeated_data_notices_are_not_coalesced();
     rc |= test_late_source_enriches_matching_canonical_call();
     rc |= test_active_canonical_call_does_not_suppress_explicit_data();
     rc |= test_ended_canonical_call_does_not_suppress_later_data();

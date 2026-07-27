@@ -147,11 +147,20 @@ typedef struct {
 /** Event bookkeeping paired with one canonical call slot. */
 typedef struct {
     uint64_t epoch;
-    uint8_t ended_committed;
     uint64_t notice_epoch;
     uint64_t notice_target_id;
+    /* Identity of the row most recently committed for this slot, used to drop a
+     * commit that only repeats the transmission already in history. */
+    double commit_m;
+    uint32_t commit_source_id;
+    uint32_t commit_target_id;
+    uint8_t ended_committed;
     uint8_t notice_kind;
     uint8_t notice_handled;
+    int8_t commit_protocol;
+    int8_t commit_gi;
+    uint8_t commit_category;
+    uint8_t commit_valid;
 } dsd_call_event_lifecycle_snapshot;
 
 /**

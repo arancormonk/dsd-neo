@@ -594,6 +594,33 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     (void)dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto);
 }
 
+// The voice LC header repeats through the start of a transmission so late
+// entrants can join, and the same LC comes back in every embedded LC. Only the
+// first copy opens a call: an explicit BEGIN on a repeat mints a second epoch,
+// which commits the first epoch's freshly built row as a duplicate event.
+// Anything that re-describes an already-running call of the same identity is
+// a continuation, so the epoch that started the transmission carries it.
+static dsd_call_boundary
+dmr_flco_voice_boundary(const dmr_flco_ctx* ctx, const dsd_call_observation* observation) {
+    if (ctx->type != 1U) {
+        return DSD_CALL_BOUNDARY_CONTINUE;
+    }
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(ctx->state, ctx->slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE) {
+        return DSD_CALL_BOUNDARY_BEGIN;
+    }
+    if (!DSD_SYNC_IS_DMR(current.protocol) || current.kind != observation->kind
+        || current.ota_target_id != observation->ota_target_id) {
+        return DSD_CALL_BOUNDARY_BEGIN;
+    }
+    // A header naming a different talker is the next transmission, not a repeat.
+    if (current.ota_source_id != 0U && observation->ota_source_id != 0U
+        && current.ota_source_id != observation->ota_source_id) {
+        return DSD_CALL_BOUNDARY_BEGIN;
+    }
+    return DSD_CALL_BOUNDARY_CONTINUE;
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -613,8 +640,7 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         .priority = (uint8_t)(ctx->so & 0x03U),
         .has_service_metadata = 1U,
     };
-    const dsd_call_boundary boundary = ctx->type == 1U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
-    (void)dsd_call_state_observe(ctx->state, &observation, boundary);
+    (void)dsd_call_state_observe(ctx->state, &observation, dmr_flco_voice_boundary(ctx, &observation));
     dmr_flco_publish_crypto(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
 }

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,6 +39,10 @@ enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
     DSD_EVENT_SUBTYPE_EXPLICIT_DATA = INT8_MAX,
 };
+
+// Seconds within which a repeated voice commit is treated as the transmission
+// already in history rather than a new one.
+#define DSD_EVENT_COMMIT_REPEAT_WINDOW_S 1.0
 
 // Safe bounded copy helper that tolerates potential overlap
 static inline void
@@ -293,6 +298,71 @@ watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_
                                                reset_slot_identity, 1);
 }
 
+static double
+watchdog_event_now_m(void) {
+    return (double)dsd_time_monotonic_ms() / 1000.0;
+}
+
+static void
+watchdog_event_note_commit(dsd_call_event_lifecycle* lifecycle, const Event_History* item, double now_m) {
+    if (lifecycle == NULL || item == NULL) {
+        return;
+    }
+    lifecycle->commit_m = now_m;
+    lifecycle->commit_protocol = item->systype;
+    lifecycle->commit_category = item->category;
+    lifecycle->commit_gi = item->gi;
+    lifecycle->commit_source_id = item->source_id;
+    lifecycle->commit_target_id = item->target_id;
+    lifecycle->commit_valid = 1U;
+}
+
+// One transmission can be closed and reopened several times: sync loss ends the
+// canonical call, the next burst that decodes opens a fresh epoch, and the end
+// of that epoch commits the same voice row again. Repeated headers do the same
+// on protocols that re-announce a running call. Drop a voice commit that only
+// restates the row committed moments ago for the same slot -- the transmission
+// is already in history, and a second copy is the duplicate users see.
+// Bounded by time so a genuine re-key still gets its own row, and limited to
+// voice so data and control notices are never coalesced.
+static int
+watchdog_event_commit_repeats_previous(const dsd_call_event_lifecycle* lifecycle, const Event_History* item,
+                                       double now_m) {
+    if (lifecycle == NULL || item == NULL || !lifecycle->commit_valid) {
+        return 0;
+    }
+    if (item->category != DSD_EVENT_CATEGORY_VOICE || lifecycle->commit_category != DSD_EVENT_CATEGORY_VOICE) {
+        return 0;
+    }
+    if (item->source_id == 0U && item->target_id == 0U) {
+        return 0;
+    }
+    if (item->systype != lifecycle->commit_protocol || item->gi != lifecycle->commit_gi) {
+        return 0;
+    }
+    if (item->source_id != lifecycle->commit_source_id || item->target_id != lifecycle->commit_target_id) {
+        return 0;
+    }
+    return now_m >= lifecycle->commit_m && (now_m - lifecycle->commit_m) <= DSD_EVENT_COMMIT_REPEAT_WINDOW_S;
+}
+
+// Commit the staged row unless it merely repeats the previous commit. Returns
+// non-zero when the row reached history.
+static int
+watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
+                                 dsd_call_event_lifecycle* lifecycle, int last_event_is_data, int reset_slot_identity) {
+    const Event_History* staged = &event_struct->Event_History_Items[0];
+    const double now_m = watchdog_event_now_m();
+    if (watchdog_event_commit_repeats_previous(lifecycle, staged, now_m)) {
+        init_event_history(event_struct, 0, 1);
+        return 0;
+    }
+    watchdog_event_note_commit(lifecycle, staged, now_m);
+    watchdog_event_handle_source_transition(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
+                                            last_event_is_data, reset_slot_identity);
+    return 1;
+}
+
 static int
 watchdog_event_call_is_authoritative(const dsd_call_snapshot* call, const dsd_call_event_lifecycle* lifecycle) {
     if (call == NULL || call->epoch == 0U) {
@@ -348,9 +418,8 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
     const int has_content = watchdog_event_item_has_content(current);
     const int promotes_current = lifecycle->epoch == 0U && watchdog_event_history_matches_call(current, call);
     if (has_content && !promotes_current) {
-        const int is_data = watchdog_event_is_data_event(current);
-        watchdog_event_handle_source_transition(opts, state, event_struct, slot,
-                                                watchdog_event_should_write_slot(state), is_data, 0);
+        (void)watchdog_event_commit_staged_row(opts, state, event_struct, slot, lifecycle,
+                                               watchdog_event_is_data_event(current), 0);
     } else if (has_content) {
         init_event_history(event_struct, 0, 1);
     }
@@ -980,9 +1049,8 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         return;
     }
     if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
-        watchdog_event_handle_source_transition((dsd_opts*)opts, state, event_struct, slot,
-                                                watchdog_event_should_write_slot(state),
-                                                call->kind == DSD_CALL_KIND_DATA, 1);
+        (void)watchdog_event_commit_staged_row((dsd_opts*)opts, state, event_struct, slot, lifecycle,
+                                               call->kind == DSD_CALL_KIND_DATA, 1);
     } else {
         init_event_history(event_struct, 0, 1);
     }

@@ -278,16 +278,11 @@ call_state_begin_specializes_provisional_voice(const dsd_call_snapshot* current,
     return dsd_call_state_protocol_family(current->protocol) == dsd_call_state_protocol_family(observation->protocol);
 }
 
+// True when the observation names a different call than the one the slot holds.
+// An absent field on either side is not a change: protocols fill identity in
+// over several bursts, and a partial re-description must not fork the epoch.
 static int
-call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
-                                    dsd_call_boundary boundary) {
-    if (current->phase != DSD_CALL_PHASE_ACTIVE) {
-        return 1;
-    }
-    if (boundary == DSD_CALL_BOUNDARY_BEGIN
-        && !call_state_begin_specializes_provisional_voice(current, observation, boundary)) {
-        return 1;
-    }
+call_state_observation_changes_identity(const dsd_call_snapshot* current, const dsd_call_observation* observation) {
     if (current->protocol != DSD_SYNC_NONE && observation->protocol != DSD_SYNC_NONE
         && dsd_call_state_protocol_family(current->protocol) != dsd_call_state_protocol_family(observation->protocol)) {
         return 1;
@@ -306,6 +301,22 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
     }
     return call_state_known_text_changed(current->source_text, observation->source_text)
            || call_state_known_text_changed(current->target_text, observation->target_text);
+}
+
+static int
+call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
+                                    dsd_call_boundary boundary) {
+    if (current->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    // An explicit BEGIN is positive per-transmission evidence (a PTT, a grant, a
+    // voice header) and always opens an epoch. Callers that repeat a header for
+    // the transmission already running must observe a CONTINUE instead.
+    if (boundary == DSD_CALL_BOUNDARY_BEGIN
+        && !call_state_begin_specializes_provisional_voice(current, observation, boundary)) {
+        return 1;
+    }
+    return call_state_observation_changes_identity(current, observation);
 }
 
 static void
@@ -365,8 +376,8 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[observation->slot];
-    const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
     const double now_m = call_state_observed_m(observation->observed_m);
+    const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
     if (begins_epoch) {
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
