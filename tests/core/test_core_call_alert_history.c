@@ -2803,6 +2803,90 @@ test_merge_rerenders_against_committed_environment(void) {
     return rc;
 }
 
+// The test above commits the first segment's row from its own end, while the decoder still
+// describes it. A row is also committed from the other direction -- the next epoch opening finds
+// a staged row and pushes it -- and by then the canonical layer has already moved to the incoming
+// call. Capturing the environment at that moment reads the new call's channel, so the row is
+// re-rendered under a channel the transmission it describes never used.
+static int
+test_epoch_change_commit_keeps_staged_environment(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.nxdn_grant_chan = 12U;
+    state.nxdn_grant_freq = 851012500;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    // Sync loss with no further pass: the staged row is left for the next epoch to commit, which
+    // is the path watchdog_event_history_authoritative() takes.
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+
+    // The decoder retunes before the segment is reacquired, so the live grant channel now
+    // describes the incoming call rather than the staged row.
+    state.nxdn_grant_chan = 44U;
+    state.nxdn_grant_freq = 852000000;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_has_substr("row committed at the epoch change keeps its own channel",
+                               event_history[0].Event_History_Items[1].event_string, "CH: 12;");
+
+    // Ending the reacquired segment merges it into that row and re-renders it. The environment
+    // the merge renders against is the one captured with the row, not the retuned decoder.
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("epoch-change merge commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("merged row keeps the channel it was staged under", merged->event_string, "CH: 12;");
+    rc |= expect_int("merged row still gained the source", (int)merged->source_id, 201);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A merged row is re-rendered from its own fields plus the captured environment, and that render
+// has to agree with the one the unmerged path produces. Encryption is the case that matters: a
+// row carries only the derived flag, so the classification the builders also test must be rebuilt
+// from it rather than left unset.
+static int
+test_merged_row_keeps_encryption_marker(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED, 0x84U, 0x1234U, 0U) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_has_substr("first segment marks encryption", event_history[0].Event_History_Items[1].event_string,
+                               "ENC;");
+
+    // Reacquired segment folds into that row and re-renders it.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    rc |= expect_int("encrypted reacquisition commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("merged row keeps the encryption marker",
+                            event_history[0].Event_History_Items[1].event_string, "ENC;");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // Data calls describe distinct receptions and are never coalesced, even when the canonical
 // layer flags the epoch as reacquired.
 static int
@@ -3178,6 +3262,8 @@ main(void) {
     rc |= test_notice_during_reacquisition_merges();
     rc |= test_merge_without_event_time_keeps_the_row_timestamp();
     rc |= test_merge_rerenders_against_committed_environment();
+    rc |= test_epoch_change_commit_keeps_staged_environment();
+    rc |= test_merged_row_keeps_encryption_marker();
     rc |= test_repeated_data_notices_are_not_coalesced();
     rc |= test_late_source_enriches_matching_canonical_call();
     rc |= test_active_canonical_call_does_not_suppress_explicit_data();

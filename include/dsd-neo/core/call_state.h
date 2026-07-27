@@ -213,7 +213,12 @@ typedef struct {
      * 1 + (push_seq - committed_seq), so interleaved notice pushes cannot make
      * the merge target the wrong row. */
     uint64_t committed_seq;
-    /* Render inputs captured when committed_seq's row was pushed. */
+    /* Render inputs as they stood when the staged row was last rendered. Captured with the row's
+     * content rather than at commit time: a row is sometimes committed only once the decoder has
+     * already moved on to the next call, and by then the live values describe that call. */
+    dsd_call_event_render_env staged_env;
+    /* Render inputs belonging to committed_seq's row, promoted from staged_env when it was
+     * pushed. */
     dsd_call_event_render_env committed_env;
     uint8_t committed_valid;
     uint8_t ended_committed;

@@ -340,8 +340,11 @@ watchdog_event_flush_pending_end_alert(dsd_opts* opts, dsd_state* state, uint8_t
 }
 
 // Snapshot the live decoder inputs the per-protocol builders read directly. Taken once per render
-// so a row can later be rebuilt against the same values, rather than against a decoder that has
-// retuned, changed manufacturer feature id, or been reconfigured since.
+// -- with the row's content, not when that row is eventually pushed -- so a row can later be
+// rebuilt against the same values, rather than against a decoder that has retuned, changed
+// manufacturer feature id, or been reconfigured since. A staged row is sometimes committed only
+// after the canonical layer has opened the next call, by which point the live values describe
+// that call rather than the one the row is about.
 static void
 watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, dsd_call_event_render_env* env) {
     env->mfid = slot == 0U ? state->dmr_fid : state->dmr_fidR;
@@ -621,7 +624,10 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
         lifecycle->committed_seq = event_struct->push_seq;
         lifecycle->committed_epoch = lifecycle->epoch;
         lifecycle->committed_valid = 1U;
-        watchdog_event_capture_render_env(state, slot, &lifecycle->committed_env);
+        // Promoted from the render, not re-read from the decoder: this commit may be running
+        // because the epoch changed, in which case the live values already describe the incoming
+        // call rather than the row being pushed.
+        lifecycle->committed_env = lifecycle->staged_env;
     }
     return 1;
 }
@@ -689,6 +695,10 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
 
     lifecycle->epoch = call->epoch;
     lifecycle->ended_committed = 0U;
+    // Set after the commit above, which belongs to the outgoing epoch. Rows staged directly by a
+    // protocol never pass through the renderer, so without this they would inherit whichever
+    // environment the previous epoch's last render left behind.
+    DSD_MEMSET(&lifecycle->staged_env, 0, sizeof(lifecycle->staged_env));
     lifecycle->notice_epoch = 0U;
     lifecycle->notice_target_id = 0U;
     lifecycle->notice_kind = DSD_CALL_KIND_UNKNOWN;
@@ -1330,6 +1340,12 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->target_id = item->target_id;
     ctx->svc_opts = item->svc;
     ctx->enc = item->enc;
+    // A row persists only the derived flag, so the classification is rebuilt from it rather than
+    // left at UNKNOWN. The P25 builder tests crypto and enc together; leaving crypto zero made
+    // its first two disjuncts dead on every merged row, so any future classification that set
+    // crypto without setting enc would have dropped the encryption marker from a merged row while
+    // the unmerged path still showed it.
+    ctx->crypto = item->enc ? DSD_CALL_CRYPTO_ENCRYPTED : DSD_CALL_CRYPTO_UNKNOWN;
     ctx->alg_id = item->enc_alg;
     ctx->key_id = item->enc_key;
     ctx->mi = item->mi;
@@ -1515,6 +1531,12 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     DSD_SNPRINTF(candidate.event_string, sizeof(candidate.event_string), "%s", event_string);
 
     watchdog_event_commit_candidate(event_struct, &candidate);
+    // The staged row and the decoder inputs that produced it are captured together, so whenever
+    // that row is committed -- now, or on a later pass once the epoch has already changed -- it
+    // carries the environment it was actually rendered under.
+    if (lifecycle != NULL) {
+        watchdog_event_capture_render_env(state, slot, &lifecycle->staged_env);
+    }
     watchdog_event_finalize_ended(opts, state, slot, effective_call, lifecycle, event_struct, finalize_ended);
 
     /* stack buffers; no free */
