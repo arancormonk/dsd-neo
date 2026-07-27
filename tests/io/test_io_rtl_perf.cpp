@@ -4,6 +4,9 @@
  * aggregate counters over an interval, write CSV rows, and reset on shutdown.
  */
 
+// LLVM 22/GCC 16 misclassifies these runtime test oracles as compile-time assertions.
+// NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -156,3 +159,5 @@ main(void) {
     reset_fixture();
     return 0;
 }
+
+// NOLINTEND(cert-dcl03-c,misc-static-assert)
