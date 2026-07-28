@@ -1157,6 +1157,18 @@ watchdog_event_current_build_event_edacs(const watchdog_event_current_ctx* ctx, 
                  sys_string, afs_str, afs, lid_str, ctx->channel, ctx->sys_id1, sup_str);
 }
 
+// The Group/Private annotation, shared by every builder that renders one. Kept in one place so a
+// new dsd_call_kind, or a change to either token, cannot be applied to some protocols and missed on
+// others.
+static void
+watchdog_event_append_call_kind(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
+        watchdog_event_str_append(event_string, event_size, "Group; ");
+    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        watchdog_event_str_append(event_string, event_size, "Private; ");
+    }
+}
+
 static void
 watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
@@ -1187,11 +1199,7 @@ watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, co
         watchdog_event_str_append(event_string, event_size, "OVCM; ");
     }
 
-    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Private; ");
-    }
+    watchdog_event_append_call_kind(ctx, event_string, event_size);
 
     if (ctx->env.mfid == 0x10) {
         if (ctx->svc_opts & 0x30) {
@@ -1215,15 +1223,6 @@ watchdog_event_append_ess_crypto(const watchdog_event_current_ctx* ctx, char* ev
     } else if (ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED
                || ctx->enc) {
         watchdog_event_str_append(event_string, event_size, "ENC; ");
-    }
-}
-
-static void
-watchdog_event_append_call_kind(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
-    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Private; ");
     }
 }
 
@@ -1293,11 +1292,7 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
         watchdog_event_str_append(event_string, event_size, ess_str);
     }
 
-    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Private; ");
-    }
+    watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
 
 // Every builder renders purely from ctx -- the identity and metadata copied off the call or the
