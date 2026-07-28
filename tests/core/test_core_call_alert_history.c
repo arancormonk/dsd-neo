@@ -1698,6 +1698,66 @@ test_identityless_voice_epoch_commits_no_row(void) {
     return rc;
 }
 
+// An identity-less voice epoch that carried decoded audio and ended on a
+// terminator is a real transmission, not noise: on a RAS DMR system under the
+// aggressive-framesync default every link control fails the masked CRC, so a
+// short PTT whose embedded LC never reassembled plays audio yet never names a
+// call. Its row must reach history -- as the zero-ID record that a
+// transmission occurred -- and its deferred VOICE_END must fire once the
+// terminator repeat corroborates the end. A media-carrying epoch that merely
+// faded out (sync loss, no terminator) stays droppable: that is the
+// stray-sync noise shape.
+static int
+test_media_terminated_identityless_voice_epoch_commits_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs on the epoch", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("terminator ends the epoch unverified",
+                     end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("audible terminated row reaches history",
+                     event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
+    rc |= expect_int("row records that no one was named", (int)event_history[0].Event_History_Items[1].target_id, 0);
+    dsd_call_context_snapshot context;
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("recoverable end holds the VOICE_END alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int("only the start alert has fired", g_beeper_count, 1);
+
+    // The hangtime repeat -- itself unverified on a RAS system -- corroborates the end into
+    // EXPLICIT, releasing the held alert.
+    rc |= expect_int("corroborating terminator tightens the end",
+                     end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("released VOICE_END alert fires", g_beeper_count, 2);
+
+    // A media-carrying epoch that fades out without a terminator is still the
+    // stray-sync noise shape and leaves no row.
+    rc |= expect_int("noise epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("noise media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("noise row does not reach history", event_history[0].Event_History_Items[2].event_string[0], '\0');
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // A voice epoch whose only decoded knowledge is its crypto -- encrypted, this
 // alg, this key -- is not noise. P25 late entry deliberately opens an
 // identity-less epoch so ESS crypto can attach; when the signal fades before
@@ -3828,6 +3888,7 @@ main(void) {
     rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_identityless_voice_epoch_commits_no_row();
+    rc |= test_media_terminated_identityless_voice_epoch_commits_row();
     rc |= test_crypto_only_voice_epoch_commits_row();
     rc |= test_route_text_only_row_survives_epoch_change_commit();
     rc |= test_standalone_provoice_zero_id_row_commits();

@@ -375,16 +375,45 @@ dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
            || call_state_text_is_known(current->route_text[0]) || call_state_text_is_known(current->route_text[1]);
 }
 
-// True when this observation reopens an epoch that sync loss ended moments ago while describing
-// the same call -- one transmission the decoder lost and regained, not two transmissions. The
-// boundary token is deliberately not consulted: the paths that reopen mid-transmission (the
-// vocoder's per-frame media mark, a DMR Voice LC Header arriving after the gap, M17's stream
-// mark, the P25p1 ESS ensure-call) all pass BEGIN, while P25 Phase 2 and the other re-announcing
-// protocols pass CONTINUE. Both must arm.
+// Protocol capability, kept in the canonical layer so the event layer never grows its own
+// per-protocol knowledge: these modes never parse their voice traffic into a talkgroup or
+// source, so an identity-less voice epoch is the protocol's whole story -- that the channel
+// carried voice -- not a decode failure. A protocol added here keeps its all-zero rows;
+// everywhere else an identity-less voice epoch must earn its row another way. (EDACS-trunked
+// ProVoice rows carry AFS/LID strings and never present as identity-less; the entry only
+// matters for the standalone mode.)
+int
+dsd_call_state_protocol_voice_is_anonymous(int protocol) {
+    return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol);
+}
+
+static int
+call_state_end_reason_is_recoverable(uint8_t end_reason) {
+    return end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+}
+
+// True when this observation reopens an epoch that a recoverable end closed moments ago while
+// describing the same call -- one transmission the decoder lost and regained, not two
+// transmissions. The boundary token is deliberately not consulted: the paths that reopen
+// mid-transmission (the vocoder's per-frame media mark, a DMR Voice LC Header arriving after the
+// gap, M17's stream mark, the P25p1 ESS ensure-call) all pass BEGIN, while P25 Phase 2 and the
+// other re-announcing protocols pass CONTINUE. Both must arm.
 static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
                                   double now_m) {
-    if (current->phase != DSD_CALL_PHASE_ENDED || current->end_reason != (uint8_t)DSD_CALL_END_SYNC_LOSS) {
+    if (current->phase != DSD_CALL_PHASE_ENDED || !call_state_end_reason_is_recoverable(current->end_reason)) {
+        return 0;
+    }
+    // An unverified terminator was positive -- if fallible -- evidence the transmission ended,
+    // so only identity-less continuations may reopen its epoch: the vocoder's per-frame media
+    // mark that heals a voice burst mis-typed as a terminator arrives within one burst and
+    // carries no identity. An identity-bearing observation after such an end is the next
+    // transmission's header, and folding it in would merge a genuine second PTT on the same
+    // TG/SRC into the terminated call's row. A sync-loss end carries no end evidence at all, so
+    // there the identity-bearing reopen (a DMR Voice LC Header arriving after the gap, M17's
+    // stream mark) stays a reacquisition.
+    if (current->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR
+        && call_state_observation_has_identity(observation)) {
         return 0;
     }
     // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
@@ -631,15 +660,24 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     // that fire while unsynced do not re-stamp ended_m: the reacquisition gap
     // stays anchored at the first end.
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE) {
-        // One exception: a terminator or EOT decoded after sync loss already ended the epoch is
-        // positive evidence that the transmission is over, and it must be able to retract the
-        // reacquisition permission that end granted. The fade is often the last thing heard
-        // before the terminator that explains it, so without this a second PTT on the same
-        // identity inside the gap folds into the terminated call's row. Only this one direction
-        // is allowed, and ended_m is deliberately left alone: the reason changes, the moment the
-        // transmission stopped does not.
-        if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED
-            && snapshot->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && reason == DSD_CALL_END_EXPLICIT) {
+        // One exception: positive evidence that the transmission is over, arriving after a
+        // recoverable end, must be able to retract the reacquisition permission that end
+        // granted. The fade is often the last thing heard before the terminator that explains
+        // it, so without this a second PTT on the same identity inside the gap folds into the
+        // terminated call's row. Two strengths of evidence qualify: a verified terminator or
+        // EOT (an EXPLICIT request) retracts either recoverable reason, and a second unverified
+        // terminator corroborates an unverified-terminator end -- two independently mis-typed
+        // bursts in a row is not a plausible fade. An unverified terminator alone never
+        // tightens a sync-loss end: it is the same fallible evidence the recoverable end exists
+        // to distrust, and trusting it there would split a faded transmission in two and
+        // release its held VOICE_END early. Only tightening toward EXPLICIT is allowed, and
+        // ended_m is deliberately left alone: the reason changes, the moment the transmission
+        // stopped does not.
+        const int retracts =
+            reason == DSD_CALL_END_EXPLICIT && call_state_end_reason_is_recoverable(snapshot->end_reason);
+        const int corroborates = reason == DSD_CALL_END_UNVERIFIED_TERMINATOR
+                                 && snapshot->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+        if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED && (retracts || corroborates)) {
             snapshot->end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
             snapshot->revision = call_state_next_nonzero(snapshot->revision);
             ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
@@ -755,8 +793,6 @@ dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
     // a decoder context from before this invalidation.
     DSD_MEMSET(&lifecycle->staged_env, 0, sizeof(lifecycle->staged_env));
     DSD_MEMSET(&lifecycle->committed_env, 0, sizeof(lifecycle->committed_env));
-    // The staged row this verdict described is going away with the rows above.
-    lifecycle->staged_named_call = 0U;
 }
 
 int

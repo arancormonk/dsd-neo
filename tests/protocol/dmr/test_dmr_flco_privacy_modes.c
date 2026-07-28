@@ -770,11 +770,12 @@ test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
 // A terminator whose link control failed RS(12,9) still ends the call -- on
 // RAS systems under the aggressive default every LC fails the masked CRC, so
 // gating the end on the CRC would leave those calls active forever -- but with
-// the recoverable sync-loss reason, so a voice burst mis-typed as a terminator
-// mid-call is healed by the next same-identity observation reacquiring the
-// epoch instead of splitting the transmission in two. The slot's payload
-// crypto and alias state resets either way: keeping it would let the next call
-// on the slot inherit a stale algid/key/MI or half-built alias.
+// the recoverable unverified-terminator reason, so a voice burst mis-typed as
+// a terminator mid-call is healed by the next identity-less media mark
+// reacquiring the epoch instead of splitting the transmission in two. The
+// slot's payload crypto and alias state resets either way: keeping it would
+// let the next call on the slot inherit a stale algid/key/MI or half-built
+// alias.
 static void
 test_unverified_terminator_ends_call_recoverably(void) {
     static dsd_opts opts;
@@ -789,12 +790,12 @@ test_unverified_terminator_ends_call_recoverably(void) {
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
 
-    // A repeated unverified terminator on the sync-loss-ended epoch is positive
-    // evidence the transmission is over: it tightens the reason to explicit, so
-    // a second PTT on the same identity inside the reacquisition gap cannot
-    // fold into the terminated call's row.
+    // A repeated unverified terminator corroborates the unverified end -- two
+    // independently mis-typed bursts in a row is not a plausible fade -- so the
+    // reason tightens to explicit, which retracts the reacquisition permission
+    // and releases the held VOICE_END alert where the hangtime repeat runs.
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
@@ -810,6 +811,96 @@ test_unverified_terminator_ends_call_recoverably(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    dsd_state_ext_free_all(&state);
+}
+
+// After an unverified terminator ends the call, what may reopen its epoch
+// depends on what the next observation carries. The identity-less media mark
+// the vocoder emits when a voice burst was mis-typed as a terminator heals the
+// epoch -- same transmission, one row. A same-identity voice LC header inside
+// the reacquisition gap is the next PTT's preamble and must open its own
+// epoch: the terminator was positive evidence the previous transmission
+// ended, and folding the header in would merge two calls into one row.
+static void
+test_unverified_terminator_reopen_depends_on_identity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Identity-less media mark: heals the epoch in place.
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    const uint64_t ended_epoch = call.epoch;
+
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != ended_epoch);
+    // Reacquired, not new: the healed epoch keeps the terminated call's identity.
+    assert(call.ota_source_id == 2002U);
+    assert(call.ota_target_id == 1001U);
+
+    // Same-identity header after the unverified end: the next transmission.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    const uint64_t second_ended_epoch = call.epoch;
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != second_ended_epoch);
+    assert(call.ota_source_id == 2002U);
+    // A fresh epoch, not a reacquisition: the new PTT does not merge into the
+    // terminated call's row.
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
+    assert(context.events[0].reacquired_epoch != call.epoch);
+    dsd_state_ext_free_all(&state);
+}
+
+// An unverified terminator arriving after a sync loss already ended the epoch
+// is the same fallible evidence the recoverable end exists to distrust: it
+// must not tighten the reason to explicit, or a single corrupt burst mis-typed
+// as a terminator during a fade would retract the reacquisition permission and
+// split the resuming transmission in two.
+static void
+test_unverified_terminator_does_not_tighten_sync_loss_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS);
+
+    // A verified terminator is trustworthy evidence and does retract it.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
     dsd_state_ext_free_all(&state);
@@ -1429,6 +1520,8 @@ main(void) {
     test_stale_headerless_epoch_does_not_absorb_next_header();
     test_repeated_voice_lc_headers_commit_one_history_row();
     test_unverified_terminator_ends_call_recoverably();
+    test_unverified_terminator_reopen_depends_on_identity();
+    test_unverified_terminator_does_not_tighten_sync_loss_end();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();

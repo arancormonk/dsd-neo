@@ -657,33 +657,29 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
 // burst type is FEC-protected separately from the LC payload, and on RAS
 // systems under the aggressive default every LC fails the masked CRC, so
 // gating the end on the CRC would leave RAS calls active forever -- but with
-// the recoverable sync-loss reason, so a voice burst mis-typed as a terminator
-// mid-call is healed by the very next same-identity observation reacquiring
-// the epoch instead of splitting the transmission in two. On an epoch sync
-// loss already ended, even an unverified terminator is positive evidence the
-// transmission is over, so it tightens the reason to explicit and retracts the
-// reacquisition permission. The slot's payload crypto and alias state resets
-// either way: keeping it would let the next call on the slot inherit a stale
-// algid/key/MI or half-built alias.
+// the recoverable unverified-terminator reason, so a voice burst mis-typed as
+// a terminator mid-call is healed by the next identity-less media mark
+// reacquiring the epoch instead of splitting the transmission in two, while a
+// same-identity header inside the gap still opens the next transmission's own
+// epoch. The canonical layer owns what a repeat means on an epoch already
+// ended: a second unverified terminator corroborates an unverified end into
+// EXPLICIT -- which also releases the held VOICE_END alert, so on repeater
+// systems the hangtime repeat alerts within a burst of where a verified
+// terminator would -- but never tightens a sync-loss end, whose fade the same
+// fallible evidence cannot explain away. The slot's payload crypto and alias
+// state resets either way: keeping it would let the next call on the slot
+// inherit a stale algid/key/MI or half-built alias.
 static void
 dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
-    int ended;
-    if (ctx->CRCCorrect == 1U) {
-        ended = dsd_call_state_end(ctx->state, ctx->slot, 0.0);
-    } else {
-        dsd_call_snapshot current;
-        const int active =
-            dsd_call_state_get(ctx->state, ctx->slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE;
-        ended = active ? dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0, DSD_CALL_END_SYNC_LOSS)
-                       : dsd_call_state_end(ctx->state, ctx->slot, 0.0);
-    }
+    const int ended = ctx->CRCCorrect == 1U
+                          ? dsd_call_state_end(ctx->state, ctx->slot, 0.0)
+                          : dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0, DSD_CALL_END_UNVERIFIED_TERMINATOR);
     if (ended > 0) {
         dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
     }
-    if (ctx->state->currentslot == 0) {
+    if (ctx->slot == 0U) {
         dmr_flco_reset_td_lc_slot0(ctx);
-    }
-    if (ctx->state->currentslot == 1) {
+    } else {
         dmr_flco_reset_td_lc_slot1(ctx);
     }
 }

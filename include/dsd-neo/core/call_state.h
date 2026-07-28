@@ -53,13 +53,25 @@ typedef enum {
 /**
  * Why a call epoch ended.
  *
- * Only DSD_CALL_END_SYNC_LOSS permits the next epoch on the slot to be treated as the same
- * transmission being reacquired. EXPLICIT is the default so an unconverted call site produces a
- * second history row -- a duplicate is recoverable, a deleted transmission is not.
+ * Only the recoverable reasons -- DSD_CALL_END_SYNC_LOSS and
+ * DSD_CALL_END_UNVERIFIED_TERMINATOR -- permit the next epoch on the slot to be treated as the
+ * same transmission being reacquired, and the unverified-terminator reason permits it only for
+ * identity-less continuations: the terminator was positive (if fallible) evidence the
+ * transmission ended, so an identity-bearing observation after it is the next transmission.
+ * EXPLICIT is the default so an unconverted call site produces a second history row -- a
+ * duplicate is recoverable, a deleted transmission is not.
  */
 typedef enum {
     DSD_CALL_END_EXPLICIT = 0,  /**< Terminator, EOT, release, teardown, or retune. */
     DSD_CALL_END_SYNC_LOSS = 1, /**< Carrier or sync lost; the transmission may still resume. */
+    /**
+     * A terminator burst decoded but its link control failed verification (a RAS-masked CRC, a
+     * marginal signal). Ends the call on the strength of the burst type while staying
+     * recoverable, so a voice burst mis-typed as a terminator mid-call heals instead of
+     * splitting the transmission. A second unverified terminator corroborates the end and
+     * tightens it to EXPLICIT.
+     */
+    DSD_CALL_END_UNVERIFIED_TERMINATOR = 2,
 } dsd_call_end_reason;
 
 /**
@@ -166,11 +178,16 @@ typedef struct {
 } dsd_recent_activity_snapshot;
 
 /**
- * Live decoder inputs the per-protocol event builders read but a history row does not carry.
+ * Live decoder inputs the per-protocol event builders read but a history row does not carry,
+ * plus the render-time verdicts about the epoch the row describes.
  *
  * Captured when a row is committed and replayed when that row is re-rendered, so a merged
  * transmission is described by the system context it was decoded under rather than whatever the
  * decoder has retuned to since. Everything else a builder needs already lives on the row.
+ *
+ * The verdicts live inside this struct rather than as siblings so every site that clears or
+ * copies the environment carries them automatically; a paired manual update would eventually be
+ * missed and leave a stale verdict vouching for the wrong row.
  */
 typedef struct {
     uint16_t nxdn_grant_chan;
@@ -185,6 +202,19 @@ typedef struct {
     int edacs_a_mask;
     int edacs_f_mask;
     int edacs_s_mask;
+    /* Whether the epoch had named a call when the row was last rendered. Vouches for identity
+     * the row strings never carry -- the route text anchoring a D-STAR or YSF transmission whose
+     * talker callsigns did not decode -- including on the epoch-change commit path where the
+     * canonical snapshot is already gone. Identity only accrues within an epoch, so plain
+     * assignment per render is already sticky. */
+    uint8_t named_call;
+    /* Whether the epoch carried decoded voice media at any render. Sticky for the epoch's
+     * lifetime: the canonical snapshot clears media_active when the call ends, but the row's
+     * keep-or-drop verdict is about whether audio ever ran, not whether it is running now. */
+    uint8_t saw_media;
+    /* Whether the epoch's end, as last rendered, was terminator-evidenced (any reason but
+     * SYNC_LOSS). Zero while the call is active or after a bare sync loss. */
+    uint8_t ended_positively;
 } dsd_call_event_render_env;
 
 /** Event bookkeeping paired with one canonical call slot. */
@@ -217,11 +247,6 @@ typedef struct {
      * content rather than at commit time: a row is sometimes committed only once the decoder has
      * already moved on to the next call, and by then the live values describe that call. */
     dsd_call_event_render_env staged_env;
-    /* Whether the staged row's epoch had named a call when the row was last rendered. Captured
-     * like staged_env so the commit-time decision to keep or drop an identity-less voice row is
-     * the same on every path, including the epoch-change path where the staged row's canonical
-     * snapshot -- and the route text that may be its only identity -- is already gone. */
-    uint8_t staged_named_call;
     /* Render inputs belonging to committed_seq's row, promoted from staged_env when it was
      * pushed. */
     dsd_call_event_render_env committed_env;
@@ -278,8 +303,11 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  * End the active epoch, recording why it ended.
  *
  * Returns non-zero when the call state changed -- either the epoch was ended, or an already
- * sync-loss-ended epoch had its reason tightened to DSD_CALL_END_EXPLICIT by a terminator that
- * decoded after the fade. The latter leaves ended_m untouched. Callers that gate
+ * recoverably-ended epoch had its reason tightened to DSD_CALL_END_EXPLICIT: a verified
+ * terminator retracts either recoverable reason, and a second unverified terminator corroborates
+ * an unverified-terminator end. An unverified terminator alone never tightens a sync-loss end --
+ * it is the same fallible evidence the recoverable end exists to distrust. Tightening leaves
+ * ended_m untouched. Callers that gate
  * dsd_event_sync_slot() on this result therefore let the event layer see the retracted
  * reacquisition permission; callers that need "an active call was ended" specifically must
  * check DSD_CALL_PHASE_ACTIVE themselves beforehand.

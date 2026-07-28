@@ -27,6 +27,14 @@ dsd_call_state_ext* dsd_call_state_ext_get(dsd_state* state, int create);
  * whose epoch never named a call (dsd_events.c). NULL-safe.
  */
 int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
+
+/**
+ * True for protocols whose voice traffic never carries per-call identity (standalone X2-TDMA and
+ * ProVoice), so an all-zero voice row is the protocol's whole story rather than noise. Protocol
+ * capability lives here, beside the identity notion it qualifies, so the event layer's
+ * keep-or-drop decision never grows a private per-protocol list.
+ */
+int dsd_call_state_protocol_voice_is_anonymous(int protocol);
 const dsd_call_state_ext* dsd_call_state_ext_peek(const dsd_state* state);
 void dsd_call_state_ext_lock(const dsd_call_state_ext* ext);
 void dsd_call_state_ext_unlock(const dsd_call_state_ext* ext);

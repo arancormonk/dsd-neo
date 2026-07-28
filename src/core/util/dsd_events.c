@@ -238,13 +238,23 @@ watchdog_event_should_write_slot(const dsd_state* state) {
     return watchdog_event_should_write_systype(state->lastsynctype);
 }
 
+// Decoded per-transmission detail beyond identity: an alias, a position, a text message, or a
+// notice. One list, shared by watchdog_event_item_has_content() and the identity-less drop check
+// below -- a second private copy of these fields would let a future field pass one check and
+// fail the other, and a row whose only content is that field would then be staged but silently
+// dropped.
+static int
+watchdog_event_row_has_decoded_detail(const Event_History* item) {
+    return item->alias[0] != '\0' || item->gps_s[0] != '\0' || item->text_message[0] != '\0'
+           || item->internal_str[0] != '\0';
+}
+
 static int
 watchdog_event_item_has_content(const Event_History* item) {
     if (item == NULL) {
         return 0;
     }
-    return item->event_string[0] != '\0' || item->text_message[0] != '\0' || item->alias[0] != '\0'
-           || item->gps_s[0] != '\0' || item->internal_str[0] != '\0';
+    return item->event_string[0] != '\0' || watchdog_event_row_has_decoded_detail(item);
 }
 
 // Crypto knowledge is decoded detail: a row whose epoch only ever learned "encrypted, this
@@ -255,7 +265,10 @@ watchdog_event_row_records_crypto(const Event_History* item) {
 }
 
 // Numeric or textual call identity carried by the row itself. System identifiers alone (a color
-// code, a NAC) do not name a call, matching dsd_call_state_snapshot_has_identity().
+// code, a NAC) do not name a call, matching dsd_call_state_snapshot_has_identity(). This is a
+// rescue check only -- it can keep a row, never doom one: renderer-built rows copy these fields
+// from the canonical snapshot, whose named_call verdict is the authoritative gate, so a field
+// this list misses costs nothing as long as the canonical helper counts it.
 static int
 watchdog_event_row_names_call(const Event_History* item) {
     return item->target_id != 0U || item->source_id != 0U || item->src_str[0] != '\0' || item->tgt_str[0] != '\0';
@@ -272,18 +285,27 @@ watchdog_event_voice_row_is_identityless(const Event_History* item) {
     if (item == NULL || item->category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
-    // X2-TDMA and standalone ProVoice are exempt: neither ever parses its voice traffic into a
-    // talkgroup or source, so an all-zero row is the protocol's whole story -- that the channel
-    // carried voice -- not noise. (EDACS-trunked ProVoice rows carry AFS/LID strings and never
-    // reach the drop; the exemption only matters for the standalone modes.)
-    if (DSD_SYNC_IS_X2TDMA(item->systype) || DSD_SYNC_IS_PROVOICE(item->systype)) {
+    // Protocols whose voice traffic never carries identity keep their all-zero rows; the
+    // capability list lives in the canonical layer beside the identity notion it qualifies.
+    if (dsd_call_state_protocol_voice_is_anonymous(item->systype)) {
         return 0;
     }
     if (watchdog_event_row_records_crypto(item) || watchdog_event_row_names_call(item)) {
         return 0;
     }
-    return item->alias[0] == '\0' && item->gps_s[0] == '\0' && item->text_message[0] == '\0'
-           && item->internal_str[0] == '\0';
+    return !watchdog_event_row_has_decoded_detail(item);
+}
+
+// The staged epoch's render-time verdicts vouch for a row the field checks above cannot: it
+// named a call in ways the row strings never carry (route text), or it was a real transmission
+// on the air even though nothing named it -- decoded voice media ran and a terminator ended it.
+// The media-plus-terminator arm is what keeps audible traffic on systems where link control
+// rarely verifies (a RAS DMR kerchunk whose embedded LC never reassembled) from vanishing
+// without a row, a log line, or an end alert, while a stray-sync noise epoch -- media but no
+// terminator, ended by sync loss -- still drops.
+static int
+watchdog_event_staged_epoch_vouches(const dsd_call_event_render_env* env) {
+    return env->named_call != 0U || (env->saw_media != 0U && env->ended_positively != 0U);
 }
 
 static int
@@ -353,18 +375,25 @@ typedef enum {
     DSD_EVENT_END_DEFERRED,
 } dsd_event_end_disposition;
 
-// Retire the staged row: rotate the WAV when the transmission is over, then clear the row and
-// the per-transmission scratch that fed it. Every path that is done with the staged row --
-// commit, merge, or drop -- ends in this sequence. The rotation must precede the clear:
-// close_and_rename_wav_file() reads its rename metadata from Items[0].
+// Retire the staged row: rotate the WAV when the transmission is over, clear the row and the
+// per-transmission scratch that fed it, then sound the end-of-call alert when a FINAL end asked
+// for one. Every path that is done with the staged row -- commit, merge, or drop -- ends in this
+// sequence; keeping the alert inside it means the end-of-call side effects cannot drift apart
+// across call sites. The rotation must precede the clear: close_and_rename_wav_file() reads its
+// rename metadata from Items[0]. `alert_on_final` is zero only on the drop path, whose rule is
+// that nothing the operator saw is ending.
 static void
 watchdog_event_retire_staged_row(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
-                                 dsd_event_end_disposition end_disposition) {
+                                 dsd_event_end_disposition end_disposition, int alert_on_final,
+                                 int last_event_is_data) {
     if (end_disposition != DSD_EVENT_END_NONE) {
         watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
     }
     init_event_history(event_struct, 0, 1);
     watchdog_event_reset_post_push(state);
+    if (alert_on_final && end_disposition == DSD_EVENT_END_FINAL) {
+        watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
+    }
 }
 
 static void
@@ -376,10 +405,7 @@ watchdog_event_handle_source_transition_ex(dsd_opts* opts, dsd_state* state, Eve
     event_struct->Event_History_Items[0].write = 1;
     push_event_history(event_struct);
     (void)reset_slot_identity;
-    watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition);
-    if (end_disposition == DSD_EVENT_END_FINAL) {
-        watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
-    }
+    watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 1, last_event_is_data);
 }
 
 static void
@@ -426,7 +452,8 @@ watchdog_event_flush_pending_end_alert(dsd_opts* opts, dsd_state* state, uint8_t
 // after the canonical layer has opened the next call, by which point the live values describe
 // that call rather than the one the row is about.
 static void
-watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, dsd_call_event_render_env* env) {
+watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                                  dsd_call_event_render_env* env) {
     env->mfid = slot == 0U ? state->dmr_fid : state->dmr_fidR;
     env->nxdn_grant_chan = state->nxdn_grant_chan;
     env->nxdn_grant_freq = state->nxdn_grant_freq;
@@ -439,6 +466,15 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, dsd_call
     env->edacs_a_mask = state->edacs_a_mask;
     env->edacs_f_mask = state->edacs_f_mask;
     env->edacs_s_mask = state->edacs_s_mask;
+    // The epoch verdicts the keep-or-drop decision reads at commit time, captured with the env
+    // so they describe the same render. Identity accrues within an epoch, so plain assignment
+    // is sticky for named_call; media_active is cleared when the call ends, so saw_media must
+    // remember earlier renders itself; the end verdict only exists once the phase is ENDED, and
+    // the epoch-boundary memset of the whole env resets all three.
+    env->named_call = (uint8_t)(dsd_call_state_snapshot_has_identity(call) != 0);
+    env->saw_media = (uint8_t)(env->saw_media != 0U || (call != NULL && call->media_active != 0U));
+    env->ended_positively = (uint8_t)(call != NULL && call->phase == DSD_CALL_PHASE_ENDED
+                                      && call->end_reason != (uint8_t)DSD_CALL_END_SYNC_LOSS);
 }
 
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
@@ -642,17 +678,20 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
                                  dsd_call_event_lifecycle* lifecycle, int last_event_is_data, int reset_slot_identity,
                                  dsd_event_end_disposition end_disposition) {
     const Event_History* staged = &event_struct->Event_History_Items[0];
-    // A voice row whose epoch never named a call is dropped rather than committed as
-    // "TGT: 00000000; SRC: 00000000". staged_named_call vouches for identity the row strings
-    // never carry -- the route text anchoring a D-STAR or YSF transmission whose talker
-    // callsigns did not decode -- and, being recorded at render time, gives every commit path
-    // the same verdict, including the epoch-change path where the staged row's canonical
-    // snapshot is already gone. The WAV still rotates: voice frames ran for this epoch, so
-    // leaving the file open would let the noise segment's audio lead the next transmission's
-    // recording. No end alert either -- like the empty-staged-row case, nothing the operator
-    // saw is ending.
-    if (watchdog_event_voice_row_is_identityless(staged) && (lifecycle == NULL || !lifecycle->staged_named_call)) {
-        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition);
+    // A voice row whose epoch was never anything the operator could name or hear end is dropped
+    // rather than committed as "TGT: 00000000; SRC: 00000000". The staged verdicts -- recorded
+    // at render time, so every commit path gets the same answer, including the epoch-change
+    // path where the staged row's canonical snapshot is already gone -- vouch for what the row
+    // fields cannot: route-text-only identity, or audible media that a terminator positively
+    // ended. Without a lifecycle there are no verdicts to consult, so the row is kept: the
+    // paths that commit without one (a notice for a non-canonical call) stage real traffic,
+    // and a duplicate row is recoverable where a deleted transmission is not. The WAV still
+    // rotates on a drop: voice frames may have run for the epoch, and leaving the file open
+    // would let the noise segment's audio lead the next transmission's recording. No end alert
+    // either -- like the empty-staged-row case, nothing the operator saw is ending.
+    if (watchdog_event_voice_row_is_identityless(staged) && lifecycle != NULL
+        && !watchdog_event_staged_epoch_vouches(&lifecycle->staged_env)) {
+        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 0, last_event_is_data);
         return 0;
     }
     const uint8_t retained_index = watchdog_event_committed_row_index(event_struct, lifecycle);
@@ -676,10 +715,7 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
         lifecycle->committed_epoch = lifecycle->epoch;
         // Each segment keeps its own recording; leaving the WAV open would let it absorb the
         // next transmission's audio and be exported under that call's metadata instead.
-        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition);
-        if (end_disposition == DSD_EVENT_END_FINAL) {
-            watchdog_event_maybe_beep_call_end(opts, state, slot, last_event_is_data);
-        }
+        watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 1, last_event_is_data);
         return 1;
     }
     watchdog_event_handle_source_transition_ex(opts, state, event_struct, slot, watchdog_event_should_write_slot(state),
@@ -751,7 +787,7 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
     const int has_content = watchdog_event_item_has_content(current);
     const int promotes_current = lifecycle->epoch == 0U && watchdog_event_history_matches_call(current, call);
     if (has_content && !promotes_current) {
-        // The staged row belongs to the outgoing epoch; staged_named_call still describes it,
+        // The staged row belongs to the outgoing epoch; the staged verdicts still describe it,
         // so the incoming call's identity cannot vouch for the leftover row.
         (void)watchdog_event_commit_staged_row(opts, state, event_struct, slot, lifecycle,
                                                watchdog_event_is_data_event(current), 0, DSD_EVENT_END_FINAL);
@@ -763,9 +799,8 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
     lifecycle->ended_committed = 0U;
     // Set after the commit above, which belongs to the outgoing epoch. Rows staged directly by a
     // protocol never pass through the renderer, so without this they would inherit whichever
-    // environment -- and identity verdict -- the previous epoch's last render left behind.
+    // environment -- and epoch verdicts -- the previous epoch's last render left behind.
     DSD_MEMSET(&lifecycle->staged_env, 0, sizeof(lifecycle->staged_env));
-    lifecycle->staged_named_call = 0U;
     lifecycle->notice_epoch = 0U;
     lifecycle->notice_target_id = 0U;
     lifecycle->notice_kind = DSD_CALL_KIND_UNKNOWN;
@@ -958,7 +993,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     ctx->protocol = DSD_SYNC_NONE;
     ctx->kind = DSD_CALL_KIND_UNKNOWN;
     ctx->subtype = slot == 0U ? state->dmrburstL : state->dmrburstR;
-    watchdog_event_capture_render_env(state, slot, &ctx->env);
+    watchdog_event_capture_render_env(state, slot, call, &ctx->env);
 
     if (!call || call->epoch == 0U) {
         return;
@@ -1582,16 +1617,20 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     if (call->phase != DSD_CALL_PHASE_ENDED || lifecycle->epoch != call->epoch || lifecycle->ended_committed) {
         return;
     }
-    // A sync-loss end may be the middle of a transmission rather than its end, so its VOICE_END
-    // alert is held until the reacquisition window closes. Each further segment re-arms it, and
-    // the alert lands once the call really has stopped flapping. An explicit terminator is
-    // unambiguous and alerts immediately.
+    // A recoverable end -- a sync loss, or a terminator whose link control failed verification
+    // -- may be the middle of a transmission rather than its end, so its VOICE_END alert is
+    // held until the reacquisition window closes. Each further segment re-arms it, and the
+    // alert lands once the call really has stopped flapping; a corroborating terminator repeat
+    // tightens the reason to EXPLICIT, which releases the hold at the next sync pass. A
+    // verified terminator is unambiguous and alerts immediately.
     //
     // This describes what happened on the air, so it is derived from the air alone. Whether the
     // operator wants to hear the result is a separate question, answered where the beep is
     // actually emitted -- folding the alert setting in here would make a disposition that other
     // side effects hang off silently change with an unrelated preference.
-    const int deferred_end = call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && call->kind != DSD_CALL_KIND_DATA;
+    const int deferred_end = (call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS
+                              || call->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR)
+                             && call->kind != DSD_CALL_KIND_DATA;
     const dsd_event_end_disposition disposition = deferred_end ? DSD_EVENT_END_DEFERRED : DSD_EVENT_END_FINAL;
     if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
         // A new row, a merge into the row the interrupted transmission already owns, or -- for
@@ -1662,14 +1701,12 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     DSD_SNPRINTF(candidate.event_string, sizeof(candidate.event_string), "%s", event_string);
 
     watchdog_event_commit_candidate(event_struct, &candidate);
-    // The staged row, the decoder inputs that produced it, and whether its epoch has named a
-    // call are captured together, so whenever that row is committed -- now, or on a later pass
-    // once the epoch has already changed and the snapshot is gone -- it carries the environment
-    // and the identity verdict it was actually rendered under. Identity only accrues within an
-    // epoch, so plain assignment is already sticky.
+    // The staged row, the decoder inputs that produced it, and the epoch verdicts the
+    // keep-or-drop decision reads are captured together, so whenever that row is committed --
+    // now, or on a later pass once the epoch has already changed and the snapshot is gone -- it
+    // carries the environment and the verdicts it was actually rendered under.
     if (lifecycle != NULL) {
-        watchdog_event_capture_render_env(state, slot, &lifecycle->staged_env);
-        lifecycle->staged_named_call = (uint8_t)(dsd_call_state_snapshot_has_identity(effective_call) != 0);
+        watchdog_event_capture_render_env(state, slot, effective_call, &lifecycle->staged_env);
     }
     watchdog_event_finalize_ended(opts, state, slot, effective_call, lifecycle, event_struct, finalize_ended);
 
