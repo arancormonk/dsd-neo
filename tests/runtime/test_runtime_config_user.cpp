@@ -846,6 +846,89 @@ test_load_and_apply_soapy_input_with_args(void) {
 }
 
 static int
+test_load_and_apply_sddc_digital_resample(void) {
+    /* RX-888 shape: SDDC profile, VHF tuner port, and an explicit digital resample mode. */
+    static const char* ini = "[input]\n"
+                             "source = \"soapy\"\n"
+                             "soapy_args = \"driver=SDDC\"\n"
+                             "soapy_profile = \"sddc\"\n"
+                             "soapy_antenna = \"VHF\"\n"
+                             "soapy_gains = \"RF:0,IF:24\"\n"
+                             "soapy_settings = \"adc_frequency=98304000\"\n"
+                             "soapy_bandwidth_hz = 0\n"
+                             "digital_resample = \"off\"\n"
+                             "rtl_freq = \"851.375M\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    if (strcmp(cfg.soapy_profile, "sddc") != 0 || strcmp(cfg.soapy_antenna, "VHF") != 0
+        || strcmp(cfg.soapy_settings, "adc_frequency=98304000") != 0 || cfg.soapy_bandwidth_hz != 0
+        || !cfg.soapy_bandwidth_hz_is_set) {
+        DSD_FPRINTF(stderr, "sddc soapy fields not parsed correctly\n");
+        rc |= 1;
+    }
+    if (strcmp(cfg.digital_resample, "off") != 0) {
+        DSD_FPRINTF(stderr, "digital_resample parse mismatch: \"%s\"\n", cfg.digital_resample);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    if (opts.digital_resample_mode != 2) {
+        DSD_FPRINTF(stderr, "digital_resample \"off\" applied as mode %d, want 2\n", opts.digital_resample_mode);
+        rc |= 1;
+    }
+    if (strcmp(opts.soapy_profile, "sddc") != 0 || strcmp(opts.soapy_antenna, "VHF") != 0
+        || opts.soapy_bandwidth_hz != 0) {
+        DSD_FPRINTF(stderr, "sddc soapy fields not applied correctly\n");
+        rc |= 1;
+    }
+
+    /* Auto is the default and stays implicit so configs are not littered with it. */
+    static const char* ini_auto = "[input]\n"
+                                  "source = \"soapy\"\n"
+                                  "soapy_args = \"driver=SDDC\"\n";
+    char auto_path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini_auto, auto_path, sizeof auto_path) == 0) {
+        dsdneoUserConfig auto_cfg;
+        if (dsd_user_config_load(auto_path, &auto_cfg) == 0) {
+            static dsd_opts auto_opts;
+            static dsd_state auto_state;
+            reset_opts_and_state(auto_opts, auto_state);
+            dsd_apply_user_config_to_opts(&auto_cfg, &auto_opts, &auto_state);
+            if (auto_opts.digital_resample_mode != 0) {
+                DSD_FPRINTF(stderr, "omitted digital_resample applied as mode %d, want 0\n",
+                            auto_opts.digital_resample_mode);
+                rc |= 1;
+            }
+        } else {
+            DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", auto_path);
+            rc |= 1;
+        }
+        (void)remove(auto_path);
+    } else {
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_snapshot_roundtrip_soapy_args(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1672,6 +1755,7 @@ main(void) {
     rc |= test_load_and_apply_alerts_empty_event_mask();
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();
+    rc |= test_load_and_apply_sddc_digital_resample();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();

@@ -319,6 +319,7 @@ struct rtl_device {
     uint64_t soapy_last_overflow_log_ns = 0U;
     int soapy_profile_id = 0;
     int soapy_requested_bandwidth_hz = 0;
+    uint32_t soapy_startup_center_freq_hz = 0U;
     int soapy_named_gain_override = 0;
     int soapy_named_gain_skip_logged = 0;
     char soapy_args_string[1024] = {};
@@ -2617,17 +2618,34 @@ soapy_log_capability_summary_locked(struct rtl_device* dev) {
 
 static int
 soapy_apply_antenna_locked(struct rtl_device* dev) {
-    if (!dev || !dev->soapy_dev || dev->soapy_requested_antenna[0] == '\0') {
+    if (!dev || !dev->soapy_dev) {
+        return 0;
+    }
+    const dsdneo::SoapyProfile& profile = dsdneo::soapy_profile_by_id((dsdneo::SoapyProfileId)dev->soapy_profile_id);
+    const dsdneo::SoapyAntennaChoice choice = dsdneo::soapy_choose_antenna(
+        profile.default_antenna, dev->soapy_requested_antenna, (double)dev->soapy_startup_center_freq_hz);
+    if (choice.name.empty()) {
         return 0;
     }
     std::vector<std::string> antennas = dev->soapy_dev->listAntennas(SOAPY_SDR_RX, 0);
-    if (!dsdneo::soapy_name_list_contains(antennas, dev->soapy_requested_antenna)) {
-        DSD_FPRINTF(stderr, "SoapySDR: antenna '%s' is unavailable; choices=[%s].\n", dev->soapy_requested_antenna,
+    if (!dsdneo::soapy_name_list_contains(antennas, choice.name)) {
+        if (choice.auto_selected) {
+            /* The profile guessed; leave the driver default rather than failing the open. */
+            DSD_FPRINTF(stderr, "SoapySDR: %s profile antenna '%s' is unavailable; leaving driver default.\n",
+                        profile.name, choice.name.c_str());
+            return 0;
+        }
+        DSD_FPRINTF(stderr, "SoapySDR: antenna '%s' is unavailable; choices=[%s].\n", choice.name.c_str(),
                     dsdneo::soapy_join_names(antennas, 160).c_str());
         return DSD_ERR_NOT_SUPPORTED;
     }
-    dev->soapy_dev->setAntenna(SOAPY_SDR_RX, 0, dev->soapy_requested_antenna);
-    DSD_FPRINTF(stderr, "SoapySDR: selected antenna '%s'.\n", dev->soapy_requested_antenna);
+    dev->soapy_dev->setAntenna(SOAPY_SDR_RX, 0, choice.name);
+    if (choice.auto_selected) {
+        DSD_FPRINTF(stderr, "SoapySDR: selected antenna '%s' for %.4f MHz (%s profile default).\n", choice.name.c_str(),
+                    (double)dev->soapy_startup_center_freq_hz / 1e6, profile.name);
+    } else {
+        DSD_FPRINTF(stderr, "SoapySDR: selected antenna '%s'.\n", choice.name.c_str());
+    }
     return 0;
 }
 
@@ -4844,6 +4862,7 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->replay_float_elements_written = 0;
     dev->soapy_profile_id = (int)dsdneo::SoapyProfileId::Generic;
     dev->soapy_requested_bandwidth_hz = -1;
+    dev->soapy_startup_center_freq_hz = 0U;
     dev->soapy_named_gain_override = 0;
     dev->soapy_named_gain_skip_logged = 0;
     dev->soapy_args_string[0] = '\0';
@@ -5164,6 +5183,7 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     rtl_device_copy_cstr(dev->soapy_requested_gains, sizeof(dev->soapy_requested_gains), gains);
     rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format), stream_format);
     dev->soapy_requested_bandwidth_hz = cfg ? cfg->bandwidth_hz : -1;
+    dev->soapy_startup_center_freq_hz = cfg ? cfg->center_freq_hz : 0U;
 }
 
 #ifdef USE_SOAPYSDR
@@ -5535,6 +5555,43 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
 }
 
 /**
+ * @brief Report the rate the backend would deliver for a requested rate.
+ *
+ * Pure query: no device state is changed. Backends with a fixed rate grid (many
+ * SoapySDR drivers) answer with the grid entry nearest the request so the rate
+ * chain can pick decimation for the rate that will really arrive.
+ */
+int
+// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev; the stub build does not.
+rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
+    if (!dev || requested == 0U || !out_actual) {
+        return -1;
+    }
+    *out_actual = requested;
+    if (dev->backend != RTL_BACKEND_SOAPY) {
+        return 0;
+    }
+#ifdef USE_SOAPYSDR
+    double applied = (double)requested;
+    int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
+        bool adjusted = false;
+        std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
+        std::vector<dsdneo::SoapyRange> ranges =
+            soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
+        applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+        return 0;
+    });
+    if (rc != 0 || !(applied > 0.0)) {
+        return -1;
+    }
+    *out_actual = (uint32_t)std::lround(applied);
+    return 0;
+#else
+    return -1;
+#endif
+}
+
+/**
  * @brief Get current device sample rate.
  *
  * For USB, queries librtlsdr for the actual rate applied (which may be
@@ -5889,6 +5946,33 @@ rtl_device_set_ppm(struct rtl_device* dev, int ppm_error) {
         dev->ppm_error = ppm_error;
     }
     return rc;
+}
+
+/**
+ * @brief Report whether the backend can apply a frequency (PPM) correction.
+ */
+int
+// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev; the stub build does not.
+rtl_device_supports_ppm(struct rtl_device* dev) {
+    if (!dev) {
+        return 0;
+    }
+    if (dev->backend == RTL_BACKEND_IQ_REPLAY) {
+        return 0;
+    }
+    if (dev->backend == RTL_BACKEND_SOAPY) {
+#ifdef USE_SOAPYSDR
+        int supported = 0;
+        int rc = soapy_call_locked(dev, "hasFrequencyCorrection", [&]() -> int {
+            supported = dev->soapy_dev->hasFrequencyCorrection(SOAPY_SDR_RX, 0) ? 1 : 0;
+            return 0;
+        });
+        return (rc == 0) ? supported : 0;
+#else
+        return 0;
+#endif
+    }
+    return 1;
 }
 
 /**

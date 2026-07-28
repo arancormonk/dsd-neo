@@ -3372,6 +3372,21 @@ file(
     "rtl_freq = \"851.375M\"\n"
 )
 
+set(_DSD_BOOTSTRAP_SDDC_CONFIG "${_DSD_BOOTSTRAP_FIXTURE_DIR}/sddc_config.ini")
+file(
+    WRITE "${_DSD_BOOTSTRAP_SDDC_CONFIG}"
+    "[input]\n"
+    "source = \"soapy\"\n"
+    "soapy_args = \"driver=SDDC\"\n"
+    "soapy_profile = \"sddc\"\n"
+    "soapy_antenna = \"VHF\"\n"
+    "soapy_gains = \"RF:0,IF:24\"\n"
+    "soapy_settings = \"adc_frequency=98304000\"\n"
+    "soapy_bandwidth_hz = 0\n"
+    "digital_resample = \"off\"\n"
+    "rtl_freq = \"851.375M\"\n"
+)
+
 add_test(
     NAME RUNTIME_BOOTSTRAP_ENV_CONFIG
     COMMAND $<TARGET_FILE:dsd-neo> --print-config
@@ -3415,6 +3430,17 @@ set_tests_properties(
         WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
         PASS_REGULAR_EXPRESSION
             [=[soapy_settings = "rfnotch_ctrl=true,rx:agc_setpoint=-30"]=]
+)
+
+add_test(
+    NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_SDDC_PROFILE
+    COMMAND $<TARGET_FILE:dsd-neo> --config "sddc_config.ini" --print-config
+)
+set_tests_properties(
+    RUNTIME_BOOTSTRAP_PRINT_CONFIG_SDDC_PROFILE
+    PROPERTIES
+        WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+        PASS_REGULAR_EXPRESSION [=[digital_resample = "off"]=]
 )
 
 add_test(

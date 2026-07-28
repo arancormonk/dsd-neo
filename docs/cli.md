@@ -401,6 +401,11 @@ Advanced (env)
 - `soapy_settings = "key=value[,rx:key=value...]"` writes driver settings through Soapy. For example, SDRplay
   modules may expose `rfnotch_ctrl`, `dabnotch_ctrl`, `biasT_ctrl`, `agc_setpoint`, or `rfgain_sel`.
 - `soapy_gains = "NAME:dB[,NAME:dB...]"` uses named gain stages and takes precedence over aggregate `rtl_gain`.
+- `digital_resample = "auto|on|off"` controls resampling of the digital FSK stream to the resampler target rate.
+  `auto` engages only when the device forces a rate that yields a non-integer samples-per-symbol, which is what
+  devices with a coarse rate grid (RX-888/SDDC, Airspy, SDRplay) do.
+- RX-888 family radios use the SDDC Soapy module and the `sddc` profile; see `docs/soapysdr.md` for the antenna,
+  ADC clock, and throughput requirements.
 - `--print-config` reflects shorthand as normalized config fields (`soapy_args` + `rtl_*`) rather than the raw input
   string.
 - If your Soapy args string itself contains `:`, prefer config keys (`soapy_args` + `rtl_*`) to avoid ambiguity.

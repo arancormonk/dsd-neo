@@ -89,8 +89,8 @@ Optional tuning keys (also shared with RTL/RTL-TCP):
 
 Optional Soapy-specific keys:
 
-- `soapy_profile = "auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd"` selects a capability profile. `auto`
-  detects from the Soapy driver/hardware strings.
+- `soapy_profile = "auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd|sddc"` selects a capability profile.
+  `auto` detects from the Soapy driver/hardware strings.
 - `soapy_stream_format = "auto|cf32|cs16"` controls RX stream format selection. `auto` prefers the device native
   format when it is `CF32` or `CS16`, then falls back to supported formats.
 - `soapy_antenna = "<name>"` selects a listed RX antenna.
@@ -102,6 +102,10 @@ Optional Soapy-specific keys:
   may be separated with commas, semicolons, or spaces.
 - `soapy_bandwidth_hz = -1|0|<Hz>` uses profile/default behavior for `-1`, driver automatic/no explicit request for
   `0`, or validates and applies an explicit hardware bandwidth in Hz.
+- `digital_resample = "auto|on|off"` controls whether the digital FSK stream is resampled to the resampler target
+  (48000 Hz by default). `auto` engages only when the device forces a sample rate that yields a non-integer
+  samples-per-symbol; `off` always keeps the raw demod rate; `on` always resamples. CQPSK symbol output is never
+  resampled because its timing loop already tracks a fractional SPS.
 
 `soapy_settings` is a strict passthrough to the installed Soapy driver. DSD-neo checks reported setting keys and
 option lists when the driver provides metadata, then calls Soapy `writeSetting`. Startup fails for malformed items,
@@ -136,6 +140,63 @@ rtl_volume = 2
 
 Set `rtl_freq` explicitly for predictable startup frequency. `rtl_volume` is a monitor/non-symbol gain field and does not
 scale SoapySDR or other RTL-family digital symbols.
+
+## 3a) RX-888 and other SDDC devices
+
+The RX-888 family (RX-888, RX-888 mk2, RX-999, RX-666, BBRF103) is used through the **SoapySDDC** module from
+[`ik1xpv/ExtIO_sddc`](https://github.com/ik1xpv/ExtIO_sddc). DSD-neo has no native FX3 driver: the SDDC library is
+what uploads the FX3 firmware, reads the raw ADC stream, and downconverts it on the host.
+
+Build the module (Linux needs `libfftw3-dev`), then confirm Soapy sees the radio:
+
+```bash
+SoapySDRUtil --find
+SoapySDRUtil --probe="driver=SDDC"
+```
+
+The device enumerates only when your user can claim the Cypress FX3 USB interface, so install a udev rule for it
+if `--find` comes up empty while `lsusb` shows the device.
+
+Working configuration:
+
+```ini
+[input]
+source = "soapy"
+soapy_args = "driver=SDDC"
+soapy_profile = "sddc"          # or auto; detected from the SDDC driver/RX888 hardware key
+soapy_antenna = "VHF"           # required above 32 MHz (see below)
+soapy_gains = "RF:0,IF:24"
+soapy_settings = "adc_frequency=98304000"
+soapy_bandwidth_hz = 0
+rtl_freq = "851.375M"
+rtl_bw_khz = 48
+```
+
+**Antenna.** SDDC exposes two RX ports: `HF` (direct sampling) and `VHF` (the R828D tuner). It starts on `HF`, and
+every DSD-neo protocol lives above 32 MHz, so the tuner port must be selected or the receiver hears nothing. The
+`sddc` profile selects `VHF` automatically when no `soapy_antenna` is configured and the startup frequency is above
+32 MHz, and logs the choice. An explicit `soapy_antenna` always wins.
+
+**`adc_frequency` and the sample-rate grid.** SoapySDDC derives its rate list from the ADC clock, offering
+`{2, 4, 8, 16, 32, 64} MSPS` at the stock 128 MHz clock. DSD-neo asks for 1,536,000 Hz with the default 48 kHz DSP
+bandwidth, so the driver would supply 2 MSPS instead, and no power-of-two decimation of 2 MSPS is divisible by
+4800 or 6000. Setting `adc_frequency = 98304000` moves the grid to `{1.536, 3.072, 6.144, ...} MSPS`, so the device
+delivers exactly the requested rate. `soapy_settings` is applied when the device is opened, before the rate is
+programmed, so it takes effect for the first tune.
+
+Without that setting DSD-neo still works: it re-picks decimation for the rate the device actually delivers, and
+`digital_resample = "auto"` normalizes the resulting 62,500 Hz stream to 48,000 Hz for an integer SPS. That path
+costs extra CPU, so prefer the ADC clock when your SoapySDDC build exposes `adc_frequency` (check
+`SoapySDRUtil --probe`).
+
+**Throughput.** SDDC streams raw ADC samples over USB 3.0 and downconverts them on the host, so USB and CPU load
+follow `adc_frequency` (roughly 196 MB/s at 98.304 MHz) no matter which output rate DSD-neo requests. A USB 3.0
+port and a modern multi-core CPU are required; a USB 2.0 port will not work.
+
+**Limits.** The driver reports no frequency correction, so `rtl_ppm` and auto-PPM are unavailable and DSD-neo
+disables auto-PPM with a notice at startup. It has no AGC/gain mode and no hardware bandwidth control: set the `RF`
+(attenuator) and `IF` (VGA) stages through `soapy_gains`, and leave `soapy_bandwidth_hz = 0`. The RX stream is
+CF32-only, so `--iq-capture` requires `--iq-capture-format cf32`.
 
 ## 4) Run
 

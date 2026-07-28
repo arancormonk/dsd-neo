@@ -195,6 +195,7 @@ init_opts_decoder_and_input_defaults(dsd_opts* opts) {
     opts->soapy_clock[0] = '\0';
     opts->soapy_settings[0] = '\0';
     opts->soapy_gains[0] = '\0';
+    opts->digital_resample_mode = 0; // DSD_DIGITAL_RESAMPLE_AUTO
     opts->rtl_started = 0;
     opts->rtl_needs_restart = 0;
     opts->rtl_pwr = 0;                // mean power approximation level on rtl input signal

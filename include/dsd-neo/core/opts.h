@@ -172,6 +172,9 @@ struct dsd_opts {
     int rtl_dsp_bw_khz;
     int rtl_bias_tee;       /* 1 to enable RTL-SDR bias tee (if supported) */
     int soapy_bandwidth_hz; /* -1=profile/default, 0=driver automatic, >0 explicit Soapy hardware bandwidth */
+    /* Digital FSK stream resampling: 0=auto (only for non-integer SPS), 1=on, 2=off.
+       Values match enum dsd_digital_resample_mode. */
+    int digital_resample_mode;
     int rtl_started;
     /* Mark when RTL-SDR stream must be destroyed/recreated to apply changes
        that cannot be updated live (e.g., device index, bandwidth, manual gain). */

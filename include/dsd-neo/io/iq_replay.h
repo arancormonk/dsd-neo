@@ -19,6 +19,10 @@
 extern "C" {
 #endif
 
+/* Largest base decimation a replay chain may request. The demodulator keeps one half-band
+ * history buffer per pass (demod_state::hb_hist_i), so 2^10 is the hard ceiling. */
+#define DSD_IQ_REPLAY_MAX_BASE_DECIMATION 1024U
+
 typedef struct {
     uint32_t metadata_version;
     char data_path[2048];

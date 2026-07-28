@@ -397,6 +397,29 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     opts->rtl_volume_multiplier = vol;
 }
 
+static int
+digital_resample_mode_from_name(const char* name) {
+    if (!name || !name[0] || dsd_strcasecmp(name, "auto") == 0) {
+        return 0; /* DSD_DIGITAL_RESAMPLE_AUTO */
+    }
+    if (dsd_strcasecmp(name, "on") == 0) {
+        return 1; /* DSD_DIGITAL_RESAMPLE_ON */
+    }
+    if (dsd_strcasecmp(name, "off") == 0) {
+        return 2; /* DSD_DIGITAL_RESAMPLE_OFF */
+    }
+    return 0;
+}
+
+static const char*
+digital_resample_mode_name(int mode) {
+    switch (mode) {
+        case 1: return "on";
+        case 2: return "off";
+        default: return "auto";
+    }
+}
+
 static void
 apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts) {
@@ -423,6 +446,7 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (cfg->soapy_bandwidth_hz_is_set) {
         opts->soapy_bandwidth_hz = cfg->soapy_bandwidth_hz;
     }
+    opts->digital_resample_mode = digital_resample_mode_from_name(cfg->digital_resample);
 }
 
 static void
@@ -469,6 +493,10 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (opts->soapy_bandwidth_hz >= 0) {
         cfg->soapy_bandwidth_hz = opts->soapy_bandwidth_hz;
         cfg->soapy_bandwidth_hz_is_set = 1;
+    }
+    if (opts->digital_resample_mode != 0) {
+        copy_token_string(cfg->digital_resample, sizeof cfg->digital_resample,
+                          digital_resample_mode_name(opts->digital_resample_mode));
     }
 }
 
@@ -761,6 +789,9 @@ render_input_rtl_common(FILE* out, const dsdneoUserConfig* cfg, int include_auto
     }
     if (include_auto_ppm) {
         DSD_FPRINTF(out, "auto_ppm = %s\n", ini_bool(cfg->rtl_auto_ppm));
+    }
+    if (cfg->digital_resample[0]) {
+        DSD_FPRINTF(out, "digital_resample = \"%s\"\n", cfg->digital_resample);
     }
 }
 

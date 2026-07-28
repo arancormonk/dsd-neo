@@ -676,6 +676,97 @@ expect_direct_output_open_rate_uses_demod_rate(void) {
 }
 
 static int
+expect_passes_for_device_rate(void) {
+    int rc = 0;
+    /* SoapySDDC on an RX-888 can only offer 2 MSPS at the stock ADC clock: 2e6 >> 5 = 62500 Hz
+       is the closest landing above the requested 48 kHz DSP bandwidth. */
+    rc |= expect_int_eq("2 MSPS to 48 kHz picks 5 passes", rtl_stream_test_passes_for_actual_rate(2000000U, 48000), 5);
+    rc |= expect_int_eq("2 MSPS to 24 kHz picks 6 passes", rtl_stream_test_passes_for_actual_rate(2000000U, 24000), 6);
+    /* With adc_frequency=98304000 the device offers the requested rate exactly. */
+    rc |= expect_int_eq("1.536 MSPS to 48 kHz picks 5 passes", rtl_stream_test_passes_for_actual_rate(1536000U, 48000),
+                        5);
+    rc |=
+        expect_int_eq("2.5 MSPS to 48 kHz picks 5 passes", rtl_stream_test_passes_for_actual_rate(2500000U, 48000), 5);
+    /* Never decimate below the requested bandwidth. */
+    rc |= expect_int_eq("rate below bandwidth keeps every sample",
+                        rtl_stream_test_passes_for_actual_rate(32000U, 48000), 0);
+    rc |= expect_int_eq("rate equal to bandwidth keeps every sample",
+                        rtl_stream_test_passes_for_actual_rate(48000U, 48000), 0);
+    rc |= expect_int_eq("zero rate is rejected", rtl_stream_test_passes_for_actual_rate(0U, 48000), 0);
+    rc |= expect_int_eq("zero bandwidth is rejected", rtl_stream_test_passes_for_actual_rate(2000000U, 0), 0);
+    return rc;
+}
+
+static int
+expect_digital_resample_policy(void) {
+    static constexpr int kModeAuto = DSD_DIGITAL_RESAMPLE_AUTO;
+    static constexpr int kModeOn = DSD_DIGITAL_RESAMPLE_ON;
+    static constexpr int kModeOff = DSD_DIGITAL_RESAMPLE_OFF;
+    static constexpr int kForced = 1;
+    static constexpr int kNotForced = 0;
+
+    int rc = 0;
+    unsigned int output_rate_hz = 0U;
+    int resamp_enabled = -1;
+
+    /* A device-imposed 62500 Hz gives 13.02 SPS at 4800 sym/s, so auto mode normalizes to 48 kHz. */
+    rc |= expect_int_eq("device-forced non-integer SPS helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 62500, 48000, 4800,
+                                                               kModeAuto, kForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("device-forced non-integer SPS resamples", resamp_enabled, 1);
+    rc |= expect_int_eq("device-forced non-integer SPS publishes target", (int)output_rate_hz, 48000);
+
+    /* The same rate chosen by the user's own DSP bandwidth is left alone. */
+    rc |= expect_int_eq("user bandwidth non-integer SPS helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 62500, 48000, 4800,
+                                                               kModeAuto, kNotForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("user bandwidth non-integer SPS bypasses", resamp_enabled, 0);
+    rc |= expect_int_eq("user bandwidth non-integer SPS keeps demod rate", (int)output_rate_hz, 62500);
+
+    /* An integer SPS never needs the resampler, however the rate was chosen. */
+    rc |= expect_int_eq("device-forced integer SPS helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 96000, 48000, 4800,
+                                                               kModeAuto, kForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("device-forced integer SPS bypasses", resamp_enabled, 0);
+    rc |= expect_int_eq("device-forced integer SPS keeps demod rate", (int)output_rate_hz, 96000);
+
+    /* CQPSK output is symbol-rate already; the Gardner loop absorbs fractional SPS. */
+    rc |= expect_int_eq("cqpsk helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_SYMBOL_CQPSK, 62500, 48000, 4800,
+                                                               kModeAuto, kForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("cqpsk symbols are never resampled", resamp_enabled, 0);
+    rc |= expect_int_eq("cqpsk keeps demod rate", (int)output_rate_hz, 62500);
+
+    /* Explicit modes override the auto heuristic in both directions. */
+    rc |= expect_int_eq("mode off helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 62500, 48000, 4800,
+                                                               kModeOff, kForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("mode off bypasses", resamp_enabled, 0);
+    rc |= expect_int_eq("mode off keeps demod rate", (int)output_rate_hz, 62500);
+
+    rc |= expect_int_eq("mode on helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 24000, 48000, 4800,
+                                                               kModeOn, kNotForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("mode on resamples an integer SPS rate", resamp_enabled, 1);
+    rc |= expect_int_eq("mode on publishes target", (int)output_rate_hz, 48000);
+
+    /* A target that cannot produce an integer SPS is not worth the resampler. */
+    rc |= expect_int_eq("unhelpful target helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 62500, 50000, 4800,
+                                                               kModeAuto, kForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("unhelpful target bypasses", resamp_enabled, 0);
+    rc |= expect_int_eq("unhelpful target keeps demod rate", (int)output_rate_hz, 62500);
+    return rc;
+}
+
+static int
 expect_source_policy_matrix(void) {
     static constexpr int kRadioSourceRtlUsb = 0;
     static constexpr int kRadioSourceRtlTcp = 1;
@@ -1016,6 +1107,8 @@ main(void) {
     rc |= expect_public_control_wrapper_contracts();
     rc |= expect_fsk_snr_sps_uses_active_profile();
     rc |= expect_direct_output_open_rate_uses_demod_rate();
+    rc |= expect_passes_for_device_rate();
+    rc |= expect_digital_resample_policy();
     rc |= expect_private_policy_matrices();
     rc |= expect_steady_state_watermark_disabled("rtl_tcp keeps demod watermark disabled", "rtltcp:127.0.0.1:1234");
     rc |= expect_steady_state_watermark_disabled("rtlsdr keeps demod watermark disabled", "rtl");

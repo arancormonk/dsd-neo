@@ -48,6 +48,12 @@ enum DSD_ATTR_PACKED dsd_demod_output_kind {
     DSD_DEMOD_OUTPUT_SYMBOL_CQPSK = 2,
 };
 
+enum DSD_ATTR_PACKED dsd_digital_resample_mode {
+    DSD_DIGITAL_RESAMPLE_AUTO = 0,
+    DSD_DIGITAL_RESAMPLE_ON = 1,
+    DSD_DIGITAL_RESAMPLE_OFF = 2,
+};
+
 /**
  * @brief Aggregate state container for the demodulator processing chain.
  *
@@ -159,6 +165,13 @@ struct demod_state {
 
     /* Polyphase rational resampler (L/M) */
     int resamp_enabled;
+    /* Whether the digital FSK discriminator stream may pass through the resampler:
+       0 = auto (only when a device-imposed rate gives a non-integer SPS), 1 = always, 2 = never. */
+    int digital_resample_mode;
+    /* Set when the capture rate came from the device's fixed rate grid rather than from the
+       requested DSP bandwidth. Auto-mode digital resampling only triggers in that case, so a
+       user-chosen bandwidth keeps its existing rate chain. */
+    int capture_rate_device_forced;
     int resamp_target_hz;      /* desired output sample rate */
     int resamp_L;              /* upsample factor */
     int resamp_M;              /* downsample factor */

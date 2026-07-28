@@ -44,7 +44,7 @@ This project is an active work in progress as we decouple from the upstream fork
 
 - More input and streaming options
 
-  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and SoapySDR (`-i soapy[:args]`) for non-RTL radios (for example Airspy/SDRplay/HackRF/LimeSDR).
+  - Direct RTL‑SDR USB, plus RTL‑TCP (`-i rtltcp[:host:port]`) and SoapySDR (`-i soapy[:args]`) for non-RTL radios (for example Airspy/SDRplay/HackRF/LimeSDR/RX‑888).
   - Generic TCP PCM16LE input (`-i tcp[:host:port]`, SDR++/GRC 7355 audio streams).
   - UDP audio in/out: receive PCM16LE over UDP as an input, and send decoded audio to UDP sinks for easy piping to other apps or hosts (decoded voice is typically 8 kHz; see `docs/network-audio.md`).
   - M17 UDP/IP in/out: dedicated M17 stream and packet frame input/output over UDP (`-i m17udp[:bind:17000]`, `-o m17udp[:host:17000]`).

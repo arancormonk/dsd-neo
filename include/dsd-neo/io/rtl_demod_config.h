@@ -60,6 +60,17 @@ void rtl_demod_select_defaults_for_mode(struct demod_state* demod, const dsd_opt
                                         const struct output_state* output);
 
 /**
+ * Report the rate the digital FSK discriminator stream should be resampled to.
+ *
+ * Returns 0 when the stream must pass through untouched: for CQPSK symbol output, when
+ * the mode is off, or (in auto mode) when the demod rate already yields an integer SPS.
+ *
+ * @param demod Demodulator state.
+ * @return Target rate in Hz, or 0 to bypass the resampler.
+ */
+int rtl_demod_digital_resample_target_hz(const struct demod_state* demod);
+
+/**
  * Recompute resampler configuration when the demod output rate changes,
  * updating output.rate accordingly.
  *
