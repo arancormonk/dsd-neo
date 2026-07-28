@@ -668,7 +668,10 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
 // terminator would -- but never tightens a sync-loss end, whose fade the same
 // fallible evidence cannot explain away. The slot's payload crypto and alias
 // state resets either way: keeping it would let the next call on the slot
-// inherit a stale algid/key/MI or half-built alias.
+// inherit a stale algid/key/MI or half-built alias. When the end was a
+// mis-typed voice burst, the canonical reacquisition path restores the
+// retained crypto as the healing media mark reopens the epoch (call_state.c),
+// so an encrypted continuation keeps decrypting.
 static void
 dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
     const int ended = ctx->CRCCorrect == 1U
@@ -700,8 +703,6 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
 
     if (ctx->type != 2) {
         dmr_flco_sync_active_call_state(ctx);
-    } else {
-        dmr_flco_handle_terminator(ctx);
     }
 
     if (ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
@@ -1062,6 +1063,18 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     dmr_flco_detect_special_modes(&ctx);
     ctx.protected_lc = dmr_flco_is_protected(&ctx);
     dmr_flco_print_protected_lc(&ctx);
+
+    // A terminator burst ends the slot's call before any LC-payload gate. The
+    // burst type is FEC-protected separately from the LC, so a protected LC,
+    // an unknown/vendor FID, or an irrecoverable LC still marks the end of the
+    // transmission it follows; leaving those calls to fade into a sync-loss
+    // end would let the next same-identity transmission merge into their row.
+    // Only a cleanly read TD_LC is exempt -- it terminates a data session, not
+    // the slot's voice call -- and it must be cleanly read: a protected or
+    // FEC-failed LC cannot vouch for its own FLCO.
+    if (ctx.type == 2U && !(*ctx.IrrecoverableErrors == 0 && !ctx.protected_lc && ctx.flco == 0x30U)) {
+        dmr_flco_handle_terminator(&ctx);
+    }
 
     if (*ctx.IrrecoverableErrors == 0) {
         if (dmr_flco_handle_no_error_paths(&ctx)) {
