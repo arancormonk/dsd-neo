@@ -10,6 +10,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -766,34 +767,51 @@ test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
     dsd_state_ext_free_all(&state);
 }
 
-// A terminator whose link control failed RS(12,9) must not end the call or wipe
-// the slot's payload state: a mis-typed burst would otherwise close a live
-// transmission with the un-recoverable explicit reason and drop its crypto and
-// alias state mid-call. A genuinely missed terminator is picked up by the
-// no-carrier path as a recoverable sync-loss end instead.
+// A terminator whose link control failed RS(12,9) still ends the call -- on
+// RAS systems under the aggressive default every LC fails the masked CRC, so
+// gating the end on the CRC would leave those calls active forever -- but with
+// the recoverable sync-loss reason, so a voice burst mis-typed as a terminator
+// mid-call is healed by the next same-identity observation reacquiring the
+// epoch instead of splitting the transmission in two. The slot's payload
+// crypto and alias state resets either way: keeping it would let the next call
+// on the slot inherit a stale algid/key/MI or half-built alias.
 static void
-test_unverified_terminator_keeps_call_active(void) {
+test_unverified_terminator_ends_call_recoverably(void) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t bits[80];
     uint32_t irr = 0;
+    dsd_call_snapshot call;
 
     seed_td_lc_slot(&opts, &state, 0U);
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
     assert(irr == 0);
-    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
-    assert(state.payload_algid == 0x22);
-    assert(state.payload_keyid == 0x33);
-    assert(state.payload_mi == 0x123456789AULL);
-    assert(strcmp(state.generic_talker_alias[0], "alias") == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS);
 
-    // The verified terminator still ends the call and resets the slot.
+    // A repeated unverified terminator on the sync-loss-ended epoch is positive
+    // evidence the transmission is over: it tightens the reason to explicit, so
+    // a second PTT on the same identity inside the reacquisition gap cannot
+    // fold into the terminated call's row.
     irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+
+    // The verified terminator ends explicitly in one step.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 0U);
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
     dsd_state_ext_free_all(&state);
 }
 
@@ -1300,6 +1318,52 @@ test_repeated_voice_lc_header_keeps_one_epoch(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// Header repeats only precede the transmission's first voice superframe, so an
+// active epoch that has gone longer than the repeat window without a single
+// decodable voice frame stops absorbing same-identity headers: the next
+// identical header is a new transmission, not a preamble repeat. Without the
+// bound, a header-only epoch whose voice bursts all failed to decode would
+// swallow a PTT on the same talkgroup minutes later as a continuation.
+static void
+test_stale_headerless_epoch_does_not_absorb_next_header(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+
+    // A header-shaped epoch whose start predates the repeat window, with no
+    // voice media ever marked on it.
+    const dsd_call_observation stale = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 1001U,
+        .policy_target_id = 1001U,
+        .ota_source_id = 2002U,
+        .observed_m = dsd_time_now_monotonic_s() - 10.0,
+    };
+    assert(dsd_call_state_observe(&state, &stale, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t stale_epoch = call.epoch;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_flco_stale_header") == 0);
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
+
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != stale_epoch);
+    assert(call.ota_source_id == 2002U);
+    dsd_state_ext_free_all(&state);
+}
+
 // One transmission whose voice LC header repeats must leave exactly one row in
 // event history: the repeats stay in the first epoch instead of each minting an
 // epoch whose change commits the previous epoch's freshly built row again.
@@ -1362,8 +1426,9 @@ main(void) {
     InitAllFecFunction();
 
     test_repeated_voice_lc_header_keeps_one_epoch();
+    test_stale_headerless_epoch_does_not_absorb_next_header();
     test_repeated_voice_lc_headers_commit_one_history_row();
-    test_unverified_terminator_keeps_call_active();
+    test_unverified_terminator_ends_call_recoverably();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();

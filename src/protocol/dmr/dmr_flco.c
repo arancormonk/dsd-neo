@@ -594,18 +594,26 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     (void)dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto);
 }
 
+// Longest stretch of repeated voice LC headers still read as one
+// transmission's preamble. Headers repeat only until the first voice
+// superframe (360 ms), so a couple of seconds covers every real preamble
+// while bounding how long an epoch whose voice bursts all failed to decode
+// can keep absorbing same-identity headers as continuations.
+#define DMR_FLCO_HEADER_REPEAT_WINDOW_S 2.0
+
 // The voice LC header repeats through the start of a transmission so late
 // entrants can join, and an explicit BEGIN on each repeat mints another epoch,
 // which commits the previous epoch's freshly built row as a duplicate event.
 // Header repeats can only precede the transmission's first voice superframe,
-// so a header that re-describes the identity already active on a slot that has
-// not yet carried voice media observes a continuation. Once voice has run on
-// the epoch, an identical header is the next transmission -- a same-identity
-// re-key whose terminator was missed -- and still opens its own epoch, as does
-// a header naming a different talker or target or one arriving after the
-// terminator.
+// so a header arriving within the repeat window on a slot that has not yet
+// carried voice media observes a continuation. Once voice has run on the
+// epoch, or the window has passed without a single decodable voice frame, the
+// header is the next transmission -- a same-identity re-key whose terminator
+// was missed -- and opens its own epoch. A header naming a different call
+// still forks: the CONTINUE is advisory, and the canonical comparator inside
+// dsd_call_state_observe() begins a new epoch on any identity contradiction.
 static dsd_call_boundary
-dmr_flco_voice_boundary(const dmr_flco_ctx* ctx, const dsd_call_observation* observation) {
+dmr_flco_voice_boundary(const dmr_flco_ctx* ctx) {
     if (ctx->type != 1U) {
         return DSD_CALL_BOUNDARY_CONTINUE;
     }
@@ -614,12 +622,7 @@ dmr_flco_voice_boundary(const dmr_flco_ctx* ctx, const dsd_call_observation* obs
         || current.media_active != 0U) {
         return DSD_CALL_BOUNDARY_BEGIN;
     }
-    if (!DSD_SYNC_IS_DMR(current.protocol) || current.kind != observation->kind
-        || current.ota_target_id != observation->ota_target_id) {
-        return DSD_CALL_BOUNDARY_BEGIN;
-    }
-    if (current.ota_source_id != 0U && observation->ota_source_id != 0U
-        && current.ota_source_id != observation->ota_source_id) {
+    if (dsd_time_now_monotonic_s() - current.started_m > DMR_FLCO_HEADER_REPEAT_WINDOW_S) {
         return DSD_CALL_BOUNDARY_BEGIN;
     }
     return DSD_CALL_BOUNDARY_CONTINUE;
@@ -644,9 +647,45 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         .priority = (uint8_t)(ctx->so & 0x03U),
         .has_service_metadata = 1U,
     };
-    (void)dsd_call_state_observe(ctx->state, &observation, dmr_flco_voice_boundary(ctx, &observation));
+    (void)dsd_call_state_observe(ctx->state, &observation, dmr_flco_voice_boundary(ctx));
     dmr_flco_publish_crypto(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+}
+
+// The end reason tracks the terminator's RS(12,9) verdict. A verified
+// terminator ends the call explicitly. An unverified one still ends it -- the
+// burst type is FEC-protected separately from the LC payload, and on RAS
+// systems under the aggressive default every LC fails the masked CRC, so
+// gating the end on the CRC would leave RAS calls active forever -- but with
+// the recoverable sync-loss reason, so a voice burst mis-typed as a terminator
+// mid-call is healed by the very next same-identity observation reacquiring
+// the epoch instead of splitting the transmission in two. On an epoch sync
+// loss already ended, even an unverified terminator is positive evidence the
+// transmission is over, so it tightens the reason to explicit and retracts the
+// reacquisition permission. The slot's payload crypto and alias state resets
+// either way: keeping it would let the next call on the slot inherit a stale
+// algid/key/MI or half-built alias.
+static void
+dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
+    int ended;
+    if (ctx->CRCCorrect == 1U) {
+        ended = dsd_call_state_end(ctx->state, ctx->slot, 0.0);
+    } else {
+        dsd_call_snapshot current;
+        const int active =
+            dsd_call_state_get(ctx->state, ctx->slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE;
+        ended = active ? dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0, DSD_CALL_END_SYNC_LOSS)
+                       : dsd_call_state_end(ctx->state, ctx->slot, 0.0);
+    }
+    if (ended > 0) {
+        dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+    }
+    if (ctx->state->currentslot == 0) {
+        dmr_flco_reset_td_lc_slot0(ctx);
+    }
+    if (ctx->state->currentslot == 1) {
+        dmr_flco_reset_td_lc_slot1(ctx);
+    }
 }
 
 static int
@@ -665,23 +704,8 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
 
     if (ctx->type != 2) {
         dmr_flco_sync_active_call_state(ctx);
-    }
-
-    // Only an RS(12,9)-verified terminator ends the call and clears the slot's
-    // payload state. Ending on an unverified LC lets a mis-typed burst close a
-    // live transmission with the un-recoverable EXPLICIT reason and wipe its
-    // crypto/alias state mid-call; a genuinely missed terminator is instead
-    // picked up by the no-carrier path as a recoverable sync-loss end.
-    if (ctx->type == 2 && ctx->CRCCorrect == 1U) {
-        if (dsd_call_state_end(ctx->state, ctx->slot, 0.0) > 0) {
-            dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
-        }
-        if (ctx->state->currentslot == 0) {
-            dmr_flco_reset_td_lc_slot0(ctx);
-        }
-        if (ctx->state->currentslot == 1) {
-            dmr_flco_reset_td_lc_slot1(ctx);
-        }
+    } else {
+        dmr_flco_handle_terminator(ctx);
     }
 
     if (ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
