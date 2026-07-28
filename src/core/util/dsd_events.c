@@ -225,9 +225,15 @@ write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
                                    &state->event_history_s[slot].Event_History_Items[0], NULL);
 }
 
+// Only the two-slot protocols annotate their log lines with a slot number.
+static uint8_t
+watchdog_event_should_write_systype(int systype) {
+    return (DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype)) ? 1u : 0u;
+}
+
 static uint8_t
 watchdog_event_should_write_slot(const dsd_state* state) {
-    return (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_P25P2(state->lastsynctype)) ? 1u : 0u;
+    return watchdog_event_should_write_systype(state->lastsynctype);
 }
 
 static int
@@ -310,9 +316,7 @@ static void
 watchdog_event_handle_source_transition_ex(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct,
                                            uint8_t slot, uint8_t swrite, int last_event_is_data,
                                            int reset_slot_identity, dsd_event_end_disposition end_disposition) {
-    if (opts->event_out_file[0] != 0) {
-        write_event_to_log_file(opts, state, slot, swrite, event_struct->Event_History_Items[0].event_string);
-    }
+    write_event_to_log_file(opts, state, slot, swrite, event_struct->Event_History_Items[0].event_string);
 
     event_struct->Event_History_Items[0].write = 1;
     if (end_disposition != DSD_EVENT_END_NONE) {
@@ -553,10 +557,18 @@ watchdog_event_staged_row_merges(const Event_History_I* event_struct, const dsd_
     if (lifecycle == NULL || lifecycle->epoch == 0U || lifecycle->reacquired_epoch != lifecycle->epoch) {
         return 0;
     }
+    // Two rows are legitimate targets. The row the interrupted epoch committed is the one this
+    // segment is resuming. This epoch's own row is the second: once a commit lands -- a merge, or a
+    // push because the interrupted epoch never got a row of its own -- every later commit in the
+    // same epoch is still the same transmission and belongs in it. Without that case an epoch that
+    // commits twice, as a mid-segment call notice followed by its end does, would push a duplicate.
+    //
     // The reopened epoch may have ended without ever pushing a row -- it staged nothing, or a
-    // reset intervened -- in which case committed_epoch still names something older. Folding into
-    // that would put this transmission inside an unrelated call's row, so commit a new one.
-    if (!lifecycle->committed_valid || lifecycle->committed_epoch != lifecycle->reacquired_from_epoch) {
+    // reset intervened -- in which case committed_epoch names something older than either. Folding
+    // into that would put this transmission inside an unrelated call's row, so commit a new one.
+    if (!lifecycle->committed_valid
+        || (lifecycle->committed_epoch != lifecycle->reacquired_from_epoch
+            && lifecycle->committed_epoch != lifecycle->epoch)) {
         return 0;
     }
     if (retained_index == 0U || staged->category != DSD_EVENT_CATEGORY_VOICE) {
@@ -587,8 +599,12 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
         // A protocol with no builder, or a row with no recoverable timestamp, keeps its string.
         int rendered_changed = 0;
         (void)watchdog_event_rerender_row(&lifecycle->committed_env, retained, &rendered_changed);
-        watchdog_event_log_merge_continuation(opts, slot, watchdog_event_should_write_slot(state), retained, &added,
-                                              rendered_changed);
+        // Annotation taken from the row, not from the live decoder: by the time a reacquired
+        // segment merges, lastsynctype may name a system the decoder moved on to, or have been
+        // cleared entirely by no_carrier_reset_decode_state(). The row's own systype is what its
+        // first commit was annotated from, so both halves of one transmission agree in the log.
+        watchdog_event_log_merge_continuation(opts, slot, watchdog_event_should_write_systype(retained->systype),
+                                              retained, &added, rendered_changed);
         dsd_event_history_mark_dirty(event_struct);
         // The merged row is now this epoch's row too, so late enrichment for the reacquired
         // epoch resolves to it and the next segment in the chain has a valid merge target.
@@ -1375,13 +1391,21 @@ watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t dat
     }
 
     // "YYYY-MM-DD HH:MM:SS": separators at offsets 4, 7, 10, 13, 16; digits everywhere else.
-    static const char kSeparators[19] = {0, 0, 0, 0, '-', 0, 0, '-', 0, 0, ' ', 0, 0, ':', 0, 0, ':', 0, 0};
+    static const char k_watchdog_event_datetime_separators[19] = {0,   0, 0, 0,   '-', 0, 0,   '-', 0, 0,
+                                                                  ' ', 0, 0, ':', 0,   0, ':', 0,   0};
     const char* s = item->event_string;
-    if (datestr_size < 11U || timestr_size < 9U || strnlen(s, sizeof(item->event_string)) < 19U) {
+
+    // Field widths of the prefix, including the terminator each is written with -- not the caller's
+    // buffer capacities. The size parameters below only reject a buffer too small to hold a field;
+    // widening one must not copy more of the timestamp than the field itself.
+    enum { k_datestr_len = 11U, k_timestr_len = 9U };
+
+    if (datestr_size < k_datestr_len || timestr_size < k_timestr_len || strnlen(s, sizeof(item->event_string)) < 19U) {
         return 0;
     }
     for (size_t i = 0; i < 19U; i++) {
-        if (kSeparators[i] != 0 ? s[i] != kSeparators[i] : !watchdog_event_char_is_digit(s[i])) {
+        if (k_watchdog_event_datetime_separators[i] != 0 ? s[i] != k_watchdog_event_datetime_separators[i]
+                                                         : !watchdog_event_char_is_digit(s[i])) {
             return 0;
         }
     }
@@ -1473,16 +1497,21 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         // has nothing to commit; enrichment resolves that case by push sequence and declines.
         (void)watchdog_event_commit_staged_row((dsd_opts*)opts, state, event_struct, slot, lifecycle,
                                                call->kind == DSD_CALL_KIND_DATA, 1, disposition);
+        if (deferred_end) {
+            // Armed only where a row reached history, which is what makes this the same rule the
+            // FINAL disposition follows: its alert is emitted inside the commit above, so it too
+            // cannot fire for a staged row with nothing in it. A protocol that renders no event
+            // string -- X2-TDMA has no builder -- would otherwise beep the end of a transmission
+            // the operator never saw.
+            lifecycle->end_alert_pending = 1U;
+            // Deliberately the local monotonic clock rather than call->ended_m: the deadline is
+            // only ever compared against this same clock, and ended_m carries whatever timeline
+            // the caller supplied. In production the two coincide; keeping both endpoints on one
+            // clock means a caller-supplied timeline can never make the alert fire early.
+            lifecycle->end_alert_due_m = dsd_time_now_monotonic_s() + DSD_CALL_REACQUIRE_GAP_S;
+        }
     } else {
         init_event_history(event_struct, 0, 1);
-    }
-    if (deferred_end) {
-        lifecycle->end_alert_pending = 1U;
-        // Deliberately the local monotonic clock rather than call->ended_m: the deadline is only
-        // ever compared against this same clock, and ended_m carries whatever timeline the caller
-        // supplied. In production the two coincide; keeping both endpoints on one clock means a
-        // caller-supplied timeline can never make the alert fire early.
-        lifecycle->end_alert_due_m = dsd_time_now_monotonic_s() + DSD_CALL_REACQUIRE_GAP_S;
     }
     lifecycle->ended_committed = 1U;
 }
@@ -2007,9 +2036,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s %s %s", datestr, timestr, notice);
 
-    if (opts->event_out_file[0] != '\0') {
-        write_event_to_log_file(opts, state, slot, 0U, item->event_string);
-    }
+    write_event_to_log_file(opts, state, slot, 0U, item->event_string);
     push_event_history(event_struct);
     DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
     dsd_event_history_mark_dirty(event_struct);
@@ -2083,9 +2110,7 @@ dsd_event_emit_system_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, con
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
     DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s %s %s", datestr, timestr, notice);
 
-    if (opts->event_out_file[0] != '\0') {
-        write_event_to_log_file(opts, state, slot, 0U, item->event_string);
-    }
+    write_event_to_log_file(opts, state, slot, 0U, item->event_string);
     push_event_history(event_struct);
     DSD_MEMCPY(&event_struct->Event_History_Items[0], &active, sizeof(active));
     dsd_event_history_mark_dirty(event_struct);
