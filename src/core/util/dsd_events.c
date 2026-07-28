@@ -225,10 +225,12 @@ write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
                                    &state->event_history_s[slot].Event_History_Items[0], NULL);
 }
 
-// Only the two-slot protocols annotate their log lines with a slot number.
+// Only the two-slot protocols annotate their log lines with a slot number. X2-TDMA belongs here for
+// the same reason the other two do: it carries two timeslots and its callers attribute every
+// observation through state->currentslot, so a log line without the annotation is ambiguous.
 static uint8_t
 watchdog_event_should_write_systype(int systype) {
-    return (DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype)) ? 1u : 0u;
+    return (DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype) || DSD_SYNC_IS_X2TDMA(systype)) ? 1u : 0u;
 }
 
 static uint8_t
@@ -1202,6 +1204,29 @@ watchdog_event_current_build_event_dmr(const watchdog_event_current_ctx* ctx, co
     }
 }
 
+// The ALG/KID annotation carried by the protocols that use P25-style ESS. A row persists only the
+// derived enc flag, so a merged row that lost the live classification still reports encryption.
+static void
+watchdog_event_append_ess_crypto(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    if (ctx->alg_id != 0 && ctx->alg_id != 0x80) {
+        char ess_str[30];
+        DSD_SNPRINTF(ess_str, sizeof(ess_str), "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
+        watchdog_event_str_append(event_string, event_size, ess_str);
+    } else if (ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED
+               || ctx->enc) {
+        watchdog_event_str_append(event_string, event_size, "ENC; ");
+    }
+}
+
+static void
+watchdog_event_append_call_kind(const watchdog_event_current_ctx* ctx, char* event_string, size_t event_size) {
+    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
+        watchdog_event_str_append(event_string, event_size, "Group; ");
+    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+        watchdog_event_str_append(event_string, event_size, "Private; ");
+    }
+}
+
 static void
 watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, const char* datestr, const char* timestr,
                                        const char* sys_string, char* event_string, size_t event_size) {
@@ -1214,22 +1239,27 @@ watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, co
                      sys_string, ctx->target_id, ctx->source_id, ctx->sys_id3);
     }
 
-    if (ctx->alg_id != 0 && ctx->alg_id != 0x80) {
-        char ess_str[30];
-        DSD_SNPRINTF(ess_str, sizeof(ess_str), "ENC; ALG: %02X; KID: %04X; ", ctx->alg_id, ctx->key_id);
-        watchdog_event_str_append(event_string, event_size, ess_str);
-    } else if (ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING || ctx->crypto == DSD_CALL_CRYPTO_ENCRYPTED
-               || ctx->enc) {
-        watchdog_event_str_append(event_string, event_size, "ENC; ");
-    }
+    watchdog_event_append_ess_crypto(ctx, event_string, event_size);
     if (ctx->svc_opts & 0x80) {
         watchdog_event_str_append(event_string, event_size, "Emergency; ");
     }
-    if (ctx->kind == DSD_CALL_KIND_GROUP_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Group; ");
-    } else if (ctx->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        watchdog_event_str_append(event_string, event_size, "Private; ");
-    }
+    watchdog_event_append_call_kind(ctx, event_string, event_size);
+}
+
+// X2-TDMA parses no call identity: the link control it collects is never decoded into a talkgroup
+// or a source, so those fields stay zero for the life of the call. The row still has to exist --
+// without one the transmission is absent from history and from the log entirely, and the operator
+// has no record that the slot carried voice at all. Deliberately not routed through the P25
+// builder despite the shared ESS crypto model: X2-TDMA has no NAC, and rendering "NAC: 000" would
+// assert something the decoder never read.
+static void
+watchdog_event_current_build_event_x2tdma(const watchdog_event_current_ctx* ctx, const char* datestr,
+                                          const char* timestr, const char* sys_string, char* event_string,
+                                          size_t event_size) {
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; ", datestr, timestr, sys_string,
+                 ctx->target_id, ctx->source_id);
+    watchdog_event_append_ess_crypto(ctx, event_string, event_size);
+    watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
 
 static void
@@ -1289,6 +1319,8 @@ watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx,
         watchdog_event_current_build_event_dmr(ctx, datestr, timestr, sys_string, event_string, event_size);
     } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
         watchdog_event_current_build_event_p25(ctx, datestr, timestr, sys_string, event_string, event_size);
+    } else if (DSD_SYNC_IS_X2TDMA(ctx->protocol)) {
+        watchdog_event_current_build_event_x2tdma(ctx, datestr, timestr, sys_string, event_string, event_size);
     } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
         watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys_string, event_string, event_size);
     }
@@ -1500,9 +1532,9 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         if (deferred_end) {
             // Armed only where a row reached history, which is what makes this the same rule the
             // FINAL disposition follows: its alert is emitted inside the commit above, so it too
-            // cannot fire for a staged row with nothing in it. A protocol that renders no event
-            // string -- X2-TDMA has no builder -- would otherwise beep the end of a transmission
-            // the operator never saw.
+            // cannot fire for a staged row with nothing in it. A signal that renders no event
+            // string -- one never classified into a protocol with a builder -- would otherwise beep
+            // the end of a transmission the operator never saw.
             lifecycle->end_alert_pending = 1U;
             // Deliberately the local monotonic clock rather than call->ended_m: the deadline is
             // only ever compared against this same clock, and ended_m carries whatever timeline

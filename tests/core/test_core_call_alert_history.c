@@ -2538,9 +2538,11 @@ test_reacquired_stage_superseded_by_new_call_still_merges(void) {
 // epoch. A later reacquisition of that empty epoch must not fold into the unrelated row it still
 // names -- the merge target has to be the row the reopened epoch itself committed.
 //
-// X2-TDMA is the vehicle: it has no per-protocol event builder, so its rows render no string and
-// have no content to commit. That makes it the reachable shape of "an epoch that committed
-// nothing", which is otherwise hard to construct.
+// A generic digital sync is the vehicle: no per-protocol builder claims DSD_SYNC_DIGITAL, so its
+// rows render no string and have no content to commit. That makes it the reachable shape of "an
+// epoch that committed nothing", which is otherwise hard to construct. Every protocol the decoder
+// can actually classify has a builder, so an unclassified signal is the only one left that
+// legitimately renders nothing.
 static int
 test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row(void) {
     static dsd_opts opts;
@@ -2559,7 +2561,7 @@ test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row(void) {
 
     // Call B renders nothing, so its sync-loss end commits no row and the slot's commit
     // reference still names call A.
-    assert(observe_test_call(&state, 0U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 300U, 400U, 0U, 0U,
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DIGITAL, DSD_CALL_KIND_GROUP_VOICE, 300U, 400U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -2568,7 +2570,7 @@ test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row(void) {
     assert(committed_history_rows(&event_history[0]) == 1);
 
     // B is reacquired inside the window. Whatever it contributes must not land in call A's row.
-    assert(observe_test_call(&state, 0U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 300U, 400U, 0U, 0U,
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DIGITAL, DSD_CALL_KIND_GROUP_VOICE, 300U, 400U, 0U, 0U,
                              DSD_CALL_BOUNDARY_CONTINUE)
            == 1);
     dsd_call_snapshot reacquired;
@@ -2984,8 +2986,8 @@ test_notice_then_end_in_reacquired_epoch_commits_one_row(void) {
 
 // A sync-loss end whose staged row rendered nothing put no row in history, so there is no
 // transmission for a VOICE_END to be about. The FINAL disposition cannot alert in that case --
-// its beep lives inside the commit -- and the deferred one must not either. X2-TDMA is the
-// concrete case: no builder covers it, so its rows render empty.
+// its beep lives inside the commit -- and the deferred one must not either. An unclassified
+// digital sync is the concrete case: no builder claims it, so its rows render empty.
 static int
 test_contentless_sync_loss_end_arms_no_alert(void) {
     static dsd_opts opts;
@@ -2993,9 +2995,9 @@ test_contentless_sync_loss_end_arms_no_alert(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
-    state.lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
+    state.lastsynctype = DSD_SYNC_DIGITAL;
 
-    assert(observe_test_call(&state, 0U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DIGITAL, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
@@ -3011,6 +3013,89 @@ test_contentless_sync_loss_end_arms_no_alert(void) {
     assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
     rc |= expect_int("no VOICE_END is held for a transmission with no row", context.events[0].end_alert_pending, 0);
     rc |= expect_int("nothing beeped past the START", g_beeper_count, start_alerts);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// X2-TDMA voice reached history as an empty row: no builder covered it, so the transmission was
+// absent from the UI and from the log with nothing to say it had happened. It decodes no call
+// identity -- the link control it collects is never parsed into a talkgroup or a source -- so the
+// row reports what the protocol does know: that the slot carried voice, on which timeslot, and
+// whether it was encrypted.
+static int
+test_x2tdma_voice_commits_a_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
+
+    char path[] = "/tmp/dsd-neo-x2tdma-events-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "mkstemp failed for x2tdma event log test\n");
+        return 1;
+    }
+    close(fd);
+    (void)remove(path);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+
+    // Slot 1 and identity-less, exactly as x2tdma_voice.c publishes it.
+    assert(observe_test_call(&state, 1U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+    assert(end_test_call(&state, 1U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        (void)remove(path);
+        DSD_FPRINTF(stderr, "x2tdma event log was not created\n");
+        return 1;
+    }
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    (void)remove(path);
+    buf[n] = '\0';
+
+    const Event_History* committed = &event_history[1].Event_History_Items[1];
+    int rc = expect_int("x2tdma voice commits a row", committed_history_rows(&event_history[1]), 1);
+    // The protocol name itself comes from dsd_synctype_to_string(), stubbed here for every
+    // protocol; what matters is that the builder rendered at all rather than leaving the row blank.
+    rc |= expect_int("x2tdma row is not blank", committed->event_string[0] != '\0', 1);
+    // Zeros rather than omitted: the decoder genuinely never read them, and the row shape stays
+    // the same as every other protocol's.
+    rc |= expect_has_substr("x2tdma row reports the unknown identity", committed->event_string, "TGT: 00000000;");
+    // A NAC would be fabricated -- X2-TDMA has none -- so the P25 builder is deliberately not reused.
+    rc |= expect_int("x2tdma row invents no NAC", strstr(committed->event_string, "NAC:") == NULL, 1);
+    // Two-slot, so the log line has to say which timeslot carried the call.
+    rc |= expect_has_substr("x2tdma log line carries the slot annotation", buf, "Slot 2;");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Encryption is the one call attribute X2-TDMA does publish, so it has to reach the row.
+static int
+test_x2tdma_encrypted_voice_reports_enc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    assert(update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED, 0x84U, 0x1234U, 0U) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    int rc = expect_int("encrypted x2tdma commits a row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("x2tdma row reports the algorithm", committed->event_string, "ENC; ALG: 84; KID: 1234;");
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -3529,6 +3614,8 @@ main(void) {
     rc |= test_route_identity_reacquisition_still_coalesces();
     rc |= test_observed_fallback_matches_end_site_clock_resolution();
     rc |= test_contentless_sync_loss_end_arms_no_alert();
+    rc |= test_x2tdma_voice_commits_a_row();
+    rc |= test_x2tdma_encrypted_voice_reports_enc();
     rc |= test_reacquired_stage_superseded_by_new_call_still_merges();
     rc |= test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row();
     rc |= test_reacquired_transmission_via_continue_commits_one_row();
