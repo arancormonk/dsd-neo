@@ -105,19 +105,44 @@ waddnstr(WINDOW* win, const char* str, int n) { // NOLINT(misc-use-internal-link
     return 0;
 }
 
+/* Colour-pair trace: "+n" when a pair is switched on, "-n" when switched off, in
+   render order. Lets tests assert that a highlight is balanced and that the
+   section colour is restored before the rest of a line is drawn. */
+static char g_color_trace[256];
+static size_t g_color_trace_len;
+
+static void
+reset_color_trace(void) {
+    DSD_MEMSET(g_color_trace, 0, sizeof(g_color_trace));
+    g_color_trace_len = 0U;
+}
+
+static void
+append_color_trace(char sign, attr_t attrs) {
+    const short pair = (short)PAIR_NUMBER(attrs);
+    if (pair == 0 || g_color_trace_len + 4U >= sizeof(g_color_trace)) {
+        return;
+    }
+    int wrote = DSD_SNPRINTF(g_color_trace + g_color_trace_len, sizeof(g_color_trace) - g_color_trace_len, "%c%d", sign,
+                             (int)pair);
+    if (wrote > 0) {
+        g_color_trace_len += (size_t)wrote;
+    }
+}
+
 int
 wattr_on(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-linkage)
     (void)win;
-    (void)attrs;
     (void)opts;
+    append_color_trace('+', attrs);
     return 0;
 }
 
 int
 wattr_off(WINDOW* win, attr_t attrs, void* opts) { // NOLINT(misc-use-internal-linkage)
     (void)win;
-    (void)attrs;
     (void)opts;
+    append_color_trace('-', attrs);
     return 0;
 }
 
@@ -1007,7 +1032,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert_capture_contains("ALG: 0x84 KEY ID: 0x2468 MI: 0x1122334455667788");
     assert(strstr(g_printw_capture, "UNKNOWN") == NULL);
     assert(strstr(g_printw_capture, "ENC?") == NULL);
-    assert(strstr(g_printw_capture, "FREQ:") == NULL);
+    assert(strstr(g_printw_capture, "Freq:") == NULL);
     assert(strstr(g_printw_capture, "[GROUP]") == NULL);
     assert(strstr(g_printw_capture, "P25 VOICE") == NULL);
     assert_capture_contains(" | VOICE");
@@ -1103,6 +1128,134 @@ test_canonical_p25_slot_and_recent_activity(void) {
     free(state);
 }
 
+/* Offset of the separator that precedes the burst/DUID indicator on a slot
+   header line. The whole point of the fixed status column is that this offset
+   does not move when optional call tags or banner text appear. */
+static size_t
+capture_burst_separator_offset(void) {
+    const char* separator = strstr(g_printw_capture, " | ");
+    assert(separator != NULL);
+    return (size_t)(separator - g_printw_capture);
+}
+
+static void
+capture_slot_header_line(dsd_state* state, int slot_index) {
+    ui_slot_view slot = ui_build_slot_view(state, slot_index);
+    ui_slot_render_flags flags = {0};
+    reset_printw_capture();
+    ui_render_slot_header_line(state, &slot, &flags);
+}
+
+static void
+test_slot_header_burst_column_is_fixed(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.ota_source_id = 404U;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    capture_slot_header_line(state, 0);
+    assert_capture_contains(" | VOICE");
+    const size_t baseline_offset = capture_burst_separator_offset();
+
+    // A grant carrying a priority must not push the burst indicator out of column.
+    observation.has_service_metadata = 1U;
+    observation.priority = 3U;
+    observation.observed_m = 1.2;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    capture_slot_header_line(state, 0);
+    assert_capture_contains("[PR:3]");
+    assert_capture_contains(" | VOICE");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    // Emergency is reported once, by the [EM] tag; the banner must not repeat it.
+    observation.emergency = 1U;
+    observation.observed_m = 1.4;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    capture_slot_header_line(state, 0);
+    assert_capture_contains("[EM][PR:3]");
+    assert(strstr(g_printw_capture, "Emergency") == NULL);
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    // A longer banner (encrypted) shares the same column budget.
+    dsd_call_crypto_update crypto = {0};
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+    crypto.algid = 0x84U;
+    crypto.kid = 0x2468U;
+    crypto.observed_m = 1.5;
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
+    capture_slot_header_line(state, 0);
+    assert_capture_contains("Group Encrypted");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    // The idle-slot placeholder lands on the same column as a live call.
+    state->dmrburstR = 21;
+    capture_slot_header_line(state, 1);
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
+static void
+test_slot_header_id_highlight_is_balanced(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+    state->carrier = 1;
+
+    dsd_call_observation observation = {0};
+    observation.protocol = DSD_SYNC_P25P2_POS;
+    observation.slot = 0U;
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.ota_target_id = 1201U;
+    observation.policy_target_id = 1201U;
+    observation.ota_source_id = 404U;
+    observation.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    // Voice burst: IDs are not highlighted, but the section colour is still restored.
+    ui_slot_view slot = ui_build_slot_view(state, 0);
+    assert(slot.burst == 21);
+    ui_slot_render_flags flags = {0};
+    reset_color_trace();
+    ui_render_slot_header_line(state, &slot, &flags);
+    assert(strcmp(g_color_trace, "+3") == 0);
+
+    // Non-voice burst with resolved IDs: the highlight is turned on and off again.
+    dsd_call_observation data_observation = observation;
+    data_observation.kind = DSD_CALL_KIND_DATA;
+    data_observation.ota_target_id = 2202U;
+    data_observation.policy_target_id = 2202U;
+    data_observation.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    slot = ui_build_slot_view(state, 0);
+    assert(slot.burst == 6);
+    reset_color_trace();
+    ui_render_slot_header_line(state, &slot, &flags);
+    assert(strcmp(g_color_trace, "+2-2+3") == 0);
+
+    // Without carrier there is nothing to highlight and the idle section colour applies.
+    state->carrier = 0;
+    reset_color_trace();
+    ui_render_slot_header_line(state, &slot, &flags);
+    assert(strcmp(g_color_trace, "+4") == 0);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 static void
 test_live_protocol_panels_ignore_ended_call_identity(void) {
     dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
@@ -1180,6 +1333,8 @@ main(void) {
     test_patch_and_slot_helpers();
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();
+    test_slot_header_burst_column_is_fixed();
+    test_slot_header_id_highlight_is_balanced();
     test_live_protocol_panels_ignore_ended_call_identity();
     return 0;
 }

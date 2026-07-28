@@ -171,22 +171,44 @@ ui_demod_symbol_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     return (sample_rate_hz + (state->samplesPerSymbol / 2)) / state->samplesPerSymbol;
 }
 
+/* Burst/DUID labels rendered at the end of the slot header line. Entries carry
+   no padding of their own; the render site owns the column width so every label
+   occupies the same span. */
+#define UI_SLOT_BURST_WIDTH 8
+
 static const char* DMRBusrtTypes[32] = {
-    "PI       ", "VLC      ", "TLC      ", "CSBK     ", "MBCH     ", "MBCC     ", "DATA     ",
-    "R12D     ", "R34D     ", "IDLE     ", "R1_D     ", "ERR      ", "DUID ERR ", "R-S ERR  ",
-    "CRC ERR  ", "NULL     ", "VOICE",     "         ", "INIT     ", "INIT     ",
+    "PI",       //0
+    "VLC",      //1
+    "TLC",      //2
+    "CSBK",     //3
+    "MBCH",     //4
+    "MBCC",     //5
+    "DATA",     //6
+    "R12D",     //7
+    "R34D",     //8
+    "IDLE",     //9
+    "R1_D",     //10
+    "ERR",      //11
+    "DUID ERR", //12
+    "R-S ERR",  //13
+    "CRC ERR",  //14
+    "NULL",     //15
+    "VOICE",    //16
+    "",         //17
+    "INIT",     //18
+    "INIT",     //19
     "PTT",      //20 MAC
     "VOICE",    //21 MAC_ACTIVE
     "HANGTIME", //22 MAC
     "PTT END",  //23 MAC
     "IDLE",     //24 MAC
-    "HDU",
-    "VOICE", //26 LDU1
-    "VOICE", //27 LDU2
-    "TDU/LC",    "TSBK",
-    "SIGNAL", //MAC_SIGNAL
-    "SIGNAL"  //MAC_SIGNAL
-
+    "HDU",      //25
+    "VOICE",    //26 LDU1
+    "VOICE",    //27 LDU2
+    "TDU/LC",   //28
+    "TSBK",     //29
+    "SIGNAL",   //30 MAC_SIGNAL
+    "SIGNAL",   //31 MAC_SIGNAL
 };
 
 static void
@@ -826,7 +848,7 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
     if (opts->scanner_mode == 1) {
         printw("| Scan Mode: ");
         if (state->lcn_freq_roll != 0) {
-            printw(" Frequency: %.06lf Mhz", (double)state->trunk_lcn_freq[state->lcn_freq_roll - 1] / 1000000);
+            printw(" Frequency: %.06lf MHz", (double)state->trunk_lcn_freq[state->lcn_freq_roll - 1] / 1000000);
         }
         printw(" Speed: %.02lf sec \n",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
@@ -1979,13 +2001,13 @@ ui_render_nxdn_monitor_line(const dsd_opts* opts, const dsd_state* state, int id
         printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RCCH Channel");
         if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
             long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-            printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
+            printw(" - Frequency: %.06lf MHz ", (double)f / 1000000);
         }
     } else {
         printw(idas ? "Monitoring RTCH2 Channel" : "Monitoring RTCH Channel");
         if (state->trunk_vc_freq[0] != 0 || state->p25_vc_freq[0] != 0) {
             long f = (state->trunk_vc_freq[0] != 0) ? state->trunk_vc_freq[0] : state->p25_vc_freq[0];
-            printw(" - Frequency: %.06lf Mhz ", (double)f / 1000000);
+            printw(" - Frequency: %.06lf MHz ", (double)f / 1000000);
         }
     }
     printw("\n");
@@ -2451,7 +2473,8 @@ ui_apply_canonical_call_slot(ui_slot_view* slot, const dsd_call_snapshot* call) 
     } else if (call->kind == DSD_CALL_KIND_DATA) {
         kind = "Data";
     }
-    DSD_SNPRINTF(slot->call_banner, sizeof slot->call_banner, " %s%s%s", kind, call->emergency ? " Emergency" : "",
+    // Emergency is carried by the [EM] tag immediately left of the banner; do not repeat it here.
+    DSD_SNPRINTF(slot->call_banner, sizeof slot->call_banner, " %s%s", kind,
                  call->crypto >= DSD_CALL_CRYPTO_ENCRYPTED_PENDING ? " Encrypted" : "");
 }
 
@@ -2498,7 +2521,7 @@ ui_render_p25_dmr_header_dmr_bs(const dsd_state* state) {
     if (state->dmr_rest_channel > 0) {
         printw("Rest LSN: %02d; ", state->dmr_rest_channel);
         if (state->trunk_chan_map[state->dmr_rest_channel] != 0) {
-            printw("Freq: %.06lf Mhz", (double)state->trunk_chan_map[state->dmr_rest_channel] / 1000000);
+            printw("Freq: %.06lf MHz", (double)state->trunk_chan_map[state->dmr_rest_channel] / 1000000);
         }
         return;
     }
@@ -2530,7 +2553,7 @@ ui_render_p25_dmr_header_p25p1(const dsd_opts* opts, dsd_state* state) {
     printw("; RFSS: %lld SITE: %lld ", state->p2_rfssid, state->p2_siteid);
     if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-        printw("FREQ: %.06lf MHz", (double)f / 1000000);
+        printw("Freq: %.06lf MHz", (double)f / 1000000);
     }
     ui_render_p25_talker_alias(state, ui_active_call_source(state, 0U), 0);
 }
@@ -2551,7 +2574,7 @@ ui_render_p25p2_parameter_status(const dsd_state* state) {
     }
     if (state->trunk_cc_freq != 0 || state->p25_cc_freq != 0) {
         long f = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
-        printw("FREQ: %.06lf MHz", (double)f / 1000000);
+        printw("Freq: %.06lf MHz", (double)f / 1000000);
     }
 }
 
@@ -2598,33 +2621,59 @@ ui_set_slot_render_flags(const dsd_state* state, const ui_slot_view* slot, ui_sl
     flags->show_crypto_status = slot->canonical_p25 || slot->burst == 16 || flags->show_p25_vxtra;
 }
 
+/* Optional call tags ([EM], [PR:n]) and the call banner share one fixed-width
+   column so the burst-type separator lands in the same place on every slot line,
+   whether or not a call carries emergency/priority metadata. Each part supplies
+   its own leading space; the widest content is " [EM][PR:255]" (13) followed by
+   " Private Encrypted" (18). */
+#define UI_SLOT_CALL_STATUS_WIDTH 31
+
+static void
+ui_compose_slot_call_tags(const ui_slot_view* slot, char* out, size_t out_len) {
+    char priority_tag[12] = {0};
+    if (slot->call_priority > 0) {
+        DSD_SNPRINTF(priority_tag, sizeof priority_tag, "[PR:%d]", slot->call_priority);
+    }
+    if (!slot->call_emergency && priority_tag[0] == '\0') {
+        out[0] = '\0';
+        return;
+    }
+    DSD_SNPRINTF(out, out_len, " %s%s", slot->call_emergency ? "[EM]" : "", priority_tag);
+}
+
 static void
 ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_slot_render_flags* flags) {
     printw("| SLOT %d - ", slot->slot_no);
-    const int colored_ids = ui_slot_has_colored_ids(state, slot);
-    if (slot->burst < 16 && colored_ids) {
+    /* Non-voice bursts carrying a resolved TGT/SRC pair render their IDs in the
+       terminated-call colour. Turn-on and turn-off share one predicate so the
+       pair can never leak into the banner, and the section colour is restored on
+       every path rather than only on the highlighted one. */
+    const int highlight_ids = ui_slot_has_colored_ids(state, slot) && slot->burst < 16;
+    if (highlight_ids) {
         attron(COLOR_PAIR(2));
     }
 
     ui_set_slot_render_flags(state, slot, flags);
+    char call_tags[16] = {0};
     if (flags->show_ids) {
-        printw("TGT: [%8i] SRC: [%8i] ", slot->target, slot->source);
-        if (slot->call_emergency) {
-            printw("[EM] ");
-        }
-        if (slot->call_priority > 0) {
-            printw("[PR:%d] ", slot->call_priority);
-        }
+        printw("TGT: [%8i] SRC: [%8i]", slot->target, slot->source);
+        ui_compose_slot_call_tags(slot, call_tags, sizeof call_tags);
+        printw("%s", call_tags);
     } else {
-        printw("TGT: [        ] SRC: [        ] ");
+        printw("TGT: [        ] SRC: [        ]");
     }
 
-    if (slot->burst != 16 && colored_ids) {
+    if (highlight_ids) {
         attroff(COLOR_PAIR(2));
-        attron(COLOR_PAIR(3));
     }
-    printw("%s | ", flags->show_ids ? slot->call_banner : "                     ");
-    printw("%s ", DMRBusrtTypes[slot->burst]);
+    ui_restore_call_info_color(state);
+
+    int banner_width = UI_SLOT_CALL_STATUS_WIDTH - (int)strlen(call_tags);
+    if (banner_width < 0) {
+        banner_width = 0;
+    }
+    printw("%-*.*s | ", banner_width, banner_width, flags->show_ids ? slot->call_banner : "");
+    printw("%-*s ", UI_SLOT_BURST_WIDTH, DMRBusrtTypes[slot->burst]);
     printw("\n");
 }
 
