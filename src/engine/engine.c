@@ -1286,20 +1286,30 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     }
 
     long int freq = state->trunk_lcn_freq[state->lcn_freq_roll];
+    // Tracks whether the receiver has physically moved yet, so a later leg failing cannot retract a
+    // move that already happened. With both rigctl and an RTL front end configured the rigctl leg
+    // runs first and commits s_last_rigctl_freq; if the RTL tune then fails the scan step is
+    // abandoned, but the radio is no longer on the frequency the open call was decoded from. That
+    // still has to report as a hop or the finalizer ends the call as sync loss and leaves it
+    // reacquirable by whatever decodes next -- on a different frequency.
+    int moved = 0;
     if (freq != 0) {
         if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
             return 0;
         }
-        if (opts->use_rigctl == 1 && no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
-            return 0;
+        if (opts->use_rigctl == 1) {
+            if (no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+                return 0;
+            }
+            moved = 1;
         }
         if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
             if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq) != DSD_TRUNK_TUNE_RESULT_OK) {
-                return 0;
+                return moved;
             }
 #else
-            return 0;
+            return moved;
 #endif
         }
     }

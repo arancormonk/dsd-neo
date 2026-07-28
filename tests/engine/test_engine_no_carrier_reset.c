@@ -20,6 +20,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -230,6 +231,20 @@ int
 __wrap_rtl_stream_request_fsk_reacquire(void) {
     g_rtl_fsk_reacquire_requests++;
     return 1;
+}
+
+// Rigctl needs a success path here, not just the socket-failure one the rest of the file uses:
+// the interesting case is a hop whose rigctl leg lands and whose RTL leg then does not.
+static int g_rigctl_setfreq_ok = 0;
+static int g_rigctl_setfreq_calls = 0;
+static long int g_rigctl_setfreq_freq = 0;
+
+bool
+__wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
+    (void)sockfd;
+    g_rigctl_setfreq_calls++;
+    g_rigctl_setfreq_freq = freq;
+    return g_rigctl_setfreq_ok ? true : false;
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
@@ -618,6 +633,62 @@ main(void) {
     rc |= expect_true("scanner-hop-ends-call", scanned_snapshot.phase == DSD_CALL_PHASE_ENDED);
     rc |=
         expect_true("scanner-hop-ends-call-explicitly", scanned_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // With both backends configured the rigctl leg runs first. If it lands and the RTL leg then
+    // fails, the scan step is abandoned -- but the radio has already moved off the frequency the
+    // open call was decoded from. The end must still be EXPLICIT: reporting sync loss would leave
+    // the call reacquirable by whatever the new frequency happens to carry.
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    // Frequencies no earlier case in this file uses: engine.c caches the last rigctl and RTL tune
+    // in file statics that outlive free_test_runtime(), and a repeat would be skipped as a no-op.
+    state->trunk_lcn_freq[0] = 942012500;
+    state->trunk_lcn_freq[1] = 943012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    const time_t partial_hop_scan_time = state->last_cc_sync_time;
+    g_rigctl_setfreq_ok = 1;
+    g_rigctl_setfreq_calls = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    g_rtl_tune_calls = 0;
+
+    dsd_call_observation partial_hop_call = {0};
+    partial_hop_call.protocol = DSD_SYNC_NXDN_POS;
+    partial_hop_call.slot = 0U;
+    partial_hop_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    partial_hop_call.ota_target_id = 7201U;
+    partial_hop_call.policy_target_id = 7201U;
+    partial_hop_call.ota_source_id = 8201U;
+    partial_hop_call.observed_m = 1.0;
+    rc |= expect_true("partial-hop-seeds-call",
+                      dsd_call_state_observe(state, &partial_hop_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    noCarrier(opts, state);
+
+    dsd_call_snapshot partial_hop_snapshot;
+    rc |= expect_true("partial-hop-moved-rigctl", g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == 942012500);
+    rc |= expect_true("partial-hop-rtl-failed", g_rtl_tune_calls > 0);
+    // The step itself is still abandoned: the candidate and the deadline are untouched so the next
+    // pass retries this entry rather than skipping it.
+    rc |= expect_true("partial-hop-keeps-candidate", state->lcn_freq_roll == 0);
+    rc |= expect_true("partial-hop-keeps-deadline", state->last_cc_sync_time == partial_hop_scan_time);
+    rc |= expect_true("partial-hop-retains-snapshot", dsd_call_state_get(state, 0U, &partial_hop_snapshot) == 1);
+    rc |= expect_true("partial-hop-ends-call", partial_hop_snapshot.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("partial-hop-ends-call-explicitly",
+                      partial_hop_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    g_rigctl_setfreq_ok = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 #endif
 
     free_test_runtime(opts, state);
