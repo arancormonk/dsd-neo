@@ -19,6 +19,14 @@ typedef struct {
 } dsd_call_state_ext;
 
 dsd_call_state_ext* dsd_call_state_ext_get(dsd_state* state, int create);
+
+/**
+ * True when the snapshot names a call concretely enough for "the same call" to mean anything:
+ * a target or source id, a source/target text, or a route text. The canonical identity notion
+ * shared by reacquisition (call_state.c) and the event layer's decision to drop voice rows
+ * whose epoch never named a call (dsd_events.c). NULL-safe.
+ */
+int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
 const dsd_call_state_ext* dsd_call_state_ext_peek(const dsd_state* state);
 void dsd_call_state_ext_lock(const dsd_call_state_ext* ext);
 void dsd_call_state_ext_unlock(const dsd_call_state_ext* ext);

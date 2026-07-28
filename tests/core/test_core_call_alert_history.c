@@ -1698,6 +1698,103 @@ test_identityless_voice_epoch_commits_no_row(void) {
     return rc;
 }
 
+// A voice epoch whose only decoded knowledge is its crypto -- encrypted, this
+// alg, this key -- is not noise. P25 late entry deliberately opens an
+// identity-less epoch so ESS crypto can attach; when the signal fades before
+// any LC names a talkgroup or source, the record that an encrypted
+// transmission occurred must still reach history.
+static int
+test_crypto_only_voice_epoch_commits_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_int(
+        "provisional call starts epoch",
+        observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+        1);
+    rc |= expect_int("crypto attaches to the identity-less epoch",
+                     update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x84U, 0x1234U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("crypto-only row reaches history", event_history[0].Event_History_Items[1].event_string[0] != '\0',
+                     1);
+    rc |= expect_int("row records the algorithm", event_history[0].Event_History_Items[1].enc_alg, 0x84);
+    rc |= expect_int("row records the key id", event_history[0].Event_History_Items[1].enc_key, 0x1234);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Route text is identity the row strings never carry: a D-STAR transmission
+// where only the repeater pair decoded stages a row whose every checked field
+// is empty. The identity verdict is captured at render time, so the row must
+// survive commit on every path -- including the epoch-change path, where the
+// outgoing epoch's canonical snapshot is already gone.
+static int
+test_route_text_only_row_survives_epoch_change_commit(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
+    dsd_call_observation route_only = {
+        .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = g_observed_m,
+    };
+    DSD_SNPRINTF(route_only.route_text[0], sizeof route_only.route_text[0], "%s", "RPT1CALL");
+    g_observed_m += 0.1;
+    rc |= expect_int("route-only call begins", dsd_call_state_observe(&state, &route_only, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("route-only row is staged",
+                     state.event_history_s[0].Event_History_Items[0].event_string[0] != '\0', 1);
+
+    // The next transmission's BEGIN forks the epoch before any terminator, so the leftover row
+    // commits through the epoch-change path.
+    rc |= expect_int("next call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 3333U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("route-only row reaches history", event_history[0].Event_History_Items[1].event_string[0] != '\0',
+                     1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Standalone ProVoice never parses its voice traffic into a talkgroup or
+// source, so an all-zero row is the protocol's whole story -- the channel
+// carried voice -- and must keep reaching history exactly as X2-TDMA's rows
+// do. (EDACS-trunked ProVoice rows carry AFS/LID strings and are unaffected.)
+static int
+test_standalone_provoice_zero_id_row_commits(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_PROVOICE_POS;
+    rc |= expect_int("provoice call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_PROVOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("standalone provoice row reaches history",
+                     event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_new_canonical_epoch_commits_prior_canonical_call(void) {
     static dsd_opts opts;
@@ -3731,6 +3828,9 @@ main(void) {
     rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_identityless_voice_epoch_commits_no_row();
+    rc |= test_crypto_only_voice_epoch_commits_row();
+    rc |= test_route_text_only_row_survives_epoch_change_commit();
+    rc |= test_standalone_provoice_zero_id_row_commits();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();

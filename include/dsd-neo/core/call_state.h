@@ -217,6 +217,11 @@ typedef struct {
      * content rather than at commit time: a row is sometimes committed only once the decoder has
      * already moved on to the next call, and by then the live values describe that call. */
     dsd_call_event_render_env staged_env;
+    /* Whether the staged row's epoch had named a call when the row was last rendered. Captured
+     * like staged_env so the commit-time decision to keep or drop an identity-less voice row is
+     * the same on every path, including the epoch-change path where the staged row's canonical
+     * snapshot -- and the route text that may be its only identity -- is already gone. */
+    uint8_t staged_named_call;
     /* Render inputs belonging to committed_seq's row, promoted from staged_env when it was
      * pushed. */
     dsd_call_event_render_env committed_env;

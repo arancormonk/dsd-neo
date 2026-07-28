@@ -306,7 +306,7 @@ call_state_observation_changes_identity(const dsd_call_snapshot* current, const 
         return 1;
     }
     // Route text is compared here rather than only where reacquisition consults it: both
-    // call_state_observation_has_identity() and call_state_snapshot_has_identity() already count
+    // call_state_observation_has_identity() and dsd_call_state_snapshot_has_identity() already count
     // it as identity, so leaving it out made it the one anchor no contradiction could ever reject.
     // A route-only D-STAR or YSF snapshot would then match every later observation. Like the other
     // text fields it only reports a contradiction when both sides are known, so a repeater pair
@@ -362,9 +362,14 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
 // True when the slot names a call concretely enough for "the same call" to mean anything.
 // call_state_observation_changes_identity() only reports a *contradiction*, so a snapshot that
 // never learned an identity is compatible with every observation; reacquisition needs a positive
-// anchor or it would coalesce two unrelated transmissions.
-static int
-call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
+// anchor or it would coalesce two unrelated transmissions. Exported through
+// call_state_internal.h: the event layer keys its drop-identity-less-voice-rows decision on the
+// same notion of "named a call", and a private mirror of the field list would silently diverge.
+int
+dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
+    if (current == NULL) {
+        return 0;
+    }
     return call_state_effective_target_snapshot(current) != 0U || current->ota_source_id != 0U
            || call_state_text_is_known(current->source_text) || call_state_text_is_known(current->target_text)
            || call_state_text_is_known(current->route_text[0]) || call_state_text_is_known(current->route_text[1]);
@@ -385,7 +390,7 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
     // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
     // shape mark_vocoder_call_media() opens before any header decodes -- matches everything, and
     // the next unrelated call on the slot would be folded into its row.
-    if (!call_state_snapshot_has_identity(current)) {
+    if (!dsd_call_state_snapshot_has_identity(current)) {
         return 0;
     }
     if (call_state_observation_changes_identity(current, observation)) {
@@ -750,6 +755,8 @@ dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
     // a decoder context from before this invalidation.
     DSD_MEMSET(&lifecycle->staged_env, 0, sizeof(lifecycle->staged_env));
     DSD_MEMSET(&lifecycle->committed_env, 0, sizeof(lifecycle->committed_env));
+    // The staged row this verdict described is going away with the rows above.
+    lifecycle->staged_named_call = 0U;
 }
 
 int
