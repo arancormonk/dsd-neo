@@ -1409,19 +1409,19 @@ watchdog_event_char_is_digit(char c) {
 }
 
 // Recover the "YYYY-MM-DD HH:MM:SS " prefix every builder emits, straight from the string the row
-// is already displaying. Needed because item->event_time is only stamped when reading live audio:
-// under --playfiles it is supplied by the replay timeline instead (dsd_file.c) and is legitimately
-// 0 when that timeline carries no timestamp. Formatting 0 would stamp the row 1970-01-01, so the
-// prefix it already renders is the only trustworthy source. Returns non-zero on a clean parse.
+// is already displaying, and only fall back to item->event_time when that string carries no
+// parseable prefix -- a row a protocol staged directly rather than rendering.
+//
+// The displayed string is preferred rather than the stamp because the two are not always the same
+// clock. Every builder renders the prefix from time(NULL), but watchdog_event_current_update_item()
+// only stamps event_time when opts->playfiles == 0; under --playfiles over an sdrtrunk recording it
+// is left as the recording's own timestamp instead (dsd_file.c). Formatting the stamp there would
+// rewrite a committed row's visible date and time to a value none of its siblings use, purely
+// because it was merged -- and would make the re-render report a change on every merge. Stamped or
+// not, a merge must never restamp the row. Returns non-zero on success.
 static int
 watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t datestr_size, char* timestr,
                             size_t timestr_size) {
-    if (item->event_time > 0) {
-        (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, timestr_size);
-        (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, datestr_size);
-        return 1;
-    }
-
     // "YYYY-MM-DD HH:MM:SS": separators at offsets 4, 7, 10, 13, 16; digits everywhere else.
     static const char k_watchdog_event_datetime_separators[19] = {0,   0, 0, 0,   '-', 0, 0,   '-', 0, 0,
                                                                   ' ', 0, 0, ':', 0,   0, ':', 0,   0};
@@ -1432,18 +1432,33 @@ watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t dat
     // widening one must not copy more of the timestamp than the field itself.
     enum { k_datestr_len = 11U, k_timestr_len = 9U };
 
-    if (datestr_size < k_datestr_len || timestr_size < k_timestr_len || strnlen(s, sizeof(item->event_string)) < 19U) {
+    if (datestr_size < k_datestr_len || timestr_size < k_timestr_len) {
         return 0;
     }
-    for (size_t i = 0; i < 19U; i++) {
-        if (k_watchdog_event_datetime_separators[i] != 0 ? s[i] != k_watchdog_event_datetime_separators[i]
-                                                         : !watchdog_event_char_is_digit(s[i])) {
-            return 0;
+    if (strnlen(s, sizeof(item->event_string)) >= 19U) {
+        int parsed = 1;
+        for (size_t i = 0; i < 19U; i++) {
+            if (k_watchdog_event_datetime_separators[i] != 0 ? s[i] != k_watchdog_event_datetime_separators[i]
+                                                             : !watchdog_event_char_is_digit(s[i])) {
+                parsed = 0;
+                break;
+            }
+        }
+        if (parsed) {
+            DSD_SNPRINTF(datestr, 11U, "%s", s);
+            DSD_SNPRINTF(timestr, 9U, "%s", s + 11);
+            return 1;
         }
     }
-    DSD_SNPRINTF(datestr, 11U, "%s", s);
-    DSD_SNPRINTF(timestr, 9U, "%s", s + 11);
-    return 1;
+
+    // No prefix to preserve. A stamp is better than nothing; a zero one would render 1970-01-01,
+    // so leave the row alone instead.
+    if (item->event_time > 0) {
+        (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, timestr_size);
+        (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, datestr_size);
+        return 1;
+    }
+    return 0;
 }
 
 static int

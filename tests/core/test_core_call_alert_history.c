@@ -174,6 +174,11 @@ getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, in
     return DSD_SNPRINTF(buffer, 7, "%02d-%02d%01d", a, f, s);
 }
 
+// A stamp standing in for the one a replay timeline supplies (dsd_file.c), distinct from the wall
+// clock the builders render their prefix from. It renders as its own date below so a test can tell
+// which of the two a row was rendered from.
+#define TEST_REPLAY_EVENT_TIME ((time_t)1000000000)
+
 int
 dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out, size_t out_size) {
     // An unstamped time really does render as the epoch, so the stub has to say so: rendering a
@@ -183,6 +188,13 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
         DSD_SNPRINTF(out, out_size, "%s", epoch);
         return 1;
     }
+    if (timestamp == TEST_REPLAY_EVENT_TIME) {
+        const char* replay = (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) ? "2001-09-09" : "01:46:40";
+        DSD_SNPRINTF(out, out_size, "%s", replay);
+        return 1;
+    }
+    // Everything else is the live wall clock, which the fixture cannot pin; one stable rendering
+    // keeps the prefix assertions deterministic.
     const char* value = (format == DSD_LOCAL_DATETIME_DATE_HYPHEN) ? "2026-04-30" : "00:00:00";
     DSD_SNPRINTF(out, out_size, "%s", value);
     return 1;
@@ -2295,6 +2307,57 @@ test_reacquired_segment_contributes_late_source(void) {
     return rc;
 }
 
+// A merge re-renders the surviving row, and that render has to reuse the timestamp the row is
+// already displaying rather than the stamp beside it -- the two are not always the same clock.
+// Every builder renders the prefix from the wall clock, but watchdog_event_current_update_item()
+// only stamps event_time when opts->playfiles == 0; replaying an sdrtrunk recording leaves it at
+// the recording's own time instead (dsd_file.c). Preferring the stamp would rewrite the row's
+// visible date and time to a value none of its siblings use, purely because it was merged.
+static int
+test_merge_preserves_row_timestamp_under_playfiles(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.playfiles = 1;
+    // What the sdrtrunk JSON reader stamps on the staging row, decades from the wall clock the
+    // prefix is rendered from.
+    event_history[0].Event_History_Items[0].event_time = TEST_REPLAY_EVENT_TIME;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    assert(committed->event_time == TEST_REPLAY_EVENT_TIME);
+    char prefix_before[20];
+    DSD_SNPRINTF(prefix_before, sizeof prefix_before, "%s", committed->event_string);
+
+    // A late source guarantees the merge really does re-render rather than declining to.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    char prefix_after[20];
+    DSD_SNPRINTF(prefix_after, sizeof prefix_after, "%s", merged->event_string);
+
+    int rc = expect_int("playfiles merge commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("playfiles merge re-rendered the row", merged->event_string, "SRC: 00000201;");
+    rc |= expect_str_eq("merge keeps the row's rendered timestamp", prefix_after, prefix_before);
+    // Pins which of the two clocks survived: the wall clock the row was rendered from, not the
+    // replay stamp sitting beside it.
+    rc |= expect_str_eq("merged row still shows the rendered clock", prefix_after, "2026-04-30 00:00:00");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // The PI/ESS header can decode only after the reacquisition. Dropping that commit would leave
 // the sole surviving row marked clear for a call that was encrypted.
 static int
@@ -3628,6 +3691,7 @@ main(void) {
     rc |= test_dmr_sync_polarity_flip_still_coalesces();
     rc |= test_textual_identity_reacquisition_coalesces();
     rc |= test_reacquired_segment_contributes_late_source();
+    rc |= test_merge_preserves_row_timestamp_under_playfiles();
     rc |= test_reacquired_segment_contributes_crypto();
     rc |= test_reacquired_segment_contributes_alias_and_gps();
     rc |= test_interleaved_data_notice_does_not_misdirect_merge();
