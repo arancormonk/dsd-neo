@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -457,6 +458,49 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     // the reopen instant so per-segment durations remain the segment's own.
 }
 
+// A DMR voice burst mis-typed as a terminator runs the slot's terminator reset -- clearing the
+// live dmr_so/payload_algid/payload_keyid/payload_mi the vocoder decrypts with -- before the
+// healing media mark reopens the epoch. Nothing on the identity-less reopen path re-signals
+// those fields (a PI header or late-entry rebuild may never come mid-transmission), so without
+// this the healed continuation of an encrypted call plays as noise for its remainder. The ending
+// snapshot retained the call's crypto; copy it back, but only into a slot whose live crypto is
+// entirely cleared -- the post-reset shape -- so fresher signaling is never overwritten.
+typedef struct {
+    unsigned int* so;
+    int* algid;
+    int* keyid;
+    unsigned long long int* mi;
+} call_state_dmr_slot_crypto;
+
+static call_state_dmr_slot_crypto
+call_state_dmr_slot_crypto_fields(dsd_state* state, uint8_t slot) {
+    if (slot == 0U) {
+        return (call_state_dmr_slot_crypto){&state->dmr_so, &state->payload_algid, &state->payload_keyid,
+                                            &state->payload_mi};
+    }
+    return (call_state_dmr_slot_crypto){&state->dmr_soR, &state->payload_algidR, &state->payload_keyidR,
+                                        &state->payload_miR};
+}
+
+static void
+call_state_restore_dmr_slot_crypto(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous) {
+    if (!DSD_SYNC_IS_DMR(previous->protocol)) {
+        return;
+    }
+    const uint16_t so = previous->has_service_metadata != 0U ? previous->service_options : 0U;
+    if (so == 0U && previous->algid == 0U && previous->kid == 0U && previous->mi == 0U) {
+        return;
+    }
+    const call_state_dmr_slot_crypto live = call_state_dmr_slot_crypto_fields(state, slot);
+    if (*live.so != 0U || *live.algid != 0 || *live.keyid != 0 || *live.mi != 0ULL) {
+        return;
+    }
+    *live.so = so;
+    *live.algid = previous->algid;
+    *live.keyid = previous->kid;
+    *live.mi = previous->mi;
+}
+
 static void
 call_state_apply_text(char dst[DSD_CALL_IDENTITY_TEXT_SIZE], const char* src) {
     char normalized[DSD_CALL_IDENTITY_TEXT_SIZE];
@@ -529,6 +573,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->started_m = now_m;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
+            call_state_restore_dmr_slot_crypto(state, observation->slot, &previous);
             ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
             // Which epoch was reopened. Whether a history row may actually be merged is the event
             // layer's call -- it pairs this against the epoch its committed row belongs to -- but

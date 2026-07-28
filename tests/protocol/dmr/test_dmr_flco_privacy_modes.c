@@ -906,6 +906,165 @@ test_unverified_terminator_does_not_tighten_sync_loss_end(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The terminator's burst type is FEC-protected separately from its LC payload,
+// so a terminator whose LC cannot be read -- irrecoverable FEC errors, a
+// protected LC, or an unknown vendor FID whose dispatch returns early -- still
+// ends the slot's call instead of leaving it to fade into a sync-loss end the
+// next same-identity transmission could merge into.
+static void
+test_terminator_ends_call_despite_unreadable_lc(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Irrecoverable LC FEC errors: the burst type alone ends the call, with
+    // the recoverable unverified reason since the CRC could not vouch for it.
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    irr = 1;
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 1);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+
+    // Protected LC with a verified CRC: an intact terminator, explicit end.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    bits[0] = 1U;
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+
+    // Unknown vendor FID: the no-error dispatch returns early for the LC, but
+    // the terminator transition has already run.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x2AU, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    dsd_state_ext_free_all(&state);
+}
+
+// A cleanly read TD_LC terminates a data session, not the slot's voice call:
+// the voice call state and its live crypto stay untouched, with or without a
+// verified CRC (RAS masks the CRC on every LC).
+static void
+test_data_terminator_does_not_end_voice_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x30U, 0x00U, 0x00U, 0U, 0U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert(state.payload_algid == 0x22);
+    assert(state.dmr_so == 0x40U);
+    assert(state.data_header_format[0] == 7);
+
+    irr = 0;
+    build_regular_flco(bits, 0x30U, 0x00U, 0x00U, 0U, 0U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert(state.payload_algid == 0x22);
+    dsd_state_ext_free_all(&state);
+}
+
+// A voice burst mis-typed as a terminator clears the slot's live crypto before
+// the identity-less media mark reopens the epoch, but the ending snapshot
+// retained the call's crypto. Reacquisition copies it back so the healed
+// continuation of an encrypted call keeps decrypting; an epoch that ends for
+// real starts the next call from cleared crypto as before.
+static void
+test_reacquired_epoch_restores_cleared_slot_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // An encrypted call whose crypto reached the canonical snapshot.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.algid == 0x22U);
+    assert(call.mi == 0x123456789AULL);
+
+    // A CRC-failed terminator -- possibly a mis-typed voice burst -- ends the
+    // call recoverably and runs the slot reset.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_so == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+
+    // The healing media mark reacquires the epoch and restores the decoder's
+    // live slot crypto from the retained snapshot.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_algid == 0x22);
+    assert(state.payload_keyid == 0x33);
+    assert(state.payload_mi == 0x123456789AULL);
+
+    // A corroborated end is not recoverable: the media mark opens a fresh
+    // epoch and nothing is restored.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_so == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+
+    // Slot 1 restores through the R-side fields.
+    irr = 0;
+    seed_td_lc_slot(&opts, &state, 1U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 3003U, 4004U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 3003U, 4004U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_soR == 0U);
+    assert(state.payload_algidR == 0);
+    const dsd_call_observation media_mark_r = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 1U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark_r, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_soR == 0x40U);
+    assert(state.payload_algidR == 0x44);
+    assert(state.payload_keyidR == 0x55);
+    assert(state.payload_miR == 0xABCDEF0123ULL);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
     static dsd_opts opts;
@@ -1522,6 +1681,9 @@ main(void) {
     test_unverified_terminator_ends_call_recoverably();
     test_unverified_terminator_reopen_depends_on_identity();
     test_unverified_terminator_does_not_tighten_sync_loss_end();
+    test_terminator_ends_call_despite_unreadable_lc();
+    test_data_terminator_does_not_end_voice_call();
+    test_reacquired_epoch_restores_cleared_slot_crypto();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();
