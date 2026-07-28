@@ -1647,6 +1647,57 @@ test_provisional_voice_identity_does_not_commit_zero_row(void) {
     return rc;
 }
 
+// A voice epoch that ends without ever learning an identity is noise, not a
+// call: a stray voice sync opened it and no header named anyone. Committing it
+// surfaced "TGT: 00000000; SRC: 00000000" rows in Activity history. The drop
+// must not arm the deferred VOICE_END alert either, matching the
+// empty-staged-row rule that an alert needs a row the operator can see, and
+// must leave the following identified call committing normally.
+static int
+test_identityless_voice_epoch_commits_no_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 13;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("zero-identity row is staged",
+                     state.event_history_s[0].Event_History_Items[0].event_string[0] != '\0', 1);
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identity-less row does not reach history",
+                     event_history[0].Event_History_Items[1].event_string[0], '\0');
+    dsd_call_context_snapshot context;
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("dropped row arms no end alert", context.events[0].end_alert_pending, 0);
+    rc |= expect_int("dropped row emits only the start alert", g_beeper_count, 1);
+
+    // The next identified call on the slot is unaffected by the drop.
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identified call ends", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identified row reaches history", (int)event_history[0].Event_History_Items[1].target_id, 1234);
+    rc |= expect_int("only the identified row is in history", event_history[0].Event_History_Items[2].event_string[0],
+                     '\0');
+    rc |= expect_int("identified call emits start and end alerts", g_beeper_count, 3);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_new_canonical_epoch_commits_prior_canonical_call(void) {
     static dsd_opts opts;
@@ -1896,8 +1947,9 @@ test_identityless_ended_epoch_does_not_reacquire(void) {
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
-    int rc = expect_int("unrelated call after an identity-less end gets its own row",
-                        committed_history_rows(&event_history[0]), 2);
+    // The identity-less epoch's own row is dropped -- it never named a call -- so only the
+    // unrelated call's row reaches history, un-coalesced and with its own START.
+    int rc = expect_int("only the unrelated call's row reaches history", committed_history_rows(&event_history[0]), 1);
     rc |=
         expect_int("unrelated call keeps its own target", (int)event_history[0].Event_History_Items[1].target_id, 500);
     rc |= expect_int("unrelated call still alerts START", g_beeper_count, 2);
@@ -2076,10 +2128,12 @@ test_back_to_back_same_identity_calls_commit_two_rows(void) {
     return rc;
 }
 
-// A terminator followed by an identity-less reopen inside the window must still commit twice:
-// the transmission that terminated is over, whatever decodes next is new.
+// A terminator followed by an identity-less reopen inside the window: the transmission that
+// terminated is over, and whatever decodes next is a new epoch, never a merge into the ended
+// row. The reopen itself never names a call, so it leaves no row of its own -- the terminated
+// call's row must survive untouched as the only one.
 static int
-test_explicit_end_then_identityless_reopen_commits_two_rows(void) {
+test_explicit_end_then_identityless_reopen_leaves_single_row(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
@@ -2099,7 +2153,9 @@ test_explicit_end_then_identityless_reopen_commits_two_rows(void) {
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
-    int rc = expect_int("explicit end never coalesces", committed_history_rows(&event_history[0]), 2);
+    int rc = expect_int("only the terminated call's row is in history", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("terminated call's row is not merged into or replaced",
+                     (int)event_history[0].Event_History_Items[1].target_id, 100);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -3674,6 +3730,7 @@ main(void) {
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
     rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
+    rc |= test_identityless_voice_epoch_commits_no_row();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
@@ -3691,7 +3748,7 @@ main(void) {
     rc |= test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row();
     rc |= test_reacquired_transmission_via_continue_commits_one_row();
     rc |= test_back_to_back_same_identity_calls_commit_two_rows();
-    rc |= test_explicit_end_then_identityless_reopen_commits_two_rows();
+    rc |= test_explicit_end_then_identityless_reopen_leaves_single_row();
     rc |= test_changed_identity_still_commits_its_own_row();
     rc |= test_reacquisition_gap_beyond_window_commits_two_rows();
     rc |= test_reacquired_segment_may_outlast_the_window();
