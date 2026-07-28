@@ -592,7 +592,7 @@ main(void) {
     rc |= expect_true("cc-return-ends-call", retuned_snapshot.phase == DSD_CALL_PHASE_ENDED);
     rc |= expect_true("cc-return-ends-call-explicitly", retuned_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
 
-#if defined(DSD_NEO_TEST_RTL_WRAP) && DSD_NEO_TEST_RTL_WRAP
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP) && DSD_NEO_TEST_RTL_WRAP
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
