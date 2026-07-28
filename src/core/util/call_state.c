@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -131,9 +132,14 @@ dsd_call_state_ensure(dsd_state* state) {
     return dsd_call_state_ext_get(state, 1) != NULL ? 1 : 0;
 }
 
+// The fallback deliberately matches the resolution of the clock every caller supplies. Endpoints
+// that pass observed_m all derive it from dsd_time_now_monotonic_s(), so truncating the fallback to
+// whole milliseconds would let an end stamped at ns precision compare as later than a reopen that
+// really followed it -- and call_state_reacquires_ended_epoch() would reject a legitimate
+// reacquisition that landed inside the same millisecond.
 static double
 call_state_observed_m(double observed_m) {
-    return observed_m > 0.0 ? observed_m : (double)dsd_time_monotonic_ms() / 1000.0;
+    return observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
 }
 
 static uint64_t
@@ -278,16 +284,11 @@ call_state_begin_specializes_provisional_voice(const dsd_call_snapshot* current,
     return dsd_call_state_protocol_family(current->protocol) == dsd_call_state_protocol_family(observation->protocol);
 }
 
+// True when the observation names a different call than the one the slot holds.
+// An absent field on either side is not a change: protocols fill identity in
+// over several bursts, and a partial re-description must not fork the epoch.
 static int
-call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
-                                    dsd_call_boundary boundary) {
-    if (current->phase != DSD_CALL_PHASE_ACTIVE) {
-        return 1;
-    }
-    if (boundary == DSD_CALL_BOUNDARY_BEGIN
-        && !call_state_begin_specializes_provisional_voice(current, observation, boundary)) {
-        return 1;
-    }
+call_state_observation_changes_identity(const dsd_call_snapshot* current, const dsd_call_observation* observation) {
     if (current->protocol != DSD_SYNC_NONE && observation->protocol != DSD_SYNC_NONE
         && dsd_call_state_protocol_family(current->protocol) != dsd_call_state_protocol_family(observation->protocol)) {
         return 1;
@@ -304,8 +305,122 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
         && current->ota_source_id != observation->ota_source_id) {
         return 1;
     }
+    // Route text is compared here rather than only where reacquisition consults it: both
+    // call_state_observation_has_identity() and call_state_snapshot_has_identity() already count
+    // it as identity, so leaving it out made it the one anchor no contradiction could ever reject.
+    // A route-only D-STAR or YSF snapshot would then match every later observation. Like the other
+    // text fields it only reports a contradiction when both sides are known, so a repeater pair
+    // that has not decoded yet -- or one reset to spaces, which normalizes to empty -- is not a
+    // change.
     return call_state_known_text_changed(current->source_text, observation->source_text)
-           || call_state_known_text_changed(current->target_text, observation->target_text);
+           || call_state_known_text_changed(current->target_text, observation->target_text)
+           || call_state_known_text_changed(current->route_text[0], observation->route_text[0])
+           || call_state_known_text_changed(current->route_text[1], observation->route_text[1]);
+}
+
+static int
+call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
+                                    dsd_call_boundary boundary) {
+    if (current->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    // An explicit BEGIN is positive per-transmission evidence (a PTT, a grant, a
+    // voice header) and always opens an epoch. Callers that repeat a header for
+    // the transmission already running must observe a CONTINUE instead.
+    if (boundary == DSD_CALL_BOUNDARY_BEGIN
+        && !call_state_begin_specializes_provisional_voice(current, observation, boundary)) {
+        return 1;
+    }
+    return call_state_observation_changes_identity(current, observation);
+}
+
+/*
+ * Seconds after a sync-loss end within which the next epoch describing the same call is
+ * treated as that transmission being reacquired rather than a new one.
+ *
+ * This is a backstop, not the discriminator: DSD_CALL_END_SYNC_LOSS plus an unchanged identity
+ * carry the decision, and the window only bounds a pathological gap. The anchor already sits
+ * after the no-sync timeout (~1800 symbols, dsd_frame_sync.c -- about 0.4 s at 4800 sym/s), so
+ * the tolerated air gap is effectively that timeout plus this window.
+ *
+ * Residual and accepted: an operator who un-keys during the fade and re-keys the same TG/SRC
+ * inside the window coalesces. That end really was a sync loss and the identity really does
+ * match, so time is the only discriminator left; the short window keeps it rare.
+ *
+ * Measured on whatever timeline the endpoints supply through call_state_observed_m(). No
+ * decode-derived clock exists today -- every non-zero observed_m in the tree ultimately comes
+ * from dsd_time_now_monotonic_s(), and callers that pass 0.0 get the same wall clock -- so under
+ * unpaced replay (--iq-replay-rate fast, the default) gaps appear shorter than they were on air
+ * and coalescing is correspondingly more eager. Documented in docs/iq-capture-replay.md; use
+ * --iq-replay-rate realtime to reproduce live timing. If an air-time clock is ever added, route
+ * it through call_state_observed_m() rather than introducing a second clock here.
+ *
+ * The constant itself is DSD_CALL_REACQUIRE_GAP_S in <dsd-neo/core/call_state.h>; the event layer
+ * needs it to know how long to hold a VOICE_END alert open.
+ */
+
+// True when the slot names a call concretely enough for "the same call" to mean anything.
+// call_state_observation_changes_identity() only reports a *contradiction*, so a snapshot that
+// never learned an identity is compatible with every observation; reacquisition needs a positive
+// anchor or it would coalesce two unrelated transmissions.
+static int
+call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
+    return call_state_effective_target_snapshot(current) != 0U || current->ota_source_id != 0U
+           || call_state_text_is_known(current->source_text) || call_state_text_is_known(current->target_text)
+           || call_state_text_is_known(current->route_text[0]) || call_state_text_is_known(current->route_text[1]);
+}
+
+// True when this observation reopens an epoch that sync loss ended moments ago while describing
+// the same call -- one transmission the decoder lost and regained, not two transmissions. The
+// boundary token is deliberately not consulted: the paths that reopen mid-transmission (the
+// vocoder's per-frame media mark, a DMR Voice LC Header arriving after the gap, M17's stream
+// mark, the P25p1 ESS ensure-call) all pass BEGIN, while P25 Phase 2 and the other re-announcing
+// protocols pass CONTINUE. Both must arm.
+static int
+call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
+                                  double now_m) {
+    if (current->phase != DSD_CALL_PHASE_ENDED || current->end_reason != (uint8_t)DSD_CALL_END_SYNC_LOSS) {
+        return 0;
+    }
+    // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
+    // shape mark_vocoder_call_media() opens before any header decodes -- matches everything, and
+    // the next unrelated call on the slot would be folded into its row.
+    if (!call_state_snapshot_has_identity(current)) {
+        return 0;
+    }
+    if (call_state_observation_changes_identity(current, observation)) {
+        return 0;
+    }
+    return current->ended_m > 0.0 && now_m >= current->ended_m
+           && (now_m - current->ended_m) <= DSD_CALL_REACQUIRE_GAP_S;
+}
+
+// Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
+// the staged history row blank out across the gap and have to relearn everything the previous
+// segment already decoded.
+static void
+call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_snapshot* previous) {
+    snapshot->ota_source_id = previous->ota_source_id;
+    snapshot->ota_target_id = previous->ota_target_id;
+    snapshot->policy_target_id = previous->policy_target_id;
+    DSD_MEMCPY(snapshot->source_text, previous->source_text, sizeof(snapshot->source_text));
+    DSD_MEMCPY(snapshot->target_text, previous->target_text, sizeof(snapshot->target_text));
+    DSD_MEMCPY(snapshot->route_text, previous->route_text, sizeof(snapshot->route_text));
+    snapshot->kind = previous->kind;
+    snapshot->protocol = previous->protocol;
+    snapshot->channel = previous->channel;
+    snapshot->frequency_hz = previous->frequency_hz;
+    snapshot->crypto = previous->crypto;
+    snapshot->algid = previous->algid;
+    snapshot->kid = previous->kid;
+    snapshot->mi = previous->mi;
+    snapshot->service_options = previous->service_options;
+    snapshot->has_service_metadata = previous->has_service_metadata;
+    snapshot->emergency = previous->emergency;
+    snapshot->priority = previous->priority;
+    // audio_permitted and started_m are deliberately not carried: the reacquired segment
+    // re-earns audio from the next crypto update exactly as it does today, and started_m stays
+    // the reopen instant so per-segment durations remain the segment's own.
 }
 
 static void
@@ -365,9 +480,12 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[observation->slot];
-    const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
     const double now_m = call_state_observed_m(observation->observed_m);
+    const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
+    // Evaluated before the memset below: the ending snapshot is the comparison target.
+    const int reacquires_ended_epoch = begins_epoch && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
     if (begins_epoch) {
+        const dsd_call_snapshot previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
         snapshot->epoch = ext->epoch_sequence[observation->slot];
@@ -375,6 +493,18 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->protocol = DSD_SYNC_NONE;
         snapshot->crypto = DSD_CALL_CRYPTO_UNKNOWN;
         snapshot->started_m = now_m;
+        if (reacquires_ended_epoch) {
+            call_state_seed_reacquired_snapshot(snapshot, &previous);
+            ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
+            // Which epoch was reopened. Whether a history row may actually be merged is the event
+            // layer's call -- it pairs this against the epoch its committed row belongs to -- but
+            // the identity seeding and the suppressed START above are canonical either way.
+            ext->events[observation->slot].reacquired_from_epoch = previous.epoch;
+        }
+        // reacquired_epoch is deliberately not cleared here. It is compared against the epoch it
+        // names, and epoch ids only increase, so a stale value can never match a later epoch.
+        // Clearing it would disarm a reacquisition whose staged row is still waiting to flush,
+        // and that row would then be committed a second time.
         ext->events[observation->slot].ended_committed = 0U;
         ext->events[observation->slot].notice_epoch = 0U;
         ext->events[observation->slot].notice_target_id = 0U;
@@ -482,7 +612,7 @@ dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, do
 }
 
 int
-dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
     if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;
     }
@@ -492,11 +622,30 @@ dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    // Ending an already-ended epoch is a no-op, so the repeated noCarrier() calls
+    // that fire while unsynced do not re-stamp ended_m: the reacquisition gap
+    // stays anchored at the first end.
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE) {
+        // One exception: a terminator or EOT decoded after sync loss already ended the epoch is
+        // positive evidence that the transmission is over, and it must be able to retract the
+        // reacquisition permission that end granted. The fade is often the last thing heard
+        // before the terminator that explains it, so without this a second PTT on the same
+        // identity inside the gap folds into the terminated call's row. Only this one direction
+        // is allowed, and ended_m is deliberately left alone: the reason changes, the moment the
+        // transmission stopped does not.
+        if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED
+            && snapshot->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && reason == DSD_CALL_END_EXPLICIT) {
+            snapshot->end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+            snapshot->revision = call_state_next_nonzero(snapshot->revision);
+            ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+            dsd_call_state_ext_unlock(ext);
+            return 1;
+        }
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
     snapshot->phase = DSD_CALL_PHASE_ENDED;
+    snapshot->end_reason = (uint8_t)reason;
     snapshot->media_active = 0U;
     snapshot->audio_permitted = 0U;
     snapshot->ended_m = call_state_observed_m(observed_m);
@@ -505,6 +654,11 @@ dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
     return 1;
+}
+
+int
+dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m) {
+    return dsd_call_state_end_ex(state, slot, observed_m, DSD_CALL_END_EXPLICIT);
 }
 
 int
@@ -576,6 +730,28 @@ dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot
     return 1;
 }
 
+void
+dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
+    if (lifecycle == NULL) {
+        return;
+    }
+    lifecycle->committed_seq = 0U;
+    lifecycle->committed_epoch = 0U;
+    lifecycle->committed_valid = 0U;
+    lifecycle->reacquired_epoch = 0U;
+    lifecycle->reacquired_from_epoch = 0U;
+    // A held VOICE_END describes a row that is going away. Firing it later would beep the end of
+    // a transmission the operator can no longer see.
+    lifecycle->end_alert_pending = 0U;
+    lifecycle->end_alert_due_m = 0.0;
+    // Both halves of the env pair go, matching the epoch-change path in dsd_events.c. A row staged
+    // directly by a protocol never passes through the renderer, so a surviving staged_env would be
+    // promoted into committed_env when that row commits and a later merge would re-render against
+    // a decoder context from before this invalidation.
+    DSD_MEMSET(&lifecycle->staged_env, 0, sizeof(lifecycle->staged_env));
+    DSD_MEMSET(&lifecycle->committed_env, 0, sizeof(lifecycle->committed_env));
+}
+
 int
 dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot) {
     if (!state || !snapshot) {
@@ -592,6 +768,19 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         if (ext->epoch_sequence[slot] < snapshot->calls.slots[slot].epoch) {
             ext->epoch_sequence[slot] = snapshot->calls.slots[slot].epoch;
+        }
+        // The lifecycle is saved and restored per trunk-scan target while the event history
+        // itself is global, so a commit reference -- or a VOICE_END held on the global monotonic
+        // clock -- carried across a hop would describe one target's row while the other target is
+        // running. Invalidate rather than relocate.
+        dsd_call_state_invalidate_event_lifecycle(&ext->events[slot]);
+        // Clearing the commit reference blocks the row merge but not the rest of reacquisition:
+        // the monotonic clock is global, so a slot saved mid-fade would still satisfy the gap
+        // test on the new target and suppress the first call's VOICE_START alert while seeding
+        // it with the old target's identity. A restored end is a hop, never a resumable fade.
+        // This lives on the call snapshot rather than the lifecycle, so it stays here.
+        if (ext->calls.slots[slot].phase == DSD_CALL_PHASE_ENDED) {
+            ext->calls.slots[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
         }
     }
     dsd_call_state_ext_unlock(ext);

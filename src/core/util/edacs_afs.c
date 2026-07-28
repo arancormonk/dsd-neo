@@ -10,23 +10,28 @@
 #include "dsd-neo/core/state_fwd.h"
 
 static int
-isCustomAfsString(const dsd_state* state) {
-    return state->edacs_a_bits != 4 || state->edacs_f_bits != 4 || state->edacs_s_bits != 3;
+isCustomAfsBits(int a_bits, int f_bits, int s_bits) {
+    return a_bits != 4 || f_bits != 4 || s_bits != 3;
 }
 
 int
-getAfsStringLength(const dsd_state* state) {
-    if (!isCustomAfsString(state)) {
+getAfsStringLengthFromBits(int a_bits, int f_bits, int s_bits) {
+    if (!isCustomAfsBits(a_bits, f_bits, s_bits)) {
         return 6;
     }
 
     int length = 0;
-    length += (state->edacs_a_bits + 2) / 3;
-    length += (state->edacs_f_bits + 2) / 3;
-    length += (state->edacs_s_bits + 2) / 3;
+    length += (a_bits + 2) / 3;
+    length += (f_bits + 2) / 3;
+    length += (s_bits + 2) / 3;
     length += 2;
 
     return length;
+}
+
+int
+getAfsStringLength(const dsd_state* state) {
+    return getAfsStringLengthFromBits(state->edacs_a_bits, state->edacs_f_bits, state->edacs_s_bits);
 }
 
 static int
@@ -59,19 +64,19 @@ edacs_append_decimal_field(char* buffer, size_t buf_len, size_t* printed_chars, 
 }
 
 int
-getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
-    if (!isCustomAfsString(state)) {
+getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, int f, int s) {
+    if (!isCustomAfsBits(a_bits, f_bits, s_bits)) {
         DSD_SNPRINTF(buffer, 6 + 1, "%02d-%02d%01d", a, f, s);
         return 6;
     }
 
     size_t printed_chars = 0;
-    const size_t need = (size_t)getAfsStringLength(state);
+    const size_t need = (size_t)getAfsStringLengthFromBits(a_bits, f_bits, s_bits);
     const size_t buf_len = need + 1;
 
-    int a_digits = edacs_digits_for_bits(state->edacs_a_bits);
-    int f_digits = edacs_digits_for_bits(state->edacs_f_bits);
-    int s_digits = edacs_digits_for_bits(state->edacs_s_bits);
+    int a_digits = edacs_digits_for_bits(a_bits);
+    int f_digits = edacs_digits_for_bits(f_bits);
+    int s_digits = edacs_digits_for_bits(s_bits);
 
     if (!edacs_append_decimal_field(buffer, buf_len, &printed_chars, a, a_digits, 1)) {
         return 0;
@@ -84,4 +89,9 @@ getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
     }
 
     return (int)printed_chars;
+}
+
+int
+getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
+    return getAfsStringFromBits(state->edacs_a_bits, state->edacs_f_bits, state->edacs_s_bits, buffer, a, f, s);
 }

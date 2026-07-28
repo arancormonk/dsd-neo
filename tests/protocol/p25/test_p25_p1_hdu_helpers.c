@@ -293,7 +293,7 @@ dsd_p25_optional_hook_watchdog_event_current(dsd_opts* opts, dsd_state* state, u
 
 void
 dsd_p25_optional_hook_write_event_to_log_file(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
-                                              char* event_string) {
+                                              const char* event_string) {
     (void)opts;
     (void)state;
     (void)slot;

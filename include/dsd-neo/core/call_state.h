@@ -50,6 +50,26 @@ typedef enum {
     DSD_CALL_CRYPTO_DECRYPTABLE,
 } dsd_call_crypto_state;
 
+/**
+ * Why a call epoch ended.
+ *
+ * Only DSD_CALL_END_SYNC_LOSS permits the next epoch on the slot to be treated as the same
+ * transmission being reacquired. EXPLICIT is the default so an unconverted call site produces a
+ * second history row -- a duplicate is recoverable, a deleted transmission is not.
+ */
+typedef enum {
+    DSD_CALL_END_EXPLICIT = 0,  /**< Terminator, EOT, release, teardown, or retune. */
+    DSD_CALL_END_SYNC_LOSS = 1, /**< Carrier or sync lost; the transmission may still resume. */
+} dsd_call_end_reason;
+
+/**
+ * Seconds after a sync-loss end within which the next epoch describing the same call is read as
+ * that transmission being reacquired rather than a new one. Also how long a VOICE_END alert is
+ * held before the transmission is declared over. Rationale, residual risks and the replay-timing
+ * caveat are documented at the point of use in src/core/util/call_state.c.
+ */
+#define DSD_CALL_REACQUIRE_GAP_S 0.5
+
 typedef enum {
     DSD_CALL_BOUNDARY_CONTINUE = 0, /**< Merge compatible observations into the active call epoch. */
     /**
@@ -123,6 +143,7 @@ typedef struct {
     uint8_t algid;
     uint8_t audio_permitted;
     uint8_t media_active;
+    uint8_t end_reason; /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
@@ -144,21 +165,81 @@ typedef struct {
     dsd_recent_activity_entry entries[DSD_RECENT_ACTIVITY_COUNT];
 } dsd_recent_activity_snapshot;
 
+/**
+ * Live decoder inputs the per-protocol event builders read but a history row does not carry.
+ *
+ * Captured when a row is committed and replayed when that row is re-rendered, so a merged
+ * transmission is described by the system context it was decoded under rather than whatever the
+ * decoder has retuned to since. Everything else a builder needs already lives on the row.
+ */
+typedef struct {
+    uint16_t nxdn_grant_chan;
+    long nxdn_grant_freq;
+    unsigned int mfid;
+    int ea_mode;
+    int edacs_a_bits;
+    int edacs_f_bits;
+    int edacs_s_bits;
+    int edacs_a_shift;
+    int edacs_f_shift;
+    int edacs_a_mask;
+    int edacs_f_mask;
+    int edacs_s_mask;
+} dsd_call_event_render_env;
+
 /** Event bookkeeping paired with one canonical call slot. */
 typedef struct {
     uint64_t epoch;
-    uint8_t ended_committed;
     uint64_t notice_epoch;
     uint64_t notice_target_id;
+    /* Epoch that reopened a sync-loss-ended epoch describing the same call. Only
+     * this reacquisition may merge into the row most recently committed.
+     *
+     * Never cleared when an unrelated epoch begins: the comparison is epoch-exact
+     * and epoch ids only increase, so a stale value cannot match. Clearing it early
+     * would disarm a reacquisition whose staged row has not been flushed yet, and
+     * that row would then commit as a duplicate. */
+    uint64_t reacquired_epoch;
+    /* The sync-loss-ended epoch that reacquired_epoch reopened. A merge is only
+     * legitimate into the row that epoch itself committed, so the event layer pairs
+     * this against committed_epoch before folding anything. */
+    uint64_t reacquired_from_epoch;
+    /* The epoch whose row committed_seq locates. Both the reacquisition merge and
+     * dsd_event_enrich_epoch() are epoch-scoped: an epoch that ends without pushing
+     * a row leaves this pointing at an older epoch, and neither may act on it. */
+    uint64_t committed_epoch;
+    /* Value of Event_History_I::push_seq right after this slot's last voice
+     * commit reached history. The retained row's current depth is
+     * 1 + (push_seq - committed_seq), so interleaved notice pushes cannot make
+     * the merge target the wrong row. */
+    uint64_t committed_seq;
+    /* Render inputs as they stood when the staged row was last rendered. Captured with the row's
+     * content rather than at commit time: a row is sometimes committed only once the decoder has
+     * already moved on to the next call, and by then the live values describe that call. */
+    dsd_call_event_render_env staged_env;
+    /* Render inputs belonging to committed_seq's row, promoted from staged_env when it was
+     * pushed. */
+    dsd_call_event_render_env committed_env;
+    uint8_t committed_valid;
+    uint8_t ended_committed;
     uint8_t notice_kind;
     uint8_t notice_handled;
+    /* A sync-loss end may still be reacquired, so its VOICE_END alert is held until the
+     * reacquisition window closes. Stamped with the monotonic deadline to beep at. */
+    uint8_t end_alert_pending;
+    double end_alert_due_m;
 } dsd_call_event_lifecycle_snapshot;
 
 /**
  * Complete canonical call context for runtime context switching.
  *
- * Restoring this snapshot preserves event commit bookkeeping while keeping
- * epoch allocation monotonic within the destination state.
+ * Restoring this snapshot keeps epoch allocation monotonic within the destination
+ * state but deliberately drops event commit bookkeeping: the event history is
+ * global while this context is per trunk-scan target, so a commit reference or a
+ * pending reacquisition carried across a hop would describe another target's row.
+ * dsd_call_context_restore_snapshot() invalidates both, and downgrades a retained
+ * sync-loss end so the first call on the new target cannot be read as a
+ * reacquisition of the old one.
  */
 typedef struct {
     dsd_call_state_snapshot calls;
@@ -188,6 +269,18 @@ int dsd_call_state_update_crypto(dsd_state* state, uint8_t slot, const dsd_call_
 /** Update crypto metadata on an existing active or retained ended epoch. */
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
+/**
+ * End the active epoch, recording why it ended.
+ *
+ * Returns non-zero when the call state changed -- either the epoch was ended, or an already
+ * sync-loss-ended epoch had its reason tightened to DSD_CALL_END_EXPLICIT by a terminator that
+ * decoded after the fade. The latter leaves ended_m untouched. Callers that gate
+ * dsd_event_sync_slot() on this result therefore let the event layer see the retracted
+ * reacquisition permission; callers that need "an active call was ended" specifically must
+ * check DSD_CALL_PHASE_ACTIVE themselves beforehand.
+ */
+int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
+/** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);

@@ -34,8 +34,10 @@
 #include "test_support.h"
 
 int
-getAfsString(const dsd_state* state, char* buffer, int a, int f, int s) {
-    (void)state;
+getAfsStringFromBits(int a_bits, int f_bits, int s_bits, char* buffer, int a, int f, int s) {
+    (void)a_bits;
+    (void)f_bits;
+    (void)s_bits;
     return DSD_SNPRINTF(buffer, 16, "%02d-%03d", a, (f * 8) + s);
 }
 
@@ -1173,10 +1175,82 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// Each Voice LC Header marks a transmission boundary, including a same-identity
+// re-key after a missed terminator. Embedded LCs re-describe the active call and
+// must remain in its epoch.
+static void
+test_voice_lc_header_starts_epoch_and_embedded_lc_continues(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_flco_repeated_header") == 0);
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    const uint64_t first_epoch = call.epoch;
+
+    // An embedded LC continues the transmission described by the header.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch == first_epoch);
+
+    // A new header starts the next transmission even if its identity matches.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch != first_epoch);
+    assert(call.ota_source_id == 2002U);
+    const uint64_t second_epoch = call.epoch;
+
+    // A header after the terminator opens the following transmission.
+    assert(dsd_call_state_end(&state, 0U, 0.0) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != second_epoch);
+    const uint64_t third_epoch = call.epoch;
+
+    // The same header replayed after a sync-loss end is that transmission being reacquired,
+    // not a new one, so the reopened epoch is tagged for the event layer to merge. The header
+    // passes BEGIN, which is exactly why the tagging cannot depend on the boundary token.
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.epoch != third_epoch);
+    assert(call.ota_target_id == 1001U);
+    assert(call.ota_source_id == 2002U);
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
+    assert(context.events[0].reacquired_epoch == call.epoch);
+
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     InitAllFecFunction();
 
+    test_voice_lc_header_starts_epoch_and_embedded_lc_continues();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();

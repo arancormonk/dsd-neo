@@ -114,7 +114,8 @@ dsd_event_history_item_set_message(Event_History* item, dsd_event_severity sever
     }
 }
 
-void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite, char* event_string);
+void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
+                             const char* event_string);
 void watchdog_event_history(dsd_opts* opts, dsd_state* state, uint8_t slot);
 void watchdog_event_current(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
@@ -124,6 +125,23 @@ int dsd_event_emit_call_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, c
 int dsd_event_emit_call_notice_nonfinalizing(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                              const dsd_call_snapshot* call, const char* detail);
 int dsd_event_history_copy_snapshot(const dsd_state* state, Event_History_I out[2]);
+/**
+ * Retire any VOICE_END alert still being held open against a possible reacquisition, on both
+ * slots, without waiting for its deadline.
+ *
+ * For callers that know no further audio can arrive -- shutdown being the only one today. The
+ * per-frame drain in dsd_event_sync_slot() only fires once the reacquisition window has elapsed,
+ * so an end armed in the last half second before exit would otherwise never be heard.
+ */
+void dsd_event_flush_pending_alerts(dsd_opts* opts, dsd_state* state);
+/**
+ * Clear every history row on both slots and the per-slot commit bookkeeping with it.
+ *
+ * Callers must not hold an event-history transaction: this opens its own. Clearing the rows
+ * without clearing the bookkeeping would leave a reacquired transmission trying to merge into
+ * a row that no longer exists.
+ */
+void dsd_event_history_reset(dsd_state* state);
 /* Copy telemetry atomically, copying history slots only when forced or when their source revision changed. */
 int dsd_event_state_copy_snapshot_incremental(dsd_state* dst, const dsd_state* src, Event_History_I event_history[2],
                                               const uint64_t source_revisions[2], int force_copy, uint8_t copied[2]);
