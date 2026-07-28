@@ -766,6 +766,37 @@ test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// A terminator whose link control failed RS(12,9) must not end the call or wipe
+// the slot's payload state: a mis-typed burst would otherwise close a live
+// transmission with the un-recoverable explicit reason and drop its crypto and
+// alias state mid-call. A genuinely missed terminator is picked up by the
+// no-carrier path as a recoverable sync-loss end instead.
+static void
+test_unverified_terminator_keeps_call_active(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(irr == 0);
+    assert_call(&state, 0U, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 1001U, 2002U);
+    assert(state.payload_algid == 0x22);
+    assert(state.payload_keyid == 0x33);
+    assert(state.payload_mi == 0x123456789AULL);
+    assert(strcmp(state.generic_talker_alias[0], "alias") == 0);
+
+    // The verified terminator still ends the call and resets the slot.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert_td_lc_slot_reset(&state, 0U);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_capacity_plus_rest_channel_and_call_class_are_packed_fields(void) {
     static dsd_opts opts;
@@ -1175,11 +1206,15 @@ test_completed_slco_capacity_plus_hold_returns_to_rest_channel(void) {
     dsd_state_ext_free_all(&state);
 }
 
-// Each Voice LC Header marks a transmission boundary, including a same-identity
-// re-key after a missed terminator. Embedded LCs re-describe the active call and
+// The voice LC header repeats through the start of a transmission for late
+// entry, always before the first voice superframe. Repeats that re-describe the
+// running call stay in its epoch; a second epoch would commit the first one's
+// freshly built row as a duplicate event. Once voice media has run, an
+// identical header is a same-identity re-key after a missed terminator and
+// marks a transmission boundary. Embedded LCs re-describe the active call and
 // must remain in its epoch.
 static void
-test_voice_lc_header_starts_epoch_and_embedded_lc_continues(void) {
+test_repeated_voice_lc_header_keeps_one_epoch(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1206,13 +1241,32 @@ test_voice_lc_header_starts_epoch_and_embedded_lc_continues(void) {
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.epoch == first_epoch);
 
-    // A new header starts the next transmission even if its identity matches.
+    // A header repeat before any voice media is the same transmission.
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.epoch != first_epoch);
+    assert(call.epoch == first_epoch);
     assert(call.ota_source_id == 2002U);
+
+    // A header naming a different talker is the next transmission, not a repeat.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 5005U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch != first_epoch);
+    assert(call.ota_source_id == 5005U);
+    const uint64_t talker_epoch = call.epoch;
+
+    // Once the epoch has carried voice media, an identical header is a
+    // same-identity re-key after a missed terminator: a new transmission.
+    assert(dsd_call_state_update_media(&state, 0U, 1, 0.0) > 0);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 5005U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.epoch != talker_epoch);
+    assert(call.ota_source_id == 5005U);
     const uint64_t second_epoch = call.epoch;
 
     // A header after the terminator opens the following transmission.
@@ -1246,11 +1300,70 @@ test_voice_lc_header_starts_epoch_and_embedded_lc_continues(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// One transmission whose voice LC header repeats must leave exactly one row in
+// event history: the repeats stay in the first epoch instead of each minting an
+// epoch whose change commits the previous epoch's freshly built row again.
+// Reported in discussion #152.
+static void
+test_repeated_voice_lc_headers_commit_one_history_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(event_history, 0, sizeof(event_history));
+    state.event_history_s = event_history;
+    init_event_history(&event_history[0], 0, 255);
+    init_event_history(&event_history[1], 0, 255);
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_flco_one_row") == 0);
+
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    for (int header = 0; header < 3; header++) {
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    }
+    for (int emb = 0; emb < 3; emb++) {
+        irr = 0;
+        build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+        dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    }
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    (void)remove(cap.path);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+
+    int rows = 0;
+    for (int i = 1; i < 255; i++) {
+        if (event_history[0].Event_History_Items[i].event_string[0] != '\0') {
+            rows++;
+        }
+    }
+    assert(rows == 1);
+    assert(event_history[0].Event_History_Items[1].target_id == 1001U);
+    assert(event_history[0].Event_History_Items[1].source_id == 2002U);
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     InitAllFecFunction();
 
-    test_voice_lc_header_starts_epoch_and_embedded_lc_continues();
+    test_repeated_voice_lc_header_keeps_one_epoch();
+    test_repeated_voice_lc_headers_commit_one_history_row();
+    test_unverified_terminator_keeps_call_active();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();
