@@ -545,6 +545,86 @@ main(void) {
         return 1;
     }
 
+    // An accepted return to the control channel retunes the receiver, so a call still open on the
+    // voice channel was left behind rather than faded. Reporting that as a sync loss would leave it
+    // reacquirable, and the next transmission to appear on the control channel inside the window
+    // would be folded into its history row.
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    state->p25_cc_freq = 0;
+    state->trunk_cc_freq = 936000000;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->last_vc_sync_time = time(NULL) - 11;
+    state->trunk_vc_freq[0] = 936500000;
+    state->trunk_vc_freq[1] = 936500000;
+
+    dsd_call_observation retuned_call = {0};
+    retuned_call.protocol = DSD_SYNC_NXDN_POS;
+    retuned_call.slot = 0U;
+    retuned_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    retuned_call.ota_target_id = 7001U;
+    retuned_call.policy_target_id = 7001U;
+    retuned_call.ota_source_id = 8001U;
+    retuned_call.observed_m = 1.0;
+    rc |=
+        expect_true("cc-return-seeds-call", dsd_call_state_observe(state, &retuned_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    noCarrier(opts, state);
+
+    dsd_call_snapshot retuned_snapshot;
+    rc |= expect_true("cc-return-retains-snapshot", dsd_call_state_get(state, 0U, &retuned_snapshot) == 1);
+    rc |= expect_true("cc-return-ends-call", retuned_snapshot.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("cc-return-ends-call-explicitly", retuned_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+
+#if defined(DSD_NEO_TEST_RTL_WRAP) && DSD_NEO_TEST_RTL_WRAP
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // The scanner half of the same rule. noCarrier() steps the scanner before it finalizes calls,
+    // so a hop that succeeds leaves the finalizer closing a call that belongs to the frequency the
+    // receiver just left.
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 938012500;
+    state->trunk_lcn_freq[1] = 939012500;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_tune_calls = 0;
+
+    dsd_call_observation scanned_call = {0};
+    scanned_call.protocol = DSD_SYNC_NXDN_POS;
+    scanned_call.slot = 0U;
+    scanned_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    scanned_call.ota_target_id = 7101U;
+    scanned_call.policy_target_id = 7101U;
+    scanned_call.ota_source_id = 8101U;
+    scanned_call.observed_m = 1.0;
+    rc |= expect_true("scanner-hop-seeds-call",
+                      dsd_call_state_observe(state, &scanned_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+
+    noCarrier(opts, state);
+
+    dsd_call_snapshot scanned_snapshot;
+    rc |= expect_true("scanner-hop-retuned", g_rtl_tune_calls > 0);
+    rc |= expect_true("scanner-hop-advanced", state->lcn_freq_roll == 1);
+    rc |= expect_true("scanner-hop-retains-snapshot", dsd_call_state_get(state, 0U, &scanned_snapshot) == 1);
+    rc |= expect_true("scanner-hop-ends-call", scanned_snapshot.phase == DSD_CALL_PHASE_ENDED);
+    rc |=
+        expect_true("scanner-hop-ends-call-explicitly", scanned_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+#endif
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
     opts->scanner_mode = 1;
     state->trunk_lcn_freq[0] = 938012500;
     state->lcn_freq_count = 1;

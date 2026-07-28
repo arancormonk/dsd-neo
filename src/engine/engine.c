@@ -1272,10 +1272,12 @@ no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t r
 }
 #endif
 
-static void
+// Returns non-zero when the scanner actually moved to another frequency, so the caller can end any
+// call still open as an explicit release rather than a sync loss.
+static int
 no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, time_t now) {
     if (opts->scanner_mode != 1 || (now - state->last_cc_sync_time) <= opts->trunk_hangtime) {
-        return;
+        return 0;
     }
 
     no_carrier_reset_nxdn_scan_markers(state);
@@ -1286,24 +1288,26 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     long int freq = state->trunk_lcn_freq[state->lcn_freq_roll];
     if (freq != 0) {
         if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
-            return;
+            return 0;
         }
         if (opts->use_rigctl == 1 && no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
-            return;
+            return 0;
         }
         if (opts->audio_in_type == AUDIO_IN_RTL) {
 #ifdef USE_RADIO
             if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq) != DSD_TRUNK_TUNE_RESULT_OK) {
-                return;
+                return 0;
             }
 #else
-            return;
+            return 0;
 #endif
         }
     }
     state->lcn_freq_roll++;
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    // A zero entry parks on the current frequency rather than retuning, so it is not a hop.
+    return freq != 0;
 }
 
 static int
@@ -1465,13 +1469,14 @@ no_carrier_sync_helper_tune_cache(const dsd_opts* opts, const dsd_state* state, 
 #endif
 }
 
+// `reason` is the caller's: SYNC_LOSS when the carrier simply went away and the transmission may
+// resume on the next burst that decodes, EXPLICIT when the receiver has retuned and whatever was on
+// the old frequency cannot be reacquired here no matter what the next epoch looks like.
 static void
-no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state) {
+no_carrier_clear_voice_tune_state(dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
     const double ended_m = dsd_time_now_monotonic_s();
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        // Carrier loss, not a terminator: the transmission may resume on the next
-        // burst that decodes, so the following epoch is allowed to reacquire it.
-        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, DSD_CALL_END_SYNC_LOSS) > 0) {
+        if (dsd_call_state_end_ex(state, (uint8_t)slot, ended_m, reason) > 0) {
             dsd_event_sync_slot(opts, state, (uint8_t)slot);
         }
     }
@@ -1771,7 +1776,12 @@ no_carrier_return_to_control_channel_if_needed(dsd_opts* opts, dsd_state* state,
     }
 
     if (accepted_cc_return || clear_failed_helper_state || clear_unreturnable_voice_state) {
-        no_carrier_clear_voice_tune_state(opts, state);
+        // An accepted return actually retuned to the control channel, so any call still open ended
+        // with that hop rather than with the fade that prompted it. The other two paths never
+        // changed frequency -- the helper failed, or there was no control channel to return to --
+        // so for them the carrier loss really is the end reason.
+        no_carrier_clear_voice_tune_state(opts, state,
+                                          accepted_cc_return ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS);
         (void)dsd_recent_activity_clear_all(state);
         state->is_con_plus = 0;
     }
@@ -2098,12 +2108,16 @@ no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
     set_spaces(state->dstar_gps, 8);
 }
 
+// `retuned` says whether this noCarrier() pass moved the receiver before reaching here. A call still
+// open across a frequency change did not fade -- it was left behind, and nothing decoded on the new
+// frequency is the same transmission. Reporting that as sync loss would let the next call to appear,
+// within the reacquisition window and on a different channel, be folded into its history row.
 static void
-no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state) {
+no_carrier_finalize_canonical_calls(dsd_opts* opts, dsd_state* state, int retuned) {
+    const dsd_call_end_reason reason = retuned ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_SYNC_LOSS;
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         const uint8_t call_slot = (uint8_t)slot;
-        // Sync was lost rather than released; see no_carrier_clear_voice_tune_state().
-        if (dsd_call_state_end_ex(state, call_slot, 0.0, DSD_CALL_END_SYNC_LOSS) > 0) {
+        if (dsd_call_state_end_ex(state, call_slot, 0.0, reason) > 0) {
             dsd_event_sync_slot(opts, state, call_slot);
         }
     }
@@ -2170,9 +2184,12 @@ noCarrier(dsd_opts* opts, dsd_state* state) {
     no_carrier_reset_nxdn_scan_markers(state);
 #endif
 
-    no_carrier_step_scanner_mode_if_needed(opts, state, now);
+    // The hop is reported rather than reordered around: the return-to-CC path below ends its own
+    // calls as it retunes, so the finalizer has to know whether the frequency moved out from under
+    // whatever it is about to close.
+    const int scanner_retuned = no_carrier_step_scanner_mode_if_needed(opts, state, now);
     no_carrier_return_to_control_channel_if_needed(opts, state, now);
-    no_carrier_finalize_canonical_calls(opts, state);
+    no_carrier_finalize_canonical_calls(opts, state, scanner_retuned);
     no_carrier_clear_stale_p25_return_hints_after_generic_activity(opts, state);
     no_carrier_reset_dibit_and_dmr_buffers(state);
     no_carrier_close_mbe_outputs_if_needed(opts, state);
