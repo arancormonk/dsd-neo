@@ -19,6 +19,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/runtime/call_alert.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -264,6 +265,13 @@ end_test_call(dsd_state* state, uint8_t slot, dsd_call_end_reason reason) {
 static void
 advance_test_clock(double seconds) {
     g_observed_m += seconds;
+}
+
+// "The stamp was not rewritten". The tolerance is far below the smallest step any caller here
+// advances the fixture clock by, so a restamp is still caught.
+static int
+same_instant(double a, double b) {
+    return fabs(a - b) < 1e-9 ? 1 : 0;
 }
 
 static int
@@ -1837,8 +1845,8 @@ test_end_reason_upgrade_is_one_directional(void) {
     assert(dsd_call_state_get(&state, 0U, &after_repeats) == 1);
     rc |= expect_int("explicit end reason survives a later sync loss", (int)after_repeats.end_reason,
                      (int)DSD_CALL_END_EXPLICIT);
-    rc |=
-        expect_int("repeated ends do not restamp ended_m", after_repeats.ended_m == after_explicit.ended_m ? 1 : 0, 1);
+    rc |= expect_int("repeated ends do not restamp ended_m",
+                     same_instant(after_repeats.ended_m, after_explicit.ended_m), 1);
 
     // And the upgrade path itself must not restamp: the moment the transmission stopped is the
     // fade, not the terminator that explained it.
@@ -1853,8 +1861,8 @@ test_end_reason_upgrade_is_one_directional(void) {
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_call_snapshot after_upgrade;
     assert(dsd_call_state_get(&state, 0U, &after_upgrade) == 1);
-    rc |= expect_int("upgrade keeps ended_m anchored at the fade", after_upgrade.ended_m == after_fade.ended_m ? 1 : 0,
-                     1);
+    rc |= expect_int("upgrade keeps ended_m anchored at the fade",
+                     same_instant(after_upgrade.ended_m, after_fade.ended_m), 1);
 
     dsd_state_ext_free_all(&state);
     return rc;
