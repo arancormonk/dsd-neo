@@ -6,6 +6,7 @@
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
@@ -1884,6 +1885,119 @@ test_identityless_ended_epoch_does_not_reacquire(void) {
     return rc;
 }
 
+// Route text counts as identity when deciding whether an ended epoch is anchored enough to be
+// reacquired, so it has to count when deciding whether an observation contradicts that epoch too.
+// A late-entry D-STAR call that learned only its repeater pair would otherwise be an anchor nothing
+// could reject, and the next call through a different repeater -- or an identity-less vocoder mark
+// -- would be folded into its row.
+static int
+test_route_only_identity_does_not_reacquire_unrelated_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START;
+    state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
+
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", "RPT1AAA");
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", "RPT2AAA");
+    observation.observed_m = g_observed_m;
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(committed_history_rows(&event_history[0]) == 1);
+
+    // A different transmission through a different repeater pair, well inside the window.
+    dsd_call_observation other = observation;
+    DSD_SNPRINTF(other.route_text[0], sizeof(other.route_text[0]), "%s", "RPT1BBB");
+    DSD_SNPRINTF(other.route_text[1], sizeof(other.route_text[1]), "%s", "RPT2BBB");
+    other.observed_m = g_observed_m;
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(&state, &other, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("a different route commits its own row", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_int("the second call alerts its own START", g_beeper_count, 2);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The same route that ended is still one transmission resuming, so the anchor must keep working in
+// the direction it was added for. Guards the fix above against being over-applied.
+static int
+test_route_identity_reacquisition_still_coalesces(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
+
+    dsd_call_observation observation = {
+        .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", "RPT1AAA");
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", "RPT2AAA");
+
+    for (int pass = 0; pass < 2; pass++) {
+        observation.observed_m = g_observed_m;
+        g_observed_m += 0.1;
+        assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+    }
+
+    int rc = expect_int("the same route reacquires into one row", committed_history_rows(&event_history[0]), 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The gap test compares an end against a reopen on one clock, but only one side of that comparison
+// reads the clock itself: every production end site passes a timeline derived from
+// dsd_time_now_monotonic_s(), while a reopening observation usually passes 0.0 and takes the
+// fallback. If the fallback truncates to whole milliseconds it can land *behind* an end stamped at
+// nanosecond resolution moments earlier, and the reacquisition is rejected for going backwards --
+// committing a second row and a spurious START for one transmission.
+//
+// Bracketing the fallback between two reads of the same clock catches exactly that: a truncating
+// fallback can fall up to a millisecond below the lower bound, while a full-resolution one can
+// never leave the bracket.
+static int
+test_observed_fallback_matches_end_site_clock_resolution(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const double before = dsd_time_now_monotonic_s();
+    // observed_m of 0.0 is what the protocol end paths pass, so this takes the fallback.
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+    const double after = dsd_time_now_monotonic_s();
+
+    dsd_call_snapshot ended;
+    assert(dsd_call_state_get(&state, 0U, &ended) > 0);
+    int rc = expect_int("the fallback clock is not behind the end-site clock", ended.ended_m >= before, 1);
+    rc |= expect_int("the fallback clock is not ahead of the end-site clock", ended.ended_m <= after, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // The re-announcing protocols (P25 Phase 2, NXDN, dPMR, D-STAR, EDACS, X2-TDMA, DMR embedded
 // LCs) reopen with CONTINUE. They must arm the same way the identity-less BEGIN path does.
 static int
@@ -2346,6 +2460,40 @@ test_history_reset_clears_commit_bookkeeping(void) {
     return rc;
 }
 
+// Both halves of the render-environment pair have to go when the lifecycle is invalidated. A row
+// staged directly by a protocol never passes through the renderer, so a staged_env left behind by
+// the reset would be promoted into committed_env when that row commits, and a later merge would
+// re-render the row against a decoder context from before the operator cleared history.
+static int
+test_history_reset_clears_staged_environment(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.nxdn_grant_chan = 12U;
+    state.nxdn_grant_freq = 851012500;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_NXDN_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    dsd_call_context_snapshot before;
+    assert(dsd_call_context_copy_snapshot(&state, &before) > 0);
+    assert(before.events[0].staged_env.nxdn_grant_chan == 12U);
+
+    dsd_event_history_reset(&state);
+
+    dsd_call_context_snapshot after;
+    assert(dsd_call_context_copy_snapshot(&state, &after) > 0);
+    int rc =
+        expect_int("reset clears the staged render environment", (int)after.events[0].staged_env.nxdn_grant_chan, 0);
+    rc |= expect_int("reset clears the committed render environment",
+                     (int)after.events[0].committed_env.nxdn_grant_chan, 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // The reacquisition marker names the epoch it belongs to and must survive until that epoch's
 // staged row is flushed. If a later, different call clears it first, the staged row commits a
 // second time and the reacquired transmission ends up with two rows -- the exact duplicate this
@@ -2552,6 +2700,69 @@ test_merge_logs_continuation_only_when_render_changes(void) {
     return rc;
 }
 
+// The slot annotation on a continuation describes the row being continued, so it has to come from
+// that row rather than from the live decoder. A DMR-BS transmission reacquired after the decoder
+// has resynced elsewhere -- or after no_carrier_reset_decode_state() cleared lastsynctype -- would
+// otherwise log its two halves with different annotations.
+static int
+test_merge_continuation_annotates_from_the_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    char path[] = "/tmp/dsd-neo-continuation-slot-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "mkstemp failed for continuation slot test\n");
+        return 1;
+    }
+    close(fd);
+    (void)remove(path);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+
+    // Slot 1 of a DMR-BS call: the first commit is annotated "Slot 2;".
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    assert(observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+    assert(end_test_call(&state, 1U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+
+    // The decoder loses the system entirely across the gap, as noCarrier() leaves it.
+    state.lastsynctype = DSD_SYNC_NONE;
+    assert(observe_test_call(&state, 1U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+    assert(end_test_call(&state, 1U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 1U);
+
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        (void)remove(path);
+        DSD_FPRINTF(stderr, "continuation slot event log was not created\n");
+        return 1;
+    }
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    (void)remove(path);
+    buf[n] = '\0';
+
+    const char* continuation = strstr(buf, " Reacquired: ");
+    int rc = expect_int("the reacquired segment merged into one row", committed_history_rows(&event_history[1]), 1);
+    if (continuation == NULL) {
+        DSD_FPRINTF(stderr, "expected a continuation line in the event log\n");
+        rc |= 1;
+    } else {
+        rc |= expect_has_substr("continuation keeps the row's slot annotation", continuation, "Slot 2;");
+    }
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // Optional detail a reacquired segment contributes reaches the event log even when it does not
 // change the rendered row -- otherwise it would show in the UI history and be missing from the
 // log. The continuation also carries the slot annotation that every normal commit carries.
@@ -2723,6 +2934,83 @@ test_notice_during_reacquisition_merges(void) {
     rc |= expect_str_eq("merged row carries the notice detail", event_history[0].Event_History_Items[1].internal_str,
                         "ENC LO");
     rc |= expect_int("merged row keeps its identity", (int)event_history[0].Event_History_Items[1].target_id, 100);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The notice above merges and, in doing so, makes the reacquired epoch the owner of the committed
+// row. When that same epoch later ends it commits a second time, and that commit has to land in the
+// row the epoch already owns. Matching only the interrupted epoch's row would reject it and push a
+// duplicate -- one transmission, two history rows, which is what the merge path exists to prevent.
+static int
+test_notice_then_end_in_reacquired_epoch_commits_one_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(committed_history_rows(&event_history[0]) == 1);
+
+    // The segment is reacquired and a notice fires mid-segment, merging into the committed row.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    dsd_call_snapshot reacquired;
+    assert(dsd_call_state_get(&state, 0U, &reacquired) > 0);
+    assert(dsd_event_emit_call_notice_nonfinalizing(&opts, &state, 0U, &reacquired, "ENC LO") == 1);
+    assert(committed_history_rows(&event_history[0]) == 1);
+
+    // The merge cleared the staged row, so the segment keeps decoding and stages it again. Ending
+    // then commits a second time within the one epoch.
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("notice then end in one reacquired epoch commits one row",
+                        committed_history_rows(&event_history[0]), 1);
+    rc |= expect_str_eq("surviving row keeps the notice detail", event_history[0].Event_History_Items[1].internal_str,
+                        "ENC LO");
+    rc |= expect_int("surviving row keeps its identity", (int)event_history[0].Event_History_Items[1].target_id, 100);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A sync-loss end whose staged row rendered nothing put no row in history, so there is no
+// transmission for a VOICE_END to be about. The FINAL disposition cannot alert in that case --
+// its beep lives inside the commit -- and the deferred one must not either. X2-TDMA is the
+// concrete case: no builder covers it, so its rows render empty.
+static int
+test_contentless_sync_loss_end_arms_no_alert(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+    state.lastsynctype = DSD_SYNC_X2TDMA_VOICE_POS;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_X2TDMA_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const int start_alerts = g_beeper_count;
+
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("a row that renders nothing commits nothing", committed_history_rows(&event_history[0]), 0);
+    // Asserted on the lifecycle rather than by waiting out the deadline: the alert is held against
+    // the real monotonic clock, which the fixture's timeline does not drive.
+    dsd_call_context_snapshot context;
+    assert(dsd_call_context_copy_snapshot(&state, &context) > 0);
+    rc |= expect_int("no VOICE_END is held for a transmission with no row", context.events[0].end_alert_pending, 0);
+    rc |= expect_int("nothing beeped past the START", g_beeper_count, start_alerts);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -3237,6 +3525,10 @@ main(void) {
     rc |= test_pending_end_alert_is_flushed_at_shutdown();
     rc |= test_history_reset_drops_pending_end_alert();
     rc |= test_identityless_ended_epoch_does_not_reacquire();
+    rc |= test_route_only_identity_does_not_reacquire_unrelated_call();
+    rc |= test_route_identity_reacquisition_still_coalesces();
+    rc |= test_observed_fallback_matches_end_site_clock_resolution();
+    rc |= test_contentless_sync_loss_end_arms_no_alert();
     rc |= test_reacquired_stage_superseded_by_new_call_still_merges();
     rc |= test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row();
     rc |= test_reacquired_transmission_via_continue_commits_one_row();
@@ -3260,6 +3552,9 @@ main(void) {
     rc |= test_merge_upgrades_partial_alias();
     rc |= test_merge_carries_late_system_identifiers();
     rc |= test_notice_during_reacquisition_merges();
+    rc |= test_notice_then_end_in_reacquired_epoch_commits_one_row();
+    rc |= test_merge_continuation_annotates_from_the_row();
+    rc |= test_history_reset_clears_staged_environment();
     rc |= test_merge_without_event_time_keeps_the_row_timestamp();
     rc |= test_merge_rerenders_against_committed_environment();
     rc |= test_epoch_change_commit_keeps_staged_environment();

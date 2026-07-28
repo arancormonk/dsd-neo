@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -131,9 +132,14 @@ dsd_call_state_ensure(dsd_state* state) {
     return dsd_call_state_ext_get(state, 1) != NULL ? 1 : 0;
 }
 
+// The fallback deliberately matches the resolution of the clock every caller supplies. Endpoints
+// that pass observed_m all derive it from dsd_time_now_monotonic_s(), so truncating the fallback to
+// whole milliseconds would let an end stamped at ns precision compare as later than a reopen that
+// really followed it -- and call_state_reacquires_ended_epoch() would reject a legitimate
+// reacquisition that landed inside the same millisecond.
 static double
 call_state_observed_m(double observed_m) {
-    return observed_m > 0.0 ? observed_m : (double)dsd_time_monotonic_ms() / 1000.0;
+    return observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
 }
 
 static uint64_t
@@ -299,8 +305,17 @@ call_state_observation_changes_identity(const dsd_call_snapshot* current, const 
         && current->ota_source_id != observation->ota_source_id) {
         return 1;
     }
+    // Route text is compared here rather than only where reacquisition consults it: both
+    // call_state_observation_has_identity() and call_state_snapshot_has_identity() already count
+    // it as identity, so leaving it out made it the one anchor no contradiction could ever reject.
+    // A route-only D-STAR or YSF snapshot would then match every later observation. Like the other
+    // text fields it only reports a contradiction when both sides are known, so a repeater pair
+    // that has not decoded yet -- or one reset to spaces, which normalizes to empty -- is not a
+    // change.
     return call_state_known_text_changed(current->source_text, observation->source_text)
-           || call_state_known_text_changed(current->target_text, observation->target_text);
+           || call_state_known_text_changed(current->target_text, observation->target_text)
+           || call_state_known_text_changed(current->route_text[0], observation->route_text[0])
+           || call_state_known_text_changed(current->route_text[1], observation->route_text[1]);
 }
 
 static int
@@ -729,6 +744,11 @@ dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
     // a transmission the operator can no longer see.
     lifecycle->end_alert_pending = 0U;
     lifecycle->end_alert_due_m = 0.0;
+    // Both halves of the env pair go, matching the epoch-change path in dsd_events.c. A row staged
+    // directly by a protocol never passes through the renderer, so a surviving staged_env would be
+    // promoted into committed_env when that row commits and a later merge would re-render against
+    // a decoder context from before this invalidation.
+    DSD_MEMSET(&lifecycle->staged_env, 0, sizeof(lifecycle->staged_env));
     DSD_MEMSET(&lifecycle->committed_env, 0, sizeof(lifecycle->committed_env));
 }
 
