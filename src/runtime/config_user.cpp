@@ -497,6 +497,10 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (opts->digital_resample_mode != 0) {
         copy_token_string(cfg->digital_resample, sizeof cfg->digital_resample,
                           digital_resample_mode_name(opts->digital_resample_mode));
+    } else {
+        /* Auto is the default; drop any explicit value so a mode returned to auto is not
+           frozen at its previous setting by autosave. */
+        cfg->digital_resample[0] = '\0';
     }
 }
 

@@ -763,6 +763,14 @@ expect_digital_resample_policy(void) {
                         0);
     rc |= expect_int_eq("unhelpful target bypasses", resamp_enabled, 0);
     rc |= expect_int_eq("unhelpful target keeps demod rate", (int)output_rate_hz, 62500);
+
+    /* Even mode on declines a target that cannot yield an integer SPS (documented behavior). */
+    rc |= expect_int_eq("mode on unhelpful target helper rc",
+                        rtl_stream_test_digital_resample_chain(DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR, 62500, 50000, 4800,
+                                                               kModeOn, kForced, &output_rate_hz, &resamp_enabled),
+                        0);
+    rc |= expect_int_eq("mode on unhelpful target bypasses", resamp_enabled, 0);
+    rc |= expect_int_eq("mode on unhelpful target keeps demod rate", (int)output_rate_hz, 62500);
     return rc;
 }
 

@@ -929,6 +929,35 @@ test_load_and_apply_sddc_digital_resample(void) {
 }
 
 static int
+test_snapshot_digital_resample_mode(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "soapy:driver=SDDC");
+    opts.digital_resample_mode = 2; /* off */
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+
+    int rc = 0;
+    if (strcmp(snap.digital_resample, "off") != 0) {
+        DSD_FPRINTF(stderr, "snapshot digital_resample mismatch: \"%s\", want \"off\"\n", snap.digital_resample);
+        rc |= 1;
+    }
+
+    /* A mode returned to auto must clear any previously snapshotted value so autosave
+       does not freeze the old explicit setting. */
+    opts.digital_resample_mode = 0;
+    DSD_SNPRINTF(snap.digital_resample, sizeof snap.digital_resample, "%s", "off");
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.digital_resample[0] != '\0') {
+        DSD_FPRINTF(stderr, "auto mode left stale digital_resample: \"%s\"\n", snap.digital_resample);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
 test_snapshot_roundtrip_soapy_args(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1756,6 +1785,7 @@ main(void) {
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();
     rc |= test_load_and_apply_sddc_digital_resample();
+    rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();

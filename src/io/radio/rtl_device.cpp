@@ -320,6 +320,10 @@ struct rtl_device {
     int soapy_profile_id = 0;
     int soapy_requested_bandwidth_hz = 0;
     uint32_t soapy_startup_center_freq_hz = 0U;
+    /* Memoized rtl_device_nearest_supported_rate answer; valid while the device configuration
+       (and therefore its rate grid) is unchanged. actual == 0 means empty. */
+    uint32_t soapy_nearest_rate_cache_requested = 0U;
+    uint32_t soapy_nearest_rate_cache_actual = 0U;
     int soapy_named_gain_override = 0;
     int soapy_named_gain_skip_logged = 0;
     char soapy_args_string[1024] = {};
@@ -4863,6 +4867,8 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->soapy_profile_id = (int)dsdneo::SoapyProfileId::Generic;
     dev->soapy_requested_bandwidth_hz = -1;
     dev->soapy_startup_center_freq_hz = 0U;
+    dev->soapy_nearest_rate_cache_requested = 0U;
+    dev->soapy_nearest_rate_cache_actual = 0U;
     dev->soapy_named_gain_override = 0;
     dev->soapy_named_gain_skip_logged = 0;
     dev->soapy_args_string[0] = '\0';
@@ -5184,6 +5190,9 @@ rtl_device_store_soapy_config_request(struct rtl_device* dev, const struct rtl_s
     rtl_device_copy_cstr(dev->soapy_requested_stream_format, sizeof(dev->soapy_requested_stream_format), stream_format);
     dev->soapy_requested_bandwidth_hz = cfg ? cfg->bandwidth_hz : -1;
     dev->soapy_startup_center_freq_hz = cfg ? cfg->center_freq_hz : 0U;
+    /* Driver settings (for example the SDDC ADC clock) can move the rate grid. */
+    dev->soapy_nearest_rate_cache_requested = 0U;
+    dev->soapy_nearest_rate_cache_actual = 0U;
 }
 
 #ifdef USE_SOAPYSDR
@@ -5557,12 +5566,15 @@ rtl_device_set_sample_rate(struct rtl_device* dev, uint32_t samp_rate) {
 /**
  * @brief Report the rate the backend would deliver for a requested rate.
  *
- * Pure query: no device state is changed. Backends with a fixed rate grid (many
+ * Query only: the device is never reconfigured. Backends with a fixed rate grid (many
  * SoapySDR drivers) answer with the grid entry nearest the request so the rate
- * chain can pick decimation for the rate that will really arrive.
+ * chain can pick decimation for the rate that will really arrive. The answer is
+ * cached per request while the device stays configured, so per-retune callers do
+ * not pay a driver round-trip; `rtl_device_store_soapy_config_request` clears the
+ * cache because driver settings (for example the SDDC ADC clock) can move the grid.
  */
 int
-// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev; the stub build does not.
+// cppcheck-suppress constParameterPointer -- The SoapySDR build locks dev and fills the cache; the stub build does not.
 rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, uint32_t* out_actual) {
     if (!dev || requested == 0U || !out_actual) {
         return -1;
@@ -5572,6 +5584,10 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         return 0;
     }
 #ifdef USE_SOAPYSDR
+    if (dev->soapy_nearest_rate_cache_requested == requested && dev->soapy_nearest_rate_cache_actual != 0U) {
+        *out_actual = dev->soapy_nearest_rate_cache_actual;
+        return 0;
+    }
     double applied = (double)requested;
     int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
         bool adjusted = false;
@@ -5581,10 +5597,12 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
         return 0;
     });
-    if (rc != 0 || !(applied > 0.0)) {
+    if (rc != 0 || !(applied > 0.0) || applied > (double)UINT32_MAX) {
         return -1;
     }
     *out_actual = (uint32_t)std::lround(applied);
+    dev->soapy_nearest_rate_cache_requested = requested;
+    dev->soapy_nearest_rate_cache_actual = *out_actual;
     return 0;
 #else
     return -1;

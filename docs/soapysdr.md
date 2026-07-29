@@ -104,8 +104,10 @@ Optional Soapy-specific keys:
   `0`, or validates and applies an explicit hardware bandwidth in Hz.
 - `digital_resample = "auto|on|off"` controls whether the digital FSK stream is resampled to the resampler target
   (48000 Hz by default). `auto` engages only when the device forces a sample rate that yields a non-integer
-  samples-per-symbol; `off` always keeps the raw demod rate; `on` always resamples. CQPSK symbol output is never
-  resampled because its timing loop already tracks a fractional SPS.
+  samples-per-symbol; `off` always keeps the raw demod rate; `on` resamples whenever it would help, that is
+  whenever the target rate differs from the demod rate and is a multiple of the symbol rate (a target that cannot
+  produce an integer samples-per-symbol is bypassed even in `on` mode). CQPSK symbol output is never resampled
+  because its timing loop already tracks a fractional SPS.
 
 `soapy_settings` is a strict passthrough to the installed Soapy driver. DSD-neo checks reported setting keys and
 option lists when the driver provides metadata, then calls Soapy `writeSetting`. Startup fails for malformed items,

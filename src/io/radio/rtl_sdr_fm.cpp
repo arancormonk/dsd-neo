@@ -6149,6 +6149,10 @@ stream_open_apply_requested_ppm(const dsd_opts* opts) {
         return;
     }
     RtlRequestedPpmState initial_ppm_request = snapshot_requested_ppm_state(opts);
+    if (initial_ppm_request.ppm != 0 && !g_ppm_control_supported.load(std::memory_order_relaxed)) {
+        LOG_INFO("Device does not support frequency (PPM) correction; configured ppm %d will have no effect.\n",
+                 initial_ppm_request.ppm);
+    }
     int ppm_rc = apply_ppm_setting(initial_ppm_request.ppm);
     if (ppm_rc == 0) {
         store_dongle_ppm_error(initial_ppm_request.ppm);
