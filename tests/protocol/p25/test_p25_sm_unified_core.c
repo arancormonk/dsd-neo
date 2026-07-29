@@ -493,7 +493,9 @@ test_raw_ptt_retransmissions_coalesce_history(void) {
 
     ev = p25_sm_ev_end_call_at(0, 1000, 123, first_m + 1.3);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.slots[0].ptt_signature_valid || dsd_call_state_get(&g_state, 0U, &call) <= 0
+    // The marker survives the explicit END so a straddling SACCH PTT repeat
+    // inside the retention tail stays recognizable as retention.
+    if (!ctx.slots[0].ptt_signature_valid || dsd_call_state_get(&g_state, 0U, &call) <= 0
         || call.phase != DSD_CALL_PHASE_ENDED || call.epoch != 1U
         || event_history[0].Event_History_Items[1].target_id != 1000U
         || strcmp(event_history[0].Event_History_Items[1].alias, "RETX-ALIAS") != 0
@@ -598,8 +600,12 @@ test_raw_ptt_boundary_invalidation(void) {
             ev.observed_m = first_m + 0.1;
         }
         p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-        if (ctx.slots[0].ptt_signature_valid) {
-            DSD_FPRINTF(stderr, "FAIL: Accepted boundary %d retained its PTT marker\n", (int)boundaries[i]);
+        // An explicit END keeps the marker so a straddling SACCH PTT repeat
+        // inside its retention tail stays recognizable; inactivity teardowns
+        // have no straddle to recognize and drop it.
+        const int marker_should_survive = boundaries[i] == P25_SM_EV_END;
+        if (ctx.slots[0].ptt_signature_valid != marker_should_survive) {
+            DSD_FPRINTF(stderr, "FAIL: Boundary %d marker handling changed\n", (int)boundaries[i]);
             return 1;
         }
 
@@ -1932,6 +1938,11 @@ test_anonymous_followup_restarts_crypto_pending(void) {
 
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    // Past the post-END retention tail: inside it an identity-less ACTIVE is
+    // retention of the ended call and must not reopen (P25_P2_ACTIVE_PTT_EPOCH
+    // covers that); after it, one that fails identity decode is the next
+    // transmission and must not inherit the ended call's clear classification.
+    ctx.slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
     ev = p25_sm_ev_active(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN

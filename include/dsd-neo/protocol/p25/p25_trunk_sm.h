@@ -459,6 +459,24 @@ int p25_sm_slot_grant_newer_than(int slot, double observed_m);
  */
 int p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m);
 
+/**
+ * @brief Fetch the tuned Phase 1 assignment identity for a pre-identity epoch.
+ *
+ * When ESS crypto resolves on a tuned FDMA traffic channel before any
+ * LCW/voice evidence names the call, the epoch opened to hold the
+ * classification should carry the assignment identity the grant already
+ * established rather than begin identity-less. Only a tuned, non-TDMA,
+ * non-data assignment with a known target qualifies; the conventional
+ * identity-pending flow keeps its identity-less epoch (the following LCW
+ * names that call).
+ *
+ * @param[out] is_group 1 for a group assignment, 0 for a private one.
+ * @param[out] ota_target OTA talkgroup or destination RID of the assignment.
+ * @param[out] policy_target Patch-aware policy target, or 0 when unknown.
+ * @return 1 when a tuned Phase 1 assignment identity was filled, 0 otherwise.
+ */
+int p25_sm_phase1_assignment_identity(int* is_group, uint32_t* ota_target, uint32_t* policy_target);
+
 /* ============================================================================
  * Public API - Convenience Emit Functions (use global singleton)
  * ============================================================================ */

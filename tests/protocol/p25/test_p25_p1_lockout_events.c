@@ -30,12 +30,14 @@
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define TEST_TG     57111
-#define TEST_ALGID  0x84
-#define TEST_KEYID  0x023F
-// A talkgroup of its own: the encrypted-call cache that lockouts populate is not
-// cleared by reset_test_state(), so reusing TEST_TG would block a later grant.
-#define TEST_TG_ALT (TEST_TG + 100)
+#define TEST_TG       57111
+#define TEST_ALGID    0x84
+#define TEST_KEYID    0x023F
+// Talkgroups of their own: the encrypted-call cache that lockouts populate is
+// not cleared by reset_test_state(), so reusing TEST_TG would block a later
+// grant.
+#define TEST_TG_ALT   (TEST_TG + 100)
+#define TEST_TG_GRANT (TEST_TG + 200)
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -378,10 +380,40 @@ test_non_matching_lockout_still_records_epoch(void) {
     return rc;
 }
 
+/* A tuned assignment whose HDU ESS resolves before any LCW or voice evidence:
+ * the epoch opened to hold the classification must carry the assignment
+ * identity. Minting identity-less split the call across two rows when the
+ * lockout released the channel before an LCW decoded -- a "TGT: 00000000"
+ * row with the resolved ALG/KID next to the assignment's row with pending
+ * crypto and no ALG. */
+static int
+test_pre_identity_ess_uses_assignment_identity(void) {
+    int rc = 0;
+    reset_test_state();
+    tune_group_grant(TEST_TG_GRANT);
+    rc |= expect("pre-identity fixture tuned", p25_sm_get_ctx()->state == P25_SM_TUNED);
+
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL,
+                             TEST_TG_GRANT);
+    event_ticks();
+
+    dsd_call_snapshot call;
+    rc |= expect("pre-identity ESS opens the assignment call",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.ota_target_id == TEST_TG_GRANT);
+    rc |= expect("pre-identity call carries the resolved key", call.algid == TEST_ALGID && call.kid == TEST_KEYID);
+    rc |= expect("lockout released the assignment",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect("one call commits one row", committed_event_count() == 1);
+    rc |= expect("committed row keeps the assignment target", committed_events_contain("TGT: 00057311"));
+    rc |= expect("no identity-less rows", !committed_events_contain("TGT: 00000000"));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_lockout_ess_repeats_do_not_mint_epochs();
+    rc |= test_pre_identity_ess_uses_assignment_identity();
     rc |= test_lockout_ess_window_slides_with_repeats();
     rc |= test_non_matching_lockout_still_records_epoch();
     rc |= test_identity_pending_ess_still_opens_call();

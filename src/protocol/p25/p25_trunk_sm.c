@@ -2883,6 +2883,26 @@ p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m
     return p25_voice_user_repeats_recent_end(&ctx->slots[slot], target, src, now_m);
 }
 
+int
+p25_sm_phase1_assignment_identity(int* is_group, uint32_t* ota_target, uint32_t* policy_target) {
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (!is_group || !ota_target || !policy_target || ctx->state != P25_SM_TUNED || ctx->vc_is_tdma) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[0];
+    if (!slot_ctx->grant_active || slot_ctx->data_call) {
+        return 0;
+    }
+    const int target = slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+    if (target <= 0) {
+        return 0;
+    }
+    *is_group = slot_ctx->is_group ? 1 : 0;
+    *ota_target = (uint32_t)target;
+    *policy_target = slot_ctx->target_id > 0 ? (uint32_t)slot_ctx->target_id : 0U;
+    return 1;
+}
+
 static int
 p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
     if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
@@ -3700,11 +3720,15 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
         return 0;
     }
 
-    // The PTT retransmission marker deliberately survives the END: a SACCH
-    // MAC_PTT repeat whose assembly straddled the END is recognized as
+    // The PTT retransmission marker deliberately survives an explicit END: a
+    // SACCH MAC_PTT repeat whose assembly straddled the END is recognized as
     // retention only by matching it (p25_voice_start_suppress_post_end_repeat).
     // Epoch-active gating keeps it inert otherwise, and slot clear/release
-    // still invalidates it.
+    // still invalidates it. Inactivity teardowns have no straddle to
+    // recognize, so they drop the marker as before.
+    if (!is_explicit_end) {
+        p25_ptt_marker_invalidate(ctx, s);
+    }
     const double now_m = dsd_time_now_monotonic_s();
     const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
     const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
