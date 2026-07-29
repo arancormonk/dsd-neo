@@ -1044,11 +1044,26 @@ ui_render_demod_snr_line(const dsd_opts* opts, const dsd_state* state) {
     printw("\n");
 }
 
+/* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes. Hide only
+   for RTL QPSK where symbols are fixed ±1/±3 from differential demod. */
+static int
+ui_in_level_visible(const dsd_opts* opts, const dsd_state* state) {
+    return opts->audio_in_type != AUDIO_IN_RTL || state->rf_mod != 1;
+}
+
+/* Single-slot rendering applies when stereo decoding is off or a DMR mono
+   override is active; *mono_slot selects the slot whose state is shown
+   (0 -> slot 1, 1 -> slot 2). */
+static int
+ui_single_slot_mode(const dsd_opts* opts, const dsd_state* state, int* mono_slot) {
+    const int dmr_mono_override_active = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(ncurses_last_synctype);
+    *mono_slot = (dmr_mono_override_active && state->dmr_mono_slot == 1) ? 1 : 0;
+    return opts->dmr_stereo == 0 || dmr_mono_override_active;
+}
+
 static void
 ui_render_audio_decode_levels(const dsd_opts* opts, const dsd_state* state, int level) {
-    /* In Level is meaningful for non-RTL inputs and RTL C4FM/GFSK modes.
-       Hide only for RTL QPSK where symbols are fixed ±1/±3 from differential demod. */
-    if (opts->audio_in_type != AUDIO_IN_RTL || state->rf_mod != 1) {
+    if (ui_in_level_visible(opts, state)) {
         ui_print_kv_line("In Level", "[%02d%%]", level);
     }
     /* Quick hint for output mute toggle */
@@ -1137,10 +1152,9 @@ ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level
     int is_p25p1_active = DSD_SYNC_IS_P25P1(ncurses_last_synctype);
     int is_p25p2_active = DSD_SYNC_IS_P25P2(ncurses_last_synctype);
     int is_p25_active = is_p25p1_active || is_p25p2_active;
-    const int dmr_mono_override_active = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(ncurses_last_synctype);
+    int mono_slot = 0;
 
-    if (opts->dmr_stereo == 0 || dmr_mono_override_active) {
-        const int mono_slot = dmr_mono_override_active && state->dmr_mono_slot == 1 ? 1 : 0;
+    if (ui_single_slot_mode(opts, state, &mono_slot)) {
         ui_render_voice_error_single_slot(opts, state, is_p25_active, mono_slot);
     } else {
         ui_render_voice_error_dual_slot(opts, state, is_p25_active);
@@ -1149,7 +1163,7 @@ ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level
 }
 
 static void
-ui_render_compact_status_line(dsd_opts* opts, const dsd_state* state) {
+ui_render_compact_status_line(const dsd_opts* opts, const dsd_state* state) {
     ui_print_label_pad("Status");
     {
         const char* modlab = (state->rf_mod == 1) ? "QPSK" : (state->rf_mod == 2) ? "GFSK" : "C4FM";
@@ -1164,16 +1178,13 @@ ui_render_compact_status_line(dsd_opts* opts, const dsd_state* state) {
 static void
 ui_render_compact_levels_line(const dsd_opts* opts, const dsd_state* state, int level) {
     ui_print_label_pad("Levels");
-    /* Same visibility rule as ui_render_audio_decode_levels: In Level is not
-       meaningful for RTL QPSK (fixed +/-1,+/-3 differential symbols). */
-    if (opts->audio_in_type != AUDIO_IN_RTL || state->rf_mod != 1) {
+    if (ui_in_level_visible(opts, state)) {
         printw("In [%02d%%]  ", level);
     }
     printw("Out (x) [%s]", (opts->audio_out == 0) ? "Muted" : "On");
 
-    const int dmr_mono_override_active = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(ncurses_last_synctype);
-    if (opts->dmr_stereo == 0 || dmr_mono_override_active) {
-        const int mono_slot = dmr_mono_override_active && state->dmr_mono_slot == 1 ? 1 : 0;
+    int mono_slot = 0;
+    if (ui_single_slot_mode(opts, state, &mono_slot)) {
         if (mono_slot == 1) {
             printw("  S2 (2) [%s]", (opts->slot2_on == 1) ? "On" : "Off");
         } else {
@@ -1190,7 +1201,7 @@ ui_render_compact_levels_line(const dsd_opts* opts, const dsd_state* state, int 
    sections when compact view is active ('c'): decode mode, tuner state, SNR
    meter, and level/slot basics. Call Info and event history render as usual. */
 static void
-ui_render_compact_status_section(dsd_opts* opts, const dsd_state* state, int level) {
+ui_render_compact_status_section(const dsd_opts* opts, const dsd_state* state, int level) {
     if (opts == NULL || state == NULL) {
         return;
     }

@@ -745,6 +745,43 @@ test_io_and_state_commands(void) {
     return rc;
 }
 
+static int
+test_compact_visualizer_toast(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frontend_terminal_display.terminal_compact = 1;
+
+    post_empty(DSD_APP_CMD_CONST_TOGGLE);
+    rc |= expect_int("constellation toggle applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("constellation enabled", opts.frontend_display.constellation, 1);
+    rc |= expect_contains("constellation compact toast", state.ui_msg, "hidden in compact view");
+
+    /* Switching a visualizer off raises no hint */
+    state.ui_msg[0] = '\0';
+    post_empty(DSD_APP_CMD_CONST_TOGGLE);
+    rc |= expect_int("constellation untoggle applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("no toast on visualizer off", state.ui_msg, "");
+
+    /* No hint outside compact view */
+    opts.frontend_terminal_display.terminal_compact = 0;
+    post_empty(DSD_APP_CMD_SPECTRUM_TOGGLE);
+    rc |= expect_int("spectrum toggle applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("no toast in full view", state.ui_msg, "");
+
+    /* Eye view shares the hint path while compact */
+    opts.frontend_terminal_display.terminal_compact = 1;
+    post_empty(DSD_APP_CMD_EYE_TOGGLE);
+    rc |= expect_int("eye toggle applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("eye compact toast", state.ui_msg, "hidden in compact view");
+
+    freeState(&state);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static void
 seed_active_p25_voice(dsd_opts* opts, dsd_state* state, long cc_freq, long vc_freq, int tg) {
@@ -1038,6 +1075,7 @@ main(void) {
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();
     rc |= test_io_and_state_commands();
+    rc |= test_compact_visualizer_toast();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
 #endif

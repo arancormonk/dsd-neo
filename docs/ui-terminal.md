@@ -177,5 +177,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
-toggles are remembered and restored when leaving compact), the detailed Audio Decode section, the optional P25
-sections, and the Channels list. The setting is session-only and is not persisted to the config file.
+toggles are remembered and restored when leaving compact; switching one on while compact shows a brief
+"hidden in compact view" toast), the detailed Audio Decode section, the optional P25 sections, and the
+Channels list. The condensed Status block also omits the Voice Error counters and the `CRC/(RAS)` decoder
+indicator from the full Audio Decode section — leave compact view to inspect those. The setting is
+session-only and is not persisted to the config file.
