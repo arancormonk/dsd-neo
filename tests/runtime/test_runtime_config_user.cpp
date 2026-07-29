@@ -929,6 +929,52 @@ test_load_and_apply_sddc_digital_resample(void) {
 }
 
 static int
+test_load_and_apply_rtl_digital_resample(void) {
+    /* digital_resample is not Soapy-specific: it governs the whole rtl-family demod chain
+       (RTL USB, RTL-TCP, IQ replay), so an RTL-shaped config must honor it too. */
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "rtl_freq = \"851.375M\"\n"
+                             "digital_resample = \"off\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.digital_resample_mode != 2) {
+        DSD_FPRINTF(stderr, "rtl source digital_resample \"off\" applied as mode %d, want 2\n",
+                    opts.digital_resample_mode);
+        rc |= 1;
+    }
+
+    /* Snapshot of an RTL input must record the mode so autosave round-trips it. */
+    opts.digital_resample_mode = 1; /* on */
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851375000");
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (strcmp(snap.digital_resample, "on") != 0) {
+        DSD_FPRINTF(stderr, "rtl snapshot digital_resample mismatch: \"%s\", want \"on\"\n", snap.digital_resample);
+        rc |= 1;
+    }
+
+    (void)remove(path);
+    return rc;
+}
+
+static int
 test_snapshot_digital_resample_mode(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -1785,6 +1831,7 @@ main(void) {
     rc |= test_load_and_apply_soapy_input_no_args();
     rc |= test_load_and_apply_soapy_input_with_args();
     rc |= test_load_and_apply_sddc_digital_resample();
+    rc |= test_load_and_apply_rtl_digital_resample();
     rc |= test_snapshot_digital_resample_mode();
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();

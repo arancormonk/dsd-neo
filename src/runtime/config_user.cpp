@@ -408,6 +408,7 @@ digital_resample_mode_from_name(const char* name) {
     if (dsd_strcasecmp(name, "off") == 0) {
         return 2; /* DSD_DIGITAL_RESAMPLE_OFF */
     }
+    DSD_FPRINTF(stderr, "Config: unrecognized digital_resample value \"%s\"; using \"auto\".\n", name);
     return 0;
 }
 
@@ -446,7 +447,6 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (cfg->soapy_bandwidth_hz_is_set) {
         opts->soapy_bandwidth_hz = cfg->soapy_bandwidth_hz;
     }
-    opts->digital_resample_mode = digital_resample_mode_from_name(cfg->digital_resample);
 }
 
 static void
@@ -464,6 +464,14 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (opts->rtlsdr_center_freq > 0) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);
         cfg->rtl_freq[sizeof cfg->rtl_freq - 1] = '\0';
+    }
+    if (opts->digital_resample_mode != 0) {
+        copy_token_string(cfg->digital_resample, sizeof cfg->digital_resample,
+                          digital_resample_mode_name(opts->digital_resample_mode));
+    } else {
+        /* Auto is the default; drop any explicit value so a mode returned to auto is not
+           frozen at its previous setting by autosave. */
+        cfg->digital_resample[0] = '\0';
     }
 }
 
@@ -493,14 +501,6 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (opts->soapy_bandwidth_hz >= 0) {
         cfg->soapy_bandwidth_hz = opts->soapy_bandwidth_hz;
         cfg->soapy_bandwidth_hz_is_set = 1;
-    }
-    if (opts->digital_resample_mode != 0) {
-        copy_token_string(cfg->digital_resample, sizeof cfg->digital_resample,
-                          digital_resample_mode_name(opts->digital_resample_mode));
-    } else {
-        /* Auto is the default; drop any explicit value so a mode returned to auto is not
-           frozen at its previous setting by autosave. */
-        cfg->digital_resample[0] = '\0';
     }
 }
 
@@ -1202,6 +1202,9 @@ apply_input_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_i
         default: break;
     }
     apply_input_rtl_auto_ppm(cfg, opts);
+    /* The digital resample policy governs the whole rtl-family demod chain, including IQ
+       replay, which can run under any configured input source — apply it unconditionally. */
+    opts->digital_resample_mode = digital_resample_mode_from_name(cfg->digital_resample);
 }
 
 static void

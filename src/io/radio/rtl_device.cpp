@@ -5584,25 +5584,31 @@ rtl_device_nearest_supported_rate(struct rtl_device* dev, uint32_t requested, ui
         return 0;
     }
 #ifdef USE_SOAPYSDR
-    if (dev->soapy_nearest_rate_cache_requested == requested && dev->soapy_nearest_rate_cache_actual != 0U) {
-        *out_actual = dev->soapy_nearest_rate_cache_actual;
-        return 0;
-    }
-    double applied = (double)requested;
+    /* The cache is read and refreshed under the Soapy lock so concurrent callers never
+       observe a torn requested/actual pair. */
+    uint32_t actual = 0U;
     int rc = soapy_call_locked(dev, "listSampleRates", [&]() -> int {
+        if (dev->soapy_nearest_rate_cache_requested == requested && dev->soapy_nearest_rate_cache_actual != 0U) {
+            actual = dev->soapy_nearest_rate_cache_actual;
+            return 0;
+        }
         bool adjusted = false;
         std::vector<double> listed = soapy_valid_positive_rates(dev->soapy_dev->listSampleRates(SOAPY_SDR_RX, 0));
         std::vector<dsdneo::SoapyRange> ranges =
             soapy_ranges_from_range_list(dev->soapy_dev->getSampleRateRange(SOAPY_SDR_RX, 0));
-        applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+        double applied = dsdneo::soapy_nearest_sample_rate((double)requested, listed, ranges, &adjusted);
+        if (!(applied > 0.0) || applied > (double)UINT32_MAX) {
+            return -1;
+        }
+        actual = (uint32_t)std::lround(applied);
+        dev->soapy_nearest_rate_cache_requested = requested;
+        dev->soapy_nearest_rate_cache_actual = actual;
         return 0;
     });
-    if (rc != 0 || !(applied > 0.0) || applied > (double)UINT32_MAX) {
+    if (rc != 0 || actual == 0U) {
         return -1;
     }
-    *out_actual = (uint32_t)std::lround(applied);
-    dev->soapy_nearest_rate_cache_requested = requested;
-    dev->soapy_nearest_rate_cache_actual = *out_actual;
+    *out_actual = actual;
     return 0;
 #else
     return -1;
