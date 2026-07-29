@@ -4662,6 +4662,25 @@ add_test(
     COMMAND dsd-neo_test_p25_p2_hangtime_events
 )
 
+# P25p2 ACTIVE-observed transmissions: the first-seen MAC_PTT folds into the
+# ACTIVE-begun canonical epoch instead of force-minting a duplicate event row
+add_executable(
+    dsd-neo_test_p25_p2_active_ptt_epoch
+    protocol/p25/test_p25_p2_active_ptt_epoch.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_active_ptt_epoch
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_active_ptt_epoch
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_ACTIVE_PTT_EPOCH
+    COMMAND dsd-neo_test_p25_p2_active_ptt_epoch
+)
+
 # P25 Unified SM tests
 add_executable(
     dsd-neo_test_p25_sm_unified_core
@@ -6210,6 +6229,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=watchdog_event_current"
             "-Wl,--wrap=watchdog_event_history"
             "-Wl,--wrap=close_and_rename_wav_file"
+            "-Wl,--wrap=close_and_rename_wav_file_ex"
             "-Wl,--wrap=open_wav_file"
     )
     add_test(

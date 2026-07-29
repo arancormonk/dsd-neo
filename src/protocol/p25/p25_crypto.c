@@ -189,11 +189,14 @@ p25_crypto_phase1_ess_continues_ended_call(dsd_state* state) {
 }
 
 static int
-p25_crypto_ensure_phase1_call(dsd_state* state) {
+p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
     dsd_call_snapshot call;
     const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     if (active && DSD_SYNC_IS_P25P1(call.protocol)
         && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
+        return 0;
+    }
+    if (!p25_sm_phase1_crypto_epoch_allowed(opts)) {
         return 0;
     }
     if (p25_crypto_phase1_ess_continues_ended_call(state)) {
@@ -204,12 +207,28 @@ p25_crypto_ensure_phase1_call(dsd_state* state) {
     if (frequency_hz == 0) {
         frequency_hz = state->trunk_vc_freq[0];
     }
-    const dsd_call_observation observation = {
+    dsd_call_observation observation = {
         .protocol = p25_crypto_phase1_protocol(state),
         .slot = 0U,
         .kind = DSD_CALL_KIND_VOICE,
         .frequency_hz = frequency_hz,
     };
+    // On a tuned assignment whose ESS resolves before any LCW/voice evidence,
+    // the grant already names this call. Beginning identity-less here splits
+    // the call across two rows when the encryption lockout releases the
+    // channel before an LCW ever decodes: a TGT 0 row carrying the resolved
+    // ALG/KID plus the staged assignment row with pending crypto. The
+    // conventional identity-pending flow keeps the identity-less epoch -- the
+    // LCW that follows names that call, not the retained assignment.
+    int assignment_is_group = 0;
+    uint32_t assignment_target = 0U;
+    uint32_t assignment_policy_target = 0U;
+    if (!state->p25_p1_identity_pending
+        && p25_sm_phase1_assignment_identity(&assignment_is_group, &assignment_target, &assignment_policy_target)) {
+        observation.kind = assignment_is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
+        observation.ota_target_id = assignment_target;
+        observation.policy_target_id = assignment_policy_target;
+    }
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
     if (began && state->p25_p1_identity_pending) {
         state->p25_p1_identity_epoch_started = 1;
@@ -392,7 +411,7 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     if (reset_stream) {
         p25_crypto_reset_stream_state(state, phase, slot);
     }
-    const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(state) : 0;
+    const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(opts, state) : 0;
     p25_crypto_set_state(state, slot, resolved);
     p25_crypto_publish_canonical(opts, state, slot);
     if (began_phase1_call && opts) {

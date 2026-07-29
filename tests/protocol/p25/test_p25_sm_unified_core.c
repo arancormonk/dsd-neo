@@ -493,7 +493,9 @@ test_raw_ptt_retransmissions_coalesce_history(void) {
 
     ev = p25_sm_ev_end_call_at(0, 1000, 123, first_m + 1.3);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.slots[0].ptt_signature_valid || dsd_call_state_get(&g_state, 0U, &call) <= 0
+    // The marker survives the explicit END so a straddling SACCH PTT repeat
+    // inside the retention tail stays recognizable as retention.
+    if (!ctx.slots[0].ptt_signature_valid || dsd_call_state_get(&g_state, 0U, &call) <= 0
         || call.phase != DSD_CALL_PHASE_ENDED || call.epoch != 1U
         || event_history[0].Event_History_Items[1].target_id != 1000U
         || strcmp(event_history[0].Event_History_Items[1].alias, "RETX-ALIAS") != 0
@@ -598,8 +600,12 @@ test_raw_ptt_boundary_invalidation(void) {
             ev.observed_m = first_m + 0.1;
         }
         p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-        if (ctx.slots[0].ptt_signature_valid) {
-            DSD_FPRINTF(stderr, "FAIL: Accepted boundary %d retained its PTT marker\n", (int)boundaries[i]);
+        // An explicit END keeps the marker so a straddling SACCH PTT repeat
+        // inside its retention tail stays recognizable; inactivity teardowns
+        // have no straddle to recognize and drop it.
+        const int marker_should_survive = boundaries[i] == P25_SM_EV_END;
+        if (ctx.slots[0].ptt_signature_valid != marker_should_survive) {
+            DSD_FPRINTF(stderr, "FAIL: Boundary %d marker handling changed\n", (int)boundaries[i]);
             return 1;
         }
 
@@ -1587,6 +1593,85 @@ test_conventional_end_is_follower_noop(void) {
 }
 
 static int
+conventional_slot_ended_with_reason(uint8_t slot, dsd_call_end_reason want_reason, const char* label) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || call.end_reason != (uint8_t)want_reason) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional %s end did not record end reason %d\n", label, (int)want_reason);
+        return 1;
+    }
+    return 0;
+}
+
+// Regression: outside P25_SM_TUNED, the emit wrappers finish the canonical call through a
+// fallback that used to hardcode DSD_CALL_END_EXPLICIT. Decoded OTA end signaling
+// (MAC_END_PTT, FACCH end, TDU, LCW termination, MAC Release) must end the epoch with
+// DSD_CALL_END_TERMINATOR so the event layer keeps audible identity-less receptions, while
+// inactivity-driven idle/hangtime ends stay EXPLICIT.
+static int
+test_conventional_ota_end_reasons_are_terminator(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    const double now_m = dsd_time_now_monotonic_s();
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0)
+        || !p25_sm_emit_end_call_at(&g_opts, &g_state, 0, 1000, 123, now_m)
+        || conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "MAC_END_PTT")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 1, 1500, 0, 321, 1, 0)
+        || p25_sm_emit_facch_end_call_at(&g_opts, &g_state, 1, 1500, 321, now_m) != P25_SM_END_APPLIED
+        || conventional_slot_ended_with_reason(1U, DSD_CALL_END_TERMINATOR, "FACCH")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 2000, 0, 456, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_tdu(&g_opts, &g_state);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "TDU")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 3000, 0, 789, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_end(&g_opts, &g_state, 0);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "LCW termination")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 4000, 0, 111, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_mac_release(&g_opts, &g_state, 0, dsd_time_now_monotonic_s());
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "MAC Release")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 5000, 0, 222, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_idle(&g_opts, &g_state, 0);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_EXPLICIT, "idle")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 6000, 0, 333, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_hangtime(&g_opts, &g_state, 0);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_EXPLICIT, "hangtime")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_conventional_anonymous_activity_waits_for_identity(void) {
     reset_test_state();
     g_opts.trunk_enable = 0;
@@ -1853,6 +1938,11 @@ test_anonymous_followup_restarts_crypto_pending(void) {
 
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    // Past the post-END retention tail: inside it an identity-less ACTIVE is
+    // retention of the ended call and must not reopen (P25_P2_ACTIVE_PTT_EPOCH
+    // covers that); after it, one that fails identity decode is the next
+    // transmission and must not inherit the ended call's clear classification.
+    ctx.slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
     ev = p25_sm_ev_active(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx.slots[0].svc_bits != P25_SM_SVC_UNKNOWN
@@ -2508,6 +2598,67 @@ test_tdma_facch_double_end_release(void) {
     return 0;
 }
 
+// Regression: MAC_END_PTT frequently names the fixed-network placeholder
+// source (0xFFFFFF) instead of the completed talker, while the first END now
+// records the talker as the ended source. A placeholder-sourced repeat must
+// resolve to that recorded talker and still qualify the double-END fast
+// release -- otherwise the carrier lingers until hangtime expires after the
+// traffic channel already went quiet.
+static int
+test_tdma_facch_double_end_release_placeholder_src(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    const double first_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 0xFFFFFF, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: First placeholder FACCH END released the carrier\n");
+        return 1;
+    }
+    if (ctx.slots[0].last_end_src != 123) {
+        DSD_FPRINTF(stderr, "FAIL: Placeholder END did not record the talker as the ended source\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 0xFFFFFF, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Placeholder FACCH END pair did not release exactly once\n");
+        return 1;
+    }
+
+    // A repeat naming a different real talker is fresh evidence, never a
+    // qualifying pair.
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const double second_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 0xFFFFFF, second_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 456, second_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Different-talker FACCH END qualified the fast release\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 static int
 test_inband_target_change_rechecks_policy(void) {
     reset_test_state();
@@ -2750,6 +2901,7 @@ main(void) {
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
+    fail += test_conventional_ota_end_reasons_are_terminator();
     fail += test_conventional_anonymous_activity_waits_for_identity();
     fail += test_conventional_anonymous_activity_preserves_service_options();
     fail += test_conventional_unknown_service_stays_unconfirmed();
@@ -2769,6 +2921,7 @@ main(void) {
     fail += test_tdma_single_slot_end_retains_carrier();
     fail += test_tdma_end_identity_and_order_guards();
     fail += test_tdma_facch_double_end_release();
+    fail += test_tdma_facch_double_end_release_placeholder_src();
     fail += test_inband_target_change_rechecks_policy();
     fail += test_inband_policy_reject_preserves_tdma_companion();
     fail += test_inband_policy_reject_releases_after_companion_ended();

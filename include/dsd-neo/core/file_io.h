@@ -51,6 +51,14 @@ void openSymbolOutFile(dsd_opts* opts, dsd_state* state);
 SNDFILE* close_wav_file(SNDFILE* wav_file);
 SNDFILE* close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
                                    const char* dir, const Event_History_I* event_struct);
+/**
+ * As close_and_rename_wav_file(), but with the rdio-scanner export gated by `export_call`.
+ * The event layer's drop path rotates the recording of an epoch that gets no history row or log
+ * line; exporting it would upload audio tagged with all-zero metadata that the operator has
+ * nothing local to correlate against.
+ */
+SNDFILE* close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename,
+                                      const char* dir, const Event_History_I* event_struct, int export_call);
 void closeMbeOutFile(dsd_opts* opts, dsd_state* state);
 void closeMbeOutFileR(dsd_opts* opts, dsd_state* state);
 void closeSymbolOutFile(dsd_opts* opts, dsd_state* state);

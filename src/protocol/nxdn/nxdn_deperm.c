@@ -741,7 +741,9 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
             (void)dsd_event_enrich_alias(state, 0U, call.epoch, "JPN DCR");
         }
-    } else if (fields->sf_mes == 0x1EU && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    } else if (fields->sf_mes == 0x1EU && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
+        // Release signaling decoded over the air: positive end evidence, distinguishable from an
+        // engine retune, so the event layer can keep an audible identity-less epoch it closed.
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
     if (fields->sf_fb) {
@@ -1212,9 +1214,11 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    //End the canonical call on explicit release or disconnect signaling.
+    //End the canonical call on explicit release or disconnect signaling. CRC-verified release
+    //decoded over the air is positive end evidence -- the terminator reason lets the event layer
+    //keep an audible epoch whose call identity never decoded, where EXPLICIT reads as a retune.
     if (state->NxdnElementsContent.VCallCrcIsGood != 0U && nxdn_message_type_resets_call(MessageType)) {
-        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }
         nxdn_alias_reset(state);

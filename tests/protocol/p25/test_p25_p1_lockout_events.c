@@ -30,12 +30,14 @@
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define TEST_TG     57111
-#define TEST_ALGID  0x84
-#define TEST_KEYID  0x023F
-// A talkgroup of its own: the encrypted-call cache that lockouts populate is not
-// cleared by reset_test_state(), so reusing TEST_TG would block a later grant.
-#define TEST_TG_ALT (TEST_TG + 100)
+#define TEST_TG       57111
+#define TEST_ALGID    0x84
+#define TEST_KEYID    0x023F
+// Talkgroups of their own: the encrypted-call cache that lockouts populate is
+// not cleared by reset_test_state(), so reusing TEST_TG would block a later
+// grant.
+#define TEST_TG_ALT   (TEST_TG + 100)
+#define TEST_TG_GRANT (TEST_TG + 200)
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -207,6 +209,8 @@ static int
 test_identity_pending_ess_still_opens_call(void) {
     int rc = 0;
     reset_test_state();
+    // The TDU flow that arms identity_pending is the conventional receiver's.
+    g_opts.trunk_enable = 0;
 
     begin_identified_call();
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
@@ -245,14 +249,19 @@ test_reused_key_after_new_assignment_opens_call(void) {
 
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     ctx->grant_count++;
+    // The fresh assignment has the receiver on its traffic channel.
+    ctx->state = P25_SM_TUNED;
     g_state.p25_p1_identity_pending = 0;
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x6666ULL, TEST_TG);
     event_ticks();
 
     dsd_call_snapshot call;
-    rc |= expect("reused-key assignment opens call",
-                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    // The stale lockout context must not suppress the mint. On the tuned
+    // assignment the enc lockout may end the fresh epoch synchronously, so
+    // assert the new epoch and its key rather than a live phase.
     rc |= expect("reused-key assignment starts new epoch", slot0_epoch() != ended_epoch);
+    rc |= expect("reused-key epoch records the key",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.algid == TEST_ALGID && call.kid == TEST_KEYID);
     return rc;
 }
 
@@ -262,6 +271,8 @@ static int
 test_ess_after_cryptoless_end_still_opens_call(void) {
     int rc = 0;
     reset_test_state();
+    // Conventional: a trunked receiver without an assignment declines the mint.
+    g_opts.trunk_enable = 0;
 
     begin_identified_call();
     (void)dsd_call_state_end(&g_state, 0U, 0.0);
@@ -285,6 +296,7 @@ static int
 test_stale_same_key_ess_opens_conventional_call(void) {
     int rc = 0;
     reset_test_state();
+    g_opts.trunk_enable = 0;
 
     begin_identified_call();
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
@@ -378,10 +390,66 @@ test_non_matching_lockout_still_records_epoch(void) {
     return rc;
 }
 
+/* A tuned assignment whose HDU ESS resolves before any LCW or voice evidence:
+ * the epoch opened to hold the classification must carry the assignment
+ * identity. Minting identity-less split the call across two rows when the
+ * lockout released the channel before an LCW decoded -- a "TGT: 00000000"
+ * row with the resolved ALG/KID next to the assignment's row with pending
+ * crypto and no ALG. */
+static int
+test_pre_identity_ess_uses_assignment_identity(void) {
+    int rc = 0;
+    reset_test_state();
+    tune_group_grant(TEST_TG_GRANT);
+    rc |= expect("pre-identity fixture tuned", p25_sm_get_ctx()->state == P25_SM_TUNED);
+
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL,
+                             TEST_TG_GRANT);
+    event_ticks();
+
+    dsd_call_snapshot call;
+    rc |= expect("pre-identity ESS opens the assignment call",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.ota_target_id == TEST_TG_GRANT);
+    rc |= expect("pre-identity call carries the resolved key", call.algid == TEST_ALGID && call.kid == TEST_KEYID);
+    rc |= expect("lockout released the assignment",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect("one call commits one row", committed_event_count() == 1);
+    rc |= expect("committed row keeps the assignment target", committed_events_contain("TGT: 00057311"));
+    rc |= expect("no identity-less rows", !committed_events_contain("TGT: 00000000"));
+    return rc;
+}
+
+/* ESS observed while a trunked receiver sits on the control channel with no
+ * traffic assignment is noise briefly false-syncing as an LDU. Minting an
+ * identity-less epoch for it leaves a stale ACTIVE call that the next real
+ * call's teardown flushes as a phantom TGT 0 row minutes later. Conventional
+ * receivers keep the mint. */
+static int
+test_cc_noise_ess_does_not_mint_epoch(void) {
+    int rc = 0;
+    reset_test_state();
+    p25_sm_get_ctx()->state = P25_SM_ON_CC;
+
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, 0x97, 0x540E, 0x1111ULL, 0);
+    event_ticks();
+    dsd_call_snapshot call;
+    rc |= expect("CC-noise ESS mints no epoch", dsd_call_state_get(&g_state, 0U, &call) <= 0);
+    rc |= expect("CC-noise ESS commits no row", committed_event_count() == 0);
+
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, 0);
+    rc |= expect("conventional ESS still opens a call",
+                 dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_lockout_ess_repeats_do_not_mint_epochs();
+    rc |= test_cc_noise_ess_does_not_mint_epoch();
+    rc |= test_pre_identity_ess_uses_assignment_identity();
     rc |= test_lockout_ess_window_slides_with_repeats();
     rc |= test_non_matching_lockout_still_records_epoch();
     rc |= test_identity_pending_ess_still_opens_call();

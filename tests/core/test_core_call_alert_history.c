@@ -124,6 +124,7 @@ canonical_snapshot_reader(void* arg) {
 
 static int g_open_wav_count;
 static int g_close_wav_count;
+static int g_close_wav_export_count;
 static SNDFILE* g_open_wav_result;
 static double g_observed_m;
 
@@ -139,14 +140,17 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 }
 
 SNDFILE*
-close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                          const Event_History_I* event_struct) {
+close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                             const Event_History_I* event_struct, int export_call) {
     UNUSED(wav_file);
     UNUSED(opts);
     UNUSED(wav_out_filename);
     UNUSED(dir);
     UNUSED(event_struct);
     g_close_wav_count++;
+    if (export_call) {
+        g_close_wav_export_count++;
+    }
     return NULL;
 }
 
@@ -1647,6 +1651,531 @@ test_provisional_voice_identity_does_not_commit_zero_row(void) {
     return rc;
 }
 
+// A voice epoch that ends without ever learning an identity is noise, not a
+// call: a stray voice sync opened it and no header named anyone. Committing it
+// surfaced "TGT: 00000000; SRC: 00000000" rows in Activity history. The drop
+// must not arm the deferred VOICE_END alert either, matching the
+// empty-staged-row rule that an alert needs a row the operator can see, and
+// must leave the following identified call committing normally.
+static int
+test_identityless_voice_epoch_commits_no_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 13;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("zero-identity row is staged",
+                     state.event_history_s[0].Event_History_Items[0].event_string[0] != '\0', 1);
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identity-less row does not reach history",
+                     event_history[0].Event_History_Items[1].event_string[0], '\0');
+    dsd_call_context_snapshot context;
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("dropped row arms no end alert", context.events[0].end_alert_pending, 0);
+    rc |= expect_int("dropped row emits only the start alert", g_beeper_count, 1);
+
+    // The next identified call on the slot is unaffected by the drop.
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identified call ends", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identified row reaches history", (int)event_history[0].Event_History_Items[1].target_id, 1234);
+    rc |= expect_int("only the identified row is in history", event_history[0].Event_History_Items[2].event_string[0],
+                     '\0');
+    rc |= expect_int("identified call emits start and end alerts", g_beeper_count, 3);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// An identity-less voice epoch that carried decoded audio and ended on a
+// terminator is a real transmission, not noise: on a RAS DMR system under the
+// aggressive-framesync default every link control fails the masked CRC, so a
+// short PTT whose embedded LC never reassembled plays audio yet never names a
+// call. Its row must reach history -- as the zero-ID record that a
+// transmission occurred -- and its deferred VOICE_END must fire once the
+// terminator repeat corroborates the end. A media-carrying epoch that merely
+// faded out (sync loss, no terminator) stays droppable: that is the
+// stray-sync noise shape.
+static int
+test_media_terminated_identityless_voice_epoch_commits_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs on the epoch", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("terminator ends the epoch unverified",
+                     end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("audible terminated row reaches history",
+                     event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
+    rc |= expect_int("row records that no one was named", (int)event_history[0].Event_History_Items[1].target_id, 0);
+    dsd_call_context_snapshot context;
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("recoverable end holds the VOICE_END alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int("only the start alert has fired", g_beeper_count, 1);
+
+    // The hangtime repeat -- itself unverified on a RAS system -- corroborates the end into
+    // EXPLICIT, releasing the held alert.
+    rc |= expect_int("corroborating terminator tightens the end",
+                     end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("released VOICE_END alert fires", g_beeper_count, 2);
+
+    // A media-carrying epoch that fades out without a terminator is still the
+    // stray-sync noise shape and leaves no row.
+    rc |= expect_int("noise epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("noise media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("noise row does not reach history", event_history[0].Event_History_Items[2].event_string[0], '\0');
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int committed_history_rows(const Event_History_I* history);
+
+// The engine ends epochs EXPLICIT on every retune and teardown --
+// no_carrier_clear_voice_tune_state() fires one each time the trunker returns
+// to the control channel -- so an EXPLICIT end is not evidence a transmission
+// ended over the air. A stray-sync noise epoch that carried media and was then
+// ended by a retune must drop exactly like the faded shape; only the
+// terminator reasons vouch for an identity-less audible row.
+static int
+test_retune_explicit_end_drops_identityless_media_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs on the epoch", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("retune ends the epoch explicitly", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("retune-ended noise row does not reach history", committed_history_rows(&event_history[0]), 0);
+
+    // The verified-terminator shape is the one that vouches: same epoch shape,
+    // ended by positive over-the-air evidence, keeps its row.
+    rc |= expect_int("audible epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs again", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("verified terminator ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("terminator-ended audible row reaches history", committed_history_rows(&event_history[0]), 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The drop path still rotates the WAV -- leaving it open would let the noise segment's audio
+// lead the next transmission's recording -- but must not export it: the recording of an epoch
+// with no history row or log line would upload to rdio-scanner under all-zero metadata the
+// operator has nothing local to correlate against. A committed row's rotation still exports.
+static int
+test_dropped_identityless_row_rotates_wav_without_export(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_close_wav_count = 0;
+    g_close_wav_export_count = 0;
+
+    opts.wav_out_f = (SNDFILE*)0x1;
+    rc |= expect_int("noise epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("noise media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("dropped row leaves no history", committed_history_rows(&event_history[0]), 0);
+    // The keep-or-drop verdict is held while the recoverable end could still be explained by a
+    // late terminator, so the WAV has not rotated yet; a new call taking the slot resolves the
+    // hold, and the drop's rotation must not export.
+    rc |= expect_int("keep-or-drop is held while the end may still be explained", g_close_wav_count, 0);
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("held drop resolves when a new call takes the slot", g_close_wav_count, 1);
+    rc |= expect_int("dropped row's rotation does not export", g_close_wav_export_count, 0);
+    rc |= expect_int("resolved drop still leaves no history", committed_history_rows(&event_history[0]), 0);
+
+    // The committed shape keeps exporting: same rotation path, row reached history.
+    opts.wav_out_f = (SNDFILE*)0x1;
+    g_close_wav_count = 0;
+    rc |= expect_int("identified call ends", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("committed row rotates the WAV", g_close_wav_count, 1);
+    rc |= expect_int("committed row's rotation exports", g_close_wav_export_count, 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The keep-or-drop verdict for an identity-less audible row must not be irrevocable at the
+// first ended-sync pass: a fade often beats the terminator that explains it, and the hangtime
+// terminator then retracts the sync-loss end to TERMINATOR in the canonical layer. The held
+// verdict re-reads the staged environment on the next pass, sees the end became positive, and
+// commits the row the immediate drop would have deleted with nothing left to re-render.
+static int
+test_terminator_after_fade_rescues_identityless_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("audible epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("carrier fades before the terminator", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("verdict is held, not dropped", committed_history_rows(&event_history[0]), 0);
+
+    // The hangtime terminator decodes after the fade; a verified terminator retracts the
+    // recoverable end, and the next sync pass commits the row it now vouches for.
+    rc |=
+        expect_int("late terminator retracts the sync-loss end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("rescued audible row reaches history", committed_history_rows(&event_history[0]), 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// D-STAR has no terminator to decode -- its transmissions only ever end by sync loss or an
+// engine teardown -- so the media-plus-terminator vouch would be structurally unsatisfiable for
+// it. A sync-loss end after audible media must count as the positive end evidence the mode can
+// never produce, keeping the reception's row where a DMR noise epoch's still drops.
+static int
+test_dstar_sync_loss_after_media_keeps_identityless_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
+
+    rc |= expect_int("identity-less D-STAR epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the reception", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("audible D-STAR row reaches history", committed_history_rows(&event_history[0]), 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// M17, YSF and NXDN each define an end marker but send it exactly once, behind a CRC or FICH
+// error check: an M17 stream whose transmitter drops carrier before the EOT, a YSF tail burst
+// whose FICH is corrupt, or a missed NXDN release SACCH all leave an audible reception ending by
+// sync loss. Demanding a terminator there deleted the row, the log line and the end alert and
+// left the rotated WAV an orphan, so a sync-loss end after media must vouch for them the way it
+// does for D-STAR -- while DMR, P25 and dPMR, whose end signaling repeats or rides the sync
+// correlator, keep dropping the same shape as the noise it is.
+static int
+test_unreliable_terminator_modes_keep_audible_identityless_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+
+    static const int lenient[] = {DSD_SYNC_M17_STR_POS, DSD_SYNC_YSF_POS, DSD_SYNC_NXDN_POS};
+    static const int strict[] = {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_P25P1_POS, DSD_SYNC_DPMR_FS2_POS};
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(lenient) / sizeof(lenient[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.lastsynctype = lenient[i];
+        rc |= expect_int(
+            "identity-less epoch starts",
+            observe_test_call(&state, 0U, lenient[i], DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN), 1);
+        rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("carrier drops before the end marker", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("audible row survives the missed end marker", committed_history_rows(&event_history[0]), 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    for (size_t i = 0; i < sizeof(strict) / sizeof(strict[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.lastsynctype = strict[i];
+        rc |= expect_int(
+            "identity-less epoch starts",
+            observe_test_call(&state, 0U, strict[i], DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN), 1);
+        rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("noise row still drops", committed_history_rows(&event_history[0]), 0);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
+// The held VOICE_END deadline must be selected by the same reason-keyed rule the canonical layer
+// applies to reacquisition: an unverified-terminator end stops accepting a heal after
+// DSD_CALL_TERMINATOR_HEAL_GAP_S, so its alert must not be withheld for the full sync-loss
+// window on top of that. Both deadlines are bracketed between two reads of the same clock the
+// arming site uses, so the assertions hold at any scheduler pace.
+static int
+test_end_alert_deadline_matches_reacquire_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_call_context_snapshot context;
+
+    // Sync-loss end: held for the full reacquisition gap.
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    double before = dsd_time_now_monotonic_s();
+    rc |= expect_int("sync loss ends it", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    double after = dsd_time_now_monotonic_s();
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("sync-loss end holds the alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int("sync-loss deadline is not below its window",
+                     context.events[0].end_alert_due_m >= before + DSD_CALL_REACQUIRE_GAP_S, 1);
+    rc |= expect_int("sync-loss deadline is not above its window",
+                     context.events[0].end_alert_due_m <= after + DSD_CALL_REACQUIRE_GAP_S, 1);
+    dsd_event_flush_pending_alerts(&opts, &state);
+
+    // Unverified-terminator end: held only for the tighter heal gap.
+    rc |= expect_int("second identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    before = dsd_time_now_monotonic_s();
+    rc |= expect_int("unverified terminator ends it", end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    after = dsd_time_now_monotonic_s();
+    rc |= expect_int("second context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("unverified end holds the alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int("terminator deadline is not below the heal window",
+                     context.events[0].end_alert_due_m >= before + DSD_CALL_TERMINATOR_HEAL_GAP_S, 1);
+    rc |= expect_int("terminator deadline is not above the heal window",
+                     context.events[0].end_alert_due_m <= after + DSD_CALL_TERMINATOR_HEAL_GAP_S, 1);
+    dsd_event_flush_pending_alerts(&opts, &state);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The heal window after an unverified terminator is tighter than the sync-loss
+// reacquisition window: the mis-typed voice burst it exists for is followed by
+// the transmission's next media mark within a burst or two, while a real end
+// followed by a fast re-key whose headers fail to decode can put an
+// identity-less media mark on the slot well inside the sync-loss window -- and
+// folding that in would hand the new call the terminated call's identity (and,
+// in DMR, its restored crypto).
+static int
+test_unverified_terminator_heal_window_is_tight(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("unverified terminator ends it", end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    // Beyond the heal window but still inside the sync-loss window: proves the
+    // tighter gate is what rejects the reopen.
+    advance_test_clock(0.3);
+    rc |= expect_int("late identity-less continuation begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_call_snapshot call;
+    rc |= expect_int("late continuation opens a fresh epoch", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("fresh epoch is not seeded with the ended call's identity", (int)call.ota_target_id, 0);
+    // Retire the fresh identity-less epoch so the next identified BEGIN opens
+    // its own epoch instead of specializing into it.
+    rc |= expect_int("fresh epoch retires", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+
+    // Inside the heal window the mis-typed burst still heals.
+    rc |= expect_int("second identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("unverified terminator ends the second call",
+                     end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    rc |= expect_int("prompt identity-less continuation begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("prompt continuation heals the epoch", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("healed epoch keeps the terminated call's identity", (int)call.ota_target_id, 4321);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A voice epoch whose only decoded knowledge is its crypto -- encrypted, this
+// alg, this key -- is not noise. P25 late entry deliberately opens an
+// identity-less epoch so ESS crypto can attach; when the signal fades before
+// any LC names a talkgroup or source, the record that an encrypted
+// transmission occurred must still reach history.
+static int
+test_crypto_only_voice_epoch_commits_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_P25P1_POS;
+    rc |= expect_int(
+        "provisional call starts epoch",
+        observe_test_call(&state, 0U, DSD_SYNC_P25P1_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+        1);
+    rc |= expect_int("crypto attaches to the identity-less epoch",
+                     update_test_crypto(&state, 0U, DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0x84U, 0x1234U, 0U), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("crypto-only row reaches history", event_history[0].Event_History_Items[1].event_string[0] != '\0',
+                     1);
+    rc |= expect_int("row records the algorithm", event_history[0].Event_History_Items[1].enc_alg, 0x84);
+    rc |= expect_int("row records the key id", event_history[0].Event_History_Items[1].enc_key, 0x1234);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Route text is identity the row strings never carry: a D-STAR transmission
+// where only the repeater pair decoded stages a row whose every checked field
+// is empty. The identity verdict is captured at render time, so the row must
+// survive commit on every path -- including the epoch-change path, where the
+// outgoing epoch's canonical snapshot is already gone.
+static int
+test_route_text_only_row_survives_epoch_change_commit(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
+    dsd_call_observation route_only = {
+        .protocol = DSD_SYNC_DSTAR_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .observed_m = g_observed_m,
+    };
+    DSD_SNPRINTF(route_only.route_text[0], sizeof route_only.route_text[0], "%s", "RPT1CALL");
+    g_observed_m += 0.1;
+    rc |= expect_int("route-only call begins", dsd_call_state_observe(&state, &route_only, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("route-only row is staged",
+                     state.event_history_s[0].Event_History_Items[0].event_string[0] != '\0', 1);
+
+    // The next transmission's BEGIN forks the epoch before any terminator, so the leftover row
+    // commits through the epoch-change path.
+    rc |= expect_int("next call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 3333U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("route-only row reaches history", event_history[0].Event_History_Items[1].event_string[0] != '\0',
+                     1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Standalone ProVoice never parses its voice traffic into a talkgroup or
+// source, so an all-zero row is the protocol's whole story -- the channel
+// carried voice -- and must keep reaching history exactly as X2-TDMA's rows
+// do. (EDACS-trunked ProVoice rows carry AFS/LID strings and are unaffected.)
+static int
+test_standalone_provoice_zero_id_row_commits(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_PROVOICE_POS;
+    rc |= expect_int("provoice call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_PROVOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("standalone provoice row reaches history",
+                     event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_new_canonical_epoch_commits_prior_canonical_call(void) {
     static dsd_opts opts;
@@ -1896,8 +2425,9 @@ test_identityless_ended_epoch_does_not_reacquire(void) {
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
-    int rc = expect_int("unrelated call after an identity-less end gets its own row",
-                        committed_history_rows(&event_history[0]), 2);
+    // The identity-less epoch's own row is dropped -- it never named a call -- so only the
+    // unrelated call's row reaches history, un-coalesced and with its own START.
+    int rc = expect_int("only the unrelated call's row reaches history", committed_history_rows(&event_history[0]), 1);
     rc |=
         expect_int("unrelated call keeps its own target", (int)event_history[0].Event_History_Items[1].target_id, 500);
     rc |= expect_int("unrelated call still alerts START", g_beeper_count, 2);
@@ -2076,10 +2606,12 @@ test_back_to_back_same_identity_calls_commit_two_rows(void) {
     return rc;
 }
 
-// A terminator followed by an identity-less reopen inside the window must still commit twice:
-// the transmission that terminated is over, whatever decodes next is new.
+// A terminator followed by an identity-less reopen inside the window: the transmission that
+// terminated is over, and whatever decodes next is a new epoch, never a merge into the ended
+// row. The reopen itself never names a call, so it leaves no row of its own -- the terminated
+// call's row must survive untouched as the only one.
 static int
-test_explicit_end_then_identityless_reopen_commits_two_rows(void) {
+test_explicit_end_then_identityless_reopen_leaves_single_row(void) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I event_history[2];
@@ -2099,7 +2631,9 @@ test_explicit_end_then_identityless_reopen_commits_two_rows(void) {
     assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
-    int rc = expect_int("explicit end never coalesces", committed_history_rows(&event_history[0]), 2);
+    int rc = expect_int("only the terminated call's row is in history", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("terminated call's row is not merged into or replaced",
+                     (int)event_history[0].Event_History_Items[1].target_id, 100);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -3674,6 +4208,18 @@ main(void) {
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
     rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
+    rc |= test_identityless_voice_epoch_commits_no_row();
+    rc |= test_media_terminated_identityless_voice_epoch_commits_row();
+    rc |= test_retune_explicit_end_drops_identityless_media_row();
+    rc |= test_dropped_identityless_row_rotates_wav_without_export();
+    rc |= test_terminator_after_fade_rescues_identityless_row();
+    rc |= test_dstar_sync_loss_after_media_keeps_identityless_row();
+    rc |= test_unreliable_terminator_modes_keep_audible_identityless_rows();
+    rc |= test_end_alert_deadline_matches_reacquire_window();
+    rc |= test_unverified_terminator_heal_window_is_tight();
+    rc |= test_crypto_only_voice_epoch_commits_row();
+    rc |= test_route_text_only_row_survives_epoch_change_commit();
+    rc |= test_standalone_provoice_zero_id_row_commits();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
@@ -3691,7 +4237,7 @@ main(void) {
     rc |= test_reacquisition_after_uncommitted_epoch_does_not_merge_stale_row();
     rc |= test_reacquired_transmission_via_continue_commits_one_row();
     rc |= test_back_to_back_same_identity_calls_commit_two_rows();
-    rc |= test_explicit_end_then_identityless_reopen_commits_two_rows();
+    rc |= test_explicit_end_then_identityless_reopen_leaves_single_row();
     rc |= test_changed_identity_still_commits_its_own_row();
     rc |= test_reacquisition_gap_beyond_window_commits_two_rows();
     rc |= test_reacquired_segment_may_outlast_the_window();

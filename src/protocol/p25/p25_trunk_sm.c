@@ -71,8 +71,8 @@ typedef enum {
 } p25_call_obs_provenance;
 
 static void p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot,
-                                         int new_epoch, int allow_coalesce, p25_call_obs_provenance provenance,
-                                         double observed_m);
+                                         int new_epoch, int allow_coalesce, int continuous_activity,
+                                         p25_call_obs_provenance provenance, double observed_m);
 static void p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
 #ifdef USE_RADIO
 static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
@@ -95,6 +95,7 @@ static atomic_int g_p25_sm_release_lock = 0;
 #define P25_VC_CQPSK_REACQUIRE_HOLD_S          0.75
 #define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES  3U
 #define P25_PTT_RETRANSMIT_WINDOW_S            1.0
+#define P25_POST_END_VOICE_USER_REPEAT_S       1.0
 #define P25_PTT_SIGNATURE_ALGID_INDEX          9
 #define P25_PTT_SIGNATURE_IDENTITY_INDEX       12
 #define P25_CANONICAL_EPOCH_COALESCE_S         1.0
@@ -2051,7 +2052,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call, now_m);
     const int call_slot = p25_grant_logical_slot(ctx, route->slot);
     if (!data_call && call_slot >= 0 && call_slot <= 1 && ctx->slots[call_slot].voice_active) {
-        p25_call_publish_observation(ctx, opts, state, call_slot, 0, 0, P25_CALL_OBS_ASSIGNMENT_REPEAT, now_m);
+        p25_call_publish_observation(ctx, opts, state, call_slot, 0, 0, 0, P25_CALL_OBS_ASSIGNMENT_REPEAT, now_m);
     }
     if (data_call) {
         ctx->t_tune_m = now_m;
@@ -2463,13 +2464,17 @@ p25_call_kind_from_slot(const p25_sm_slot_ctx_t* slot_ctx) {
 
 static int
 p25_call_begin_coalesces_into_active_epoch(const dsd_state* state, int slot, const dsd_call_observation* observation,
-                                           double observed_m) {
+                                           double observed_m, int continuous_activity) {
     // A voice start raised by MAC_ACTIVE follows the traffic-channel GVCU
     // observation of the same transmission, which already began the canonical
     // epoch moments earlier. Forcing a second epoch would push the first
     // epoch's freshly built row as a duplicate event. Coalesce only into a
     // young matching epoch: an identity reused after the window (missed END
-    // plus a fresh start) still begins its own epoch.
+    // plus a fresh start) still begins its own epoch. Continuously observed
+    // voice extends the window -- a first-seen MAC_PTT can decode several
+    // seconds into a transmission whose GVCU began the epoch, and with no END
+    // between them it names the transmission already on the air, not a fresh
+    // start.
     dsd_call_snapshot current;
     if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE) {
         return 0;
@@ -2491,18 +2496,37 @@ p25_call_begin_coalesces_into_active_epoch(const dsd_state* state, int slot, con
         return 0;
     }
     const double now_m = observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
-    return current.started_m > 0.0 && now_m >= current.started_m
-           && (now_m - current.started_m) <= P25_CANONICAL_EPOCH_COALESCE_S;
+    if (current.started_m <= 0.0 || now_m < current.started_m) {
+        return 0;
+    }
+    return (now_m - current.started_m) <= P25_CANONICAL_EPOCH_COALESCE_S || continuous_activity;
+}
+
+// Whether the slot has decoded voice continuously up to this observation: no
+// END was accepted after the epoch began, and the last voice activity is at
+// most one coalesce window old. A gap means a terminator may have been missed,
+// so an identity reuse past the window must fork its own epoch.
+static int
+p25_call_slot_activity_is_continuous(const p25_sm_slot_ctx_t* slot_ctx, double observed_m) {
+    if (!slot_ctx || !slot_ctx->voice_active || slot_ctx->last_active_m <= 0.0) {
+        return 0;
+    }
+    if (slot_ctx->last_end_m > 0.0 && slot_ctx->last_end_m >= slot_ctx->last_start_m) {
+        return 0;
+    }
+    const double now_m = observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
+    return now_m >= slot_ctx->last_active_m && (now_m - slot_ctx->last_active_m) <= P25_CANONICAL_EPOCH_COALESCE_S;
 }
 
 static dsd_call_boundary
 p25_call_publish_boundary(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, int slot,
-                          int new_epoch, int allow_coalesce, const dsd_call_observation* observation,
-                          double observed_m) {
+                          int new_epoch, int allow_coalesce, int continuous_activity,
+                          const dsd_call_observation* observation, double observed_m) {
     if (!new_epoch) {
         return DSD_CALL_BOUNDARY_CONTINUE;
     }
-    if (allow_coalesce && p25_call_begin_coalesces_into_active_epoch(state, slot, observation, observed_m)) {
+    if (allow_coalesce
+        && p25_call_begin_coalesces_into_active_epoch(state, slot, observation, observed_m, continuous_activity)) {
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "canonical_epoch_coalesce", "path=trunk slot=%d tg=%llu src=%llu",
                      slot, (unsigned long long)observation->ota_target_id,
                      (unsigned long long)observation->ota_source_id);
@@ -2531,7 +2555,8 @@ p25_call_observation_retains_ended_call(const dsd_state* state, int slot, p25_ca
 
 static void
 p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, int new_epoch,
-                             int allow_coalesce, p25_call_obs_provenance provenance, double observed_m) {
+                             int allow_coalesce, int continuous_activity, p25_call_obs_provenance provenance,
+                             double observed_m) {
     if (!ctx || !state || slot < 0 || slot > 1) {
         return;
     }
@@ -2560,8 +2585,8 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         p25_call_publish_crypto_update(opts, state, slot, observed_m, 1);
         return;
     }
-    const dsd_call_boundary boundary =
-        p25_call_publish_boundary(ctx, opts, state, slot, new_epoch, allow_coalesce, &observation, observed_m);
+    const dsd_call_boundary boundary = p25_call_publish_boundary(ctx, opts, state, slot, new_epoch, allow_coalesce,
+                                                                 continuous_activity, &observation, observed_m);
     const int began = dsd_call_state_observe(state, &observation, boundary);
     if (began >= 0) {
         p25_call_publish_crypto(opts, state, slot, observed_m);
@@ -2575,13 +2600,22 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
 }
 
 static void
-p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+p25_call_end_slot_ex(dsd_opts* opts, dsd_state* state, int slot, double observed_m, dsd_call_end_reason reason) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
-    if (dsd_call_state_end(state, (uint8_t)slot, observed_m) > 0 && opts) {
+    if (dsd_call_state_end_ex(state, (uint8_t)slot, observed_m, reason) > 0 && opts) {
         dsd_event_sync_slot(opts, state, (uint8_t)slot);
     }
+}
+
+// Teardown/retune wrapper: says nothing about how the transmission ended on the air. Call
+// sites reacting to decoded OTA end signaling (MAC_END_PTT, MAC Release, TDU, FACCH end,
+// LCW termination/EOT) must use p25_call_end_slot_ex with DSD_CALL_END_TERMINATOR so the
+// event layer can keep an audible epoch whose call identity never decoded.
+static void
+p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+    p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_EXPLICIT);
 }
 
 static void
@@ -2835,6 +2869,75 @@ p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
     return slot_ctx && slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
 }
 
+// After an accepted MAC_END_PTT the FNE keeps describing the completed call for a few bursts:
+// END repeats interleave with SACCH voice-user copies whose four-burst assembly began before
+// the END decoded. A voice user naming the completed talker -- or naming no talker -- on the
+// unchanged target inside that tail is retention of the transmission that just ended, and
+// reopening an epoch from it commits a duplicate history row once the phantom epoch dies at
+// hangtime or at the next talker's PTT. The time bound is what the retired identity-only
+// guards lacked: outside the tail, a genuinely ACTIVE-typed voice user re-naming the same
+// talker is the next transmission and still reopens the call. A changed source is fresh
+// evidence and is never suppressed.
+static int
+p25_voice_end_repeat_tail_active(const p25_sm_slot_ctx_t* slot_ctx, double now_m) {
+    return slot_ctx && slot_ctx->last_end_m > 0.0 && now_m >= slot_ctx->last_end_m
+           && (now_m - slot_ctx->last_end_m) <= P25_POST_END_VOICE_USER_REPEAT_S;
+}
+
+static int
+p25_voice_user_repeats_recent_end(const p25_sm_slot_ctx_t* slot_ctx, int target, int src, double now_m) {
+    if (!slot_ctx || target <= 0 || target != slot_ctx->last_end_tg) {
+        return 0;
+    }
+    if (p25_voice_slot_epoch_active(slot_ctx)) {
+        return 0;
+    }
+    if (p25_source_id_known(src) && src != slot_ctx->last_end_src) {
+        return 0;
+    }
+    return p25_voice_end_repeat_tail_active(slot_ctx, now_m);
+}
+
+int
+p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m) {
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (slot < 0 || slot > 1 || ctx->state != P25_SM_TUNED || !ctx->vc_is_tdma) {
+        return 0;
+    }
+    return p25_voice_user_repeats_recent_end(&ctx->slots[slot], target, src, now_m);
+}
+
+int
+p25_sm_phase1_crypto_epoch_allowed(const dsd_opts* opts) {
+    // Mirrors the voice-start rule: a trunked receiver with no traffic
+    // assignment is parked on (or hunting) the control channel, where a
+    // Phase 1 ESS observation can only be noise briefly false-syncing as an
+    // LDU. Minting an identity-less epoch for it leaves a stale ACTIVE call
+    // that the next real call's teardown flushes as a phantom TGT 0 row.
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    return !(opts && opts->trunk_enable == 1 && ctx->state != P25_SM_TUNED);
+}
+
+int
+p25_sm_phase1_assignment_identity(int* is_group, uint32_t* ota_target, uint32_t* policy_target) {
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (!is_group || !ota_target || !policy_target || ctx->state != P25_SM_TUNED || ctx->vc_is_tdma) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[0];
+    if (!slot_ctx->grant_active || slot_ctx->data_call) {
+        return 0;
+    }
+    const int target = slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+    if (target <= 0) {
+        return 0;
+    }
+    *is_group = slot_ctx->is_group ? 1 : 0;
+    *ota_target = (uint32_t)target;
+    *policy_target = slot_ctx->target_id > 0 ? (uint32_t)slot_ctx->target_id : 0U;
+    return 1;
+}
+
 static int
 p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
     if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
@@ -2988,6 +3091,11 @@ typedef struct {
     int requires_update;
     int preserve_crypto_classification;
     int coalesce_canonical_epoch;
+    // Captured before commit closes slot media: whether voice was decoded
+    // continuously right up to this observation. Extends the coalesce window
+    // for a first-seen PTT naming the transmission already on the air.
+    int continuous_activity;
+    int ptt_evidence;
 } p25_voice_start_changes_t;
 
 static int
@@ -3013,19 +3121,44 @@ p25_p1_hdu_crypto_consume_identity(const p25_sm_ctx_t* ctx, dsd_state* state, co
     }
 }
 
+// A PTT normally keeps its own canonical epoch: PTT is per-transmission
+// evidence. The exception is the transmission that is already being observed
+// live: a tune that lands so a GVCU/MAC_ACTIVE decodes before one of the
+// transmission-start MAC_PTT repeats begins the canonical epoch from that
+// observation, and letting the first-seen PTT force a second epoch commits
+// the observation epoch's freshly built row as a duplicate event. The PTT may
+// therefore fold into a young matching epoch only while that epoch has not
+// already accepted a PTT of its own -- a second, differently-signed PTT is
+// the next transmission and must begin its own epoch.
+static int
+p25_voice_ptt_start_may_coalesce(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    return ctx->slots[slot].ptt_canonical_epoch != current.epoch;
+}
+
 static p25_voice_start_changes_t
-p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
-                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev, int ptt_retransmit) {
+p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
+                                 const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* input,
+                                 const p25_sm_event_t* call_ev, int ptt_retransmit) {
     p25_voice_start_changes_t changes = {0};
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
 
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
     changes.new_epoch = p25_voice_start_begins_new_epoch(ctx, slot_ctx, input, call_ev, ptt_retransmit);
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
-    // A PTT is per-transmission evidence and must keep its own canonical
-    // epoch; only an ACTIVE-driven start may fold into the epoch the
-    // traffic-channel observation of the same transmission just began.
-    changes.coalesce_canonical_epoch = input->type == P25_SM_EV_ACTIVE;
+    changes.ptt_evidence = p25_voice_start_is_p2_ptt(ctx, input);
+    // An ACTIVE-driven start may always fold into the epoch the
+    // traffic-channel observation of the same transmission just began. A PTT
+    // may do the same only for an epoch no PTT has claimed yet; identity and
+    // age matching stay with p25_call_begin_coalesces_into_active_epoch().
+    changes.coalesce_canonical_epoch =
+        input->type == P25_SM_EV_ACTIVE
+        || (changes.new_epoch && changes.ptt_evidence && p25_voice_ptt_start_may_coalesce(ctx, state, slot));
+    changes.continuous_activity =
+        p25_call_slot_activity_is_continuous(slot_ctx, input->observed_m > 0.0 ? input->observed_m : 0.0);
     return changes;
 }
 
@@ -3150,7 +3283,18 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
     p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
     p25_call_publish_observation(ctx, opts, state, slot, changes->new_epoch, changes->coalesce_canonical_epoch,
-                                 P25_CALL_OBS_VOICE_EVIDENCE, now_m);
+                                 changes->continuous_activity, P25_CALL_OBS_VOICE_EVIDENCE, now_m);
+    if (changes->ptt_evidence) {
+        // Whether this PTT began the epoch or folded into one an ACTIVE
+        // observation began, the epoch now contains a PTT: the next
+        // differently-signed PTT is the next transmission and must not
+        // coalesce into it. Read back rather than assumed: the publish may
+        // have declined (no assignment target), leaving no epoch to claim.
+        dsd_call_snapshot current;
+        if (dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE) {
+            slot_ctx->ptt_canonical_epoch = current.epoch;
+        }
+    }
 }
 
 static int
@@ -3176,7 +3320,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
 
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
     p25_voice_start_changes_t changes =
-        p25_voice_start_classify_changes(ctx, slot_ctx, input, &call_ev, ptt_retransmit);
+        p25_voice_start_classify_changes(ctx, state, slot, slot_ctx, input, &call_ev, ptt_retransmit);
     if (pending_p1_identity) {
         changes.requires_update = 1;
     }
@@ -3298,6 +3442,50 @@ p25_voice_start_apply_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
     return 1;
 }
 
+// Phase 2 only: the post-END retention tail is a TDMA artifact (END repeats
+// interleaving with the four-burst SACCH assembly). Phase 1's post-TDU
+// same-identity signaling drives its own HDU/LCW crypto machinery and must
+// keep flowing. Retention is still channel activity, so the liveness clock
+// advances, but the hangtime timer keeps running and no epoch reopens.
+static int
+p25_voice_start_suppress_post_end_repeat(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, int slot,
+                                         const p25_sm_event_t* ev, const char* why, double now_m) {
+    if (!ctx->vc_is_tdma) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    int repeats = 0;
+    if (ev->type == P25_SM_EV_ACTIVE) {
+        int target = ev->is_group ? ev->tg : ev->dst;
+        if (target <= 0) {
+            // An identity-less ACTIVE (a live-typed PDU whose MAC payload is
+            // not a voice-user block) would re-fill the retained assignment
+            // identity with unknown service options, so judge it against the
+            // identity it would reopen -- otherwise it resurrects the ended
+            // call as a crypto-pending phantom.
+            target = slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+        }
+        repeats = p25_voice_user_repeats_recent_end(slot_ctx, target, ev->src, now_m);
+    } else if (ev->type == P25_SM_EV_PTT) {
+        // A SACCH MAC_PTT repeat whose four-burst assembly straddled the END
+        // arrives after the END was accepted, still signed like the marker
+        // the completed transmission refreshed. The END keeps that marker
+        // precisely so this repeat stays recognizable; the next transmission
+        // carries a fresh signature (new MI) or lands outside the one-second
+        // marker and retention windows.
+        double elapsed_s = 0.0;
+        repeats = !p25_voice_slot_epoch_active(slot_ctx) && p25_voice_end_repeat_tail_active(slot_ctx, now_m)
+                  && p25_ptt_marker_matches(ctx, slot, ev, now_m, &elapsed_s);
+    }
+    if (!repeats) {
+        return 0;
+    }
+    p25_sm_note_vc_decode_activity(ctx, opts, state, why, slot, now_m);
+    p25_sm_diagf(opts, state, ctx, "voice_observation_suppressed", "reason=repeats-recent-end slot=%d tg=%d src=%d",
+                 slot, ev->tg, ev->src);
+    return 1;
+}
+
 static int
 handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, const char* why) {
     if (!ctx || !ev) {
@@ -3309,6 +3497,9 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
 
     double now_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_time_now_monotonic_s();
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
+    if (p25_voice_start_suppress_post_end_repeat(ctx, opts, state, s, ev, why, now_m)) {
+        return 1;
+    }
     int new_epoch = !ctx->slots[s].voice_active;
     if (!p25_voice_start_apply_event(ctx, opts, state, s, ev, now_m, &new_epoch)) {
         return 0;
@@ -3512,7 +3703,12 @@ p25_voice_end_event_tg(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot
 
 static int
 p25_voice_end_event_src(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* ev) {
-    return ev && ev->src > 0 ? ev->src : p25_voice_slot_diag_src(ctx, state, slot);
+    // MAC_END_PTT often names the fixed-network placeholder (0xFFFFFF) rather
+    // than the completed talker. Recording the placeholder as the ended
+    // source made every post-END voice-user copy naming the real talker look
+    // like a changed source, defeating the retention-tail suppression and
+    // reopening the ended call between END repeats.
+    return ev && p25_source_id_known(ev->src) ? ev->src : p25_voice_slot_diag_src(ctx, state, slot);
 }
 
 static void
@@ -3545,9 +3741,14 @@ p25_voice_end_clear_policy_route(const p25_sm_ctx_t* ctx, dsd_state* state, int 
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
 }
 
+// `end_reason` records what the triggering event actually said about the air:
+// DSD_CALL_END_TERMINATOR for over-the-air end signaling (a MAC_END_PTT, a Phase 1 TDU), so the
+// event layer can keep an audible epoch whose call identity never decoded, and
+// DSD_CALL_END_EXPLICIT for inactivity-driven teardowns (idle, hangtime), which say nothing
+// about how the transmission ended.
 static int
 handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
-                 int arm_stale_regrant_guard, const p25_sm_event_t* ev) {
+                 int arm_stale_regrant_guard, const p25_sm_event_t* ev, dsd_call_end_reason end_reason) {
     if (!ctx) {
         return 0;
     }
@@ -3565,7 +3766,15 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
         return 0;
     }
 
-    p25_ptt_marker_invalidate(ctx, s);
+    // The PTT retransmission marker deliberately survives an explicit END: a
+    // SACCH MAC_PTT repeat whose assembly straddled the END is recognized as
+    // retention only by matching it (p25_voice_start_suppress_post_end_repeat).
+    // Epoch-active gating keeps it inert otherwise, and slot clear/release
+    // still invalidates it. Inactivity teardowns have no straddle to
+    // recognize, so they drop the marker as before.
+    if (!is_explicit_end) {
+        p25_ptt_marker_invalidate(ctx, s);
+    }
     const double now_m = dsd_time_now_monotonic_s();
     const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
     const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
@@ -3578,7 +3787,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     p25_voice_end_record(&ctx->slots[s], is_explicit_end, arm_stale_regrant_guard, now_m, ended_tg, ended_src);
     p25_voice_end_clear_policy_route(ctx, state, s, preserve_recent_idle_grant);
     p25_voice_close_slot_media_for_end(ctx, opts, state, s, preserve_recent_idle_grant);
-    p25_call_end_slot(opts, state, s, now_m);
+    p25_call_end_slot_ex(opts, state, s, now_m, end_reason);
     if (state && !ctx->vc_is_tdma && arm_stale_regrant_guard) {
         state->p25_p1_identity_pending = 1;
         state->p25_p1_identity_epoch_started = 0;
@@ -3614,7 +3823,12 @@ p25_facch_end_identity_matches(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_e
         return 0;
     }
     const int event_tg = ev->tg > 0 ? ev->tg : slot_ctx->last_end_tg;
-    const int event_src = ev->src > 0 ? ev->src : slot_ctx->last_end_src;
+    // MAC_END_PTT repeats often carry the fixed-network placeholder source
+    // (0xFFFFFF) while the recorded end identity resolved the placeholder to
+    // the completed talker (p25_voice_end_event_src). Resolve the event the
+    // same way, or a placeholder-sourced repeat looks like a different talker
+    // and the double-END fast release never fires.
+    const int event_src = p25_source_id_known(ev->src) ? ev->src : slot_ctx->last_end_src;
     if (event_tg != slot_ctx->facch_end_tg) {
         return 0;
     }
@@ -3665,7 +3879,7 @@ handle_facch_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
         return do_release(ctx, opts, state, "facch-double-end", 0) ? P25_SM_END_CHANNEL_RELEASED : P25_SM_END_IGNORED;
     }
 
-    int applied = handle_voice_end(ctx, opts, state, ev->slot, "end", 1, 1, ev);
+    int applied = handle_voice_end(ctx, opts, state, ev->slot, "end", 1, 1, ev, DSD_CALL_END_TERMINATOR);
     if (!applied) {
         return P25_SM_END_IGNORED;
     }
@@ -4518,23 +4732,23 @@ p25_sm_handle_event_end(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* stat
         (void)handle_facch_voice_end(ctx, (dsd_opts*)opts, state, ev);
         return;
     }
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev, DSD_CALL_END_TERMINATOR);
 }
 
 static void
 p25_sm_handle_event_idle(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release.
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev, DSD_CALL_END_EXPLICIT);
 }
 
 static void
 p25_sm_handle_event_tdu(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 0, 1, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 0, 1, ev, DSD_CALL_END_TERMINATOR);
 }
 
 static void
 p25_sm_handle_event_hangtime(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "mac-hangtime", 0, 0, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "mac-hangtime", 0, 0, ev, DSD_CALL_END_EXPLICIT);
 }
 
 static void
@@ -5727,7 +5941,7 @@ p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
         p25_ptt_marker_invalidate(ctx, slot);
-        p25_call_end_slot(opts, state, slot, 0.0);
+        p25_call_end_slot_ex(opts, state, slot, 0.0, DSD_CALL_END_TERMINATOR);
     }
 }
 
@@ -5742,10 +5956,10 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     }
     p25_sm_event_t ev = p25_sm_ev_end_call_at(slot, tg, src, observed_m);
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
-    const int accepted = handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev);
+    const int accepted = handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev, DSD_CALL_END_TERMINATOR);
     if (!trunk_assignment_active && accepted) {
         p25_ptt_marker_invalidate(ctx, slot);
-        p25_call_end_slot(opts, state, slot, observed_m);
+        p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_TERMINATOR);
     }
     return accepted;
 }
@@ -5768,7 +5982,7 @@ p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double obser
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
     }
-    p25_call_end_slot(opts, state, slot, ended_m);
+    p25_call_end_slot_ex(opts, state, slot, ended_m, DSD_CALL_END_TERMINATOR);
     p25_sm_update_ui_mode(ctx, state);
 }
 
@@ -5786,7 +6000,7 @@ p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg
     const int result = handle_facch_voice_end(ctx, opts, state, &ev);
     if (!trunk_assignment_active && result != P25_SM_END_IGNORED) {
         p25_ptt_marker_invalidate(ctx, slot);
-        p25_call_end_slot(opts, state, slot, observed_m);
+        p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_TERMINATOR);
     }
     return result;
 }
@@ -5835,7 +6049,7 @@ p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state) {
     p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
         p25_ptt_marker_invalidate(ctx, 0);
-        p25_call_end_slot(opts, state, 0, 0.0);
+        p25_call_end_slot_ex(opts, state, 0, 0.0, DSD_CALL_END_TERMINATOR);
     }
 }
 

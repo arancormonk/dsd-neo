@@ -1115,7 +1115,9 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
 
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload((const dsd_opts*)opts, state, payload, stream_frame_number, processed_payload);
-    if (end != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    // The stream frame's end-of-stream flag is an over-the-air terminator: it lets the event
+    // layer keep an audible epoch whose LSF never decoded, where EXPLICIT would read as a retune.
+    if (end != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 }
@@ -3240,7 +3242,8 @@ m17_ip_handle_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t
     }
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
     (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, crc_valid);
-    if (crc_valid && eot != 0U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
+    if (crc_valid && eot != 0U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
     }
 

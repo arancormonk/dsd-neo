@@ -2076,9 +2076,10 @@ eot_cc(dsd_opts* opts, dsd_state* state) {
     // Give the control channel time to cancel the grant before retuning back to it.
     skipDibit(opts, state, 240 * 8);
 
-    //watchdog event at this point
+    //watchdog event at this point. The EOT dotting sequence decoded over the air is positive end
+    //evidence, so the event layer can keep an audible epoch the EOT closed.
     state->lastsynctype = DSD_SYNC_EDACS_NEG;
-    (void)dsd_call_state_end(state, 0U, nowm);
+    (void)dsd_call_state_end_ex(state, 0U, nowm, DSD_CALL_END_TERMINATOR);
     dsd_event_sync_slot(opts, state, 0);
 
     //jump back to CC here

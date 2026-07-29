@@ -120,6 +120,10 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
 
     dmr_reset_blocks(opts, state);
 
+    // The DMR heal stash mirrors the payload crypto being cleared below; hopping back to the
+    // control channel leaves nothing the stash could legitimately be restored onto.
+    state->dmr_heal_valid[0] = 0;
+    state->dmr_heal_valid[1] = 0;
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
