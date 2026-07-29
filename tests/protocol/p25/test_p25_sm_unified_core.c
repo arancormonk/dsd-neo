@@ -2598,6 +2598,67 @@ test_tdma_facch_double_end_release(void) {
     return 0;
 }
 
+// Regression: MAC_END_PTT frequently names the fixed-network placeholder
+// source (0xFFFFFF) instead of the completed talker, while the first END now
+// records the talker as the ended source. A placeholder-sourced repeat must
+// resolve to that recorded talker and still qualify the double-END fast
+// release -- otherwise the carrier lingers until hangtime expires after the
+// traffic channel already went quiet.
+static int
+test_tdma_facch_double_end_release_placeholder_src(void) {
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+
+    p25_sm_ctx_t ctx;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    p25_sm_event_t ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+
+    const double first_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 0xFFFFFF, first_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: First placeholder FACCH END released the carrier\n");
+        return 1;
+    }
+    if (ctx.slots[0].last_end_src != 123) {
+        DSD_FPRINTF(stderr, "FAIL: Placeholder END did not record the talker as the ended source\n");
+        return 1;
+    }
+
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 0xFFFFFF, first_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1) {
+        DSD_FPRINTF(stderr, "FAIL: Placeholder FACCH END pair did not release exactly once\n");
+        return 1;
+    }
+
+    // A repeat naming a different real talker is fresh evidence, never a
+    // qualifying pair.
+    reset_test_state();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    p25_sm_init_ctx(&ctx, &g_opts, &g_state);
+    ev = p25_sm_ev_group_grant(0x1234, 851500000, 1000, 123, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, 0);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    const double second_m = dsd_time_now_monotonic_s() + 0.01;
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 0xFFFFFF, second_m);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    ev = p25_sm_ev_facch_end_call_at(0, 1000, 456, second_m + 0.5);
+    p25_sm_event(&ctx, &g_opts, &g_state, &ev);
+    if (g_return_requests != 0) {
+        DSD_FPRINTF(stderr, "FAIL: Different-talker FACCH END qualified the fast release\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 static int
 test_inband_target_change_rechecks_policy(void) {
     reset_test_state();
@@ -2860,6 +2921,7 @@ main(void) {
     fail += test_tdma_single_slot_end_retains_carrier();
     fail += test_tdma_end_identity_and_order_guards();
     fail += test_tdma_facch_double_end_release();
+    fail += test_tdma_facch_double_end_release_placeholder_src();
     fail += test_inband_target_change_rechecks_policy();
     fail += test_inband_policy_reject_preserves_tdma_companion();
     fail += test_inband_policy_reject_releases_after_companion_ended();

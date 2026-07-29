@@ -3823,7 +3823,12 @@ p25_facch_end_identity_matches(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_e
         return 0;
     }
     const int event_tg = ev->tg > 0 ? ev->tg : slot_ctx->last_end_tg;
-    const int event_src = ev->src > 0 ? ev->src : slot_ctx->last_end_src;
+    // MAC_END_PTT repeats often carry the fixed-network placeholder source
+    // (0xFFFFFF) while the recorded end identity resolved the placeholder to
+    // the completed talker (p25_voice_end_event_src). Resolve the event the
+    // same way, or a placeholder-sourced repeat looks like a different talker
+    // and the double-END fast release never fires.
+    const int event_src = p25_source_id_known(ev->src) ? ev->src : slot_ctx->last_end_src;
     if (event_tg != slot_ctx->facch_end_tg) {
         return 0;
     }
