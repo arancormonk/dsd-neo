@@ -264,6 +264,11 @@ nxdn_deperm_pich_tch_soft(const dsd_opts* opts, dsd_state* state, uint8_t bits[1
 }
 
 void
+nxdn_cipher_force(dsd_state* state, uint8_t cipher) {
+    state->nxdn_cipher_type = cipher;
+}
+
+void
 nxdn_voice(dsd_opts* opts, dsd_state* state, int voice, uint8_t dbuf[182], const uint8_t* dbuf_reliab) {
     (void)opts;
     (void)state;

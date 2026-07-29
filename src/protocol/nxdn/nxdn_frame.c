@@ -409,7 +409,7 @@ nxdn_apply_limazulu_voice_tweak(const dsd_opts* opts, dsd_state* state, const nx
     }
 
     if (state->R != 0 && state->M == 1) {
-        state->nxdn_cipher_type = 0x1;
+        nxdn_cipher_force(state, 0x1);
     }
 
     state->last_cc_sync_time = time(NULL) + 2;
@@ -449,7 +449,7 @@ nxdn_apply_data_frame_lfsr(dsd_state* state) {
 static void
 nxdn_apply_pre_voice_facch1_lfsr(dsd_state* state) {
     if (state->M == 1 && state->R != 0) {
-        state->nxdn_cipher_type = 0x1;
+        nxdn_cipher_force(state, 0x1);
     }
     if (state->nxdn_cipher_type == 0x1 && state->R != 0) {
         if (state->payload_miN == 0) {
@@ -549,7 +549,7 @@ nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ct
         state->last_vc_sync_time = time(NULL);
         state->last_vc_sync_time_m = dsd_time_now_monotonic_s();
         if (state->M == 1 && state->R != 0) {
-            state->nxdn_cipher_type = 0x1;
+            nxdn_cipher_force(state, 0x1);
         }
         nxdn_voice(opts, state, ctx->voice, (uint8_t*)ctx->dbuf, (uint8_t*)ctx->dbuf_reliab);
         return;

@@ -1402,8 +1402,11 @@ test_bad_crc_encrypted_vcall_records_metadata(void) {
     rc |= expect_int("bad-crc-vcall-key", state->NxdnElementsContent.KeyID, 0x09);
     dsd_call_snapshot call;
     rc |= expect_int("bad-crc-vcall-no-canonical-call", dsd_call_state_get(state, 0U, &call), 0);
-    rc |= expect_int("bad-crc-vcall-cipher-state", state->nxdn_cipher_type, 3);
-    rc |= expect_int("bad-crc-vcall-lockout", state->dmr_encL, 1);
+    // The parse-level metadata above is recorded for display, but a CRC-failed VCALL may not
+    // mutate the live cipher the audio gate and the enc lockout act on: a trellis
+    // miscorrection here was one element away from muting a clear call.
+    rc |= expect_int("bad-crc-vcall-cipher-state", state->nxdn_cipher_type, 0);
+    rc |= expect_int("bad-crc-vcall-lockout", state->dmr_encL, 0);
     free(state);
     free(opts);
     return rc;

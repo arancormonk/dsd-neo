@@ -31,6 +31,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/trellis.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
@@ -785,7 +786,9 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
     DSD_FPRINTF(stderr, "UC: %03d; ", user_code);
     if (cipher == 0x01) {
         DSD_FPRINTF(stderr, "Scrambler; ");
-        state->nxdn_cipher_type = 1;
+        // A single CRC-accepted SACCH-2 must not flip the classification the VCALLs
+        // established: hold a contradicting observation until it repeats.
+        state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 0);
         if (state->R != 0) {
             char key_text[24];
             DSD_FPRINTF(stderr, "Key: %s; ",
@@ -796,7 +799,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
     }
 
     state->dmr_encL = (state->nxdn_cipher_type != 0 && state->R == 0) ? 1 : 0;
-    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher);
+    nxdn_publish_sacch2_crypto(opts, state, fields->sf_mes, cipher == 0x01 ? (uint8_t)state->nxdn_cipher_type : cipher);
     const uint8_t mfid = (uint8_t)convert_bits_into_output(state->dmr_pdu_sf[0] + 11, 7U);
     if (mfid != 0) {
         DSD_FPRINTF(stderr, "MFID: %02X; ", mfid);
@@ -1223,6 +1226,7 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
         }
         nxdn_alias_reset(state);
         state->nxdn_cipher_type = 0; // Force will reactivate it if needed during voice tx
+        nxdn_cipher_class_reset(state);
         if (state->keyloader == 1) {
             state->R = 0;
         }
