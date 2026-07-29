@@ -289,6 +289,8 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
     s->dc_block = 1;
     s->dc_avg = 0.0f;
     s->resamp_enabled = 0;
+    s->digital_resample_mode = DSD_DIGITAL_RESAMPLE_AUTO;
+    s->capture_rate_device_forced = 0;
     s->resamp_target_hz = 0;
     s->resamp_L = 1;
     s->resamp_M = 1;
@@ -570,6 +572,7 @@ rtl_demod_config_from_env_and_opts(struct demod_state* demod, const dsd_opts* op
 
     demod_apply_runtime_global_flags(opts, cfg);
     demod_apply_resampler_target_defaults(demod, cfg);
+    demod->digital_resample_mode = opts->digital_resample_mode;
     demod_apply_costas_defaults(demod, cfg);
     demod_apply_ted_defaults(demod, cfg);
     demod_apply_cqpsk_defaults(demod, opts, cfg);
@@ -658,10 +661,48 @@ rtl_demod_disable_resampler(struct demod_state* demod, int reset_ratio) {
     demod->resamp_hist_head = 0;
 }
 
+int
+rtl_demod_digital_resample_target_hz(const struct demod_state* demod) {
+    /* Only the FSK discriminator stream is at sample rate. CQPSK output is already one value
+       per symbol from the Gardner loop, which absorbs a fractional SPS on its own. */
+    if (!demod || demod->output_kind != DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return 0;
+    }
+    if (demod->digital_resample_mode == DSD_DIGITAL_RESAMPLE_OFF) {
+        return 0;
+    }
+    const int target = demod->resamp_target_hz;
+    const int sym_rate = demod->symbol_rate_hz > 0 ? demod->symbol_rate_hz : 4800;
+    const int in_rate = demod->rate_out;
+    if (target <= 0 || in_rate <= 0 || target == in_rate) {
+        return 0;
+    }
+    if ((target % sym_rate) != 0) {
+        /* Resampling here would not buy an integer SPS. */
+        return 0;
+    }
+    if (demod->digital_resample_mode == DSD_DIGITAL_RESAMPLE_AUTO) {
+        if ((in_rate % sym_rate) == 0) {
+            return 0;
+        }
+        if (!demod->capture_rate_device_forced) {
+            /* The rate follows the requested DSP bandwidth, so leave the existing chain alone
+               and let the non-integer SPS warning point the user at a better bandwidth. */
+            return 0;
+        }
+    }
+    return target;
+}
+
 static int
 rtl_demod_should_skip_resampler(const struct demod_state* demod) {
-    return (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR
-            || demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK) {
+        return 1;
+    }
+    if (demod->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
+        return rtl_demod_digital_resample_target_hz(demod) <= 0;
+    }
+    return 0;
 }
 
 static void

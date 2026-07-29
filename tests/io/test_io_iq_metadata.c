@@ -1094,13 +1094,21 @@ test_rate_chain_validation(void) {
     char m1[512];
     char m2[512];
     char m3[512];
+    char m4[512];
+    char m5[512];
     path_join(m1, sizeof(m1), dir, "rate1.iq.json");
     path_join(m2, sizeof(m2), dir, "rate2.iq.json");
     path_join(m3, sizeof(m3), dir, "rate3.iq.json");
+    path_join(m4, sizeof(m4), dir, "rate4.iq.json");
+    path_join(m5, sizeof(m5), dir, "rate5.iq.json");
 
     write_valid_metadata(m1, "r.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 3, 1, 512000, 0, 8);
     write_valid_metadata(m2, "r.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 0, 0, 0, 8);
     write_valid_metadata(m3, "r.iq", "cu8", "none", "post_mute_pre_widen", 1536000, 32, 1, 12345, 0, 8);
+    /* 2048 needs 11 half-band passes; demod_state only carries history for 10. */
+    write_valid_metadata(m4, "r.iq", "cu8", "none", "post_mute_pre_widen", 98304000, 2048, 1, 48000, 0, 8);
+    /* The largest decimation the cascade can actually run must still load. */
+    write_valid_metadata(m5, "r.iq", "cu8", "none", "post_mute_pre_widen", 49152000, 1024, 1, 48000, 0, 8);
 
     dsd_iq_replay_config cfg;
     DSD_MEMSET(&cfg, 0, sizeof(cfg));
@@ -1110,6 +1118,10 @@ test_rate_chain_validation(void) {
     rc |= expect_int("zero post_downsample", prc, DSD_IQ_ERR_RATE_CHAIN);
     prc = dsd_iq_replay_read_metadata(m3, &cfg, err, sizeof(err));
     rc |= expect_int("demod mismatch", prc, DSD_IQ_ERR_RATE_CHAIN);
+    prc = dsd_iq_replay_read_metadata(m4, &cfg, err, sizeof(err));
+    rc |= expect_int("oversized base_decimation", prc, DSD_IQ_ERR_RATE_CHAIN);
+    prc = dsd_iq_replay_read_metadata(m5, &cfg, err, sizeof(err));
+    rc |= expect_int("maximum base_decimation accepted", prc, DSD_IQ_OK);
     return rc;
 }
 

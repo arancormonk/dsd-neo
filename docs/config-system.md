@@ -290,13 +290,14 @@ small subset is exposed as config keys for convenience (for example
 | `rtltcp_host` | STRING | RTL-TCP hostname | `127.0.0.1` |
 | `rtltcp_port` | INT (1-65535) | RTL-TCP port | `1234` |
 | `soapy_args` | STRING | SoapySDR device selection args (from SoapySDRUtil `--find`/`--probe`) | (empty) |
-| `soapy_profile` | ENUM | SoapySDR capability profile (`auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd`) | `auto` |
+| `soapy_profile` | ENUM | SoapySDR capability profile (`auto|generic|airspy|sdrplay|hackrf|lime|pluto|rtlsdr|uhd|sddc`) | `auto` |
 | `soapy_stream_format` | ENUM | SoapySDR RX stream format (`auto|cf32|cs16`) | `auto` |
 | `soapy_antenna` | STRING | SoapySDR RX antenna name | (empty) |
 | `soapy_clock` | STRING | SoapySDR clock source name | (empty) |
 | `soapy_settings` | STRING | SoapySDR driver settings (`key=value`, `rx:key=value`) | (empty) |
 | `soapy_gains` | STRING | Named SoapySDR gain stages (`NAME:dB`) | (empty) |
 | `soapy_bandwidth_hz` | INT (-1-20000000) | SoapySDR hardware bandwidth (`-1` profile/default, `0` driver auto) | `-1` |
+| `digital_resample` | ENUM | Resample the digital FSK stream to the resampler target (`auto|on|off`) | `auto` |
 | `file_path` | PATH | Input file path (WAV/BIN/RAW/SYM) | (empty) |
 | `file_sample_rate` | INT (8000-192000) | File sample rate (WAV/RAW) | `48000` |
 | `tcp_host` | STRING | TCP PCM input host | `127.0.0.1` |

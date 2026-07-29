@@ -113,6 +113,12 @@ non-`.bin` file input under `-r`/WAV replay, which is likewise unthrottled; only
   rejected until segment-rate replay is supported.
 - Direct `-i iqreplay:...` is intentionally rejected; use `--iq-replay <path>`.
 - Replay currently feeds the RTL radio path and reuses existing demod processing/state handling.
+- `base_decimation` is capped at 1024 (10 half-band passes); metadata requesting more is rejected.
+- The capture file dictates the replay rate chain, so a capture whose demod rate yields a non-integer
+  samples-per-symbol (for example 62,500 Hz at 4800 sym/s) is resampled to the resampler target (48,000 Hz by
+  default) under the default `digital_resample = "auto"` policy. Decode output for such captures can therefore
+  differ from releases that fed the raw demod rate through; set `digital_resample = "off"` to restore the
+  previous behavior. See `docs/soapysdr.md` for the full policy.
 
 ## Backend Notes
 

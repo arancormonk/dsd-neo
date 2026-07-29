@@ -383,6 +383,10 @@ static const float kRetuneSettleMinMeanAbs = 0.015f;
 
 static dsd::io::radio::RtlAutoPpmController g_auto_ppm_controller;
 
+/* Cleared at stream open when the backend cannot apply a frequency correction, so auto-PPM
+ * does not keep estimating an offset the device will silently discard. */
+static std::atomic<int> g_ppm_control_supported{1};
+
 static inline uint32_t
 load_dongle_frequency(void) {
     return dongle.freq.load(std::memory_order_acquire);
@@ -470,6 +474,7 @@ apply_actual_capture_rate(uint32_t center_freq_hz, uint32_t requested_capture_fr
 
     store_dongle_rate(actual_capture_rate_hz);
     demod.rate_out = demod_output_rate_for_capture_rate(actual_capture_rate_hz);
+    demod.capture_rate_device_forced = 1;
     retune_capture_frequency_for_actual_rate(center_freq_hz, requested_capture_freq_hz, actual_capture_rate_hz);
     LOG_INFO("Adjusted to actual device rate: requested=%u, actual=%u, demod_out=%d Hz.\n", requested_capture_rate_hz,
              actual_capture_rate_hz, demod.rate_out);
@@ -3252,25 +3257,28 @@ demod_write_output_block(struct demod_state* d, struct output_state* o) {
     if (!d || !o) {
         return 0U;
     }
-    if (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR) {
-        if (d->result_len > 0) {
-            return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
-        }
+    if (d->result_len <= 0) {
         return 0U;
     }
-    if (d->resamp_enabled) {
+    /* Digital streams carry discriminator/symbol values, not audio, so the monitor output
+     * scale must not be applied to them. CQPSK output is symbol-rate and never resampled. */
+    const int digital_output =
+        (d->output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || d->output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
+    const int resample = d->resamp_enabled && (d->output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK);
+    if (resample) {
         int out_n = resamp_process_block(d, d->result, d->result_len, d->resamp_outbuf);
-        if (out_n > 0) {
-            apply_output_scale(d, d->resamp_outbuf, out_n);
-            return demod_write_output_samples_interruptible(o, d->resamp_outbuf, (size_t)out_n);
+        if (out_n <= 0) {
+            return 0U;
         }
-        return 0U;
+        if (!digital_output) {
+            apply_output_scale(d, d->resamp_outbuf, out_n);
+        }
+        return demod_write_output_samples_interruptible(o, d->resamp_outbuf, (size_t)out_n);
     }
-    if (d->result_len > 0) {
+    if (!digital_output) {
         apply_output_scale(d, d->result, d->result_len);
-        return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
     }
-    return 0U;
+    return demod_write_output_samples_interruptible(o, d->result, (size_t)d->result_len);
 }
 
 static double
@@ -3452,6 +3460,12 @@ rtl_floor_log2_nonzero(int value) {
 #endif
 }
 
+/* Decimation is a half-band cascade, so passes are bounded by demod_state::hb_hist_i[]. */
+static const int kMaxDownsamplePasses = 10;
+/* Capture-rate window the ingest ring and watermark defaults are sized for. */
+static const long long kMinCaptureRateHz = 225000LL;
+static const long long kMaxCaptureRateHz = 3200000LL;
+
 static int
 rtl_choose_passes_near_good_rate(int rate_in_hz, int suggested_passes) {
     static const int good_rates[] = {960000, 1024000, 1200000, 1536000, 1920000, 2048000, 2400000};
@@ -3459,9 +3473,9 @@ rtl_choose_passes_near_good_rate(int rate_in_hz, int suggested_passes) {
     long long best_err = LLONG_MAX;
     for (int delta = -1; delta <= 1; delta++) {
         int p = suggested_passes + delta;
-        p = std::max(0, std::min(10, p));
+        p = std::max(0, std::min(kMaxDownsamplePasses, p));
         long long cap = (long long)rate_in_hz * (1LL << p);
-        if (cap < 225000LL || cap > 3200000LL) {
+        if (cap < kMinCaptureRateHz || cap > kMaxCaptureRateHz) {
             continue;
         }
         for (size_t i = 0; i < sizeof(good_rates) / sizeof(good_rates[0]); i++) {
@@ -3484,8 +3498,38 @@ rtl_downsample_passes_for_rate_in(int rate_in_hz) {
     int floor_log2 = rtl_floor_log2_nonzero(downsample_factor);
     int is_pow2 = (downsample_factor & (downsample_factor - 1)) == 0;
     int passes = is_pow2 ? floor_log2 : (floor_log2 + 1);
-    passes = std::max(0, std::min(10, passes));
+    passes = std::max(0, std::min(kMaxDownsamplePasses, passes));
     return rtl_choose_passes_near_good_rate(rate_in_hz, passes);
+}
+
+/**
+ * @brief Pick half-band passes for a rate the device imposes on us.
+ *
+ * Devices with a coarse rate grid (RX-888/SDDC at 2/4/8 MSPS, Airspy, SDRplay) cannot
+ * deliver the RTL-shaped rate that `rtl_downsample_passes_for_rate_in` asks for. Choose
+ * the decimation that lands closest to the requested DSP bandwidth, preferring not to
+ * decimate below it since that would alias the wanted channel.
+ */
+static int
+rtl_choose_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz) {
+    if (actual_rate_hz == 0U || rate_in_hz <= 0) {
+        return 0;
+    }
+    int best_p = 0;
+    long long best_err = LLONG_MAX;
+    for (int p = 0; p <= kMaxDownsamplePasses; p++) {
+        long long out = (long long)actual_rate_hz >> p;
+        if (out < (long long)rate_in_hz) {
+            break;
+        }
+        long long err = out - (long long)rate_in_hz;
+        if (err < best_err) {
+            best_err = err;
+            best_p = p;
+        }
+    }
+    /* When even the undecimated rate is below the requested DSP bandwidth, keep every sample. */
+    return best_p;
 }
 
 /**
@@ -3505,6 +3549,18 @@ optimal_settings(int freq, int rate) {
     int downsample_factor = 1 << dm->downsample_passes;
     int capture_rate = downsample_factor * dm->rate_in;
     uint32_t capture_rate_hz = (capture_rate > 0) ? (uint32_t)capture_rate : 0U;
+    /* Devices with a fixed rate grid cannot honour the RTL-shaped request. Ask what will
+       actually be delivered and re-pick decimation for that rate, so the fs/4 capture offset
+       and rate_out below are derived from the real stream rate. */
+    uint32_t deliverable_hz = capture_rate_hz;
+    dm->capture_rate_device_forced = 0;
+    if (capture_rate_hz > 0U
+        && rtl_device_nearest_supported_rate(rtl_device_handle, capture_rate_hz, &deliverable_hz) == 0
+        && deliverable_hz > 0U && deliverable_hz != capture_rate_hz) {
+        dm->downsample_passes = rtl_choose_passes_for_actual_rate(deliverable_hz, dm->rate_in);
+        capture_rate_hz = deliverable_hz;
+        dm->capture_rate_device_forced = 1;
+    }
     uint32_t capture_freq_hz = capture_frequency_for_rate((int64_t)freq, capture_rate_hz);
     /* Normalize discriminator radians into roughly [-1,1] for float pipeline. */
     dm->output_scale = (float)(1.0 / M_PI);
@@ -4131,6 +4187,12 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
     if ((cfg->base_decimation & (cfg->base_decimation - 1U)) != 0U) {
         return -1;
     }
+    if (cfg->base_decimation > DSD_IQ_REPLAY_MAX_BASE_DECIMATION) {
+        /* More passes than demod_state::hb_hist_i can hold. */
+        LOG_ERROR("Replay base_decimation %u exceeds the maximum of %u.\n", cfg->base_decimation,
+                  (unsigned)DSD_IQ_REPLAY_MAX_BASE_DECIMATION);
+        return -1;
+    }
 
     uint32_t dec = cfg->base_decimation;
     int passes = 0;
@@ -4150,6 +4212,8 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
         demod.rate_in = 1;
     }
     demod.rate_out = (int)cfg->demod_rate_hz;
+    /* The capture file dictates the rate chain, exactly like a device with a fixed rate grid. */
+    demod.capture_rate_device_forced = 1;
 
     uint32_t center_hz =
         (uint32_t)((cfg->center_frequency_hz > 0) ? cfg->center_frequency_hz : cfg->capture_center_frequency_hz);
@@ -5790,6 +5854,7 @@ stream_open_open_device_soapy(const dsd_opts* opts) {
     soapy_cfg.gains = opts->soapy_gains;
     soapy_cfg.stream_format = opts->soapy_stream_format;
     soapy_cfg.bandwidth_hz = opts->soapy_bandwidth_hz;
+    soapy_cfg.center_freq_hz = (controller.freq_len > 0) ? controller.freqs[0] : 0U;
     int soapy_cfg_rc = rtl_device_configure_soapy(rtl_device_handle, &soapy_cfg);
     if (soapy_cfg_rc != 0) {
         LOG_ERROR("Failed to apply SoapySDR profile/configuration (rc=%d).\n", soapy_cfg_rc);
@@ -6038,12 +6103,56 @@ stream_open_apply_audio_lpf_from_config(void) {
     LOG_INFO("Audio LPF enabled: fc%s%d Hz, alpha=%.4f\n", approx, cutoff_hz, demod.audio_lpf_alpha);
 }
 
+/**
+ * @brief Reject devices whose slowest usable rate exceeds what the ingest path carries.
+ *
+ * The input ring and the millisecond-based watermarks are sized for capture rates in the
+ * `kMinCaptureRateHz`..`kMaxCaptureRateHz` window. A device that can only stream faster
+ * would silently overrun, so fail the open with the numbers the user needs instead.
+ */
+static int
+stream_open_validate_device_capture_rate(RadioSourceKind source_kind) {
+    if (source_kind == RADIO_SOURCE_IQ_REPLAY || !rtl_device_handle) {
+        return 0;
+    }
+    int passes = rtl_downsample_passes_for_rate_in(demod.rate_in);
+    long long ideal = (long long)demod.rate_in * (1LL << passes);
+    if (ideal <= 0 || ideal > (long long)UINT32_MAX) {
+        return 0;
+    }
+    uint32_t deliverable_hz = 0U;
+    if (rtl_device_nearest_supported_rate(rtl_device_handle, (uint32_t)ideal, &deliverable_hz) != 0
+        || deliverable_hz == 0U) {
+        return 0;
+    }
+    if ((long long)deliverable_hz <= kMaxCaptureRateHz) {
+        return 0;
+    }
+    LOG_ERROR("Device sample rate %u Hz exceeds the supported capture ceiling of %lld Hz (requested %lld Hz). "
+              "Lower the device rate, or use a device that streams within the ceiling.\n",
+              deliverable_hz, kMaxCaptureRateHz, ideal);
+    return -1;
+}
+
+static void
+stream_open_note_ppm_capability(void) {
+    int supported = rtl_device_supports_ppm(rtl_device_handle) ? 1 : 0;
+    g_ppm_control_supported.store(supported, std::memory_order_relaxed);
+    if (!supported) {
+        LOG_INFO("Device does not support frequency (PPM) correction; auto-PPM is disabled.\n");
+    }
+}
+
 static void
 stream_open_apply_requested_ppm(const dsd_opts* opts) {
     if (!opts) {
         return;
     }
     RtlRequestedPpmState initial_ppm_request = snapshot_requested_ppm_state(opts);
+    if (initial_ppm_request.ppm != 0 && !g_ppm_control_supported.load(std::memory_order_relaxed)) {
+        LOG_INFO("Device does not support frequency (PPM) correction; configured ppm %d will have no effect.\n",
+                 initial_ppm_request.ppm);
+    }
     int ppm_rc = apply_ppm_setting(initial_ppm_request.ppm);
     if (ppm_rc == 0) {
         store_dongle_ppm_error(initial_ppm_request.ppm);
@@ -6083,9 +6192,10 @@ stream_open_apply_controller_settings(RadioSourceKind source_kind, const dsd_opt
 
 static void
 stream_open_configure_resampler_chain(void) {
-    const bool direct_symbol_output =
+    const int digital_target_hz = rtl_demod_digital_resample_target_hz(&demod);
+    const bool digital_output =
         (demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
-    if (direct_symbol_output) {
+    if (digital_output && digital_target_hz <= 0) {
         demod.resamp_enabled = 0;
         demod.resamp_L = 1;
         demod.resamp_M = 1;
@@ -6127,9 +6237,7 @@ stream_open_configure_resampler_chain(void) {
 
 static void
 stream_open_update_output_rates(void) {
-    const bool direct_symbol_output =
-        (demod.output_kind == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK || demod.output_kind == DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
-    if (!direct_symbol_output && demod.resamp_enabled && demod.resamp_target_hz > 0) {
+    if (demod.resamp_enabled && demod.resamp_target_hz > 0) {
         output.rate = demod.resamp_target_hz;
         LOG_INFO("Output rate set to %d Hz via resampler.\n", output.rate);
     } else {
@@ -6352,6 +6460,9 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_open_device(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
+    if (stream_open_validate_device_capture_rate(source_kind) != 0) {
+        return -1;
+    }
     stream_open_apply_runtime_controls(opts);
     stream_open_apply_deemphasis_from_config();
     stream_open_apply_audio_lpf_from_config();
@@ -6361,6 +6472,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (dongle.gain == AUTO_GAIN) {
         LOG_INFO("Setting RTL Autogain. \n");
     }
+    stream_open_note_ppm_capability();
     stream_open_apply_requested_ppm(opts);
 
     if (stream_open_apply_controller_settings(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
@@ -6545,6 +6657,9 @@ auto_ppm_pick_demod_snr_db(uint64_t now_ms) {
 
 static int
 auto_ppm_effective_enabled(const dsd_opts* opts) {
+    if (!g_ppm_control_supported.load(std::memory_order_relaxed)) {
+        return 0;
+    }
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     int enabled = (cfg && cfg->auto_ppm_enable) ? 1 : 0;
     int user = g_auto_ppm_user_en.load(std::memory_order_relaxed);
@@ -8541,6 +8656,62 @@ rtl_stream_test_direct_output_rate_after_open_update(int output_kind, int rate_o
     demod.resamp_L = prev_resamp_l;
     demod.resamp_M = prev_resamp_m;
     demod.resamp_phase = prev_resamp_phase;
+    output.rate = prev_output_rate;
+    return 0;
+}
+
+extern "C" int
+rtl_stream_test_passes_for_actual_rate(uint32_t actual_rate_hz, int rate_in_hz) {
+    return rtl_choose_passes_for_actual_rate(actual_rate_hz, rate_in_hz);
+}
+
+extern "C" int
+rtl_stream_test_digital_resample_chain(int output_kind, int rate_out_hz, int resamp_target_hz, int symbol_rate_hz,
+                                       int digital_resample_mode, int capture_rate_device_forced,
+                                       unsigned int* out_rate_hz, int* out_resamp_enabled) {
+    if (!out_rate_hz || !out_resamp_enabled) {
+        return -1;
+    }
+
+    const int prev_output_kind = demod.output_kind;
+    const int prev_rate_out = demod.rate_out;
+    const int prev_resamp_target_hz = demod.resamp_target_hz;
+    const int prev_resamp_enabled = demod.resamp_enabled;
+    const int prev_resamp_l = demod.resamp_L;
+    const int prev_resamp_m = demod.resamp_M;
+    const int prev_resamp_phase = demod.resamp_phase;
+    const int prev_symbol_rate = demod.symbol_rate_hz;
+    const int prev_mode = demod.digital_resample_mode;
+    const int prev_forced = demod.capture_rate_device_forced;
+    const unsigned int prev_output_rate = output.rate;
+
+    demod.output_kind = (dsd_demod_output_kind)output_kind;
+    demod.rate_out = rate_out_hz;
+    demod.resamp_target_hz = resamp_target_hz;
+    demod.symbol_rate_hz = symbol_rate_hz;
+    demod.digital_resample_mode = digital_resample_mode;
+    demod.capture_rate_device_forced = capture_rate_device_forced;
+    demod.resamp_enabled = 0;
+    demod.resamp_L = 1;
+    demod.resamp_M = 1;
+    demod.resamp_phase = 0;
+    output.rate = 0U;
+
+    stream_open_configure_resampler_chain();
+    stream_open_update_output_rates();
+    *out_rate_hz = output.rate;
+    *out_resamp_enabled = demod.resamp_enabled;
+
+    demod.output_kind = (dsd_demod_output_kind)prev_output_kind;
+    demod.rate_out = prev_rate_out;
+    demod.resamp_target_hz = prev_resamp_target_hz;
+    demod.resamp_enabled = prev_resamp_enabled;
+    demod.resamp_L = prev_resamp_l;
+    demod.resamp_M = prev_resamp_m;
+    demod.resamp_phase = prev_resamp_phase;
+    demod.symbol_rate_hz = prev_symbol_rate;
+    demod.digital_resample_mode = prev_mode;
+    demod.capture_rate_device_forced = prev_forced;
     output.rate = prev_output_rate;
     return 0;
 }

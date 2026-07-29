@@ -551,6 +551,7 @@ typedef struct dsdneoUserConfig {
     char soapy_gains[512];
     int soapy_bandwidth_hz;
     int soapy_bandwidth_hz_is_set;
+    char digital_resample[8]; /* auto|on|off */
     char file_path[1024];
     int file_sample_rate;
     char tcp_host[128];

@@ -689,6 +689,13 @@ validate_replay_semantics(const dsd_iq_replay_config* cfg, char* err_buf, size_t
         set_error(err_buf, err_buf_size, "base_decimation must be a power of two");
         return DSD_IQ_ERR_RATE_CHAIN;
     }
+    /* The half-band cascade keeps one history buffer per pass, so the replay chain must not
+       ask for more passes than the demodulator state has room for. */
+    if (cfg->base_decimation > DSD_IQ_REPLAY_MAX_BASE_DECIMATION) {
+        set_error(err_buf, err_buf_size, "base_decimation (%u) exceeds the maximum of %u", cfg->base_decimation,
+                  (unsigned)DSD_IQ_REPLAY_MAX_BASE_DECIMATION);
+        return DSD_IQ_ERR_RATE_CHAIN;
+    }
     if (cfg->post_downsample == 0) {
         set_error(err_buf, err_buf_size, "post_downsample must be > 0");
         return DSD_IQ_ERR_RATE_CHAIN;

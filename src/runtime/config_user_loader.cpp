@@ -310,6 +310,8 @@ apply_input_rtltcp_soapy_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
         if (apply_integer_setting(val, -1, mode, &cfg->soapy_bandwidth_hz)) {
             cfg->soapy_bandwidth_hz_is_set = 1;
         }
+    } else if (strcmp(key_lc, "digital_resample") == 0) {
+        copy_text_value(cfg->digital_resample, sizeof cfg->digital_resample, val);
     } else {
         return 0;
     }

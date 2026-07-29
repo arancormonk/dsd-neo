@@ -100,6 +100,12 @@ test_profile_selection(void) {
     rc |= expect_profile("uhd hardware", {"", "", "USRP B200", ""}, SoapyProfileId::Uhd);
     rc |= expect_profile("requested overrides auto", {"generic", "airspy", "", ""}, SoapyProfileId::Generic);
     rc |= expect_profile("unknown falls back generic", {"", "custom", "unknown", ""}, SoapyProfileId::Generic);
+    rc |= expect_profile("sddc driver", {"", "SDDC", "", ""}, SoapyProfileId::Sddc);
+    rc |= expect_profile("rx888 hardware", {"", "", "RX888 MKII", ""}, SoapyProfileId::Sddc);
+    rc |= expect_profile("rx999 hardware", {"", "", "RX999", ""}, SoapyProfileId::Sddc);
+    rc |= expect_profile("bbrf103 hardware", {"", "", "BBRF103", ""}, SoapyProfileId::Sddc);
+    rc |= expect_profile("sddc args", {"", "", "", "driver=SDDC"}, SoapyProfileId::Sddc);
+    rc |= expect_profile("sddc requested by name", {"sddc", "", "", ""}, SoapyProfileId::Sddc);
 
     SoapyProfileId parsed = SoapyProfileId::Generic;
     rc |= expect_true("empty profile parses auto", dsdneo::soapy_profile_parse_name("", &parsed));
@@ -108,6 +114,69 @@ test_profile_selection(void) {
     rc |= expect_true("profile parse rejects unknown", !dsdneo::soapy_profile_parse_name("mystery", &parsed));
     rc |= expect_cstr("invalid profile id falls back generic", dsdneo::soapy_profile_by_id((SoapyProfileId)255).name,
                       "generic");
+    return rc;
+}
+
+static int
+expect_antenna(const char* label, const dsdneo::SoapyAntennaChoice& got, const char* want_name, bool want_auto) {
+    if (got.name != want_name || got.auto_selected != want_auto) {
+        DSD_FPRINTF(stderr, "%s: got name=\"%s\" auto=%d want name=\"%s\" auto=%d\n", label, got.name.c_str(),
+                    got.auto_selected ? 1 : 0, want_name, want_auto ? 1 : 0);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_antenna_selection(void) {
+    int rc = 0;
+    /* The SDDC profile starts on its HF port, so VHF/UHF work needs the tuner port selected. */
+    rc |= expect_antenna("auto selects profile default above split",
+                         dsdneo::soapy_choose_antenna("VHF", "", 851375000.0), "VHF", true);
+    rc |=
+        expect_antenna("no auto selection below split", dsdneo::soapy_choose_antenna("VHF", "", 7100000.0), "", false);
+    rc |= expect_antenna("split boundary is exclusive",
+                         dsdneo::soapy_choose_antenna("VHF", "", dsdneo::kSoapyHfVhfSplitHz), "", false);
+    rc |= expect_antenna("explicit antenna wins", dsdneo::soapy_choose_antenna("VHF", "HF", 851375000.0), "HF", false);
+    rc |= expect_antenna("explicit antenna wins below split", dsdneo::soapy_choose_antenna("VHF", "HF", 7100000.0),
+                         "HF", false);
+    rc |= expect_antenna("configured antenna is trimmed", dsdneo::soapy_choose_antenna(nullptr, "  RX  ", 0.0), "RX",
+                         false);
+    rc |= expect_antenna("no profile default leaves driver choice",
+                         dsdneo::soapy_choose_antenna(nullptr, "", 851375000.0), "", false);
+    rc |= expect_antenna("empty profile default leaves driver choice",
+                         dsdneo::soapy_choose_antenna("", "", 851375000.0), "", false);
+    rc |= expect_antenna("unknown frequency skips auto selection", dsdneo::soapy_choose_antenna("VHF", "", 0.0), "",
+                         false);
+
+    rc |= expect_cstr("sddc profile defaults to VHF", dsdneo::soapy_profile_by_id(SoapyProfileId::Sddc).default_antenna,
+                      "VHF");
+    rc |= expect_true("generic profile has no default antenna",
+                      dsdneo::soapy_profile_by_id(SoapyProfileId::Generic).default_antenna == nullptr);
+    return rc;
+}
+
+static int
+test_sddc_rate_grid(void) {
+    int rc = 0;
+    bool adjusted = false;
+    /* SoapySDDC exposes {2,4,8,16,32,64} MSPS at the stock 128 MHz ADC clock. dsd-neo asks for
+       1.536 MSPS with the default 48 kHz DSP bandwidth, so it must land on 2 MSPS. */
+    const std::vector<double> stock_rates = {2e6, 4e6, 8e6, 16e6, 32e6, 64e6};
+    rc |= expect_double("sddc stock grid snaps up",
+                        dsdneo::soapy_nearest_sample_rate(1536000.0, stock_rates, {}, &adjusted), 2000000.0);
+    rc |= expect_true("sddc stock grid reports adjustment", adjusted);
+
+    /* At adc_frequency=98304000 the grid starts exactly on the requested rate. */
+    const std::vector<double> tuned_rates = {1536000.0, 3072000.0, 6144000.0, 12288000.0, 24576000.0, 49152000.0};
+    rc |= expect_double("sddc tuned grid matches request",
+                        dsdneo::soapy_nearest_sample_rate(1536000.0, tuned_rates, {}, &adjusted), 1536000.0);
+    rc |= expect_true("sddc tuned grid reports no adjustment", !adjusted);
+
+    rc |= expect_bandwidth("sddc profile requests no hardware bandwidth",
+                           dsdneo::soapy_choose_bandwidth_hz(
+                               0, false, -1, dsdneo::soapy_profile_by_id(SoapyProfileId::Sddc).default_bandwidth_hz),
+                           false, 0, false);
     return rc;
 }
 
@@ -300,6 +369,8 @@ int
 main(void) {
     int rc = 0;
     rc |= test_profile_selection();
+    rc |= test_antenna_selection();
+    rc |= test_sddc_rate_grid();
     rc |= test_bandwidth_selection();
     rc |= test_stream_format_selection();
     rc |= test_range_selection();
