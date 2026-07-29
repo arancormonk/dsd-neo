@@ -30,6 +30,7 @@ p25_crypto_reset_slot(dsd_state* state, int slot) {
     }
     state->p25_crypto_state[slot] = DSD_P25_CRYPTO_UNKNOWN;
     DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
+    DSD_MEMSET(&state->p25_p2_crypto_conflict[slot], 0, sizeof(state->p25_p2_crypto_conflict[slot]));
     state->p25_p2_audio_allowed[slot] = 0;
 
     if (slot == 0) {

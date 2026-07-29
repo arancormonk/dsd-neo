@@ -1649,6 +1649,27 @@ main(void) {
     assert(s19g.p25_p2_audio_ring_count[0] == 1);
     assert(s19g.s_l4[0][0] == 321);
 
+    // An implicit duplicate update (no service options) carries no
+    // classification evidence. Control channels interleave explicit and
+    // implicit updates for one call; the implicit copies must not demote the
+    // retained explicit-clear service bits and knock the classified-clear slot
+    // back to encryption-pending, which muted and purged clear audio once per
+    // update under encryption lockout.
+    p25_sm_event_t duplicate_unknown = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5501, 6501, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_unknown);
+    assert(ctx19g.grant_count == 1U);
+    assert(ctx19g.slots[0].svc_bits == 0x00);
+    assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    assert(s19g.p25_p2_audio_allowed[0] == 1);
+    assert(s19g.p25_p2_audio_ring_count[0] == 1);
+    assert(s19g.s_l4[0][0] == 321);
+
+    // A duplicate whose valid service options genuinely change the
+    // classification (clear -> encrypted) must still restart it.
+    p25_sm_event(&ctx19g, &o19g, &s19g, &duplicate_encrypted);
+    assert(ctx19g.slots[0].svc_bits == 0x40);
+    assert(s19g.p25_crypto_state[0] == DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+
     // A same-route grant update received during active voice must refresh the
     // canonical service metadata even when the clear/encrypted classification
     // does not change and no later ACTIVE event supplies the new options.
@@ -1950,8 +1971,9 @@ main(void) {
     assert(g_result_return_to_cc_calls == 1);
     assert(ctx19f.state == P25_SM_ON_CC);
 
-    // 27) A Phase 2 classification timeout blocks and purges only the
-    // unresolved slot while retaining an active clear companion.
+    // 27) A Phase 2 classification timeout returns only the unresolved slot to
+    // unclassified (never encrypted -- nothing was observed) and purges it
+    // while retaining an active clear companion.
     static dsd_opts o19c;
     static dsd_state s19c;
     DSD_MEMSET(&o19c, 0, sizeof(o19c));
@@ -1991,7 +2013,7 @@ main(void) {
     assert(g_result_return_to_cc_calls == 0);
     assert(ctx19c.slots[0].grant_active == 0);
     assert(ctx19c.slots[1].voice_active == 1);
-    assert(s19c.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
+    assert(s19c.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
     assert(s19c.p25_p2_audio_ring_count[0] == 0);
     assert(s19c.p25_p2_audio_ring_count[1] == 3);
     assert(s19c.s_l4[0][0] == 0);
@@ -2036,7 +2058,7 @@ main(void) {
     assert(ctx19i.slots[0].grant_active == 0);
     assert(ctx19i.slots[1].grant_active == 1);
     assert(ctx19i.slots[1].data_call == 1);
-    assert(s19i.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
+    assert(s19i.p25_crypto_state[0] == DSD_P25_CRYPTO_UNKNOWN);
     assert(s19i.p25_p2_audio_ring_count[0] == 0);
     assert(s19i.s_l4[0][0] == 0);
 

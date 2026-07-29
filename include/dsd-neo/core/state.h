@@ -53,6 +53,13 @@ typedef struct {
     uint8_t active;
 } dsd_p25_p1_crypto_conflict_state;
 
+/** Phase 2 per-slot ESS crypto tuple awaiting corroboration against clear service context. */
+typedef struct {
+    uint16_t keyid;
+    uint8_t algid;
+    uint8_t active;
+} dsd_p25_p2_crypto_conflict_state;
+
 /** Phase 1 carrier/call epoch whose post-lockout ESS repeats may be ignored. */
 typedef struct {
     uint64_t call_epoch;
@@ -710,6 +717,8 @@ struct dsd_state {
     int p25_p1_hdu_crypto_fresh;
     // One non-clear HDU/LDU2 tuple contradicted explicit-clear Phase 1 service options.
     dsd_p25_p1_crypto_conflict_state p25_p1_crypto_conflict;
+    // One non-clear Phase 2 ESS tuple contradicted explicit-clear service context.
+    dsd_p25_p2_crypto_conflict_state p25_p2_crypto_conflict[2];
     // Exact carrier/canonical epoch ended by Phase 1 encryption lockout.
     dsd_p25_p1_lockout_epoch_state p25_p1_lockout_epoch;
     // Sticky Phase 2 media rejection, cleared only after the slot receives an accepted assignment/activity.

@@ -1079,15 +1079,19 @@ p25_grant_transient_enc_cache_blocks(dsd_opts* opts, dsd_state* state, const p25
         return 0;
     }
 
-    time_t until = 0;
-    if (p25_enc_tg_cache_refresh_until(now, &until)) {
-        state->p25_enc_tg_cache_until[idx] = until;
-    } else {
-        p25_enc_tg_cache_clear_entry(state, idx);
-        return 0;
+    // Only a grant whose service options prove encryption may extend the
+    // entry. Ambiguous (service-less) updates still skip while the entry
+    // lives, but they carry no evidence: letting them slide the window kept a
+    // falsely-cached clear talkgroup blocked for as long as the control
+    // channel kept announcing its ongoing call.
+    if (eval_ctx->svc_valid && eval_ctx->encrypted_call) {
+        time_t until = 0;
+        if (p25_enc_tg_cache_refresh_until(now, &until)) {
+            state->p25_enc_tg_cache_until[idx] = until;
+        }
     }
     p25_sm_diagf(opts, state, NULL, "grant_enc_cache_skip", "kind=%s target=%d idx=%d until=%ld",
-                 is_group ? "group" : "private", eval_ctx->tg, idx, (long)until);
+                 is_group ? "group" : "private", eval_ctx->tg, idx, (long)state->p25_enc_tg_cache_until[idx]);
     sm_log(opts, state, "grant-enc-cache");
     return 1;
 }
@@ -1995,15 +1999,26 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     const int previous_svc = slot_ctx->svc_bits;
     const int previous_clear_override = slot_ctx->enc_override_clear;
     const int force_clear = eval_ctx && eval_ctx->enc_override_clear;
-    slot_ctx->svc_bits = ev->svc_bits;
+    // A duplicate without service options carries no classification evidence.
+    // Control channels interleave explicit and implicit updates for one call;
+    // letting the implicit copies demote the retained service bits toggled the
+    // slot between clear and encryption-pending once per update, purging audio
+    // each time.
+    const int svc_known = p25_sm_svc_bits_valid(ev->svc_bits);
+    const int current_svc = svc_known ? ev->svc_bits : previous_svc;
+    if (svc_known) {
+        slot_ctx->svc_bits = ev->svc_bits;
+    }
     slot_ctx->enc_override_clear = force_clear ? 1 : 0;
     if (data_call) {
         return;
     }
 
-    if (p25_grant_duplicate_crypto_needs_restart(previous_svc, ev->svc_bits, previous_clear_override, force_clear,
+    if (p25_grant_duplicate_crypto_needs_restart(previous_svc, current_svc, previous_clear_override, force_clear,
                                                  state->p25_crypto_state[crypto_slot])) {
-        p25_grant_begin_crypto_classification(ctx, state, ev, eval_ctx, route->slot, 0, now_m);
+        p25_sm_event_t crypto_ev = *ev;
+        crypto_ev.svc_bits = current_svc;
+        p25_grant_begin_crypto_classification(ctx, state, &crypto_ev, eval_ctx, route->slot, 0, now_m);
     }
 }
 
@@ -2965,6 +2980,21 @@ p25_voice_start_source_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_e
 }
 
 static int
+p25_voice_start_assignment_service_is_fresh(const p25_sm_slot_ctx_t* slot_ctx) {
+    // Mirrors the source-freshness rule: the retained service options describe
+    // the next transmission only while a grant re-validates the assignment.
+    // Control channels keep repeating the call's grant (with its clear/enc
+    // service bits) through hangtime, so a completed transmission whose
+    // assignment the CC has re-announced since the stop may classify the next
+    // same-identity transmission from those bits instead of starting every one
+    // encryption-pending and muting clear voice until ESS decodes.
+    if (!slot_ctx) {
+        return 0;
+    }
+    return !p25_voice_start_follows_completed_epoch(slot_ctx) || slot_ctx->last_grant_m > slot_ctx->last_stop_m;
+}
+
+static int
 p25_voice_start_is_p2_ptt(const p25_sm_ctx_t* ctx, const p25_sm_event_t* ev) {
     return ctx && ev && ctx->vc_is_tdma && ev->type == P25_SM_EV_PTT;
 }
@@ -2978,7 +3008,7 @@ p25_voice_start_begins_new_epoch(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_
 
 static int
 p25_voice_start_requires_unknown_service(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
-    return p25_voice_start_follows_completed_epoch(slot_ctx) || p25_voice_start_target_changed(slot_ctx, ev)
+    return !p25_voice_start_assignment_service_is_fresh(slot_ctx) || p25_voice_start_target_changed(slot_ctx, ev)
            || p25_voice_start_source_changed(slot_ctx, ev);
 }
 
@@ -2993,11 +3023,11 @@ p25_voice_start_fill_anonymous_identity(const dsd_state* state, int slot, const 
         out->src = slot_ctx->src;
     }
 
-    // A source-less PTT/ACTIVE after a completed transmission has no service
-    // options for the new epoch. Keep crypto classification pending until
-    // ESS/LCW proves it clear instead of inheriting the preceding epoch.
-    const int follows_completed_epoch = p25_voice_start_follows_completed_epoch(slot_ctx);
-    out->svc_bits = follows_completed_epoch ? P25_SM_SVC_UNKNOWN : slot_ctx->svc_bits;
+    // A source-less PTT/ACTIVE after a completed transmission inherits no
+    // service options from the preceding epoch. Only a grant that re-validated
+    // the assignment since the stop may classify the new epoch; otherwise keep
+    // crypto classification pending until ESS/LCW proves it clear.
+    out->svc_bits = p25_voice_start_assignment_service_is_fresh(slot_ctx) ? slot_ctx->svc_bits : P25_SM_SVC_UNKNOWN;
 }
 
 static void
@@ -5384,7 +5414,10 @@ p25_sm_block_expired_crypto_slot(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
         sm_log(opts, state, "crypto-conflict-timeout");
         return 1;
     }
-    p25_crypto_block_pending(state, slot);
+    // The window lapsing means no FEC-accepted ESS arrived, not that the call
+    // is encrypted. Return the slot to unclassified before releasing so the
+    // canonical call and UI never claim encryption nothing observed.
+    p25_crypto_expire_pending(state, slot);
     ctx->slots[slot].voice_active = 0;
     if (ctx->vc_is_tdma) {
         p25_voice_clear_slot_grant(ctx, state, slot);
@@ -5411,8 +5444,10 @@ p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_stat
 static int
 p25_sm_recover_expired_followed_p1_conflict(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m,
                                             double grant_timeout) {
-    if (!ctx || !opts || !state || opts->trunk_tune_enc_calls == 0 || ctx->vc_is_tdma
-        || !state->p25_p1_crypto_conflict.active
+    // Applies under encryption lockout as well: the quarantined tuple never
+    // corroborated against a call whose service options are explicit clear, so
+    // the presumption of clear resumes the call instead of releasing it.
+    if (!ctx || !opts || !state || ctx->vc_is_tdma || !state->p25_p1_crypto_conflict.active
         || !p25_grant_service_options_are_explicit_clear(ctx->slots[0].svc_bits)
         || !p25_sm_crypto_slot_expired(ctx, state, 0, now_m, grant_timeout)) {
         return 0;

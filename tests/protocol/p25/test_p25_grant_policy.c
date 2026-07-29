@@ -388,8 +388,11 @@ main(void) {
                                        .svc_bits = P25_SM_SVC_UNKNOWN,
                                        .is_group = 1});
         rc |= expect_true("unknown-svc grant suppressed by blocked-call cache", cache_st.p25_sm_tune_count == before);
-        rc |= expect_true("suppressed grant refreshes blocked-call expiry",
-                          cache_idx >= 0 && cache_st.p25_enc_tg_cache_until[cache_idx] > short_until);
+        // An ambiguous update carries no encryption evidence: it may not slide
+        // the expiry window, or a falsely-cached clear talkgroup stays blocked
+        // for as long as the control channel keeps announcing its call.
+        rc |= expect_true("suppressed ambiguous grant does not extend blocked-call expiry",
+                          cache_idx >= 0 && cache_st.p25_enc_tg_cache_until[cache_idx] == short_until);
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -400,6 +403,8 @@ main(void) {
                                        .is_group = 1});
         rc |= expect_true("explicit encrypted grant suppressed by blocked-call cache",
                           cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("explicit encrypted grant refreshes blocked-call expiry",
+                          cache_idx >= 0 && cache_st.p25_enc_tg_cache_until[cache_idx] > short_until);
         rc |= expect_true("transient enc cache does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
 
         cache_opts.trunk_is_tuned = 0;
