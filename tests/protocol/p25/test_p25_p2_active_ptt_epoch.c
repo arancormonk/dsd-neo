@@ -364,6 +364,98 @@ test_post_end_identityless_active_does_not_reopen(void) {
     return rc;
 }
 
+/* MAC_END_PTT often names the fixed-network placeholder (0xFFFFFF) instead of
+ * the completed talker. Recording the placeholder as the ended source made a
+ * post-END voice-user copy naming the real talker look like a changed source,
+ * defeating the retention tail and reopening the ended call between END
+ * repeats -- one transmission, two rows. */
+static int
+test_placeholder_end_src_keeps_tail_guard(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0xB1U);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, 0xFFFFFF, dsd_time_now_monotonic_s());
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+
+    rc |= expect("placeholder END records the real talker",
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s()) == 1);
+
+    /* Delayed SACCH copy still naming the completed talker. */
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    rc |= expect("sourced repeat after placeholder END does not reopen", slot0_phase_is(DSD_CALL_PHASE_ENDED));
+    rc |= expect("sourced repeat after placeholder END mints no epoch", slot0_epoch() == ended_epoch);
+    rc |= expect("placeholder END transmission commits one row", committed_event_count() == 1);
+    return rc;
+}
+
+/* A first-seen MAC_PTT can decode several seconds into a transmission whose
+ * GVCU observation began the epoch. With voice decoded continuously and no
+ * END between them, it names the transmission already on the air and must
+ * fold in; the young-epoch window alone forced a split row. After an activity
+ * gap the same late PTT is a fresh start and still forks. */
+static int
+test_late_first_ptt_folds_into_continuous_epoch(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const double t0 = dsd_time_now_monotonic_s();
+    p25_sm_event_t ev = p25_sm_ev_active_call(0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    ev.observed_m = t0;
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    event_ticks();
+    const uint64_t active_epoch = slot0_epoch();
+    rc |= expect("continuity fixture opens the epoch", active_epoch != 0U && slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
+
+    /* Voice-user copies keep the slot continuously active past the window. */
+    for (int i = 1; i <= 2; i++) {
+        ev = p25_sm_ev_active_call(0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+        ev.observed_m = t0 + (double)i;
+        p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    }
+
+    uint8_t sig[P25_SM_PTT_SIGNATURE_BYTES];
+    DSD_MEMSET(sig, 0xF2, sizeof(sig));
+    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, P25_SM_SVC_UNKNOWN, sig,
+                                        t0 + 2.4, 0);
+    event_ticks();
+    rc |= expect("late first PTT folds into the continuous epoch", slot0_epoch() == active_epoch);
+    rc |= expect("late first PTT keeps the epoch live", slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
+
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, t0 + 3.0);
+    event_ticks();
+    rc |= expect("continuous transmission commits one row", committed_event_count() == 1);
+
+    /* Same shape with an activity gap: a missed terminator may hide a fresh
+     * start, so the late PTT must fork its own epoch. */
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+    ctx = p25_sm_get_ctx();
+    const double t1 = dsd_time_now_monotonic_s();
+    ev = p25_sm_ev_active_call(0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    ev.observed_m = t1;
+    p25_sm_event(ctx, &g_opts, &g_state, &ev);
+    event_ticks();
+    const uint64_t gap_epoch = slot0_epoch();
+
+    DSD_MEMSET(sig, 0xF3, sizeof(sig));
+    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, P25_SM_SVC_UNKNOWN, sig,
+                                        t1 + 2.4, 0);
+    event_ticks();
+    rc |= expect("late PTT after an activity gap forks", slot0_epoch() != gap_epoch);
+    return rc;
+}
+
 /* A different talker inside the tail is fresh evidence: the conversation's
  * next transmission must not be mistaken for retention. */
 static int
@@ -424,6 +516,8 @@ main(void) {
     rc |= test_post_end_active_repeat_does_not_reopen();
     rc |= test_post_end_ptt_repeat_does_not_reopen();
     rc |= test_post_end_identityless_active_does_not_reopen();
+    rc |= test_placeholder_end_src_keeps_tail_guard();
+    rc |= test_late_first_ptt_folds_into_continuous_epoch();
     rc |= test_post_end_changed_source_reopens();
     rc |= test_repeat_helper_windows();
 

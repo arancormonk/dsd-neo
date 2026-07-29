@@ -71,8 +71,8 @@ typedef enum {
 } p25_call_obs_provenance;
 
 static void p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot,
-                                         int new_epoch, int allow_coalesce, p25_call_obs_provenance provenance,
-                                         double observed_m);
+                                         int new_epoch, int allow_coalesce, int continuous_activity,
+                                         p25_call_obs_provenance provenance, double observed_m);
 static void p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m);
 #ifdef USE_RADIO
 static int p25_sm_hold_release_for_vc_cqpsk_reacquire(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state,
@@ -2052,7 +2052,7 @@ p25_grant_handle_duplicate(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* s
     p25_grant_refresh_duplicate_crypto(ctx, state, ev, route, eval_ctx, data_call, now_m);
     const int call_slot = p25_grant_logical_slot(ctx, route->slot);
     if (!data_call && call_slot >= 0 && call_slot <= 1 && ctx->slots[call_slot].voice_active) {
-        p25_call_publish_observation(ctx, opts, state, call_slot, 0, 0, P25_CALL_OBS_ASSIGNMENT_REPEAT, now_m);
+        p25_call_publish_observation(ctx, opts, state, call_slot, 0, 0, 0, P25_CALL_OBS_ASSIGNMENT_REPEAT, now_m);
     }
     if (data_call) {
         ctx->t_tune_m = now_m;
@@ -2464,13 +2464,17 @@ p25_call_kind_from_slot(const p25_sm_slot_ctx_t* slot_ctx) {
 
 static int
 p25_call_begin_coalesces_into_active_epoch(const dsd_state* state, int slot, const dsd_call_observation* observation,
-                                           double observed_m) {
+                                           double observed_m, int continuous_activity) {
     // A voice start raised by MAC_ACTIVE follows the traffic-channel GVCU
     // observation of the same transmission, which already began the canonical
     // epoch moments earlier. Forcing a second epoch would push the first
     // epoch's freshly built row as a duplicate event. Coalesce only into a
     // young matching epoch: an identity reused after the window (missed END
-    // plus a fresh start) still begins its own epoch.
+    // plus a fresh start) still begins its own epoch. Continuously observed
+    // voice extends the window -- a first-seen MAC_PTT can decode several
+    // seconds into a transmission whose GVCU began the epoch, and with no END
+    // between them it names the transmission already on the air, not a fresh
+    // start.
     dsd_call_snapshot current;
     if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE) {
         return 0;
@@ -2492,18 +2496,37 @@ p25_call_begin_coalesces_into_active_epoch(const dsd_state* state, int slot, con
         return 0;
     }
     const double now_m = observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
-    return current.started_m > 0.0 && now_m >= current.started_m
-           && (now_m - current.started_m) <= P25_CANONICAL_EPOCH_COALESCE_S;
+    if (current.started_m <= 0.0 || now_m < current.started_m) {
+        return 0;
+    }
+    return (now_m - current.started_m) <= P25_CANONICAL_EPOCH_COALESCE_S || continuous_activity;
+}
+
+// Whether the slot has decoded voice continuously up to this observation: no
+// END was accepted after the epoch began, and the last voice activity is at
+// most one coalesce window old. A gap means a terminator may have been missed,
+// so an identity reuse past the window must fork its own epoch.
+static int
+p25_call_slot_activity_is_continuous(const p25_sm_slot_ctx_t* slot_ctx, double observed_m) {
+    if (!slot_ctx || !slot_ctx->voice_active || slot_ctx->last_active_m <= 0.0) {
+        return 0;
+    }
+    if (slot_ctx->last_end_m > 0.0 && slot_ctx->last_end_m >= slot_ctx->last_start_m) {
+        return 0;
+    }
+    const double now_m = observed_m > 0.0 ? observed_m : dsd_time_now_monotonic_s();
+    return now_m >= slot_ctx->last_active_m && (now_m - slot_ctx->last_active_m) <= P25_CANONICAL_EPOCH_COALESCE_S;
 }
 
 static dsd_call_boundary
 p25_call_publish_boundary(const p25_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state, int slot,
-                          int new_epoch, int allow_coalesce, const dsd_call_observation* observation,
-                          double observed_m) {
+                          int new_epoch, int allow_coalesce, int continuous_activity,
+                          const dsd_call_observation* observation, double observed_m) {
     if (!new_epoch) {
         return DSD_CALL_BOUNDARY_CONTINUE;
     }
-    if (allow_coalesce && p25_call_begin_coalesces_into_active_epoch(state, slot, observation, observed_m)) {
+    if (allow_coalesce
+        && p25_call_begin_coalesces_into_active_epoch(state, slot, observation, observed_m, continuous_activity)) {
         p25_sm_diagf((dsd_opts*)opts, state, ctx, "canonical_epoch_coalesce", "path=trunk slot=%d tg=%llu src=%llu",
                      slot, (unsigned long long)observation->ota_target_id,
                      (unsigned long long)observation->ota_source_id);
@@ -2532,7 +2555,8 @@ p25_call_observation_retains_ended_call(const dsd_state* state, int slot, p25_ca
 
 static void
 p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int slot, int new_epoch,
-                             int allow_coalesce, p25_call_obs_provenance provenance, double observed_m) {
+                             int allow_coalesce, int continuous_activity, p25_call_obs_provenance provenance,
+                             double observed_m) {
     if (!ctx || !state || slot < 0 || slot > 1) {
         return;
     }
@@ -2561,8 +2585,8 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         p25_call_publish_crypto_update(opts, state, slot, observed_m, 1);
         return;
     }
-    const dsd_call_boundary boundary =
-        p25_call_publish_boundary(ctx, opts, state, slot, new_epoch, allow_coalesce, &observation, observed_m);
+    const dsd_call_boundary boundary = p25_call_publish_boundary(ctx, opts, state, slot, new_epoch, allow_coalesce,
+                                                                 continuous_activity, &observation, observed_m);
     const int began = dsd_call_state_observe(state, &observation, boundary);
     if (began >= 0) {
         p25_call_publish_crypto(opts, state, slot, observed_m);
@@ -3056,6 +3080,10 @@ typedef struct {
     int requires_update;
     int preserve_crypto_classification;
     int coalesce_canonical_epoch;
+    // Captured before commit closes slot media: whether voice was decoded
+    // continuously right up to this observation. Extends the coalesce window
+    // for a first-seen PTT naming the transmission already on the air.
+    int continuous_activity;
     int ptt_evidence;
 } p25_voice_start_changes_t;
 
@@ -3118,6 +3146,8 @@ p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state
     changes.coalesce_canonical_epoch =
         input->type == P25_SM_EV_ACTIVE
         || (changes.new_epoch && changes.ptt_evidence && p25_voice_ptt_start_may_coalesce(ctx, state, slot));
+    changes.continuous_activity =
+        p25_call_slot_activity_is_continuous(slot_ctx, input->observed_m > 0.0 ? input->observed_m : 0.0);
     return changes;
 }
 
@@ -3242,7 +3272,7 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     (void)dsd_tg_policy_note_active_call(state, &route, decision, now_m);
     p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
     p25_call_publish_observation(ctx, opts, state, slot, changes->new_epoch, changes->coalesce_canonical_epoch,
-                                 P25_CALL_OBS_VOICE_EVIDENCE, now_m);
+                                 changes->continuous_activity, P25_CALL_OBS_VOICE_EVIDENCE, now_m);
     if (changes->ptt_evidence) {
         // Whether this PTT began the epoch or folded into one an ACTIVE
         // observation began, the epoch now contains a PTT: the next
@@ -3662,7 +3692,12 @@ p25_voice_end_event_tg(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot
 
 static int
 p25_voice_end_event_src(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, const p25_sm_event_t* ev) {
-    return ev && ev->src > 0 ? ev->src : p25_voice_slot_diag_src(ctx, state, slot);
+    // MAC_END_PTT often names the fixed-network placeholder (0xFFFFFF) rather
+    // than the completed talker. Recording the placeholder as the ended
+    // source made every post-END voice-user copy naming the real talker look
+    // like a changed source, defeating the retention-tail suppression and
+    // reopening the ended call between END repeats.
+    return ev && p25_source_id_known(ev->src) ? ev->src : p25_voice_slot_diag_src(ctx, state, slot);
 }
 
 static void
