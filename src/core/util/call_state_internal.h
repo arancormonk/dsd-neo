@@ -43,6 +43,23 @@ int dsd_call_state_protocol_voice_is_anonymous(int protocol);
  * (dsd_events.c); a private mirror of the reason list would silently diverge.
  */
 int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
+
+/**
+ * True for the end reasons that are positive over-the-air evidence a transmission ended (a
+ * terminator burst, verified or not). EXPLICIT is deliberately excluded: the engine ends epochs
+ * EXPLICIT on every retune and teardown, so it says nothing about the air. The canonical
+ * predicate behind the event layer's keep-or-drop verdict for identity-less voice rows
+ * (dsd_events.c); a private mirror of the reason list would silently diverge.
+ */
+int dsd_call_state_end_reason_is_terminator(uint8_t end_reason);
+
+/**
+ * Seconds after an end with this reason within which the epoch may still be reacquired:
+ * DSD_CALL_TERMINATOR_HEAL_GAP_S after an unverified terminator, DSD_CALL_REACQUIRE_GAP_S
+ * otherwise. The event layer holds a VOICE_END alert open for exactly this long, so the deadline
+ * and the reacquisition window it waits on cannot drift apart.
+ */
+double dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason);
 const dsd_call_state_ext* dsd_call_state_ext_peek(const dsd_state* state);
 void dsd_call_state_ext_lock(const dsd_call_state_ext* ext);
 void dsd_call_state_ext_unlock(const dsd_call_state_ext* ext);

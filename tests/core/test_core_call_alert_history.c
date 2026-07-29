@@ -124,6 +124,7 @@ canonical_snapshot_reader(void* arg) {
 
 static int g_open_wav_count;
 static int g_close_wav_count;
+static int g_close_wav_export_count;
 static SNDFILE* g_open_wav_result;
 static double g_observed_m;
 
@@ -139,14 +140,17 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
 }
 
 SNDFILE*
-close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                          const Event_History_I* event_struct) {
+close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                             const Event_History_I* event_struct, int export_call) {
     UNUSED(wav_file);
     UNUSED(opts);
     UNUSED(wav_out_filename);
     UNUSED(dir);
     UNUSED(event_struct);
     g_close_wav_count++;
+    if (export_call) {
+        g_close_wav_export_count++;
+    }
     return NULL;
 }
 
@@ -1797,6 +1801,109 @@ test_retune_explicit_end_drops_identityless_media_row(void) {
     rc |= expect_int("verified terminator ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_int("terminator-ended audible row reaches history", committed_history_rows(&event_history[0]), 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The drop path still rotates the WAV -- leaving it open would let the noise segment's audio
+// lead the next transmission's recording -- but must not export it: the recording of an epoch
+// with no history row or log line would upload to rdio-scanner under all-zero metadata the
+// operator has nothing local to correlate against. A committed row's rotation still exports.
+static int
+test_dropped_identityless_row_rotates_wav_without_export(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    g_close_wav_count = 0;
+    g_close_wav_export_count = 0;
+
+    opts.wav_out_f = (SNDFILE*)0x1;
+    rc |= expect_int("noise epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("noise media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("dropped row leaves no history", committed_history_rows(&event_history[0]), 0);
+    rc |= expect_int("dropped row still rotates the WAV", g_close_wav_count, 1);
+    rc |= expect_int("dropped row's rotation does not export", g_close_wav_export_count, 0);
+
+    // The committed shape keeps exporting: same rotation path, row reached history.
+    opts.wav_out_f = (SNDFILE*)0x1;
+    g_close_wav_count = 0;
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("identified call ends", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("committed row rotates the WAV", g_close_wav_count, 1);
+    rc |= expect_int("committed row's rotation exports", g_close_wav_export_count, 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The held VOICE_END deadline must be selected by the same reason-keyed rule the canonical layer
+// applies to reacquisition: an unverified-terminator end stops accepting a heal after
+// DSD_CALL_TERMINATOR_HEAL_GAP_S, so its alert must not be withheld for the full sync-loss
+// window on top of that. Both deadlines are bracketed between two reads of the same clock the
+// arming site uses, so the assertions hold at any scheduler pace.
+static int
+test_end_alert_deadline_matches_reacquire_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dsd_call_context_snapshot context;
+
+    // Sync-loss end: held for the full reacquisition gap.
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    double before = dsd_time_now_monotonic_s();
+    rc |= expect_int("sync loss ends it", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    double after = dsd_time_now_monotonic_s();
+    rc |= expect_int("context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("sync-loss end holds the alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int("sync-loss deadline is not below its window",
+                     context.events[0].end_alert_due_m >= before + DSD_CALL_REACQUIRE_GAP_S, 1);
+    rc |= expect_int("sync-loss deadline is not above its window",
+                     context.events[0].end_alert_due_m <= after + DSD_CALL_REACQUIRE_GAP_S, 1);
+    dsd_event_flush_pending_alerts(&opts, &state);
+
+    // Unverified-terminator end: held only for the tighter heal gap.
+    rc |= expect_int("second identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    before = dsd_time_now_monotonic_s();
+    rc |= expect_int("unverified terminator ends it", end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    after = dsd_time_now_monotonic_s();
+    rc |= expect_int("second context snapshot copies", dsd_call_context_copy_snapshot(&state, &context) > 0, 1);
+    rc |= expect_int("unverified end holds the alert", context.events[0].end_alert_pending, 1);
+    rc |= expect_int("terminator deadline is not below the heal window",
+                     context.events[0].end_alert_due_m >= before + DSD_CALL_TERMINATOR_HEAL_GAP_S, 1);
+    rc |= expect_int("terminator deadline is not above the heal window",
+                     context.events[0].end_alert_due_m <= after + DSD_CALL_TERMINATOR_HEAL_GAP_S, 1);
+    dsd_event_flush_pending_alerts(&opts, &state);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -3988,6 +4095,8 @@ main(void) {
     rc |= test_identityless_voice_epoch_commits_no_row();
     rc |= test_media_terminated_identityless_voice_epoch_commits_row();
     rc |= test_retune_explicit_end_drops_identityless_media_row();
+    rc |= test_dropped_identityless_row_rotates_wav_without_export();
+    rc |= test_end_alert_deadline_matches_reacquire_window();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();
     rc |= test_route_text_only_row_survives_epoch_change_commit();

@@ -31,7 +31,10 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
 
     if (state->synctype == DSD_SYNC_M17_EOT_POS || state->synctype == DSD_SYNC_M17_EOT_NEG) {
         skipDibit(opts, state, M17_EOT_REMAINING_DIBITS);
-        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        // An EOT marker decoded over the air is positive evidence the transmission ended, so the
+        // event layer can keep an audible epoch whose LSF never reassembled; a plain EXPLICIT end
+        // is indistinguishable from an engine retune and would drop that row.
+        if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot(opts, state, 0U);
         }
         DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));

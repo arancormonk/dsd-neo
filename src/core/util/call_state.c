@@ -395,6 +395,24 @@ dsd_call_state_end_reason_is_recoverable(uint8_t end_reason) {
     return end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
 }
 
+// Exported through call_state_internal.h: the event layer's keep-or-drop verdict for identity-less
+// voice rows keys on the same notion of "positively ended over the air", and a private mirror of
+// the reason list would silently diverge when a reason is added.
+int
+dsd_call_state_end_reason_is_terminator(uint8_t end_reason) {
+    return end_reason == (uint8_t)DSD_CALL_END_TERMINATOR || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+}
+
+// Exported through call_state_internal.h: the event layer holds a VOICE_END alert open for
+// exactly as long as the end may still be reacquired, so the deadline must be selected by the
+// same reason-keyed rule reacquisition itself applies below -- a second copy of the selection
+// would drift the two windows apart.
+double
+dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
+    return end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR ? DSD_CALL_TERMINATOR_HEAL_GAP_S
+                                                                     : DSD_CALL_REACQUIRE_GAP_S;
+}
+
 // True when this observation reopens an epoch that a recoverable end closed moments ago while
 // describing the same call -- one transmission the decoder lost and regained, not two
 // transmissions. The boundary token is deliberately not consulted: the paths that reopen
@@ -434,9 +452,7 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
     // decode can put a new transmission's first identity-less media mark on the slot well inside
     // the sync-loss window -- and folding that in would hand the new call the terminated call's
     // identity and crypto.
-    const double gap = current->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR
-                           ? DSD_CALL_TERMINATOR_HEAL_GAP_S
-                           : DSD_CALL_REACQUIRE_GAP_S;
+    const double gap = dsd_call_state_end_reason_reacquire_gap_s(current->end_reason);
     return current->ended_m > 0.0 && now_m >= current->ended_m && (now_m - current->ended_m) <= gap;
 }
 

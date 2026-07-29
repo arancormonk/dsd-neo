@@ -745,6 +745,39 @@ assert_td_lc_slot_reset(const dsd_state* state, unsigned int slot) {
                 slot == 0U ? 2002U : 4004U);
 }
 
+// A terminator whose LC could not be read (FEC-failed or protected) may really be a mid-call
+// voice burst mis-typed as a terminator. Its crypto reset is stashed for the heal, but the
+// alias/GPS/superframe metadata has no stash -- so the handler must leave it in place, or a
+// healed epoch would print "Invalid Header" for every remaining alias block.
+static void
+assert_td_lc_slot_crypto_reset_metadata_retained(const dsd_state* state, unsigned int slot) {
+    if (slot == 0U) {
+        assert(state->dmr_fid == 0);
+        assert(state->dmr_so == 0);
+        assert(state->payload_algid == 0);
+        assert(state->payload_keyid == 0);
+        assert(state->payload_mi == 0);
+        assert(state->aout_gain == 6.25f);
+    } else {
+        assert(state->dmr_fidR == 0);
+        assert(state->dmr_soR == 0);
+        assert(state->payload_algidR == 0);
+        assert(state->payload_keyidR == 0);
+        assert(state->payload_miR == 0);
+        assert(state->aout_gainR == 6.25f);
+    }
+
+    assert(state->dmr_alias_block_len[slot] == 7);
+    assert(state->dmr_alias_char_size[slot] == 1);
+    assert(state->dmr_alias_format[slot] == 2);
+    assert(strcmp(state->generic_talker_alias[slot], "alias") == 0);
+    assert(state->dmr_pdu_sf[slot][0] == 0x5A);
+    assert(strcmp(state->dmr_embedded_gps[slot], "gps") == 0);
+    assert(strcmp(state->dmr_lrrp_gps[slot], "lrrp") == 0);
+    assert_call(state, (uint8_t)slot, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, slot == 0U ? 1001U : 3003U,
+                slot == 0U ? 2002U : 4004U);
+}
+
 static void
 test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
     static dsd_opts opts;
@@ -773,9 +806,10 @@ test_td_lc_resets_slot_call_privacy_and_alias_state(void) {
 // the recoverable unverified-terminator reason, so a voice burst mis-typed as
 // a terminator mid-call is healed by the next identity-less media mark
 // reacquiring the epoch instead of splitting the transmission in two. The
-// slot's payload crypto and alias state resets either way: keeping it would
-// let the next call on the slot inherit a stale algid/key/MI or half-built
-// alias.
+// slot's payload crypto resets either way (stashed first, so the heal can
+// restore it); the alias/GPS metadata is cleared only when the LC itself was
+// readable, since an unreadable "terminator" may be a mis-typed voice burst
+// whose half-built alias the healed epoch still needs.
 static void
 test_unverified_terminator_ends_call_recoverably(void) {
     static dsd_opts opts;
@@ -929,7 +963,7 @@ test_terminator_ends_call_despite_unreadable_lc(void) {
     irr = 1;
     dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
     assert(irr == 1);
-    assert_td_lc_slot_reset(&state, 0U);
+    assert_td_lc_slot_crypto_reset_metadata_retained(&state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
 
@@ -944,7 +978,7 @@ test_terminator_ends_call_despite_unreadable_lc(void) {
     bits[0] = 1U;
     dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(irr == 0);
-    assert_td_lc_slot_reset(&state, 0U);
+    assert_td_lc_slot_crypto_reset_metadata_retained(&state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
 
@@ -1162,6 +1196,48 @@ test_stale_heal_stash_does_not_leak_into_later_call(void) {
     assert(state.payload_algid == 0);
     assert(state.payload_mi == 0ULL);
     assert(state.dmr_fid == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
+// A Hytera-Enhanced-shaped LC (fid 0x68, flco 0x02, valid vendor checksum) arriving as an
+// FEC-failed terminator burst: the terminator transition has already ended the call, stashed
+// the live crypto, and reset the slot, so the Hytera Enhanced handler must not run afterward
+// and re-populate payload_algid/keyid/mi -- that would leave dmr_fid=0 beside a non-zero ALGID,
+// make dmr_flco_slot_crypto_is_clear() refuse the restore, and strand the stash forever.
+static void
+test_irrecoverable_hytera_terminator_does_not_repopulate_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 1;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    uint8_t bytes[9] = {0x02U, 0x68U, 0x77U, 0x12U, 0x34U, 0x56U, 0x78U, 0x9AU, 0x00U};
+    uint8_t sum = 0U;
+    for (size_t i = 0U; i < 8U; i++) {
+        sum = (uint8_t)(sum + bytes[i]);
+    }
+    bytes[8] = (uint8_t)(0U - sum);
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    for (size_t i = 0U; i < 9U; i++) {
+        write_bits_u64(bits, i * 8U, bytes[i], 8U);
+    }
+
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+
+    assert_td_lc_slot_crypto_reset_metadata_retained(&state, 0U);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    // And the heal still restores the stashed crypto when the epoch reopens.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_fid == 0x68U);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_mi == 0x123456789AULL);
     dsd_state_ext_free_all(&state);
 }
 
@@ -1786,6 +1862,7 @@ main(void) {
     test_reacquired_epoch_restores_cleared_slot_crypto();
     test_heal_restores_live_mi_and_basic_privacy_fid();
     test_stale_heal_stash_does_not_leak_into_later_call();
+    test_irrecoverable_hytera_terminator_does_not_repopulate_crypto();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();

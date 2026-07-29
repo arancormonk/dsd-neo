@@ -788,8 +788,8 @@ wav_file_get_size_or_negative(const char* filename) {
 }
 
 SNDFILE*
-close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                          const Event_History_I* event_struct) {
+close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                             const Event_History_I* event_struct, int export_call) {
     if (wav_file != NULL) {
         sf_close(wav_file);
     }
@@ -826,7 +826,7 @@ close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* w
         return wav_file;
     }
 
-    if (opts && final_size > 44) {
+    if (export_call && opts && final_size > 44) {
         if (dsd_rdio_export_call(opts, event_struct, new_filename) != 0) {
             LOG_WARN("Rdio export failed for %s\n", new_filename);
         }
@@ -834,6 +834,12 @@ close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* w
 
     wav_file = NULL;
     return wav_file;
+}
+
+SNDFILE*
+close_and_rename_wav_file(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
+                          const Event_History_I* event_struct) {
+    return close_and_rename_wav_file_ex(wav_file, opts, wav_out_filename, dir, event_struct, 1);
 }
 
 void

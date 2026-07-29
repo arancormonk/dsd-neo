@@ -327,21 +327,22 @@ watchdog_event_is_data_event(const Event_History* item) {
 }
 
 static void
-watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot) {
+watchdog_event_rotate_wav_if_needed(dsd_opts* opts, const Event_History_I* event_struct, uint8_t slot,
+                                    int export_recording) {
     if (opts->static_wav_file != 0) {
         return;
     }
 
     if (slot == 0 && opts->wav_out_f != NULL) {
-        opts->wav_out_f =
-            close_and_rename_wav_file(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir, event_struct);
+        opts->wav_out_f = close_and_rename_wav_file_ex(opts->wav_out_f, opts, opts->wav_out_file, opts->wav_out_dir,
+                                                       event_struct, export_recording);
         opts->wav_out_f = open_wav_file(opts->wav_out_dir, opts->wav_out_file, sizeof opts->wav_out_file, 8000, 0);
         return;
     }
 
     if (slot == 1 && opts->wav_out_fR != NULL) {
-        opts->wav_out_fR =
-            close_and_rename_wav_file(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir, event_struct);
+        opts->wav_out_fR = close_and_rename_wav_file_ex(opts->wav_out_fR, opts, opts->wav_out_fileR, opts->wav_out_dir,
+                                                        event_struct, export_recording);
         opts->wav_out_fR = open_wav_file(opts->wav_out_dir, opts->wav_out_fileR, sizeof opts->wav_out_fileR, 8000, 0);
     }
 }
@@ -381,13 +382,16 @@ typedef enum {
 // sequence; keeping the alert inside it means the end-of-call side effects cannot drift apart
 // across call sites. The rotation must precede the clear: close_and_rename_wav_file() reads its
 // rename metadata from Items[0]. `alert_on_final` is zero only on the drop path, whose rule is
-// that nothing the operator saw is ending.
+// that nothing the operator saw is ending -- and for the same reason its rotation skips the
+// rdio-scanner export: the recording of an epoch with no history row or log line would upload
+// under all-zero metadata the operator has nothing local to correlate against. The file itself
+// still rotates so the noise segment's audio cannot lead the next transmission's recording.
 static void
 watchdog_event_retire_staged_row(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
                                  dsd_event_end_disposition end_disposition, int alert_on_final,
                                  int last_event_is_data) {
     if (end_disposition != DSD_EVENT_END_NONE) {
-        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot);
+        watchdog_event_rotate_wav_if_needed(opts, event_struct, slot, alert_on_final);
     }
     init_event_history(event_struct, 0, 1);
     watchdog_event_reset_post_push(state);
@@ -479,8 +483,7 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
     // drop whenever the trunker returns to the control channel instead of letting the signal
     // fade.
     env->ended_positively = (uint8_t)(call != NULL && call->phase == DSD_CALL_PHASE_ENDED
-                                      && (call->end_reason == (uint8_t)DSD_CALL_END_TERMINATOR
-                                          || call->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR));
+                                      && dsd_call_state_end_reason_is_terminator(call->end_reason));
 }
 
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
@@ -692,9 +695,11 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
     // ended. Without a lifecycle there are no verdicts to consult, so the row is kept: the
     // paths that commit without one (a notice for a non-canonical call) stage real traffic,
     // and a duplicate row is recoverable where a deleted transmission is not. The WAV still
-    // rotates on a drop: voice frames may have run for the epoch, and leaving the file open
-    // would let the noise segment's audio lead the next transmission's recording. No end alert
-    // either -- like the empty-staged-row case, nothing the operator saw is ending.
+    // rotates on a drop -- voice frames may have run for the epoch, and leaving the file open
+    // would let the noise segment's audio lead the next transmission's recording -- but it is
+    // not exported: an upload with all-zero metadata and no local row to correlate against is
+    // an orphan. No end alert either -- like the empty-staged-row case, nothing the operator
+    // saw is ending.
     if (watchdog_event_voice_row_is_identityless(staged) && lifecycle != NULL
         && !watchdog_event_staged_epoch_vouches(&lifecycle->staged_env)) {
         watchdog_event_retire_staged_row(opts, state, event_struct, slot, end_disposition, 0, last_event_is_data);
@@ -1653,8 +1658,11 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
             // Deliberately the local monotonic clock rather than call->ended_m: the deadline is
             // only ever compared against this same clock, and ended_m carries whatever timeline
             // the caller supplied. In production the two coincide; keeping both endpoints on one
-            // clock means a caller-supplied timeline can never make the alert fire early.
-            lifecycle->end_alert_due_m = dsd_time_now_monotonic_s() + DSD_CALL_REACQUIRE_GAP_S;
+            // clock means a caller-supplied timeline can never make the alert fire early. The gap
+            // is selected by end reason -- the same rule reacquisition applies -- so the alert is
+            // not held open past the moment the canonical layer stops accepting a heal.
+            lifecycle->end_alert_due_m =
+                dsd_time_now_monotonic_s() + dsd_call_state_end_reason_reacquire_gap_s(call->end_reason);
         }
     } else {
         init_event_history(event_struct, 0, 1);

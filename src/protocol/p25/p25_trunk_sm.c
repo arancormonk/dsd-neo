@@ -2575,13 +2575,18 @@ p25_call_publish_observation(const p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
 }
 
 static void
-p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+p25_call_end_slot_ex(dsd_opts* opts, dsd_state* state, int slot, double observed_m, dsd_call_end_reason reason) {
     if (!state || slot < 0 || slot > 1) {
         return;
     }
-    if (dsd_call_state_end(state, (uint8_t)slot, observed_m) > 0 && opts) {
+    if (dsd_call_state_end_ex(state, (uint8_t)slot, observed_m, reason) > 0 && opts) {
         dsd_event_sync_slot(opts, state, (uint8_t)slot);
     }
+}
+
+static void
+p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
+    p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_EXPLICIT);
 }
 
 static void
@@ -3545,9 +3550,14 @@ p25_voice_end_clear_policy_route(const p25_sm_ctx_t* ctx, dsd_state* state, int 
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
 }
 
+// `end_reason` records what the triggering event actually said about the air:
+// DSD_CALL_END_TERMINATOR for over-the-air end signaling (a MAC_END_PTT, a Phase 1 TDU), so the
+// event layer can keep an audible epoch whose call identity never decoded, and
+// DSD_CALL_END_EXPLICIT for inactivity-driven teardowns (idle, hangtime), which say nothing
+// about how the transmission ended.
 static int
 handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, const char* why, int is_explicit_end,
-                 int arm_stale_regrant_guard, const p25_sm_event_t* ev) {
+                 int arm_stale_regrant_guard, const p25_sm_event_t* ev, dsd_call_end_reason end_reason) {
     if (!ctx) {
         return 0;
     }
@@ -3578,7 +3588,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     p25_voice_end_record(&ctx->slots[s], is_explicit_end, arm_stale_regrant_guard, now_m, ended_tg, ended_src);
     p25_voice_end_clear_policy_route(ctx, state, s, preserve_recent_idle_grant);
     p25_voice_close_slot_media_for_end(ctx, opts, state, s, preserve_recent_idle_grant);
-    p25_call_end_slot(opts, state, s, now_m);
+    p25_call_end_slot_ex(opts, state, s, now_m, end_reason);
     if (state && !ctx->vc_is_tdma && arm_stale_regrant_guard) {
         state->p25_p1_identity_pending = 1;
         state->p25_p1_identity_epoch_started = 0;
@@ -3665,7 +3675,7 @@ handle_facch_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, cons
         return do_release(ctx, opts, state, "facch-double-end", 0) ? P25_SM_END_CHANNEL_RELEASED : P25_SM_END_IGNORED;
     }
 
-    int applied = handle_voice_end(ctx, opts, state, ev->slot, "end", 1, 1, ev);
+    int applied = handle_voice_end(ctx, opts, state, ev->slot, "end", 1, 1, ev, DSD_CALL_END_TERMINATOR);
     if (!applied) {
         return P25_SM_END_IGNORED;
     }
@@ -4518,23 +4528,23 @@ p25_sm_handle_event_end(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* stat
         (void)handle_facch_voice_end(ctx, (dsd_opts*)opts, state, ev);
         return;
     }
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "end", 1, 1, ev, DSD_CALL_END_TERMINATOR);
 }
 
 static void
 p25_sm_handle_event_idle(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     // MAC_IDLE may occur during brief gaps - use hangtime, not immediate release.
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "idle", 0, 0, ev, DSD_CALL_END_EXPLICIT);
 }
 
 static void
 p25_sm_handle_event_tdu(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 0, 1, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, 0, "tdu", 0, 1, ev, DSD_CALL_END_TERMINATOR);
 }
 
 static void
 p25_sm_handle_event_hangtime(p25_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
-    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "mac-hangtime", 0, 0, ev);
+    (void)handle_voice_end(ctx, (dsd_opts*)opts, state, ev->slot, "mac-hangtime", 0, 0, ev, DSD_CALL_END_EXPLICIT);
 }
 
 static void
@@ -5742,7 +5752,7 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     }
     p25_sm_event_t ev = p25_sm_ev_end_call_at(slot, tg, src, observed_m);
     const int trunk_assignment_active = ctx->state == P25_SM_TUNED;
-    const int accepted = handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev);
+    const int accepted = handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev, DSD_CALL_END_TERMINATOR);
     if (!trunk_assignment_active && accepted) {
         p25_ptt_marker_invalidate(ctx, slot);
         p25_call_end_slot(opts, state, slot, observed_m);

@@ -2540,7 +2540,8 @@ nxdn_scch_update_busy_display(dsd_opts* opts, dsd_state* state, const struct nxd
     DSD_FPRINTF(stderr, "%s ", info->gu == 0U ? "Group Call" : "Private Call");
     if (info->rep1 == 31U) {
         DSD_FPRINTF(stderr, "Termination ");
-        if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        // Channel-update termination signaling: positive over-the-air end evidence.
+        if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot(opts, state, 0U);
         }
     } else if (info->rep1 != 0U) {
