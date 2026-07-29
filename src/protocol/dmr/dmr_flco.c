@@ -780,13 +780,17 @@ dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
     const int lc_readable = dmr_flco_lc_readable(ctx);
     const int verified = ctx->CRCCorrect == 1U && lc_readable;
     const uint8_t idx = ctx->slot != 0U ? 1U : 0U;
-    if (verified) {
-        // A verified end is final; a heal can never follow it, so no stash may linger to be
-        // matched against some future epoch.
-        ctx->state->dmr_heal_valid[idx] = 0U;
-    } else {
+    if (!verified) {
+        // The stash must cover every epoch the reset below can strand: one still active, and
+        // equally one a recoverable end already closed but that may still reacquire. The fade
+        // case is the one that bites -- sync loss ends the epoch, then the terminator that
+        // explains the fade arrives with an unreadable LC. It cannot tighten a sync-loss end,
+        // but its reset still clears the slot, so without a stash a resumption inside the
+        // window comes back with the canonical snapshot claiming encryption and the live
+        // decoder holding no ALGID, key or MI.
         dsd_call_snapshot ending;
-        if (dsd_call_state_get(ctx->state, ctx->slot, &ending) > 0 && ending.phase == DSD_CALL_PHASE_ACTIVE) {
+        if (dsd_call_state_get(ctx->state, ctx->slot, &ending) > 0 && ending.epoch != 0U
+            && (ending.phase == DSD_CALL_PHASE_ACTIVE || dsd_call_state_end_reason_is_recoverable(ending.end_reason))) {
             dmr_flco_stash_slot_crypto(ctx->state, ctx->slot, ending.epoch);
         }
     }
@@ -794,6 +798,15 @@ dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
                                             verified ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_UNVERIFIED_TERMINATOR);
     if (ended > 0) {
         dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+    }
+    // A final end -- a verified terminator, or an unverified one corroborated by a repeat -- can
+    // never be followed by a heal, so no stash may linger to be matched against a future epoch.
+    // The epoch counter only grows, but dsd_call_context_restore_snapshot() swaps in another
+    // trunk-scan target's epochs wholesale, so a stale stash can meet an equal epoch number.
+    dsd_call_snapshot settled;
+    if (dsd_call_state_get(ctx->state, ctx->slot, &settled) > 0 && settled.phase == DSD_CALL_PHASE_ENDED
+        && !dsd_call_state_end_reason_is_recoverable(settled.end_reason)) {
+        ctx->state->dmr_heal_valid[idx] = 0U;
     }
     dmr_flco_reset_slot_crypto(ctx, idx);
     if (lc_readable) {

@@ -1921,6 +1921,53 @@ test_dstar_sync_loss_after_media_keeps_identityless_row(void) {
     return rc;
 }
 
+// M17, YSF and NXDN each define an end marker but send it exactly once, behind a CRC or FICH
+// error check: an M17 stream whose transmitter drops carrier before the EOT, a YSF tail burst
+// whose FICH is corrupt, or a missed NXDN release SACCH all leave an audible reception ending by
+// sync loss. Demanding a terminator there deleted the row, the log line and the end alert and
+// left the rotated WAV an orphan, so a sync-loss end after media must vouch for them the way it
+// does for D-STAR -- while DMR, P25 and dPMR, whose end signaling repeats or rides the sync
+// correlator, keep dropping the same shape as the noise it is.
+static int
+test_unreliable_terminator_modes_keep_audible_identityless_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+
+    static const int lenient[] = {DSD_SYNC_M17_STR_POS, DSD_SYNC_YSF_POS, DSD_SYNC_NXDN_POS};
+    static const int strict[] = {DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_P25P1_POS, DSD_SYNC_DPMR_FS2_POS};
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(lenient) / sizeof(lenient[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.lastsynctype = lenient[i];
+        rc |= expect_int(
+            "identity-less epoch starts",
+            observe_test_call(&state, 0U, lenient[i], DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN), 1);
+        rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("carrier drops before the end marker", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("audible row survives the missed end marker", committed_history_rows(&event_history[0]), 1);
+        dsd_state_ext_free_all(&state);
+    }
+
+    for (size_t i = 0; i < sizeof(strict) / sizeof(strict[0]); i++) {
+        reset_fixture(&opts, &state, event_history);
+        state.lastsynctype = strict[i];
+        rc |= expect_int(
+            "identity-less epoch starts",
+            observe_test_call(&state, 0U, strict[i], DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U, DSD_CALL_BOUNDARY_BEGIN), 1);
+        rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+        dsd_event_sync_slot(&opts, &state, 0U);
+        rc |= expect_int("noise row still drops", committed_history_rows(&event_history[0]), 0);
+        dsd_state_ext_free_all(&state);
+    }
+    return rc;
+}
+
 // The held VOICE_END deadline must be selected by the same reason-keyed rule the canonical layer
 // applies to reacquisition: an unverified-terminator end stops accepting a heal after
 // DSD_CALL_TERMINATOR_HEAL_GAP_S, so its alert must not be withheld for the full sync-loss
@@ -4167,6 +4214,7 @@ main(void) {
     rc |= test_dropped_identityless_row_rotates_wav_without_export();
     rc |= test_terminator_after_fade_rescues_identityless_row();
     rc |= test_dstar_sync_loss_after_media_keeps_identityless_row();
+    rc |= test_unreliable_terminator_modes_keep_audible_identityless_rows();
     rc |= test_end_alert_deadline_matches_reacquire_window();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();

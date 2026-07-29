@@ -481,10 +481,10 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
     // EXPLICIT is deliberately excluded: the engine ends epochs EXPLICIT on every retune and
     // teardown, so counting it would commit the identity-less noise row this verdict exists to
     // drop whenever the trunker returns to the control channel instead of letting the signal
-    // fade. For protocols with no terminator to decode (D-STAR), a sync-loss end is the closest
-    // thing to positive end evidence the mode can produce; demanding a terminator there would
-    // make the vouch structurally unsatisfiable and delete every audible identity-less
-    // reception.
+    // fade. For protocols whose end marker cannot be relied on -- D-STAR has none, and M17, YSF
+    // and NXDN each send one un-repeated gated burst -- a sync-loss end is the closest thing to
+    // positive end evidence the mode can produce; demanding a terminator there would delete
+    // audible identity-less receptions as a matter of course rather than exceptionally.
     env->ended_positively = (uint8_t)(call != NULL && call->phase == DSD_CALL_PHASE_ENDED
                                       && (dsd_call_state_end_reason_is_terminator(call->end_reason)
                                           || (!dsd_call_state_protocol_voice_has_terminator(call->protocol)
@@ -1667,7 +1667,7 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     // -- may be the middle of a transmission rather than its end, so its VOICE_END alert is
     // held until the reacquisition window closes. Each further segment re-arms it, and the
     // alert lands once the call really has stopped flapping; a corroborating terminator repeat
-    // tightens the reason to EXPLICIT, which releases the hold at the next sync pass. A
+    // tightens the reason to TERMINATOR, which releases the hold at the next sync pass. A
     // verified terminator is unambiguous and alerts immediately.
     //
     // This describes what happened on the air, so it is derived from the air alone. Whether the

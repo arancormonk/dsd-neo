@@ -1239,6 +1239,76 @@ test_stale_heal_stash_does_not_leak_into_later_call(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The terminator that explains a fade usually arrives after the fade already ended the epoch by
+// sync loss. It cannot tighten that end, but its reset still clears the slot, so the stash must
+// cover a recoverably-ended epoch and not only an active one: otherwise a resumption inside the
+// window comes back with the snapshot claiming encryption and the vocoder holding nothing.
+static void
+test_terminator_after_sync_loss_end_still_stashes_crypto(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // An encrypted call whose crypto reached the canonical snapshot, then a fade.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+
+    // The FEC-failed terminator that explains the fade: the sync-loss end stands, the slot
+    // resets, and the stash is taken against the still-reacquirable epoch.
+    irr = 1;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    // Voice resumes inside the window: the healed epoch decrypts again.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_algid == 0x22);
+    assert(state.payload_keyid == 0x33);
+    assert(state.payload_mi == 0x123456789AULL);
+    dsd_state_ext_free_all(&state);
+}
+
+// A stash outlives its usefulness the moment the end becomes final. A verified terminator says
+// so outright; a corroborating repeat tightens an unverified end into TERMINATOR after the stash
+// was already taken, so the stash has to be dropped on the settled reason rather than on the
+// burst that was just read.
+static void
+test_corroborated_terminator_drops_the_heal_stash(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    assert(state.dmr_heal_valid[0] == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
 // A Hytera-Enhanced-shaped LC (fid 0x68, flco 0x02, valid vendor checksum) arriving as an
 // FEC-failed terminator burst: the terminator transition has already ended the call, stashed
 // the live crypto, and reset the slot, so the Hytera Enhanced handler must not run afterward
@@ -1903,6 +1973,8 @@ main(void) {
     test_reacquired_epoch_restores_cleared_slot_crypto();
     test_heal_restores_live_mi_and_basic_privacy_fid();
     test_stale_heal_stash_does_not_leak_into_later_call();
+    test_terminator_after_sync_loss_end_still_stashes_crypto();
+    test_corroborated_terminator_drops_the_heal_stash();
     test_irrecoverable_hytera_terminator_does_not_repopulate_crypto();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();

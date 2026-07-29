@@ -387,20 +387,35 @@ dsd_call_state_protocol_voice_is_anonymous(int protocol) {
     return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol);
 }
 
-// Protocol capability, kept beside voice_is_anonymous for the same reason. D-STAR has no
-// over-the-air end signaling the decoder parses -- a transmission just stops and the carrier
-// fades -- so its epochs only ever end by sync loss or an engine teardown. Requiring
-// terminator-evidenced ends from it would make the event layer's media-plus-terminator vouch
-// structurally unsatisfiable and silently delete every audible identity-less reception; a
-// sync-loss end is the closest thing to a positive end these modes can produce.
+// Protocol capability, kept beside voice_is_anonymous for the same reason. The question this
+// answers is not "does the mode define an end marker" but "can the decoder be relied on to see
+// one", because the event layer's media-plus-terminator vouch deletes an audible identity-less
+// reception whenever the answer is no.
+//
+// D-STAR has no over-the-air end signaling the decoder parses at all -- a transmission just
+// stops and the carrier fades -- so its epochs only ever end by sync loss or an engine teardown.
+// M17, YSF and NXDN do define one, but each sends it exactly once, in the burst most likely to
+// be the one the fade ate, and behind a check that drops it when the burst is damaged: an M17
+// EOT only ends the call with a valid CRC, a YSF tail only with err == 0 on the FICH, and an
+// NXDN release rides a single SACCH. A transmitter that drops carrier a frame early, or one
+// damaged tail burst, leaves a perfectly audible reception with no end marker to show. DMR and
+// P25 stay on the strict side: their end signaling repeats across the hangtime, so a missed
+// terminator is a decode failure rather than the normal case, and dPMR's FS3 end frame is a
+// sync-correlator match rather than a CRC-gated payload.
+//
+// For the lenient modes a sync-loss end is the closest thing to positive end evidence they can
+// produce, so it has to count -- the cost is that their stray-sync noise epochs keep a row,
+// which is the recoverable direction of the trade.
 int
 dsd_call_state_protocol_voice_has_terminator(int protocol) {
-    return !DSD_SYNC_IS_DSTAR(protocol);
+    return !DSD_SYNC_IS_DSTAR(protocol) && !DSD_SYNC_IS_M17(protocol) && !DSD_SYNC_IS_YSF(protocol)
+           && !DSD_SYNC_IS_NXDN(protocol);
 }
 
-// Exported through call_state_internal.h: the event layer's decision to hold a VOICE_END alert
-// open keys on the same notion of "may still be reacquired", and a private mirror of the reason
-// list would silently diverge when a reason is added.
+// Exported through call_state.h: the event layer's decision to hold a VOICE_END alert open, and a
+// reacquire-hook owner's decision about whether the state its end path is tearing down may still
+// be healed back, key on the same notion of "may still be reacquired". A private mirror of the
+// reason list would silently diverge when a reason is added.
 int
 dsd_call_state_end_reason_is_recoverable(uint8_t end_reason) {
     return end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;

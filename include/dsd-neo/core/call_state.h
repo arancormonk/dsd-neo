@@ -346,6 +346,17 @@ int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 
 /**
+ * True for the end reasons that leave the epoch reacquirable (DSD_CALL_END_SYNC_LOSS and
+ * DSD_CALL_END_UNVERIFIED_TERMINATOR).
+ *
+ * The canonical predicate behind reacquisition itself, the event layer's held VOICE_END alert,
+ * and a reacquire-hook owner's decision about whether the state it is about to tear down may
+ * still be needed back. Any private mirror of the reason list would silently diverge when a
+ * reason is added, so callers ask here instead of comparing reasons themselves.
+ */
+int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
+
+/**
  * Called after dsd_call_state_observe() heals a recoverably-ended epoch, with the ending
  * snapshot the reopened epoch was seeded from. The canonical layer stays protocol-neutral:
  * a protocol whose end path tears down live decoder state it would need back on a heal (the

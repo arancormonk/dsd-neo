@@ -37,20 +37,19 @@ int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
 int dsd_call_state_protocol_voice_is_anonymous(int protocol);
 
 /**
- * True for protocols whose voice traffic can signal its own end over the air (a terminator
- * burst, an end frame, an EOT). False for D-STAR, whose transmissions only ever end by sync
- * loss or an engine teardown, so the event layer's keep-or-drop verdict must accept a sync-loss
- * end as the positive end evidence those modes can never produce.
+ * True for protocols whose voice traffic can be relied on to signal its own end over the air:
+ * DMR and P25 repeat their end signaling across the hangtime, and dPMR's FS3 end frame is a
+ * sync-correlator match. False for D-STAR, which has no end signaling at all, and for M17, YSF
+ * and NXDN, whose end marker is one un-repeated CRC- or error-gated burst that a fade or a
+ * single damaged frame routinely costs. The event layer's keep-or-drop verdict must accept a
+ * sync-loss end from the false side as the positive end evidence those modes cannot be counted
+ * on to produce.
  */
 int dsd_call_state_protocol_voice_has_terminator(int protocol);
 
-/**
- * True for the end reasons that leave the epoch reacquirable (SYNC_LOSS and
- * UNVERIFIED_TERMINATOR). The canonical predicate behind both reacquisition (call_state.c) and
- * the event layer's decision to hold a VOICE_END alert open until the window closes
- * (dsd_events.c); a private mirror of the reason list would silently diverge.
- */
-int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
+/* dsd_call_state_end_reason_is_recoverable() is declared in <dsd-neo/core/call_state.h>: the
+ * protocol reacquire-hook owners need the same predicate to decide whether state they are about
+ * to tear down may still be healed back, so it is public rather than core-internal. */
 
 /**
  * True for the end reasons that are positive over-the-air evidence a transmission ended (a
