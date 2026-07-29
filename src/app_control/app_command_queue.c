@@ -2495,6 +2495,7 @@ apply_cmd_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
             return 1;
         case DSD_APP_CMD_TOGGLE_COMPACT:
             opts->frontend_terminal_display.terminal_compact = opts->frontend_terminal_display.terminal_compact ? 0 : 1;
+            dsd_telemetry_request_redraw();
             return 1;
         case DSD_APP_CMD_HISTORY_CYCLE:
             (void)dsd_app_frontend_history_cycle_mode();
@@ -2653,13 +2654,22 @@ apply_cmd_payload_filters(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/* Visual aids are suppressed while compact view is active; surface a hint when
+   a visualizer is switched on there so the key does not look dead. */
+static void
+ui_toast_visualizer_hidden_if_compact(const dsd_opts* opts, dsd_state* state, uint8_t view_on) {
+    if (view_on && opts->frontend_terminal_display.terminal_compact == 1) {
+        ui_set_toast(state, 3, "Visualizer hidden in compact view (c to exit)");
+    }
+}
+
 static int
 apply_cmd_constellation(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     switch (c->id) {
         case DSD_APP_CMD_CONST_TOGGLE:
             if (opts->audio_in_type == AUDIO_IN_RTL) {
                 opts->frontend_display.constellation = opts->frontend_display.constellation ? 0 : 1;
+                ui_toast_visualizer_hidden_if_compact(opts, state, opts->frontend_display.constellation);
             }
             return 1;
         case DSD_APP_CMD_CONST_NORM_TOGGLE:
@@ -2690,10 +2700,10 @@ apply_cmd_constellation(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 
 static int
 ui_cmd_handle_eye_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     (void)c;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         opts->frontend_display.eye_view = opts->frontend_display.eye_view ? 0 : 1;
+        ui_toast_visualizer_hidden_if_compact(opts, state, opts->frontend_display.eye_view);
     }
     return 1;
 }
@@ -2720,20 +2730,20 @@ ui_cmd_handle_eye_color_toggle(dsd_opts* opts, dsd_state* state, const struct ds
 
 static int
 ui_cmd_handle_fsk_hist_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     (void)c;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         opts->frontend_display.fsk_hist_view = opts->frontend_display.fsk_hist_view ? 0 : 1;
+        ui_toast_visualizer_hidden_if_compact(opts, state, opts->frontend_display.fsk_hist_view);
     }
     return 1;
 }
 
 static int
 ui_cmd_handle_spectrum_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)state;
     (void)c;
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         opts->frontend_display.spectrum_view = opts->frontend_display.spectrum_view ? 0 : 1;
+        ui_toast_visualizer_hidden_if_compact(opts, state, opts->frontend_display.spectrum_view);
     }
     return 1;
 }

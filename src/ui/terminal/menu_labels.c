@@ -817,6 +817,14 @@ lbl_ui_channels(const void* v, char* b, size_t n) {
 }
 
 const char*
+lbl_ui_compact(const void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    DSD_SNPRINTF(b, n, "Compact View [%s]",
+                 (c && c->opts && c->opts->frontend_terminal_display.terminal_compact) ? "On" : "Off");
+    return b;
+}
+
+const char*
 lbl_ui_p25_callsign(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     DSD_SNPRINTF(b, n, "Show P25 Callsign Decode [%s]",

@@ -106,6 +106,7 @@ const char* lbl_ui_p25_neighbors(const void* v, char* b, size_t n);
 const char* lbl_ui_p25_iden(const void* v, char* b, size_t n);
 const char* lbl_ui_p25_ccc(const void* v, char* b, size_t n);
 const char* lbl_ui_channels(const void* v, char* b, size_t n);
+const char* lbl_ui_compact(const void* v, char* b, size_t n);
 const char* lbl_ui_p25_callsign(const void* v, char* b, size_t n);
 
 // LRRP labels
