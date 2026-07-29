@@ -35,6 +35,14 @@ int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
  * keep-or-drop decision never grows a private per-protocol list.
  */
 int dsd_call_state_protocol_voice_is_anonymous(int protocol);
+
+/**
+ * True for the end reasons that leave the epoch reacquirable (SYNC_LOSS and
+ * UNVERIFIED_TERMINATOR). The canonical predicate behind both reacquisition (call_state.c) and
+ * the event layer's decision to hold a VOICE_END alert open until the window closes
+ * (dsd_events.c); a private mirror of the reason list would silently diverge.
+ */
+int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
 const dsd_call_state_ext* dsd_call_state_ext_peek(const dsd_state* state);
 void dsd_call_state_ext_lock(const dsd_call_state_ext* ext);
 void dsd_call_state_ext_unlock(const dsd_call_state_ext* ext);

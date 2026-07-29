@@ -582,6 +582,20 @@ struct dsd_state {
     unsigned int dmr_soR;
     unsigned int dmr_flcoR;
 
+    /* Live slot crypto captured by the DMR terminator handler just before its reset, so the
+     * heal of a voice burst mis-typed as a terminator can restore exactly what the vocoder was
+     * decrypting with: the FID the Basic Privacy gates require, and the MI as the superframe
+     * machinery last advanced it (the canonical snapshot's MI can lag it). Indexed by slot;
+     * epoch ties each capture to the ended epoch it belongs to, so a stale stash can never be
+     * applied to a later call. Owned by src/protocol/dmr; the canonical layer never touches it. */
+    unsigned long long int dmr_heal_mi[2];
+    unsigned long long int dmr_heal_epoch[2];
+    unsigned int dmr_heal_fid[2];
+    unsigned int dmr_heal_so[2];
+    int dmr_heal_algid[2];
+    int dmr_heal_keyid[2];
+    uint8_t dmr_heal_valid[2];
+
     char slot1light[8];
     char slot2light[8];
     int directmode;

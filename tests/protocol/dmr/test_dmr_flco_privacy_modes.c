@@ -794,17 +794,20 @@ test_unverified_terminator_ends_call_recoverably(void) {
 
     // A repeated unverified terminator corroborates the unverified end -- two
     // independently mis-typed bursts in a row is not a plausible fade -- so the
-    // reason tightens to explicit, which retracts the reacquisition permission
-    // and releases the held VOICE_END alert where the hangtime repeat runs.
+    // reason tightens to the final terminator reason, which retracts the
+    // reacquisition permission and releases the held VOICE_END alert where the
+    // hangtime repeat runs.
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
     assert(irr == 0);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.phase == DSD_CALL_PHASE_ENDED);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
 
-    // The verified terminator ends explicitly in one step.
+    // The verified terminator ends with the final terminator reason in one
+    // step -- not EXPLICIT, which is the engine's retune/teardown reason and
+    // says nothing about the air.
     irr = 0;
     seed_td_lc_slot(&opts, &state, 0U);
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
@@ -812,7 +815,7 @@ test_unverified_terminator_ends_call_recoverably(void) {
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
     dsd_state_ext_free_all(&state);
 }
 
@@ -902,7 +905,7 @@ test_unverified_terminator_does_not_tighten_sync_loss_end(void) {
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
     dsd_state_ext_free_all(&state);
 }
 
@@ -930,7 +933,11 @@ test_terminator_ends_call_despite_unreadable_lc(void) {
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
 
-    // Protected LC with a verified CRC: an intact terminator, explicit end.
+    // Protected LC, even with a verified CRC: the FLCO is hidden, so the burst
+    // cannot rule out being a TD_LC that terminates a data session rather than
+    // the slot's voice call. It ends the call only recoverably, so a data
+    // terminator arriving mid-voice-call heals on the next media mark instead
+    // of hard-ending the voice call.
     irr = 0;
     seed_td_lc_slot(&opts, &state, 0U);
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
@@ -939,10 +946,11 @@ test_terminator_ends_call_despite_unreadable_lc(void) {
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
 
     // Unknown vendor FID: the no-error dispatch returns early for the LC, but
-    // the terminator transition has already run.
+    // the terminator transition has already run, and the clean unprotected CRC
+    // makes it a verified end.
     irr = 0;
     seed_td_lc_slot(&opts, &state, 0U);
     build_regular_flco(bits, 0x00U, 0x2AU, 0x00U, 1001U, 2002U);
@@ -950,7 +958,7 @@ test_terminator_ends_call_despite_unreadable_lc(void) {
     assert(irr == 0);
     assert_td_lc_slot_reset(&state, 0U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
     dsd_state_ext_free_all(&state);
 }
 
@@ -983,10 +991,10 @@ test_data_terminator_does_not_end_voice_call(void) {
 }
 
 // A voice burst mis-typed as a terminator clears the slot's live crypto before
-// the identity-less media mark reopens the epoch, but the ending snapshot
-// retained the call's crypto. Reacquisition copies it back so the healed
-// continuation of an encrypted call keeps decrypting; an epoch that ends for
-// real starts the next call from cleared crypto as before.
+// the identity-less media mark reopens the epoch, but the terminator handler
+// stashed the live fields first. The heal restores them so the encrypted
+// continuation keeps decrypting; an epoch that ends for real starts the next
+// call from cleared crypto as before.
 static void
 test_reacquired_epoch_restores_cleared_slot_crypto(void) {
     static dsd_opts opts;
@@ -1035,7 +1043,7 @@ test_reacquired_epoch_restores_cleared_slot_crypto(void) {
     build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
     assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
     assert(state.dmr_so == 0U);
     assert(state.payload_algid == 0);
@@ -1062,6 +1070,98 @@ test_reacquired_epoch_restores_cleared_slot_crypto(void) {
     assert(state.payload_algidR == 0x44);
     assert(state.payload_keyidR == 0x55);
     assert(state.payload_miR == 0xABCDEF0123ULL);
+    dsd_state_ext_free_all(&state);
+}
+
+// The heal must put back what the vocoder was actually decrypting with, not what the canonical
+// snapshot last recorded. The superframe machinery (the PI/LE LFSR advances) rolls the live MI
+// forward without publishing a canonical crypto update, and the Basic Privacy decrypt gates in
+// dsd_mbe.c key on the slot FID -- which the canonical snapshot never carried at all. A restore
+// sourced from the snapshot resumed with a stale MI (wrong keystream: still noise) and a zero
+// FID (Basic Privacy never re-applied); the stash of the live fields carries both.
+static void
+test_heal_restores_live_mi_and_basic_privacy_fid(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    // Motorola Basic Privacy shape: enc service option set, algid/keyid zero, FID 0x10 gating
+    // the keystream application, and a live MI the superframe machinery has advanced past
+    // whatever crypto signaling last published.
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.dmr_fid = 0x10;
+    state.dmr_so = 0x40;
+    state.payload_algid = 0;
+    state.payload_keyid = 0;
+    state.payload_mi = 0xDEADBEEFULL;
+
+    // A CRC-failed terminator -- possibly a mis-typed voice burst -- ends the call recoverably
+    // and the reset clears every live field, FID included.
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_fid == 0U);
+    assert(state.dmr_so == 0U);
+    assert(state.payload_mi == 0ULL);
+
+    // The healing media mark restores the live capture: advanced MI, gate-bearing FID.
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(state.dmr_fid == 0x10U);
+    assert(state.dmr_so == 0x40U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_keyid == 0);
+    assert(state.payload_mi == 0xDEADBEEFULL);
+    dsd_state_ext_free_all(&state);
+}
+
+// A lingering stash from one call must never be applied to another epoch's heal: the stash is
+// tied to the epoch whose terminator captured it. A later call on the slot that fades into a
+// sync-loss end and heals -- with its live crypto simply never signaled -- gets nothing
+// restored, rather than the previous call's crypto.
+static void
+test_stale_heal_stash_does_not_leak_into_later_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    // Call A: encrypted, ends on an unverified terminator, stashing its crypto.
+    seed_td_lc_slot(&opts, &state, 0U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1001U, 2002U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 2U);
+    assert(state.dmr_heal_valid[0] == 1U);
+
+    // Call B: a new clear call on the slot (identity-bearing, so it can never heal A's
+    // unverified end), which then fades into a sync-loss end and heals identity-lessly.
+    const dsd_call_observation call_b = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 7007U,
+        .policy_target_id = 7007U,
+        .ota_source_id = 8008U,
+    };
+    assert(dsd_call_state_observe(&state, &call_b, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) == 1);
+    const dsd_call_observation media_mark = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    assert(dsd_call_state_observe(&state, &media_mark, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.ota_target_id == 7007U);
+    // A's stash did not leak into B's healed epoch.
+    assert(state.dmr_so == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_mi == 0ULL);
+    assert(state.dmr_fid == 0U);
     dsd_state_ext_free_all(&state);
 }
 
@@ -1684,6 +1784,8 @@ main(void) {
     test_terminator_ends_call_despite_unreadable_lc();
     test_data_terminator_does_not_end_voice_call();
     test_reacquired_epoch_restores_cleared_slot_crypto();
+    test_heal_restores_live_mi_and_basic_privacy_fid();
+    test_stale_heal_stash_does_not_leak_into_later_call();
     test_flco_output_uses_real_newlines();
     test_ms_direct_flco_reports_internal_slot_one();
     test_single_slot_flco_forces_slot_one_context();

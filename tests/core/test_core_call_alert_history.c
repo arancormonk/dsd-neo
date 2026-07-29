@@ -1758,6 +1758,104 @@ test_media_terminated_identityless_voice_epoch_commits_row(void) {
     return rc;
 }
 
+static int committed_history_rows(const Event_History_I* history);
+
+// The engine ends epochs EXPLICIT on every retune and teardown --
+// no_carrier_clear_voice_tune_state() fires one each time the trunker returns
+// to the control channel -- so an EXPLICIT end is not evidence a transmission
+// ended over the air. A stray-sync noise epoch that carried media and was then
+// ended by a retune must drop exactly like the faded shape; only the
+// terminator reasons vouch for an identity-less audible row.
+static int
+test_retune_explicit_end_drops_identityless_media_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs on the epoch", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("retune ends the epoch explicitly", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("retune-ended noise row does not reach history", committed_history_rows(&event_history[0]), 0);
+
+    // The verified-terminator shape is the one that vouches: same epoch shape,
+    // ended by positive over-the-air evidence, keeps its row.
+    rc |= expect_int("audible epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs again", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("verified terminator ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("terminator-ended audible row reaches history", committed_history_rows(&event_history[0]), 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The heal window after an unverified terminator is tighter than the sync-loss
+// reacquisition window: the mis-typed voice burst it exists for is followed by
+// the transmission's next media mark within a burst or two, while a real end
+// followed by a fast re-key whose headers fail to decode can put an
+// identity-less media mark on the slot well inside the sync-loss window -- and
+// folding that in would hand the new call the terminated call's identity (and,
+// in DMR, its restored crypto).
+static int
+test_unverified_terminator_heal_window_is_tight(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("unverified terminator ends it", end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    // Beyond the heal window but still inside the sync-loss window: proves the
+    // tighter gate is what rejects the reopen.
+    advance_test_clock(0.3);
+    rc |= expect_int("late identity-less continuation begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_call_snapshot call;
+    rc |= expect_int("late continuation opens a fresh epoch", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("fresh epoch is not seeded with the ended call's identity", (int)call.ota_target_id, 0);
+    // Retire the fresh identity-less epoch so the next identified BEGIN opens
+    // its own epoch instead of specializing into it.
+    rc |= expect_int("fresh epoch retires", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
+
+    // Inside the heal window the mis-typed burst still heals.
+    rc |= expect_int("second identified call begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U,
+                                       0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("unverified terminator ends the second call",
+                     end_test_call(&state, 0U, DSD_CALL_END_UNVERIFIED_TERMINATOR), 1);
+    rc |= expect_int("prompt identity-less continuation begins",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("prompt continuation heals the epoch", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("healed epoch keeps the terminated call's identity", (int)call.ota_target_id, 4321);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // A voice epoch whose only decoded knowledge is its crypto -- encrypted, this
 // alg, this key -- is not noise. P25 late entry deliberately opens an
 // identity-less epoch so ESS crypto can attach; when the signal fades before
@@ -3889,6 +3987,8 @@ main(void) {
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();
     rc |= test_identityless_voice_epoch_commits_no_row();
     rc |= test_media_terminated_identityless_voice_epoch_commits_row();
+    rc |= test_retune_explicit_end_drops_identityless_media_row();
+    rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();
     rc |= test_route_text_only_row_survives_epoch_change_commit();
     rc |= test_standalone_provoice_zero_id_row_commits();

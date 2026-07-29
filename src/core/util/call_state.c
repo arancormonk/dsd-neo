@@ -5,7 +5,6 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
-#include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -388,8 +387,11 @@ dsd_call_state_protocol_voice_is_anonymous(int protocol) {
     return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol);
 }
 
-static int
-call_state_end_reason_is_recoverable(uint8_t end_reason) {
+// Exported through call_state_internal.h: the event layer's decision to hold a VOICE_END alert
+// open keys on the same notion of "may still be reacquired", and a private mirror of the reason
+// list would silently diverge when a reason is added.
+int
+dsd_call_state_end_reason_is_recoverable(uint8_t end_reason) {
     return end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
 }
 
@@ -402,7 +404,7 @@ call_state_end_reason_is_recoverable(uint8_t end_reason) {
 static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
                                   double now_m) {
-    if (current->phase != DSD_CALL_PHASE_ENDED || !call_state_end_reason_is_recoverable(current->end_reason)) {
+    if (current->phase != DSD_CALL_PHASE_ENDED || !dsd_call_state_end_reason_is_recoverable(current->end_reason)) {
         return 0;
     }
     // An unverified terminator was positive -- if fallible -- evidence the transmission ended,
@@ -426,8 +428,16 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
     if (call_state_observation_changes_identity(current, observation)) {
         return 0;
     }
-    return current->ended_m > 0.0 && now_m >= current->ended_m
-           && (now_m - current->ended_m) <= DSD_CALL_REACQUIRE_GAP_S;
+    // The heal window after an unverified terminator is much tighter than the sync-loss window:
+    // the mis-typed voice burst it exists for is followed by the transmission's next voice frame
+    // within a burst or two, while a real end followed by a fast re-key whose headers fail to
+    // decode can put a new transmission's first identity-less media mark on the slot well inside
+    // the sync-loss window -- and folding that in would hand the new call the terminated call's
+    // identity and crypto.
+    const double gap = current->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR
+                           ? DSD_CALL_TERMINATOR_HEAL_GAP_S
+                           : DSD_CALL_REACQUIRE_GAP_S;
+    return current->ended_m > 0.0 && now_m >= current->ended_m && (now_m - current->ended_m) <= gap;
 }
 
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
@@ -458,47 +468,16 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     // the reopen instant so per-segment durations remain the segment's own.
 }
 
-// A DMR voice burst mis-typed as a terminator runs the slot's terminator reset -- clearing the
-// live dmr_so/payload_algid/payload_keyid/payload_mi the vocoder decrypts with -- before the
-// healing media mark reopens the epoch. Nothing on the identity-less reopen path re-signals
-// those fields (a PI header or late-entry rebuild may never come mid-transmission), so without
-// this the healed continuation of an encrypted call plays as noise for its remainder. The ending
-// snapshot retained the call's crypto; copy it back, but only into a slot whose live crypto is
-// entirely cleared -- the post-reset shape -- so fresher signaling is never overwritten.
-typedef struct {
-    unsigned int* so;
-    int* algid;
-    int* keyid;
-    unsigned long long int* mi;
-} call_state_dmr_slot_crypto;
+// A protocol whose end path tears down live decoder state it needs back on a heal (the DMR
+// terminator reset clearing the slot's crypto) installs this hook and restores its own fields.
+// The canonical layer only reports that a heal happened and hands over the ending snapshot; what
+// was cleared and what is safe to put back is protocol knowledge and stays in the protocol.
+// Written once from the decode path before the first heal can occur, read on the same thread.
+static dsd_call_state_reacquire_hook g_call_state_reacquire_hook = NULL;
 
-static call_state_dmr_slot_crypto
-call_state_dmr_slot_crypto_fields(dsd_state* state, uint8_t slot) {
-    if (slot == 0U) {
-        return (call_state_dmr_slot_crypto){&state->dmr_so, &state->payload_algid, &state->payload_keyid,
-                                            &state->payload_mi};
-    }
-    return (call_state_dmr_slot_crypto){&state->dmr_soR, &state->payload_algidR, &state->payload_keyidR,
-                                        &state->payload_miR};
-}
-
-static void
-call_state_restore_dmr_slot_crypto(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous) {
-    if (!DSD_SYNC_IS_DMR(previous->protocol)) {
-        return;
-    }
-    const uint16_t so = previous->has_service_metadata != 0U ? previous->service_options : 0U;
-    if (so == 0U && previous->algid == 0U && previous->kid == 0U && previous->mi == 0U) {
-        return;
-    }
-    const call_state_dmr_slot_crypto live = call_state_dmr_slot_crypto_fields(state, slot);
-    if (*live.so != 0U || *live.algid != 0 || *live.keyid != 0 || *live.mi != 0ULL) {
-        return;
-    }
-    *live.so = so;
-    *live.algid = previous->algid;
-    *live.keyid = previous->kid;
-    *live.mi = previous->mi;
+void
+dsd_call_state_set_reacquire_hook(dsd_call_state_reacquire_hook hook) {
+    g_call_state_reacquire_hook = hook;
 }
 
 static void
@@ -562,8 +541,12 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
     const int reacquires_ended_epoch = begins_epoch && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
+    // Copied out of the locked region for the reacquire hook: the hook runs protocol code and
+    // must not execute under the canonical lock.
+    dsd_call_snapshot previous;
+    DSD_MEMSET(&previous, 0, sizeof(previous));
     if (begins_epoch) {
-        const dsd_call_snapshot previous = *snapshot;
+        previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
         snapshot->epoch = ext->epoch_sequence[observation->slot];
@@ -573,7 +556,6 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         snapshot->started_m = now_m;
         if (reacquires_ended_epoch) {
             call_state_seed_reacquired_snapshot(snapshot, &previous);
-            call_state_restore_dmr_slot_crypto(state, observation->slot, &previous);
             ext->events[observation->slot].reacquired_epoch = snapshot->epoch;
             // Which epoch was reopened. Whether a history row may actually be merged is the event
             // layer's call -- it pairs this against the epoch its committed row belongs to -- but
@@ -597,6 +579,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
+    if (reacquires_ended_epoch && g_call_state_reacquire_hook != NULL) {
+        g_call_state_reacquire_hook(state, observation->slot, &previous);
+    }
     return begins_epoch;
 }
 
@@ -709,21 +694,24 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
         // recoverable end, must be able to retract the reacquisition permission that end
         // granted. The fade is often the last thing heard before the terminator that explains
         // it, so without this a second PTT on the same identity inside the gap folds into the
-        // terminated call's row. Two strengths of evidence qualify: a verified terminator or
-        // EOT (an EXPLICIT request) retracts either recoverable reason, and a second unverified
+        // terminated call's row. Two strengths of evidence qualify: a verified terminator or an
+        // EXPLICIT teardown retracts either recoverable reason, and a second unverified
         // terminator corroborates an unverified-terminator end -- two independently mis-typed
         // bursts in a row is not a plausible fade. An unverified terminator alone never
         // tightens a sync-loss end: it is the same fallible evidence the recoverable end exists
         // to distrust, and trusting it there would split a faded transmission in two and
-        // release its held VOICE_END early. Only tightening toward EXPLICIT is allowed, and
-        // ended_m is deliberately left alone: the reason changes, the moment the transmission
-        // stopped does not.
-        const int retracts =
-            reason == DSD_CALL_END_EXPLICIT && call_state_end_reason_is_recoverable(snapshot->end_reason);
+        // release its held VOICE_END early. Only tightening toward a final reason is allowed --
+        // TERMINATOR where the evidence was a terminator (verified, or corroborated by repeat),
+        // EXPLICIT for a teardown -- and ended_m is deliberately left alone: the reason
+        // changes, the moment the transmission stopped does not.
+        const int retracts = (reason == DSD_CALL_END_EXPLICIT || reason == DSD_CALL_END_TERMINATOR)
+                             && dsd_call_state_end_reason_is_recoverable(snapshot->end_reason);
         const int corroborates = reason == DSD_CALL_END_UNVERIFIED_TERMINATOR
                                  && snapshot->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
         if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED && (retracts || corroborates)) {
-            snapshot->end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+            snapshot->end_reason = (reason == DSD_CALL_END_TERMINATOR || corroborates)
+                                       ? (uint8_t)DSD_CALL_END_TERMINATOR
+                                       : (uint8_t)DSD_CALL_END_EXPLICIT;
             snapshot->revision = call_state_next_nonzero(snapshot->revision);
             ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
             dsd_call_state_ext_unlock(ext);

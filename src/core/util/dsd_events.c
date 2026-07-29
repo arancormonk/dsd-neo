@@ -302,7 +302,7 @@ watchdog_event_voice_row_is_identityless(const Event_History* item) {
 // The media-plus-terminator arm is what keeps audible traffic on systems where link control
 // rarely verifies (a RAS DMR kerchunk whose embedded LC never reassembled) from vanishing
 // without a row, a log line, or an end alert, while a stray-sync noise epoch -- media but no
-// terminator, ended by sync loss -- still drops.
+// terminator, ended by sync loss or by the engine retuning away -- still drops.
 static int
 watchdog_event_staged_epoch_vouches(const dsd_call_event_render_env* env) {
     return env->named_call != 0U || (env->saw_media != 0U && env->ended_positively != 0U);
@@ -415,8 +415,8 @@ watchdog_event_handle_source_transition(dsd_opts* opts, dsd_state* state, Event_
                                                reset_slot_identity, DSD_EVENT_END_FINAL);
 }
 
-// True when the epoch this slot holds a VOICE_END for has since been positively terminated: a
-// terminator or EOT decoded after the sync-loss end and tightened the reason to EXPLICIT. The
+// True when the epoch this slot holds a VOICE_END for has since had its recoverable end
+// tightened to a final reason: a terminator, EOT, or teardown decoded after the fade. The
 // reacquisition window is what the alert was waiting on, and that permission is now retracted,
 // so there is nothing left to wait for.
 static int
@@ -425,7 +425,7 @@ watchdog_event_end_is_positively_terminated(const dsd_call_snapshot* call, const
         return 0;
     }
     return call->phase == DSD_CALL_PHASE_ENDED && call->epoch != 0U && call->epoch == lifecycle->epoch
-           && call->end_reason == (uint8_t)DSD_CALL_END_EXPLICIT;
+           && !dsd_call_state_end_reason_is_recoverable(call->end_reason);
 }
 
 // Emit a VOICE_END alert that was held open across a possible reacquisition. `force` retires it
@@ -473,8 +473,14 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
     // the epoch-boundary memset of the whole env resets all three.
     env->named_call = (uint8_t)(dsd_call_state_snapshot_has_identity(call) != 0);
     env->saw_media = (uint8_t)(env->saw_media != 0U || (call != NULL && call->media_active != 0U));
+    // Only the terminator reasons are positive over-the-air evidence a transmission ended.
+    // EXPLICIT is deliberately excluded: the engine ends epochs EXPLICIT on every retune and
+    // teardown, so counting it would commit the identity-less noise row this verdict exists to
+    // drop whenever the trunker returns to the control channel instead of letting the signal
+    // fade.
     env->ended_positively = (uint8_t)(call != NULL && call->phase == DSD_CALL_PHASE_ENDED
-                                      && call->end_reason != (uint8_t)DSD_CALL_END_SYNC_LOSS);
+                                      && (call->end_reason == (uint8_t)DSD_CALL_END_TERMINATOR
+                                          || call->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR));
 }
 
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
@@ -1628,9 +1634,8 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     // operator wants to hear the result is a separate question, answered where the beep is
     // actually emitted -- folding the alert setting in here would make a disposition that other
     // side effects hang off silently change with an unrelated preference.
-    const int deferred_end = (call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS
-                              || call->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR)
-                             && call->kind != DSD_CALL_KIND_DATA;
+    const int deferred_end =
+        dsd_call_state_end_reason_is_recoverable(call->end_reason) && call->kind != DSD_CALL_KIND_DATA;
     const dsd_event_end_disposition disposition = deferred_end ? DSD_EVENT_END_DEFERRED : DSD_EVENT_END_FINAL;
     if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
         // A new row, a merge into the row the interrupted transmission already owns, or -- for

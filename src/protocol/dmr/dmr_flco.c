@@ -652,31 +652,115 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
 }
 
-// The end reason tracks the terminator's RS(12,9) verdict. A verified
-// terminator ends the call explicitly. An unverified one still ends it -- the
-// burst type is FEC-protected separately from the LC payload, and on RAS
-// systems under the aggressive default every LC fails the masked CRC, so
-// gating the end on the CRC would leave RAS calls active forever -- but with
-// the recoverable unverified-terminator reason, so a voice burst mis-typed as
-// a terminator mid-call is healed by the next identity-less media mark
-// reacquiring the epoch instead of splitting the transmission in two, while a
-// same-identity header inside the gap still opens the next transmission's own
-// epoch. The canonical layer owns what a repeat means on an epoch already
-// ended: a second unverified terminator corroborates an unverified end into
-// EXPLICIT -- which also releases the held VOICE_END alert, so on repeater
-// systems the hangtime repeat alerts within a burst of where a verified
-// terminator would -- but never tightens a sync-loss end, whose fade the same
-// fallible evidence cannot explain away. The slot's payload crypto and alias
-// state resets either way: keeping it would let the next call on the slot
-// inherit a stale algid/key/MI or half-built alias. When the end was a
-// mis-typed voice burst, the canonical reacquisition path restores the
-// retained crypto as the healing media mark reopens the epoch (call_state.c),
-// so an encrypted continuation keeps decrypting.
+// The heal side of the unverified-terminator end. The terminator reset below clears the live
+// dmr_fid/dmr_so/payload_algid/payload_keyid/payload_mi the vocoder decrypts and gates with;
+// when the "terminator" was really a mis-typed voice burst, the identity-less media mark that
+// reopens the epoch a burst later needs them back, and nothing on that path re-signals them (a
+// PI header or late-entry rebuild may never come mid-transmission). So the handler stashes the
+// live fields -- not the canonical snapshot's copies: the snapshot's MI can lag the superframe
+// machinery's advances, and it never carried the FID the Basic Privacy gates require -- and the
+// canonical layer's reacquire hook restores them when, and only when, the ended epoch itself is
+// healed. The epoch tie plus the all-cleared gate mean a stale stash can never overwrite
+// fresher signaling or leak into a later call.
+typedef struct {
+    unsigned int* fid;
+    unsigned int* so;
+    int* algid;
+    int* keyid;
+    unsigned long long int* mi;
+} dmr_flco_slot_crypto;
+
+static dmr_flco_slot_crypto
+dmr_flco_slot_crypto_fields(dsd_state* state, uint8_t idx) {
+    if (idx == 0U) {
+        return (dmr_flco_slot_crypto){&state->dmr_fid, &state->dmr_so, &state->payload_algid, &state->payload_keyid,
+                                      &state->payload_mi};
+    }
+    return (dmr_flco_slot_crypto){&state->dmr_fidR, &state->dmr_soR, &state->payload_algidR, &state->payload_keyidR,
+                                  &state->payload_miR};
+}
+
+static int
+dmr_flco_slot_crypto_is_clear(const dmr_flco_slot_crypto* live) {
+    return *live->fid == 0U && *live->so == 0U && *live->algid == 0 && *live->keyid == 0 && *live->mi == 0ULL;
+}
+
+static void
+dmr_flco_stash_slot_crypto(dsd_state* state, uint8_t slot, uint64_t epoch) {
+    const uint8_t idx = slot != 0U ? 1U : 0U;
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
+    state->dmr_heal_valid[idx] = 0U;
+    if (dmr_flco_slot_crypto_is_clear(&live)) {
+        return;
+    }
+    state->dmr_heal_fid[idx] = *live.fid;
+    state->dmr_heal_so[idx] = *live.so;
+    state->dmr_heal_algid[idx] = *live.algid;
+    state->dmr_heal_keyid[idx] = *live.keyid;
+    state->dmr_heal_mi[idx] = *live.mi;
+    state->dmr_heal_epoch[idx] = epoch;
+    state->dmr_heal_valid[idx] = 1U;
+}
+
+static void
+dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous) {
+    if (state == NULL || previous == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    const uint8_t idx = slot != 0U ? 1U : 0U;
+    if (!DSD_SYNC_IS_DMR(previous->protocol) || state->dmr_heal_valid[idx] == 0U
+        || state->dmr_heal_epoch[idx] != previous->epoch) {
+        return;
+    }
+    // Only into a slot whose live fields are entirely cleared -- the post-reset shape -- so
+    // fresher signaling (a header that decoded between the reset and the heal) never loses.
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
+    if (!dmr_flco_slot_crypto_is_clear(&live)) {
+        return;
+    }
+    *live.fid = state->dmr_heal_fid[idx];
+    *live.so = state->dmr_heal_so[idx];
+    *live.algid = state->dmr_heal_algid[idx];
+    *live.keyid = state->dmr_heal_keyid[idx];
+    *live.mi = state->dmr_heal_mi[idx];
+    state->dmr_heal_valid[idx] = 0U;
+}
+
+// The end reason tracks how much of the terminator could be read. A terminator whose LC came
+// through FEC-clean, unprotected, and CRC-verified is trustworthy end evidence and ends the
+// call with the final TERMINATOR reason. Anything less ends it with the recoverable
+// unverified-terminator reason: on RAS systems under the aggressive default every LC fails the
+// masked CRC (gating the end on the CRC would leave RAS calls active forever); a garbled LC can
+// pass the 16-bit CRC by chance while its FEC reports irrecoverable errors; and a protected LC
+// hides its own FLCO, so it cannot rule out being a TD_LC that terminates a data session rather
+// than the slot's voice call. In every unverified shape a voice burst mis-typed as a terminator
+// mid-call is healed by the next identity-less media mark reacquiring the epoch instead of
+// splitting the transmission in two, while a same-identity header inside the gap still opens
+// the next transmission's own epoch. The canonical layer owns what a repeat means on an epoch
+// already ended: a second unverified terminator corroborates an unverified end into TERMINATOR
+// -- which also releases the held VOICE_END alert, so on repeater systems the hangtime repeat
+// alerts within a burst of where a verified terminator would -- but never tightens a sync-loss
+// end, whose fade the same fallible evidence cannot explain away. The slot's payload crypto and
+// alias state resets either way: keeping it would let the next call on the slot inherit a stale
+// algid/key/MI or half-built alias. Before an unverified end's reset, the live crypto is
+// stashed so the heal can restore it (dmr_flco_stash_slot_crypto above).
 static void
 dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
-    const int ended = ctx->CRCCorrect == 1U
-                          ? dsd_call_state_end(ctx->state, ctx->slot, 0.0)
-                          : dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0, DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    const int verified = ctx->CRCCorrect == 1U && *ctx->IrrecoverableErrors == 0 && !ctx->protected_lc;
+    const uint8_t idx = ctx->slot != 0U ? 1U : 0U;
+    if (verified) {
+        // A verified end is final; a heal can never follow it, so no stash may linger to be
+        // matched against some future epoch.
+        ctx->state->dmr_heal_valid[idx] = 0U;
+    } else {
+        dsd_call_snapshot ending;
+        if (dsd_call_state_get(ctx->state, ctx->slot, &ending) > 0 && ending.phase == DSD_CALL_PHASE_ACTIVE) {
+            dmr_flco_stash_slot_crypto(ctx->state, ctx->slot, ending.epoch);
+            dsd_call_state_set_reacquire_hook(dmr_flco_heal_restore);
+        }
+    }
+    const int ended = dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0,
+                                            verified ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_UNVERIFIED_TERMINATOR);
     if (ended > 0) {
         dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
     }
@@ -1071,7 +1155,11 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
     // end would let the next same-identity transmission merge into their row.
     // Only a cleanly read TD_LC is exempt -- it terminates a data session, not
     // the slot's voice call -- and it must be cleanly read: a protected or
-    // FEC-failed LC cannot vouch for its own FLCO.
+    // FEC-failed LC cannot vouch for its own FLCO. Those unreadable shapes
+    // might still be a TD_LC arriving mid-voice-call, which is why the handler
+    // ends them only recoverably: if voice bursts keep coming, the next media
+    // mark heals the epoch and restores the stashed slot crypto, so the cost
+    // of the ambiguity is one burst, not a split call or lost decryption.
     if (ctx.type == 2U && !(*ctx.IrrecoverableErrors == 0 && !ctx.protected_lc && ctx.flco == 0x30U)) {
         dmr_flco_handle_terminator(&ctx);
     }
