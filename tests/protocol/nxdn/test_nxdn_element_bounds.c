@@ -735,6 +735,55 @@ test_bad_crc_release_keeps_active_call(void) {
 }
 
 static int
+test_release_ends_call_with_terminator_reason(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+
+    int rc = 0;
+    // 0x07 TX_REL_EX ends the epoch only via the VCALL release path; 0x08 TX_REL and 0x11 DISC
+    // end it earlier in nxdn_message_type(). All three are CRC-verified over-the-air release
+    // signaling and must record the terminator end reason, not EXPLICIT (a retune/teardown),
+    // or the event layer drops an audible identity-less epoch's row.
+    const uint8_t release_types[] = {0x07U, 0x08U, 0x11U};
+    for (size_t i = 0U; i < sizeof(release_types) / sizeof(release_types[0]); i++) {
+        const dsd_call_observation observation = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 0x4567U,
+            .policy_target_id = 0x4567U,
+            .ota_source_id = 0x1234U,
+        };
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_call_snapshot before;
+        assert(dsd_call_state_get(state, 0U, &before) == 1);
+
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_message_type(bits, release_types[i]);
+        state->NxdnElementsContent.VCallCrcIsGood = 1U;
+        NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+        dsd_call_snapshot after;
+        rc |= expect_int("release-terminator-call-present", dsd_call_state_get(state, 0U, &after), 1);
+        rc |= expect_int("release-terminator-call-ended", after.phase, DSD_CALL_PHASE_ENDED);
+        rc |= expect_int("release-terminator-end-reason", after.end_reason, (int)DSD_CALL_END_TERMINATOR);
+        rc |= expect_u64("release-terminator-call-epoch", after.epoch, before.epoch);
+    }
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
 test_sdcall_header_short_is_ignored(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -1779,6 +1828,7 @@ main(void) {
     rc |= test_disc_trunk_return_clears_call_state();
     rc |= test_idle_keeps_active_call();
     rc |= test_bad_crc_release_keeps_active_call();
+    rc |= test_release_ends_call_with_terminator_reason();
     rc |= test_sdcall_header_short_is_ignored();
     rc |= test_sdcall_iv_short_type_c_is_ignored();
     rc |= test_sdcall_iv_type_d_min_length_is_accepted();

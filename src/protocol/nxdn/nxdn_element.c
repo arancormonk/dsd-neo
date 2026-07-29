@@ -2283,11 +2283,25 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
     }
 }
 
+// Release and disconnect variants that reach nxdn_vcall_process. TX_REL_EX (0x07) ends the epoch
+// only here: unlike TX_REL/DISC it deliberately skips the alias/cipher/keyloader resets in
+// nxdn_message_type(), so this is the one site where its end reason is recorded.
+static int
+nxdn_vcall_message_type_is_release(uint8_t message_type) {
+    return message_type == 0x07U || message_type == 0x08U || message_type == 0x11U;
+}
+
 static void
 nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    if (info->message_type != 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U
-        && dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot(opts, state, 0U);
+    if (info->message_type != 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
+        // A CRC-verified release decoded over the air is positive end evidence -- the terminator
+        // reason lets the event layer keep an audible epoch whose call identity never decoded,
+        // where EXPLICIT reads as a retune and drops the row.
+        const dsd_call_end_reason reason =
+            nxdn_vcall_message_type_is_release(info->message_type) ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_EXPLICIT;
+        if (dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
+            dsd_event_sync_slot(opts, state, 0U);
+        }
     }
     nxdn_vcall_print_summary(state, info);
     nxdn_vcall_load_key(opts, state, info);
