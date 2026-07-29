@@ -157,6 +157,12 @@ test_identity_decode_failure_still_reopens_call(void) {
     end_transmission(TEST_SRC);
     const uint64_t ended_epoch = slot0_epoch();
 
+    // Past the post-END retention tail: inside it an identity-less ACTIVE is
+    // retention of the ended call and must not reopen (covered by
+    // P25_P2_ACTIVE_PTT_EPOCH); after it, a live-typed PDU whose identity
+    // failed to decode is the next transmission arriving.
+    p25_sm_get_ctx()->slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
+
     rc |= expect("anonymous ACTIVE accepted", p25_sm_emit_active(&g_opts, &g_state, 0) > 0);
     rc |= expect("anonymous ACTIVE opens retained assignment", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));
     rc |= expect("anonymous ACTIVE starts epoch", slot0_epoch() != ended_epoch);

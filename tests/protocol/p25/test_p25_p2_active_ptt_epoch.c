@@ -296,6 +296,74 @@ test_post_end_active_repeat_does_not_reopen(void) {
     return rc;
 }
 
+/* A SACCH MAC_PTT repeat whose four-burst assembly straddled the accepted END
+ * re-arrives inside the retention tail carrying the signature the completed
+ * transmission already refreshed. It must not reopen the ended call --
+ * previously it force-minted a phantom epoch (the END had invalidated the
+ * retransmission marker) that committed an identical duplicate row. */
+static int
+test_post_end_ptt_repeat_does_not_reopen(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0xC3U);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+
+    /* Delayed SACCH copy of one of the transmission-start PTT repeats. */
+    mac_ptt(0xC3U);
+    event_ticks();
+    rc |= expect("post-END PTT repeat does not reopen", slot0_phase_is(DSD_CALL_PHASE_ENDED));
+    rc |= expect("post-END PTT repeat mints no epoch", slot0_epoch() == ended_epoch);
+
+    /* The next transmission keys up inside the tail with a fresh signature
+     * (a new MI): that is the conversation continuing, not retention. */
+    uint8_t sig[P25_SM_PTT_SIGNATURE_BYTES];
+    DSD_MEMSET(sig, 0xD4, sizeof(sig));
+    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, P25_SM_SVC_UNKNOWN, sig,
+                                        dsd_time_now_monotonic_s(), 0);
+    event_ticks();
+    rc |= expect("fresh-signature PTT reopens", slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC + 7, dsd_time_now_monotonic_s());
+    event_ticks();
+
+    rc |= expect("two transmissions commit two rows", committed_event_count() == 2);
+    return rc;
+}
+
+/* A live-typed MAC_ACTIVE whose payload carries no decodable voice-user block
+ * emits an identity-less start. Inside the tail it re-fills the retained
+ * assignment identity with unknown service options, reopening the ended call
+ * as a crypto-pending phantom -- the field's trailing "SRC 00000000; ENC"
+ * rows. It must be treated as retention like its identity-bearing siblings. */
+static int
+test_post_end_identityless_active_does_not_reopen(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0xE5U);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+
+    /* Live-typed PDU with non-voice MAC content inside the retention tail. */
+    (void)p25_sm_emit_active(&g_opts, &g_state, 0);
+    event_ticks();
+    rc |= expect("post-END identity-less ACTIVE does not reopen", slot0_phase_is(DSD_CALL_PHASE_ENDED));
+    rc |= expect("post-END identity-less ACTIVE mints no epoch", slot0_epoch() == ended_epoch);
+    rc |= expect("one transmission commits one row", committed_event_count() == 1);
+    return rc;
+}
+
 /* A different talker inside the tail is fresh evidence: the conversation's
  * next transmission must not be mistaken for retention. */
 static int
@@ -354,6 +422,8 @@ main(void) {
     rc |= test_second_ptt_still_begins_new_epoch();
     rc |= test_ptt_without_active_lockout_single_row();
     rc |= test_post_end_active_repeat_does_not_reopen();
+    rc |= test_post_end_ptt_repeat_does_not_reopen();
+    rc |= test_post_end_identityless_active_does_not_reopen();
     rc |= test_post_end_changed_source_reopens();
     rc |= test_repeat_helper_windows();
 

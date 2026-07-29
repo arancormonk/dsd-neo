@@ -2855,8 +2855,14 @@ p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
 // talker is the next transmission and still reopens the call. A changed source is fresh
 // evidence and is never suppressed.
 static int
+p25_voice_end_repeat_tail_active(const p25_sm_slot_ctx_t* slot_ctx, double now_m) {
+    return slot_ctx && slot_ctx->last_end_m > 0.0 && now_m >= slot_ctx->last_end_m
+           && (now_m - slot_ctx->last_end_m) <= P25_POST_END_VOICE_USER_REPEAT_S;
+}
+
+static int
 p25_voice_user_repeats_recent_end(const p25_sm_slot_ctx_t* slot_ctx, int target, int src, double now_m) {
-    if (!slot_ctx || slot_ctx->last_end_m <= 0.0 || target <= 0 || target != slot_ctx->last_end_tg) {
+    if (!slot_ctx || target <= 0 || target != slot_ctx->last_end_tg) {
         return 0;
     }
     if (p25_voice_slot_epoch_active(slot_ctx)) {
@@ -2865,7 +2871,7 @@ p25_voice_user_repeats_recent_end(const p25_sm_slot_ctx_t* slot_ctx, int target,
     if (p25_source_id_known(src) && src != slot_ctx->last_end_src) {
         return 0;
     }
-    return now_m >= slot_ctx->last_end_m && (now_m - slot_ctx->last_end_m) <= P25_POST_END_VOICE_USER_REPEAT_S;
+    return p25_voice_end_repeat_tail_active(slot_ctx, now_m);
 }
 
 int
@@ -3383,8 +3389,34 @@ p25_voice_start_apply_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
 static int
 p25_voice_start_suppress_post_end_repeat(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, int slot,
                                          const p25_sm_event_t* ev, const char* why, double now_m) {
-    if (ev->type != P25_SM_EV_ACTIVE || !ctx->vc_is_tdma
-        || !p25_voice_user_repeats_recent_end(&ctx->slots[slot], ev->is_group ? ev->tg : ev->dst, ev->src, now_m)) {
+    if (!ctx->vc_is_tdma) {
+        return 0;
+    }
+    const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
+    int repeats = 0;
+    if (ev->type == P25_SM_EV_ACTIVE) {
+        int target = ev->is_group ? ev->tg : ev->dst;
+        if (target <= 0) {
+            // An identity-less ACTIVE (a live-typed PDU whose MAC payload is
+            // not a voice-user block) would re-fill the retained assignment
+            // identity with unknown service options, so judge it against the
+            // identity it would reopen -- otherwise it resurrects the ended
+            // call as a crypto-pending phantom.
+            target = slot_ctx->is_group ? slot_ctx->ota_tg : slot_ctx->dst;
+        }
+        repeats = p25_voice_user_repeats_recent_end(slot_ctx, target, ev->src, now_m);
+    } else if (ev->type == P25_SM_EV_PTT) {
+        // A SACCH MAC_PTT repeat whose four-burst assembly straddled the END
+        // arrives after the END was accepted, still signed like the marker
+        // the completed transmission refreshed. The END keeps that marker
+        // precisely so this repeat stays recognizable; the next transmission
+        // carries a fresh signature (new MI) or lands outside the one-second
+        // marker and retention windows.
+        double elapsed_s = 0.0;
+        repeats = !p25_voice_slot_epoch_active(slot_ctx) && p25_voice_end_repeat_tail_active(slot_ctx, now_m)
+                  && p25_ptt_marker_matches(ctx, slot, ev, now_m, &elapsed_s);
+    }
+    if (!repeats) {
         return 0;
     }
     p25_sm_note_vc_decode_activity(ctx, opts, state, why, slot, now_m);
@@ -3668,7 +3700,11 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
         return 0;
     }
 
-    p25_ptt_marker_invalidate(ctx, s);
+    // The PTT retransmission marker deliberately survives the END: a SACCH
+    // MAC_PTT repeat whose assembly straddled the END is recognized as
+    // retention only by matching it (p25_voice_start_suppress_post_end_repeat).
+    // Epoch-active gating keeps it inert otherwise, and slot clear/release
+    // still invalidates it.
     const double now_m = dsd_time_now_monotonic_s();
     const int ended_tg = p25_voice_end_event_tg(ctx, state, s, ev);
     const int ended_src = p25_voice_end_event_src(ctx, state, s, ev);
