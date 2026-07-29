@@ -280,6 +280,13 @@ typedef struct {
      * reacquisition window closes. Stamped with the monotonic deadline to beep at. */
     uint8_t end_alert_pending;
     double end_alert_due_m;
+    /* An identity-less voice row whose recoverable end lacks positive end evidence is held
+     * un-committed rather than dropped: a terminator decoding after the fade retracts the
+     * recoverable reason and vouches for the row, and an immediate drop would be irrevocable.
+     * Stamped with the monotonic deadline to give up and drop at -- the same reacquisition
+     * window the canonical layer applies to the end reason. */
+    uint8_t drop_hold_pending;
+    double drop_hold_due_m;
 } dsd_call_event_lifecycle_snapshot;
 
 /**

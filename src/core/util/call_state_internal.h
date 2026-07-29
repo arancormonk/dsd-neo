@@ -37,6 +37,14 @@ int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
 int dsd_call_state_protocol_voice_is_anonymous(int protocol);
 
 /**
+ * True for protocols whose voice traffic can signal its own end over the air (a terminator
+ * burst, an end frame, an EOT). False for D-STAR, whose transmissions only ever end by sync
+ * loss or an engine teardown, so the event layer's keep-or-drop verdict must accept a sync-loss
+ * end as the positive end evidence those modes can never produce.
+ */
+int dsd_call_state_protocol_voice_has_terminator(int protocol);
+
+/**
  * True for the end reasons that leave the epoch reacquirable (SYNC_LOSS and
  * UNVERIFIED_TERMINATOR). The canonical predicate behind both reacquisition (call_state.c) and
  * the event layer's decision to hold a VOICE_END alert open until the window closes

@@ -481,9 +481,14 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
     // EXPLICIT is deliberately excluded: the engine ends epochs EXPLICIT on every retune and
     // teardown, so counting it would commit the identity-less noise row this verdict exists to
     // drop whenever the trunker returns to the control channel instead of letting the signal
-    // fade.
+    // fade. For protocols with no terminator to decode (D-STAR), a sync-loss end is the closest
+    // thing to positive end evidence the mode can produce; demanding a terminator there would
+    // make the vouch structurally unsatisfiable and delete every audible identity-less
+    // reception.
     env->ended_positively = (uint8_t)(call != NULL && call->phase == DSD_CALL_PHASE_ENDED
-                                      && dsd_call_state_end_reason_is_terminator(call->end_reason));
+                                      && (dsd_call_state_end_reason_is_terminator(call->end_reason)
+                                          || (!dsd_call_state_protocol_voice_has_terminator(call->protocol)
+                                              && call->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS)));
 }
 
 // Depth of the row this slot last committed, or 0 when it can no longer be located.
@@ -808,6 +813,11 @@ watchdog_event_history_authoritative(dsd_opts* opts, dsd_state* state, uint8_t s
 
     lifecycle->epoch = call->epoch;
     lifecycle->ended_committed = 0U;
+    // The commit above resolved the outgoing epoch's staged row -- committed or dropped -- so a
+    // hold it left pending is spent, and a stale deadline must not make the incoming epoch's
+    // own keep-or-drop verdict skip its arming step.
+    lifecycle->drop_hold_pending = 0U;
+    lifecycle->drop_hold_due_m = 0.0;
     // Set after the commit above, which belongs to the outgoing epoch. Rows staged directly by a
     // protocol never pass through the renderer, so without this they would inherit whichever
     // environment -- and epoch verdicts -- the previous epoch's last render left behind.
@@ -1619,6 +1629,31 @@ watchdog_event_commit_candidate(Event_History_I* event_struct, const Event_Histo
     }
 }
 
+// Non-zero while the keep-or-drop verdict for the staged row must stay open. An identity-less
+// row that would be dropped is not dropped while its recoverable end can still be explained: a
+// terminator decoding in the hangtime after a fade retracts the end reason, the next render's
+// verdicts then vouch for the row, and the finalize pass -- re-run every sync pass because
+// ended_committed stays clear -- commits it normally. An immediate drop would be irrevocable:
+// the retraction succeeds in the canonical layer but the staged row is already zeroed with
+// nothing left to re-render. The hold expires on the same reason-keyed window reacquisition
+// uses; a window that closes with the end still unexplained falls through to the drop the
+// verdicts already called for.
+static int
+watchdog_event_drop_verdict_held(dsd_call_event_lifecycle* lifecycle, const dsd_call_snapshot* call,
+                                 const Event_History_I* event_struct, int deferred_end) {
+    if (!deferred_end || !watchdog_event_voice_row_is_identityless(&event_struct->Event_History_Items[0])
+        || watchdog_event_staged_epoch_vouches(&lifecycle->staged_env)) {
+        return 0;
+    }
+    const double now_m = dsd_time_now_monotonic_s();
+    if (!lifecycle->drop_hold_pending) {
+        lifecycle->drop_hold_pending = 1U;
+        lifecycle->drop_hold_due_m = now_m + dsd_call_state_end_reason_reacquire_gap_s(call->end_reason);
+        return 1;
+    }
+    return now_m < lifecycle->drop_hold_due_m;
+}
+
 static void
 watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                               dsd_call_event_lifecycle* lifecycle, Event_History_I* event_struct, int finalize_ended) {
@@ -1643,6 +1678,9 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
         dsd_call_state_end_reason_is_recoverable(call->end_reason) && call->kind != DSD_CALL_KIND_DATA;
     const dsd_event_end_disposition disposition = deferred_end ? DSD_EVENT_END_DEFERRED : DSD_EVENT_END_FINAL;
     if (watchdog_event_item_has_content(&event_struct->Event_History_Items[0])) {
+        if (watchdog_event_drop_verdict_held(lifecycle, call, event_struct, deferred_end)) {
+            return;
+        }
         // A new row, a merge into the row the interrupted transmission already owns, or -- for
         // a voice epoch that never learned an identity -- a drop. The empty-staged-row branch
         // has nothing to commit; enrichment resolves that case by push sequence and declines.
@@ -1667,6 +1705,8 @@ watchdog_event_finalize_ended(const dsd_opts* opts, dsd_state* state, uint8_t sl
     } else {
         init_event_history(event_struct, 0, 1);
     }
+    lifecycle->drop_hold_pending = 0U;
+    lifecycle->drop_hold_due_m = 0.0;
     lifecycle->ended_committed = 1U;
 }
 

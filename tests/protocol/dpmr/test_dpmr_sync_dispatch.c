@@ -15,6 +15,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -126,6 +127,31 @@ test_dispatch_voice_sync_begins_anonymous_call_and_processes_voice(void) {
     assert(strcmp(state.fsubtype, " VOICE        ") == 0);
 }
 
+// An FS3 end frame decoding after a sync-loss end must still reach the canonical retract path:
+// the recoverable end tightens to TERMINATOR, so the event layer can keep the audible epoch's
+// row and the reacquisition window closes. A phase guard in the dispatch would make the retract
+// path unreachable for dPMR alone among the converted protocols.
+static void
+test_dispatch_end_sync_tightens_sync_loss_end(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+
+    state.synctype = DSD_SYNC_DPMR_FS3_POS;
+    dsd_dispatch_handle_dpmr(&opts, &state);
+
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -133,6 +159,7 @@ main(void) {
     test_synctype_helpers();
     test_dispatch_close_only_syncs();
     test_dispatch_voice_sync_begins_anonymous_call_and_processes_voice();
+    test_dispatch_end_sync_tightens_sync_loss_end();
     printf("DPMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

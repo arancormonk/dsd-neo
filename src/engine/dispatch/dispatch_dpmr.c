@@ -20,11 +20,15 @@
 // is positive over-the-air evidence the transmission ended (DSD_CALL_END_TERMINATOR), so the
 // event layer can keep an audible epoch whose header never decoded, while a new header sync
 // preempting a still-open call says nothing about the previous transmission and stays EXPLICIT.
+// The end is offered even when the slot's call has already ended: an FS3 decoding inside the
+// reacquisition window after a sync-loss end must reach dsd_call_state_end_ex()'s retract path
+// so the recoverable end tightens to its final reason -- otherwise the audible epoch's row is
+// dropped despite positive end evidence, and a second PTT inside the window folds into the
+// ended call's row. end_ex() itself no-ops on everything else.
 static void
-dpmr_end_active_call(dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
+dpmr_end_call(dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_DPMR(call.protocol)) {
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_DPMR(call.protocol)) {
         return;
     }
     if (dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
@@ -43,7 +47,7 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     //dPMR
     if ((state->synctype == DSD_SYNC_DPMR_FS1_POS) || (state->synctype == DSD_SYNC_DPMR_FS1_NEG)) {
         /* dPMR Frame Sync 1 */
-        dpmr_end_active_call(opts, state, DSD_CALL_END_EXPLICIT);
+        dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 1 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
@@ -73,14 +77,14 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
 
     } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
         /* dPMR Frame Sync 3 */
-        dpmr_end_active_call(opts, state, DSD_CALL_END_TERMINATOR);
+        dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 3 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);
         }
     } else if ((state->synctype == DSD_SYNC_DPMR_FS4_POS) || (state->synctype == DSD_SYNC_DPMR_FS4_NEG)) {
         /* dPMR Frame Sync 4 */
-        dpmr_end_active_call(opts, state, DSD_CALL_END_EXPLICIT);
+        dpmr_end_call(opts, state, DSD_CALL_END_EXPLICIT);
         DSD_FPRINTF(stderr, "dPMR Frame Sync 4 ");
         if (opts->mbe_out_f != NULL) {
             closeMbeOutFile(opts, state);

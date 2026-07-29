@@ -1024,6 +1024,46 @@ test_data_terminator_does_not_end_voice_call(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// A protected LC hides its own FLCO -- the payload bits are ciphertext -- so a protected
+// terminator burst whose scrambled FLCO happens to decode as 0x30 must not be trusted as a
+// TD_LC: the slot's voice call still ends (recoverably, like every unreadable terminator
+// shape), but a live data session's reassembly state stays intact instead of being wiped on
+// ciphertext.
+static void
+test_protected_td_lc_shape_does_not_wipe_data_session(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    seed_td_lc_slot(&opts, &state, 0U);
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 4;
+    state.data_header_valid[0] = 1;
+    state.data_conf_data[0] = 1;
+    state.data_block_poc[0] = 3;
+    state.data_byte_ctr[0] = 42;
+    state.data_ks_start[0] = 5;
+
+    build_regular_flco(bits, 0x30U, 0x00U, 0x00U, 0U, 0U);
+    bits[0] = 1; /* pf: the LC payload, including its FLCO, is ciphertext */
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.phase == DSD_CALL_PHASE_ENDED);
+    assert(call.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    assert(state.data_header_format[0] == 2);
+    assert(state.data_header_sap[0] == 4);
+    assert(state.data_header_valid[0] == 1);
+    assert(state.data_conf_data[0] == 1);
+    assert(state.data_block_poc[0] == 3);
+    assert(state.data_byte_ctr[0] == 42);
+    assert(state.data_ks_start[0] == 5);
+    dsd_state_ext_free_all(&state);
+}
+
 // A voice burst mis-typed as a terminator clears the slot's live crypto before
 // the identity-less media mark reopens the epoch, but the terminator handler
 // stashed the live fields first. The heal restores them so the encrypted
@@ -1859,6 +1899,7 @@ main(void) {
     test_unverified_terminator_does_not_tighten_sync_loss_end();
     test_terminator_ends_call_despite_unreadable_lc();
     test_data_terminator_does_not_end_voice_call();
+    test_protected_td_lc_shape_does_not_wipe_data_session();
     test_reacquired_epoch_restores_cleared_slot_crypto();
     test_heal_restores_live_mi_and_basic_privacy_fid();
     test_stale_heal_stash_does_not_leak_into_later_call();

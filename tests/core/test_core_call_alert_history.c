@@ -1832,21 +1832,90 @@ test_dropped_identityless_row_rotates_wav_without_export(void) {
     rc |= expect_int("sync loss ends the noise epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_int("dropped row leaves no history", committed_history_rows(&event_history[0]), 0);
-    rc |= expect_int("dropped row still rotates the WAV", g_close_wav_count, 1);
-    rc |= expect_int("dropped row's rotation does not export", g_close_wav_export_count, 0);
-
-    // The committed shape keeps exporting: same rotation path, row reached history.
-    opts.wav_out_f = (SNDFILE*)0x1;
-    g_close_wav_count = 0;
+    // The keep-or-drop verdict is held while the recoverable end could still be explained by a
+    // late terminator, so the WAV has not rotated yet; a new call taking the slot resolves the
+    // hold, and the drop's rotation must not export.
+    rc |= expect_int("keep-or-drop is held while the end may still be explained", g_close_wav_count, 0);
     rc |= expect_int("identified call begins",
                      observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U,
                                        0U, 0U, DSD_CALL_BOUNDARY_BEGIN),
                      1);
     dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("held drop resolves when a new call takes the slot", g_close_wav_count, 1);
+    rc |= expect_int("dropped row's rotation does not export", g_close_wav_export_count, 0);
+    rc |= expect_int("resolved drop still leaves no history", committed_history_rows(&event_history[0]), 0);
+
+    // The committed shape keeps exporting: same rotation path, row reached history.
+    opts.wav_out_f = (SNDFILE*)0x1;
+    g_close_wav_count = 0;
     rc |= expect_int("identified call ends", end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
     rc |= expect_int("committed row rotates the WAV", g_close_wav_count, 1);
     rc |= expect_int("committed row's rotation exports", g_close_wav_export_count, 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The keep-or-drop verdict for an identity-less audible row must not be irrevocable at the
+// first ended-sync pass: a fade often beats the terminator that explains it, and the hangtime
+// terminator then retracts the sync-loss end to TERMINATOR in the canonical layer. The held
+// verdict re-reads the staged environment on the next pass, sees the end became positive, and
+// commits the row the immediate drop would have deleted with nothing left to re-render.
+static int
+test_terminator_after_fade_rescues_identityless_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    rc |= expect_int("audible epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("carrier fades before the terminator", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("verdict is held, not dropped", committed_history_rows(&event_history[0]), 0);
+
+    // The hangtime terminator decodes after the fade; a verified terminator retracts the
+    // recoverable end, and the next sync pass commits the row it now vouches for.
+    rc |=
+        expect_int("late terminator retracts the sync-loss end", end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("rescued audible row reaches history", committed_history_rows(&event_history[0]), 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// D-STAR has no terminator to decode -- its transmissions only ever end by sync loss or an
+// engine teardown -- so the media-plus-terminator vouch would be structurally unsatisfiable for
+// it. A sync-loss end after audible media must count as the positive end evidence the mode can
+// never produce, keeping the reception's row where a DMR noise epoch's still drops.
+static int
+test_dstar_sync_loss_after_media_keeps_identityless_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = 0;
+    state.lastsynctype = DSD_SYNC_DSTAR_VOICE_POS;
+
+    rc |= expect_int("identity-less D-STAR epoch starts",
+                     observe_test_call(&state, 0U, DSD_SYNC_DSTAR_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    rc |= expect_int("voice media runs", dsd_call_state_update_media(&state, 0U, 1, g_observed_m), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("sync loss ends the reception", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("audible D-STAR row reaches history", committed_history_rows(&event_history[0]), 1);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -4096,6 +4165,8 @@ main(void) {
     rc |= test_media_terminated_identityless_voice_epoch_commits_row();
     rc |= test_retune_explicit_end_drops_identityless_media_row();
     rc |= test_dropped_identityless_row_rotates_wav_without_export();
+    rc |= test_terminator_after_fade_rescues_identityless_row();
+    rc |= test_dstar_sync_loss_after_media_keeps_identityless_row();
     rc |= test_end_alert_deadline_matches_reacquire_window();
     rc |= test_unverified_terminator_heal_window_is_tight();
     rc |= test_crypto_only_voice_epoch_commits_row();

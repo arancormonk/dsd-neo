@@ -387,6 +387,17 @@ dsd_call_state_protocol_voice_is_anonymous(int protocol) {
     return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol);
 }
 
+// Protocol capability, kept beside voice_is_anonymous for the same reason. D-STAR has no
+// over-the-air end signaling the decoder parses -- a transmission just stops and the carrier
+// fades -- so its epochs only ever end by sync loss or an engine teardown. Requiring
+// terminator-evidenced ends from it would make the event layer's media-plus-terminator vouch
+// structurally unsatisfiable and silently delete every audible identity-less reception; a
+// sync-loss end is the closest thing to a positive end these modes can produce.
+int
+dsd_call_state_protocol_voice_has_terminator(int protocol) {
+    return !DSD_SYNC_IS_DSTAR(protocol);
+}
+
 // Exported through call_state_internal.h: the event layer's decision to hold a VOICE_END alert
 // open keys on the same notion of "may still be reacquired", and a private mirror of the reason
 // list would silently diverge when a reason is added.
@@ -558,9 +569,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     // Evaluated before the memset below: the ending snapshot is the comparison target.
     const int reacquires_ended_epoch = begins_epoch && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
     // Copied out of the locked region for the reacquire hook: the hook runs protocol code and
-    // must not execute under the canonical lock.
+    // must not execute under the canonical lock. Every read is dominated by the begins_epoch
+    // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
     dsd_call_snapshot previous;
-    DSD_MEMSET(&previous, 0, sizeof(previous));
     if (begins_epoch) {
         previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
@@ -836,6 +847,9 @@ dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
     // a transmission the operator can no longer see.
     lifecycle->end_alert_pending = 0U;
     lifecycle->end_alert_due_m = 0.0;
+    // Same for a held keep-or-drop verdict: the staged row it was waiting to resolve is gone.
+    lifecycle->drop_hold_pending = 0U;
+    lifecycle->drop_hold_due_m = 0.0;
     // Both halves of the env pair go, matching the epoch-change path in dsd_events.c. A row staged
     // directly by a protocol never passes through the renderer, so a surviving staged_env would be
     // promoted into committed_env when that row commits and a later merge would re-render against
