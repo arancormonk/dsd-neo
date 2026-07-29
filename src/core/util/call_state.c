@@ -306,7 +306,7 @@ call_state_observation_changes_identity(const dsd_call_snapshot* current, const 
         return 1;
     }
     // Route text is compared here rather than only where reacquisition consults it: both
-    // call_state_observation_has_identity() and call_state_snapshot_has_identity() already count
+    // call_state_observation_has_identity() and dsd_call_state_snapshot_has_identity() already count
     // it as identity, so leaving it out made it the one anchor no contradiction could ever reject.
     // A route-only D-STAR or YSF snapshot would then match every later observation. Like the other
     // text fields it only reports a contradiction when both sides are known, so a repeater pair
@@ -362,37 +362,124 @@ call_state_observation_begins_epoch(const dsd_call_snapshot* current, const dsd_
 // True when the slot names a call concretely enough for "the same call" to mean anything.
 // call_state_observation_changes_identity() only reports a *contradiction*, so a snapshot that
 // never learned an identity is compatible with every observation; reacquisition needs a positive
-// anchor or it would coalesce two unrelated transmissions.
-static int
-call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
+// anchor or it would coalesce two unrelated transmissions. Exported through
+// call_state_internal.h: the event layer keys its drop-identity-less-voice-rows decision on the
+// same notion of "named a call", and a private mirror of the field list would silently diverge.
+int
+dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current) {
+    if (current == NULL) {
+        return 0;
+    }
     return call_state_effective_target_snapshot(current) != 0U || current->ota_source_id != 0U
            || call_state_text_is_known(current->source_text) || call_state_text_is_known(current->target_text)
            || call_state_text_is_known(current->route_text[0]) || call_state_text_is_known(current->route_text[1]);
 }
 
-// True when this observation reopens an epoch that sync loss ended moments ago while describing
-// the same call -- one transmission the decoder lost and regained, not two transmissions. The
-// boundary token is deliberately not consulted: the paths that reopen mid-transmission (the
-// vocoder's per-frame media mark, a DMR Voice LC Header arriving after the gap, M17's stream
-// mark, the P25p1 ESS ensure-call) all pass BEGIN, while P25 Phase 2 and the other re-announcing
-// protocols pass CONTINUE. Both must arm.
+// Protocol capability, kept in the canonical layer so the event layer never grows its own
+// per-protocol knowledge: these modes never parse their voice traffic into a talkgroup or
+// source, so an identity-less voice epoch is the protocol's whole story -- that the channel
+// carried voice -- not a decode failure. A protocol added here keeps its all-zero rows;
+// everywhere else an identity-less voice epoch must earn its row another way. (EDACS-trunked
+// ProVoice rows carry AFS/LID strings and never present as identity-less; the entry only
+// matters for the standalone mode.)
+int
+dsd_call_state_protocol_voice_is_anonymous(int protocol) {
+    return DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_PROVOICE(protocol);
+}
+
+// Protocol capability, kept beside voice_is_anonymous for the same reason. The question this
+// answers is not "does the mode define an end marker" but "can the decoder be relied on to see
+// one", because the event layer's media-plus-terminator vouch deletes an audible identity-less
+// reception whenever the answer is no.
+//
+// D-STAR has no over-the-air end signaling the decoder parses at all -- a transmission just
+// stops and the carrier fades -- so its epochs only ever end by sync loss or an engine teardown.
+// M17, YSF and NXDN do define one, but each sends it exactly once, in the burst most likely to
+// be the one the fade ate, and behind a check that drops it when the burst is damaged: an M17
+// EOT only ends the call with a valid CRC, a YSF tail only with err == 0 on the FICH, and an
+// NXDN release rides a single SACCH. A transmitter that drops carrier a frame early, or one
+// damaged tail burst, leaves a perfectly audible reception with no end marker to show. DMR and
+// P25 stay on the strict side: their end signaling repeats across the hangtime, so a missed
+// terminator is a decode failure rather than the normal case, and dPMR's FS3 end frame is a
+// sync-correlator match rather than a CRC-gated payload.
+//
+// For the lenient modes a sync-loss end is the closest thing to positive end evidence they can
+// produce, so it has to count -- the cost is that their stray-sync noise epochs keep a row,
+// which is the recoverable direction of the trade.
+int
+dsd_call_state_protocol_voice_has_terminator(int protocol) {
+    return !DSD_SYNC_IS_DSTAR(protocol) && !DSD_SYNC_IS_M17(protocol) && !DSD_SYNC_IS_YSF(protocol)
+           && !DSD_SYNC_IS_NXDN(protocol);
+}
+
+// Exported through call_state.h: the event layer's decision to hold a VOICE_END alert open, and a
+// reacquire-hook owner's decision about whether the state its end path is tearing down may still
+// be healed back, key on the same notion of "may still be reacquired". A private mirror of the
+// reason list would silently diverge when a reason is added.
+int
+dsd_call_state_end_reason_is_recoverable(uint8_t end_reason) {
+    return end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+}
+
+// Exported through call_state_internal.h: the event layer's keep-or-drop verdict for identity-less
+// voice rows keys on the same notion of "positively ended over the air", and a private mirror of
+// the reason list would silently diverge when a reason is added.
+int
+dsd_call_state_end_reason_is_terminator(uint8_t end_reason) {
+    return end_reason == (uint8_t)DSD_CALL_END_TERMINATOR || end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+}
+
+// Exported through call_state_internal.h: the event layer holds a VOICE_END alert open for
+// exactly as long as the end may still be reacquired, so the deadline must be selected by the
+// same reason-keyed rule reacquisition itself applies below -- a second copy of the selection
+// would drift the two windows apart.
+double
+dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
+    return end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR ? DSD_CALL_TERMINATOR_HEAL_GAP_S
+                                                                     : DSD_CALL_REACQUIRE_GAP_S;
+}
+
+// True when this observation reopens an epoch that a recoverable end closed moments ago while
+// describing the same call -- one transmission the decoder lost and regained, not two
+// transmissions. The boundary token is deliberately not consulted: the paths that reopen
+// mid-transmission (the vocoder's per-frame media mark, a DMR Voice LC Header arriving after the
+// gap, M17's stream mark, the P25p1 ESS ensure-call) all pass BEGIN, while P25 Phase 2 and the
+// other re-announcing protocols pass CONTINUE. Both must arm.
 static int
 call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_call_observation* observation,
                                   double now_m) {
-    if (current->phase != DSD_CALL_PHASE_ENDED || current->end_reason != (uint8_t)DSD_CALL_END_SYNC_LOSS) {
+    if (current->phase != DSD_CALL_PHASE_ENDED || !dsd_call_state_end_reason_is_recoverable(current->end_reason)) {
+        return 0;
+    }
+    // An unverified terminator was positive -- if fallible -- evidence the transmission ended,
+    // so only identity-less continuations may reopen its epoch: the vocoder's per-frame media
+    // mark that heals a voice burst mis-typed as a terminator arrives within one burst and
+    // carries no identity. An identity-bearing observation after such an end is the next
+    // transmission's header, and folding it in would merge a genuine second PTT on the same
+    // TG/SRC into the terminated call's row. A sync-loss end carries no end evidence at all, so
+    // there the identity-bearing reopen (a DMR Voice LC Header arriving after the gap, M17's
+    // stream mark) stays a reacquisition.
+    if (current->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR
+        && call_state_observation_has_identity(observation)) {
         return 0;
     }
     // The ending epoch must name a call. Without this an identity-less provisional epoch -- the
     // shape mark_vocoder_call_media() opens before any header decodes -- matches everything, and
     // the next unrelated call on the slot would be folded into its row.
-    if (!call_state_snapshot_has_identity(current)) {
+    if (!dsd_call_state_snapshot_has_identity(current)) {
         return 0;
     }
     if (call_state_observation_changes_identity(current, observation)) {
         return 0;
     }
-    return current->ended_m > 0.0 && now_m >= current->ended_m
-           && (now_m - current->ended_m) <= DSD_CALL_REACQUIRE_GAP_S;
+    // The heal window after an unverified terminator is much tighter than the sync-loss window:
+    // the mis-typed voice burst it exists for is followed by the transmission's next voice frame
+    // within a burst or two, while a real end followed by a fast re-key whose headers fail to
+    // decode can put a new transmission's first identity-less media mark on the slot well inside
+    // the sync-loss window -- and folding that in would hand the new call the terminated call's
+    // identity and crypto.
+    const double gap = dsd_call_state_end_reason_reacquire_gap_s(current->end_reason);
+    return current->ended_m > 0.0 && now_m >= current->ended_m && (now_m - current->ended_m) <= gap;
 }
 
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
@@ -421,6 +508,18 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
     // re-earns audio from the next crypto update exactly as it does today, and started_m stays
     // the reopen instant so per-segment durations remain the segment's own.
+}
+
+// A protocol whose end path tears down live decoder state it needs back on a heal (the DMR
+// terminator reset clearing the slot's crypto) installs this hook and restores its own fields.
+// The canonical layer only reports that a heal happened and hands over the ending snapshot; what
+// was cleared and what is safe to put back is protocol knowledge and stays in the protocol.
+// Written once from the decode path before the first heal can occur, read on the same thread.
+static dsd_call_state_reacquire_hook g_call_state_reacquire_hook = NULL;
+
+void
+dsd_call_state_set_reacquire_hook(dsd_call_state_reacquire_hook hook) {
+    g_call_state_reacquire_hook = hook;
 }
 
 static void
@@ -484,8 +583,12 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     const int begins_epoch = call_state_observation_begins_epoch(snapshot, observation, boundary);
     // Evaluated before the memset below: the ending snapshot is the comparison target.
     const int reacquires_ended_epoch = begins_epoch && call_state_reacquires_ended_epoch(snapshot, observation, now_m);
+    // Copied out of the locked region for the reacquire hook: the hook runs protocol code and
+    // must not execute under the canonical lock. Every read is dominated by the begins_epoch
+    // assignment below (reacquires_ended_epoch implies begins_epoch), so no zeroing is needed.
+    dsd_call_snapshot previous;
     if (begins_epoch) {
-        const dsd_call_snapshot previous = *snapshot;
+        previous = *snapshot;
         DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
         ext->epoch_sequence[observation->slot] = call_state_next_nonzero(ext->epoch_sequence[observation->slot]);
         snapshot->epoch = ext->epoch_sequence[observation->slot];
@@ -518,6 +621,9 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
+    if (reacquires_ended_epoch && g_call_state_reacquire_hook != NULL) {
+        g_call_state_reacquire_hook(state, observation->slot, &previous);
+    }
     return begins_epoch;
 }
 
@@ -626,16 +732,28 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     // that fire while unsynced do not re-stamp ended_m: the reacquisition gap
     // stays anchored at the first end.
     if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE) {
-        // One exception: a terminator or EOT decoded after sync loss already ended the epoch is
-        // positive evidence that the transmission is over, and it must be able to retract the
-        // reacquisition permission that end granted. The fade is often the last thing heard
-        // before the terminator that explains it, so without this a second PTT on the same
-        // identity inside the gap folds into the terminated call's row. Only this one direction
-        // is allowed, and ended_m is deliberately left alone: the reason changes, the moment the
-        // transmission stopped does not.
-        if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED
-            && snapshot->end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && reason == DSD_CALL_END_EXPLICIT) {
-            snapshot->end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+        // One exception: positive evidence that the transmission is over, arriving after a
+        // recoverable end, must be able to retract the reacquisition permission that end
+        // granted. The fade is often the last thing heard before the terminator that explains
+        // it, so without this a second PTT on the same identity inside the gap folds into the
+        // terminated call's row. Two strengths of evidence qualify: a verified terminator or an
+        // EXPLICIT teardown retracts either recoverable reason, and a second unverified
+        // terminator corroborates an unverified-terminator end -- two independently mis-typed
+        // bursts in a row is not a plausible fade. An unverified terminator alone never
+        // tightens a sync-loss end: it is the same fallible evidence the recoverable end exists
+        // to distrust, and trusting it there would split a faded transmission in two and
+        // release its held VOICE_END early. Only tightening toward a final reason is allowed --
+        // TERMINATOR where the evidence was a terminator (verified, or corroborated by repeat),
+        // EXPLICIT for a teardown -- and ended_m is deliberately left alone: the reason
+        // changes, the moment the transmission stopped does not.
+        const int retracts = (reason == DSD_CALL_END_EXPLICIT || reason == DSD_CALL_END_TERMINATOR)
+                             && dsd_call_state_end_reason_is_recoverable(snapshot->end_reason);
+        const int corroborates = reason == DSD_CALL_END_UNVERIFIED_TERMINATOR
+                                 && snapshot->end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+        if (snapshot->epoch != 0U && snapshot->phase == DSD_CALL_PHASE_ENDED && (retracts || corroborates)) {
+            snapshot->end_reason = (reason == DSD_CALL_END_TERMINATOR || corroborates)
+                                       ? (uint8_t)DSD_CALL_END_TERMINATOR
+                                       : (uint8_t)DSD_CALL_END_EXPLICIT;
             snapshot->revision = call_state_next_nonzero(snapshot->revision);
             ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
             dsd_call_state_ext_unlock(ext);
@@ -744,6 +862,9 @@ dsd_call_state_invalidate_event_lifecycle(dsd_call_event_lifecycle* lifecycle) {
     // a transmission the operator can no longer see.
     lifecycle->end_alert_pending = 0U;
     lifecycle->end_alert_due_m = 0.0;
+    // Same for a held keep-or-drop verdict: the staged row it was waiting to resolve is gone.
+    lifecycle->drop_hold_pending = 0U;
+    lifecycle->drop_hold_due_m = 0.0;
     // Both halves of the env pair go, matching the epoch-change path in dsd_events.c. A row staged
     // directly by a protocol never passes through the renderer, so a surviving staged_env would be
     // promoted into committed_env when that row commits and a later merge would re-render against

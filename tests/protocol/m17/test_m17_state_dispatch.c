@@ -1384,6 +1384,9 @@ test_ip_stream_bad_crc_does_not_reopen_ended_voice_epoch(void) {
     err |= expect_int("valid voice EOT publishes call", get_m17_call(state, &call), 1);
     err |= expect_int("valid voice EOT ends call", call.phase, DSD_CALL_PHASE_ENDED);
     err |= expect_int("valid voice EOT owns M17 protocol", DSD_SYNC_IS_M17(call.protocol), 1);
+    // Terminator, not EXPLICIT: an over-the-air EOT is positive end evidence, and the event
+    // layer keys its keep-or-drop verdict for identity-less audible rows on that distinction.
+    err |= expect_int("valid voice EOT records terminator end", call.end_reason, (int)DSD_CALL_END_TERMINATOR);
     const uint64_t ended_epoch = call.epoch;
 
     build_ip_stream_frame(ip_frame, lsf_bits, 0xBEEFU, (uint16_t)(M17_REF_STREAM_FN + 1U), 0U, payload_bits);

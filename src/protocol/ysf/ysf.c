@@ -897,7 +897,10 @@ ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info*
 
 static void
 ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
-    if (info->err == 0 && info->fi == 2U && dsd_call_state_end(state, 0U, 0.0) > 0) {
+    // A FICH-verified communication terminator (FI=2) is positive over-the-air end evidence, so
+    // the event layer can keep an audible epoch whose callsigns never decoded; EXPLICIT would be
+    // indistinguishable from an engine retune and drop that row.
+    if (info->err == 0 && info->fi == 2U && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
 }

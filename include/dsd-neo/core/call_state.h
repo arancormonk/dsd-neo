@@ -53,13 +53,36 @@ typedef enum {
 /**
  * Why a call epoch ended.
  *
- * Only DSD_CALL_END_SYNC_LOSS permits the next epoch on the slot to be treated as the same
- * transmission being reacquired. EXPLICIT is the default so an unconverted call site produces a
- * second history row -- a duplicate is recoverable, a deleted transmission is not.
+ * Only the recoverable reasons -- DSD_CALL_END_SYNC_LOSS and
+ * DSD_CALL_END_UNVERIFIED_TERMINATOR -- permit the next epoch on the slot to be treated as the
+ * same transmission being reacquired, and the unverified-terminator reason permits it only for
+ * identity-less continuations: the terminator was positive (if fallible) evidence the
+ * transmission ended, so an identity-bearing observation after it is the next transmission.
+ * EXPLICIT is the default so an unconverted call site produces a second history row -- a
+ * duplicate is recoverable, a deleted transmission is not.
+ *
+ * EXPLICIT and TERMINATOR are equally final; they differ only in what they say happened on the
+ * air. The engine ends epochs EXPLICIT on retune and teardown, so an EXPLICIT end is not
+ * evidence a transmission ended over the air -- a keep-or-drop decision about whether the air
+ * carried a real, positively-ended transmission must key on the terminator reasons.
  */
 typedef enum {
-    DSD_CALL_END_EXPLICIT = 0,  /**< Terminator, EOT, release, teardown, or retune. */
+    DSD_CALL_END_EXPLICIT = 0,  /**< Teardown, retune, or an unconverted OTA end site (EOT, release). */
     DSD_CALL_END_SYNC_LOSS = 1, /**< Carrier or sync lost; the transmission may still resume. */
+    /**
+     * A terminator burst decoded but its link control failed verification (a RAS-masked CRC, a
+     * protected LC, a marginal signal). Ends the call on the strength of the burst type while
+     * staying recoverable, so a voice burst mis-typed as a terminator mid-call heals instead of
+     * splitting the transmission. A second unverified terminator corroborates the end and
+     * tightens it to TERMINATOR.
+     */
+    DSD_CALL_END_UNVERIFIED_TERMINATOR = 2,
+    /**
+     * A terminator whose link control verified: positive, trustworthy over-the-air evidence the
+     * transmission ended. Final like EXPLICIT, but distinguishable from an engine retune so the
+     * event layer can vouch for an audible transmission the terminator closed.
+     */
+    DSD_CALL_END_TERMINATOR = 3,
 } dsd_call_end_reason;
 
 /**
@@ -68,7 +91,17 @@ typedef enum {
  * held before the transmission is declared over. Rationale, residual risks and the replay-timing
  * caveat are documented at the point of use in src/core/util/call_state.c.
  */
-#define DSD_CALL_REACQUIRE_GAP_S 0.5
+#define DSD_CALL_REACQUIRE_GAP_S       0.5
+
+/**
+ * Seconds after an unverified-terminator end within which an identity-less continuation may
+ * heal the epoch. Much tighter than DSD_CALL_REACQUIRE_GAP_S: the heal exists for a voice burst
+ * mis-typed as a terminator, whose per-frame media mark follows within a burst or two, while a
+ * real end followed by a fast re-key can put a new transmission's first decodable voice frame on
+ * the slot well inside the sync-loss window -- and folding that into the terminated call would
+ * hand it the previous call's identity and crypto.
+ */
+#define DSD_CALL_TERMINATOR_HEAL_GAP_S 0.25
 
 typedef enum {
     DSD_CALL_BOUNDARY_CONTINUE = 0, /**< Merge compatible observations into the active call epoch. */
@@ -166,11 +199,16 @@ typedef struct {
 } dsd_recent_activity_snapshot;
 
 /**
- * Live decoder inputs the per-protocol event builders read but a history row does not carry.
+ * Live decoder inputs the per-protocol event builders read but a history row does not carry,
+ * plus the render-time verdicts about the epoch the row describes.
  *
  * Captured when a row is committed and replayed when that row is re-rendered, so a merged
  * transmission is described by the system context it was decoded under rather than whatever the
  * decoder has retuned to since. Everything else a builder needs already lives on the row.
+ *
+ * The verdicts live inside this struct rather than as siblings so every site that clears or
+ * copies the environment carries them automatically; a paired manual update would eventually be
+ * missed and leave a stale verdict vouching for the wrong row.
  */
 typedef struct {
     uint16_t nxdn_grant_chan;
@@ -185,6 +223,20 @@ typedef struct {
     int edacs_a_mask;
     int edacs_f_mask;
     int edacs_s_mask;
+    /* Whether the epoch had named a call when the row was last rendered. Vouches for identity
+     * the row strings never carry -- the route text anchoring a D-STAR or YSF transmission whose
+     * talker callsigns did not decode -- including on the epoch-change commit path where the
+     * canonical snapshot is already gone. Identity only accrues within an epoch, so plain
+     * assignment per render is already sticky. */
+    uint8_t named_call;
+    /* Whether the epoch carried decoded voice media at any render. Sticky for the epoch's
+     * lifetime: the canonical snapshot clears media_active when the call ends, but the row's
+     * keep-or-drop verdict is about whether audio ever ran, not whether it is running now. */
+    uint8_t saw_media;
+    /* Whether the epoch's end, as last rendered, was terminator-evidenced (TERMINATOR or
+     * UNVERIFIED_TERMINATOR). Zero while the call is active, after a bare sync loss, and after
+     * an engine retune or teardown -- those end EXPLICIT, which says nothing about the air. */
+    uint8_t ended_positively;
 } dsd_call_event_render_env;
 
 /** Event bookkeeping paired with one canonical call slot. */
@@ -228,6 +280,13 @@ typedef struct {
      * reacquisition window closes. Stamped with the monotonic deadline to beep at. */
     uint8_t end_alert_pending;
     double end_alert_due_m;
+    /* An identity-less voice row whose recoverable end lacks positive end evidence is held
+     * un-committed rather than dropped: a terminator decoding after the fade retracts the
+     * recoverable reason and vouches for the row, and an immediate drop would be irrevocable.
+     * Stamped with the monotonic deadline to give up and drop at -- the same reacquisition
+     * window the canonical layer applies to the end reason. */
+    uint8_t drop_hold_pending;
+    double drop_hold_due_m;
 } dsd_call_event_lifecycle_snapshot;
 
 /**
@@ -273,8 +332,11 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  * End the active epoch, recording why it ended.
  *
  * Returns non-zero when the call state changed -- either the epoch was ended, or an already
- * sync-loss-ended epoch had its reason tightened to DSD_CALL_END_EXPLICIT by a terminator that
- * decoded after the fade. The latter leaves ended_m untouched. Callers that gate
+ * recoverably-ended epoch had its reason tightened to a final one: a verified terminator or an
+ * EXPLICIT teardown retracts either recoverable reason, and a second unverified terminator
+ * corroborates an unverified-terminator end into DSD_CALL_END_TERMINATOR. An unverified
+ * terminator alone never tightens a sync-loss end -- it is the same fallible evidence the
+ * recoverable end exists to distrust. Tightening leaves ended_m untouched. Callers that gate
  * dsd_event_sync_slot() on this result therefore let the event layer see the retracted
  * reacquisition permission; callers that need "an active call was ended" specifically must
  * check DSD_CALL_PHASE_ACTIVE themselves beforehand.
@@ -282,6 +344,29 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
 int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
 /** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
+
+/**
+ * True for the end reasons that leave the epoch reacquirable (DSD_CALL_END_SYNC_LOSS and
+ * DSD_CALL_END_UNVERIFIED_TERMINATOR).
+ *
+ * The canonical predicate behind reacquisition itself, the event layer's held VOICE_END alert,
+ * and a reacquire-hook owner's decision about whether the state it is about to tear down may
+ * still be needed back. Any private mirror of the reason list would silently diverge when a
+ * reason is added, so callers ask here instead of comparing reasons themselves.
+ */
+int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
+
+/**
+ * Called after dsd_call_state_observe() heals a recoverably-ended epoch, with the ending
+ * snapshot the reopened epoch was seeded from. The canonical layer stays protocol-neutral:
+ * a protocol whose end path tears down live decoder state it would need back on a heal (the
+ * DMR terminator reset clearing the slot's crypto) installs a hook and restores its own
+ * fields, keyed on the snapshot's protocol and epoch. Invoked outside the canonical lock, on
+ * the observing thread. Install once from the decode path before the first heal can occur;
+ * installing NULL removes it.
+ */
+typedef void (*dsd_call_state_reacquire_hook)(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous);
+void dsd_call_state_set_reacquire_hook(dsd_call_state_reacquire_hook hook);
 int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);

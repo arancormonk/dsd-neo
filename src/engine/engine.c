@@ -1892,6 +1892,10 @@ no_carrier_reset_voice_and_audio_metrics(dsd_state* state) {
 static void
 no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     state->dmr_ms_mode = 0;
+    // The DMR heal stash mirrors the payload crypto being cleared below; a stash that outlived
+    // this reset could only ever be misapplied to whatever decodes next.
+    state->dmr_heal_valid[0] = 0;
+    state->dmr_heal_valid[1] = 0;
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;

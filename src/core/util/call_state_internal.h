@@ -19,6 +19,54 @@ typedef struct {
 } dsd_call_state_ext;
 
 dsd_call_state_ext* dsd_call_state_ext_get(dsd_state* state, int create);
+
+/**
+ * True when the snapshot names a call concretely enough for "the same call" to mean anything:
+ * a target or source id, a source/target text, or a route text. The canonical identity notion
+ * shared by reacquisition (call_state.c) and the event layer's decision to drop voice rows
+ * whose epoch never named a call (dsd_events.c). NULL-safe.
+ */
+int dsd_call_state_snapshot_has_identity(const dsd_call_snapshot* current);
+
+/**
+ * True for protocols whose voice traffic never carries per-call identity (standalone X2-TDMA and
+ * ProVoice), so an all-zero voice row is the protocol's whole story rather than noise. Protocol
+ * capability lives here, beside the identity notion it qualifies, so the event layer's
+ * keep-or-drop decision never grows a private per-protocol list.
+ */
+int dsd_call_state_protocol_voice_is_anonymous(int protocol);
+
+/**
+ * True for protocols whose voice traffic can be relied on to signal its own end over the air:
+ * DMR and P25 repeat their end signaling across the hangtime, and dPMR's FS3 end frame is a
+ * sync-correlator match. False for D-STAR, which has no end signaling at all, and for M17, YSF
+ * and NXDN, whose end marker is one un-repeated CRC- or error-gated burst that a fade or a
+ * single damaged frame routinely costs. The event layer's keep-or-drop verdict must accept a
+ * sync-loss end from the false side as the positive end evidence those modes cannot be counted
+ * on to produce.
+ */
+int dsd_call_state_protocol_voice_has_terminator(int protocol);
+
+/* dsd_call_state_end_reason_is_recoverable() is declared in <dsd-neo/core/call_state.h>: the
+ * protocol reacquire-hook owners need the same predicate to decide whether state they are about
+ * to tear down may still be healed back, so it is public rather than core-internal. */
+
+/**
+ * True for the end reasons that are positive over-the-air evidence a transmission ended (a
+ * terminator burst, verified or not). EXPLICIT is deliberately excluded: the engine ends epochs
+ * EXPLICIT on every retune and teardown, so it says nothing about the air. The canonical
+ * predicate behind the event layer's keep-or-drop verdict for identity-less voice rows
+ * (dsd_events.c); a private mirror of the reason list would silently diverge.
+ */
+int dsd_call_state_end_reason_is_terminator(uint8_t end_reason);
+
+/**
+ * Seconds after an end with this reason within which the epoch may still be reacquired:
+ * DSD_CALL_TERMINATOR_HEAL_GAP_S after an unverified terminator, DSD_CALL_REACQUIRE_GAP_S
+ * otherwise. The event layer holds a VOICE_END alert open for exactly this long, so the deadline
+ * and the reacquisition window it waits on cannot drift apart.
+ */
+double dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason);
 const dsd_call_state_ext* dsd_call_state_ext_peek(const dsd_state* state);
 void dsd_call_state_ext_lock(const dsd_call_state_ext* ext);
 void dsd_call_state_ext_unlock(const dsd_call_state_ext* ext);

@@ -293,6 +293,15 @@ dmr_flco_handle_alias_gps_capplus(dmr_flco_ctx* ctx) {
     dmr_flco_handle_cap_plus(ctx);
 }
 
+// True when the LC payload can vouch for its own contents: FEC came back clean and the payload
+// is not protected. A protected LC's bits -- including its FLCO -- are ciphertext, and an
+// FEC-failed LC may be anything, so every decision keyed on what the LC *says* (as opposed to
+// the burst's separately FEC-protected type) must pass through this one predicate.
+static int
+dmr_flco_lc_readable(const dmr_flco_ctx* ctx) {
+    return *ctx->IrrecoverableErrors == 0 && !ctx->protected_lc;
+}
+
 static int
 dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
     if (ctx->fid == 0x10 && (ctx->flco == 0x08 || ctx->flco == 0x28 || ctx->flco == 0x29)) {
@@ -303,7 +312,9 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
         return 1;
     }
 
-    if (ctx->type == 2 && ctx->flco == 0x30) {
+    // Readable LC required like the alias/GPS branches above: a protected LC hides its own
+    // FLCO, so a ciphertext 0x30 must not wipe a live data session's reassembly state.
+    if (ctx->type == 2 && ctx->flco == 0x30 && dmr_flco_lc_readable(ctx)) {
         DSD_FPRINTF(stderr, "%s \n", KRED);
         dmr_print_slot_tag(ctx->state);
         DSD_FPRINTF(stderr, " Data Terminator (TD_LC) ");
@@ -500,42 +511,60 @@ dmr_flco_handle_no_error_paths(dmr_flco_ctx* ctx) {
     return 0;
 }
 
-static void
-dmr_flco_reset_td_lc_slot0(dmr_flco_ctx* ctx) {
-    ctx->state->dmr_fid = 0;
-    ctx->state->dmr_so = 0;
-    ctx->state->payload_algid = 0;
-    ctx->state->payload_mi = 0;
-    ctx->state->payload_keyid = 0;
-    if (ctx->opts->floating_point == 1) {
-        ctx->state->aout_gain = ctx->opts->audio_gain;
+// The per-slot live crypto fields the vocoder decrypts and gates with, mapped once so the
+// terminator reset below and the heal stash/restore further down all walk the same list. A
+// field added to the stash but missed by a reset (or vice versa) would be stashed and healed
+// but never cleared on terminator, leaking one call's crypto into the next.
+typedef struct {
+    unsigned int* fid;
+    unsigned int* so;
+    int* algid;
+    int* keyid;
+    unsigned long long int* mi;
+} dmr_flco_slot_crypto;
+
+static dmr_flco_slot_crypto
+dmr_flco_slot_crypto_fields(dsd_state* state, uint8_t idx) {
+    if (idx == 0U) {
+        return (dmr_flco_slot_crypto){&state->dmr_fid, &state->dmr_so, &state->payload_algid, &state->payload_keyid,
+                                      &state->payload_mi};
     }
-    ctx->state->dmr_alias_block_len[0] = 0;
-    ctx->state->dmr_alias_char_size[0] = 0;
-    ctx->state->dmr_alias_format[0] = 0;
-    DSD_SNPRINTF(ctx->state->generic_talker_alias[0], sizeof(ctx->state->generic_talker_alias[0]), "%s", "");
-    DSD_MEMSET(ctx->state->dmr_pdu_sf[0], 0, sizeof(ctx->state->dmr_pdu_sf[0]));
-    ctx->state->dmr_embedded_gps[0][0] = '\0';
-    ctx->state->dmr_lrrp_gps[0][0] = '\0';
+    return (dmr_flco_slot_crypto){&state->dmr_fidR, &state->dmr_soR, &state->payload_algidR, &state->payload_keyidR,
+                                  &state->payload_miR};
+}
+
+// The terminator reset, split by what the heal can give back. The crypto half is stashed before
+// an unverified end and restored when the epoch heals, so it is safe to clear on every
+// terminator. The metadata half -- the partially assembled talker alias, the dmr_pdu_sf
+// superframe scratch, and the embedded/LRRP GPS -- has no stash: clearing it on a burst that was
+// really mid-call voice mis-typed as a terminator would permanently lose the transmission's
+// alias, so it is only cleared when the terminator's LC could actually be read.
+static void
+dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(ctx->state, idx);
+    *live.fid = 0;
+    *live.so = 0;
+    *live.algid = 0;
+    *live.keyid = 0;
+    *live.mi = 0;
+    if (ctx->opts->floating_point == 1) {
+        if (idx == 0U) {
+            ctx->state->aout_gain = ctx->opts->audio_gain;
+        } else {
+            ctx->state->aout_gainR = ctx->opts->audio_gain;
+        }
+    }
 }
 
 static void
-dmr_flco_reset_td_lc_slot1(dmr_flco_ctx* ctx) {
-    ctx->state->dmr_fidR = 0;
-    ctx->state->dmr_soR = 0;
-    ctx->state->payload_algidR = 0;
-    ctx->state->payload_miR = 0;
-    ctx->state->payload_keyidR = 0;
-    if (ctx->opts->floating_point == 1) {
-        ctx->state->aout_gainR = ctx->opts->audio_gain;
-    }
-    ctx->state->dmr_alias_block_len[1] = 0;
-    ctx->state->dmr_alias_char_size[1] = 0;
-    ctx->state->dmr_alias_format[1] = 0;
-    DSD_SNPRINTF(ctx->state->generic_talker_alias[1], sizeof(ctx->state->generic_talker_alias[1]), "%s", "");
-    DSD_MEMSET(ctx->state->dmr_pdu_sf[1], 0, sizeof(ctx->state->dmr_pdu_sf[1]));
-    ctx->state->dmr_embedded_gps[1][0] = '\0';
-    ctx->state->dmr_lrrp_gps[1][0] = '\0';
+dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
+    ctx->state->dmr_alias_block_len[idx] = 0;
+    ctx->state->dmr_alias_char_size[idx] = 0;
+    ctx->state->dmr_alias_format[idx] = 0;
+    DSD_SNPRINTF(ctx->state->generic_talker_alias[idx], sizeof(ctx->state->generic_talker_alias[idx]), "%s", "");
+    DSD_MEMSET(ctx->state->dmr_pdu_sf[idx], 0, sizeof(ctx->state->dmr_pdu_sf[idx]));
+    ctx->state->dmr_embedded_gps[idx][0] = '\0';
+    ctx->state->dmr_lrrp_gps[idx][0] = '\0';
 }
 
 static void
@@ -594,6 +623,40 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     (void)dsd_call_state_update_crypto(ctx->state, ctx->slot, &crypto);
 }
 
+// Longest stretch of repeated voice LC headers still read as one
+// transmission's preamble. Headers repeat only until the first voice
+// superframe (360 ms), so a couple of seconds covers every real preamble
+// while bounding how long an epoch whose voice bursts all failed to decode
+// can keep absorbing same-identity headers as continuations.
+#define DMR_FLCO_HEADER_REPEAT_WINDOW_S 2.0
+
+// The voice LC header repeats through the start of a transmission so late
+// entrants can join, and an explicit BEGIN on each repeat mints another epoch,
+// which commits the previous epoch's freshly built row as a duplicate event.
+// Header repeats can only precede the transmission's first voice superframe,
+// so a header arriving within the repeat window on a slot that has not yet
+// carried voice media observes a continuation. Once voice has run on the
+// epoch, or the window has passed without a single decodable voice frame, the
+// header is the next transmission -- a same-identity re-key whose terminator
+// was missed -- and opens its own epoch. A header naming a different call
+// still forks: the CONTINUE is advisory, and the canonical comparator inside
+// dsd_call_state_observe() begins a new epoch on any identity contradiction.
+static dsd_call_boundary
+dmr_flco_voice_boundary(const dmr_flco_ctx* ctx) {
+    if (ctx->type != 1U) {
+        return DSD_CALL_BOUNDARY_CONTINUE;
+    }
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(ctx->state, ctx->slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE
+        || current.media_active != 0U) {
+        return DSD_CALL_BOUNDARY_BEGIN;
+    }
+    if (dsd_time_now_monotonic_s() - current.started_m > DMR_FLCO_HEADER_REPEAT_WINDOW_S) {
+        return DSD_CALL_BOUNDARY_BEGIN;
+    }
+    return DSD_CALL_BOUNDARY_CONTINUE;
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -613,10 +676,142 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         .priority = (uint8_t)(ctx->so & 0x03U),
         .has_service_metadata = 1U,
     };
-    const dsd_call_boundary boundary = ctx->type == 1U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
-    (void)dsd_call_state_observe(ctx->state, &observation, boundary);
+    (void)dsd_call_state_observe(ctx->state, &observation, dmr_flco_voice_boundary(ctx));
     dmr_flco_publish_crypto(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+}
+
+// The heal side of the unverified-terminator end. The terminator reset below clears the live
+// dmr_fid/dmr_so/payload_algid/payload_keyid/payload_mi the vocoder decrypts and gates with;
+// when the "terminator" was really a mis-typed voice burst, the identity-less media mark that
+// reopens the epoch a burst later needs them back, and nothing on that path re-signals them (a
+// PI header or late-entry rebuild may never come mid-transmission). So the handler stashes the
+// live fields -- not the canonical snapshot's copies: the snapshot's MI can lag the superframe
+// machinery's advances, and it never carried the FID the Basic Privacy gates require -- and the
+// canonical layer's reacquire hook restores them when, and only when, the ended epoch itself is
+// healed. The epoch tie plus the all-cleared gate mean a stale stash can never overwrite
+// fresher signaling or leak into a later call.
+static int
+dmr_flco_slot_crypto_is_clear(const dmr_flco_slot_crypto* live) {
+    return *live->fid == 0U && *live->so == 0U && *live->algid == 0 && *live->keyid == 0 && *live->mi == 0ULL;
+}
+
+// The stash holds only what the canonical snapshot cannot supply: the FID and service options
+// the Basic Privacy gates require, which the snapshot never carried, and the MI as the
+// superframe machinery last advanced it, which the snapshot's copy can lag. The ALGID and key id
+// are deliberately not duplicated here -- the heal reads them back from the `previous` snapshot
+// the canonical layer hands it, so there is one source of truth for them.
+static void
+dmr_flco_stash_slot_crypto(dsd_state* state, uint8_t slot, uint64_t epoch) {
+    const uint8_t idx = slot != 0U ? 1U : 0U;
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
+    state->dmr_heal_valid[idx] = 0U;
+    if (dmr_flco_slot_crypto_is_clear(&live)) {
+        return;
+    }
+    state->dmr_heal_fid[idx] = *live.fid;
+    state->dmr_heal_so[idx] = *live.so;
+    state->dmr_heal_mi[idx] = *live.mi;
+    state->dmr_heal_epoch[idx] = epoch;
+    state->dmr_heal_valid[idx] = 1U;
+}
+
+static void
+dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* previous) {
+    if (state == NULL || previous == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return;
+    }
+    const uint8_t idx = slot != 0U ? 1U : 0U;
+    if (!DSD_SYNC_IS_DMR(previous->protocol) || state->dmr_heal_valid[idx] == 0U
+        || state->dmr_heal_epoch[idx] != previous->epoch) {
+        return;
+    }
+    // Only into a slot whose live fields are entirely cleared -- the post-reset shape -- so
+    // fresher signaling (a header that decoded between the reset and the heal) never loses.
+    const dmr_flco_slot_crypto live = dmr_flco_slot_crypto_fields(state, idx);
+    if (!dmr_flco_slot_crypto_is_clear(&live)) {
+        return;
+    }
+    *live.fid = state->dmr_heal_fid[idx];
+    *live.so = state->dmr_heal_so[idx];
+    *live.algid = (int)previous->algid;
+    *live.keyid = (int)previous->kid;
+    *live.mi = state->dmr_heal_mi[idx];
+    state->dmr_heal_valid[idx] = 0U;
+}
+
+// Install the heal hook exactly once, per the contract in call_state.h ("Install once from the
+// decode path before the first heal can occur"). The hook slot is a single process-global; a
+// re-install per terminator would be a repeated unsynchronized function-pointer write, and any
+// second protocol adopting the heal pattern would silently steal the slot -- the guard makes
+// that a one-time, first-DMR-decode event instead of a per-burst race surface.
+static void
+dmr_flco_ensure_heal_hook(void) {
+    static int installed = 0;
+    if (!installed) {
+        dsd_call_state_set_reacquire_hook(dmr_flco_heal_restore);
+        installed = 1;
+    }
+}
+
+// The end reason tracks how much of the terminator could be read. A terminator whose LC came
+// through FEC-clean, unprotected, and CRC-verified is trustworthy end evidence and ends the
+// call with the final TERMINATOR reason. Anything less ends it with the recoverable
+// unverified-terminator reason: on RAS systems under the aggressive default every LC fails the
+// masked CRC (gating the end on the CRC would leave RAS calls active forever); a garbled LC can
+// pass the 16-bit CRC by chance while its FEC reports irrecoverable errors; and a protected LC
+// hides its own FLCO, so it cannot rule out being a TD_LC that terminates a data session rather
+// than the slot's voice call. In every unverified shape a voice burst mis-typed as a terminator
+// mid-call is healed by the next identity-less media mark reacquiring the epoch instead of
+// splitting the transmission in two, while a same-identity header inside the gap still opens
+// the next transmission's own epoch. The canonical layer owns what a repeat means on an epoch
+// already ended: a second unverified terminator corroborates an unverified end into TERMINATOR
+// -- which also releases the held VOICE_END alert, so on repeater systems the hangtime repeat
+// alerts within a burst of where a verified terminator would -- but never tightens a sync-loss
+// end, whose fade the same fallible evidence cannot explain away. The slot's payload crypto
+// resets either way -- keeping it would let the next call on the slot inherit a stale
+// algid/key/MI, and before an unverified end's reset it is stashed so the heal can restore it
+// (dmr_flco_stash_slot_crypto above). The alias/GPS/superframe metadata has no stash, so it is
+// cleared only when the LC itself was readable: an FEC-failed or protected "terminator" may be a
+// mis-typed mid-call voice burst, and wiping the half-assembled alias there would lose it for
+// the rest of the transmission even after the epoch heals.
+static void
+dmr_flco_handle_terminator(dmr_flco_ctx* ctx) {
+    const int lc_readable = dmr_flco_lc_readable(ctx);
+    const int verified = ctx->CRCCorrect == 1U && lc_readable;
+    const uint8_t idx = ctx->slot != 0U ? 1U : 0U;
+    if (!verified) {
+        // The stash must cover every epoch the reset below can strand: one still active, and
+        // equally one a recoverable end already closed but that may still reacquire. The fade
+        // case is the one that bites -- sync loss ends the epoch, then the terminator that
+        // explains the fade arrives with an unreadable LC. It cannot tighten a sync-loss end,
+        // but its reset still clears the slot, so without a stash a resumption inside the
+        // window comes back with the canonical snapshot claiming encryption and the live
+        // decoder holding no ALGID, key or MI.
+        dsd_call_snapshot ending;
+        if (dsd_call_state_get(ctx->state, ctx->slot, &ending) > 0 && ending.epoch != 0U
+            && (ending.phase == DSD_CALL_PHASE_ACTIVE || dsd_call_state_end_reason_is_recoverable(ending.end_reason))) {
+            dmr_flco_stash_slot_crypto(ctx->state, ctx->slot, ending.epoch);
+        }
+    }
+    const int ended = dsd_call_state_end_ex(ctx->state, ctx->slot, 0.0,
+                                            verified ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    if (ended > 0) {
+        dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
+    }
+    // A final end -- a verified terminator, or an unverified one corroborated by a repeat -- can
+    // never be followed by a heal, so no stash may linger to be matched against a future epoch.
+    // The epoch counter only grows, but dsd_call_context_restore_snapshot() swaps in another
+    // trunk-scan target's epochs wholesale, so a stale stash can meet an equal epoch number.
+    dsd_call_snapshot settled;
+    if (dsd_call_state_get(ctx->state, ctx->slot, &settled) > 0 && settled.phase == DSD_CALL_PHASE_ENDED
+        && !dsd_call_state_end_reason_is_recoverable(settled.end_reason)) {
+        ctx->state->dmr_heal_valid[idx] = 0U;
+    }
+    dmr_flco_reset_slot_crypto(ctx, idx);
+    if (lc_readable) {
+        dmr_flco_reset_slot_metadata(ctx, idx);
+    }
 }
 
 static int
@@ -635,18 +830,6 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
 
     if (ctx->type != 2) {
         dmr_flco_sync_active_call_state(ctx);
-    }
-
-    if (ctx->type == 2) {
-        if (dsd_call_state_end(ctx->state, ctx->slot, 0.0) > 0) {
-            dsd_event_sync_slot(ctx->opts, ctx->state, ctx->slot);
-        }
-        if (ctx->state->currentslot == 0) {
-            dmr_flco_reset_td_lc_slot0(ctx);
-        }
-        if (ctx->state->currentslot == 1) {
-            dmr_flco_reset_td_lc_slot1(ctx);
-        }
     }
 
     if (ctx->restchannel != ctx->state->dmr_rest_channel && ctx->restchannel != -1) {
@@ -1004,16 +1187,37 @@ dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrec
          uint8_t type) {
     dmr_flco_ctx ctx;
     dmr_flco_ctx_init(&ctx, opts, state, lc_bits, CRCCorrect, IrrecoverableErrors, type);
+    dmr_flco_ensure_heal_hook();
     dmr_flco_detect_special_modes(&ctx);
     ctx.protected_lc = dmr_flco_is_protected(&ctx);
     dmr_flco_print_protected_lc(&ctx);
+
+    // A terminator burst ends the slot's call before any LC-payload gate. The
+    // burst type is FEC-protected separately from the LC, so a protected LC,
+    // an unknown/vendor FID, or an irrecoverable LC still marks the end of the
+    // transmission it follows; leaving those calls to fade into a sync-loss
+    // end would let the next same-identity transmission merge into their row.
+    // Only a cleanly read TD_LC is exempt -- it terminates a data session, not
+    // the slot's voice call -- and it must be cleanly read: a protected or
+    // FEC-failed LC cannot vouch for its own FLCO. Those unreadable shapes
+    // might still be a TD_LC arriving mid-voice-call, which is why the handler
+    // ends them only recoverably: if voice bursts keep coming, the next media
+    // mark heals the epoch and restores the stashed slot crypto, so the cost
+    // of the ambiguity is one burst, not a split call or lost decryption.
+    if (ctx.type == 2U && !(dmr_flco_lc_readable(&ctx) && ctx.flco == 0x30U)) {
+        dmr_flco_handle_terminator(&ctx);
+    }
 
     if (*ctx.IrrecoverableErrors == 0) {
         if (dmr_flco_handle_no_error_paths(&ctx)) {
             dmr_flco_finalize(&ctx);
             return;
         }
-    } else if (dmr_flco_handle_irrecoverable_hytera_enhanced(&ctx)) {
+    } else if (ctx.type != 2U && dmr_flco_handle_irrecoverable_hytera_enhanced(&ctx)) {
+        // Gated off terminator bursts: the handler above just ended the call and reset the
+        // slot's crypto for the heal, and letting a Hytera-Enhanced-shaped FEC-failed LC
+        // re-populate payload_algid/keyid/mi here would leave dmr_fid=0 beside a non-zero
+        // ALGID and make dmr_flco_slot_crypto_is_clear() refuse the restore forever.
         dmr_flco_finalize(&ctx);
         return;
     }

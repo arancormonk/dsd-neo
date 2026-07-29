@@ -191,15 +191,25 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     // reason nor re-stamp ended_m and slide the reacquisition window. A stub that overwrote them
     // would model the exact bug that guard exists to prevent.
     if (g_stub_calls[slot].epoch == 0U || g_stub_calls[slot].phase != DSD_CALL_PHASE_ACTIVE) {
-        // And production's one exception, mirrored for the same reason: a terminator decoded after
-        // sync loss already ended the epoch retracts the reacquisition permission that end granted.
+        // And production's one exception, mirrored for the same reason: final evidence decoded
+        // after a recoverable end retracts the reacquisition permission that end granted, and a
+        // second unverified terminator corroborates an unverified end into TERMINATOR.
         // Stub-linked protocol tests drive exactly this path from their terminator handlers, so a
         // stub that returned 0 here would leave every one of them modelling the pre-retraction
         // behaviour and silently skipping the event flush that follows.
+        const uint8_t prior = g_stub_calls[slot].end_reason;
+        const int prior_recoverable =
+            prior == (uint8_t)DSD_CALL_END_SYNC_LOSS || prior == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
+        const int retracts =
+            (reason == DSD_CALL_END_EXPLICIT || reason == DSD_CALL_END_TERMINATOR) && prior_recoverable;
+        const int corroborates =
+            reason == DSD_CALL_END_UNVERIFIED_TERMINATOR && prior == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR;
         if (g_stub_calls[slot].epoch != 0U && g_stub_calls[slot].phase == DSD_CALL_PHASE_ENDED
-            && g_stub_calls[slot].end_reason == (uint8_t)DSD_CALL_END_SYNC_LOSS && reason == DSD_CALL_END_EXPLICIT) {
+            && (retracts || corroborates)) {
             // ended_m is deliberately left alone: the reason changes, the moment does not.
-            g_stub_calls[slot].end_reason = (uint8_t)DSD_CALL_END_EXPLICIT;
+            g_stub_calls[slot].end_reason = (reason == DSD_CALL_END_TERMINATOR || corroborates)
+                                                ? (uint8_t)DSD_CALL_END_TERMINATOR
+                                                : (uint8_t)DSD_CALL_END_EXPLICIT;
             return 1;
         }
         return 0;
