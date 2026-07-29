@@ -6,7 +6,11 @@
 /*
  * P25 Phase 2 MAC_ACTIVE is positive transmission evidence. Hangtime voice
  * users are filtered by their outer MAC PDU type in the VPDU decoder, so the
- * state machine must not infer hangtime from a recently ended identity.
+ * state machine must not infer hangtime from a recently ended identity --
+ * with one time-bounded exception: inside the short post-END retention tail,
+ * copies still naming the completed talker on the unchanged target re-describe
+ * the transmission that just ended and must not reopen it (see
+ * test_p25_p2_active_ptt_epoch.c).
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -131,6 +135,10 @@ test_same_identity_mac_active_reopens_call(void) {
     end_transmission(TEST_SRC);
     const uint64_t ended_epoch = slot0_epoch();
 
+    // Past the post-END retention tail: END repeats and delayed SACCH copies
+    // of the ended transmission arrive inside it, a re-keyed talker after it.
+    p25_sm_get_ctx()->slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
+
     rc |= expect("same-source ACTIVE accepted",
                  p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00) > 0);
     rc |= expect("same-source ACTIVE reopens call", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, TEST_SRC));
@@ -148,6 +156,12 @@ test_identity_decode_failure_still_reopens_call(void) {
     transmit_clear(0x22U, TEST_SRC);
     end_transmission(TEST_SRC);
     const uint64_t ended_epoch = slot0_epoch();
+
+    // Past the post-END retention tail: inside it an identity-less ACTIVE is
+    // retention of the ended call and must not reopen (covered by
+    // P25_P2_ACTIVE_PTT_EPOCH); after it, a live-typed PDU whose identity
+    // failed to decode is the next transmission arriving.
+    p25_sm_get_ctx()->slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
 
     rc |= expect("anonymous ACTIVE accepted", p25_sm_emit_active(&g_opts, &g_state, 0) > 0);
     rc |= expect("anonymous ACTIVE opens retained assignment", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, 0U));

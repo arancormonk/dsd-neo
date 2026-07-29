@@ -197,6 +197,27 @@ p25p2_vpdu_update_voice_crypto(dsd_state* state, int slot, int service_options, 
     }
 }
 
+// A live-typed voice user whose four-burst SACCH assembly straddled the
+// accepted MAC_END_PTT still re-describes the ended transmission. Track the
+// slot -- liveness and crypto classification -- without reopening a canonical
+// epoch, which would commit the ended call's row a second time.
+static int
+p25p2_vpdu_voice_repeats_recent_end(dsd_opts* opts, dsd_state* state, int slot, uint64_t target,
+                                    uint64_t subscriber_source, int service_options) {
+    dsd_call_snapshot current = {0};
+    if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ENDED
+        || !p25_sm_voice_user_repeats_recent_end(slot, (int)target, (int)subscriber_source,
+                                                 dsd_time_now_monotonic_s())) {
+        return 0;
+    }
+    p25p2_vpdu_update_voice_crypto(state, slot, service_options, 0,
+                                   p25p2_vpdu_is_encrypted_probe(opts, service_options));
+    dsd_p25_sm_logf(
+        opts, "event=voice_observation_suppressed path=p2-vpdu reason=repeats-recent-end slot=%d tg=%llu src=%llu",
+        slot, (unsigned long long)target, (unsigned long long)subscriber_source);
+    return 1;
+}
+
 static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
                          uint64_t source, int service_options, p25_mac_pdu_type pdu_type) {
@@ -218,6 +239,9 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
         return 1;
     }
     const uint64_t subscriber_source = p25_source_id_is_subscriber(source) ? source : 0U;
+    if (p25p2_vpdu_voice_repeats_recent_end(opts, state, slot, target, subscriber_source, service_options)) {
+        return 1;
+    }
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
     const dsd_call_observation observation = {
         .protocol = p25p2_vpdu_voice_protocol(state),

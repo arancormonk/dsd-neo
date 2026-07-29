@@ -440,6 +440,56 @@ int p25_sm_vc_reacquire_hold_active(const p25_sm_ctx_t* ctx, const dsd_opts* opt
  */
 int p25_sm_slot_grant_newer_than(int slot, double observed_m);
 
+/**
+ * @brief Check whether a voice-user observation re-describes a call that just ended.
+ *
+ * After an accepted MAC_END_PTT the FNE keeps describing the completed call
+ * for a few bursts: END repeats interleave with SACCH voice-user copies whose
+ * assembly began before the END decoded. A voice user naming the completed
+ * talker (or naming no talker) on the unchanged target inside that short tail
+ * is retention of the ended transmission and must not begin a canonical
+ * epoch. A changed source, or the same identity outside the tail, is fresh
+ * evidence and returns 0.
+ *
+ * @param slot Slot index (0 or 1).
+ * @param target OTA talkgroup for group calls, destination RID for private calls.
+ * @param src Source RID, or 0/unknown when the observation carries none.
+ * @param now_m Monotonic timestamp of the observation.
+ * @return 1 when the observation repeats the recently ended call, 0 otherwise.
+ */
+int p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m);
+
+/**
+ * @brief Whether a Phase 1 ESS observation may open a canonical epoch.
+ *
+ * Mirrors the voice-start rule: a trunked receiver with no traffic assignment
+ * is parked on or hunting the control channel, where Phase 1 ESS can only be
+ * noise briefly false-syncing as an LDU. Conventional receivers (trunking
+ * disabled) always qualify.
+ *
+ * @param opts Decoder options (trunking configuration).
+ * @return 1 when an ESS-driven epoch may open, 0 to decline the mint.
+ */
+int p25_sm_phase1_crypto_epoch_allowed(const dsd_opts* opts);
+
+/**
+ * @brief Fetch the tuned Phase 1 assignment identity for a pre-identity epoch.
+ *
+ * When ESS crypto resolves on a tuned FDMA traffic channel before any
+ * LCW/voice evidence names the call, the epoch opened to hold the
+ * classification should carry the assignment identity the grant already
+ * established rather than begin identity-less. Only a tuned, non-TDMA,
+ * non-data assignment with a known target qualifies; the conventional
+ * identity-pending flow keeps its identity-less epoch (the following LCW
+ * names that call).
+ *
+ * @param[out] is_group 1 for a group assignment, 0 for a private one.
+ * @param[out] ota_target OTA talkgroup or destination RID of the assignment.
+ * @param[out] policy_target Patch-aware policy target, or 0 when unknown.
+ * @return 1 when a tuned Phase 1 assignment identity was filled, 0 otherwise.
+ */
+int p25_sm_phase1_assignment_identity(int* is_group, uint32_t* ota_target, uint32_t* policy_target);
+
 /* ============================================================================
  * Public API - Convenience Emit Functions (use global singleton)
  * ============================================================================ */
