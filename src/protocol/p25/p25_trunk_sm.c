@@ -2584,6 +2584,10 @@ p25_call_end_slot_ex(dsd_opts* opts, dsd_state* state, int slot, double observed
     }
 }
 
+// Teardown/retune wrapper: says nothing about how the transmission ended on the air. Call
+// sites reacting to decoded OTA end signaling (MAC_END_PTT, MAC Release, TDU, FACCH end,
+// LCW termination/EOT) must use p25_call_end_slot_ex with DSD_CALL_END_TERMINATOR so the
+// event layer can keep an audible epoch whose call identity never decoded.
 static void
 p25_call_end_slot(dsd_opts* opts, dsd_state* state, int slot, double observed_m) {
     p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_EXPLICIT);
@@ -5737,7 +5741,7 @@ p25_sm_emit_end(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
         p25_ptt_marker_invalidate(ctx, slot);
-        p25_call_end_slot(opts, state, slot, 0.0);
+        p25_call_end_slot_ex(opts, state, slot, 0.0, DSD_CALL_END_TERMINATOR);
     }
 }
 
@@ -5755,7 +5759,7 @@ p25_sm_emit_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg, int 
     const int accepted = handle_voice_end(ctx, opts, state, slot, "end", 1, 1, &ev, DSD_CALL_END_TERMINATOR);
     if (!trunk_assignment_active && accepted) {
         p25_ptt_marker_invalidate(ctx, slot);
-        p25_call_end_slot(opts, state, slot, observed_m);
+        p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_TERMINATOR);
     }
     return accepted;
 }
@@ -5778,7 +5782,7 @@ p25_sm_emit_mac_release(dsd_opts* opts, dsd_state* state, int slot, double obser
     if (state) {
         (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
     }
-    p25_call_end_slot(opts, state, slot, ended_m);
+    p25_call_end_slot_ex(opts, state, slot, ended_m, DSD_CALL_END_TERMINATOR);
     p25_sm_update_ui_mode(ctx, state);
 }
 
@@ -5796,7 +5800,7 @@ p25_sm_emit_facch_end_call_at(dsd_opts* opts, dsd_state* state, int slot, int tg
     const int result = handle_facch_voice_end(ctx, opts, state, &ev);
     if (!trunk_assignment_active && result != P25_SM_END_IGNORED) {
         p25_ptt_marker_invalidate(ctx, slot);
-        p25_call_end_slot(opts, state, slot, observed_m);
+        p25_call_end_slot_ex(opts, state, slot, observed_m, DSD_CALL_END_TERMINATOR);
     }
     return result;
 }
@@ -5845,7 +5849,7 @@ p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state) {
     p25_sm_event(ctx, opts, state, &ev);
     if (!trunk_assignment_active) {
         p25_ptt_marker_invalidate(ctx, 0);
-        p25_call_end_slot(opts, state, 0, 0.0);
+        p25_call_end_slot_ex(opts, state, 0, 0.0, DSD_CALL_END_TERMINATOR);
     }
 }
 

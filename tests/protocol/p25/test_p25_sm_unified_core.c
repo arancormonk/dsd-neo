@@ -1587,6 +1587,85 @@ test_conventional_end_is_follower_noop(void) {
 }
 
 static int
+conventional_slot_ended_with_reason(uint8_t slot, dsd_call_end_reason want_reason, const char* label) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(&g_state, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ENDED
+        || call.end_reason != (uint8_t)want_reason) {
+        DSD_FPRINTF(stderr, "FAIL: Conventional %s end did not record end reason %d\n", label, (int)want_reason);
+        return 1;
+    }
+    return 0;
+}
+
+// Regression: outside P25_SM_TUNED, the emit wrappers finish the canonical call through a
+// fallback that used to hardcode DSD_CALL_END_EXPLICIT. Decoded OTA end signaling
+// (MAC_END_PTT, FACCH end, TDU, LCW termination, MAC Release) must end the epoch with
+// DSD_CALL_END_TERMINATOR so the event layer keeps audible identity-less receptions, while
+// inactivity-driven idle/hangtime ends stay EXPLICIT.
+static int
+test_conventional_ota_end_reasons_are_terminator(void) {
+    reset_test_state();
+    g_opts.trunk_enable = 0;
+    g_state.p25_cc_freq = 0;
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &g_opts, &g_state);
+    const double now_m = dsd_time_now_monotonic_s();
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 1000, 0, 123, 1, 0)
+        || !p25_sm_emit_end_call_at(&g_opts, &g_state, 0, 1000, 123, now_m)
+        || conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "MAC_END_PTT")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 1, 1500, 0, 321, 1, 0)
+        || p25_sm_emit_facch_end_call_at(&g_opts, &g_state, 1, 1500, 321, now_m) != P25_SM_END_APPLIED
+        || conventional_slot_ended_with_reason(1U, DSD_CALL_END_TERMINATOR, "FACCH")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 2000, 0, 456, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_tdu(&g_opts, &g_state);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "TDU")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 3000, 0, 789, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_end(&g_opts, &g_state, 0);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "LCW termination")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 4000, 0, 111, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_mac_release(&g_opts, &g_state, 0, dsd_time_now_monotonic_s());
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_TERMINATOR, "MAC Release")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 5000, 0, 222, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_idle(&g_opts, &g_state, 0);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_EXPLICIT, "idle")) {
+        return 1;
+    }
+
+    if (!p25_sm_emit_ptt_call(&g_opts, &g_state, 0, 6000, 0, 333, 1, 0)) {
+        return 1;
+    }
+    p25_sm_emit_hangtime(&g_opts, &g_state, 0);
+    if (conventional_slot_ended_with_reason(0U, DSD_CALL_END_EXPLICIT, "hangtime")) {
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_conventional_anonymous_activity_waits_for_identity(void) {
     reset_test_state();
     g_opts.trunk_enable = 0;
@@ -2750,6 +2829,7 @@ main(void) {
     fail += test_identified_followup_without_service_restarts_crypto_pending();
     fail += test_missed_end_identity_change_without_service_restarts_crypto_pending();
     fail += test_conventional_end_is_follower_noop();
+    fail += test_conventional_ota_end_reasons_are_terminator();
     fail += test_conventional_anonymous_activity_waits_for_identity();
     fail += test_conventional_anonymous_activity_preserves_service_options();
     fail += test_conventional_unknown_service_stays_unconfirmed();
