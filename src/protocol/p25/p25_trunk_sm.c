@@ -2908,6 +2908,17 @@ p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m
 }
 
 int
+p25_sm_phase1_crypto_epoch_allowed(const dsd_opts* opts) {
+    // Mirrors the voice-start rule: a trunked receiver with no traffic
+    // assignment is parked on (or hunting) the control channel, where a
+    // Phase 1 ESS observation can only be noise briefly false-syncing as an
+    // LDU. Minting an identity-less epoch for it leaves a stale ACTIVE call
+    // that the next real call's teardown flushes as a phantom TGT 0 row.
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    return !(opts && opts->trunk_enable == 1 && ctx->state != P25_SM_TUNED);
+}
+
+int
 p25_sm_phase1_assignment_identity(int* is_group, uint32_t* ota_target, uint32_t* policy_target) {
     const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     if (!is_group || !ota_target || !policy_target || ctx->state != P25_SM_TUNED || ctx->vc_is_tdma) {

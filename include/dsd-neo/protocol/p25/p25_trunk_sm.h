@@ -460,6 +460,19 @@ int p25_sm_slot_grant_newer_than(int slot, double observed_m);
 int p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m);
 
 /**
+ * @brief Whether a Phase 1 ESS observation may open a canonical epoch.
+ *
+ * Mirrors the voice-start rule: a trunked receiver with no traffic assignment
+ * is parked on or hunting the control channel, where Phase 1 ESS can only be
+ * noise briefly false-syncing as an LDU. Conventional receivers (trunking
+ * disabled) always qualify.
+ *
+ * @param opts Decoder options (trunking configuration).
+ * @return 1 when an ESS-driven epoch may open, 0 to decline the mint.
+ */
+int p25_sm_phase1_crypto_epoch_allowed(const dsd_opts* opts);
+
+/**
  * @brief Fetch the tuned Phase 1 assignment identity for a pre-identity epoch.
  *
  * When ESS crypto resolves on a tuned FDMA traffic channel before any

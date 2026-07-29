@@ -189,11 +189,14 @@ p25_crypto_phase1_ess_continues_ended_call(dsd_state* state) {
 }
 
 static int
-p25_crypto_ensure_phase1_call(dsd_state* state) {
+p25_crypto_ensure_phase1_call(const dsd_opts* opts, dsd_state* state) {
     dsd_call_snapshot call;
     const int active = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
     if (active && DSD_SYNC_IS_P25P1(call.protocol)
         && (!state->p25_p1_identity_pending || state->p25_p1_identity_epoch_started)) {
+        return 0;
+    }
+    if (!p25_sm_phase1_crypto_epoch_allowed(opts)) {
         return 0;
     }
     if (p25_crypto_phase1_ess_continues_ended_call(state)) {
@@ -408,7 +411,7 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     if (reset_stream) {
         p25_crypto_reset_stream_state(state, phase, slot);
     }
-    const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(state) : 0;
+    const int began_phase1_call = phase == DSD_P25_CRYPTO_PHASE1 ? p25_crypto_ensure_phase1_call(opts, state) : 0;
     p25_crypto_set_state(state, slot, resolved);
     p25_crypto_publish_canonical(opts, state, slot);
     if (began_phase1_call && opts) {
