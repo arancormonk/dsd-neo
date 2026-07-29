@@ -598,6 +598,17 @@ struct dsd_state {
     unsigned int dmr_heal_so[2];
     uint8_t dmr_heal_valid[2];
 
+    /* Per-slot DMR encryption-classification hysteresis (src/protocol/dmr/dmr_enc_class.c).
+     * The service-option privacy bit arrives through channels of very different reliability --
+     * a voice LC header behind a 16-bit masked CRC, an embedded LC behind a 5-bit checksum, and
+     * on RAS systems no verifiable CRC at all -- so the classification the enc lockout and the
+     * audio gate act on is corroborated here: strong evidence applies at once, weak evidence
+     * applies tentatively and must repeat before it can flip an established classification or
+     * arm the lockout. Indexed by slot. */
+    uint8_t dmr_enc_class[2];         /* applied classification: 0 none, 1 clear, 2 encrypted */
+    uint8_t dmr_enc_class_est[2];     /* classification corroborated (strong LC or matching repeat) */
+    uint8_t dmr_enc_class_pending[2]; /* quarantined contradicting candidate (0 none, 1 clear, 2 enc) */
+
     char slot1light[8];
     char slot2light[8];
     int directmode;

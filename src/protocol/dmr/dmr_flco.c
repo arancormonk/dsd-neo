@@ -480,6 +480,7 @@ dmr_flco_handle_irrecoverable_hytera_enhanced(dmr_flco_ctx* ctx) {
             ctx->state->payload_keyidR = key;
             ctx->state->payload_miR = mi;
         }
+        dmr_enc_class_force(ctx->state, ctx->slot, 1);
         ctx->opts->dmr_le = 2;
         *ctx->IrrecoverableErrors = 0;
     } else {
@@ -547,6 +548,7 @@ dmr_flco_reset_slot_crypto(dmr_flco_ctx* ctx, uint8_t idx) {
     *live.algid = 0;
     *live.keyid = 0;
     *live.mi = 0;
+    dmr_enc_class_reset(ctx->state, idx);
     if (ctx->opts->floating_point == 1) {
         if (idx == 0U) {
             ctx->state->aout_gain = ctx->opts->audio_gain;
@@ -569,6 +571,16 @@ dmr_flco_reset_slot_metadata(dmr_flco_ctx* ctx, uint8_t idx) {
 
 static void
 dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
+    // The privacy bit is filtered through the per-slot classification hysteresis before it can
+    // reach the live SO the audio gate and the enc lockout act on. Only the voice LC header's
+    // 16-bit masked CRC is strong enough to trust alone: the embedded LC's 5-bit checksum
+    // passes a miscorrected payload roughly one time in 32, and on RAS systems under the
+    // aggressive default the masked CRC never verifies, so those observations must repeat
+    // before they can flip an established classification.
+    if (dmr_slot_is_known(ctx->state)) {
+        const int strong = ctx->type == 1U && ctx->CRCCorrect == 1U;
+        ctx->so = (uint8_t)dmr_enc_class_observe(ctx->state, (uint8_t)(ctx->state->currentslot & 1), ctx->so, strong);
+    }
     if (ctx->state->currentslot == 0) {
         ctx->state->dmr_fid = ctx->fid;
         ctx->state->dmr_so = ctx->so;
@@ -737,6 +749,9 @@ dmr_flco_heal_restore(dsd_state* state, uint8_t slot, const dsd_call_snapshot* p
     *live.algid = (int)previous->algid;
     *live.keyid = (int)previous->kid;
     *live.mi = state->dmr_heal_mi[idx];
+    // The stash held live, already-corroborated signaling; restoring it re-establishes the
+    // classification so the resumed transmission is not re-proved from scratch.
+    dmr_enc_class_force(state, idx, (*live.so & 0x40U) != 0U);
     state->dmr_heal_valid[idx] = 0U;
 }
 
@@ -927,6 +942,18 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     DSD_FPRINTF(stderr, "%s", KRED);
     DSD_FPRINTF(stderr, "Encrypted ");
     if (!(ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0)) {
+        return;
+    }
+    // A terminator's privacy bit describes the transmission that just ended; blocking the
+    // talkgroup and forcing a release for a call that is already over would only tear down
+    // whatever follows on the channel.
+    if (ctx->type == 2U) {
+        return;
+    }
+    // Blocking the talkgroup is permanent for the session and the forced P_CLEAR release
+    // drops the channel, so only an established (corroborated) encrypted classification may
+    // act -- a lone corrupt LC observing the privacy bit stays quarantined above.
+    if (!dmr_enc_class_established_enc(ctx->state, (uint8_t)(ctx->state->currentslot & 1))) {
         return;
     }
 

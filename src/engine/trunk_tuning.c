@@ -16,6 +16,7 @@
 #include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_block.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
@@ -124,6 +125,15 @@ dsd_engine_reset_return_to_cc_state(dsd_opts* opts, dsd_state* state) {
     // control channel leaves nothing the stash could legitimately be restored onto.
     state->dmr_heal_valid[0] = 0;
     state->dmr_heal_valid[1] = 0;
+    // The live service options and the classification they establish belong to the channel
+    // being left; a stale privacy bit here would mute the opening bursts of the next tuned
+    // call until its first LC decodes.
+    state->dmr_so = 0;
+    state->dmr_soR = 0;
+    state->dmr_fid = 0;
+    state->dmr_fidR = 0;
+    dmr_enc_class_reset(state, 0);
+    dmr_enc_class_reset(state, 1);
     state->payload_algid = 0;
     state->payload_algidR = 0;
     state->payload_keyid = 0;
