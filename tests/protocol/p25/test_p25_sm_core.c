@@ -1763,6 +1763,24 @@ main(void) {
     assert(s19k.p25_p2_audio_ring_count[0] == 0);
     assert(s19k.s_l4[0][0] == 0);
 
+    // An implicit duplicate (no service options) carries no override evidence
+    // either: it must retain the applied regroup clear override instead of
+    // demoting the classified-clear slot back to encryption-pending and
+    // purging audio on every service-less update.
+    s19k.p25_p2_audio_allowed[0] = 1;
+    s19k.p25_p2_audio_ring_count[0] = 1;
+    s19k.s_l4[0][0] = 654;
+    p25_sm_event_t duplicate_regroup_unknown = p25_sm_ev_group_grant(tdma_slot0_ch, 0, 5701, 6701, P25_SM_SVC_UNKNOWN);
+    p25_sm_event(&ctx19k, &o19k, &s19k, &duplicate_regroup_unknown);
+    assert(g_result_tune_to_freq_calls == 1);
+    assert(ctx19k.grant_count == 1U);
+    assert(ctx19k.slots[0].enc_override_clear == 1);
+    assert(ctx19k.slots[0].svc_bits == 0x40);
+    assert(s19k.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
+    assert(s19k.p25_p2_audio_allowed[0] == 1);
+    assert(s19k.p25_p2_audio_ring_count[0] == 1);
+    assert(s19k.s_l4[0][0] == 654);
+
     // The same encrypted duplicate must return to pending if KEY=0 is
     // replaced by a non-clear regroup key. Service options alone cannot
     // reveal this transition, so retain and compare override provenance.

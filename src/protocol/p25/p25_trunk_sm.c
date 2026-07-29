@@ -2003,22 +2003,26 @@ p25_grant_refresh_duplicate_crypto(p25_sm_ctx_t* ctx, dsd_state* state, const p2
     // Control channels interleave explicit and implicit updates for one call;
     // letting the implicit copies demote the retained service bits toggled the
     // slot between clear and encryption-pending once per update, purging audio
-    // each time.
+    // each time. The regroup clear-key override derives from those same
+    // service options, so an implicit copy may neither grant nor remove it.
     const int svc_known = p25_sm_svc_bits_valid(ev->svc_bits);
     const int current_svc = svc_known ? ev->svc_bits : previous_svc;
+    const int current_clear_override = svc_known ? (force_clear ? 1 : 0) : previous_clear_override;
     if (svc_known) {
         slot_ctx->svc_bits = ev->svc_bits;
     }
-    slot_ctx->enc_override_clear = force_clear ? 1 : 0;
+    slot_ctx->enc_override_clear = current_clear_override;
     if (data_call) {
         return;
     }
 
-    if (p25_grant_duplicate_crypto_needs_restart(previous_svc, current_svc, previous_clear_override, force_clear,
-                                                 state->p25_crypto_state[crypto_slot])) {
+    if (p25_grant_duplicate_crypto_needs_restart(previous_svc, current_svc, previous_clear_override,
+                                                 current_clear_override, state->p25_crypto_state[crypto_slot])) {
         p25_sm_event_t crypto_ev = *ev;
         crypto_ev.svc_bits = current_svc;
-        p25_grant_begin_crypto_classification(ctx, state, &crypto_ev, eval_ctx, route->slot, 0, now_m);
+        p25_grant_eval_ctx_t crypto_eval = eval_ctx ? *eval_ctx : p25_grant_eval_ctx_from_event(&crypto_ev);
+        crypto_eval.enc_override_clear = current_clear_override;
+        p25_grant_begin_crypto_classification(ctx, state, &crypto_ev, &crypto_eval, route->slot, 0, now_m);
     }
 }
 
@@ -2981,17 +2985,15 @@ p25_voice_start_source_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_e
 
 static int
 p25_voice_start_assignment_service_is_fresh(const p25_sm_slot_ctx_t* slot_ctx) {
-    // Mirrors the source-freshness rule: the retained service options describe
-    // the next transmission only while a grant re-validates the assignment.
-    // Control channels keep repeating the call's grant (with its clear/enc
-    // service bits) through hangtime, so a completed transmission whose
-    // assignment the CC has re-announced since the stop may classify the next
-    // same-identity transmission from those bits instead of starting every one
-    // encryption-pending and muting clear voice until ESS decodes.
-    if (!slot_ctx) {
-        return 0;
-    }
-    return !p25_voice_start_follows_completed_epoch(slot_ctx) || slot_ctx->last_grant_m > slot_ctx->last_stop_m;
+    // The retained service options follow the same freshness rule as the
+    // retained source: they describe the next transmission only while a grant
+    // re-validates the assignment. Control channels keep repeating the call's
+    // grant (with its clear/enc service bits) through hangtime, so a completed
+    // transmission whose assignment the CC has re-announced since the stop may
+    // classify the next same-identity transmission from those bits instead of
+    // starting every one encryption-pending and muting clear voice until ESS
+    // decodes.
+    return p25_voice_start_assignment_source_is_fresh(slot_ctx);
 }
 
 static int

@@ -633,6 +633,23 @@ test_expire_pending_returns_slot_to_unclassified(void) {
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     p25_crypto_expire_pending(&state, 0);
     rc |= expect_int("expire leaves blocked classification", state.p25_crypto_state[0], DSD_P25_CRYPTO_BLOCKED);
+
+    // An armed quarantine candidate dies with its classification window: the
+    // next transmission must not corroborate against a tuple from the expired
+    // epoch.
+    reset_fixture(&opts, &state);
+    rc |= expect_int("seed clear P2 call before expiry", begin_p2_call(&state, 0U, 0x04U, 1U), 1);
+    p25_crypto_begin_voice_call(&state, DSD_P25_CRYPTO_PHASE2, 0, 0x04, 0);
+    rc |= expect_int(
+        "non-clear tuple quarantined before expiry",
+        p25_crypto_resolve(NULL, &state, DSD_P25_CRYPTO_PHASE2, 0, 0x13, 0x2222, UINT64_C(0x0102030405060708), 50061),
+        DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_int("quarantine armed before expiry", state.p25_p2_crypto_conflict[0].active, 1);
+    p25_crypto_expire_pending(&state, 0);
+    rc |= expect_int("expiry returns quarantined slot to unknown", state.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
+    rc |= expect_int("expiry clears quarantine candidate", state.p25_p2_crypto_conflict[0].active, 0);
+
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 
