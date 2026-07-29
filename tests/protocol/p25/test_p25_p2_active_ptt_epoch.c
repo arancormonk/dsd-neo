@@ -1,0 +1,277 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * A tune can land so a SACCH GVCU (MAC_ACTIVE) decodes before one of the
+ * transmission-start MAC_PTT repeats. The ACTIVE observation begins the
+ * canonical epoch; the first-seen PTT of the same transmission previously
+ * force-minted a second epoch, committing the observation epoch's freshly
+ * built row as a duplicate event -- surfaced in the field as a same-second
+ * pair of rows for one encrypted call: "ENC" with no ALG/KID from the ended
+ * ACTIVE epoch, then "ENC; ALG; KID" with the lockout notice from the PTT
+ * epoch the lockout finalized. The PTT must fold into the young ACTIVE-begun
+ * epoch, while a second, differently-signed PTT is the next transmission and
+ * must still begin its own epoch.
+ */
+
+#include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
+#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
+
+#define TEST_TG    21001
+#define TEST_SRC   1011308
+#define TEST_ALGID 0x84
+#define TEST_KEYID 0x2710
+
+static dsd_opts g_opts;
+static dsd_state g_state;
+
+static int
+expect(const char* tag, int cond) {
+    if (!cond) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", tag);
+        return 1;
+    }
+    return 0;
+}
+
+static dsd_trunk_tune_result
+test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)ted_sps;
+    (void)request_id;
+    return freq > 0 ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED;
+}
+
+static dsd_trunk_tune_result
+test_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    (void)request_id;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+reset_test_state(int tune_enc_calls) {
+    if (g_state.event_history_s != NULL) {
+        free(g_state.event_history_s);
+        g_state.event_history_s = NULL;
+    }
+    dsd_state_ext_free_all(&g_state);
+    DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
+    DSD_MEMSET(&g_state, 0, sizeof(g_state));
+    g_opts.trunk_enable = 1;
+    g_opts.trunk_hangtime = 2.0f;
+    g_opts.trunk_tune_group_calls = 1;
+    g_opts.trunk_tune_enc_calls = tune_enc_calls;
+    g_state.p25_cc_freq = 851000000;
+    g_state.lastsynctype = DSD_SYNC_P25P2_POS;
+    g_state.synctype = DSD_SYNC_P25P2_POS;
+    g_state.event_history_s = calloc(2, sizeof(Event_History_I));
+    if (g_state.event_history_s != NULL) {
+        for (int i = 0; i < 2; i++) {
+            init_event_history(&g_state.event_history_s[i], 0, 255);
+        }
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = test_tune_request,
+        .tune_to_cc_request = test_tune_request,
+        .return_to_cc_request = test_return_request,
+    });
+    p25_sm_init_ctx(p25_sm_get_ctx(), &g_opts, &g_state);
+}
+
+static void
+event_ticks(void) {
+    for (int i = 0; i < 3; i++) {
+        watchdog_event_current(&g_opts, &g_state, 0);
+        watchdog_event_history(&g_opts, &g_state, 0);
+    }
+}
+
+static int
+committed_event_count(void) {
+    if (g_state.event_history_s == NULL) {
+        return -1;
+    }
+    int count = 0;
+    for (int i = 1; i < 255; i++) {
+        if (g_state.event_history_s[0].Event_History_Items[i].event_string[0] != '\0') {
+            count++;
+        }
+    }
+    return count;
+}
+
+static int
+committed_events_contain(const char* needle) {
+    if (g_state.event_history_s == NULL) {
+        return 0;
+    }
+    for (int i = 1; i < 255; i++) {
+        if (strstr(g_state.event_history_s[0].Event_History_Items[i].event_string, needle) != NULL) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t
+slot0_epoch(void) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(&g_state, 0U, &call) > 0 ? call.epoch : 0U;
+}
+
+static int
+slot0_phase_is(dsd_call_phase phase) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(&g_state, 0U, &call) > 0 && call.phase == phase;
+}
+
+static void
+tune_grant(int svc) {
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    g_state.trunk_chan_map[0x1234] = 851500000;
+    g_state.p25_chan_tdma_explicit[1] = 2;
+    g_opts.trunk_is_tuned = 1;
+    p25_sm_event_t grant = p25_sm_ev_group_grant(0x1234, 851500000, TEST_TG, TEST_SRC, svc);
+    p25_sm_event(ctx, &g_opts, &g_state, &grant);
+}
+
+static void
+mac_ptt(uint8_t sig_fill) {
+    uint8_t signature[P25_SM_PTT_SIGNATURE_BYTES];
+    DSD_MEMSET(signature, sig_fill, sizeof(signature));
+    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, P25_SM_SVC_UNKNOWN, signature,
+                                        dsd_time_now_monotonic_s(), 0);
+}
+
+static void
+resolve_ess(void) {
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
+}
+
+/* The field capture: enc lockout on, tune catches a MAC_ACTIVE before one of
+ * the transmission-start MAC_PTT repeats, the PTT's ESS locks the call out.
+ * One transmission must commit exactly one history row. */
+static int
+test_active_then_ptt_lockout_single_row(void) {
+    int rc = 0;
+    reset_test_state(0);
+    tune_grant(0x00);
+    event_ticks();
+
+    rc |= expect("lockout fixture ACTIVE accepted",
+                 p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x40) > 0);
+    event_ticks();
+    const uint64_t active_epoch = slot0_epoch();
+    rc |= expect("lockout fixture ACTIVE begins epoch", active_epoch != 0U);
+
+    mac_ptt(0x33U);
+    rc |= expect("first PTT folds into ACTIVE epoch", slot0_epoch() == active_epoch);
+    rc |= expect("first PTT keeps epoch live", slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
+
+    resolve_ess();
+    event_ticks();
+    rc |= expect("lockout ends the transmission", slot0_phase_is(DSD_CALL_PHASE_ENDED));
+
+    /* Remaining PTT repeats and the release follow on the air. */
+    mac_ptt(0x33U);
+    resolve_ess();
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    p25_crypto_reset_slot(&g_state, 0);
+    event_ticks();
+
+    rc |= expect("one transmission commits one row", committed_event_count() == 1);
+    rc |= expect("committed row carries the resolved ALG", committed_events_contain("ALG: 84"));
+    return rc;
+}
+
+/* A differently-signed PTT after the epoch has accepted a PTT is the next
+ * transmission: it must still begin its own canonical epoch. */
+static int
+test_second_ptt_still_begins_new_epoch(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    rc |= expect("clear fixture ACTIVE accepted",
+                 p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00) > 0);
+    const uint64_t active_epoch = slot0_epoch();
+
+    mac_ptt(0x44U);
+    rc |= expect("clear first PTT folds into ACTIVE epoch", slot0_epoch() == active_epoch);
+
+    /* Same signature repeats stay in the epoch. */
+    mac_ptt(0x44U);
+    rc |= expect("PTT retransmit keeps the epoch", slot0_epoch() == active_epoch);
+
+    /* A new signature is a new transmission even without a decoded END. */
+    mac_ptt(0x55U);
+    rc |= expect("differently-signed PTT begins a new epoch", slot0_epoch() != active_epoch);
+    rc |= expect("new transmission epoch is live", slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
+    return rc;
+}
+
+/* Guard the already-correct paths: a PTT with no preceding ACTIVE observation
+ * still commits exactly one row under enc lockout. */
+static int
+test_ptt_without_active_lockout_single_row(void) {
+    int rc = 0;
+    reset_test_state(0);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0x66U);
+    resolve_ess();
+    event_ticks();
+    mac_ptt(0x66U);
+    resolve_ess();
+    event_ticks();
+
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    p25_crypto_reset_slot(&g_state, 0);
+    event_ticks();
+
+    rc |= expect("ptt-only lockout commits one row", committed_event_count() == 1);
+    return rc;
+}
+
+int
+main(void) {
+    int rc = 0;
+    rc |= test_active_then_ptt_lockout_single_row();
+    rc |= test_second_ptt_still_begins_new_epoch();
+    rc |= test_ptt_without_active_lockout_single_row();
+
+    if (g_state.event_history_s != NULL) {
+        free(g_state.event_history_s);
+        g_state.event_history_s = NULL;
+    }
+    dsd_state_ext_free_all(&g_state);
+
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "P25 P2 ACTIVE PTT EPOCH: OK\n");
+    }
+    return rc;
+}

@@ -168,6 +168,7 @@ typedef struct {
     uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES]; // Last accepted raw P25P2 MAC_PTT signature
     double ptt_last_seen_m;                            // Last observation of that PTT, including retransmissions
     int ptt_signature_valid;                           // 1 while no accepted call boundary/replacement intervened
+    uint64_t ptt_canonical_epoch;                      // Canonical epoch that most recently accepted a MAC_PTT
 } p25_sm_slot_ctx_t;
 
 typedef struct {

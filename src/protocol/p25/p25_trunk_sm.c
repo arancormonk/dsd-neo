@@ -2997,6 +2997,7 @@ typedef struct {
     int requires_update;
     int preserve_crypto_classification;
     int coalesce_canonical_epoch;
+    int ptt_evidence;
 } p25_voice_start_changes_t;
 
 static int
@@ -3022,19 +3023,42 @@ p25_p1_hdu_crypto_consume_identity(const p25_sm_ctx_t* ctx, dsd_state* state, co
     }
 }
 
+// A PTT normally keeps its own canonical epoch: PTT is per-transmission
+// evidence. The exception is the transmission that is already being observed
+// live: a tune that lands so a GVCU/MAC_ACTIVE decodes before one of the
+// transmission-start MAC_PTT repeats begins the canonical epoch from that
+// observation, and letting the first-seen PTT force a second epoch commits
+// the observation epoch's freshly built row as a duplicate event. The PTT may
+// therefore fold into a young matching epoch only while that epoch has not
+// already accepted a PTT of its own -- a second, differently-signed PTT is
+// the next transmission and must begin its own epoch.
+static int
+p25_voice_ptt_start_may_coalesce(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot) {
+    dsd_call_snapshot current;
+    if (dsd_call_state_get(state, (uint8_t)slot, &current) <= 0 || current.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    return ctx->slots[slot].ptt_canonical_epoch != current.epoch;
+}
+
 static p25_voice_start_changes_t
-p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const p25_sm_slot_ctx_t* slot_ctx,
-                                 const p25_sm_event_t* input, const p25_sm_event_t* call_ev, int ptt_retransmit) {
+p25_voice_start_classify_changes(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot,
+                                 const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* input,
+                                 const p25_sm_event_t* call_ev, int ptt_retransmit) {
     p25_voice_start_changes_t changes = {0};
     const int learned_source = !p25_source_id_known(slot_ctx->src) && p25_source_id_known(call_ev->src);
 
     changes.service_changed = p25_voice_start_service_changed(slot_ctx, call_ev);
     changes.new_epoch = p25_voice_start_begins_new_epoch(ctx, slot_ctx, input, call_ev, ptt_retransmit);
     changes.requires_update = changes.new_epoch || changes.service_changed || learned_source;
-    // A PTT is per-transmission evidence and must keep its own canonical
-    // epoch; only an ACTIVE-driven start may fold into the epoch the
-    // traffic-channel observation of the same transmission just began.
-    changes.coalesce_canonical_epoch = input->type == P25_SM_EV_ACTIVE;
+    changes.ptt_evidence = p25_voice_start_is_p2_ptt(ctx, input);
+    // An ACTIVE-driven start may always fold into the epoch the
+    // traffic-channel observation of the same transmission just began. A PTT
+    // may do the same only for an epoch no PTT has claimed yet; identity and
+    // age matching stay with p25_call_begin_coalesces_into_active_epoch().
+    changes.coalesce_canonical_epoch =
+        input->type == P25_SM_EV_ACTIVE
+        || (changes.new_epoch && changes.ptt_evidence && p25_voice_ptt_start_may_coalesce(ctx, state, slot));
     return changes;
 }
 
@@ -3160,6 +3184,17 @@ p25_voice_start_commit_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* st
     p25_voice_start_update_crypto(ctx, state, slot, logical_slot, call_ev, eval_ctx, changes, now_m);
     p25_call_publish_observation(ctx, opts, state, slot, changes->new_epoch, changes->coalesce_canonical_epoch,
                                  P25_CALL_OBS_VOICE_EVIDENCE, now_m);
+    if (changes->ptt_evidence) {
+        // Whether this PTT began the epoch or folded into one an ACTIVE
+        // observation began, the epoch now contains a PTT: the next
+        // differently-signed PTT is the next transmission and must not
+        // coalesce into it. Read back rather than assumed: the publish may
+        // have declined (no assignment target), leaving no epoch to claim.
+        dsd_call_snapshot current;
+        if (dsd_call_state_get(state, (uint8_t)slot, &current) > 0 && current.phase == DSD_CALL_PHASE_ACTIVE) {
+            slot_ctx->ptt_canonical_epoch = current.epoch;
+        }
+    }
 }
 
 static int
@@ -3185,7 +3220,7 @@ p25_voice_start_apply_identity(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* sta
 
     const p25_sm_slot_ctx_t* slot_ctx = &ctx->slots[slot];
     p25_voice_start_changes_t changes =
-        p25_voice_start_classify_changes(ctx, slot_ctx, input, &call_ev, ptt_retransmit);
+        p25_voice_start_classify_changes(ctx, state, slot, slot_ctx, input, &call_ev, ptt_retransmit);
     if (pending_p1_identity) {
         changes.requires_update = 1;
     }
