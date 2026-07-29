@@ -95,6 +95,7 @@ static atomic_int g_p25_sm_release_lock = 0;
 #define P25_VC_CQPSK_REACQUIRE_HOLD_S          0.75
 #define P25_VC_CQPSK_REACQUIRE_NO_SYNC_PASSES  3U
 #define P25_PTT_RETRANSMIT_WINDOW_S            1.0
+#define P25_POST_END_VOICE_USER_REPEAT_S       1.0
 #define P25_PTT_SIGNATURE_ALGID_INDEX          9
 #define P25_PTT_SIGNATURE_IDENTITY_INDEX       12
 #define P25_CANONICAL_EPOCH_COALESCE_S         1.0
@@ -2844,6 +2845,38 @@ p25_voice_start_follows_completed_epoch(const p25_sm_slot_ctx_t* slot_ctx) {
     return slot_ctx && slot_ctx->last_start_m > 0.0 && !p25_voice_slot_epoch_active(slot_ctx);
 }
 
+// After an accepted MAC_END_PTT the FNE keeps describing the completed call for a few bursts:
+// END repeats interleave with SACCH voice-user copies whose four-burst assembly began before
+// the END decoded. A voice user naming the completed talker -- or naming no talker -- on the
+// unchanged target inside that tail is retention of the transmission that just ended, and
+// reopening an epoch from it commits a duplicate history row once the phantom epoch dies at
+// hangtime or at the next talker's PTT. The time bound is what the retired identity-only
+// guards lacked: outside the tail, a genuinely ACTIVE-typed voice user re-naming the same
+// talker is the next transmission and still reopens the call. A changed source is fresh
+// evidence and is never suppressed.
+static int
+p25_voice_user_repeats_recent_end(const p25_sm_slot_ctx_t* slot_ctx, int target, int src, double now_m) {
+    if (!slot_ctx || slot_ctx->last_end_m <= 0.0 || target <= 0 || target != slot_ctx->last_end_tg) {
+        return 0;
+    }
+    if (p25_voice_slot_epoch_active(slot_ctx)) {
+        return 0;
+    }
+    if (p25_source_id_known(src) && src != slot_ctx->last_end_src) {
+        return 0;
+    }
+    return now_m >= slot_ctx->last_end_m && (now_m - slot_ctx->last_end_m) <= P25_POST_END_VOICE_USER_REPEAT_S;
+}
+
+int
+p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m) {
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (slot < 0 || slot > 1 || ctx->state != P25_SM_TUNED || !ctx->vc_is_tdma) {
+        return 0;
+    }
+    return p25_voice_user_repeats_recent_end(&ctx->slots[slot], target, src, now_m);
+}
+
 static int
 p25_voice_start_target_changed(const p25_sm_slot_ctx_t* slot_ctx, const p25_sm_event_t* ev) {
     if (!slot_ctx || !ev || slot_ctx->is_group != (ev->is_group ? 1 : 0)) {
@@ -3342,6 +3375,24 @@ p25_voice_start_apply_event(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
     return 1;
 }
 
+// Phase 2 only: the post-END retention tail is a TDMA artifact (END repeats
+// interleaving with the four-burst SACCH assembly). Phase 1's post-TDU
+// same-identity signaling drives its own HDU/LCW crypto machinery and must
+// keep flowing. Retention is still channel activity, so the liveness clock
+// advances, but the hangtime timer keeps running and no epoch reopens.
+static int
+p25_voice_start_suppress_post_end_repeat(p25_sm_ctx_t* ctx, dsd_opts* opts, const dsd_state* state, int slot,
+                                         const p25_sm_event_t* ev, const char* why, double now_m) {
+    if (ev->type != P25_SM_EV_ACTIVE || !ctx->vc_is_tdma
+        || !p25_voice_user_repeats_recent_end(&ctx->slots[slot], ev->is_group ? ev->tg : ev->dst, ev->src, now_m)) {
+        return 0;
+    }
+    p25_sm_note_vc_decode_activity(ctx, opts, state, why, slot, now_m);
+    p25_sm_diagf(opts, state, ctx, "voice_observation_suppressed", "reason=repeats-recent-end slot=%d tg=%d src=%d",
+                 slot, ev->tg, ev->src);
+    return 1;
+}
+
 static int
 handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev, const char* why) {
     if (!ctx || !ev) {
@@ -3353,6 +3404,9 @@ handle_voice_start(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p2
 
     double now_m = ev->observed_m > 0.0 ? ev->observed_m : dsd_time_now_monotonic_s();
     int s = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : 0;
+    if (p25_voice_start_suppress_post_end_repeat(ctx, opts, state, s, ev, why, now_m)) {
+        return 1;
+    }
     int new_epoch = !ctx->slots[s].voice_active;
     if (!p25_voice_start_apply_event(ctx, opts, state, s, ev, now_m, &new_epoch)) {
         return 0;

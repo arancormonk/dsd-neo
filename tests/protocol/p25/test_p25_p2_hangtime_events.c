@@ -6,7 +6,11 @@
 /*
  * P25 Phase 2 MAC_ACTIVE is positive transmission evidence. Hangtime voice
  * users are filtered by their outer MAC PDU type in the VPDU decoder, so the
- * state machine must not infer hangtime from a recently ended identity.
+ * state machine must not infer hangtime from a recently ended identity --
+ * with one time-bounded exception: inside the short post-END retention tail,
+ * copies still naming the completed talker on the unchanged target re-describe
+ * the transmission that just ended and must not reopen it (see
+ * test_p25_p2_active_ptt_epoch.c).
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -130,6 +134,10 @@ test_same_identity_mac_active_reopens_call(void) {
     transmit_clear(0x11U, TEST_SRC);
     end_transmission(TEST_SRC);
     const uint64_t ended_epoch = slot0_epoch();
+
+    // Past the post-END retention tail: END repeats and delayed SACCH copies
+    // of the ended transmission arrive inside it, a re-keyed talker after it.
+    p25_sm_get_ctx()->slots[0].last_end_m = dsd_time_now_monotonic_s() - 1.1;
 
     rc |= expect("same-source ACTIVE accepted",
                  p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00) > 0);

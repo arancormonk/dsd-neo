@@ -440,6 +440,25 @@ int p25_sm_vc_reacquire_hold_active(const p25_sm_ctx_t* ctx, const dsd_opts* opt
  */
 int p25_sm_slot_grant_newer_than(int slot, double observed_m);
 
+/**
+ * @brief Check whether a voice-user observation re-describes a call that just ended.
+ *
+ * After an accepted MAC_END_PTT the FNE keeps describing the completed call
+ * for a few bursts: END repeats interleave with SACCH voice-user copies whose
+ * assembly began before the END decoded. A voice user naming the completed
+ * talker (or naming no talker) on the unchanged target inside that short tail
+ * is retention of the ended transmission and must not begin a canonical
+ * epoch. A changed source, or the same identity outside the tail, is fresh
+ * evidence and returns 0.
+ *
+ * @param slot Slot index (0 or 1).
+ * @param target OTA talkgroup for group calls, destination RID for private calls.
+ * @param src Source RID, or 0/unknown when the observation carries none.
+ * @param now_m Monotonic timestamp of the observation.
+ * @return 1 when the observation repeats the recently ended call, 0 otherwise.
+ */
+int p25_sm_voice_user_repeats_recent_end(int slot, int target, int src, double now_m);
+
 /* ============================================================================
  * Public API - Convenience Emit Functions (use global singleton)
  * ============================================================================ */

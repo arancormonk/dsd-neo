@@ -257,12 +257,105 @@ test_ptt_without_active_lockout_single_row(void) {
     return rc;
 }
 
+/* Conversation turnaround: after the accepted MAC_END_PTT, END repeats
+ * interleave with SACCH voice-user copies still naming the completed talker.
+ * Such a copy inside the retention tail must not reopen the ended call --
+ * previously it minted a phantom epoch that committed a duplicate row when
+ * the next talker keyed up. */
+static int
+test_post_end_active_repeat_does_not_reopen(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0x77U);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+
+    /* Delayed SACCH copy still naming the completed talker. */
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC, 1, 0x00);
+    event_ticks();
+    rc |= expect("post-END repeat does not reopen", slot0_phase_is(DSD_CALL_PHASE_ENDED));
+    rc |= expect("post-END repeat mints no epoch", slot0_epoch() == ended_epoch);
+
+    /* Next talker keys up; their transmission runs and ends. */
+    uint8_t sig[P25_SM_PTT_SIGNATURE_BYTES];
+    DSD_MEMSET(sig, 0x88, sizeof(sig));
+    (void)p25_sm_emit_ptt_call_metadata(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, P25_SM_SVC_UNKNOWN, sig,
+                                        dsd_time_now_monotonic_s(), 0);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, 0x00);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC + 7, dsd_time_now_monotonic_s());
+    event_ticks();
+
+    rc |= expect("two transmissions commit two rows", committed_event_count() == 2);
+    return rc;
+}
+
+/* A different talker inside the tail is fresh evidence: the conversation's
+ * next transmission must not be mistaken for retention. */
+static int
+test_post_end_changed_source_reopens(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0x99U);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    event_ticks();
+    const uint64_t ended_epoch = slot0_epoch();
+
+    rc |= expect("changed-source ACTIVE accepted",
+                 p25_sm_emit_active_call(&g_opts, &g_state, 0, TEST_TG, 0, TEST_SRC + 7, 1, 0x00) > 0);
+    rc |= expect("changed-source ACTIVE reopens", slot0_phase_is(DSD_CALL_PHASE_ACTIVE));
+    rc |= expect("changed-source ACTIVE begins epoch", slot0_epoch() != ended_epoch);
+    return rc;
+}
+
+/* The suppression helper the VPDU observation path shares with the state
+ * machine: same identity inside the tail repeats the ended call; outside the
+ * tail, or with a changed source, it is fresh evidence. */
+static int
+test_repeat_helper_windows(void) {
+    int rc = 0;
+    reset_test_state(1);
+    tune_grant(0x00);
+    event_ticks();
+
+    mac_ptt(0xABU);
+    event_ticks();
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, TEST_TG, TEST_SRC, dsd_time_now_monotonic_s());
+    event_ticks();
+
+    const double now_m = dsd_time_now_monotonic_s();
+    rc |= expect("helper: same identity in tail repeats",
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC, now_m) == 1);
+    rc |= expect("helper: source-less copy in tail repeats",
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, 0, now_m) == 1);
+    rc |= expect("helper: changed source is fresh",
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC + 7, now_m) == 0);
+    rc |= expect("helper: changed target is fresh",
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG + 1, TEST_SRC, now_m) == 0);
+    rc |= expect("helper: outside the tail is fresh",
+                 p25_sm_voice_user_repeats_recent_end(0, TEST_TG, TEST_SRC, now_m + 1.5) == 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_active_then_ptt_lockout_single_row();
     rc |= test_second_ptt_still_begins_new_epoch();
     rc |= test_ptt_without_active_lockout_single_row();
+    rc |= test_post_end_active_repeat_does_not_reopen();
+    rc |= test_post_end_changed_source_reopens();
+    rc |= test_repeat_helper_windows();
 
     if (g_state.event_history_s != NULL) {
         free(g_state.event_history_s);
