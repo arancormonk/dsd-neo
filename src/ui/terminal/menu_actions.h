@@ -161,6 +161,7 @@ void act_toggle_ui_p25_neighbors(void* v);
 void act_toggle_ui_p25_iden(void* v);
 void act_toggle_ui_p25_ccc(void* v);
 void act_toggle_ui_channels(void* v);
+void act_toggle_ui_compact(void* v);
 void act_toggle_ui_p25_callsign(void* v);
 
 // ---- RTL-SDR actions (USE_RADIO only) ----

@@ -2495,6 +2495,7 @@ apply_cmd_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
             return 1;
         case DSD_APP_CMD_TOGGLE_COMPACT:
             opts->frontend_terminal_display.terminal_compact = opts->frontend_terminal_display.terminal_compact ? 0 : 1;
+            dsd_telemetry_request_redraw();
             return 1;
         case DSD_APP_CMD_HISTORY_CYCLE:
             (void)dsd_app_frontend_history_cycle_mode();

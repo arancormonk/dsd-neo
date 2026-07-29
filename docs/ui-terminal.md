@@ -78,7 +78,7 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 | Key | Action |
 |---|---|
 | `q` | Quit |
-| `c` | Toggle compact view |
+| `c` | Toggle compact scanner view |
 | `h` | Cycle history mode |
 | `x` / `X` | Toggle mute |
 | `z` | Toggle payload logging (`-Z`-like) |
@@ -164,3 +164,18 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 | `s` | Stop playback |
 | `[` / `]` | Event history previous/next |
 | `\\` | Toggle event history slot (or toggle M17 TX in encoder mode) |
+
+## Compact View
+
+Press `c` (or use Menu → UI Display → General → Compact View) to collapse the main screen to a scanner-style
+layout. While active, the header shows a `Compact (c)` indicator and the frame renders only:
+
+- the header banner and any transient status toast;
+- a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
+  input level, output mute state, and slot on/off states;
+- the full Call Info section (per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
+- the event history, which expands into the freed rows.
+
+Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
+toggles are remembered and restored when leaving compact), the detailed Audio Decode section, the optional P25
+sections, and the Channels list. The setting is session-only and is not persisted to the config file.

@@ -87,7 +87,7 @@ test_header_null_opts_is_noop(void) {
 }
 
 static void
-test_header_compact_renders_without_banner_color(void) {
+test_header_compact_shows_indicator_and_banner_color(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof opts);
@@ -97,31 +97,15 @@ test_header_compact_renders_without_banner_color(void) {
     reset_calls();
     ui_panel_header_render(&opts, &state);
 
-    assert(g_attron_calls == 0);
-    assert(g_attroff_calls == 0);
+    assert(g_attron_calls == 2);
+    assert(g_attroff_calls == 1);
+    assert(g_last_attroff == COLOR_PAIR(6));
+    assert(g_last_attron == COLOR_PAIR(4));
     assert(g_hr_calls == 2);
     assert(g_printw_calls == 1);
     assert(strstr(g_last_printw, "test-tag") != NULL);
     assert(strstr(g_last_printw, "test-hash") != NULL);
-}
-
-static void
-test_header_compact_trunk_restores_trunk_color(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.frontend_terminal_display.terminal_compact = 1;
-    opts.trunk_enable = 1;
-
-    reset_calls();
-    ui_panel_header_render(&opts, &state);
-
-    assert(g_attron_calls == 1);
-    assert(g_last_attron == COLOR_PAIR(4));
-    assert(g_attroff_calls == 0);
-    assert(g_hr_calls == 2);
-    assert(g_printw_calls == 1);
+    assert(strstr(g_last_printw, "Compact (c)") != NULL);
 }
 
 static void
@@ -140,6 +124,7 @@ test_header_full_renders_banner_and_body_colors(void) {
     assert(g_last_attron == COLOR_PAIR(4));
     assert(g_hr_calls == 2);
     assert(g_printw_calls == 1);
+    assert(strstr(g_last_printw, "Compact (c)") == NULL);
 }
 
 static void
@@ -204,8 +189,7 @@ test_footer_expired_toast_clears_snapshot_only(void) {
 int
 main(void) {
     test_header_null_opts_is_noop();
-    test_header_compact_renders_without_banner_color();
-    test_header_compact_trunk_restores_trunk_color();
+    test_header_compact_shows_indicator_and_banner_color();
     test_header_full_renders_banner_and_body_colors();
     test_footer_null_inputs_are_noop();
     test_footer_active_toast_renders_without_clearing();

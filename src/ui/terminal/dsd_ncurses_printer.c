@@ -1149,6 +1149,62 @@ ui_render_audio_decode_section(dsd_opts* opts, const dsd_state* state, int level
 }
 
 static void
+ui_render_compact_status_line(dsd_opts* opts, const dsd_state* state) {
+    ui_print_label_pad("Status");
+    {
+        const char* modlab = (state->rf_mod == 1) ? "QPSK" : (state->rf_mod == 2) ? "GFSK" : "C4FM";
+        printw("[%s] [%s][%d]", opts->output_name, modlab, ui_demod_symbol_rate_hz(opts, state));
+    }
+    if (opts->trunk_enable == 1) {
+        printw("  Tuner [%s]", (opts->trunk_is_tuned == 1) ? "Busy" : "Free");
+    }
+    printw("\n");
+}
+
+static void
+ui_render_compact_levels_line(const dsd_opts* opts, const dsd_state* state, int level) {
+    ui_print_label_pad("Levels");
+    /* Same visibility rule as ui_render_audio_decode_levels: In Level is not
+       meaningful for RTL QPSK (fixed +/-1,+/-3 differential symbols). */
+    if (opts->audio_in_type != AUDIO_IN_RTL || state->rf_mod != 1) {
+        printw("In [%02d%%]  ", level);
+    }
+    printw("Out (x) [%s]", (opts->audio_out == 0) ? "Muted" : "On");
+
+    const int dmr_mono_override_active = opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(ncurses_last_synctype);
+    if (opts->dmr_stereo == 0 || dmr_mono_override_active) {
+        const int mono_slot = dmr_mono_override_active && state->dmr_mono_slot == 1 ? 1 : 0;
+        if (mono_slot == 1) {
+            printw("  S2 (2) [%s]", (opts->slot2_on == 1) ? "On" : "Off");
+        } else {
+            printw("  S1 (1) [%s]", (opts->slot1_on == 1) ? "On" : "Off");
+        }
+    } else {
+        printw("  S1 (1) [%s]  S2 (2) [%s]", (opts->slot1_on == 1) ? "On" : "Off",
+               (opts->slot2_on == 1) ? "On" : "Off");
+    }
+    printw("\n");
+}
+
+/* Condensed status block shown instead of the Input Output / Audio Decode
+   sections when compact view is active ('c'): decode mode, tuner state, SNR
+   meter, and level/slot basics. Call Info and event history render as usual. */
+static void
+ui_render_compact_status_section(dsd_opts* opts, const dsd_state* state, int level) {
+    if (opts == NULL || state == NULL) {
+        return;
+    }
+    ui_print_header("Status");
+    ui_render_compact_status_line(opts, state);
+    /* The SNR field continues an existing line in the full view; give it a
+       left border when it starts its own line here. */
+    ui_print_lborder();
+    ui_render_demod_snr_line(opts, state);
+    ui_render_compact_levels_line(opts, state, level);
+    ui_print_hr();
+}
+
+static void
 ui_sort_indices_by_last_seen(const time_t* last_seen, int* idxs, int n) {
     for (int i = 0; i < n; i++) {
         int best = i;
@@ -3008,7 +3064,7 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_hr();
 
     // Render learned LCNs just under the Call Info section when trunking (toggle in menu)
-    if (opts->frontend_display.show_channels == 1) {
+    if (opts->frontend_display.show_channels == 1 && opts->frontend_terminal_display.terminal_compact == 0) {
         ui_print_learned_lcns(opts, state);
         // fence bottom only when Channels are shown
         ui_print_hr();
@@ -3022,8 +3078,8 @@ ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
 
 void
 dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
-    /* Guard against null opts. Without opts we cannot render safely. */
-    if (!opts) {
+    /* Guard against null opts/state. Without them we cannot render safely. */
+    if (!opts || !state) {
         return;
     }
     /* Demod path must not touch ncurses. Telemetry is published through
@@ -3038,18 +3094,25 @@ dsd_terminal_render(dsd_opts* opts, dsd_state* state) {
     //Start Printing Section
     erase();
     ui_panel_header_render(opts, state);
-    if (state) {
-        ui_panel_footer_status_render(opts, state);
+    ui_panel_footer_status_render(opts, state);
+
+    const int compact = opts->frontend_terminal_display.terminal_compact == 1;
+
+    if (!compact) {
+        ui_render_input_output_section(opts, state);
+        ui_render_rtl_visual_aids(opts, state);
     }
 
-    ui_render_input_output_section(opts, state);
-    ui_render_rtl_visual_aids(opts, state);
-
+    /* Always compute the input level: it also arms the carrier color pair
+       that Call Info relies on, in compact and full views alike. */
     level = ui_compute_input_level_and_color(opts, state);
 
-    ui_render_audio_decode_section(opts, state, level);
-
-    ui_render_p25_optional_sections(opts, state);
+    if (compact) {
+        ui_render_compact_status_section(opts, state, level);
+    } else {
+        ui_render_audio_decode_section(opts, state, level);
+        ui_render_p25_optional_sections(opts, state);
+    }
 
     ui_render_call_info_and_history(opts, state);
 

@@ -1189,6 +1189,12 @@ act_toggle_ui_channels(void* v) {
 }
 
 void
+act_toggle_ui_compact(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_TOGGLE_COMPACT);
+}
+
+void
 act_toggle_ui_p25_callsign(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);

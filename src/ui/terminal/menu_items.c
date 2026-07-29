@@ -650,6 +650,10 @@ static const NcMenuItem UI_DISPLAY_GENERAL_ITEMS[] = {
      .label_fn = lbl_ui_channels,
      .help = "Toggle Channels section.",
      .on_select = act_toggle_ui_channels},
+    {.id = "compact",
+     .label_fn = lbl_ui_compact,
+     .help = "Toggle compact scanner view (hotkey: c).",
+     .on_select = act_toggle_ui_compact},
 };
 
 const NcMenuItem UI_DISPLAY_MENU_ITEMS[] = {

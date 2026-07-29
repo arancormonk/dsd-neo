@@ -353,6 +353,13 @@ void
 ui_print_lborder_green(void) {} // NOLINT(misc-use-internal-linkage)
 
 void
+ui_print_lborder(void) { // NOLINT(misc-use-internal-linkage)
+    if (g_printw_capture_len < sizeof(g_printw_capture) - 1U) {
+        g_printw_capture[g_printw_capture_len++] = '|';
+    }
+}
+
+void
 ui_panel_header_render(const dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)state;
@@ -680,6 +687,72 @@ test_input_level_policy(void) {
     opts.rtl_dsp_bw_khz = 48;
     state.max = 0.075f;
     assert(ui_compute_input_level_and_color(&opts, &state) == 50);
+}
+
+static void
+test_compact_status_section_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    /* Null inputs render nothing */
+    reset_printw_capture();
+    ui_render_compact_status_section(NULL, &state, 0);
+    ui_render_compact_status_section(&opts, NULL, 0);
+    assert(g_printw_capture[0] == '\0');
+
+    /* Trunking tuned: Tuner [Busy]; dual-slot shows both slot states */
+    DSD_SNPRINTF(opts.output_name, sizeof(opts.output_name), "AUTO");
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    state.samplesPerSymbol = 10;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.audio_out = 1;
+    opts.dmr_stereo = 1;
+    opts.slot1_on = 1;
+    opts.slot2_on = 0;
+    ncurses_last_synctype = DSD_SYNC_NONE;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert_capture_contains("[AUTO] [C4FM][4800]");
+    assert_capture_contains("Tuner [Busy]");
+    /* SNR line starts with its own left border in compact view */
+    assert_capture_contains("Tuner [Busy]\n|");
+    assert_capture_contains("In [42%]");
+    assert_capture_contains("Out (x) [On]");
+    assert_capture_contains("S1 (1) [On]");
+    assert_capture_contains("S2 (2) [Off]");
+
+    /* Trunking not tuned: Tuner [Free] */
+    opts.trunk_is_tuned = 0;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert_capture_contains("Tuner [Free]");
+
+    /* Trunking off: no Tuner field; muted output */
+    opts.trunk_enable = 0;
+    opts.audio_out = 0;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert(strstr(g_printw_capture, "Tuner [") == NULL);
+    assert_capture_contains("Out (x) [Muted]");
+
+    /* Single-slot mode shows only S1 */
+    opts.dmr_stereo = 0;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert_capture_contains("S1 (1) [On]");
+    assert(strstr(g_printw_capture, "S2 (2)") == NULL);
+
+    /* RTL QPSK hides In Level (fixed differential symbols) */
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rf_mod = 1;
+    reset_printw_capture();
+    ui_render_compact_status_section(&opts, &state, 42);
+    assert(strstr(g_printw_capture, "In [") == NULL);
+    assert_capture_contains("[QPSK]");
 }
 
 static void
@@ -1325,6 +1398,7 @@ main(void) {
     test_rtl_auto_ppm_status_rendering();
     test_demod_symbol_rate_helpers();
     test_input_level_policy();
+    test_compact_status_section_rendering();
     test_history_and_sort_helpers();
     test_history_color_pair_policy();
     test_history_viewport_helpers();

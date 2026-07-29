@@ -344,6 +344,9 @@ test_env_config_display_and_key_labels(void) {
     rc |= expect_str("show p25 iden off", lbl_ui_p25_iden(&ctx, b, sizeof(b)), "Show P25 IDEN Plan [Off]");
     rc |= expect_str("show p25 cc candidates off", lbl_ui_p25_ccc(&ctx, b, sizeof(b)), "Show P25 CC Candidates [Off]");
     rc |= expect_str("show channels", lbl_ui_channels(&ctx, b, sizeof(b)), "Show Channels [On]");
+    rc |= expect_str("compact view off", lbl_ui_compact(&ctx, b, sizeof(b)), "Compact View [Off]");
+    opts.frontend_terminal_display.terminal_compact = 1;
+    rc |= expect_str("compact view on", lbl_ui_compact(&ctx, b, sizeof(b)), "Compact View [On]");
     rc |=
         expect_str("show p25 callsign off", lbl_ui_p25_callsign(&ctx, b, sizeof(b)), "Show P25 Callsign Decode [Off]");
 

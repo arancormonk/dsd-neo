@@ -1040,6 +1040,10 @@ test_key_lrrp_and_display_actions(void) {
     rc |= expect_int("ui channels command", g_cmd.id, DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE);
 
     reset_capture();
+    act_toggle_ui_compact(&ctx);
+    rc |= expect_int("ui compact command", g_cmd.id, DSD_APP_CMD_TOGGLE_COMPACT);
+
+    reset_capture();
     act_toggle_ui_p25_callsign(&ctx);
     rc |= expect_int("ui callsign command", g_cmd.id, DSD_APP_CMD_UI_SHOW_P25_CALLSIGN_TOGGLE);
 
