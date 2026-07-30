@@ -1323,6 +1323,25 @@ frame_sync_try_dmr_dm_ts2_voice(frame_sync_match_ctx* ctx) {
 }
 
 static int
+frame_sync_try_dmr_rc_data(frame_sync_match_ctx* ctx) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    /* The RC sync has no voice/data complement partner: its symbol-wise
+     * complement is the ETSI-reserved pattern, so it maps to RC only when the
+     * input polarity is inverted and is never claimed at normal polarity. */
+    const char* pattern = (opts->inverted_dmr == 0) ? DMR_MS_RC_SYNC : DMR_MS_RC_SYNC_INV;
+    if (strcmp(ctx->synctest, pattern) != 0) {
+        return DSD_SYNC_NONE;
+    }
+
+    frame_sync_prepare_dmr_sync(ctx);
+    DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "DMR RC");
+    state->lastsynctype = DSD_SYNC_DMR_RC_DATA;
+    dmr_resample_on_sync(opts, state);
+    return DSD_SYNC_DMR_RC_DATA;
+}
+
+static int
 frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
     if (ctx->opts->frame_dmr != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
         || !frame_sync_match_window_ready(ctx, 24)) {
@@ -1357,7 +1376,11 @@ frame_sync_try_dmr(frame_sync_match_ctx* ctx) {
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
-    return frame_sync_try_dmr_dm_ts2_voice(ctx);
+    sync_type = frame_sync_try_dmr_dm_ts2_voice(ctx);
+    if (sync_type != DSD_SYNC_NONE) {
+        return sync_type;
+    }
+    return frame_sync_try_dmr_rc_data(ctx);
 }
 
 static int
@@ -3041,6 +3064,38 @@ dsd_frame_sync_test_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, int
 }
 #endif
 
+/* Symbols seen since the last sync or unsynced dump; only the DSP thread
+ * touches it (same pattern as the g_vote_* diagnostics). */
+static unsigned int g_unsynced_dmr_dump_symbols = 0;
+
+/* --dmr-debug-unsynced: while hunting, print the trailing 144 dibits from the
+ * rolling DMR payload buffer as non-overlapping "Debug Demod -Sync" chunks.
+ * Chunk boundaries are arbitrary and thresholds may be uncalibrated; this is a
+ * best-effort raw view of demod output that never achieved sync. */
+static void
+frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->dmr_debug_unsynced == 0 || opts->frame_dmr != 1) {
+        return;
+    }
+    if (opts->audio_in_type != AUDIO_IN_SYMBOL_BIN && opts->audio_in_type != AUDIO_IN_SYMBOL_FLT
+        && state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return;
+    }
+    if (++g_unsynced_dmr_dump_symbols < 144U) {
+        return;
+    }
+    g_unsynced_dmr_dump_symbols = 0;
+
+    if (state->dmr_payload_buf == NULL || state->dmr_payload_p == NULL
+        || state->dmr_payload_p - state->dmr_payload_buf < 144) {
+        return;
+    }
+    char line[192];
+    if (dmr_debug_format_unsynced(line, sizeof(line), state->dmr_payload_p - 144, 144U) != 0U) {
+        DSD_FPRINTF(stderr, "%s\n", line);
+    }
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -3075,9 +3130,11 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         if (rt.history_count >= 8) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
+                g_unsynced_dmr_dump_symbols = 0;
                 return sync_type;
             }
         }
+        frame_sync_maybe_dump_unsynced_dmr(opts, state);
 
         if (exitflag == 1) {
             dsd_request_shutdown(opts, state);

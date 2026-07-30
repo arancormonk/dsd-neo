@@ -433,17 +433,15 @@ dmr_sbrc_print_fec_error(const dsd_opts* opts, const dmr_sbrc_data* data) {
 
 static void
 dmr_sbrc_print_rc_command(const dsd_opts* opts, uint32_t sbrc_hex) {
-    static const char* rc_commands[] = {" RC: Increase Power By One Step;", " RC: Decrease Power By One Step;",
-                                        " RC: Set Power To Highest;",       " RC: Set Power To Lowest;",
-                                        " RC: Cease Transmission Command;", " RC: Cease Transmission Request;"};
     const uint32_t rc_value = sbrc_hex >> 7;
+    const char* name = dmr_rc_command_name((uint8_t)rc_value);
 
     if (opts->payload == 0) {
         DSD_FPRINTF(stderr, "\n");
     }
     DSD_FPRINTF(stderr, "%s", KCYN);
-    if (rc_value < (sizeof(rc_commands) / sizeof(rc_commands[0]))) {
-        DSD_FPRINTF(stderr, "%s", rc_commands[rc_value]);
+    if (name != NULL) {
+        DSD_FPRINTF(stderr, " RC: %s;", name);
     } else {
         DSD_FPRINTF(stderr, " RC: Reserved %02X;", rc_value);
     }

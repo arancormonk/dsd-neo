@@ -715,6 +715,48 @@ test_symbol_replay_bypasses_sps_profile_gating(void) {
 }
 
 static void
+test_dmr_rc_sync_matches_and_respects_polarity(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Normal polarity: the MS RC sync maps to the RC synctype. */
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DMR_MS_RC_SYNC, 24) == DSD_SYNC_DMR_RC_DATA);
+    assert(state.lastsynctype == DSD_SYNC_DMR_RC_DATA);
+    assert(strcmp(state.ftype, "DMR RC") == 0);
+
+    /* The complement pattern is ETSI-reserved: never claimed as RC at
+     * normal polarity. */
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DMR_MS_RC_SYNC_INV, 24) == DSD_SYNC_NONE);
+
+    /* Inverted input flips the RC sync into the complement pattern. */
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.inverted_dmr = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DMR_MS_RC_SYNC_INV, 24) == DSD_SYNC_DMR_RC_DATA);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DMR_MS_RC_SYNC, 24) == DSD_SYNC_NONE);
+
+    /* No DMR decoding, no RC sync. */
+    reset(&opts, &state);
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DMR_MS_RC_SYNC, 24) == DSD_SYNC_NONE);
+}
+
+static void
 test_symbol_replay_requires_explicit_nxdn_variant(void) {
     static const int symbol_input_types[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
     static dsd_opts opts;
@@ -1576,6 +1618,7 @@ main(void) {
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
     test_symbol_replay_bypasses_sps_profile_gating();
+    test_dmr_rc_sync_matches_and_respects_polarity();
     test_symbol_replay_requires_explicit_nxdn_variant();
     test_manual_p25p2_c4fm_bypasses_profile_gating();
     test_locked_p25p2_c4fm_survives_sync();

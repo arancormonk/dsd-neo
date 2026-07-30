@@ -79,6 +79,19 @@ void dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, ui
                                 uint8_t ambe_fr2[4][24], uint8_t ambe_fr3[4][24]);
 void dmr_late_entry_mi(dsd_opts* opts, dsd_state* state);
 void dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power);
+
+/* Standalone Reverse Channel burst (ETSI TS 102 361-1 clause 6.4.1). */
+enum {
+    DMR_RC_DECODE_OK = 0,
+    DMR_RC_DECODE_FEC_ERR = 1,
+    DMR_RC_DECODE_CRC_ERR = 2,
+};
+
+void dmrRC(dsd_opts* opts, dsd_state* state);
+int dmr_rc_decode_pdu(const uint8_t interleaved_bits[32], uint8_t* out_command, uint32_t* out_hex);
+const char* dmr_rc_command_name(uint8_t rc_command);
+void dmr_rc_assemble_bits(const int dibits[48], uint8_t emb_bits[16], uint8_t rc_bits[32]);
+size_t dmr_debug_format_rc_burst(char* out, size_t out_size, const int dibits[48]);
 void LFSR64(dsd_state* state);
 void LFSR128d(dsd_state* state);
 void hytera_enhanced_alg_refresh(dsd_state* state);

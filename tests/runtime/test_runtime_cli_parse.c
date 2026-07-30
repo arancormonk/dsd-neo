@@ -3475,11 +3475,12 @@ test_dmr_debug_burst_long_option_parse(void) {
 
     char arg0[] = "dsd-neo";
     char arg1[] = "--dmr-debug-burst";
-    char* argv[] = {arg0, arg1, NULL};
+    char arg2[] = "--dmr-debug-unsynced";
+    char* argv[] = {arg0, arg1, arg2, NULL};
 
     int argc_effective = 0;
     int exit_rc = -1;
-    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
     if (rc != DSD_PARSE_CONTINUE) {
         DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
         freeState(state);
@@ -3491,6 +3492,10 @@ test_dmr_debug_burst_long_option_parse(void) {
     int test_rc = 0;
     if (opts->dmr_debug_burst != 1) {
         DSD_FPRINTF(stderr, "expected dmr_debug_burst=1, got %u\n", (unsigned int)opts->dmr_debug_burst);
+        test_rc = 1;
+    }
+    if (opts->dmr_debug_unsynced != 1) {
+        DSD_FPRINTF(stderr, "expected dmr_debug_unsynced=1, got %u\n", (unsigned int)opts->dmr_debug_unsynced);
         test_rc = 1;
     }
     if (opts->payload != 0) {

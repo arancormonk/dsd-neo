@@ -16,6 +16,8 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_DMR_SYNC_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_DSP_DMR_SYNC_H_
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -61,6 +63,20 @@ void dmr_resample_cach(struct dsd_opts* opts, struct dsd_state* state, int sync_
  * @return 0 on success, -1 if sample history unavailable
  */
 int dmr_resample_on_sync(struct dsd_opts* opts, struct dsd_state* state);
+
+/**
+ * @brief Format a run of raw dibits as a "Debug Demod -Sync" hex line.
+ *
+ * Packs 4 dibits per byte (MSB first) with no burst alignment implied; used
+ * by the --dmr-debug-unsynced dump while hunting for sync.
+ *
+ * @param out Output buffer (NUL-terminated on return)
+ * @param out_size Output buffer size in bytes
+ * @param dibits Raw dibit values (low 2 bits used)
+ * @param count Number of dibits to format (multiple of 4; remainder dropped)
+ * @return Number of characters written, or 0 on invalid arguments
+ */
+size_t dmr_debug_format_unsynced(char* out, size_t out_size, const int* dibits, size_t count);
 
 #ifdef __cplusplus
 }

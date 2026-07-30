@@ -116,6 +116,65 @@ dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_
     DSD_FPRINTF(stderr, "%s\n", line);
 }
 
+/* Append `count` dibits as [XX] hex bytes (4 dibits per byte, MSB first).
+ * Shared tail for the RC and unsynced debug-dump formatters. */
+static size_t
+dmr_debug_append_dibit_bytes(char* out, size_t out_size, size_t pos, const int* dibits, size_t count) {
+    for (size_t byte_index = 0; byte_index < count / 4U; byte_index++) {
+        uint8_t byte = 0;
+        for (size_t d = 0; d < 4U; d++) {
+            byte = (uint8_t)((byte << 2) | (dibits[(byte_index * 4U) + d] & 0x03));
+        }
+        const int n = DSD_SNPRINTF(out + pos, out_size - pos, "[%02X]", (unsigned int)byte);
+        if (n < 0) {
+            out[pos] = '\0';
+            return pos;
+        }
+        pos += (size_t)n;
+        if (pos >= out_size) {
+            out[out_size - 1U] = '\0';
+            return pos;
+        }
+    }
+    return pos;
+}
+
+size_t
+dmr_debug_format_rc_burst(char* out, size_t out_size, const int dibits[48]) {
+    if (out == NULL || out_size == 0U || dibits == NULL) {
+        return 0U;
+    }
+
+    const int n = DSD_SNPRINTF(out, out_size, "Debug Demod +Sync RC: ");
+    if (n < 0) {
+        out[0] = '\0';
+        return 0U;
+    }
+    size_t pos = (size_t)n;
+    if (pos >= out_size) {
+        out[out_size - 1U] = '\0';
+        return pos;
+    }
+
+    /* Full 96-bit burst in over-the-air order, sync included: the visible
+     * 77 D5 5F 7D FD 77 centre doubles as a polarity/alignment check. */
+    return dmr_debug_append_dibit_bytes(out, out_size, pos, dibits, 48U);
+}
+
+const char*
+dmr_rc_command_name(uint8_t rc_command) {
+    /* ETSI TS 102 361-4 V1.12.1, table 6.32 (superset of TS 102 361-2
+     * table 7.27, which defines only the two cease-transmission values). */
+    static const char* names[] = {
+        "Increase Power By One Step", "Decrease Power By One Step", "Set Power To Highest",
+        "Set Power To Lowest",        "Cease Transmission Command", "Cease Transmission Request",
+    };
+    if (rc_command < (uint8_t)(sizeof(names) / sizeof(names[0]))) {
+        return names[rc_command];
+    }
+    return NULL;
+}
+
 // A Hamming (17,12,3) Check for completed SLC message
 bool
 Hamming17123(uint8_t* d) {

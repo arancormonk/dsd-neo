@@ -5338,6 +5338,15 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_debug_burst PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_DEBUG_BURST COMMAND dsd-neo_test_dmr_debug_burst)
 
+# Standalone DMR Reverse Channel burst: RC PDU round-trip and dmrRC framing
+add_executable(dsd-neo_test_dmr_rc_burst protocol/dmr/test_dmr_rc_burst.c)
+target_include_directories(
+    dsd-neo_test_dmr_rc_burst
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_dmr_rc_burst PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_RC_BURST COMMAND dsd-neo_test_dmr_rc_burst)
+
 add_executable(
     dsd-neo_test_dmr_dburst_profile
     protocol/dmr/test_dmr_dburst_profile.c

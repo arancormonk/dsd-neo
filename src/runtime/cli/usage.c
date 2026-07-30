@@ -281,6 +281,11 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("      --show-keys  Reveal radio keys and keystream material in CLI/status output for this run.\n");
     printf("                   Default output remains redacted.\n");
     printf("\n");
+    printf("      --dmr-debug-burst     Dump each synced DMR burst payload to stderr as hex\n");
+    printf("                            ('Debug Demod +Sync' lines; RC bursts dump all 12 bytes incl. sync).\n");
+    printf("      --dmr-debug-unsynced  While hunting for sync with DMR enabled, dump raw demod output\n");
+    printf("                            to stderr in 36-byte chunks ('Debug Demod -Sync' lines).\n");
+    printf("\n");
 }
 
 static void
