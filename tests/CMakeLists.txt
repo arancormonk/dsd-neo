@@ -7009,6 +7009,29 @@ if(DSD_HAS_RADIO)
     )
 
     add_executable(
+        dsd-neo_test_io_rtl_retune_mute_window
+        io/test_io_rtl_retune_mute_window.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_retune_mute_window
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_retune_mute_window
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_retune_mute_window
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_RETUNE_MUTE_WINDOW
+        COMMAND dsd-neo_test_io_rtl_retune_mute_window
+    )
+
+    add_executable(
         dsd-neo_test_io_rtl_replay_retune_reject
         io/test_io_rtl_replay_retune_reject.cpp
     )
