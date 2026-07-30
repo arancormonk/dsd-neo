@@ -23,6 +23,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 #define FLOAT_TOL 0.01f
@@ -336,6 +337,41 @@ test_full_resample_on_sync(void) {
     printf("test_full_resample_on_sync: passed\n\n");
 }
 
+static void
+test_unsynced_debug_format(void) {
+    int dibits[144];
+    for (int i = 0; i < 144; i++) {
+        dibits[i] = i & 3;
+    }
+
+    /* Dibits 0..3 = 0,1,2,3 -> 0x1B, repeated for every 4-dibit group. */
+    char expected[256];
+    DSD_SNPRINTF(expected, sizeof(expected), "%s", "Debug Demod -Sync: ");
+    for (int i = 0; i < 36; i++) {
+        const size_t len = strlen(expected);
+        DSD_SNPRINTF(expected + len, sizeof(expected) - len, "%s", "[1B]");
+    }
+
+    char actual[256];
+    size_t n = dmr_debug_format_unsynced(actual, sizeof(actual), dibits, 144U);
+    check_int("unsynced format nonzero", 1, n != 0U);
+    check_int("unsynced format content", 0, strcmp(actual, expected));
+
+    /* Guards: invalid args are rejected. */
+    check_int("unsynced NULL out", 0, (int)dmr_debug_format_unsynced(NULL, sizeof(actual), dibits, 144U));
+    check_int("unsynced zero size", 0, (int)dmr_debug_format_unsynced(actual, 0U, dibits, 144U));
+    check_int("unsynced NULL dibits", 0, (int)dmr_debug_format_unsynced(actual, sizeof(actual), NULL, 144U));
+    check_int("unsynced short count", 0, (int)dmr_debug_format_unsynced(actual, sizeof(actual), dibits, 3U));
+
+    /* Truncation: NUL-terminated, returns would-be length. */
+    char tiny[8];
+    n = dmr_debug_format_unsynced(tiny, sizeof(tiny), dibits, 144U);
+    check_int("unsynced truncation length", 1, n > sizeof(tiny));
+    check_int("unsynced truncation nul", 0, (int)tiny[sizeof(tiny) - 1U]);
+
+    printf("test_unsynced_debug_format: passed\n\n");
+}
+
 int
 main(void) {
     printf("DMR Resample-on-Sync Tests\n");
@@ -345,6 +381,7 @@ main(void) {
     test_history_buffer_wrap();
     test_cach_redigitize();
     test_full_resample_on_sync();
+    test_unsynced_debug_format();
 
     printf("==========================\n");
     printf("Tests: %d, Failures: %d\n", g_test_count, g_fail_count);

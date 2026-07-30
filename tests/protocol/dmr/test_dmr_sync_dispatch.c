@@ -28,6 +28,7 @@ static int data_sync_calls;
 static int ms_bootstrap_calls;
 static int ms_data_calls;
 static int open_left_calls;
+static int rc_calls;
 
 static void
 reset_calls(void) {
@@ -39,6 +40,7 @@ reset_calls(void) {
     ms_bootstrap_calls = 0;
     ms_data_calls = 0;
     open_left_calls = 0;
+    rc_calls = 0;
 }
 
 void
@@ -90,13 +92,21 @@ dmr_data_sync(dsd_opts* opts, dsd_state* state) {
     data_sync_calls++;
 }
 
+void
+dmrRC(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    rc_calls++;
+}
+
 static void
 test_sync_pattern_lengths(void) {
     _Static_assert(sizeof(DMR_BS_DATA_SYNC) == 25U, "DMR_BS_DATA_SYNC length");
     _Static_assert(sizeof(DMR_BS_VOICE_SYNC) == 25U, "DMR_BS_VOICE_SYNC length");
     _Static_assert(sizeof(DMR_MS_DATA_SYNC) == 25U, "DMR_MS_DATA_SYNC length");
     _Static_assert(sizeof(DMR_MS_VOICE_SYNC) == 25U, "DMR_MS_VOICE_SYNC length");
-    _Static_assert(sizeof(DMR_RESERVED_SYNC) == 25U, "DMR_RESERVED_SYNC length");
+    _Static_assert(sizeof(DMR_MS_RC_SYNC) == 25U, "DMR_MS_RC_SYNC length");
+    _Static_assert(sizeof(DMR_MS_RC_SYNC_INV) == 25U, "DMR_MS_RC_SYNC_INV length");
     _Static_assert(sizeof(DMR_DIRECT_MODE_TS1_DATA_SYNC) == 25U, "DMR_DIRECT_MODE_TS1_DATA_SYNC length");
     _Static_assert(sizeof(DMR_DIRECT_MODE_TS1_VOICE_SYNC) == 25U, "DMR_DIRECT_MODE_TS1_VOICE_SYNC length");
     _Static_assert(sizeof(DMR_DIRECT_MODE_TS2_DATA_SYNC) == 25U, "DMR_DIRECT_MODE_TS2_DATA_SYNC length");
@@ -252,13 +262,39 @@ test_ms_data_routes_to_ms_data(void) {
 
     opts.mbe_out_f = stdout;
     opts.mbe_out_fR = stderr;
-    state.synctype = DSD_SYNC_DMR_RC_DATA;
+    state.synctype = DSD_SYNC_DMR_MS_DATA;
     dsd_dispatch_handle_dmr(&opts, &state);
 
     assert(ms_data_calls == 1);
     assert(data_sync_calls == 0);
     assert(close_left_calls == 1);
     assert(close_right_calls == 1);
+}
+
+static void
+test_rc_routes_to_rc_handler(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    /* An in-progress recording must survive a one-shot RC burst untouched. */
+    opts.mbe_out_f = stdout;
+    opts.mbe_out_fR = stderr;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_RC_DATA;
+    dsd_dispatch_handle_dmr(&opts, &state);
+
+    assert(rc_calls == 1);
+    assert(ms_data_calls == 0);
+    assert(data_sync_calls == 0);
+    assert(ms_bootstrap_calls == 0);
+    assert(bs_bootstrap_calls == 0);
+    assert(close_left_calls == 0);
+    assert(close_right_calls == 0);
+    assert(opts.mbe_out_f == stdout);
+    assert(opts.mbe_out_fR == stderr);
 }
 
 static void
@@ -296,6 +332,7 @@ main(void) {
     test_trunked_bs_voice_in_mono_mode_defers_mbe_open_to_bs_bootstrap();
     test_stereo_voice_routes_by_synctype();
     test_ms_data_routes_to_ms_data();
+    test_rc_routes_to_rc_handler();
     test_bs_data_routes_to_data_sync();
     printf("DMR_SYNC_DISPATCH: OK\n");
     return 0;

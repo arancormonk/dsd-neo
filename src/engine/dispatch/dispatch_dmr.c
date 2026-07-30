@@ -31,8 +31,8 @@ dmr_is_voice_synctype(int synctype) {
 }
 
 static int
-dmr_is_ms_or_rc_data_synctype(int synctype) {
-    return synctype == DSD_SYNC_DMR_MS_DATA || synctype == DSD_SYNC_DMR_RC_DATA;
+dmr_is_ms_data_synctype(int synctype) {
+    return synctype == DSD_SYNC_DMR_MS_DATA;
 }
 
 static void
@@ -102,7 +102,7 @@ dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-dmr_handle_ms_or_rc_data(dsd_opts* opts, dsd_state* state) {
+dmr_handle_ms_data(dsd_opts* opts, dsd_state* state) {
     dmr_close_mbe_out_if_open(opts, state);
     if (opts->trunk_enable == 0) {
         dmrMSData(opts, state);
@@ -136,6 +136,13 @@ dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
+    /* A standalone RC burst is a one-shot 10 ms event: decode it without
+     * touching slot lights, MBE output files, or per-slot call state. */
+    if (state->synctype == DSD_SYNC_DMR_RC_DATA) {
+        dmrRC(opts, state);
+        return;
+    }
+
     dmr_update_branding(state);
     state->nac = 0;
 
@@ -143,8 +150,8 @@ dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
         dmr_handle_voice(opts, state);
         return;
     }
-    if (dmr_is_ms_or_rc_data_synctype(state->synctype)) {
-        dmr_handle_ms_or_rc_data(opts, state);
+    if (dmr_is_ms_data_synctype(state->synctype)) {
+        dmr_handle_ms_data(opts, state);
         return;
     }
     dmr_handle_other_data(opts, state);

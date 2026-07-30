@@ -862,6 +862,10 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             opts->dmr_debug_burst = 1;                                                                                 \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-debug-unsynced") == 0) {                                                            \
+            opts->dmr_debug_unsynced = 1;                                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--show-keys") == 0) {                                                                     \
             opts->show_keys = 1;                                                                                       \
             continue;                                                                                                  \

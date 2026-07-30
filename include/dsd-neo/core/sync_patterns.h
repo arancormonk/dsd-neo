@@ -67,7 +67,12 @@
 #define NXDN_PANDFSW                   "3131133313131331131" /* 19 symbols */
 #define INV_NXDN_PANDFSW               "1313311131313113313" /* 19 symbols */
 
-#define DMR_RESERVED_SYNC              "131331111133133133311313"
+/* MS sourced RC sync 0x77D55F7DFD77 (ETSI TS 102 361-1 Table 9.2) — standalone
+ * 96-bit Reverse Channel burst. The INV variant is its symbol-wise complement
+ * 0xDD7FF5D757DD (the ETSI "Reserved" pattern); it is matched only for
+ * inverted-polarity RC detection, never claimed as RC at normal polarity. */
+#define DMR_MS_RC_SYNC                 "131331111133133133311313"
+#define DMR_MS_RC_SYNC_INV             "313113333311311311133131"
 
 #define DMR_DIRECT_MODE_TS1_DATA_SYNC  "331333313111313133311111"
 #define DMR_DIRECT_MODE_TS1_VOICE_SYNC "113111131333131311133333"

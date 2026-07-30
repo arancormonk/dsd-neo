@@ -7,7 +7,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Help: `dsd-neo -h` | UI/logs: `--frontend terminal` (`-N` alias), `-Z` | List devices: `-O`
 - Inputs: `-i pulse | file.wav | rtl[:...] | rtltcp[:...] | soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]] | tcp[:host[:port]] | udp[:bind_addr[:port]] | m17udp[:bind_addr[:port]] | -`
 - Outputs: `-o pulse | null | udp[:host[:port]] | m17udp[:host[:port]] | -`
-- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`
+- Record/Logs/Debug: `-6 file.wav`, `-w file.wav`, `-P`, `-7 ./calls`, `-d ./mbe`, `-J events.log`, `--frame-log frames.log`, `--p25-sm-log p25-sm.log`, `-L lrrp.log`, `-Q dsp.bin`, `-c symbols.bin`, `-r *.mbe`, `--dmr-debug-burst`, `--dmr-debug-unsynced`
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
@@ -136,28 +136,38 @@ Tip: If paths or names contain spaces, wrap them in single quotes.
 
 ## DMR Burst Debugging
 
-`--dmr-debug-burst` emits one console line to stderr for each synced, fully assembled DMR burst. Use it when
-troubleshooting live DMR decode and you need bracketed post-demod no-CACH payload bytes without enabling verbose `-Z`
-payload logging or changing `-Q` OK-DMRlib structured output.
+`--dmr-debug-burst` emits one console line to stderr for each synced DMR burst. Use it when
+troubleshooting live DMR decode and you need bracketed post-demod payload bytes without enabling verbose `-Z`
+payload logging or changing `-Q` OK-DMRlib structured output. `--dmr-debug-unsynced` complements it with a raw
+dump of demodulated data while no sync has been achieved. Both flags compose and are deliberately CLI-only
+(debug aids are not persisted to the config schema).
 
 Example:
 
 ```sh
-dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 --dmr-debug-burst
+dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 --dmr-debug-burst --dmr-debug-unsynced
 ```
 
-Output format:
+Output formats:
 
 ```text
-Debug Demod +Sync slot=<1|2> type=0xNN: [AA][BB]...[CC]
+Debug Demod +Sync slot=<1|2> type=0xNN: [AA][BB]...[CC]   # normal 144-dibit burst (33 bytes, no CACH)
+Debug Demod +Sync RC: [AA][BB]...[CC]                     # standalone Reverse Channel burst (12 bytes)
+Debug Demod -Sync: [AA][BB]...[CC]                        # unsynced demod chunk (36 bytes)
 ```
 
 Notes:
 
-- The dump is DMR-only and only runs for synced 144-dibit bursts.
-- The byte stream is the 33-byte no-CACH payload range also used by `-Q` DMR output.
-- Voice bursts report `type=0x10`; data bursts use the decoded DMR data burst type.
-- The option writes to stderr only. It does not imply `-Q`, `-Z`, symbol capture, or payload file logging.
+- The dump is DMR-only. Normal synced bursts dump the 33-byte no-CACH payload range also used by `-Q` DMR
+  output; voice bursts report `type=0x10`, data bursts use the decoded DMR data burst type.
+- Standalone Reverse Channel (RC) bursts (ETSI TS 102 361-1 clause 6.4.1) are 96-bit/10 ms inbound bursts;
+  their dump is the full burst in over-the-air order, so the RC sync `[77][D5][5F][7D][FD][77]` is visible at
+  the centre as a polarity/alignment check. RC detection and command decode (e.g. `RC: Cease Transmission
+  Request;`) are always on when DMR decoding is enabled; only the hex dump needs `--dmr-debug-burst`.
+- `--dmr-debug-unsynced` prints non-overlapping 144-dibit (36-byte) chunks of raw demod output while hunting
+  for sync. Chunk boundaries are arbitrary and symbol thresholds may still be uncalibrated, so the bytes are
+  best-effort and not aligned to burst boundaries. Expect noise hex on an idle channel.
+- The options write to stderr only. They do not imply `-Q`, `-Z`, symbol capture, or payload file logging.
 
 Windows console runs:
 
