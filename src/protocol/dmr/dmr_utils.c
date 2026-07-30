@@ -14,6 +14,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -114,29 +115,6 @@ dmr_debug_dump_burst(const dsd_opts* opts, const dsd_state* state, uint8_t slot_
         return;
     }
     DSD_FPRINTF(stderr, "%s\n", line);
-}
-
-/* Append `count` dibits as [XX] hex bytes (4 dibits per byte, MSB first).
- * Shared tail for the RC and unsynced debug-dump formatters. */
-static size_t
-dmr_debug_append_dibit_bytes(char* out, size_t out_size, size_t pos, const int* dibits, size_t count) {
-    for (size_t byte_index = 0; byte_index < count / 4U; byte_index++) {
-        uint8_t byte = 0;
-        for (size_t d = 0; d < 4U; d++) {
-            byte = (uint8_t)((byte << 2) | (dibits[(byte_index * 4U) + d] & 0x03));
-        }
-        const int n = DSD_SNPRINTF(out + pos, out_size - pos, "[%02X]", (unsigned int)byte);
-        if (n < 0) {
-            out[pos] = '\0';
-            return pos;
-        }
-        pos += (size_t)n;
-        if (pos >= out_size) {
-            out[out_size - 1U] = '\0';
-            return pos;
-        }
-    }
-    return pos;
 }
 
 size_t

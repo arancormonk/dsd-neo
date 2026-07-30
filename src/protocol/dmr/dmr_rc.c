@@ -92,7 +92,12 @@ dmr_rc_decode_pdu(const uint8_t interleaved_bits[32], uint8_t* out_command, uint
 }
 
 /* Copy the cached prefix (RC_a + EMB_a + SYNC) and read the 12 trailing
- * dibits live. Returns 0 if the payload history is too short. */
+ * dibits live. Returns 0 if the payload history is too short.
+ *
+ * Caveat: the rolling payload buffer periodically rewinds its write pointer
+ * (dsd_dibit.c); if that happens between sync detection and this read, the
+ * cached prefix can span stale pre-rewind dibits. Worst case is a one-shot
+ * spurious FEC/CRC-error line, so it is not worth restructuring for. */
 static int
 dmr_rc_collect_dibits(dsd_opts* opts, dsd_state* state, int dibits[48]) {
     if (state->dmr_payload_buf == NULL || state->dmr_payload_p == NULL
@@ -166,9 +171,16 @@ dmr_rc_print(const dsd_opts* opts, int emb_ok, const uint8_t emb_bits[16], int r
     }
 
     if (opts->payload == 1) {
-        const uint8_t pi = emb_bits[4] & 1U;
-        const uint8_t lcss = (uint8_t)((emb_bits[5] << 1) | emb_bits[6]);
-        DSD_FPRINTF(stderr, " | PI=%u LCSS=%u RC PDU=%03X", pi, lcss, (unsigned int)rc_hex);
+        /* PI/LCSS come from the EMB codeword: only trustworthy when the
+         * QR(16,7,6) decode succeeded. */
+        if (emb_ok == 1) {
+            const uint8_t pi = emb_bits[4] & 1U;
+            const uint8_t lcss = (uint8_t)((emb_bits[5] << 1) | emb_bits[6]);
+            DSD_FPRINTF(stderr, " | PI=%u LCSS=%u", pi, lcss);
+        } else {
+            DSD_FPRINTF(stderr, " | PI=X LCSS=X");
+        }
+        DSD_FPRINTF(stderr, " RC PDU=%03X", (unsigned int)rc_hex);
     }
     DSD_FPRINTF(stderr, "\n");
 }

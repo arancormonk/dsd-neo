@@ -78,6 +78,21 @@ int dmr_resample_on_sync(struct dsd_opts* opts, struct dsd_state* state);
  */
 size_t dmr_debug_format_unsynced(char* out, size_t out_size, const int* dibits, size_t count);
 
+/**
+ * @brief Append `count` dibits as [XX] hex bytes (4 dibits per byte, MSB first).
+ *
+ * Shared tail for the DMR debug-dump formatters (unsynced and RC burst).
+ * Truncates safely: the buffer is always NUL-terminated on return.
+ *
+ * @param out Output buffer
+ * @param out_size Output buffer size in bytes
+ * @param pos Write position to append at (returned unchanged if out of range)
+ * @param dibits Raw dibit values (low 2 bits used)
+ * @param count Number of dibits to append (multiple of 4; remainder dropped)
+ * @return New write position (may exceed what fit if truncated)
+ */
+size_t dmr_debug_append_dibit_bytes(char* out, size_t out_size, size_t pos, const int* dibits, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

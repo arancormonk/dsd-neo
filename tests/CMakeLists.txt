@@ -5659,9 +5659,10 @@ target_compile_definitions(
     dsd-neo_test_dmr_relaxed_header_ip
     PRIVATE MBELIB_NO_HEADERS=1
 )
+# dmr_utils.c uses the shared debug hex formatter exported by dsd-neo_dsp.
 target_link_libraries(
     dsd-neo_test_dmr_relaxed_header_ip
-    PRIVATE dsd-neo_test_support
+    PRIVATE dsd-neo_dsp dsd-neo_test_support
 )
 add_test(NAME DMR_RELAXED_HEADER_IP COMMAND dsd-neo_test_dmr_relaxed_header_ip)
 

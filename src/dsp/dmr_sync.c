@@ -131,28 +131,16 @@ dmr_resample_on_sync(dsd_opts* opts, dsd_state* state) {
  * ───────────────────────────────────────────────────────────────────────────── */
 
 size_t
-dmr_debug_format_unsynced(char* out, size_t out_size, const int* dibits, size_t count) {
-    if (out == NULL || out_size == 0U || dibits == NULL || count < 4U) {
-        return 0U;
-    }
-
-    int n = DSD_SNPRINTF(out, out_size, "Debug Demod -Sync: ");
-    if (n < 0) {
-        out[0] = '\0';
-        return 0U;
-    }
-    size_t pos = (size_t)n;
-    if (pos >= out_size) {
-        out[out_size - 1U] = '\0';
+dmr_debug_append_dibit_bytes(char* out, size_t out_size, size_t pos, const int* dibits, size_t count) {
+    if (out == NULL || out_size == 0U || pos >= out_size || dibits == NULL) {
         return pos;
     }
-
     for (size_t byte_index = 0; byte_index < count / 4U; byte_index++) {
         uint8_t byte = 0;
         for (size_t d = 0; d < 4U; d++) {
             byte = (uint8_t)((byte << 2) | (dibits[(byte_index * 4U) + d] & 0x03));
         }
-        n = DSD_SNPRINTF(out + pos, out_size - pos, "[%02X]", (unsigned int)byte);
+        const int n = DSD_SNPRINTF(out + pos, out_size - pos, "[%02X]", (unsigned int)byte);
         if (n < 0) {
             out[pos] = '\0';
             return pos;
@@ -163,6 +151,25 @@ dmr_debug_format_unsynced(char* out, size_t out_size, const int* dibits, size_t 
             return pos;
         }
     }
-
     return pos;
+}
+
+size_t
+dmr_debug_format_unsynced(char* out, size_t out_size, const int* dibits, size_t count) {
+    if (out == NULL || out_size == 0U || dibits == NULL || count < 4U) {
+        return 0U;
+    }
+
+    const int n = DSD_SNPRINTF(out, out_size, "Debug Demod -Sync: ");
+    if (n < 0) {
+        out[0] = '\0';
+        return 0U;
+    }
+    size_t pos = (size_t)n;
+    if (pos >= out_size) {
+        out[out_size - 1U] = '\0';
+        return pos;
+    }
+
+    return dmr_debug_append_dibit_bytes(out, out_size, pos, dibits, count);
 }

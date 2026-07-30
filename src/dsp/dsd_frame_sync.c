@@ -3071,7 +3071,9 @@ static unsigned int g_unsynced_dmr_dump_symbols = 0;
 /* --dmr-debug-unsynced: while hunting, print the trailing 144 dibits from the
  * rolling DMR payload buffer as non-overlapping "Debug Demod -Sync" chunks.
  * Chunk boundaries are arbitrary and thresholds may be uncalibrated; this is a
- * best-effort raw view of demod output that never achieved sync. */
+ * best-effort raw view of demod output that never achieved sync. The first
+ * chunk after the rolling buffer rewinds its write pointer can also span
+ * stale pre-rewind dibits. */
 static void
 frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state) {
     if (opts->dmr_debug_unsynced == 0 || opts->frame_dmr != 1) {
