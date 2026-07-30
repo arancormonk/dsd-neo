@@ -2516,6 +2516,14 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_state_ext PRIVATE dsd-neo_core)
 add_test(NAME CORE_STATE_EXT COMMAND dsd-neo_test_core_state_ext)
 
+add_executable(dsd-neo_test_core_alias_hangtime core/test_core_alias_hangtime.c)
+target_include_directories(
+    dsd-neo_test_core_alias_hangtime
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_alias_hangtime PRIVATE dsd-neo_core)
+add_test(NAME CORE_ALIAS_HANGTIME COMMAND dsd-neo_test_core_alias_hangtime)
+
 add_executable(dsd-neo_test_core_call_state core/test_core_call_state.c)
 target_include_directories(
     dsd-neo_test_core_call_state
