@@ -32,5 +32,15 @@ for file-specific license/provenance details.
   `src/protocol/ysf/ysf.c`) - source comments identify OP25, libM17, NedSimao/FilteringLibrary, gqrx-scanner, DSDcc,
   gr-ysf, and Munaut-derived code or ideas.
 
+## Test Fixtures
+
+- **I/Q decode fixtures** (`tests/fixtures/iq/*.iq`) - derived from public sample recordings, converted to cu8
+  baseband by `tools/build_iq_fixtures.py`, which records the upstream URL for every fixture.
+  - Most fixtures derive from the [Signal Identification Wiki](https://www.sigidwiki.com/), whose content is licensed
+    CC-BY-SA. Attribution: Signal Identification Wiki contributors. Derivative fixtures are redistributed under the
+    same terms; CC-BY-SA 4.0 is one-way compatible with GPL-3.0-or-later.
+  - The M17 fixture derives from `samples/m17_clear_voice_wav.wav` in [lwvmobile/m17-fme](https://github.com/lwvmobile/m17-fme),
+    licensed GPL.
+
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`.
