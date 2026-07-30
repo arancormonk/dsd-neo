@@ -27,8 +27,6 @@ Usage:
 """
 
 import argparse
-import io
-import json
 import math
 import os
 import subprocess
@@ -133,10 +131,9 @@ def fetch(cache_dir, key, url):
     path = os.path.join(cache_dir, key + os.path.splitext(url)[1])
     if os.path.exists(path) and os.path.getsize(path) > 0:
         return path
-    req = urllib.request.Request(url, headers={"User-Agent": "dsd-neo-fixture-builder"})
     # URLs come only from the SOURCES constant above and are guarded to https.
-    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
-    with urllib.request.urlopen(req) as resp:
+    req = urllib.request.Request(url, headers={"User-Agent": "dsd-neo-fixture-builder"})  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+    with urllib.request.urlopen(req) as resp:  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         data = resp.read()
     with open(path, "wb") as handle:
         handle.write(data)
