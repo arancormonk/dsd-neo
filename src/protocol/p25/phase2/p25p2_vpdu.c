@@ -2085,7 +2085,7 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration
-        if (opts->trunk_enable == 1 && channel != 0 && freq != 0) {
+        if (channel != 0 && p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {
             p25_sm_event_t ev = p25_sm_ev_group_grant_update(channel, 0, sg, /*source*/ 0, svc);
             p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
         }
