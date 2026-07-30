@@ -1637,6 +1637,169 @@ test_encrypted_flco_allowed_tuning_skips_lockout_policy(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The embedded LC's 5-bit checksum passes a miscorrected payload roughly one time in 32, so a
+// lone embedded observation of the privacy bit classifies only tentatively: the slot mutes,
+// but the session-permanent blocking entry and the forced release wait for the matching repeat
+// one superframe (~360 ms) later.
+static void
+test_embedded_lc_enc_requires_corroboration_for_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
+    assert(strcmp(lookup.entry.mode, "B") == 0);
+    assert(strcmp(lookup.entry.name, "ENC LO") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+// A CRC-verified voice LC header established the call clear; one contradicting embedded LC --
+// the exact shape a miscorrected BPTC payload takes -- must not mute the audio, demote the
+// published classification, or arm the lockout. A corroborated contradiction is a real
+// mid-call change and does all three.
+static void
+test_lone_contradicting_emb_does_not_flap_established_clear(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+    dsd_call_snapshot call;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) == 0U);
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) == 0U);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    assert(call.audio_permitted == 1U);
+
+    // The repeat corroborates: the classification flips and the lockout acts.
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
+    assert(strcmp(lookup.entry.mode, "B") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
+// A terminator's privacy bit describes a transmission that already ended; it may print, but it
+// must not block the talkgroup or force a release for whatever follows on the channel.
+static void
+test_terminator_privacy_bit_does_not_lock_out(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
+    assert(irr == 0);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_state_ext_free_all(&state);
+}
+
+// On RAS systems under the aggressive default every LC arrives with the masked CRC failed, so
+// the header is weak evidence too: the first encrypted observation classifies tentatively and
+// the lockout waits for the repeat -- which a real encrypted call supplies within one embedded
+// LC cadence.
+static void
+test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_tg_policy_lookup lookup;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 1U);
+    assert(irr == 0);
+    assert((state.dmr_so & 0x40U) != 0U);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 0U, &irr, 3U);
+    assert(irr == 0);
+    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
+    assert(strcmp(lookup.entry.mode, "B") == 0);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_completed_slco_tier3_site_parameters_update_state(void) {
     static dsd_opts opts;
@@ -1996,6 +2159,10 @@ main(void) {
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
     test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
+    test_embedded_lc_enc_requires_corroboration_for_lockout();
+    test_lone_contradicting_emb_does_not_flap_established_clear();
+    test_terminator_privacy_bit_does_not_lock_out();
+    test_crc_failed_header_enc_requires_repeat_for_lockout();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();

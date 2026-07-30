@@ -34,6 +34,19 @@ void dmr_data_burst_handler(dsd_opts* opts, dsd_state* state, uint8_t info[196],
                             const uint8_t* reliab98);
 
 void dmr_pi(dsd_opts* opts, dsd_state* state, uint8_t PI_BYTE[], uint32_t CRCCorrect, uint32_t IrrecoverableErrors);
+
+/* Per-slot encryption-classification hysteresis for the DMR service-option privacy bit.
+ * Values stored in dsd_state.dmr_enc_class[]: 0 unclassified, 1 clear, 2 encrypted. */
+enum {
+    DMR_ENC_CLASS_NONE = 0,
+    DMR_ENC_CLASS_CLEAR = 1,
+    DMR_ENC_CLASS_ENC = 2,
+};
+
+unsigned int dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int so, int strong);
+void dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted);
+void dmr_enc_class_reset(dsd_state* state, uint8_t slot);
+int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);
