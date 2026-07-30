@@ -11,6 +11,9 @@ extern "C" {
 #endif
 
 int dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms);
+/* Republish the cross-thread demod profile/TED mirrors after a test mutates
+ * demod fields directly; public getters read the mirrors, not the fields. */
+void rtl_stream_test_publish_demod_snapshot(void);
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,

@@ -1739,8 +1739,11 @@ static std::atomic<int> g_pub_symbol_levels{4};
 static std::atomic<int> g_pub_channel_profile{0};
 static std::atomic<int> g_pub_ted_sps{10};
 static std::atomic<int> g_pub_ted_sps_override{0};
+static std::atomic<int> g_pub_cqpsk_enable{0};
+static std::atomic<int> g_pub_ted_bias_q14{0};
 
 static void rtl_stream_publish_demod_profile_snapshot(void);
+static void rtl_stream_publish_ted_bias(void);
 
 std::atomic<double> g_snr_c4fm_db{-100.0};
 std::atomic<double> g_snr_qpsk_db{-100.0};
@@ -3443,6 +3446,7 @@ static DSD_THREAD_RETURN_TYPE
         full_demod(d);
         g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
         rtl_stream_publish_demod_profile_snapshot();
+        rtl_stream_publish_ted_bias();
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_time_monotonic_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
@@ -7097,18 +7101,34 @@ dsd_rtl_stream_should_exit(void) {
  */
 extern "C" int
 dsd_rtl_stream_cqpsk_timing_bias(void) {
-    const float scaled = demod.ted_state.e_ema * 16384.0f; /* Q14 scale */
-    if (scaled > (float)INT_MAX) {
-        return INT_MAX;
+    /* demod.ted_state belongs to the demod thread; read the per-block mirror. */
+    return g_pub_ted_bias_q14.load(std::memory_order_relaxed);
+}
+
+/* Demod-thread only: mirrors demod.ted_state.e_ema for the timing-bias hook. */
+static void
+rtl_stream_publish_ted_bias(void) {
+    const float bias_scaled = demod.ted_state.e_ema * 16384.0f; /* Q14 scale */
+    int bias_q14;
+    if (bias_scaled > (float)INT_MAX) {
+        bias_q14 = INT_MAX;
+    } else if (bias_scaled < (float)INT_MIN) {
+        bias_q14 = INT_MIN;
+    } else {
+        bias_q14 = (int)lrintf(bias_scaled);
     }
-    if (scaled < (float)INT_MIN) {
-        return INT_MIN;
-    }
-    return (int)lrintf(scaled);
+    g_pub_ted_bias_q14.store(bias_q14, std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_stream_test_publish_demod_snapshot(void) {
+    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_publish_ted_bias();
 }
 
 static void
 rtl_stream_publish_demod_profile_snapshot(void) {
+    g_pub_cqpsk_enable.store(demod.cqpsk_enable ? 1 : 0, std::memory_order_relaxed);
     g_pub_output_kind.store(demod.output_kind, std::memory_order_relaxed);
     g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
     g_pub_symbol_levels.store(demod.symbol_levels, std::memory_order_relaxed);
@@ -7209,7 +7229,9 @@ rtl_stream_request_fsk_reacquire(void) {
 
 extern "C" int
 rtl_stream_request_cqpsk_reacquire(void) {
-    if (demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !demod.cqpsk_enable) {
+    /* Main-thread hook: use the published mirrors, not demod fields. */
+    if (g_pub_output_kind.load(std::memory_order_relaxed) != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK
+        && !g_pub_cqpsk_enable.load(std::memory_order_relaxed)) {
         return 0;
     }
     g_cqpsk_reacquire_pending.store(1, std::memory_order_release);
@@ -7267,6 +7289,7 @@ rtl_stream_set_ted_sps(int sps) {
             (void)rtl_stream_set_symbol_profile(sym_rate, demod.symbol_levels == 2 ? 2 : 4, demod.channel_lpf_profile);
         }
     }
+    rtl_stream_publish_demod_profile_snapshot();
 }
 
 extern "C" void
@@ -7892,7 +7915,11 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
 
 extern "C" int
 rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
-    int cqpsk = (demod.cqpsk_enable || rtl_stream_cqpsk_symbol_output_active()) ? 1 : 0;
+    /* Main-thread hook: use the published mirrors, not demod fields. */
+    int cqpsk = (g_pub_cqpsk_enable.load(std::memory_order_relaxed)
+                 || g_pub_output_kind.load(std::memory_order_relaxed) == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK)
+                    ? 1
+                    : 0;
     if (cqpsk_enable) {
         *cqpsk_enable = cqpsk;
     }
@@ -9290,6 +9317,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
     const int prev_pending = g_cqpsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
     demod.output_kind = test_demod.output_kind;
     demod.cqpsk_enable = test_demod.cqpsk_enable;
+    rtl_stream_publish_demod_profile_snapshot();
     g_stream = NULL;
 
     ring_clear(&output);
@@ -9307,6 +9335,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
         && !fsk_reacquire_test_request_state_valid(queued_samples, cached_symbols, out_result->generation_before)) {
         demod.output_kind = prev_output_kind;
         demod.cqpsk_enable = prev_cqpsk;
+        rtl_stream_publish_demod_profile_snapshot();
         g_stream = prev_stream;
         g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
         fsk_reacquire_test_reset_output_state();
@@ -9320,6 +9349,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
 
     demod.output_kind = prev_output_kind;
     demod.cqpsk_enable = prev_cqpsk;
+    rtl_stream_publish_demod_profile_snapshot();
     g_stream = prev_stream;
     g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();

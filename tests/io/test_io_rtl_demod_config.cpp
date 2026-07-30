@@ -246,6 +246,7 @@ expect_live_symbol_status(void) {
     demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
     demod.symbol_rate_hz = 4800;
     demod.symbol_levels = 4;
+    rtl_stream_test_publish_demod_snapshot();
 
     int cq = -1;
     int timing = -1;
@@ -268,6 +269,7 @@ expect_live_symbol_status(void) {
 
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    rtl_stream_test_publish_demod_snapshot();
 
     cq = -1;
     timing = -1;
@@ -543,8 +545,10 @@ expect_public_control_wrapper_contracts(void) {
 
     DSD_MEMSET(&demod, 0, sizeof(demod));
     demod.ted_state.e_ema = 0.25f;
+    rtl_stream_test_publish_demod_snapshot();
     rc |= expect_int_eq("RTL timing bias exports Q14", rtl_stream_cqpsk_timing_bias(nullptr), 4096);
     demod.ted_state.e_ema = -0.5f;
+    rtl_stream_test_publish_demod_snapshot();
     rc |= expect_int_eq("RTL timing bias preserves sign", rtl_stream_cqpsk_timing_bias(nullptr), -8192);
 
     // Symbol profile setters validate input and refresh the dependent demodulator fields.
