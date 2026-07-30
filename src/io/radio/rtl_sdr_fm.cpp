@@ -1184,7 +1184,7 @@ apply_capture_tuner_bandwidth(uint32_t capture_rate_hz, const dsd_opts* opts, in
 static void constellation_ring_clear(void);
 static void eye_ring_clear(void);
 static void snr_ema_reset(void);
-static void controller_arm_retune_mute(const char* phase);
+static void controller_arm_retune_mute(const char* phase, int post_retune);
 
 namespace {
 
@@ -3636,22 +3636,39 @@ apply_capture_settings(uint32_t center_freq_hz, int ppm_error,
     if (out_ppm_rc) {
         *out_ppm_rc = ppm_rc;
     }
-    controller_arm_retune_mute("program");
+    controller_arm_retune_mute("program", 0);
     return program_capture_frequency_and_rate(center_freq_hz, restore_on_frequency_failure, out_hardware_changed);
 }
 
-static int
-retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
-    /* Drop the first post-retune callbacks so tuner-settling samples do not
-     * train the freshly reset CQPSK TED/Costas loops or smear the retained FLL
-     * coarse CFO estimate. */
-    uint64_t mute_ms = 120;
-    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (cfg && cfg->retune_mute_ms > 0) {
-        mute_ms = (uint64_t)cfg->retune_mute_ms;
+/*
+ * Two retune mute windows guard the demod against tuner-settling samples:
+ * the pre-retune window swallows stale old-frequency bytes still in flight
+ * when a reconfigure starts, while the post-retune (settle) window is armed
+ * after the hardware retune completes and is therefore pure decode dead time
+ * on the new frequency. Local USB tuners lock their PLL within a few
+ * milliseconds, so the settle window stays short to avoid discarding the
+ * start of short transmissions; buffered backends (rtl_tcp, SoapySDR,
+ * replay) can keep delivering pre-retune samples well after the reconfigure
+ * finishes and keep the full window. An explicit DSD_NEO_RETUNE_MUTE_MS
+ * override applies to both windows.
+ */
+static const uint64_t kRetuneMuteDefaultMs = 120;
+static const uint64_t kRetuneSettleMuteDefaultMs = 25;
+
+static uint64_t
+retune_mute_window_ms(int cfg_mute_ms, int cfg_mute_ms_is_set, int post_retune, int buffered_backend) {
+    if (cfg_mute_ms_is_set && cfg_mute_ms > 0) {
+        return (uint64_t)cfg_mute_ms;
     }
+    if (post_retune && !buffered_backend) {
+        return kRetuneSettleMuteDefaultMs;
+    }
+    return kRetuneMuteDefaultMs;
+}
+
+static int
+retune_mute_bytes_for_window(uint32_t sample_rate_hz, uint64_t mute_ms, uint64_t min_bytes) {
     uint64_t bytes = ((uint64_t)sample_rate_hz * 2ULL * mute_ms) / 1000ULL;
-    uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
     if (bytes < min_bytes) {
         bytes = min_bytes;
     }
@@ -3661,17 +3678,42 @@ retune_mute_bytes_for_rate(uint32_t sample_rate_hz) {
     return (int)bytes;
 }
 
+static int
+retune_mute_backend_is_buffered(void) {
+    if (stream_is_replay_active()) {
+        return 1;
+    }
+    if (g_stream && g_stream->opts) {
+        if (g_stream->opts->rtltcp_enabled) {
+            return 1;
+        }
+        if (dsd_opts_audio_in_dev_is_soapy_spec(g_stream->opts->audio_in_dev)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+retune_mute_bytes_for_rate(uint32_t sample_rate_hz, int post_retune) {
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    uint64_t mute_ms = retune_mute_window_ms(cfg ? cfg->retune_mute_ms : 0, cfg ? cfg->retune_mute_ms_is_set : 0,
+                                             post_retune, retune_mute_backend_is_buffered());
+    uint64_t min_bytes = (ACTUAL_BUF_LENGTH > 0) ? (uint64_t)ACTUAL_BUF_LENGTH : (uint64_t)DEFAULT_BUF_LENGTH;
+    return retune_mute_bytes_for_window(sample_rate_hz, mute_ms, min_bytes);
+}
+
 static void
-controller_arm_retune_mute(const char* phase) {
+controller_arm_retune_mute(const char* phase, int post_retune) {
     uint32_t sample_rate_hz = load_dongle_rate();
     if (!rtl_device_handle || sample_rate_hz == 0) {
         return;
     }
-    int mute_bytes = retune_mute_bytes_for_rate(sample_rate_hz);
+    int mute_bytes = retune_mute_bytes_for_rate(sample_rate_hz, post_retune);
     rtl_device_mute(rtl_device_handle, mute_bytes);
     if (debug_cqpsk_enabled()) {
-        DSD_FPRINTF(stderr, "[RETUNE-MUTE] phase=%s rate=%u bytes=%d\n", phase ? phase : "unknown", sample_rate_hz,
-                    mute_bytes);
+        DSD_FPRINTF(stderr, "[RETUNE-MUTE] phase=%s settle=%d rate=%u bytes=%d\n", phase ? phase : "unknown",
+                    post_retune ? 1 : 0, sample_rate_hz, mute_bytes);
     }
 }
 
@@ -3873,7 +3915,7 @@ static inline void
 controller_prepare_reconfigure_input(void) {
     rtl_device_begin_capture_reconfigure(rtl_device_handle);
     controller_request_input_purge();
-    controller_arm_retune_mute("pre");
+    controller_arm_retune_mute("pre", 0);
 }
 
 static inline void
@@ -3922,7 +3964,7 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     uint32_t previous_center_freq_hz = s->last_applied_freq_hz.load(std::memory_order_acquire);
     int previous_rate_out_hz = demod.rate_out;
     CaptureSettingsSnapshot previous_capture = capture_settings_snapshot_for_center(previous_center_freq_hz);
-    controller_arm_retune_mute("program");
+    controller_arm_retune_mute("program", 0);
     int hardware_changed = 0;
     int rc = program_capture_frequency_and_rate(center_freq_hz, &previous_capture, &hardware_changed);
     int ppm_changed = (reset_reason == DemodRetuneResetReason::PpmCorrection);
@@ -3932,12 +3974,12 @@ controller_reconfigure_active_stream_locked(struct controller_state* s, uint32_t
     }
     uint32_t finalized_center_freq_hz =
         controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, rc, hardware_changed);
-    controller_arm_retune_mute("post");
+    controller_arm_retune_mute("post", 1);
     rtl_device_record_capture_retune(rtl_device_handle, finalized_center_freq_hz, load_dongle_frequency(),
                                      load_dongle_rate(), retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz, NULL);
-    controller_arm_retune_mute("post-reset");
+    controller_arm_retune_mute("post-reset", 1);
     rtl_device_end_capture_reconfigure(rtl_device_handle);
     if (out_reconfigured) {
         *out_reconfigured = 1;
@@ -3976,7 +4018,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
         controller_reconfigure_finalized_center(center_freq_hz, previous_center_freq_hz, apply_rc, hardware_changed);
     const RtlRetuneProfile* finalized_profile =
         controller_reconfigure_finalized_profile(retune_profile, center_freq_hz, finalized_center_freq_hz);
-    controller_arm_retune_mute("post");
+    controller_arm_retune_mute("post", 1);
     store_dongle_ppm_error_if_applied(ppm_rc, ppm_error);
     DemodRetuneResetReason reset_reason =
         ppm_changed ? DemodRetuneResetReason::PpmCorrection : DemodRetuneResetReason::FrequencyRetune;
@@ -3984,7 +4026,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
                                      load_dongle_rate(), retune_reset_reason_name(reset_reason));
     controller_finalize_reconfigure(s, g_stream ? g_stream->opts : NULL, finalized_center_freq_hz, reset_reason,
                                     previous_center_freq_hz, previous_rate_out_hz, finalized_profile);
-    controller_arm_retune_mute("post-reset");
+    controller_arm_retune_mute("post-reset", 1);
     rtl_device_end_capture_reconfigure(rtl_device_handle);
     controller_end_reconfigure(s);
     if (out_reconfigured) {
@@ -8286,6 +8328,13 @@ dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq_hz,
     controller.edge = outer_edge;
     disable_fs4_shift = outer_disable_fs4_shift;
     return 0;
+}
+
+extern "C" int
+rtl_stream_test_retune_mute_plan(uint32_t sample_rate_hz, int cfg_mute_ms, int cfg_mute_ms_is_set, int post_retune,
+                                 int buffered_backend, uint32_t min_bytes) {
+    uint64_t mute_ms = retune_mute_window_ms(cfg_mute_ms, cfg_mute_ms_is_set, post_retune, buffered_backend);
+    return retune_mute_bytes_for_window(sample_rate_hz, mute_ms, (uint64_t)min_bytes);
 }
 
 extern "C" int

@@ -31,6 +31,8 @@ int dsd_rtl_stream_test_capture_settings_failure_restore(uint32_t* out_full_freq
                                                          int* out_full_rate_out_hz, uint32_t* out_partial_freq_hz,
                                                          uint32_t* out_partial_rate_hz, int* out_partial_rate_out_hz);
 int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int* out_ppm_error);
+int rtl_stream_test_retune_mute_plan(uint32_t sample_rate_hz, int cfg_mute_ms, int cfg_mute_ms_is_set, int post_retune,
+                                     int buffered_backend, uint32_t min_bytes);
 int dsd_rtl_stream_test_retune_completion_result_binding(int* out_first_result, int* out_second_result);
 int rtl_stream_test_clear_output(size_t queued_samples, int cached_symbols, size_t* out_used_after,
                                  int* out_cache_pending_after, uint32_t* out_generation_before,

@@ -537,7 +537,9 @@ Capture/retune behavior
 - `DSD_NEO_DISABLE_FS4_SHIFT=1` — disable +fs/4 capture shift
 - `DSD_NEO_OUTPUT_CLEAR_ON_RETUNE=1` — clear output on retune
 - `DSD_NEO_RETUNE_DRAIN_MS=<ms>` — drain time before retune
-- `DSD_NEO_RETUNE_MUTE_MS=<ms>` — input mute around RTL retunes, default 120ms
+- `DSD_NEO_RETUNE_MUTE_MS=<ms>` — input mute around RTL retunes (range 10–1000). By default the pre-retune mute is
+  120ms and the post-retune settle mute is 25ms on local USB tuners (120ms on rtl_tcp/SoapySDR, which buffer stale
+  samples); setting this applies the same value to both windows
 
 RTL‑TCP networking
 
