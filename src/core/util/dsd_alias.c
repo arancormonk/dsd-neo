@@ -72,8 +72,14 @@ alias_current_call_snapshot(const dsd_state* state, uint8_t slot, uint32_t src, 
     }
 
     uint8_t slot_idx = alias_slot_index(slot);
-    if (dsd_call_state_get(state, slot_idx, out) <= 0 || out->phase != DSD_CALL_PHASE_ACTIVE
-        || out->ota_source_id != src) {
+    if (dsd_call_state_get(state, slot_idx, out) <= 0 || out->ota_source_id != src) {
+        return 0;
+    }
+    // Motorola P25 systems transmit the talker alias during hangtime, after the
+    // transmission's MAC_END_PTT has already ended the epoch. The retained ended
+    // epoch still names that talker, and the exact source-id match above keeps a
+    // late alias from landing on a different call.
+    if (out->phase != DSD_CALL_PHASE_ACTIVE && out->phase != DSD_CALL_PHASE_ENDED) {
         return 0;
     }
     if (tg != 0 && out->ota_target_id != 0U && out->ota_target_id != tg && out->policy_target_id != tg) {
@@ -743,7 +749,11 @@ l3h_alias_resolve_src_tg(const dsd_state* state, uint8_t slot, uint32_t* tsrc, u
     *ttg = 0;
     dsd_call_snapshot call;
     uint8_t slot_idx = alias_slot_index(slot);
-    if (dsd_call_state_get(state, slot_idx, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {
+    // The retained ended epoch counts too: Harris alias blocks can straddle the
+    // end of the transmission and complete during hangtime, and the fragment key
+    // captured with block 0 still has to resolve to the talker who sent them.
+    if (dsd_call_state_get(state, slot_idx, &call) > 0
+        && (call.phase == DSD_CALL_PHASE_ACTIVE || call.phase == DSD_CALL_PHASE_ENDED)) {
         if (call.ota_source_id <= UINT32_MAX) {
             *tsrc = (uint32_t)call.ota_source_id;
         }
