@@ -326,6 +326,63 @@ test_encrypted_follow_tracks_activity_while_media_is_muted(void) {
     return rc;
 }
 
+static int
+test_new_transmission_inherits_fresh_clear_grant_service(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+
+    // A transmission completed on slot 0 and the CC re-announced the
+    // assignment (grant update with explicit-clear service options) after the
+    // stop. The retained service bits classify the next transmission clear
+    // instead of starting it encryption-pending and muting clear voice until
+    // an ESS decodes -- the audible chop under encryption lockout in fades.
+    ctx->slots[0].svc_bits = 0x04;
+    ctx->slots[0].last_start_m = 1.0;
+    ctx->slots[0].last_stop_m = 2.0;
+    ctx->slots[0].last_grant_m = 3.0;
+    ctx->slots[0].voice_active = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+
+    p25_sm_emit_ptt(&opts, &state, 0);
+
+    int rc = 0;
+    rc |= expect_eq("fresh clear grant: next transmission classified clear", state.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_CLEAR);
+    rc |= expect_eq("fresh clear grant: voice activity accepted", ctx->slots[0].voice_active, 1);
+    rc |= expect_eq("fresh clear grant: no classification deadline", ctx->slots[0].crypto_attempt_m == 0.0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int
+test_new_transmission_without_grant_revalidation_stays_pending(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+
+    // No grant re-validated the assignment since the stop: the next
+    // transmission may not inherit the preceding epoch's service options and
+    // must wait for ESS/LCW to classify it.
+    ctx->slots[0].svc_bits = 0x04;
+    ctx->slots[0].last_start_m = 1.0;
+    ctx->slots[0].last_stop_m = 3.0;
+    ctx->slots[0].last_grant_m = 2.0;
+    ctx->slots[0].voice_active = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_UNKNOWN;
+
+    p25_sm_emit_ptt(&opts, &state, 0);
+
+    int rc = 0;
+    rc |= expect_eq("stale grant service: next transmission stays pending", state.p25_crypto_state[0],
+                    DSD_P25_CRYPTO_ENCRYPTED_PENDING);
+    rc |= expect_eq("stale grant service: classification deadline armed", ctx->slots[0].crypto_attempt_m > 0.0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     install_trunk_tuning_hooks();
@@ -337,5 +394,7 @@ main(void) {
     rc |= test_clear_regroup_override_survives_voice_burst();
     rc |= test_private_voice_ignores_regroup_clear_key_collision();
     rc |= test_encrypted_follow_tracks_activity_while_media_is_muted();
+    rc |= test_new_transmission_inherits_fresh_clear_grant_service();
+    rc |= test_new_transmission_without_grant_revalidation_stays_pending();
     return rc;
 }

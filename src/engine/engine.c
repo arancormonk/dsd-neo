@@ -1897,6 +1897,15 @@ no_carrier_reset_payload_and_keystream_state(dsd_state* state) {
     // this reset could only ever be misapplied to whatever decodes next.
     state->dmr_heal_valid[0] = 0;
     state->dmr_heal_valid[1] = 0;
+    // The live service options and the classification they establish describe the carrier
+    // that just went away; a stale privacy bit would mute the opening bursts of whatever
+    // decodes next until its first LC arrives.
+    state->dmr_so = 0;
+    state->dmr_soR = 0;
+    state->dmr_fid = 0;
+    state->dmr_fidR = 0;
+    dmr_enc_class_reset(state, 0);
+    dmr_enc_class_reset(state, 1);
     state->payload_mi = 0;
     state->payload_miR = 0;
     state->payload_mfid = 0;

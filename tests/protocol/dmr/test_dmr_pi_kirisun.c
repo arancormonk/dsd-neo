@@ -428,6 +428,9 @@ test_pi_hytera_slot0_checksum_key_and_error_paths(void) {
     assert(state.payload_mi == 0x1032547698ULL);
     assert(opts.dmr_le == 2);
 
+    // A checksum-failed Hytera-shaped PI is one corrupt burst away from muting a clear call
+    // with a fabricated ALGID/MI -- the caller dispatches on the MFID byte alone -- so the
+    // failure path may print, but nothing may reach the live crypto.
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.dmr_le = 1;
@@ -435,10 +438,10 @@ test_pi_hytera_slot0_checksum_key_and_error_paths(void) {
     pi[9] ^= 0x7FU;
     dmr_pi(&opts, &state, pi, 1, 0);
 
-    assert((state.dmr_so & 0x40U) != 0U);
-    assert(state.payload_algid == 0x02);
-    assert(state.payload_keyid == 0x21);
-    assert(state.payload_mi == 0x1032547698ULL);
+    assert((state.dmr_so & 0x40U) == 0U);
+    assert(state.payload_algid == 0);
+    assert(state.payload_keyid == 0);
+    assert(state.payload_mi == 0ULL);
     assert(opts.dmr_le == 1);
 }
 

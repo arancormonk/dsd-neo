@@ -68,6 +68,8 @@ dmr_pi_handle_kirisun(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[])
         state->payload_keyidR = key_hash;
         state->payload_miR = mi;
     }
+    // CRC-verified PI header (gated by the caller): strong classification evidence.
+    dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), (so & 0x40U) != 0U);
 
     DSD_FPRINTF(stderr, "%s ", KYEL);
     DSD_FPRINTF(stderr, "\n Slot %d", state->currentslot + 1);
@@ -102,24 +104,28 @@ dmr_pi_hytera_print_key(const dsd_state* state, int show_keys) {
 
 static void
 dmr_pi_handle_hytera(dsd_opts* opts, dsd_state* state, const uint8_t pi_byte[]) {
-    if (state->currentslot == 0) {
-        state->dmr_so |= 0x40; //OR the enc bit onto the SO
-        state->payload_algid = pi_byte[0];
-        state->payload_keyid = pi_byte[2];
-        state->payload_mi = dmr_pi_extract_mi40(pi_byte);
-    } else {
-        state->dmr_soR |= 0x40; //OR the enc bit onto the SO
-        state->payload_algidR = pi_byte[0];
-        state->payload_keyidR = pi_byte[2];
-        state->payload_miR = dmr_pi_extract_mi40(pi_byte);
-    }
-
     DSD_FPRINTF(stderr, "%s ", KYEL);
     DSD_FPRINTF(stderr, "\n Slot %d", state->currentslot + 1);
     DSD_FPRINTF(stderr, " DMR PI H- ALG ID: %02X; KEY ID: %02X; MI(40): %02X%02X%02X%02X%02X;", pi_byte[0], pi_byte[2],
                 pi_byte[3], pi_byte[4], pi_byte[5], pi_byte[6], pi_byte[7]);
 
     if (dmr_hytera_checksum(pi_byte, 9U) == pi_byte[9]) {
+        // Only a checksum-verified PI may mutate the live crypto: the caller dispatches on the
+        // MFID byte alone, so an unverified Hytera-shaped PI is exactly one corrupt burst away
+        // from muting a clear call with a fabricated ALGID/MI.
+        if (state->currentslot == 0) {
+            state->dmr_so |= 0x40; //OR the enc bit onto the SO
+            state->payload_algid = pi_byte[0];
+            state->payload_keyid = pi_byte[2];
+            state->payload_mi = dmr_pi_extract_mi40(pi_byte);
+        } else {
+            state->dmr_soR |= 0x40; //OR the enc bit onto the SO
+            state->payload_algidR = pi_byte[0];
+            state->payload_keyidR = pi_byte[2];
+            state->payload_miR = dmr_pi_extract_mi40(pi_byte);
+        }
+        dmr_enc_class_force(state, (uint8_t)(state->currentslot & 1), 1);
+
         DSD_FPRINTF(stderr, " Hytera Enhanced; ");
         dmr_pi_hytera_print_key(state, opts->show_keys);
 

@@ -15,6 +15,7 @@ target_sources(
         dmr_trunk_sm.c
         dmr_data.c
         dmr_dburst.c
+        dmr_enc_class.c
         dmr_flco.c
         dmr_hytera.c
         dmr_le.c
