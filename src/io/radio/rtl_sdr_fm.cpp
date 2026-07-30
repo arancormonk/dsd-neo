@@ -1724,6 +1724,13 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     return plan;
 }
 
+/* Cross-thread mirror of demod.channel_pwr: written by the demod thread after
+ * each block, read by the main thread via dsd_rtl_stream_return_pwr(). */
+std::atomic<float> g_channel_pwr{0.0f};
+
+/* Cross-thread mirror of demod.ted_sps for the eye-diagram getter. */
+static std::atomic<int> g_eye_ted_sps{10};
+
 std::atomic<double> g_snr_c4fm_db{-100.0};
 std::atomic<double> g_snr_qpsk_db{-100.0};
 std::atomic<double> g_snr_gfsk_db{-100.0};
@@ -2025,7 +2032,7 @@ controller_wait_for_demod_idle(struct controller_state* s) {
     if (!s) {
         return;
     }
-    while (s->demod_processing_active.load(std::memory_order_acquire) && !exitflag
+    while (s->demod_processing_active.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
         dsd_sleep_ms(1);
     }
@@ -2097,7 +2104,7 @@ struct DemodSnrUpdateFlags {
 
 static inline int
 demod_should_exit_requested(void) {
-    return exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire));
+    return dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire));
 }
 
 static int
@@ -3185,7 +3192,7 @@ demod_maybe_signal_squelch_hop(struct demod_state* d) {
 
 static int
 demod_output_write_cancelled(void) {
-    return (exitflag || controller.retune_in_progress.load(std::memory_order_acquire)) ? 1 : 0;
+    return (dsd_exitflag_load() || controller.retune_in_progress.load(std::memory_order_acquire)) ? 1 : 0;
 }
 
 static int
@@ -3196,7 +3203,7 @@ demod_wait_for_output_space(struct output_state* o) {
     if (ret == 0) {
         return 1;
     }
-    if (exitflag) {
+    if (dsd_exitflag_load()) {
         return 0;
     }
     o->write_timeouts.fetch_add(1);
@@ -3422,13 +3429,15 @@ static DSD_THREAD_RETURN_TYPE
             (void)rtl_stream_consume_fsk_modem_reset_pending(d);
         }
         full_demod(d);
+        g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
+        g_eye_ted_sps.store(d->ted_sps, std::memory_order_relaxed);
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_time_monotonic_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
         if (d->exit_flag) {
-            exitflag = 1;
+            dsd_exitflag_store(1);
         }
         demod_maybe_signal_squelch_hop(d);
         uint64_t perf_output_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
@@ -4038,7 +4047,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
 static void
 replay_wait_for_input_purge_applied(void) {
     uint64_t deadline_ns = dsd_time_monotonic_ns() + 100000000ULL;
-    while (g_ring_purge_pending.load(std::memory_order_acquire) && !exitflag
+    while (g_ring_purge_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))
            && dsd_time_monotonic_ns() < deadline_ns) {
         /* Replay callbacks run on the sole producer after the controller has
@@ -4311,11 +4320,11 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
     while (!s->manual_retune_pending.load(std::memory_order_acquire)
-           && !s->ppm_change_pending.load(std::memory_order_acquire) && !exitflag
+           && !s->ppm_change_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load())) {
         dsd_cond_wait(&s->hop, &s->hop_m);
     }
-    if (exitflag || (g_stream && g_stream->should_exit.load())) {
+    if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load())) {
         dsd_mutex_unlock(&s->hop_m);
         return 0;
     }
@@ -4619,7 +4628,7 @@ static DSD_THREAD_RETURN_TYPE
     controller_thread_retune_loop(void* arg) {
     struct controller_state* s = static_cast<controller_state*>(arg);
 
-    while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
+    while (!dsd_exitflag_load() && !(g_stream && g_stream->should_exit.load())) {
         ControllerRetuneWork work = {};
         if (!controller_wait_for_retune_work(s, &work)) {
             break;
@@ -4650,8 +4659,11 @@ static DSD_THREAD_RETURN_TYPE
 /* ---------------- Constellation capture (simple lock-free ring) ---------------- */
 
 static const int kConstMaxPairs = 8192;
-static float g_const_xy[kConstMaxPairs * 2];
-static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wraps */
+/* Relaxed atomics: single demod-thread writer, main-thread reader. Tearing
+ * across samples is acceptable for display/estimation; atomics keep the
+ * unsynchronized access well-defined. Relaxed ops compile to plain moves. */
+static std::atomic<float> g_const_xy[kConstMaxPairs * 2];
+static std::atomic<int> g_const_head{0}; /* pairs written [0..kConstMaxPairs-1], wraps */
 
 /**
  * @brief Clear the constellation ring buffer.
@@ -4663,8 +4675,10 @@ static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wr
  */
 static void
 constellation_ring_clear(void) {
-    DSD_MEMSET(g_const_xy, 0, sizeof(g_const_xy));
-    g_const_head = 0;
+    for (int k = 0; k < kConstMaxPairs * 2; k++) {
+        g_const_xy[k].store(0.0f, std::memory_order_relaxed);
+    }
+    g_const_head.store(0, std::memory_order_relaxed);
 }
 
 /* Forward decl for eye-ring append used in demod loop */
@@ -4681,14 +4695,14 @@ constellation_ring_append(const float* iq, int len, int sps_hint) {
     for (int n = 0; n < N; n += stride) {
         float i = iq[(size_t)(n << 1) + 0];
         float q = iq[(size_t)(n << 1) + 1];
-        int h = g_const_head;
-        g_const_xy[(size_t)(h << 1) + 0] = i;
-        g_const_xy[(size_t)(h << 1) + 1] = q;
+        int h = g_const_head.load(std::memory_order_relaxed);
+        g_const_xy[(size_t)(h << 1) + 0].store(i, std::memory_order_relaxed);
+        g_const_xy[(size_t)(h << 1) + 1].store(q, std::memory_order_relaxed);
         h++;
         if (h >= kConstMaxPairs) {
             h = 0;
         }
-        g_const_head = h;
+        g_const_head.store(h, std::memory_order_relaxed);
     }
 }
 
@@ -4697,21 +4711,22 @@ rtl_stream_constellation_get(float* out_xy, int max_points) {
     if (!out_xy || max_points <= 0) {
         return 0;
     }
-    int head = g_const_head; /* snapshot */
+    int head = g_const_head.load(std::memory_order_relaxed); /* snapshot */
     int n = (max_points < kConstMaxPairs) ? max_points : kConstMaxPairs;
     int start = head;
     for (int k = 0; k < n; k++) {
         int idx = (start + k) % kConstMaxPairs;
-        out_xy[(size_t)(k << 1) + 0] = g_const_xy[(size_t)(idx << 1) + 0];
-        out_xy[(size_t)(k << 1) + 1] = g_const_xy[(size_t)(idx << 1) + 1];
+        out_xy[(size_t)(k << 1) + 0] = g_const_xy[(size_t)(idx << 1) + 0].load(std::memory_order_relaxed);
+        out_xy[(size_t)(k << 1) + 1] = g_const_xy[(size_t)(idx << 1) + 1].load(std::memory_order_relaxed);
     }
     return n;
 }
 
 /* ---------------- Eye diagram capture (I-channel of complex baseband) ---------------- */
 static const int kEyeMax = 16384;
-static float g_eye_buf[kEyeMax];
-static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
+/* Relaxed atomics for the same reason as the constellation ring above. */
+static std::atomic<float> g_eye_buf[kEyeMax];
+static std::atomic<int> g_eye_head{0}; /* samples written [0..kEyeMax-1], wraps */
 
 /**
  * @brief Clear the eye diagram ring buffer.
@@ -4721,8 +4736,10 @@ static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
  */
 static void
 eye_ring_clear(void) {
-    DSD_MEMSET(g_eye_buf, 0, sizeof(g_eye_buf));
-    g_eye_head = 0;
+    for (int k = 0; k < kEyeMax; k++) {
+        g_eye_buf[k].store(0.0f, std::memory_order_relaxed);
+    }
+    g_eye_head.store(0, std::memory_order_relaxed);
 }
 
 static inline void
@@ -4733,30 +4750,32 @@ eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved) {
     int N = len_interleaved >> 1; /* complex samples */
     for (int n = 0; n < N; n++) {
         float i = iq_interleaved[(size_t)(n << 1) + 0];
-        int h = g_eye_head;
-        g_eye_buf[h] = i;
+        int h = g_eye_head.load(std::memory_order_relaxed);
+        g_eye_buf[h].store(i, std::memory_order_relaxed);
         h++;
         if (h >= kEyeMax) {
             h = 0;
         }
-        g_eye_head = h;
+        g_eye_head.store(h, std::memory_order_relaxed);
     }
 }
 
 extern "C" int
 rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
     if (out_sps) {
-        *out_sps = demod.ted_sps;
+        /* demod.ted_sps belongs to the demod thread; read the published
+         * atomic mirror instead of the struct field to avoid a data race. */
+        *out_sps = g_eye_ted_sps.load(std::memory_order_relaxed);
     }
     if (!out || max_samples <= 0) {
         return 0;
     }
-    int head = g_eye_head;
+    int head = g_eye_head.load(std::memory_order_relaxed);
     int n = (max_samples < kEyeMax) ? max_samples : kEyeMax;
     int start = head;
     for (int k = 0; k < n; k++) {
         int idx = (start + k) % kEyeMax;
-        out[k] = g_eye_buf[idx];
+        out[k] = g_eye_buf[idx].load(std::memory_order_relaxed);
     }
     return n;
 }
@@ -6372,7 +6391,7 @@ stream_open_rtltcp_target_prebuffer(size_t desired_prebuf) {
 static void
 stream_open_rtltcp_wait_for_prebuffer(size_t target) {
     int waited_ms = 0;
-    while (!exitflag && input_ring_used(&input_ring) < target && waited_ms < 2000) {
+    while (!dsd_exitflag_load() && input_ring_used(&input_ring) < target && waited_ms < 2000) {
         dsd_sleep_ms(2);
         waited_ms += 2;
     }
@@ -6898,7 +6917,8 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
 static int
 rtl_stream_read_live_samples(float* out, size_t count) {
     for (;;) {
-        if (!output.buffer || exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        if (!output.buffer || dsd_exitflag_load()
+            || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
             return -1;
         }
 
@@ -6950,7 +6970,7 @@ rtl_stream_read_replay(float* out, size_t count) {
         if (!output.buffer || !g_stream) {
             return -1;
         }
-        if (g_stream->replay_forced_stop.load(std::memory_order_acquire) || exitflag) {
+        if (g_stream->replay_forced_stop.load(std::memory_order_acquire) || dsd_exitflag_load()) {
             return -1;
         }
         size_t used = ring_used(&output);
@@ -7562,7 +7582,11 @@ rtl_stream_toggle_cqpsk(int onoff) {
     int next = onoff ? 1 : 0;
     int changed = (next != was) ? 1 : 0;
     int gate_armed = changed ? rtl_stream_enter_demod_family_switch_gate() : 0;
-    demod.cqpsk_enable = next;
+    /* Only store when the value changes: the demod thread reads cqpsk_enable
+     * concurrently, so even a same-value store outside the gate is a race. */
+    if (changed) {
+        demod.cqpsk_enable = next;
+    }
     if (demod.cqpsk_enable) {
         rtl_stream_enable_cqpsk_mode();
     } else {
@@ -7840,7 +7864,7 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
     const uint64_t deadline_ns = dsd_time_monotonic_ns() + 500000000ULL;
     dsd_mutex_lock(&controller.retune_done_m);
     while (controller.retune_complete_id.load(std::memory_order_acquire) < request_id) {
-        if (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
             rtl_stream_log_tune_warning(requested_freq, "shutdown");
             rc = RTL_STREAM_TUNE_FAILED;
             break;
@@ -8020,7 +8044,7 @@ dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms) {
             dsd_mutex_unlock(&controller.retune_done_m);
             return -2;
         }
-        if (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
             dsd_mutex_unlock(&controller.retune_done_m);
             return -2;
         }
@@ -9540,7 +9564,9 @@ rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
  */
 extern "C" double
 dsd_rtl_stream_return_pwr(void) {
-    return (double)demod.channel_pwr;
+    /* demod.channel_pwr belongs to the demod thread; read the published
+     * atomic mirror instead of the struct field to avoid a data race. */
+    return (double)g_channel_pwr.load(std::memory_order_relaxed);
 }
 
 /**

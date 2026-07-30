@@ -12,6 +12,7 @@
  * driven DSP toggles, and rate-dependent helpers.
  */
 
+#include <atomic>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
@@ -33,6 +34,11 @@
 #include "dsd-neo/dsp/costas.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/threading.h"
+
+/* Cross-thread channel power mirror owned by rtl_sdr_fm.cpp (see
+ * rtl_stream_shared.hpp; declared directly to avoid pulling in the demod
+ * global, which would shadow every local `demod` parameter below). */
+extern std::atomic<float> g_channel_pwr;
 
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */
@@ -280,6 +286,7 @@ demod_init_common_defaults(struct demod_state* s, int rtl_dsp_bw_hz, struct outp
         s->channel_lpf_hist_q[k] = 0;
     }
     s->channel_pwr = 0.0f;
+    g_channel_pwr.store(0.0f, std::memory_order_relaxed);
     s->channel_squelch_level = 0.0f;
     s->channel_squelched = 0;
     s->audio_lpf_enable = 0;

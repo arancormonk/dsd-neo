@@ -20,6 +20,8 @@
 
 extern demod_state demod;
 
+extern std::atomic<float> g_channel_pwr;
+
 extern std::atomic<double> g_snr_c4fm_db;
 extern std::atomic<double> g_snr_qpsk_db;
 extern std::atomic<double> g_snr_gfsk_db;
