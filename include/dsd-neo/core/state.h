@@ -561,6 +561,17 @@ struct dsd_state {
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 
+    /* NXDN cipher-classification hysteresis (src/protocol/nxdn/nxdn_enc_class.c). The cipher
+     * field reaches the decoder from several channels (VCALL, SACCH-2, SCCH) whose FEC/CRC can
+     * accept a miscorrected payload, and under --enc-lockout a single non-clear observation
+     * used to write a session-permanent blocking talkgroup entry and force the channel
+     * released. Observations apply tentatively and must repeat before they can flip an
+     * established classification or arm the lockout; user-forced scrambler modes and the
+     * keyloader apply as authoritative. Values are the observed cipher plus one; 0 = none. */
+    uint8_t nxdn_cipher_class;         /* applied cipher observation + 1; 0 = unclassified */
+    uint8_t nxdn_cipher_class_est;     /* classification corroborated (authoritative or repeat) */
+    uint8_t nxdn_cipher_class_pending; /* quarantined contradicting candidate + 1; 0 = none */
+
     NxdnElementsContent_t NxdnElementsContent;
 
     char ambe_ciphered[49];

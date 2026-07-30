@@ -698,6 +698,11 @@ init_state_protocol_defaults_a(dsd_state* state) {
 
     state->nxdn_last_ran = -1;
     state->nxdn_cipher_type = 0;
+    /* Cleared directly rather than through nxdn_cipher_class_reset(): core must not call into
+     * protocol modules. */
+    state->nxdn_cipher_class = 0;
+    state->nxdn_cipher_class_est = 0;
+    state->nxdn_cipher_class_pending = 0;
     state->nxdn_key = 0;
     state->nxdn_pn95_seed = 228;
     state->payload_miN = 0;

@@ -28,6 +28,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_alias_decode.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -415,6 +416,7 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
         (void)dsd_recent_activity_clear_all(state);
         if (state->M == 0) {
             state->nxdn_cipher_type = 0;
+            nxdn_cipher_class_reset(state);
         }
     }
 }
@@ -1581,7 +1583,7 @@ nxdn_vcall_assgn_load_scrambler_key(const dsd_opts* opts, dsd_state* state, cons
         state->payload_miN = state->R;
     }
     if (state->M == 1) {
-        state->nxdn_cipher_type = 0x1;
+        nxdn_cipher_force(state, 0x1);
     }
 }
 
@@ -2217,15 +2219,23 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .has_service_metadata = 1U,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-    nxdn_vcall_publish_crypto(opts, state, info->cipher_type, info->key_id);
+    // Publish the applied classification, not the raw observation: a quarantined contradiction
+    // must not flap the published crypto any more than it may flap the audio gate.
+    nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, (uint8_t)state->nxdn_key);
     dsd_event_sync_slot(opts, state, 0U);
 }
 
 static void
 nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type == 0x01U) {
-        state->nxdn_key = info->key_id;
-        state->nxdn_cipher_type = info->cipher_type;
+        // Only a CRC-verified VCALL may mutate the live cipher, and even then through the
+        // classification hysteresis: trellis miscorrections that survive the short CRCs are
+        // exactly one element away from muting a clear call -- or unmuting an encrypted one --
+        // and, under lockout, permanently blocking the talkgroup.
+        if (state->NxdnElementsContent.VCallCrcIsGood != 0U) {
+            state->nxdn_key = info->key_id;
+            state->nxdn_cipher_type = nxdn_cipher_observe(state, info->cipher_type, 0);
+        }
     } else {
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
         nxdn_alias_reset(state);
@@ -2257,6 +2267,13 @@ static void
 nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (opts->trunk_enable != 1 || opts->trunk_tune_enc_calls != 0 || info->message_type != 0x01U
         || state->dmr_encL != 1) {
+        return;
+    }
+    // The blocking talkgroup entry is permanent for the session and the synthesized disconnect
+    // drops the channel, so the lockout acts only on CRC-verified, corroborated evidence: a
+    // lone non-clear observation stays tentative (or quarantined) in the hysteresis above and
+    // must repeat -- one superframe -- before it may lock the talkgroup out.
+    if (state->NxdnElementsContent.VCallCrcIsGood == 0U || !nxdn_cipher_established_enc(state)) {
         return;
     }
 
@@ -2535,7 +2552,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
             state->R = state->rkey_array[info->id];
         }
         if (state->M == 1) {
-            state->nxdn_cipher_type = 0x1;
+            nxdn_cipher_force(state, 0x1);
         }
     } else if (opts->trunk_enable == 1) {
         nxdn_policy_log_block(opts, is_private_call, info->id, 0, &policy_decision);
@@ -2717,9 +2734,12 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
             DSD_FPRINTF(stderr, "- %s - ", NXDN_Cipher_Type_To_Str(info->cipher));
             DSD_FPRINTF(stderr, "Key ID: %d; ", info->key_id);
         }
-        state->nxdn_cipher_type = info->cipher;
+        // One SCCH observation must not flip the classification the VCALLs established -- in
+        // either direction: a corrupt call option could mute a clear call, or silently unmute
+        // an encrypted one mid-stream. The hysteresis holds it until it repeats.
+        state->nxdn_cipher_type = nxdn_cipher_observe(state, (uint8_t)info->cipher, 0);
         state->nxdn_key = info->key_id;
-        nxdn_vcall_publish_crypto(opts, state, info->cipher, info->key_id);
+        nxdn_vcall_publish_crypto(opts, state, (uint8_t)state->nxdn_cipher_type, info->key_id);
     } else {
         DSD_FPRINTF(stderr, "\n%s ", KYEL);
         DSD_FPRINTF(stderr, "Call IV B: %04llX; ", info->iv_b);

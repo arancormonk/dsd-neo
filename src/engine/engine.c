@@ -37,6 +37,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/m17/m17.h>
+#include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -2021,6 +2022,7 @@ no_carrier_unload_keys_if_needed(dsd_state* state) {
 static void
 no_carrier_reset_dmr_misc_state(dsd_state* state) {
     state->nxdn_cipher_type = 0;
+    nxdn_cipher_class_reset(state);
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
     state->dmr_cach_counter = 0;
     DSD_MEMSET(state->dmr_pdu_sf, 0, sizeof(state->dmr_pdu_sf));

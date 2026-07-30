@@ -10,6 +10,7 @@ target_sources(
         nxdn_descramble.c
         nxdn_deperm.c
         nxdn_element.c
+        nxdn_enc_class.c
         nxdn_frame.c
         nxdn_lfsr.c
         nxdn_trunk_diag.c
