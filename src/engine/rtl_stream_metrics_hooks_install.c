@@ -23,14 +23,10 @@ static int
 rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
                                        int ted_sps) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (!cfg || !cfg->cqpsk_is_set) {
-        rtl_stream_toggle_cqpsk(cqpsk_enable);
-    }
-    rtl_stream_clear_ted_sps_override();
-    if (ted_sps > 0) {
-        rtl_stream_set_ted_sps_no_override(ted_sps);
-    }
-    return rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    /* Queue for the demod thread instead of touching demod state from the
+     * decode thread; a user cqpsk override (-1) leaves the family unchanged. */
+    int cqpsk = (!cfg || !cfg->cqpsk_is_set) ? (cqpsk_enable ? 1 : 0) : -1;
+    return rtl_stream_request_demod_profile(cqpsk, symbol_rate_hz, levels, channel_profile, ted_sps);
 }
 #endif
 

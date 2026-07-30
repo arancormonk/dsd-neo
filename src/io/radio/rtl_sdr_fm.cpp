@@ -344,6 +344,7 @@ static std::atomic<int> g_replay_event_last_reset_reason{0};
 static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 
+static void rtl_stream_consume_demod_profile_request(void);
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
@@ -1728,8 +1729,18 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
  * each block, read by the main thread via dsd_rtl_stream_return_pwr(). */
 std::atomic<float> g_channel_pwr{0.0f};
 
-/* Cross-thread mirror of demod.ted_sps for the eye-diagram getter. */
-static std::atomic<int> g_eye_ted_sps{10};
+/* Cross-thread mirrors of the demod profile fields consumed by main-thread
+ * getters (output kind, symbol profile, TED SPS). The demod thread republishes
+ * them once per block; setters that run pre-start or under the demod-family
+ * gate publish immediately after writing. */
+static std::atomic<int> g_pub_output_kind{0};
+static std::atomic<int> g_pub_symbol_rate{4800};
+static std::atomic<int> g_pub_symbol_levels{4};
+static std::atomic<int> g_pub_channel_profile{0};
+static std::atomic<int> g_pub_ted_sps{10};
+static std::atomic<int> g_pub_ted_sps_override{0};
+
+static void rtl_stream_publish_demod_profile_snapshot(void);
 
 std::atomic<double> g_snr_c4fm_db{-100.0};
 std::atomic<double> g_snr_qpsk_db{-100.0};
@@ -3422,6 +3433,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+        rtl_stream_consume_demod_profile_request();
         (void)rtl_stream_consume_fsk_modem_config_pending(d);
         (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
         int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
@@ -3430,7 +3442,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         full_demod(d);
         g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
-        g_eye_ted_sps.store(d->ted_sps, std::memory_order_relaxed);
+        rtl_stream_publish_demod_profile_snapshot();
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_time_monotonic_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
@@ -4765,7 +4777,7 @@ rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
     if (out_sps) {
         /* demod.ted_sps belongs to the demod thread; read the published
          * atomic mirror instead of the struct field to avoid a data race. */
-        *out_sps = g_eye_ted_sps.load(std::memory_order_relaxed);
+        *out_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
     }
     if (!out || max_samples <= 0) {
         return 0;
@@ -6607,6 +6619,9 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
+    /* Seed the profile mirrors from the freshly configured demod state before
+     * any thread starts, so main-thread getters see the startup profile. */
+    rtl_stream_publish_demod_profile_snapshot();
     if (stream_open_start_io_pipeline(opts, source_kind) != 0) {
         return -1;
     }
@@ -7092,19 +7107,32 @@ dsd_rtl_stream_cqpsk_timing_bias(void) {
     return (int)lrintf(scaled);
 }
 
+static void
+rtl_stream_publish_demod_profile_snapshot(void) {
+    g_pub_output_kind.store(demod.output_kind, std::memory_order_relaxed);
+    g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
+    g_pub_symbol_levels.store(demod.symbol_levels, std::memory_order_relaxed);
+    g_pub_channel_profile.store(demod.channel_lpf_profile, std::memory_order_relaxed);
+    g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
+    g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
+}
+
+/* The getters below read the published mirrors rather than demod fields: the
+ * demod thread owns those fields while running, so direct reads would race. */
+
 extern "C" int
 rtl_stream_get_ted_sps(void) {
-    return demod.ted_sps;
+    return g_pub_ted_sps.load(std::memory_order_relaxed);
 }
 
 extern "C" int
 rtl_stream_get_ted_sps_override(void) {
-    return demod.ted_sps_override;
+    return g_pub_ted_sps_override.load(std::memory_order_relaxed);
 }
 
 extern "C" int
 rtl_stream_get_output_kind(void) {
-    return demod.output_kind;
+    return g_pub_output_kind.load(std::memory_order_relaxed);
 }
 
 extern "C" int
@@ -7120,13 +7148,13 @@ rtl_stream_output_generation(void) {
 extern "C" int
 rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
     if (out_symbol_rate_hz) {
-        *out_symbol_rate_hz = demod.symbol_rate_hz;
+        *out_symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
     }
     if (out_levels) {
-        *out_levels = demod.symbol_levels;
+        *out_levels = g_pub_symbol_levels.load(std::memory_order_relaxed);
     }
     if (out_channel_profile) {
-        *out_channel_profile = demod.channel_lpf_profile;
+        *out_channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
     }
     return 0;
 }
@@ -7162,6 +7190,7 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
         demod.costas_reset_pending = 1;
         rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     }
+    rtl_stream_publish_demod_profile_snapshot();
     return 0;
 }
 
@@ -7243,6 +7272,7 @@ rtl_stream_set_ted_sps(int sps) {
 extern "C" void
 rtl_stream_clear_ted_sps_override(void) {
     demod.ted_sps_override = 0;
+    g_pub_ted_sps_override.store(0, std::memory_order_relaxed);
 }
 
 extern "C" void
@@ -7288,6 +7318,7 @@ rtl_stream_set_ted_sps_no_override(int sps) {
             (void)rtl_stream_set_symbol_profile(sym_rate, demod.symbol_levels == 2 ? 2 : 4, demod.channel_lpf_profile);
         }
     }
+    rtl_stream_publish_demod_profile_snapshot();
     /* Does NOT set ted_sps_override, allowing rate-change refresh to
        recalculate SPS later. Use when returning to CC or switching protocols. */
 }
@@ -7576,15 +7607,15 @@ rtl_stream_leave_demod_family_switch_gate(int gate_armed) {
     }
 }
 
-extern "C" void
-rtl_stream_toggle_cqpsk(int onoff) {
+/* Body of rtl_stream_toggle_cqpsk without the demod-family switch gate.
+ * Callers must either hold the gate or run on the demod thread. */
+static void
+rtl_stream_apply_cqpsk_toggle(int onoff) {
     int was = demod.cqpsk_enable ? 1 : 0;
     int next = onoff ? 1 : 0;
-    int changed = (next != was) ? 1 : 0;
-    int gate_armed = changed ? rtl_stream_enter_demod_family_switch_gate() : 0;
     /* Only store when the value changes: the demod thread reads cqpsk_enable
      * concurrently, so even a same-value store outside the gate is a race. */
-    if (changed) {
+    if (next != was) {
         demod.cqpsk_enable = next;
     }
     if (demod.cqpsk_enable) {
@@ -7599,7 +7630,67 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.costas_reset_pending = 1;
         rtl_stream_clear_output_for_demod_family_switch();
     }
+}
+
+extern "C" void
+rtl_stream_toggle_cqpsk(int onoff) {
+    int changed = ((onoff ? 1 : 0) != (demod.cqpsk_enable ? 1 : 0)) ? 1 : 0;
+    int gate_armed = changed ? rtl_stream_enter_demod_family_switch_gate() : 0;
+    rtl_stream_apply_cqpsk_toggle(onoff);
+    rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_leave_demod_family_switch_gate(gate_armed);
+}
+
+/* ---------------- Deferred demod-profile application ----------------
+ * The frame-sync/metrics path requests demod profile changes from the decode
+ * thread while the demod thread is running. Writing demod state from that
+ * thread races with the pipeline, so requests are queued here and applied by
+ * the demod thread between blocks (rtl_stream_consume_demod_profile_request),
+ * like the other *_pending consumes. Parameter stores are ordered by the
+ * release store of the pending flag; a newer request simply overwrites an
+ * unconsumed older one, which matches the last-writer-wins intent. */
+static std::atomic<int> g_profile_req_pending{0};
+static std::atomic<int> g_profile_req_cqpsk{-1}; /* -1 = leave unchanged */
+static std::atomic<int> g_profile_req_sym_rate{0};
+static std::atomic<int> g_profile_req_levels{0};
+static std::atomic<int> g_profile_req_chan{-1};
+static std::atomic<int> g_profile_req_ted_sps{0}; /* <=0 = leave unchanged */
+
+extern "C" int
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+    if (symbol_rate_hz <= 0) {
+        return -1;
+    }
+    if (levels != 2 && levels != 4) {
+        return -1;
+    }
+    g_profile_req_cqpsk.store(cqpsk_enable, std::memory_order_relaxed);
+    g_profile_req_sym_rate.store(symbol_rate_hz, std::memory_order_relaxed);
+    g_profile_req_levels.store(levels, std::memory_order_relaxed);
+    g_profile_req_chan.store(channel_profile, std::memory_order_relaxed);
+    g_profile_req_ted_sps.store(ted_sps, std::memory_order_relaxed);
+    g_profile_req_pending.store(1, std::memory_order_release);
+    return 0;
+}
+
+static void
+rtl_stream_consume_demod_profile_request(void) {
+    if (!g_profile_req_pending.exchange(0, std::memory_order_acquire)) {
+        return;
+    }
+    int cqpsk = g_profile_req_cqpsk.load(std::memory_order_relaxed);
+    int sym_rate = g_profile_req_sym_rate.load(std::memory_order_relaxed);
+    int levels = g_profile_req_levels.load(std::memory_order_relaxed);
+    int chan = g_profile_req_chan.load(std::memory_order_relaxed);
+    int ted_sps = g_profile_req_ted_sps.load(std::memory_order_relaxed);
+    if (cqpsk >= 0) {
+        rtl_stream_apply_cqpsk_toggle(cqpsk);
+    }
+    rtl_stream_clear_ted_sps_override();
+    if (ted_sps > 0) {
+        rtl_stream_set_ted_sps_no_override(ted_sps);
+    }
+    (void)rtl_stream_set_symbol_profile(sym_rate, levels, chan);
 }
 
 static int

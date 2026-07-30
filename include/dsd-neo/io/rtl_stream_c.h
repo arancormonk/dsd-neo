@@ -218,6 +218,24 @@ int rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels,
  */
 int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profile);
 
+/**
+ * @brief Queue a demod profile change for the demod thread to apply.
+ *
+ * Unlike calling rtl_stream_toggle_cqpsk()/rtl_stream_set_symbol_profile()
+ * directly, this is safe while the demod thread is running: parameters are
+ * validated and queued, and the demod thread applies them between blocks
+ * (a newer request overwrites an unconsumed older one).
+ *
+ * @param cqpsk_enable 1/0 to switch the demod family, -1 to leave unchanged.
+ * @param symbol_rate_hz Symbol rate in Hz, e.g. 4800, 6000, 2400.
+ * @param levels Number of FSK levels (2 or 4).
+ * @param channel_profile rtl_stream_channel_profile profile id.
+ * @param ted_sps Timing SPS to apply without override, <=0 to leave unchanged.
+ * @return 0 on success, negative on invalid input.
+ */
+int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                     int ted_sps);
+
 typedef struct rtl_stream_retune_gain_profile {
     int tuner_gain_is_set;
     int tuner_gain_tenth_db;
