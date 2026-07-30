@@ -1,0 +1,10 @@
+# Patterns here replace Semgrep's built-in default ignore list, so the
+# relevant defaults are restated first.
+.git/
+:include .gitignore
+
+# Dev-only fixture regeneration script (not run by CI). Its urllib use is
+# restricted to the hard-coded https SOURCES table with a scheme guard, and
+# the hosted Semgrep scan does not honor the inline nosemgrep suppressions
+# on those lines.
+tools/build_iq_fixtures.py
