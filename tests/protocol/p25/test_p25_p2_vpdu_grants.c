@@ -1157,6 +1157,42 @@ main(void) {
         rc |= expect_eq_long("0x83 stored service options", state.dmr_so, 0x81);
     }
 
+    // Case D5c1: MFID90 0x83 heard while tuned to a different carrier must not
+    // dispatch a grant (regression: Moto hangtime-era VCH updates restarting
+    // release timers); the same update on the matching carrier still dispatches.
+    {
+        static dsd_opts opts;
+        static dsd_state state;
+        unsigned long long int MAC[24] = {0};
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        opts.trunk_enable = 1;
+        opts.trunk_tune_group_calls = 1;
+        opts.trunk_tune_enc_calls = 1;
+        opts.trunk_is_tuned = 1;
+        state.p25_cc_freq = cc;
+        seed_fdma_iden(&state, iden, type, base, spac);
+
+        MAC[1] = 0x83;
+        MAC[2] = 0x90;
+        MAC[3] = 0x81;
+        MAC[4] = 0x55;
+        MAC[5] = 0x66;
+        MAC[6] = 0x10;
+        MAC[7] = 0x0A; // channel 0x100A -> 851.125 MHz
+
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
+        p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+        ctx->state = P25_SM_TUNED;
+        ctx->vc_freq_hz = 851500000; // camped on a different VC
+        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        rc |= expect_eq_long("0x83 off-carrier no dispatch", ctx->grant_count, 0);
+
+        ctx->vc_freq_hz = 851125000; // now matches the update's channel
+        process_MAC_VPDU(&opts, &state, 0, P25_MAC_PDU_ACTIVE, MAC);
+        rc |= expect_eq_long("0x83 on-carrier dispatch", ctx->grant_count, 1);
+    }
+
     // Case D5c2: SACCH grants apply service-option state to the decoded slot, not currentslot.
     {
         static dsd_opts opts;
