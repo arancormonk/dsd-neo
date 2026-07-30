@@ -1253,11 +1253,16 @@ test_p1_clear_identity_quarantines_conflicting_hdu(void) {
     if (setup_p1_retained_clear_conflict(&ctx, 0) != 0) {
         return 1;
     }
+    // An unconfirmed conflict expiring under encryption lockout resumes the
+    // presumed-clear call exactly like encrypted-follow mode: the tuple never
+    // corroborated against explicit-clear service options, so releasing the
+    // channel would drop clear voice over a single unrepeated observation.
     ctx.slots[0].crypto_attempt_m = dsd_time_now_monotonic_s() - ctx.config.grant_timeout_s - 0.1;
     p25_sm_tick_ctx(&ctx, &g_opts, &g_state);
-    if (ctx.state != P25_SM_ON_CC || g_return_requests != 1 || encrypted_call_cache_has(3069U, 1)
-        || g_state.p25_p1_crypto_conflict.active) {
-        DSD_FPRINTF(stderr, "FAIL: Unconfirmed Phase 1 conflict timeout produced encrypted-call side effects\n");
+    if (ctx.state != P25_SM_TUNED || g_return_requests != 0 || encrypted_call_cache_has(3069U, 1)
+        || g_state.p25_p1_crypto_conflict.active || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR
+        || !p25_crypto_audio_permitted(&g_opts, &g_state, 0)) {
+        DSD_FPRINTF(stderr, "FAIL: Unconfirmed lockout conflict timeout did not resume the presumed-clear call\n");
         return 1;
     }
     return 0;

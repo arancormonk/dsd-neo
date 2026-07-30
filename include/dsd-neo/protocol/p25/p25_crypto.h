@@ -117,14 +117,20 @@ void p25_crypto_clear_phase1_lockout_epoch(dsd_state* state);
  *
  * Imported key material for @p keyid is activated before decryptability is
  * tested. ALGID 0 remains non-definitive; only ALGID 0x80 confirms clear voice.
- * A Phase 1 non-clear tuple that contradicts explicit-clear service options
- * remains pending until another FEC-accepted tuple repeats the ALGID and KID.
+ * A non-clear tuple that contradicts explicit-clear service context remains
+ * pending until another FEC-accepted tuple repeats the ALGID and KID: Phase 1
+ * checks the slot's explicit-clear service options, Phase 2 the canonical
+ * call's explicit-clear service metadata.
  */
 dsd_p25_crypto_state p25_crypto_resolve(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot,
                                         int algid, int keyid, uint64_t mi, int talkgroup);
 
-/** Convert a still-pending classification into a silent timeout block. */
-void p25_crypto_block_pending(dsd_state* state, int slot);
+/**
+ * Return a still-pending classification to unclassified after a silent
+ * timeout. The deadline lapsing is absence of evidence, not proof of
+ * encryption, so the slot must not be published as encrypted.
+ */
+void p25_crypto_expire_pending(dsd_state* state, int slot);
 
 /** Reset crypto classification and metadata at a call boundary. */
 void p25_crypto_reset_slot(dsd_state* state, int slot);
