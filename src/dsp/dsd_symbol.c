@@ -1163,7 +1163,7 @@ symbol_close_audio_in_file(dsd_opts* opts) {
 
 static inline int
 symbol_stop_after_shutdown(float* sample_out) {
-    if (exitflag != 1) {
+    if (dsd_exitflag_load() != 1) {
         return 0;
     }
     if (sample_out != NULL) {
@@ -1438,7 +1438,7 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out) {
     if (tcp_result == 0) {
         int reconnected = 0;
     TCP_RETRY:
-        if (exitflag == 1) {
+        if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
             return 0;
         }
@@ -1747,12 +1747,12 @@ symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
     float float_symbol = 0.0f;
     size_t read_count = fread(&float_symbol, sizeof(float), 1, opts->symbolfile);
     if (read_count != 1) {
-        exitflag = 1;
+        dsd_exitflag_store(1);
         *symbol_out = 0.0f;
         return 1;
     }
     if (feof(opts->symbolfile)) {
-        exitflag = 1;
+        dsd_exitflag_store(1);
     }
     *symbol_out = float_symbol * 10000.0f;
     return 1;

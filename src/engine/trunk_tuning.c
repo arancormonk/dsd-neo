@@ -236,19 +236,22 @@ dsd_engine_rtl_profile_snapshot_restore(dsd_state* state, const dsd_engine_rtl_p
     rtl_stream_clear_pending_retune_profile();
     state->rf_mod = snapshot->rf_mod;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
-    rtl_stream_toggle_cqpsk(snapshot->rtl_cqpsk_enable);
-    if (snapshot->rtl_ted_sps > 0) {
-        rtl_stream_set_ted_sps_no_override(snapshot->rtl_ted_sps);
-    }
+    /* Queue the restore for the demod thread instead of mutating demod state
+     * from this thread. A saved override wins over the plain TED SPS; with
+     * neither saved, ted_sps=0 clears any override left behind. */
+    int ted_sps = 0;
+    int ted_sps_is_override = 0;
     if (snapshot->rtl_ted_sps_override > 0) {
-        rtl_stream_set_ted_sps(snapshot->rtl_ted_sps_override);
-    } else {
-        rtl_stream_clear_ted_sps_override();
+        ted_sps = snapshot->rtl_ted_sps_override;
+        ted_sps_is_override = 1;
+    } else if (snapshot->rtl_ted_sps > 0) {
+        ted_sps = snapshot->rtl_ted_sps;
     }
-    if (snapshot->rtl_symbol_rate_hz > 0 && (snapshot->rtl_symbol_levels == 2 || snapshot->rtl_symbol_levels == 4)) {
-        (void)rtl_stream_set_symbol_profile(snapshot->rtl_symbol_rate_hz, snapshot->rtl_symbol_levels,
-                                            snapshot->rtl_channel_profile);
-    }
+    const int profile_valid =
+        snapshot->rtl_symbol_rate_hz > 0 && (snapshot->rtl_symbol_levels == 2 || snapshot->rtl_symbol_levels == 4);
+    (void)rtl_stream_request_demod_profile(
+        snapshot->rtl_cqpsk_enable ? 1 : 0, profile_valid ? snapshot->rtl_symbol_rate_hz : 0,
+        profile_valid ? snapshot->rtl_symbol_levels : 0, snapshot->rtl_channel_profile, ted_sps, ted_sps_is_override);
 }
 
 static void

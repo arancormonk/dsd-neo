@@ -1350,7 +1350,7 @@ replay_forced_stop_requested(const struct rtl_device* s) {
     if (!s) {
         return 1;
     }
-    if (!s->run.load(std::memory_order_acquire) || exitflag) {
+    if (!s->run.load(std::memory_order_acquire) || dsd_exitflag_load()) {
         return 1;
     }
     if (s->replay_has_eof_state && s->replay_eof.replay_forced_stop
@@ -2346,7 +2346,7 @@ rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
         }
     }
 
-    if (exitflag) {
+    if (dsd_exitflag_load()) {
         return;
     }
     if (!ctx) {
@@ -2429,7 +2429,7 @@ static DSD_THREAD_RETURN_TYPE
             stderr,
             "ERROR: libusb exception in rtlsdr_read_async (MSVC/Windows). "
             "Check that the bundled libusb/librtlsdr DLLs match the build and the device driver is installed.\n");
-        exitflag = 1;
+        dsd_exitflag_store(1);
     }
 #else
     rtlsdr_read_async(s->dev, rtlsdr_callback, s, 16, s->buf_len);
@@ -3219,7 +3219,7 @@ static DSD_THREAD_RETURN_TYPE
     }
 
     int fatal = 0;
-    while (s->run.load() && exitflag == 0) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
         void* buffs[1] = {NULL};
         if (soapy_prepare_read_buffer(s, &cf32_buf, &cs16_buf, buffs) != 0) {
             fatal = 1;
@@ -3653,7 +3653,7 @@ rtl_tcp_reconnect_after_stall(struct rtl_device* s, struct rtl_tcp_loop_state* s
     rtl_tcp_close_socket_if_open(s);
 
     int attempt = 0;
-    while (s->run.load() && exitflag == 0) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
         attempt++;
         if (rtl_tcp_try_reconnect_once(s, &snap, st, attempt, out_r)) {
             return 1;
@@ -3680,7 +3680,7 @@ rtl_tcp_handle_recv_failure(struct rtl_device* s, struct rtl_tcp_loop_state* st,
     if (!s || !st || !out_r) {
         return 0;
     }
-    if (!s->run.load() || exitflag) {
+    if (!s->run.load() || dsd_exitflag_load()) {
         return 0;
     }
     if (rtl_tcp_recv_is_timeout(r)) {
@@ -4084,7 +4084,7 @@ static DSD_THREAD_RETURN_TYPE
         DSD_THREAD_RETURN;
     }
 
-    while (s->run.load() && exitflag == 0) {
+    while (s->run.load() && dsd_exitflag_load() == 0) {
         rtl_tcp_apply_backpressure_if_needed(s);
         int r = dsd_socket_recv(s->sockfd, st.u8, st.bufsz, st.waitall ? MSG_WAITALL : 0);
         if (r <= 0) {

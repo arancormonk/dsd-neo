@@ -44,7 +44,7 @@ main(int argc, char** argv) {
 
     initOpts(opts);
     initState(state);
-    if (exitflag != 0) {
+    if (dsd_exitflag_load() != 0) {
         freeState(state);
         free(opts);
         free(state);

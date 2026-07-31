@@ -10,12 +10,10 @@
 
 #include <atomic>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/ring.h>
 #include <stddef.h>
-#include <stdint.h>
 #include "dsd-neo/core/safe_api.h"
-
-extern "C" volatile uint8_t exitflag;
 
 int
 ring_read_batch(struct output_state* o, float* out, size_t max_count) {
@@ -33,7 +31,7 @@ ring_read_batch(struct output_state* o, float* out, size_t max_count) {
         int ret = dsd_cond_timedwait(&o->ready, &o->ready_m, 10);
         dsd_mutex_unlock(&o->ready_m);
         if (ret != 0) {
-            if (exitflag || !o->buffer) {
+            if (dsd_exitflag_load() || !o->buffer) {
                 return -1;
             }
             o->read_timeouts.fetch_add(1);

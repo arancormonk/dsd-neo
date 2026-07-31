@@ -45,3 +45,5 @@ Thumbs.db
 /.preflight-baseline*/
 /.scan-build.local/
 /.cppcheck-build/
+/.iq-fixture-cache/
+__pycache__/

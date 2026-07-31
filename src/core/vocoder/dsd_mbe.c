@@ -1768,7 +1768,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
                     break;
                 }
             }
-            if (exitflag == 1) {
+            if (dsd_exitflag_load() == 1) {
                 dsd_request_shutdown(opts, state);
                 break;
             }
@@ -1777,7 +1777,7 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
             fclose(opts->mbe_in_f); //close file after playing it
             opts->mbe_in_f = NULL;
         }
-        if (exitflag == 1) {
+        if (dsd_exitflag_load() == 1) {
             return;
         }
     }

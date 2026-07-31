@@ -6,12 +6,11 @@
 #include <atomic>
 #include <cstring>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
-#include <stdint.h>
 #include "dsd-neo/core/safe_api.h"
 
-extern "C" volatile uint8_t exitflag; // defined in src/runtime/exitflag.c
 #ifdef USE_RADIO
 extern "C" int dsd_rtl_stream_should_exit(void);
 #endif
@@ -173,7 +172,7 @@ input_ring_wait_for_data(struct input_ring_state* r) {
         int ret = dsd_cond_timedwait(&r->ready, &r->ready_m, 10); /* 10ms */
         dsd_mutex_unlock(&r->ready_m);
         if (ret != 0) {
-            if (exitflag) {
+            if (dsd_exitflag_load()) {
                 return -1;
             }
 #ifdef USE_RADIO

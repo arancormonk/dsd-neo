@@ -337,7 +337,7 @@ udp_input_read_sample(dsd_opts* opts, int16_t* out) {
     // Block until we have a real sample (do not synthesize silence; it breaks symbol timing).
     dsd_mutex_lock(&ctx->ring.m);
     while (ring_used(&ctx->ring) == 0) {
-        if (exitflag || !atomic_load(&ctx->running)) {
+        if (dsd_exitflag_load() || !atomic_load(&ctx->running)) {
             dsd_mutex_unlock(&ctx->ring.m);
             return 0;
         }

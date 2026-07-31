@@ -26,9 +26,11 @@ static const int PARITY[] = {0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0,
 
 // trellis_1_2 encode: source is in bits, result in bits
 static void
-trellis_encode(uint8_t result[], const uint8_t source[], int result_len, int reg) {
+trellis_encode(uint8_t result[], const uint8_t source[], int result_len, unsigned int reg) {
+    /* Only the low 5 bits of the shift register are ever consulted, so mask
+     * each step to keep the value bounded (avoids signed shift overflow). */
     for (int i = 0; i < result_len; i += 2) {
-        reg = (reg << 1) | source[i >> 1];
+        reg = ((reg << 1) | source[i >> 1]) & 0x1FU;
         result[i] = PARITY[reg & 0x19];
         result[i + 1] = PARITY[reg & 0x17];
     }
@@ -40,7 +42,7 @@ trellis_encode(uint8_t result[], const uint8_t source[], int result_len, int reg
 // in the original unencoded message (excl. these trailing bits)
 void
 trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
-    int reg = 0;
+    unsigned int reg = 0;
     int min_d = 9999;
     int min_bt = 0;
 
@@ -65,7 +67,7 @@ trellis_decode(uint8_t result[], const uint8_t source[], int result_len) {
             }
         }
         result[p] = min_bt;
-        reg = (reg << 1) | min_bt;
+        reg = ((reg << 1) | (unsigned int)min_bt) & 0x1FU;
     }
 
     //debug output

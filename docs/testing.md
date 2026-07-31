@@ -27,6 +27,50 @@ cmake --build --preset dev-debug -j
 ctest --preset dev-debug --output-on-failure
 ```
 
+### Full-chain modulation decode tests
+
+The `DECODE_IQ_*` cases (CTest label `iq-decode`) are end-to-end regression
+tests for every supported modulation. Each replays a short cu8 I/Q fixture from
+`tests/fixtures/iq` through `--iq-replay`, which drives the complete chain:
+decimation, filtering, discriminator/CQPSK timing recovery, symbol slicing,
+frame sync, and the protocol layer. Unlike `.bin` symbol-capture replay, which
+begins after the demodulator, this covers the DSP front end as well.
+
+```sh
+ctest --preset dev-debug -L iq-decode --output-on-failure
+```
+
+Each case asserts on a decoded payload field (NAC, WACN/SYS, colour code, RAN,
+callsign, site ID) rather than a sync count, so a silent framing or protocol
+regression fails the test instead of merely moving a counter. The whole set runs
+in about 7 seconds because I/Q replay defaults to `--iq-replay-rate fast`.
+
+Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
+voice), P25 Phase 2, DMR voice, DMR Tier III control, NXDN48, NXDN96, dPMR,
+D-STAR, YSF, EDACS, and M17.
+
+Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
+`THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
+its decode margin (the original set still passed with ±45 counts of added
+noise) and that a mismatched mode flag produces no match, so the assertions
+stay robust rather than borderline. Sources that exist only as FM
+discriminator audio are integrated back into complex baseband (FM demodulation
+is invertible), so those fixtures exercise the same code path but carry none of
+the original RF impairments. Where a genuine off-air I/Q recording exists (P25
+C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
+
+Known gaps and caveats:
+
+- **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
+- **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
+  system WACN/SYSID/CC via `-X`, which the public sample does not identify.
+- **M17** asserts only the LSF `CAN` field. The same source decodes cleanly from
+  native 48 kHz baseband via `-i file.wav` but degrades to mostly LSF CRC errors
+  through the I/Q chain; that discrepancy is unresolved.
+- Fixtures are timing-insensitive by construction. Do not add assertions that
+  depend on wall-clock call-state timers, because `fast` replay compresses them;
+  use `--iq-replay-rate realtime` for that.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch

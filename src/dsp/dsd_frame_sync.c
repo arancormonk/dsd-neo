@@ -3138,7 +3138,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         }
         frame_sync_maybe_dump_unsynced_dmr(opts, state);
 
-        if (exitflag == 1) {
+        if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
             return DSD_SYNC_NONE;
         }

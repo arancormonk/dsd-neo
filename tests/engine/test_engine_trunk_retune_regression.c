@@ -402,6 +402,36 @@ rtl_stream_set_ted_sps_no_override(int sps) {
     g_rtl_ted_sps = sps;
 }
 
+/* Model the queued profile request as an immediate apply (the real demod
+ * thread consumes it between blocks with the same ordering). */
+int
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                 int ted_sps_is_override) {
+    if (symbol_rate_hz > 0 && levels != 2 && levels != 4) {
+        return -1;
+    }
+    if (ted_sps_is_override && ted_sps <= 0) {
+        return -1;
+    }
+    if (cqpsk_enable >= 0) {
+        rtl_stream_toggle_cqpsk(cqpsk_enable);
+    }
+    if (ted_sps >= 0) {
+        rtl_stream_clear_ted_sps_override();
+        if (ted_sps > 0) {
+            if (ted_sps_is_override) {
+                rtl_stream_set_ted_sps(ted_sps);
+            } else {
+                rtl_stream_set_ted_sps_no_override(ted_sps);
+            }
+        }
+    }
+    if (symbol_rate_hz > 0) {
+        (void)rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    }
+    return 0;
+}
+
 uint64_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_time_monotonic_ns(void) {

@@ -72,6 +72,7 @@
 #include "rtl_perf.h"
 #include "rtl_ppm_request.h"
 #include "rtl_replay_device.h"
+#include "rtl_stream_mirrors.hpp"
 #include "rtl_stream_shared.hpp"
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 #include "rtl_stream_test_support.h"
@@ -344,6 +345,8 @@ static std::atomic<int> g_replay_event_last_reset_reason{0};
 static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 
+static void rtl_stream_consume_demod_profile_request(void);
+static void rtl_stream_clear_demod_profile_request(void);
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
@@ -1724,6 +1727,37 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
     return plan;
 }
 
+/* Cross-thread mirror of demod.channel_pwr: written by the demod thread after
+ * each block, read by the main thread via dsd_rtl_stream_return_pwr(). */
+std::atomic<float> g_channel_pwr{0.0f};
+
+/* Cross-thread mirrors of the demod profile fields consumed by main-thread
+ * getters (output kind, symbol profile, TED SPS). The demod thread republishes
+ * them once per block; setters that run pre-start or under the demod-family
+ * gate publish immediately after writing. */
+static std::atomic<int> g_pub_output_kind{0};
+static std::atomic<int> g_pub_symbol_rate{4800};
+static std::atomic<int> g_pub_symbol_levels{4};
+static std::atomic<int> g_pub_channel_profile{0};
+static std::atomic<int> g_pub_ted_sps{10};
+static std::atomic<int> g_pub_ted_sps_override{0};
+static std::atomic<int> g_pub_cqpsk_enable{0};
+static std::atomic<int> g_pub_ted_bias_q14{0};
+static std::atomic<int> g_pub_rate_out{48000};
+
+static void rtl_stream_publish_demod_profile_snapshot(void);
+static void rtl_stream_publish_ted_bias(void);
+
+/* Main-thread SNR bias/estimator paths: read the published mirrors, not the
+ * demod-thread-owned fields (rate_out/ted_sps/channel_lpf_profile are written
+ * by the deferred profile consume and retune reconfigure). */
+static void
+rtl_stream_load_snr_bias_inputs(int* rate_out, int* ted_sps, int* channel_profile) {
+    *rate_out = g_pub_rate_out.load(std::memory_order_relaxed);
+    *ted_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
+    *channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+}
+
 std::atomic<double> g_snr_c4fm_db{-100.0};
 std::atomic<double> g_snr_qpsk_db{-100.0};
 std::atomic<double> g_snr_gfsk_db{-100.0};
@@ -1977,7 +2011,11 @@ extern "C" double rtl_stream_estimate_snr_gfsk_eye(void);
  */
 extern "C" double
 rtl_stream_get_snr_bias_c4fm(void) {
-    return dsd_snr_bias_c4fm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    int rate_out;
+    int ted_sps;
+    int channel_profile;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
+    return dsd_snr_bias_c4fm_db(rate_out, ted_sps, channel_profile);
 }
 
 /**
@@ -1986,7 +2024,11 @@ rtl_stream_get_snr_bias_c4fm(void) {
  */
 extern "C" double
 rtl_stream_get_snr_bias_evm(void) {
-    return dsd_snr_bias_evm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    int rate_out;
+    int ted_sps;
+    int channel_profile;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
+    return dsd_snr_bias_evm_db(rate_out, ted_sps, channel_profile);
 }
 
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
@@ -2025,7 +2067,7 @@ controller_wait_for_demod_idle(struct controller_state* s) {
     if (!s) {
         return;
     }
-    while (s->demod_processing_active.load(std::memory_order_acquire) && !exitflag
+    while (s->demod_processing_active.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
         dsd_sleep_ms(1);
     }
@@ -2097,7 +2139,7 @@ struct DemodSnrUpdateFlags {
 
 static inline int
 demod_should_exit_requested(void) {
-    return exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire));
+    return dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire));
 }
 
 static int
@@ -3185,7 +3227,7 @@ demod_maybe_signal_squelch_hop(struct demod_state* d) {
 
 static int
 demod_output_write_cancelled(void) {
-    return (exitflag || controller.retune_in_progress.load(std::memory_order_acquire)) ? 1 : 0;
+    return (dsd_exitflag_load() || controller.retune_in_progress.load(std::memory_order_acquire)) ? 1 : 0;
 }
 
 static int
@@ -3196,7 +3238,7 @@ demod_wait_for_output_space(struct output_state* o) {
     if (ret == 0) {
         return 1;
     }
-    if (exitflag) {
+    if (dsd_exitflag_load()) {
         return 0;
     }
     o->write_timeouts.fetch_add(1);
@@ -3415,6 +3457,7 @@ static DSD_THREAD_RETURN_TYPE
         }
         int perf_on = rtl_perf_enabled();
         uint64_t perf_full_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
+        rtl_stream_consume_demod_profile_request();
         (void)rtl_stream_consume_fsk_modem_config_pending(d);
         (void)rtl_stream_consume_cqpsk_reacquire_pending(d);
         int consumed_fsk_reacquire = rtl_stream_consume_fsk_reacquire_pending(d);
@@ -3422,13 +3465,16 @@ static DSD_THREAD_RETURN_TYPE
             (void)rtl_stream_consume_fsk_modem_reset_pending(d);
         }
         full_demod(d);
+        g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
+        rtl_stream_publish_demod_profile_snapshot();
+        rtl_stream_publish_ted_bias();
         rtl_stream_publish_fsk_phase_cfo_snapshot(d);
         uint64_t perf_full_demod_ns = perf_on ? (dsd_time_monotonic_ns() - perf_full_start_ns) : 0ULL;
         demod_log_retune_diag_block(d, span.got, &retune_diag);
         demod_input_span_release_direct(d, &span);
         uint64_t perf_metrics_ns = demod_metrics_process(d, perf_on);
         if (d->exit_flag) {
-            exitflag = 1;
+            dsd_exitflag_store(1);
         }
         demod_maybe_signal_squelch_hop(d);
         uint64_t perf_output_start_ns = perf_on ? dsd_time_monotonic_ns() : 0ULL;
@@ -4038,7 +4084,7 @@ controller_apply_reconfigure(struct controller_state* s, uint32_t center_freq_hz
 static void
 replay_wait_for_input_purge_applied(void) {
     uint64_t deadline_ns = dsd_time_monotonic_ns() + 100000000ULL;
-    while (g_ring_purge_pending.load(std::memory_order_acquire) && !exitflag
+    while (g_ring_purge_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load(std::memory_order_acquire))
            && dsd_time_monotonic_ns() < deadline_ns) {
         /* Replay callbacks run on the sole producer after the controller has
@@ -4311,11 +4357,11 @@ controller_wait_for_retune_work(struct controller_state* s, ControllerRetuneWork
     rtl_stream_clear_retune_profile(&work->manual_profile);
     dsd_mutex_lock(&s->hop_m);
     while (!s->manual_retune_pending.load(std::memory_order_acquire)
-           && !s->ppm_change_pending.load(std::memory_order_acquire) && !exitflag
+           && !s->ppm_change_pending.load(std::memory_order_acquire) && !dsd_exitflag_load()
            && !(g_stream && g_stream->should_exit.load())) {
         dsd_cond_wait(&s->hop, &s->hop_m);
     }
-    if (exitflag || (g_stream && g_stream->should_exit.load())) {
+    if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load())) {
         dsd_mutex_unlock(&s->hop_m);
         return 0;
     }
@@ -4619,7 +4665,7 @@ static DSD_THREAD_RETURN_TYPE
     controller_thread_retune_loop(void* arg) {
     struct controller_state* s = static_cast<controller_state*>(arg);
 
-    while (!exitflag && !(g_stream && g_stream->should_exit.load())) {
+    while (!dsd_exitflag_load() && !(g_stream && g_stream->should_exit.load())) {
         ControllerRetuneWork work = {};
         if (!controller_wait_for_retune_work(s, &work)) {
             break;
@@ -4650,8 +4696,11 @@ static DSD_THREAD_RETURN_TYPE
 /* ---------------- Constellation capture (simple lock-free ring) ---------------- */
 
 static const int kConstMaxPairs = 8192;
-static float g_const_xy[kConstMaxPairs * 2];
-static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wraps */
+/* Relaxed atomics: single demod-thread writer, main-thread reader. Tearing
+ * across samples is acceptable for display/estimation; atomics keep the
+ * unsynchronized access well-defined. Relaxed ops compile to plain moves. */
+static std::atomic<float> g_const_xy[kConstMaxPairs * 2];
+static std::atomic<int> g_const_head{0}; /* pairs written [0..kConstMaxPairs-1], wraps */
 
 /**
  * @brief Clear the constellation ring buffer.
@@ -4663,8 +4712,10 @@ static volatile int g_const_head = 0; /* pairs written [0..kConstMaxPairs-1], wr
  */
 static void
 constellation_ring_clear(void) {
-    DSD_MEMSET(g_const_xy, 0, sizeof(g_const_xy));
-    g_const_head = 0;
+    for (int k = 0; k < kConstMaxPairs * 2; k++) {
+        g_const_xy[k].store(0.0f, std::memory_order_relaxed);
+    }
+    g_const_head.store(0, std::memory_order_relaxed);
 }
 
 /* Forward decl for eye-ring append used in demod loop */
@@ -4681,14 +4732,14 @@ constellation_ring_append(const float* iq, int len, int sps_hint) {
     for (int n = 0; n < N; n += stride) {
         float i = iq[(size_t)(n << 1) + 0];
         float q = iq[(size_t)(n << 1) + 1];
-        int h = g_const_head;
-        g_const_xy[(size_t)(h << 1) + 0] = i;
-        g_const_xy[(size_t)(h << 1) + 1] = q;
+        int h = g_const_head.load(std::memory_order_relaxed);
+        g_const_xy[(size_t)(h << 1) + 0].store(i, std::memory_order_relaxed);
+        g_const_xy[(size_t)(h << 1) + 1].store(q, std::memory_order_relaxed);
         h++;
         if (h >= kConstMaxPairs) {
             h = 0;
         }
-        g_const_head = h;
+        g_const_head.store(h, std::memory_order_relaxed);
     }
 }
 
@@ -4697,21 +4748,22 @@ rtl_stream_constellation_get(float* out_xy, int max_points) {
     if (!out_xy || max_points <= 0) {
         return 0;
     }
-    int head = g_const_head; /* snapshot */
+    int head = g_const_head.load(std::memory_order_relaxed); /* snapshot */
     int n = (max_points < kConstMaxPairs) ? max_points : kConstMaxPairs;
     int start = head;
     for (int k = 0; k < n; k++) {
         int idx = (start + k) % kConstMaxPairs;
-        out_xy[(size_t)(k << 1) + 0] = g_const_xy[(size_t)(idx << 1) + 0];
-        out_xy[(size_t)(k << 1) + 1] = g_const_xy[(size_t)(idx << 1) + 1];
+        out_xy[(size_t)(k << 1) + 0] = g_const_xy[(size_t)(idx << 1) + 0].load(std::memory_order_relaxed);
+        out_xy[(size_t)(k << 1) + 1] = g_const_xy[(size_t)(idx << 1) + 1].load(std::memory_order_relaxed);
     }
     return n;
 }
 
 /* ---------------- Eye diagram capture (I-channel of complex baseband) ---------------- */
 static const int kEyeMax = 16384;
-static float g_eye_buf[kEyeMax];
-static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
+/* Relaxed atomics for the same reason as the constellation ring above. */
+static std::atomic<float> g_eye_buf[kEyeMax];
+static std::atomic<int> g_eye_head{0}; /* samples written [0..kEyeMax-1], wraps */
 
 /**
  * @brief Clear the eye diagram ring buffer.
@@ -4721,8 +4773,10 @@ static volatile int g_eye_head = 0; /* samples written [0..kEyeMax-1], wraps */
  */
 static void
 eye_ring_clear(void) {
-    DSD_MEMSET(g_eye_buf, 0, sizeof(g_eye_buf));
-    g_eye_head = 0;
+    for (int k = 0; k < kEyeMax; k++) {
+        g_eye_buf[k].store(0.0f, std::memory_order_relaxed);
+    }
+    g_eye_head.store(0, std::memory_order_relaxed);
 }
 
 static inline void
@@ -4733,30 +4787,32 @@ eye_ring_append_i_chan(const float* iq_interleaved, int len_interleaved) {
     int N = len_interleaved >> 1; /* complex samples */
     for (int n = 0; n < N; n++) {
         float i = iq_interleaved[(size_t)(n << 1) + 0];
-        int h = g_eye_head;
-        g_eye_buf[h] = i;
+        int h = g_eye_head.load(std::memory_order_relaxed);
+        g_eye_buf[h].store(i, std::memory_order_relaxed);
         h++;
         if (h >= kEyeMax) {
             h = 0;
         }
-        g_eye_head = h;
+        g_eye_head.store(h, std::memory_order_relaxed);
     }
 }
 
 extern "C" int
 rtl_stream_eye_get(float* out, int max_samples, int* out_sps) {
     if (out_sps) {
-        *out_sps = demod.ted_sps;
+        /* demod.ted_sps belongs to the demod thread; read the published
+         * atomic mirror instead of the struct field to avoid a data race. */
+        *out_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
     }
     if (!out || max_samples <= 0) {
         return 0;
     }
-    int head = g_eye_head;
+    int head = g_eye_head.load(std::memory_order_relaxed);
     int n = (max_samples < kEyeMax) ? max_samples : kEyeMax;
     int start = head;
     for (int k = 0; k < n; k++) {
         int idx = (start + k) % kEyeMax;
-        out[k] = g_eye_buf[idx];
+        out[k] = g_eye_buf[idx].load(std::memory_order_relaxed);
     }
     return n;
 }
@@ -5021,7 +5077,7 @@ rtl_stream_estimate_snr_c4fm_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    double bias = dsd_snr_bias_c4fm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    double bias = rtl_stream_get_snr_bias_c4fm();
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
@@ -5057,7 +5113,7 @@ rtl_stream_estimate_snr_qpsk_const(void) {
             best_snr = snr_d;
         }
     }
-    double bias = dsd_snr_bias_evm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    double bias = rtl_stream_get_snr_bias_evm();
     return best_snr - bias;
 }
 
@@ -5103,7 +5159,7 @@ rtl_stream_estimate_snr_gfsk_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    double bias = dsd_snr_bias_evm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    double bias = rtl_stream_get_snr_bias_evm();
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
@@ -6372,7 +6428,7 @@ stream_open_rtltcp_target_prebuffer(size_t desired_prebuf) {
 static void
 stream_open_rtltcp_wait_for_prebuffer(size_t target) {
     int waited_ms = 0;
-    while (!exitflag && input_ring_used(&input_ring) < target && waited_ms < 2000) {
+    while (!dsd_exitflag_load() && input_ring_used(&input_ring) < target && waited_ms < 2000) {
         dsd_sleep_ms(2);
         waited_ms += 2;
     }
@@ -6588,6 +6644,13 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
+    /* Seed the profile mirrors from the freshly configured demod state before
+     * any thread starts, so main-thread getters see the startup profile.
+     * Also drop any profile request queued during a previous session's
+     * teardown, so a stale request cannot override this session's startup
+     * profile on the demod thread's first block. */
+    rtl_stream_clear_demod_profile_request();
+    rtl_stream_publish_demod_profile_snapshot();
     if (stream_open_start_io_pipeline(opts, source_kind) != 0) {
         return -1;
     }
@@ -6785,8 +6848,9 @@ auto_ppm_maybe_adjust(dsd_opts* opts, const dsd_state* state) {
     dsd::io::radio::RtlAutoPpmConfig config = auto_ppm_make_config(opts);
 
     dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
-    metrics.cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
-    metrics.tracking_enable = demod.cqpsk_enable ? 1 : 0;
+    /* Decode-thread path (rtl_stream_read_live): use the published mirror. */
+    metrics.cqpsk_enable = g_pub_cqpsk_enable.load(std::memory_order_relaxed);
+    metrics.tracking_enable = metrics.cqpsk_enable;
     metrics.carrier_lock = rtl_stream_get_carrier_lock();
     metrics.nco_cfo_hz = rtl_stream_get_cfo_hz();
     double fsk_phase_cfo_hz = 0.0;
@@ -6898,7 +6962,8 @@ rtl_stream_read_live_available(struct controller_state* s, struct output_state* 
 static int
 rtl_stream_read_live_samples(float* out, size_t count) {
     for (;;) {
-        if (!output.buffer || exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        if (!output.buffer || dsd_exitflag_load()
+            || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
             return -1;
         }
 
@@ -6950,7 +7015,7 @@ rtl_stream_read_replay(float* out, size_t count) {
         if (!output.buffer || !g_stream) {
             return -1;
         }
-        if (g_stream->replay_forced_stop.load(std::memory_order_acquire) || exitflag) {
+        if (g_stream->replay_forced_stop.load(std::memory_order_acquire) || dsd_exitflag_load()) {
             return -1;
         }
         size_t used = ring_used(&output);
@@ -7062,29 +7127,61 @@ dsd_rtl_stream_should_exit(void) {
  */
 extern "C" int
 dsd_rtl_stream_cqpsk_timing_bias(void) {
-    const float scaled = demod.ted_state.e_ema * 16384.0f; /* Q14 scale */
-    if (scaled > (float)INT_MAX) {
-        return INT_MAX;
-    }
-    if (scaled < (float)INT_MIN) {
-        return INT_MIN;
-    }
-    return (int)lrintf(scaled);
+    /* demod.ted_state belongs to the demod thread; read the per-block mirror. */
+    return g_pub_ted_bias_q14.load(std::memory_order_relaxed);
 }
+
+/* Demod-thread only: mirrors demod.ted_state.e_ema for the timing-bias hook. */
+static void
+rtl_stream_publish_ted_bias(void) {
+    const float bias_scaled = demod.ted_state.e_ema * 16384.0f; /* Q14 scale */
+    int bias_q14;
+    if (bias_scaled > (float)INT_MAX) {
+        bias_q14 = INT_MAX;
+    } else if (bias_scaled < (float)INT_MIN) {
+        bias_q14 = INT_MIN;
+    } else {
+        bias_q14 = (int)lrintf(bias_scaled);
+    }
+    g_pub_ted_bias_q14.store(bias_q14, std::memory_order_relaxed);
+}
+
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+extern "C" void
+rtl_stream_test_publish_demod_snapshot(void) {
+    rtl_stream_publish_demod_profile_snapshot();
+    rtl_stream_publish_ted_bias();
+}
+#endif
+
+static void
+rtl_stream_publish_demod_profile_snapshot(void) {
+    g_pub_cqpsk_enable.store(demod.cqpsk_enable ? 1 : 0, std::memory_order_relaxed);
+    g_pub_output_kind.store(demod.output_kind, std::memory_order_relaxed);
+    g_pub_symbol_rate.store(demod.symbol_rate_hz, std::memory_order_relaxed);
+    g_pub_symbol_levels.store(demod.symbol_levels, std::memory_order_relaxed);
+    g_pub_channel_profile.store(demod.channel_lpf_profile, std::memory_order_relaxed);
+    g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
+    g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
+    g_pub_rate_out.store(demod.rate_out, std::memory_order_relaxed);
+}
+
+/* The getters below read the published mirrors rather than demod fields: the
+ * demod thread owns those fields while running, so direct reads would race. */
 
 extern "C" int
 rtl_stream_get_ted_sps(void) {
-    return demod.ted_sps;
+    return g_pub_ted_sps.load(std::memory_order_relaxed);
 }
 
 extern "C" int
 rtl_stream_get_ted_sps_override(void) {
-    return demod.ted_sps_override;
+    return g_pub_ted_sps_override.load(std::memory_order_relaxed);
 }
 
 extern "C" int
 rtl_stream_get_output_kind(void) {
-    return demod.output_kind;
+    return g_pub_output_kind.load(std::memory_order_relaxed);
 }
 
 extern "C" int
@@ -7099,14 +7196,18 @@ rtl_stream_output_generation(void) {
 
 extern "C" int
 rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    /* The three mirrors are read independently, so a caller racing a profile
+     * change can observe a mixed rate/levels/channel combination for one
+     * block. Fine for display/telemetry; do not branch on the combination as
+     * a consistent set. */
     if (out_symbol_rate_hz) {
-        *out_symbol_rate_hz = demod.symbol_rate_hz;
+        *out_symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
     }
     if (out_levels) {
-        *out_levels = demod.symbol_levels;
+        *out_levels = g_pub_symbol_levels.load(std::memory_order_relaxed);
     }
     if (out_channel_profile) {
-        *out_channel_profile = demod.channel_lpf_profile;
+        *out_channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
     }
     return 0;
 }
@@ -7142,6 +7243,7 @@ rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_profil
         demod.costas_reset_pending = 1;
         rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     }
+    rtl_stream_publish_demod_profile_snapshot();
     return 0;
 }
 
@@ -7160,7 +7262,9 @@ rtl_stream_request_fsk_reacquire(void) {
 
 extern "C" int
 rtl_stream_request_cqpsk_reacquire(void) {
-    if (demod.output_kind != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK && !demod.cqpsk_enable) {
+    /* Main-thread hook: use the published mirrors, not demod fields. */
+    if (g_pub_output_kind.load(std::memory_order_relaxed) != DSD_DEMOD_OUTPUT_SYMBOL_CQPSK
+        && !g_pub_cqpsk_enable.load(std::memory_order_relaxed)) {
         return 0;
     }
     g_cqpsk_reacquire_pending.store(1, std::memory_order_release);
@@ -7218,11 +7322,13 @@ rtl_stream_set_ted_sps(int sps) {
             (void)rtl_stream_set_symbol_profile(sym_rate, demod.symbol_levels == 2 ? 2 : 4, demod.channel_lpf_profile);
         }
     }
+    rtl_stream_publish_demod_profile_snapshot();
 }
 
 extern "C" void
 rtl_stream_clear_ted_sps_override(void) {
     demod.ted_sps_override = 0;
+    g_pub_ted_sps_override.store(0, std::memory_order_relaxed);
 }
 
 extern "C" void
@@ -7268,6 +7374,7 @@ rtl_stream_set_ted_sps_no_override(int sps) {
             (void)rtl_stream_set_symbol_profile(sym_rate, demod.symbol_levels == 2 ? 2 : 4, demod.channel_lpf_profile);
         }
     }
+    rtl_stream_publish_demod_profile_snapshot();
     /* Does NOT set ted_sps_override, allowing rate-change refresh to
        recalculate SPS later. Use when returning to CC or switching protocols. */
 }
@@ -7556,13 +7663,17 @@ rtl_stream_leave_demod_family_switch_gate(int gate_armed) {
     }
 }
 
-extern "C" void
-rtl_stream_toggle_cqpsk(int onoff) {
+/* Body of rtl_stream_toggle_cqpsk without the demod-family switch gate.
+ * Callers must either hold the gate or run on the demod thread. */
+static void
+rtl_stream_apply_cqpsk_toggle(int onoff) {
     int was = demod.cqpsk_enable ? 1 : 0;
     int next = onoff ? 1 : 0;
-    int changed = (next != was) ? 1 : 0;
-    int gate_armed = changed ? rtl_stream_enter_demod_family_switch_gate() : 0;
-    demod.cqpsk_enable = next;
+    /* Only store when the value changes: the demod thread reads cqpsk_enable
+     * concurrently, so even a same-value store outside the gate is a race. */
+    if (next != was) {
+        demod.cqpsk_enable = next;
+    }
     if (demod.cqpsk_enable) {
         rtl_stream_enable_cqpsk_mode();
     } else {
@@ -7575,7 +7686,136 @@ rtl_stream_toggle_cqpsk(int onoff) {
         demod.costas_reset_pending = 1;
         rtl_stream_clear_output_for_demod_family_switch();
     }
+}
+
+extern "C" void
+rtl_stream_toggle_cqpsk(int onoff) {
+    /* Arm the gate unconditionally: deciding based on demod.cqpsk_enable here
+     * would itself be a cross-thread read of a demod-owned field. The gate is
+     * cheap when nothing changes and this path is rare (UI/profile switches). */
+    int gate_armed = rtl_stream_enter_demod_family_switch_gate();
+    rtl_stream_apply_cqpsk_toggle(onoff);
+    rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_leave_demod_family_switch_gate(gate_armed);
+}
+
+/* ---------------- Deferred demod-profile application ----------------
+ * The frame-sync/metrics path requests demod profile changes from the decode
+ * thread while the demod thread is running. Writing demod state from that
+ * thread races with the pipeline, so requests are queued here and applied by
+ * the demod thread between blocks (rtl_stream_consume_demod_profile_request),
+ * like the other *_pending consumes. The mutex keeps each request's parameter
+ * set consistent even if a new request lands mid-consume; the atomic pending
+ * flag lets the demod thread skip the lock on the (common) no-request path.
+ * A newer request overwrites an unconsumed older one: last-writer-wins. */
+static std::mutex g_profile_req_m;
+static std::atomic<int> g_profile_req_pending{0};
+/* Guarded by g_profile_req_m: */
+static int g_profile_req_cqpsk = -1;   /* -1 = leave unchanged */
+static int g_profile_req_sym_rate = 0; /* <=0 = leave symbol profile unchanged */
+static int g_profile_req_levels = 0;
+static int g_profile_req_chan = -1;
+static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear override only */
+static int g_profile_req_ted_sps_is_override = 0;
+
+/* Shared application order for both the immediate and the deferred path.
+ * use_gate selects the gated public toggle (callers outside the demod
+ * thread with no pipeline running) versus the ungated body (the demod
+ * thread applying a consumed request; arming the gate there would deadlock
+ * waiting for its own block to finish). */
+static void
+rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int chan, int ted_sps,
+                                      int ted_sps_is_override, int use_gate) {
+    if (cqpsk >= 0) {
+        if (use_gate) {
+            rtl_stream_toggle_cqpsk(cqpsk);
+        } else {
+            rtl_stream_apply_cqpsk_toggle(cqpsk);
+        }
+    }
+    if (ted_sps >= 0) {
+        rtl_stream_clear_ted_sps_override();
+        if (ted_sps > 0) {
+            if (ted_sps_is_override) {
+                rtl_stream_set_ted_sps(ted_sps);
+            } else {
+                rtl_stream_set_ted_sps_no_override(ted_sps);
+            }
+        }
+    }
+    if (sym_rate > 0) {
+        if (rtl_stream_set_symbol_profile(sym_rate, levels, chan) != 0) {
+            LOG_WARN("RTL: requested demod profile rejected (rate=%d levels=%d profile=%d).\n", sym_rate, levels, chan);
+        }
+    }
+}
+
+extern "C" int
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                 int ted_sps_is_override) {
+    if (symbol_rate_hz > 0 && levels != 2 && levels != 4) {
+        return -1;
+    }
+    if (ted_sps_is_override && ted_sps <= 0) {
+        return -1;
+    }
+    if (!g_stream) {
+        /* No pipeline running: there is no demod thread to race with (or to
+         * consume a queued request), so apply immediately.
+         *
+         * Ordering assumption: g_stream transitions happen on the thread that
+         * owns stream open/close, and requesters only run either before open,
+         * after close, or from threads the running pipeline itself services.
+         * A request racing the open/close transition is not supported; a
+         * request queued during teardown is discarded by the next open
+         * (rtl_stream_clear_demod_profile_request). */
+        rtl_stream_apply_demod_profile_params(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                              ted_sps_is_override, 1);
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_cqpsk = cqpsk_enable;
+    g_profile_req_sym_rate = symbol_rate_hz;
+    g_profile_req_levels = levels;
+    g_profile_req_chan = channel_profile;
+    g_profile_req_ted_sps = ted_sps;
+    g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
+    g_profile_req_pending.store(1, std::memory_order_release);
+    return 0;
+}
+
+static void
+rtl_stream_consume_demod_profile_request(void) {
+    if (!g_profile_req_pending.load(std::memory_order_acquire)) {
+        return;
+    }
+    int cqpsk;
+    int sym_rate;
+    int levels;
+    int chan;
+    int ted_sps;
+    int ted_sps_is_override;
+    {
+        std::lock_guard<std::mutex> lock(g_profile_req_m);
+        g_profile_req_pending.store(0, std::memory_order_relaxed);
+        cqpsk = g_profile_req_cqpsk;
+        sym_rate = g_profile_req_sym_rate;
+        levels = g_profile_req_levels;
+        chan = g_profile_req_chan;
+        ted_sps = g_profile_req_ted_sps;
+        ted_sps_is_override = g_profile_req_ted_sps_is_override;
+    }
+    rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
+}
+
+/* Discard any unconsumed queued request. Called from dsd_rtl_stream_open
+ * before the pipeline threads start, so a request queued while a previous
+ * session was tearing down cannot override the new session's startup profile
+ * when the demod thread consumes its first block. */
+static void
+rtl_stream_clear_demod_profile_request(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_pending.store(0, std::memory_order_relaxed);
 }
 
 static int
@@ -7777,7 +8017,11 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
 
 extern "C" int
 rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
-    int cqpsk = (demod.cqpsk_enable || rtl_stream_cqpsk_symbol_output_active()) ? 1 : 0;
+    /* Main-thread hook: use the published mirrors, not demod fields. */
+    int cqpsk = (g_pub_cqpsk_enable.load(std::memory_order_relaxed)
+                 || g_pub_output_kind.load(std::memory_order_relaxed) == DSD_DEMOD_OUTPUT_SYMBOL_CQPSK)
+                    ? 1
+                    : 0;
     if (cqpsk_enable) {
         *cqpsk_enable = cqpsk;
     }
@@ -7840,7 +8084,7 @@ rtl_stream_tune_wait_for_completion(uint32_t request_id, uint32_t requested_freq
     const uint64_t deadline_ns = dsd_time_monotonic_ns() + 500000000ULL;
     dsd_mutex_lock(&controller.retune_done_m);
     while (controller.retune_complete_id.load(std::memory_order_acquire) < request_id) {
-        if (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
             rtl_stream_log_tune_warning(requested_freq, "shutdown");
             rc = RTL_STREAM_TUNE_FAILED;
             break;
@@ -8020,7 +8264,7 @@ dsd_rtl_stream_test_request_retune(long int frequency, int timeout_ms) {
             dsd_mutex_unlock(&controller.retune_done_m);
             return -2;
         }
-        if (exitflag || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
+        if (dsd_exitflag_load() || (g_stream && g_stream->should_exit.load(std::memory_order_acquire))) {
             dsd_mutex_unlock(&controller.retune_done_m);
             return -2;
         }
@@ -9175,6 +9419,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
     const int prev_pending = g_cqpsk_reacquire_pending.exchange(0, std::memory_order_acq_rel);
     demod.output_kind = test_demod.output_kind;
     demod.cqpsk_enable = test_demod.cqpsk_enable;
+    rtl_stream_publish_demod_profile_snapshot();
     g_stream = NULL;
 
     ring_clear(&output);
@@ -9192,6 +9437,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
         && !fsk_reacquire_test_request_state_valid(queued_samples, cached_symbols, out_result->generation_before)) {
         demod.output_kind = prev_output_kind;
         demod.cqpsk_enable = prev_cqpsk;
+        rtl_stream_publish_demod_profile_snapshot();
         g_stream = prev_stream;
         g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
         fsk_reacquire_test_reset_output_state();
@@ -9205,6 +9451,7 @@ rtl_stream_test_cqpsk_reacquire(int active_cqpsk, int symbol_rate_hz, int ted_sp
 
     demod.output_kind = prev_output_kind;
     demod.cqpsk_enable = prev_cqpsk;
+    rtl_stream_publish_demod_profile_snapshot();
     g_stream = prev_stream;
     g_cqpsk_reacquire_pending.store(prev_pending, std::memory_order_release);
     fsk_reacquire_test_reset_output_state();
@@ -9540,7 +9787,9 @@ rtl_stream_get_last_applied_freq(uint32_t* out_freq_hz) {
  */
 extern "C" double
 dsd_rtl_stream_return_pwr(void) {
-    return (double)demod.channel_pwr;
+    /* demod.channel_pwr belongs to the demod thread; read the published
+     * atomic mirror instead of the struct field to avoid a data race. */
+    return (double)g_channel_pwr.load(std::memory_order_relaxed);
 }
 
 /**
