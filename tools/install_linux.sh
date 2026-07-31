@@ -367,8 +367,28 @@ install_optional_packages() {
     return 2
   fi
 
-  echo "Skipping unavailable optional $label distro packages."
-  return 1
+  # Install whichever packages this distro does provide, so one missing package
+  # does not drop the whole optional group (openSUSE Leap 16.0, for example,
+  # ships rtl-sdr-devel but has no SoapySDR package).
+  available=
+  unavailable=
+  for pkg; do
+    if package_available "$pkg"; then
+      available="$available $pkg"
+    else
+      unavailable="$unavailable $pkg"
+    fi
+  done
+
+  if [ -z "$available" ]; then
+    echo "Skipping unavailable optional $label distro packages."
+    return 1
+  fi
+
+  echo "Skipping unavailable optional $label distro packages:$unavailable"
+  # shellcheck disable=SC2086
+  install_packages $available
+  return 0
 }
 
 jobs_count() {
