@@ -1742,9 +1742,20 @@ static std::atomic<int> g_pub_ted_sps{10};
 static std::atomic<int> g_pub_ted_sps_override{0};
 static std::atomic<int> g_pub_cqpsk_enable{0};
 static std::atomic<int> g_pub_ted_bias_q14{0};
+static std::atomic<int> g_pub_rate_out{48000};
 
 static void rtl_stream_publish_demod_profile_snapshot(void);
 static void rtl_stream_publish_ted_bias(void);
+
+/* Main-thread SNR bias/estimator paths: read the published mirrors, not the
+ * demod-thread-owned fields (rate_out/ted_sps/channel_lpf_profile are written
+ * by the deferred profile consume and retune reconfigure). */
+static void
+rtl_stream_load_snr_bias_inputs(int* rate_out, int* ted_sps, int* channel_profile) {
+    *rate_out = g_pub_rate_out.load(std::memory_order_relaxed);
+    *ted_sps = g_pub_ted_sps.load(std::memory_order_relaxed);
+    *channel_profile = g_pub_channel_profile.load(std::memory_order_relaxed);
+}
 
 std::atomic<double> g_snr_c4fm_db{-100.0};
 std::atomic<double> g_snr_qpsk_db{-100.0};
@@ -1999,7 +2010,11 @@ extern "C" double rtl_stream_estimate_snr_gfsk_eye(void);
  */
 extern "C" double
 rtl_stream_get_snr_bias_c4fm(void) {
-    return dsd_snr_bias_c4fm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    int rate_out;
+    int ted_sps;
+    int channel_profile;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
+    return dsd_snr_bias_c4fm_db(rate_out, ted_sps, channel_profile);
 }
 
 /**
@@ -2008,7 +2023,11 @@ rtl_stream_get_snr_bias_c4fm(void) {
  */
 extern "C" double
 rtl_stream_get_snr_bias_evm(void) {
-    return dsd_snr_bias_evm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    int rate_out;
+    int ted_sps;
+    int channel_profile;
+    rtl_stream_load_snr_bias_inputs(&rate_out, &ted_sps, &channel_profile);
+    return dsd_snr_bias_evm_db(rate_out, ted_sps, channel_profile);
 }
 
 /* Fwd decl: spectrum snapshot getter used for spectral SNR gating */
@@ -5057,7 +5076,7 @@ rtl_stream_estimate_snr_c4fm_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    double bias = dsd_snr_bias_c4fm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    double bias = rtl_stream_get_snr_bias_c4fm();
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
@@ -5093,7 +5112,7 @@ rtl_stream_estimate_snr_qpsk_const(void) {
             best_snr = snr_d;
         }
     }
-    double bias = dsd_snr_bias_evm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    double bias = rtl_stream_get_snr_bias_evm();
     return best_snr - bias;
 }
 
@@ -5139,7 +5158,7 @@ rtl_stream_estimate_snr_gfsk_eye(void) {
     if (sig_var <= 1e-9) {
         return -100.0;
     }
-    double bias = dsd_snr_bias_evm_db(demod.rate_out, demod.ted_sps, demod.channel_lpf_profile);
+    double bias = rtl_stream_get_snr_bias_evm();
     return 10.0 * log10(sig_var / noise_var) - bias;
 }
 
@@ -6824,8 +6843,9 @@ auto_ppm_maybe_adjust(dsd_opts* opts, const dsd_state* state) {
     dsd::io::radio::RtlAutoPpmConfig config = auto_ppm_make_config(opts);
 
     dsd::io::radio::RtlAutoPpmSignalMetrics metrics = {};
-    metrics.cqpsk_enable = demod.cqpsk_enable ? 1 : 0;
-    metrics.tracking_enable = demod.cqpsk_enable ? 1 : 0;
+    /* Decode-thread path (rtl_stream_read_live): use the published mirror. */
+    metrics.cqpsk_enable = g_pub_cqpsk_enable.load(std::memory_order_relaxed);
+    metrics.tracking_enable = metrics.cqpsk_enable;
     metrics.carrier_lock = rtl_stream_get_carrier_lock();
     metrics.nco_cfo_hz = rtl_stream_get_cfo_hz();
     double fsk_phase_cfo_hz = 0.0;
@@ -7136,6 +7156,7 @@ rtl_stream_publish_demod_profile_snapshot(void) {
     g_pub_channel_profile.store(demod.channel_lpf_profile, std::memory_order_relaxed);
     g_pub_ted_sps.store(demod.ted_sps, std::memory_order_relaxed);
     g_pub_ted_sps_override.store(demod.ted_sps_override, std::memory_order_relaxed);
+    g_pub_rate_out.store(demod.rate_out, std::memory_order_relaxed);
 }
 
 /* The getters below read the published mirrors rather than demod fields: the
