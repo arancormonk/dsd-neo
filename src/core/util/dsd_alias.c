@@ -88,12 +88,6 @@ alias_current_call_snapshot(const dsd_state* state, uint8_t slot, uint32_t src, 
     return 1;
 }
 
-static int
-alias_current_call_matches(const dsd_state* state, uint8_t slot, uint32_t src, uint32_t tg) {
-    dsd_call_snapshot call;
-    return alias_current_call_snapshot(state, slot, src, tg, &call);
-}
-
 static p25_apx_alias_rx_state_t*
 apx_alias_state_for(dsd_state* state, uint8_t slot) {
     if (!state) {
@@ -499,8 +493,10 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
 
 static uint8_t l3h_alias_sanitize_char(uint8_t value);
 static int l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
-                                              const uint8_t* input, int save_policy);
-static void l3h_alias_resolve_src_tg(const dsd_state* state, uint8_t slot, uint32_t* tsrc, uint32_t* ttg);
+                                              const uint8_t* input, int save_policy, uint64_t required_epoch);
+static int l3h_alias_resolve_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out);
+static int l3h_alias_attach_target(const dsd_state* state, uint8_t slot, uint64_t required_epoch,
+                                   dsd_call_snapshot* out);
 
 static p25_l3h_alias_phase1_state_t*
 l3h_alias_phase1_state_for(dsd_state* state, uint8_t slot) {
@@ -528,16 +524,18 @@ l3h_alias_phase1_clear_fragments(dsd_state* state, uint8_t slot) {
     rx->mask = 0;
     rx->src = 0;
     rx->tg = 0;
+    rx->epoch = 0;
     DSD_MEMSET(rx->fragment, 0, sizeof(rx->fragment));
 }
 
 static void
-l3h_alias_phase1_set_key(p25_l3h_alias_phase1_state_t* rx, uint32_t src, uint32_t tg) {
+l3h_alias_phase1_set_key(p25_l3h_alias_phase1_state_t* rx, uint32_t src, uint32_t tg, uint64_t epoch) {
     if (!rx) {
         return;
     }
     rx->src = src;
     rx->tg = tg;
+    rx->epoch = epoch;
 }
 
 static int
@@ -673,12 +671,10 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
     uint8_t input[44];
     size_t alias_len = l3h_alias_phase1_make_input(alias, input, sizeof(input));
 
-    uint32_t tsrc = 0;
-    uint32_t ttg = 0;
-    l3h_alias_resolve_src_tg(state, slot, &tsrc, &ttg);
-    if (!alias_current_call_matches(state, slot, tsrc, ttg)) {
+    dsd_call_snapshot call;
+    if (!l3h_alias_attach_target(state, slot, rx->epoch, &call)) {
         (void)l3h_embedded_alias_decode_internal(opts, state, slot, (int16_t)(4U + alias_len - 1U), input,
-                                                 /*save_policy*/ is_complete);
+                                                 /*save_policy*/ is_complete, rx->epoch);
         l3h_alias_phase1_clear_fragments(state, slot);
         return;
     }
@@ -691,7 +687,7 @@ l3h_alias_phase1_maybe_decode(const dsd_opts* opts, dsd_state* state, uint8_t sl
         DSD_SNPRINTF(rx->last_alias, sizeof(rx->last_alias), "%s", alias);
     }
     int saved = l3h_embedded_alias_decode_internal(opts, state, slot, (int16_t)(4U + alias_len - 1U), input,
-                                                   /*save_policy*/ is_complete);
+                                                   /*save_policy*/ is_complete, rx->epoch);
     if (saved) {
         DSD_SNPRINTF(rx->last_saved_alias, sizeof(rx->last_saved_alias), "%s", alias);
     }
@@ -716,13 +712,28 @@ l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t
     if (!rx) {
         return;
     }
+    dsd_call_snapshot key_call;
     uint32_t tsrc = 0;
     uint32_t ttg = 0;
-    l3h_alias_resolve_src_tg(state, slot, &tsrc, &ttg);
+    int have_call = l3h_alias_resolve_call(state, slot, &key_call);
+    if (have_call) {
+        tsrc = (uint32_t)key_call.ota_source_id;
+        uint64_t target = key_call.policy_target_id != 0U ? key_call.policy_target_id : key_call.ota_target_id;
+        if (target <= UINT32_MAX) {
+            ttg = (uint32_t)target;
+        }
+    }
     if (ptr == 0U) {
         l3h_alias_phase1_reset(state, slot);
         rx = l3h_alias_phase1_state_for(state, slot);
-        l3h_alias_phase1_set_key(rx, tsrc, ttg);
+        // The epoch is only recorded while the keyed call is ACTIVE: it is the proof that
+        // this fragment set started inside that transmission, which is what later allows
+        // the assembled alias to attach after the same epoch has ended (hangtime straddle).
+        // A fragment set keyed against an already-ended epoch carries no such proof -- it
+        // may belong to a talker whose grant has not been observed yet -- so it can only
+        // attach once a matching ACTIVE call exists.
+        uint64_t key_epoch = have_call && key_call.phase == DSD_CALL_PHASE_ACTIVE ? key_call.epoch : 0U;
+        l3h_alias_phase1_set_key(rx, tsrc, ttg, key_epoch);
     } else if ((rx->mask & 0x01U) == 0U) {
         return;
     } else if (!l3h_alias_phase1_key_matches(rx, tsrc, ttg)) {
@@ -743,25 +754,38 @@ l3h_embedded_alias_blocks_phase1(const dsd_opts* opts, dsd_state* state, uint8_t
     }
 }
 
-static void
-l3h_alias_resolve_src_tg(const dsd_state* state, uint8_t slot, uint32_t* tsrc, uint32_t* ttg) {
-    *tsrc = 0;
-    *ttg = 0;
-    dsd_call_snapshot call;
+// The slot's current or retained ended call, when it has a usable source id. This is
+// identity resolution only -- whether an alias may actually attach to the returned call
+// is decided by l3h_alias_attach_target().
+static int
+l3h_alias_resolve_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out) {
     uint8_t slot_idx = alias_slot_index(slot);
-    // The retained ended epoch counts too: Harris alias blocks can straddle the
-    // end of the transmission and complete during hangtime, and the fragment key
-    // captured with block 0 still has to resolve to the talker who sent them.
-    if (dsd_call_state_get(state, slot_idx, &call) > 0
-        && (call.phase == DSD_CALL_PHASE_ACTIVE || call.phase == DSD_CALL_PHASE_ENDED)) {
-        if (call.ota_source_id <= UINT32_MAX) {
-            *tsrc = (uint32_t)call.ota_source_id;
-        }
-        uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
-        if (target <= UINT32_MAX) {
-            *ttg = (uint32_t)target;
-        }
+    if (dsd_call_state_get(state, slot_idx, out) <= 0) {
+        return 0;
     }
+    if (out->phase != DSD_CALL_PHASE_ACTIVE && out->phase != DSD_CALL_PHASE_ENDED) {
+        return 0;
+    }
+    return out->ota_source_id != 0U && out->ota_source_id <= UINT32_MAX;
+}
+
+// The Harris alias payload names no source, so the talker has to be inferred from the
+// slot's call state -- and that inference is only safe against a call that provably
+// overlaps the alias. An ACTIVE call qualifies on its own. The retained ended epoch
+// qualifies only when the caller proves the alias belongs to it (required_epoch, the
+// epoch that was ACTIVE when phase-1 fragment assembly started). A self-contained alias
+// that arrives when no call is active must defer instead: it may describe a talker whose
+// grant has not been observed yet, and attaching it to the previous call overwrites that
+// call's history row with the next talker's alias.
+static int
+l3h_alias_attach_target(const dsd_state* state, uint8_t slot, uint64_t required_epoch, dsd_call_snapshot* out) {
+    if (!l3h_alias_resolve_call(state, slot, out)) {
+        return 0;
+    }
+    if (out->phase == DSD_CALL_PHASE_ACTIVE) {
+        return 1;
+    }
+    return required_epoch != 0U && out->epoch == required_epoch;
 }
 
 static void
@@ -801,19 +825,27 @@ l3h_alias_append_policy_row(const dsd_opts* opts, dsd_state* state, uint32_t tsr
 
 static int
 l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len,
-                                   const uint8_t* input, int save_policy) {
+                                   const uint8_t* input, int save_policy, uint64_t required_epoch) {
 
     //storage info for storing to groupName, if not available
     char str[40];
     DSD_MEMSET(str, 0, sizeof(str));
     char ttemp[40];
     DSD_MEMSET(ttemp, 0, sizeof(ttemp));
+    dsd_call_snapshot call;
+    int attach = l3h_alias_attach_target(state, slot, required_epoch, &call);
     uint32_t tsrc = 0;
     uint32_t ttg = 0;
-    l3h_alias_resolve_src_tg(state, slot, &tsrc, &ttg);
+    if (attach) {
+        tsrc = (uint32_t)call.ota_source_id;
+        uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+        if (target <= UINT32_MAX) {
+            ttg = (uint32_t)target;
+        }
+    }
 
     int8_t ptr = 0;
-    if (tsrc != 0) {
+    if (attach) {
         DSD_FPRINTF(stderr, " TG: %d; SRC: %d; Talker Alias: ", ttg, tsrc);
     } else {
         DSD_FPRINTF(stderr, " TG: UNK; SRC: UNK; Talker Alias: ");
@@ -828,25 +860,27 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(str, ptr + 1, "%s", ttemp);
 
     uint8_t slot_idx = alias_slot_index(slot);
-    dsd_call_snapshot call;
-    int current_call_match = alias_current_call_snapshot(state, slot, tsrc, ttg, &call);
-    if (current_call_match) {
+    if (attach) {
         (void)dsd_event_enrich_alias(state, slot_idx, call.epoch, str);
         if (save_policy) {
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
         }
-    } else if (tsrc != 0) {
-        DSD_FPRINTF(stderr, " Alias Deferred: current call source/talkgroup mismatch;");
+    } else {
+        DSD_FPRINTF(stderr, " Alias Deferred: no attributable call for this slot;");
     }
 
     DSD_MEMSET(state->dmr_pdu_sf[slot_idx], 0, sizeof(state->dmr_pdu_sf[slot_idx]));
-    return current_call_match && save_policy;
+    return attach && save_policy;
 }
 
 void
 l3h_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t len, const uint8_t* input) {
-    (void)l3h_embedded_alias_decode_internal(opts, state, slot, len, input, /*save_policy*/ 1);
+    // A phase-2 Harris alias is a single self-contained MAC message with no fragment
+    // key to anchor it to an epoch, so it may only attach to an ACTIVE call
+    // (required_epoch 0). Harris repeats the alias throughout the transmission, so
+    // dropping the copies sent during hangtime loses nothing.
+    (void)l3h_embedded_alias_decode_internal(opts, state, slot, len, input, /*save_policy*/ 1, /*required_epoch*/ 0U);
 }
 
 void

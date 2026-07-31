@@ -98,6 +98,7 @@ typedef struct {
     char last_saved_alias[40];
     uint32_t src;
     uint32_t tg;
+    uint64_t epoch; //call epoch that was ACTIVE when block 0 keyed this fragment set; 0 when none was
     uint8_t fragment[4][8];
 } p25_l3h_alias_phase1_state_t;
 

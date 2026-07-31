@@ -184,6 +184,41 @@ main(void) {
                 strstr(state->generic_talker_alias[0], "ENGINE51STATION9") != NULL);
     expect_true("harris hangtime completion reaches event history", history_has_alias(state, "ENGINE51STATION9"));
 
+    /* Regression: a phase-2 Harris alias (single self-contained MAC message, no
+     * source in the payload) that arrives while only the retained ended epoch is
+     * on the slot may belong to the *next* talker, whose grant has not been
+     * observed yet. Attaching it would overwrite the ended call's history row
+     * with the wrong alias (observed live as event-history rows carrying the
+     * following call's alias). It must defer instead. */
+    uint8_t l3h_msg[24];
+    DSD_MEMSET(l3h_msg, 0, sizeof(l3h_msg));
+    DSD_MEMCPY(l3h_msg + 4, "NEXTGUY", 7);
+    state->generic_talker_alias[0][0] = '\0';
+    l3h_embedded_alias_decode(opts, state, 0U, 10, l3h_msg);
+    expect_true("phase-2 alias with no active call is deferred", state->generic_talker_alias[0][0] == '\0');
+    expect_true("phase-2 alias never lands on the ended call's row", !history_has_alias(state, "NEXTGUY"));
+    expect_true("ended harris call keeps its own alias", history_has_alias(state, "ENGINE51STATION9"));
+
+    /* Once the next call is active, the repeated phase-2 alias attaches to it. */
+    expect_true("phase-2 follow-on call begins",
+                observe_call(state, tg, l3h_src + 1U, 6.0, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    l3h_embedded_alias_decode(opts, state, 0U, 10, l3h_msg);
+    expect_true("phase-2 alias attaches to the active call", strstr(state->generic_talker_alias[0], "NEXTGUY") != NULL);
+
+    /* Regression: phase-1 fragments whose block 0 arrived after the epoch ended
+     * carry no proof they belong to that epoch; the assembled alias must defer
+     * rather than rewrite the ended call's row. */
+    expect_true("phase-1 follow-on call ends", dsd_call_state_end_ex(state, 0U, 7.0, DSD_CALL_END_TERMINATOR) > 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    state->generic_talker_alias[0][0] = '\0';
+    build_l3h_block(lcw, sizeof(lcw), 0x32U, "LATCHED");
+    l3h_embedded_alias_blocks_phase1(opts, state, 0U, lcw);
+    build_l3h_block(lcw, sizeof(lcw), 0x33U, "WRONG  ");
+    l3h_embedded_alias_blocks_phase1(opts, state, 0U, lcw);
+    expect_true("phase-1 fragments started after end are deferred", state->generic_talker_alias[0][0] == '\0');
+    expect_true("phase-1 late fragments never reach history", !history_has_alias(state, "LATCHEDWRONG"));
+
     dsd_state_ext_free_all(state);
     free(history);
     free(state);
