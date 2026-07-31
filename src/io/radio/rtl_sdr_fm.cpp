@@ -72,6 +72,7 @@
 #include "rtl_perf.h"
 #include "rtl_ppm_request.h"
 #include "rtl_replay_device.h"
+#include "rtl_stream_mirrors.hpp"
 #include "rtl_stream_shared.hpp"
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 #include "rtl_stream_test_support.h"
@@ -7669,15 +7670,18 @@ rtl_stream_toggle_cqpsk(int onoff) {
  * thread while the demod thread is running. Writing demod state from that
  * thread races with the pipeline, so requests are queued here and applied by
  * the demod thread between blocks (rtl_stream_consume_demod_profile_request),
- * like the other *_pending consumes. Parameter stores are ordered by the
- * release store of the pending flag; a newer request simply overwrites an
- * unconsumed older one, which matches the last-writer-wins intent. */
+ * like the other *_pending consumes. The mutex keeps each request's parameter
+ * set consistent even if a new request lands mid-consume; the atomic pending
+ * flag lets the demod thread skip the lock on the (common) no-request path.
+ * A newer request overwrites an unconsumed older one: last-writer-wins. */
+static std::mutex g_profile_req_m;
 static std::atomic<int> g_profile_req_pending{0};
-static std::atomic<int> g_profile_req_cqpsk{-1}; /* -1 = leave unchanged */
-static std::atomic<int> g_profile_req_sym_rate{0};
-static std::atomic<int> g_profile_req_levels{0};
-static std::atomic<int> g_profile_req_chan{-1};
-static std::atomic<int> g_profile_req_ted_sps{0}; /* <=0 = leave unchanged */
+/* Guarded by g_profile_req_m: */
+static int g_profile_req_cqpsk = -1; /* -1 = leave unchanged */
+static int g_profile_req_sym_rate = 0;
+static int g_profile_req_levels = 0;
+static int g_profile_req_chan = -1;
+static int g_profile_req_ted_sps = 0; /* <=0 = leave unchanged */
 
 extern "C" int
 rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
@@ -7687,25 +7691,35 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     if (levels != 2 && levels != 4) {
         return -1;
     }
-    g_profile_req_cqpsk.store(cqpsk_enable, std::memory_order_relaxed);
-    g_profile_req_sym_rate.store(symbol_rate_hz, std::memory_order_relaxed);
-    g_profile_req_levels.store(levels, std::memory_order_relaxed);
-    g_profile_req_chan.store(channel_profile, std::memory_order_relaxed);
-    g_profile_req_ted_sps.store(ted_sps, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_cqpsk = cqpsk_enable;
+    g_profile_req_sym_rate = symbol_rate_hz;
+    g_profile_req_levels = levels;
+    g_profile_req_chan = channel_profile;
+    g_profile_req_ted_sps = ted_sps;
     g_profile_req_pending.store(1, std::memory_order_release);
     return 0;
 }
 
 static void
 rtl_stream_consume_demod_profile_request(void) {
-    if (!g_profile_req_pending.exchange(0, std::memory_order_acquire)) {
+    if (!g_profile_req_pending.load(std::memory_order_acquire)) {
         return;
     }
-    int cqpsk = g_profile_req_cqpsk.load(std::memory_order_relaxed);
-    int sym_rate = g_profile_req_sym_rate.load(std::memory_order_relaxed);
-    int levels = g_profile_req_levels.load(std::memory_order_relaxed);
-    int chan = g_profile_req_chan.load(std::memory_order_relaxed);
-    int ted_sps = g_profile_req_ted_sps.load(std::memory_order_relaxed);
+    int cqpsk;
+    int sym_rate;
+    int levels;
+    int chan;
+    int ted_sps;
+    {
+        std::lock_guard<std::mutex> lock(g_profile_req_m);
+        g_profile_req_pending.store(0, std::memory_order_relaxed);
+        cqpsk = g_profile_req_cqpsk;
+        sym_rate = g_profile_req_sym_rate;
+        levels = g_profile_req_levels;
+        chan = g_profile_req_chan;
+        ted_sps = g_profile_req_ted_sps;
+    }
     if (cqpsk >= 0) {
         rtl_stream_apply_cqpsk_toggle(cqpsk);
     }

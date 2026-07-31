@@ -34,11 +34,7 @@
 #include "dsd-neo/dsp/costas.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/platform/threading.h"
-
-/* Cross-thread channel power mirror owned by rtl_sdr_fm.cpp (see
- * rtl_stream_shared.hpp; declared directly to avoid pulling in the demod
- * global, which would shadow every local `demod` parameter below). */
-extern std::atomic<float> g_channel_pwr;
+#include "rtl_stream_mirrors.hpp"
 
 /* Allow disabling the fs/4 capture frequency shift via env for trunking/exact-center use cases. */
 int disable_fs4_shift = 0; /* Set by env DSD_NEO_DISABLE_FS4_SHIFT=1 */

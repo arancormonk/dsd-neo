@@ -50,7 +50,10 @@ voice), P25 Phase 2, DMR voice, DMR Tier III control, NXDN48, NXDN96, dPMR,
 D-STAR, YSF, EDACS, and M17.
 
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
-`THIRD_PARTY.md` for sample attribution. Sources that exist only as FM
+`THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify
+its decode margin (the original set still passed with ±45 counts of added
+noise) and that a mismatched mode flag produces no match, so the assertions
+stay robust rather than borderline. Sources that exist only as FM
 discriminator audio are integrated back into complex baseband (FM demodulation
 is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25

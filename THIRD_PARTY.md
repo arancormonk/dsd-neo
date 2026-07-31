@@ -36,9 +36,12 @@ for file-specific license/provenance details.
 
 - **I/Q decode fixtures** (`tests/fixtures/iq/*.iq`) - derived from public sample recordings, converted to cu8
   baseband by `tools/build_iq_fixtures.py`, which records the upstream URL for every fixture.
-  - Most fixtures derive from the [Signal Identification Wiki](https://www.sigidwiki.com/), whose content is licensed
-    CC-BY-SA. Attribution: Signal Identification Wiki contributors. Derivative fixtures are redistributed under the
-    same terms; CC-BY-SA 4.0 is one-way compatible with GPL-3.0-or-later.
+  - Most fixtures derive from user-contributed off-air sample recordings hosted on the
+    [Signal Identification Wiki](https://www.sigidwiki.com/). The wiki does not publish an explicit content license
+    (its MediaWiki rights metadata is empty), so no CC compatibility claim is made; the fixtures are short excerpts
+    of off-air radio transmissions redistributed for testing with attribution to Signal Identification Wiki
+    contributors, with per-fixture upstream URLs recorded in `tools/build_iq_fixtures.py`. If upstream licensing is
+    clarified, update this entry.
   - The M17 fixture derives from `samples/m17_clear_voice_wav.wav` in [lwvmobile/m17-fme](https://github.com/lwvmobile/m17-fme),
     licensed GPL.
 

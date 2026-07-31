@@ -1,7 +1,11 @@
 # Patterns here replace Semgrep's built-in default ignore list, so the
-# relevant defaults are restated first.
+# relevant defaults are restated first. The default list also skips test
+# directories; restate those so adding this file does not silently expand the
+# hosted scan's scope to tests/.
 .git/
 :include .gitignore
+test/
+tests/
 
 # Dev-only fixture regeneration script (not run by CI). Its urllib use is
 # restricted to the hard-coded https SOURCES table with a scheme guard, and
