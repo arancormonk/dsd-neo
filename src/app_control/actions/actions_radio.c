@@ -51,10 +51,10 @@ ui_apply_rtl_demod_profile(const dsd_opts* opts, const dsd_state* state, int sym
         return;
     }
     const int cqpsk = state->rf_mod == 1;
-    rtl_stream_toggle_cqpsk(cqpsk);
-    rtl_stream_clear_ted_sps_override();
-    rtl_stream_set_ted_sps_no_override(sps);
-    (void)rtl_stream_set_symbol_profile(symbol_rate_hz, 4, ui_rtl_channel_profile(opts, symbol_rate_hz, cqpsk));
+    /* Queue the whole profile for the demod thread instead of mutating demod
+     * state from the UI thread (sps clamp mirrors the old no-override setter). */
+    (void)rtl_stream_request_demod_profile(cqpsk, symbol_rate_hz, 4,
+                                           ui_rtl_channel_profile(opts, symbol_rate_hz, cqpsk), sps < 2 ? 2 : sps, 0);
 }
 #endif
 

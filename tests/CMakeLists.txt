@@ -7465,24 +7465,22 @@ unset(_DSD_NEO_BIT_PACKING_TEST_TARGETS)
 if(DSD_HAS_RADIO)
     set(_DSD_NEO_IQ_FIXTURE_DIR "${PROJECT_SOURCE_DIR}/tests/fixtures/iq")
 
+    # iq_decode_check.cmake enforces exit code 0 AND the payload regex AND the
+    # absence of sanitizer reports; PASS_REGULAR_EXPRESSION alone would ignore
+    # the exit code and let a crash after the first payload match pass.
     function(dsd_neo_add_iq_decode_test test_name fixture mode expected)
         add_test(
             NAME ${test_name}
             COMMAND
-                $<TARGET_FILE:dsd-neo> --frontend none ${mode} --iq-replay
-                "${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json" -o null
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
         )
-        # PASS_REGULAR_EXPRESSION makes CTest ignore the exit code, so fail
-        # explicitly on sanitizer reports that would otherwise be masked by an
-        # early payload match.
         set_tests_properties(
             ${test_name}
-            PROPERTIES
-                PASS_REGULAR_EXPRESSION "${expected}"
-                FAIL_REGULAR_EXPRESSION
-                    "AddressSanitizer|ThreadSanitizer|UndefinedBehaviorSanitizer|LeakSanitizer|runtime error:"
-                LABELS "iq-decode"
-                TIMEOUT 120
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
         )
     endfunction()
 

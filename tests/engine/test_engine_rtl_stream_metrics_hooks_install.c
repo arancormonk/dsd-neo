@@ -45,6 +45,7 @@ static int g_last_symbol_levels;
 static int g_last_symbol_profile;
 static int g_last_cqpsk_enable;
 static int g_last_ted_sps;
+static int g_last_ted_sps_is_override;
 static int g_last_p25p1_ok;
 static int g_last_p25p1_err;
 static int g_last_p25p2_slot;
@@ -93,13 +94,15 @@ rtl_stream_output_generation(void) {
 }
 
 int
-rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                 int ted_sps_is_override) {
     ++g_request_profile_calls;
     g_last_cqpsk_enable = cqpsk_enable;
     g_last_symbol_rate = symbol_rate_hz;
     g_last_symbol_levels = levels;
     g_last_symbol_profile = channel_profile;
     g_last_ted_sps = ted_sps;
+    g_last_ted_sps_is_override = ted_sps_is_override;
     return -21;
 }
 
@@ -235,6 +238,7 @@ main(void) {
     assert(g_last_symbol_levels == 4);
     assert(g_last_symbol_profile == 5);
     assert(g_last_ted_sps == 8);
+    assert(g_last_ted_sps_is_override == 0);
 
     /* A user cqpsk override leaves the demod family unchanged (-1). */
     g_runtime_config.cqpsk_is_set = 1;
@@ -250,6 +254,12 @@ main(void) {
     assert(g_last_symbol_rate == 4800);
     assert(g_last_symbol_profile == 3);
     assert(g_last_ted_sps == 10);
+
+    /* ted_sps<=0 maps to 0: clear the override without applying a value. */
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 4800, 4, 3, -5) == -21);
+    assert(g_request_profile_calls == 4);
+    assert(g_last_ted_sps == 0);
+    assert(g_last_ted_sps_is_override == 0);
 
     int cqpsk_enable = -1;
     int cqpsk_timing = -1;

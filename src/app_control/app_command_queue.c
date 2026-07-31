@@ -526,7 +526,9 @@ apply_dsp_op_cqpsk_toggle(const dsd_app_dsp_payload* p) {
     }
     int cq = 0;
     rtl_stream_get_cqpsk_status(&cq, NULL);
-    rtl_stream_toggle_cqpsk(cq ? 0 : 1);
+    /* Queue the family flip for the demod thread; leave the symbol profile
+     * (rate<=0) and timing (ted_sps<0) untouched. */
+    (void)rtl_stream_request_demod_profile(cq ? 0 : 1, 0, 0, -1, -1, 0);
     return 1;
 }
 

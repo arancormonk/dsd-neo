@@ -40,8 +40,10 @@ SAMPLE_RATE_HZ = 48000
 DSP_BW_KHZ = 48  # keeps demod rate at 48 kHz -> integer samples/symbol for every mode
 DEFAULT_DEVIATION = 0.35  # remodulation deviation as a fraction of Nyquist
 
-# Upstream sources. sigidwiki material is CC-BY-SA; m17-fme material is GPL.
-# See THIRD_PARTY.md for attribution.
+# Upstream sources. The Signal Identification Wiki publishes no explicit
+# content license, so no CC claim is made for that material (short off-air
+# excerpts redistributed for testing with attribution); the m17-fme sample is
+# GPL. THIRD_PARTY.md is the authoritative attribution/licensing notice.
 SOURCES = {
     "p25_c4fm_cc_if": "https://www.sigidwiki.com/images/4/4a/P25_C4FM-CC_BEE0014C_IF.wav",
     "p25_c4fm_vc_if": "https://www.sigidwiki.com/images/2/25/P25-C4FM-VC_IF.wav",

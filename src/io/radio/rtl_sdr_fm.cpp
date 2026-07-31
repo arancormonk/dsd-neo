@@ -7141,11 +7141,13 @@ rtl_stream_publish_ted_bias(void) {
     g_pub_ted_bias_q14.store(bias_q14, std::memory_order_relaxed);
 }
 
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 extern "C" void
 rtl_stream_test_publish_demod_snapshot(void) {
     rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_publish_ted_bias();
 }
+#endif
 
 static void
 rtl_stream_publish_demod_profile_snapshot(void) {
@@ -7679,8 +7681,10 @@ rtl_stream_apply_cqpsk_toggle(int onoff) {
 
 extern "C" void
 rtl_stream_toggle_cqpsk(int onoff) {
-    int changed = ((onoff ? 1 : 0) != (demod.cqpsk_enable ? 1 : 0)) ? 1 : 0;
-    int gate_armed = changed ? rtl_stream_enter_demod_family_switch_gate() : 0;
+    /* Arm the gate unconditionally: deciding based on demod.cqpsk_enable here
+     * would itself be a cross-thread read of a demod-owned field. The gate is
+     * cheap when nothing changes and this path is rare (UI/profile switches). */
+    int gate_armed = rtl_stream_enter_demod_family_switch_gate();
     rtl_stream_apply_cqpsk_toggle(onoff);
     rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_leave_demod_family_switch_gate(gate_armed);
@@ -7698,19 +7702,60 @@ rtl_stream_toggle_cqpsk(int onoff) {
 static std::mutex g_profile_req_m;
 static std::atomic<int> g_profile_req_pending{0};
 /* Guarded by g_profile_req_m: */
-static int g_profile_req_cqpsk = -1; /* -1 = leave unchanged */
-static int g_profile_req_sym_rate = 0;
+static int g_profile_req_cqpsk = -1;   /* -1 = leave unchanged */
+static int g_profile_req_sym_rate = 0; /* <=0 = leave symbol profile unchanged */
 static int g_profile_req_levels = 0;
 static int g_profile_req_chan = -1;
-static int g_profile_req_ted_sps = 0; /* <=0 = leave unchanged */
+static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear override only */
+static int g_profile_req_ted_sps_is_override = 0;
+
+/* Shared application order for both the immediate and the deferred path.
+ * use_gate selects the gated public toggle (callers outside the demod
+ * thread with no pipeline running) versus the ungated body (the demod
+ * thread applying a consumed request; arming the gate there would deadlock
+ * waiting for its own block to finish). */
+static void
+rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int chan, int ted_sps,
+                                      int ted_sps_is_override, int use_gate) {
+    if (cqpsk >= 0) {
+        if (use_gate) {
+            rtl_stream_toggle_cqpsk(cqpsk);
+        } else {
+            rtl_stream_apply_cqpsk_toggle(cqpsk);
+        }
+    }
+    if (ted_sps >= 0) {
+        rtl_stream_clear_ted_sps_override();
+        if (ted_sps > 0) {
+            if (ted_sps_is_override) {
+                rtl_stream_set_ted_sps(ted_sps);
+            } else {
+                rtl_stream_set_ted_sps_no_override(ted_sps);
+            }
+        }
+    }
+    if (sym_rate > 0) {
+        if (rtl_stream_set_symbol_profile(sym_rate, levels, chan) != 0) {
+            LOG_WARN("RTL: requested demod profile rejected (rate=%d levels=%d profile=%d).\n", sym_rate, levels, chan);
+        }
+    }
+}
 
 extern "C" int
-rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
-    if (symbol_rate_hz <= 0) {
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                 int ted_sps_is_override) {
+    if (symbol_rate_hz > 0 && levels != 2 && levels != 4) {
         return -1;
     }
-    if (levels != 2 && levels != 4) {
+    if (ted_sps_is_override && ted_sps <= 0) {
         return -1;
+    }
+    if (!g_stream) {
+        /* No pipeline running: there is no demod thread to race with (or to
+         * consume a queued request), so apply immediately. */
+        rtl_stream_apply_demod_profile_params(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                              ted_sps_is_override, 1);
+        return 0;
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_cqpsk = cqpsk_enable;
@@ -7718,6 +7763,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_profile_req_levels = levels;
     g_profile_req_chan = channel_profile;
     g_profile_req_ted_sps = ted_sps;
+    g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
     g_profile_req_pending.store(1, std::memory_order_release);
     return 0;
 }
@@ -7732,6 +7778,7 @@ rtl_stream_consume_demod_profile_request(void) {
     int levels;
     int chan;
     int ted_sps;
+    int ted_sps_is_override;
     {
         std::lock_guard<std::mutex> lock(g_profile_req_m);
         g_profile_req_pending.store(0, std::memory_order_relaxed);
@@ -7740,15 +7787,9 @@ rtl_stream_consume_demod_profile_request(void) {
         levels = g_profile_req_levels;
         chan = g_profile_req_chan;
         ted_sps = g_profile_req_ted_sps;
+        ted_sps_is_override = g_profile_req_ted_sps_is_override;
     }
-    if (cqpsk >= 0) {
-        rtl_stream_apply_cqpsk_toggle(cqpsk);
-    }
-    rtl_stream_clear_ted_sps_override();
-    if (ted_sps > 0) {
-        rtl_stream_set_ted_sps_no_override(ted_sps);
-    }
-    (void)rtl_stream_set_symbol_profile(sym_rate, levels, chan);
+    rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
 }
 
 static int
