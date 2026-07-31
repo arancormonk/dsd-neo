@@ -7532,5 +7532,5 @@ if(DSD_HAS_RADIO)
         -fh
         "Site ID \\[02\\]\\[002\\]"
     )
-    dsd_neo_add_iq_decode_test(DECODE_IQ_M17 m17 -fz "CAN: 7")
+    dsd_neo_add_iq_decode_test(DECODE_IQ_M17 m17 -fz "SRC: N0CALL")
 endif()

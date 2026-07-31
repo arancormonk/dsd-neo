@@ -64,9 +64,6 @@ Known gaps and caveats:
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
 - **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
   system WACN/SYSID/CC via `-X`, which the public sample does not identify.
-- **M17** asserts only the LSF `CAN` field. The same source decodes cleanly from
-  native 48 kHz baseband via `-i file.wav` but degrades to mostly LSF CRC errors
-  through the I/Q chain; that discrepancy is unresolved.
 - Fixtures are timing-insensitive by construction. Do not add assertions that
   depend on wall-clock call-state timers, because `fast` replay compresses them;
   use `--iq-replay-rate realtime` for that.
