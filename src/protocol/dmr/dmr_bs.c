@@ -892,7 +892,7 @@ dmrBS(dsd_opts* opts, dsd_state* state) {
     state->dmr_emb_err[1] = 0;
 
     while (1) {
-        if (exitflag == 1) {
+        if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
             break;
         }

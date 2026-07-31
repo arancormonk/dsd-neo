@@ -414,7 +414,7 @@ static void
 dsd_engine_signal_handler(int sgnl) {
     UNUSED(sgnl);
 
-    exitflag = 1;
+    dsd_exitflag_store(1);
 }
 
 static double
@@ -640,7 +640,7 @@ dsd_engine_setup_parse_tcp_input(dsd_opts* opts, dsd_state* state) {
     }
 
     while (1) {
-        if (exitflag == 1) {
+        if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
             return 1;
         }
@@ -889,7 +889,7 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         LOG_ERROR("RTL: libusb exception during device enumeration.\n");
         device_count = 0;
-        exitflag = 1;
+        dsd_exitflag_store(1);
     }
 #else
     device_count = (int)rtlsdr_get_device_count();
@@ -897,7 +897,7 @@ dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char*
     // cppcheck-suppress knownConditionTrueFalse -- cppcheck does not model MSVC __try assignments.
     if (device_count == 0) {
         LOG_ERROR("No supported devices found.\n");
-        exitflag = 1;
+        dsd_exitflag_store(1);
         return device_count;
     }
 
@@ -2395,7 +2395,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
     int last_min = INT_MAX;
     uint64_t frame_tune_generation;
 
-    while (!exitflag) {
+    while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
         dsd_trunk_scan_hook_tick(opts, state);
@@ -2561,7 +2561,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
         return;
     }
 
-    exitflag = 1;
+    dsd_exitflag_store(1);
 
     nxdn_trunk_diag_log_summary(opts, state);
     dsd_engine_cleanup_codec2(state);
@@ -2656,7 +2656,7 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
     if (dsd_engine_setup_io(opts, state) != 0) {
         return -1;
     }
-    if (exitflag) {
+    if (dsd_exitflag_load()) {
         *early_exit = 1;
         return 0;
     }
@@ -2789,7 +2789,7 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     int rc = 0;
     int early_exit = 0;
     int lifecycle_started = 0;
-    exitflag = 0;
+    dsd_exitflag_store(0);
 
     dsd_engine_run_record_start_time_if_debug(state);
     dsd_engine_run_install_hooks();

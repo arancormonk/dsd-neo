@@ -2472,7 +2472,7 @@ ui_cmd_payload_is_valid(const struct dsd_app_command* c) {
 static int
 apply_cmd_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
-        case DSD_APP_CMD_QUIT: exitflag = 1; return 1;
+        case DSD_APP_CMD_QUIT: dsd_exitflag_store(1); return 1;
         case DSD_APP_CMD_FORCE_PRIV_TOGGLE:
             if (!state) {
                 return 1;
@@ -3235,7 +3235,7 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     }
     if (!opts) {
         if (c->id == DSD_APP_CMD_QUIT) {
-            exitflag = 1;
+            dsd_exitflag_store(1);
             return UI_CMD_APPLY_COMPLETED;
         }
         return UI_CMD_APPLY_UNSUPPORTED;

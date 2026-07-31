@@ -252,7 +252,7 @@ ui_menu_activate_current(UiCtx* ctx) {
     ui_menu_push_submenu(it, ctx);
     if (it->on_select) {
         it->on_select(ctx);
-        if (exitflag) {
+        if (dsd_exitflag_load()) {
             ui_overlay_close_all();
             return 1;
         }

@@ -1829,7 +1829,7 @@ m17_str_read_block_stdin(dsd_opts* opts, size_t nsam, int dec, float* sample, sh
                 }
                 sf_close(opts->audio_in_file);
                 opts->audio_in_file = NULL;
-                exitflag = 1;
+                dsd_exitflag_store(1);
                 if (read_error != SF_ERR_NO_ERROR) {
                     return M17_STR_READ_ERROR;
                 }
@@ -1856,7 +1856,7 @@ m17_str_read_block_tcp(dsd_opts* opts, size_t nsam, int dec, float* sample, shor
                 opts->tcp_in_ctx = NULL;
                 DSD_FPRINTF(stderr, "Connection to TCP Server Disconnected.\n");
                 DSD_FPRINTF(stderr, "Closing DSD-neo.\n");
-                exitflag = 1;
+                dsd_exitflag_store(1);
                 return M17_STR_READ_STOP;
             }
             *sample = (float)s;
@@ -1874,7 +1874,7 @@ m17_str_read_block_udp(dsd_opts* opts, size_t nsam, int dec, float* sample, shor
             short s = 0;
             if (!dsd_net_audio_input_hook_udp_read_sample(opts, (int16_t*)&s)) {
                 DSD_FPRINTF(stderr, "UDP input stopped.\n");
-                exitflag = 1;
+                dsd_exitflag_store(1);
                 return M17_STR_READ_STOP;
             }
             *sample = (float)s;
@@ -2116,7 +2116,7 @@ m17_str_update_vox_and_eot(m17_str_ctx* ctx) {
         }
     }
 
-    if (exitflag) {
+    if (dsd_exitflag_load()) {
         ctx->eot = 1;
     }
     if (ctx->state->m17encoder_eot) {
@@ -2459,7 +2459,7 @@ encodeM17STR(dsd_opts* opts, dsd_state* state) {
     }
 
     int result = 0;
-    while (!exitflag) {
+    while (!dsd_exitflag_load()) {
         const int iteration_result = m17_str_run_iteration(&ctx);
         if (iteration_result != M17_STR_READ_OK) {
             result = iteration_result == M17_STR_READ_ERROR ? -1 : 0;
@@ -2496,7 +2496,7 @@ encodeM17BRT(dsd_opts* opts, dsd_state* state) {
 
     uint16_t lfsr = 1; //starting value of the LFSR
 
-    while (!exitflag) {
+    while (!dsd_exitflag_load()) {
         // Drain UI commands so queued actions take effect during BERT loop
         dsd_runtime_pump_controls(opts, state);
 
@@ -2735,7 +2735,7 @@ m17_pkt_send_data_frame(m17_pkt_ctx* ctx) {
         DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
         encodeM17RF(ctx->opts, ctx->state, ctx->nil, 55);
         m17_send_dead_air_frames(ctx->opts, ctx->state, ctx->nil, 25);
-        exitflag = 1;
+        dsd_exitflag_store(1);
     }
     ctx->pbc++;
 }
@@ -2743,7 +2743,7 @@ m17_pkt_send_data_frame(m17_pkt_ctx* ctx) {
 static void
 m17_pkt_run_loop(m17_pkt_ctx* ctx) {
     int new_lsf = 1;
-    while (!exitflag) {
+    while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(ctx->opts, ctx->state);
         m17_pkt_send_lsf_once(ctx, &new_lsf);
         m17_pkt_send_data_frame(ctx);
@@ -3358,7 +3358,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
 
-    while (!exitflag) {
+    while (!dsd_exitflag_load()) {
         dsd_runtime_pump_controls(opts, state);
 
         const int err = dsd_m17_udp_hook_receiver(opts, &ip_frame);

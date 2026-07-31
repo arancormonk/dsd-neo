@@ -2008,7 +2008,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
         }
 
         str_buffer = sdrtrunk_json_next_value(&str_saveptr);
-        if (str_buffer == NULL || exitflag == 1) {
+        if (str_buffer == NULL || dsd_exitflag_load() == 1) {
             break;
         }
     }

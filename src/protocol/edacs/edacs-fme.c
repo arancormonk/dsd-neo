@@ -714,7 +714,7 @@ edacs_analog(dsd_opts* opts, dsd_state* state, int afs, unsigned char lcn) {
         LOG_WARN("edacs_analog: SQL disabled (<=0). Enabling %.0fs fallback release watchdog.\n", no_sql_watchdog_s);
     }
 
-    while (!exitflag && count > 0) {
+    while (!dsd_exitflag_load() && count > 0) {
         if (!edacs_collect_analog_triplet(opts, state, analog1, analog2, analog3, &pwr)) {
             return;
         }
