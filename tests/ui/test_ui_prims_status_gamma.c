@@ -14,6 +14,13 @@
 #include <string.h>
 #include <time.h>
 
+/* ncurses builds with NCURSES_OPAQUE=0 (Debian/Ubuntu) expose these accessors as
+   function-like macros, which would expand over the stub definitions below. */
+#undef getcurx
+#undef getcury
+#undef getmaxx
+#undef getmaxy
+
 static int g_fake_stdscr_storage;
 static int g_fake_window_storage;
 WINDOW* stdscr;

@@ -1274,9 +1274,14 @@ if(DSD_ENABLE_TERMINAL_UI)
         ui/test_ui_async_lifecycle.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_async.c
     )
+    # NCURSES_REENTRANT=0 keeps stdscr an extern variable (rather than a
+    # function-call macro) so the curses stubs below can define and assign it.
     target_compile_definitions(
         dsd-neo_test_ui_async_lifecycle
-        PRIVATE DSD_NEO_THREADING_NO_INLINE_CREATE DSD_NEO_TEST_HOOKS
+        PRIVATE
+            DSD_NEO_THREADING_NO_INLINE_CREATE
+            DSD_NEO_TEST_HOOKS
+            NCURSES_REENTRANT=0
     )
     target_include_directories(
         dsd-neo_test_ui_async_lifecycle
@@ -1498,6 +1503,10 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
     )
+    target_compile_definitions(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        PRIVATE NCURSES_REENTRANT=0
+    )
     target_include_directories(
         dsd-neo_test_ui_ncurses_p25_display_helpers
         PRIVATE
@@ -1517,6 +1526,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_printer_helpers
         ui/test_ui_ncurses_printer_helpers.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_ncurses_printer_helpers
+        PRIVATE NCURSES_REENTRANT=0
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_printer_helpers
@@ -1693,6 +1706,10 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_prims_status_gamma
         ui/test_ui_prims_status_gamma.c
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_prims_status_gamma
+        PRIVATE NCURSES_REENTRANT=0
     )
     target_include_directories(
         dsd-neo_test_ui_prims_status_gamma

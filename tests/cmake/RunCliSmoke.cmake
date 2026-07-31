@@ -15,7 +15,8 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "invalid-option")
     set(_args "--definitely-not-an-option")
     set(_want_rc 1)
     set(_want_stdout_regex "Usage: dsd-neo \\[options\\]")
-    set(_want_stderr_regex "invalid option")
+    # glibc getopt reports "invalid option", musl reports "unrecognized option".
+    set(_want_stderr_regex "invalid option|unrecognized option")
 else()
     message(
         FATAL_ERROR

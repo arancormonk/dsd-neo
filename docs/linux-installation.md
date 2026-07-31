@@ -74,7 +74,7 @@ pacman. The Docker matrix validates the bootstrap path on pinned images for:
 - Debian 13 and 12.
 - Fedora 44.
 - Rocky Linux 9, AlmaLinux 9, and CentOS Stream 9 with EPEL/CRB enabled.
-- openSUSE Leap 15.6 and Tumbleweed.
+- openSUSE Leap 16.0 and Tumbleweed.
 - Alpine 3.24.
 - Arch Linux base-devel for source-build validation; use AUR for normal Arch
   installs.

@@ -37,6 +37,13 @@
 #include "dsd-neo/core/dsd_time.h"
 #include "dsd-neo/platform/platform.h"
 
+/* ncurses builds with NCURSES_OPAQUE=0 (Debian/Ubuntu) expose these accessors as
+   function-like macros, which would expand over the stub definitions below. */
+#undef getcurx
+#undef getcury
+#undef getmaxx
+#undef getmaxy
+
 int ncurses_last_synctype;
 WINDOW* stdscr;
 
