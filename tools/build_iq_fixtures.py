@@ -101,9 +101,11 @@ FIXTURES = [
     ("dstar", "dstar", "audio", 0, 4, 0.35),
     ("ysf", "ysf", "audio", 0, 6, 0.35),
     ("edacs", "edacs", "audio", 0, 2, 0.35),
-    # M17 needs a narrower synthetic deviation; see docs/testing.md for the
-    # caveat about M17 decoding better from native baseband than through I/Q.
-    ("m17", "m17", "audio", 0, 8, 0.15),
+    # The upstream sample is mostly impaired test transmissions; the clean voice
+    # stream occupies only the final seconds, so cut the fixture from there. The
+    # deviation stays near M17's real +/-2.4 kHz so the synthetic FM signal fits
+    # the 12.5 kHz channel filter profile (0.15 * 24 kHz Nyquist = 3.6 kHz peak).
+    ("m17", "m17", "audio", 19, 4.3, 0.15),
 ]
 
 METADATA_TEMPLATE = """{{
