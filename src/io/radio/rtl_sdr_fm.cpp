@@ -346,6 +346,7 @@ static std::atomic<uint32_t> g_replay_loop_restart_count{0};
 static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 
 static void rtl_stream_consume_demod_profile_request(void);
+static void rtl_stream_clear_demod_profile_request(void);
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
@@ -6644,7 +6645,11 @@ dsd_rtl_stream_open(dsd_opts* opts) {
         return -1;
     }
     /* Seed the profile mirrors from the freshly configured demod state before
-     * any thread starts, so main-thread getters see the startup profile. */
+     * any thread starts, so main-thread getters see the startup profile.
+     * Also drop any profile request queued during a previous session's
+     * teardown, so a stale request cannot override this session's startup
+     * profile on the demod thread's first block. */
+    rtl_stream_clear_demod_profile_request();
     rtl_stream_publish_demod_profile_snapshot();
     if (stream_open_start_io_pipeline(opts, source_kind) != 0) {
         return -1;
@@ -7191,6 +7196,10 @@ rtl_stream_output_generation(void) {
 
 extern "C" int
 rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    /* The three mirrors are read independently, so a caller racing a profile
+     * change can observe a mixed rate/levels/channel combination for one
+     * block. Fine for display/telemetry; do not branch on the combination as
+     * a consistent set. */
     if (out_symbol_rate_hz) {
         *out_symbol_rate_hz = g_pub_symbol_rate.load(std::memory_order_relaxed);
     }
@@ -7752,7 +7761,14 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     }
     if (!g_stream) {
         /* No pipeline running: there is no demod thread to race with (or to
-         * consume a queued request), so apply immediately. */
+         * consume a queued request), so apply immediately.
+         *
+         * Ordering assumption: g_stream transitions happen on the thread that
+         * owns stream open/close, and requesters only run either before open,
+         * after close, or from threads the running pipeline itself services.
+         * A request racing the open/close transition is not supported; a
+         * request queued during teardown is discarded by the next open
+         * (rtl_stream_clear_demod_profile_request). */
         rtl_stream_apply_demod_profile_params(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
                                               ted_sps_is_override, 1);
         return 0;
@@ -7790,6 +7806,16 @@ rtl_stream_consume_demod_profile_request(void) {
         ted_sps_is_override = g_profile_req_ted_sps_is_override;
     }
     rtl_stream_apply_demod_profile_params(cqpsk, sym_rate, levels, chan, ted_sps, ted_sps_is_override, 0);
+}
+
+/* Discard any unconsumed queued request. Called from dsd_rtl_stream_open
+ * before the pipeline threads start, so a request queued while a previous
+ * session was tearing down cannot override the new session's startup profile
+ * when the demod thread consumes its first block. */
+static void
+rtl_stream_clear_demod_profile_request(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_req_pending.store(0, std::memory_order_relaxed);
 }
 
 static int

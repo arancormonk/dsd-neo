@@ -27,6 +27,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import math
 import os
 import subprocess
@@ -58,6 +59,25 @@ SOURCES = {
     "ysf": "https://www.sigidwiki.com/images/2/26/Yaesu_sys_fusion.wav",
     "edacs": "https://www.sigidwiki.com/images/a/a8/EDACS96_Sound.mp3",
     "m17": "https://raw.githubusercontent.com/lwvmobile/m17-fme/main/samples/m17_clear_voice_wav.wav",
+}
+
+# SHA-256 of each upstream download, pinned so regeneration detects upstream
+# changes or tampering. If an upstream file is legitimately replaced, re-verify
+# the new content, update the hash here, and re-run the DECODE_IQ_* tests.
+SHA256SUMS = {
+    "p25_c4fm_cc_if": "2545836bfdae3f87c67ca24b23579bb568b955c8cff28d466e2ddc2f1978ccd3",
+    "p25_c4fm_vc_if": "1c7132e96f16e410724c76aa40f090d1a965f2a47c8e3f205ccbba563f06f58c",
+    "p25_cqpsk_cc_if": "39d02f22eab5f20558c8fd05664dbf650ff7884ea5ee2eac734112ad6b699762",
+    "p25_cqpsk_vc_if": "baec0f488a0879bf61d6b999f3d8de7f976a3f987f31efa7935e8496d477e3a4",
+    "p25_sacch": "27aa48510760ac78fcb88b8046ee0d3834e12ffd4406132af17ba6a714a60077",
+    "dmr_mototrbo": "10c4e6f181cf1bf935681d988b4e8fb4df7d9f947c1d7b199938424f36345d91",
+    "dmr_t3_cc": "f92e7ea484a95d2c712ed35a98f43fdab65e60dbedfb19ad22a6972a3cad5afa",
+    "nxdn_iq_zip": "6d5e0607da23f32d1d2205ff75aea45338e9d0c9dfc7e70eb9b153a965022cd3",
+    "dpmr_zip": "12512779b482bd48e113adec721ad9d160092fba87204ee0119e59bf56495b56",
+    "dstar": "b419679d20bd31ab9738be2b3e300b98ec762ec05d2a93683df86ae3a9946001",
+    "ysf": "607b9f9789cecc9ab1c7c204f869d10879a0d69b7b4ae60a132694e88d5476e0",
+    "edacs": "c043bdbf7f8dfec2063cf8c98f87b6b6fc6f97a0a516cff2d971e2c46fdfd99f",
+    "m17": "e841be537491fd6a71264bf8d4c5b54667c80a0be278d6332bb49156d7f1b4f7",
 }
 
 # Members to extract from zipped sources.
@@ -121,17 +141,38 @@ METADATA_TEMPLATE = """{{
 """
 
 
+def verify_sha256(key, path):
+    """Check path against the pinned hash in SHA256SUMS (which must exist)."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    expected = SHA256SUMS[key]
+    if actual != expected:
+        raise ValueError(
+            f"SHA-256 mismatch for {key} ({path}):\n"
+            f"  expected {expected}\n"
+            f"  actual   {actual}\n"
+            "Upstream content changed (or the cache is corrupt). Delete the cached "
+            "file to re-download; if the change is legitimate, update SHA256SUMS "
+            "and re-run the DECODE_IQ_* tests."
+        )
+
+
 def fetch(cache_dir, key, url):
     """Download url into cache_dir, returning the local path.
 
     Only the hard-coded https URLs in SOURCES are ever fetched; the scheme guard
     below rejects anything else so a local file:// or ftp:// path cannot be
-    substituted by editing a source list entry.
+    substituted by editing a source list entry. Every download (cached or fresh)
+    is verified against the pinned SHA-256 in SHA256SUMS.
     """
     if not url.startswith("https://"):
         raise ValueError(f"refusing non-https fixture source for {key}: {url}")
     path = os.path.join(cache_dir, key + os.path.splitext(url)[1])
     if os.path.exists(path) and os.path.getsize(path) > 0:
+        verify_sha256(key, path)
         return path
     # URLs come only from the SOURCES constant above and are guarded to https.
     req = urllib.request.Request(url, headers={"User-Agent": "dsd-neo-fixture-builder"})  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
@@ -139,6 +180,7 @@ def fetch(cache_dir, key, url):
         data = resp.read()
     with open(path, "wb") as handle:
         handle.write(data)
+    verify_sha256(key, path)
     return path
 
 
