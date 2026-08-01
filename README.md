@@ -266,6 +266,9 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_SOAPYSDR=ON|OFF` — Enable/disable SoapySDR backend discovery.
   - `-DDSD_REQUIRE_RTLSDR=ON|OFF` — Fail configure when RTL-SDR is enabled but unavailable.
   - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR >= 0.8.1 is enabled but unavailable.
+  - `-DDSD_FORCE_RADIO_PIPELINE=ON` — Build the radio pipeline even with no SDR library present. Keeps
+    `rtl_tcp` input and radio-path I/Q replay working (real USB opens fail cleanly); used by targets that
+    cannot link librtlsdr/SoapySDR.
 - UI and behavior toggles:
   - `-DDSD_ENABLE_TERMINAL_UI=ON|OFF` — Build the ncurses/PDCurses terminal frontend (default ON).
   - `-DCOLORS=OFF` — Disable ncurses color output.

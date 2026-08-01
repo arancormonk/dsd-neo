@@ -86,6 +86,11 @@ option(
     "Fail configure when SoapySDR is enabled but not found"
     OFF
 )
+option(
+    DSD_FORCE_RADIO_PIPELINE
+    "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"
+    OFF
+)
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -668,8 +673,13 @@ if(DSD_ENABLE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR AND NOT DSD_REQUIRE_SOAPYSDR)
     )
 endif()
 
+# The radio pipeline builds without an SDR library: rtl_device.cpp carries
+# complete rtlsdr_* stubs when USE_RTLSDR is undefined, so rtl_tcp (plain BSD
+# sockets) and radio-path I/Q replay still work while real USB opens fail
+# cleanly. Forcing it on is how targets with no SDR library (Android) keep
+# network SDR input.
 set(DSD_HAS_RADIO OFF)
-if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR)
+if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR OR DSD_FORCE_RADIO_PIPELINE)
     set(DSD_HAS_RADIO ON)
 endif()
 
@@ -681,7 +691,10 @@ message(
     STATUS
     "SoapySDR backend enabled: ${DSD_ENABLE_SOAPYSDR} (available: ${DSD_HAS_SOAPYSDR})"
 )
-message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
+message(
+    STATUS
+    "Radio pipeline available: ${DSD_HAS_RADIO} (forced: ${DSD_FORCE_RADIO_PIPELINE})"
+)
 
 # Curses library selection:
 # - Windows: PDCurses
