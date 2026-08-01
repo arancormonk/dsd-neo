@@ -100,7 +100,7 @@ target_include_directories(
     dsd-neo_safe_api
     INTERFACE ${PROJECT_SOURCE_DIR}/include
 )
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_compile_definitions(dsd-neo_safe_api INTERFACE _GNU_SOURCE)
 endif()
 if(MSVC)
