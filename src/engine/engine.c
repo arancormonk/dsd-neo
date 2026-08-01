@@ -2661,8 +2661,16 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
         return 0;
     }
 
-    signal(SIGINT, dsd_engine_signal_handler);
-    signal(SIGTERM, dsd_engine_signal_handler);
+    /* Embedded in a host process (Android service, GUI shell), the library must
+     * not steal the process signal dispositions; the host drives shutdown with
+     * dsd_request_shutdown() instead. */
+    {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (!cfg || !cfg->no_signal_handlers_enable) {
+            signal(SIGINT, dsd_engine_signal_handler);
+            signal(SIGTERM, dsd_engine_signal_handler);
+        }
+    }
     dsd_engine_parse_m17_userdata(opts, state);
     return 0;
 }
