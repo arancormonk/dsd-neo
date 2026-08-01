@@ -204,7 +204,7 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": "OFF",
         "DSD_ENABLE_TERMINAL_UI": "OFF",
-        "DSD_AUDIO_BACKEND": "none",
+        "DSD_AUDIO_BACKEND": "aaudio",
         "DSD_FORCE_RADIO_PIPELINE": "ON",
         "DSD_ENABLE_RTLSDR": "OFF",
         "DSD_ENABLE_SOAPYSDR": "OFF",
