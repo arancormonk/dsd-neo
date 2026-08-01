@@ -1300,6 +1300,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_trunk.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_logging.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
 target_include_directories(
     dsd-neo_test_app_control_actions

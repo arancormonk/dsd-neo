@@ -859,6 +859,9 @@ struct dsd_state {
     // key imports bump the epoch so each target re-verifies with one probe.
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     uint64_t enc_lockout_key_epoch;
+    // Monotonic confirmation ticket handed to each armed/refreshed entry; the
+    // eviction LRU orders on this rather than on one-second wall clock.
+    uint64_t enc_lockout_seq;
     // Cached P25 SM tunables (seconds), resolved once at p25_sm_init_ctx()
     double p25_cfg_vc_grace_s;
     double p25_cfg_grant_voice_to_s;

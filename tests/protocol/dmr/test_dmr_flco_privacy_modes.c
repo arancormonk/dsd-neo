@@ -1683,6 +1683,55 @@ test_embedded_lc_enc_requires_corroboration_for_lockout(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// The ledger is suspended -- not erased -- while the user follows encrypted calls, so clear
+// voice observed in follow mode must leave existing entries alone. Erasing them there would
+// make a temporary toggle cost a fresh classification probe per target once lockout returns.
+static void
+test_clear_voice_in_follow_mode_keeps_lockout_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    // Arm the entry under lockout policy (corroborated encrypted embedded LCs).
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+
+    // Follow encrypted calls: corroborated clear voice must not erase the entry.
+    opts.trunk_tune_enc_calls = 1;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dmr_enc_class_established_clear(&state, 0U));
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+
+    // Back under lockout policy the same clear evidence releases it.
+    opts.trunk_tune_enc_calls = 0;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+    dsd_state_ext_free_all(&state);
+}
+
 // A CRC-verified voice LC header established the call clear; one contradicting embedded LC --
 // the exact shape a miscorrected BPTC payload takes -- must not mute the audio, demote the
 // published classification, or arm the lockout. A corroborated contradiction is a real
@@ -2155,6 +2204,7 @@ main(void) {
     test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_embedded_lc_enc_requires_corroboration_for_lockout();
+    test_clear_voice_in_follow_mode_keeps_lockout_entry();
     test_lone_contradicting_emb_does_not_flap_established_clear();
     test_terminator_privacy_bit_does_not_lock_out();
     test_crc_failed_header_enc_requires_repeat_for_lockout();

@@ -22,6 +22,12 @@
  *    at the current epoch or releases it;
  *  - the user purges the ledger or re-enables encrypted-call tuning (the
  *    ledger is inert while opts->trunk_tune_enc_calls != 0).
+ *
+ * Threading: the decoder thread owns all mutation. UI readers
+ * (dsd_enc_lockout_entry_active / _active_count for lock markers and menu
+ * counts) read without synchronization, which is deliberately best effort --
+ * the worst case is a lock marker that renders one frame late or early. No
+ * decoding, tuning, or audio decision may be made off the decoder thread.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_ENC_LOCKOUT_H_H
@@ -46,7 +52,8 @@ enum DSD_ATTR_PACKED { DSD_ENC_LOCKOUT_ALGID_UNKNOWN = -1 };
 
 typedef struct {
     uint64_t key_epoch; /**< state->enc_lockout_key_epoch at last confirmation */
-    time_t last_seen;   /**< wall clock of last confirmation (LRU + UI) */
+    uint64_t last_seq;  /**< monotonic confirmation ticket; recency key for eviction */
+    time_t last_seen;   /**< wall clock of last confirmation (UI display only) */
     uint32_t target;    /**< group or private destination id */
     uint32_t hits;      /**< number of lockout confirmations */
     int16_t algid;      /**< last confirmed ALGID, DSD_ENC_LOCKOUT_ALGID_UNKNOWN if none */

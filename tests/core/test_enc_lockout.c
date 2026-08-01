@@ -107,6 +107,20 @@ main(void) {
     rc |= expect_true("overflow still locks new target", dsd_enc_lockout_entry_active(state, 5000U, 1));
     rc |= expect_true("overflow keeps table at capacity", dsd_enc_lockout_active_count(state) == DSD_ENC_LOCKOUT_MAX);
 
+    // Recency is a monotonic ticket, not wall clock. The whole fill and the
+    // refresh below land inside a single second, so a time_t LRU would see only
+    // ties and evict by array order -- dropping the just-refreshed 3000 and
+    // sparing 3001, the exact inverse of what this asserts.
+    dsd_enc_lockout_clear_all(state);
+    for (uint32_t i = 0; i < (uint32_t)DSD_ENC_LOCKOUT_MAX; i++) {
+        (void)dsd_enc_lockout_note(state, 3000U + i, 1, 0x84, (int)i);
+    }
+    (void)dsd_enc_lockout_note(state, 3000U, 1, 0x84, 0); // oldest becomes newest
+    (void)dsd_enc_lockout_note(state, 7000U, 1, 0x84, 5); // forces one eviction
+    rc |= expect_true("LRU evicts the least recently confirmed entry", !dsd_enc_lockout_lookup(state, 3001U, 1, NULL));
+    rc |= expect_true("refreshed entry survives eviction", dsd_enc_lockout_entry_active(state, 3000U, 1));
+    rc |= expect_true("new target locked after LRU eviction", dsd_enc_lockout_entry_active(state, 7000U, 1));
+
     // Eviction prefers a stale-epoch entry (no longer blocking anyway) over
     // current-epoch entries, regardless of recency.
     dsd_enc_lockout_clear_all(state);

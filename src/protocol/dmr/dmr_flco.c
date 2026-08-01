@@ -941,32 +941,14 @@ dmr_flco_emit_enc_lockout_event(dmr_flco_ctx* ctx) {
     watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
 }
 
+// Arm the ledger for a corroborated, undecryptable encrypted transmission and force the
+// channel release. The caller has already established that encryption lockout is the active
+// policy and that this LC is not a terminator.
 static void
-dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
-    const uint8_t eslot = (uint8_t)(ctx->state->currentslot & 1);
-    const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
-    if (!(ctx->so & 0x40)) {
-        // Corroborated clear voice on this target releases any retained
-        // lockout entry so a talkgroup that stopped encrypting recovers.
-        if (ctx->target != 0 && ctx->type != 2U && dmr_enc_class_established_clear(ctx->state, eslot)) {
-            (void)dsd_enc_lockout_release(ctx->state, ctx->target, is_group);
-        }
-        return;
-    }
-    DSD_FPRINTF(stderr, "%s", KRED);
-    DSD_FPRINTF(stderr, "Encrypted ");
-    if (!(ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0)) {
-        return;
-    }
-    // A terminator's privacy bit describes the transmission that just ended; blocking the
-    // talkgroup and forcing a release for a call that is already over would only tear down
-    // whatever follows on the channel.
-    if (ctx->type == 2U) {
-        return;
-    }
+dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
     // Locking the talkgroup out is permanent for the session and the forced P_CLEAR release
     // drops the channel, so only an established (corroborated) encrypted classification may
-    // act -- a lone corrupt LC observing the privacy bit stays quarantined above.
+    // act -- a lone corrupt LC observing the privacy bit stays quarantined by the hysteresis.
     if (!dmr_enc_class_established_enc(ctx->state, eslot) || ctx->target == 0) {
         return;
     }
@@ -992,6 +974,39 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     // lets an already-locked target still force a release -- the old
     // policy-row path skipped this whenever the target had a label.
     dmr_flco_emit_enc_lockout_action(ctx);
+}
+
+static void
+dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
+    const uint8_t eslot = (uint8_t)(ctx->state->currentslot & 1);
+    const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
+    // The ledger is suspended -- not erased -- whenever encryption lockout is not
+    // the active policy, so neither arming nor releasing may run while following
+    // encrypted calls (or with trunking off). Matches the P25 handle_enc release
+    // guard and the NXDN VCALL early return; without it a clear DMR LC in follow
+    // mode would drop entries that then owe a fresh probe once lockout returns.
+    const int lockout_active = (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0);
+    if (!(ctx->so & 0x40)) {
+        // Corroborated clear voice on this target releases any retained
+        // lockout entry so a talkgroup that stopped encrypting recovers.
+        if (lockout_active && ctx->target != 0 && ctx->type != 2U
+            && dmr_enc_class_established_clear(ctx->state, eslot)) {
+            (void)dsd_enc_lockout_release(ctx->state, ctx->target, is_group);
+        }
+        return;
+    }
+    DSD_FPRINTF(stderr, "%s", KRED);
+    DSD_FPRINTF(stderr, "Encrypted ");
+    if (!lockout_active) {
+        return;
+    }
+    // A terminator's privacy bit describes the transmission that just ended; blocking the
+    // talkgroup and forcing a release for a call that is already over would only tear down
+    // whatever follows on the channel.
+    if (ctx->type == 2U) {
+        return;
+    }
+    dmr_flco_arm_enc_lockout(ctx, eslot, is_group);
 }
 
 static void

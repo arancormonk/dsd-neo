@@ -2619,6 +2619,76 @@ test_p25_encrypted_call_cache_state_isolated_per_target(void) {
     return test_rc;
 }
 
+// A user purge must reach the ledger copies parked in every scan-target
+// snapshot, not just the target currently on air -- otherwise the next target
+// switch restores the very entries the user asked to forget.
+static int
+test_enc_lockout_purge_clears_scan_snapshots(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "enc lockout purge init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+
+    // Arm a lockout on each target so both a parked snapshot and the live
+    // ledger hold entries when the purge lands.
+    (void)dsd_enc_lockout_note(&state, 2468U, 1, 0x84, 0x1234);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    (void)dsd_enc_lockout_note(&state, 3579U, 0, 0xAA, 0x0001);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || !dsd_enc_lockout_entry_active(&state, 3579U, 0)) {
+        DSD_FPRINTF(stderr, "enc lockout purge setup failed active=%zu\n", dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    // The UI purge path: live ledger plus every parked snapshot.
+    dsd_enc_lockout_clear_all(&state);
+    dsd_trunk_scan_hook_enc_lockout_clear_snapshots(&state);
+    if (dsd_enc_lockout_lookup(&state, 3579U, 0, NULL)) {
+        DSD_FPRINTF(stderr, "purge left the live ledger populated\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || dsd_enc_lockout_lookup(&state, 2468U, 1, NULL)) {
+        DSD_FPRINTF(stderr, "target 0 snapshot restored a purged lockout active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dsd_enc_lockout_lookup(&state, 3579U, 0, NULL)) {
+        DSD_FPRINTF(stderr, "target 1 snapshot restored a purged lockout active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_trunk_targets_reuse_restored_control_channel(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -3499,6 +3569,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_p25_targets_use_rtl_output_rate_for_retune_sps);
     rc |= run_with_default_tune_hook(test_channel_map_sequence_advances_on_equal_count_target_switches);
     rc |= run_with_default_tune_hook(test_p25_encrypted_call_cache_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_enc_lockout_purge_clears_scan_snapshots);
     rc |= run_with_default_tune_hook(test_trunk_targets_reuse_restored_control_channel);
     rc |= run_with_default_tune_hook(test_locked_demod_mode_preserved_when_seeding_targets);
     rc |= run_with_default_tune_hook(test_target_retunes_select_four_level_sps_profile);

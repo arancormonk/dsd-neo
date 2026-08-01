@@ -342,8 +342,10 @@ Notes
   - A target confirmed encrypted without a usable key is locked out for the rest of the session — grants for it are
     skipped without retuning, with no retry backoff. Lockouts release when a grant or corroborated voice shows the
     target clear (or decryptable), when key material changes (each locked target then re-verifies with one silent
-    probe on its next grant), or via the menu's "Clear Encryption Lockouts" action. DMR and NXDN lockouts share the
-    same session ledger instead of writing "ENC LO" rows into the group list.
+    probe on its next grant), or via the menu's "Clear Encryption Lockouts" action, which purges every target's
+    ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
+    writing "ENC LO" rows into the group list. While `--enc-follow` is active the ledger is suspended rather than
+    erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)

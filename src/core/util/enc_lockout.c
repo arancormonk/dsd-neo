@@ -51,7 +51,10 @@ static dsd_enc_lockout_entry*
 enc_lockout_choose_slot(dsd_state* state) {
     // Eviction order: free slot, then a stale-epoch entry (no longer blocking
     // until re-confirmed, so dropping it only costs the one probe it already
-    // owed), then the least recently confirmed current-epoch entry.
+    // owed), then the least recently confirmed current-epoch entry. Recency is
+    // keyed on last_seq, not last_seen: wall clock has one-second granularity,
+    // so a burst of confirmations inside one second would collapse the LRU into
+    // "whatever sits first in the array".
     dsd_enc_lockout_entry* victim = NULL;
     for (int i = 0; i < DSD_ENC_LOCKOUT_MAX; i++) {
         dsd_enc_lockout_entry* e = &state->enc_lockout_entries[i];
@@ -60,7 +63,7 @@ enc_lockout_choose_slot(dsd_state* state) {
         }
         const int e_stale = (e->key_epoch != state->enc_lockout_key_epoch);
         const int victim_stale = victim && (victim->key_epoch != state->enc_lockout_key_epoch);
-        if (!victim || (e_stale && !victim_stale) || (e_stale == victim_stale && e->last_seen < victim->last_seen)) {
+        if (!victim || (e_stale && !victim_stale) || (e_stale == victim_stale && e->last_seq < victim->last_seq)) {
             victim = e;
         }
     }
@@ -85,8 +88,10 @@ dsd_enc_lockout_note(dsd_state* state, uint32_t target, int is_group, int algid,
         if (!e) {
             return 0;
         }
-        // in_use drops first: UI threads read the ledger unsynchronized, and
-        // memset clears the identity fields before the trailing in_use flag.
+        // Retire the slot before rewriting it, so the payload is filled while
+        // the entry still reads as free. Unsynchronized UI readers skip
+        // !in_use entries and therefore never see the evicted target's
+        // identity paired with the new one's evidence.
         e->in_use = 0;
         DSD_MEMSET(e, 0, sizeof(*e));
         e->target = target;
@@ -99,8 +104,8 @@ dsd_enc_lockout_note(dsd_state* state, uint32_t target, int is_group, int algid,
         newly_locking = 1;
     }
 
-    e->in_use = 1;
     e->key_epoch = state->enc_lockout_key_epoch;
+    e->last_seq = ++state->enc_lockout_seq;
     e->last_seen = now;
     if (e->hits < UINT32_MAX) {
         e->hits++;
@@ -109,6 +114,11 @@ dsd_enc_lockout_note(dsd_state* state, uint32_t target, int is_group, int algid,
         e->algid = (int16_t)(algid & 0xFF);
         e->keyid = (uint16_t)(keyid & 0xFFFF);
     }
+    // Publish last: every field a reader inspects after the in_use test is
+    // already written. These are plain stores with no barrier, so this narrows
+    // the race window rather than closing it -- sufficient because the only
+    // unsynchronized readers drive UI lock markers and menu counts.
+    e->in_use = 1;
     return newly_locking;
 }
 
@@ -145,8 +155,8 @@ dsd_enc_lockout_release(dsd_state* state, uint32_t target, int is_group) {
     }
     dsd_enc_lockout_entry* e = enc_lockout_find(state, target, is_group);
     if (e) {
-        // in_use drops first so unsynchronized UI readers never see a live
-        // flag beside a partially cleared identity.
+        // Retire before clearing so a UI reader that races the memset sees a
+        // free slot rather than a live flag beside a half-erased identity.
         e->in_use = 0;
         DSD_MEMSET(e, 0, sizeof(*e));
         return 1;
@@ -192,4 +202,5 @@ dsd_enc_lockout_init(dsd_state* state) {
     }
     DSD_MEMSET(state->enc_lockout_entries, 0, sizeof(state->enc_lockout_entries));
     state->enc_lockout_key_epoch = 1U;
+    state->enc_lockout_seq = 0U;
 }

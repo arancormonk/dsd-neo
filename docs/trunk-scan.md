@@ -140,7 +140,8 @@ encryption-unknown P25 voice grants are visited briefly and classified silently;
 complete matching key for a supported algorithm continue. Missing-key calls remain silent and are released at
 classification or grant timeout, while a clear companion Phase 2 slot is preserved. A target confirmed encrypted
 without a usable key stays locked out for the rest of the session (no retry backoff); it re-verifies once after key
-material changes, releases on clear evidence, and each scan target keeps its own lockout ledger.
+material changes, releases on clear evidence, and each scan target keeps its own lockout ledger. The menu's "Clear
+Encryption Lockouts" action purges every target's ledger, not just the one currently on air.
 
 Validate the config before using it:
 

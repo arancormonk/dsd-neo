@@ -788,7 +788,9 @@ trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
 // The encrypted-target lockout ledger is snapshot per scan target so one
 // system's lockouts never bleed into another. The global key epoch is
 // deliberately NOT snapshot: entries restored from before a key import carry
-// a stale epoch and re-verify with one probe, exactly like live entries.
+// a stale epoch and re-verify with one probe, exactly like live entries. The
+// eviction sequence counter is global for the same reason -- restored entries
+// keep their older ticket and so evict ahead of freshly confirmed ones.
 static void
 trunk_scan_save_enc_lockout_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     DSD_MEMCPY(snapshot->enc_lockout_entries, state->enc_lockout_entries, sizeof(snapshot->enc_lockout_entries));
@@ -1157,6 +1159,22 @@ trunk_scan_save_target_snapshot(dsd_trunk_scan_coord* coord, const dsd_state* st
 static dsd_trunk_scan_coord*
 trunk_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(dsd_trunk_scan_coord, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+}
+
+// A user purge clears the live ledger; every parked target keeps its own copy,
+// so scrub those as well or the next target switch restores entries the user
+// just forgot. The key epoch is global and intentionally untouched.
+static void
+trunk_scan_clear_enc_lockout_snapshots(const dsd_state* state) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!coord) {
+        return;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        DSD_MEMSET(coord->targets[i].snapshot.enc_lockout_entries, 0,
+                   sizeof(coord->targets[i].snapshot.enc_lockout_entries));
+    }
+    DSD_MEMSET(coord->scratch_snapshot.enc_lockout_entries, 0, sizeof(coord->scratch_snapshot.enc_lockout_entries));
 }
 
 static const dsd_trunk_scan_coord*
@@ -1859,6 +1877,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.dmr_ctx = dsd_engine_trunk_scan_active_dmr_ctx;
     hooks.tick = dsd_engine_trunk_scan_tick;
     hooks.dmr_conventional_activity = dsd_engine_trunk_scan_dmr_conventional_activity;
+    hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     dsd_trunk_scan_hooks_set(hooks);
 }
 

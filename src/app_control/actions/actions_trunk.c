@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "../command_dispatch.h"
@@ -111,6 +112,9 @@ ui_handle_enc_lockout_clear(dsd_opts* opts, dsd_state* state, const struct dsd_a
     (void)opts;
     (void)c;
     dsd_enc_lockout_clear_all(state);
+    // Trunk scan parks a ledger copy per target; without this the purge only
+    // covers the target currently on air and switching restores the rest.
+    dsd_trunk_scan_hook_enc_lockout_clear_snapshots(state);
     return 1;
 }
 
