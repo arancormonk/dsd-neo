@@ -7566,4 +7566,28 @@ if(DSD_HAS_RADIO)
         "Site ID \\[02\\]\\[002\\]"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_M17 m17 -fz "SRC: N0CALL")
+
+    # Restart safety: bootstrap + engine lifecycle twice inside one process, the
+    # shape an embedding host (Android service, GUI shell) uses. Lives here
+    # because it replays an I/Q fixture and therefore needs the radio pipeline.
+    add_executable(dsd-neo_test_engine_restart engine/test_engine_restart.c)
+    target_include_directories(
+        dsd-neo_test_engine_restart
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_restart
+        PRIVATE "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${_DSD_NEO_IQ_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_restart
+        PRIVATE
+            dsd-neo_engine
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(NAME ENGINE_RESTART COMMAND dsd-neo_test_engine_restart)
+    set_tests_properties(ENGINE_RESTART PROPERTIES TIMEOUT 240)
 endif()
