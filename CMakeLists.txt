@@ -514,7 +514,11 @@ find_package(OpenSSL 3.0 REQUIRED)
 # soft-decision frame decode and result-based processing APIs used by dsd-neo.
 set(_DSD_MBE_REQUIRED_VERSION 2.0)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
-if(TARGET mbe_neo::mbe_shared)
+if(ANDROID AND TARGET mbe_neo::mbe_static)
+    # Every shared library an Android app uses has to be bundled into the APK
+    # and loaded by name; link mbe-neo statically so there is one less.
+    set(MBE_LINK_TARGET mbe_neo::mbe_static)
+elseif(TARGET mbe_neo::mbe_shared)
     set(MBE_LINK_TARGET mbe_neo::mbe_shared)
 else()
     message(

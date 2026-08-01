@@ -214,7 +214,10 @@ run_decode_once(const char* fixture_path, output_capture* cap) {
 }
 
 int
-main(void) {
+main(int argc, char** argv) {
+    /* argv[1] overrides the fixture directory so the same binary can be pushed
+     * to a device, where the build-time source path does not exist. */
+    const char* fixture_dir = (argc > 1 && argv[1] && argv[1][0]) ? argv[1] : DSD_NEO_TEST_IQ_FIXTURE_DIR;
     char fixture_path[1024];
     int rc = 0;
 
@@ -228,7 +231,7 @@ main(void) {
         return 1;
     }
 
-    DSD_SNPRINTF(fixture_path, sizeof fixture_path, "%s/p25p1_c4fm_cc.iq.json", DSD_NEO_TEST_IQ_FIXTURE_DIR);
+    DSD_SNPRINTF(fixture_path, sizeof fixture_path, "%s/p25p1_c4fm_cc.iq.json", fixture_dir);
 
     for (int iteration = 1; iteration <= RUN_COUNT; iteration++) {
         output_capture cap;

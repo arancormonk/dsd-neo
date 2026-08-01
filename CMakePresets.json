@@ -188,6 +188,28 @@
         "DSD_ENABLE_LTO": "ON",
         "DSD_ENABLE_FAST_MATH": "ON"
       }
+    },
+    {
+      "name": "android-arm64-release",
+      "displayName": "Android arm64-v8a Release",
+      "description": "Headless arm64-v8a cross build via vcpkg chainloading the NDK toolchain; needs ANDROID_NDK_HOME and VCPKG_ROOT",
+      "binaryDir": "${sourceDir}/build/android-arm64-release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
+        "VCPKG_TARGET_TRIPLET": "arm64-android-static",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-29",
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "OFF",
+        "DSD_ENABLE_TERMINAL_UI": "OFF",
+        "DSD_AUDIO_BACKEND": "none",
+        "DSD_FORCE_RADIO_PIPELINE": "ON",
+        "DSD_ENABLE_RTLSDR": "OFF",
+        "DSD_ENABLE_SOAPYSDR": "OFF",
+        "DSD_WARNINGS_AS_ERRORS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -287,6 +309,11 @@
     {
       "name": "win-msvc-release",
       "configurePreset": "win-msvc-release",
+      "configuration": "Release"
+    },
+    {
+      "name": "android-arm64-release",
+      "configurePreset": "android-arm64-release",
       "configuration": "Release"
     }
   ],
