@@ -876,6 +876,7 @@ test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot(void) {
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     state.dmrburstL = 21;
     state.dmrburstR = 21;
+    state.voice_counter[0] = 9; // clear slot filled 9 blocks before the flush
     for (int j = 0; j < 9; j++) {
         for (int i = 0; i < 160; i++) {
             state.s_l4[j][i] = 100;
@@ -893,6 +894,45 @@ test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot(void) {
     rc |= expect_int("ss18 clear slot present in left channel", last_block[0], 100);
     rc |= expect_int("ss18 locked-out companion channel mirrors clear slot", last_block[1], 100);
     rc |= expect_int("ss18 working buffers reset after playback", state.s_l4[0][0], 0);
+    return rc;
+}
+
+static int
+test_ss18_keeps_legit_silence_inside_filled_extent(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_sink_capture();
+    reset_gate_capture();
+
+    // A clear call whose decoded audio contains a genuinely all-zero block
+    // (block 4) inside the filled extent: that block is real silence in the
+    // call timeline and must still be emitted; only the never-filled tail
+    // blocks past the extent are dropped.
+    opts.audio_out = 1;
+    opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.dmrburstL = 21;
+    state.voice_counter[0] = 9;
+    for (int j = 0; j < 9; j++) {
+        if (j == 4) {
+            continue; // decoded silence: block stays all zero
+        }
+        for (int i = 0; i < 160; i++) {
+            state.s_l4[j][i] = 100;
+        }
+    }
+
+    playSynthesizedVoiceSS18(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("ss18 silence inside extent still emits all filled blocks", g_udp_blast_calls, 9);
     return rc;
 }
 
@@ -1210,6 +1250,7 @@ main(void) {
     rc |= test_dmr_ss3_enc_locked_companion_duplicates_clear_slot();
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
     rc |= test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot();
+    rc |= test_ss18_keeps_legit_silence_inside_filled_extent();
     rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
     rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();

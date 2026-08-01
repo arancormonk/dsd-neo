@@ -433,25 +433,25 @@ dsd_apply_dual_tg_audio_gate(const dsd_opts* opts, const dsd_state* state, int* 
 // A muted companion slot (encryption lockout included) has already been zeroed
 // out of the interleaved buffer, so duplicating the audible slot into the muted
 // channel can never leak undecodable audio. Always duplicating keeps a
-// locked-out companion call transparent to the clear call's playback.
+// locked-out companion call transparent to the clear call's playback. Flags are
+// taken by value: the caller's per-slot mute flags must stay untouched so the
+// mono mixer never treats a muted slot's raw frames as audible.
 static void
-dsd_duplicate_active_float_quad_to_stereo(float stereo[4][320], int* encL, int* encR) {
-    if (!*encL && *encR) {
+dsd_duplicate_active_float_quad_to_stereo(float stereo[4][320], int encL, int encR) {
+    if (!encL && encR) {
         for (int j = 0; j < 4; j++) {
             for (int i = 0; i < 320; i += 2) {
                 stereo[j][i + 1] = stereo[j][i + 0];
             }
         }
-        *encR = 0;
         return;
     }
-    if (*encL && !*encR) {
+    if (encL && !encR) {
         for (int j = 0; j < 4; j++) {
             for (int i = 0; i < 320; i += 2) {
                 stereo[j][i + 0] = stereo[j][i + 1];
             }
         }
-        *encL = 0;
     }
 }
 
@@ -529,15 +529,24 @@ dsd_interleave_s16_18_blocks(const dsd_state* state, short stereo_sf[18][320]) {
 }
 
 static void
-dsd_output_s16_18_blocks(dsd_opts* opts, dsd_state* state, short stereo_sf[18][320]) {
+dsd_output_s16_18_blocks(dsd_opts* opts, dsd_state* state, short stereo_sf[18][320], int filled_blocks) {
     if (opts->audio_out != 1) {
         return;
     }
-    // Skip never-filled blocks: partial-superframe flushes and early emission
-    // (e.g. around a companion slot's call boundaries) leave zero tail blocks
-    // that would otherwise play as inserted silence in the middle of a call.
+    if (filled_blocks < 0) {
+        filled_blocks = 0;
+    } else if (filled_blocks > 18) {
+        filled_blocks = 18;
+    }
+    // Blocks inside the filled superframe extent always play, so a legitimate
+    // all-zero stretch of decoded audio is kept as real silence. Beyond the
+    // extent, only zero blocks are dropped: they are the never-filled tails of
+    // partial-superframe flushes and early emission (e.g. around a companion
+    // slot's call boundaries) and would otherwise play as inserted silence.
+    // Non-zero blocks past the extent still play in case a caller buffered
+    // audio without advancing the voice counters.
     for (int j = 0; j < 18; j++) {
-        if (dsd_is_all_zero_s16(stereo_sf[j], 320)) {
+        if (j >= filled_blocks && dsd_is_all_zero_s16(stereo_sf[j], 320)) {
             continue;
         }
         dsd_output_s16_block(opts, state, stereo_sf[j], 160, 2);
@@ -549,6 +558,9 @@ dsd_write_s16_wav_18_blocks(dsd_opts* opts, short stereo_sf[18][320]) {
     if (opts->wav_out_f == NULL || opts->static_wav_file != 1) {
         return;
     }
+    // Unlike live playback above, static wav output intentionally keeps all 18
+    // blocks (including zero tails) so the recording preserves a continuous
+    // superframe timeline.
     for (int j = 0; j < 18; j++) {
         dsd_audio_write_wav_short_block(opts->wav_out_f, stereo_sf[j], 320, "dsd_write_s16_wav_18_blocks");
     }
@@ -925,12 +937,9 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     dsd_fs4_pop_gain_frames(opts, state, lf, rf, l_ok, r_ok);
     dsd_fs4_mix_interleaved_frames(lf, rf, encL, encR, l_ok, r_ok, stereo);
     // Duplication operates on the interleaved buffer, whose muted channel is
-    // already zeroed. The per-slot mute flags must stay untouched: the mono
-    // mixer below reads the raw lf/rf frames, and clearing a flag there would
-    // leak a muted (e.g. encryption-lockout) slot's audio into the mono mix.
-    int outL = encL;
-    int outR = encR;
-    dsd_duplicate_active_float_quad_to_stereo(stereo, &outL, &outR);
+    // already zeroed; the mono mixer below still reads the raw lf/rf frames
+    // gated by the untouched per-slot mute flags.
+    dsd_duplicate_active_float_quad_to_stereo(stereo, encL, encR);
 
     if (encL && encR) {
         goto END_FS4;
@@ -1159,8 +1168,20 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
         goto SS18_END;
     }
 
+    // Every caller emits before resetting the voice counters, so the counters
+    // still describe how many blocks of this superframe were actually filled.
+    // A muted slot's (frozen, possibly stale) counter is excluded: its buffers
+    // were zeroed by the output policy above and contribute no extent.
+    int filled_blocks = 0;
+    if (!encL && state->voice_counter[0] > filled_blocks) {
+        filled_blocks = state->voice_counter[0];
+    }
+    if (!encR && state->voice_counter[1] > filled_blocks) {
+        filled_blocks = state->voice_counter[1];
+    }
+
     dsd_interleave_s16_18_blocks(state, stereo_sf);
-    dsd_output_s16_18_blocks(opts, state, stereo_sf);
+    dsd_output_s16_18_blocks(opts, state, stereo_sf, filled_blocks);
     dsd_write_s16_wav_18_blocks(opts, stereo_sf);
 
 SS18_END:

@@ -934,6 +934,20 @@ main(void) {
     rc |= expect_eq("locked-out slot1 leaves clear slot0 counter alone", st.voice_counter[0], 7);
     rc |= expect_eq("locked-out slot1 buffers stay silent", st.s_r4[0][0], 0);
 
+    // Documented trade-off of the frozen counter: when the slot un-mutes
+    // mid-superframe it resumes writing at its frozen index instead of the
+    // companion's phase (same as a call starting on a previously idle slot),
+    // and the clear companion's counter is still untouched.
+    st.p25_p2_audio_allowed[1] = 1;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    st.dmr_soR = 0;
+    set_ess_algid(&st, 1, 0x80);
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("unmuted slot1 decodes voice again", g_mbe_calls, 2);
+    rc |= expect_eq("unmuted slot1 resumes counter at frozen index", st.voice_counter[1], 2);
+    rc |= expect_eq("unmuted slot1 still leaves clear slot0 counter alone", st.voice_counter[0], 7);
+
     dsd_state_ext_free_all(&st);
     return rc;
 }

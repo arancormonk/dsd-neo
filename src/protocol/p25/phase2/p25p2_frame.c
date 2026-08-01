@@ -932,6 +932,12 @@ p25p2_zero_voice_frame(dsd_state* state, int frame_index) {
     // resets both, so a slot that contributes no audible audio (e.g. an
     // encryption-lockout companion call) advancing its counter de-phases the
     // clear slot's cadence and forces early, zero-padded superframe emission.
+    // Accepted trade-off: a slot that un-mutes mid-superframe resumes writing
+    // at its frozen index rather than the companion's phase, skewing its audio
+    // within that one superframe until the shared reset realigns both slots.
+    // This matches how an idle slot behaves when a call starts on it
+    // mid-superframe (its counter is equally stale), which is exactly the
+    // "muted companion is indistinguishable from an idle slot" policy.
     if (state->currentslot == 0) {
         int vc_idx = state->voice_counter[0] % 18;
         DSD_MEMSET(state->f_l4[frame_index], 0, sizeof(state->f_l4[frame_index]));
