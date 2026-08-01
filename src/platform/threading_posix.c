@@ -269,7 +269,9 @@ dsd_thread_set_realtime_priority(int priority) {
 
 int
 dsd_thread_set_affinity(int cpu_index) {
-#if DSD_PLATFORM_LINUX
+/* Bionic gained pthread_setaffinity_np only in Android 15; below that the
+ * symbol does not exist, so Android takes the ENOSYS path callers tolerate. */
+#if DSD_PLATFORM_LINUX && !defined(__ANDROID__)
     cpu_set_t cpuset;
     DSD_MEMSET(&cpuset, 0, sizeof(cpuset));
     CPU_SET((unsigned)cpu_index, &cpuset);
