@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -83,7 +84,7 @@ typedef struct {
     p25_pending_announcement_t p25_pending_announcements[P25_PENDING_ANNOUNCEMENT_MAX];
     p25_iden_entry_t p25_iden_fdma[16];
     p25_iden_entry_t p25_iden_tdma[16];
-    time_t p25_enc_tg_cache_until[DSD_P25_ENC_TG_CACHE_DEPTH];
+    dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
@@ -132,9 +133,6 @@ typedef struct {
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
     uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
-    uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
-    uint8_t p25_enc_tg_cache_is_group[DSD_P25_ENC_TG_CACHE_DEPTH];
-    unsigned int p25_enc_tg_cache_next;
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_cc_prot_valid;
@@ -787,34 +785,18 @@ trunk_scan_restore_call_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->dmr_soR = snapshot->dmr_soR;
 }
 
+// The encrypted-target lockout ledger is snapshot per scan target so one
+// system's lockouts never bleed into another. The global key epoch is
+// deliberately NOT snapshot: entries restored from before a key import carry
+// a stale epoch and re-verify with one probe, exactly like live entries.
 static void
-trunk_scan_save_p25_encrypted_call_cache_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
-    DSD_MEMCPY(snapshot->p25_enc_tg_cache_until, state->p25_enc_tg_cache_until,
-               sizeof(snapshot->p25_enc_tg_cache_until));
-    DSD_MEMCPY(snapshot->p25_enc_tg_cache_tg, state->p25_enc_tg_cache_tg, sizeof(snapshot->p25_enc_tg_cache_tg));
-    DSD_MEMCPY(snapshot->p25_enc_tg_cache_is_group, state->p25_enc_tg_cache_is_group,
-               sizeof(snapshot->p25_enc_tg_cache_is_group));
-    snapshot->p25_enc_tg_cache_next = state->p25_enc_tg_cache_next;
+trunk_scan_save_enc_lockout_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    DSD_MEMCPY(snapshot->enc_lockout_entries, state->enc_lockout_entries, sizeof(snapshot->enc_lockout_entries));
 }
 
 static void
-trunk_scan_restore_p25_encrypted_call_cache_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
-    DSD_MEMCPY(state->p25_enc_tg_cache_until, snapshot->p25_enc_tg_cache_until, sizeof(state->p25_enc_tg_cache_until));
-    DSD_MEMCPY(state->p25_enc_tg_cache_tg, snapshot->p25_enc_tg_cache_tg, sizeof(state->p25_enc_tg_cache_tg));
-    DSD_MEMCPY(state->p25_enc_tg_cache_is_group, snapshot->p25_enc_tg_cache_is_group,
-               sizeof(state->p25_enc_tg_cache_is_group));
-    state->p25_enc_tg_cache_next = snapshot->p25_enc_tg_cache_next;
-}
-
-static void
-trunk_scan_clear_p25_encrypted_call_cache_snapshot(dsd_trunk_scan_snapshot* snapshot) {
-    if (!snapshot) {
-        return;
-    }
-    DSD_MEMSET(snapshot->p25_enc_tg_cache_until, 0, sizeof(snapshot->p25_enc_tg_cache_until));
-    DSD_MEMSET(snapshot->p25_enc_tg_cache_tg, 0, sizeof(snapshot->p25_enc_tg_cache_tg));
-    DSD_MEMSET(snapshot->p25_enc_tg_cache_is_group, 0, sizeof(snapshot->p25_enc_tg_cache_is_group));
-    snapshot->p25_enc_tg_cache_next = 0U;
+trunk_scan_restore_enc_lockout_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    DSD_MEMCPY(state->enc_lockout_entries, snapshot->enc_lockout_entries, sizeof(state->enc_lockout_entries));
 }
 
 static void
@@ -828,7 +810,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->trunk_cc_freq = state->trunk_cc_freq;
     DSD_MEMCPY(snapshot->p25_vc_freq, state->p25_vc_freq, sizeof(snapshot->p25_vc_freq));
     DSD_MEMCPY(snapshot->trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
-    trunk_scan_save_p25_encrypted_call_cache_snapshot(state, snapshot);
+    trunk_scan_save_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->trunk_lcn_freq, state->trunk_lcn_freq, sizeof(snapshot->trunk_lcn_freq));
     DSD_MEMCPY(snapshot->trunk_chan_map, state->trunk_chan_map, sizeof(snapshot->trunk_chan_map));
     DSD_MEMCPY(snapshot->trunk_chan_map_used, state->trunk_chan_map_used, sizeof(snapshot->trunk_chan_map_used));
@@ -862,7 +844,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->trunk_cc_freq = snapshot->trunk_cc_freq;
     DSD_MEMCPY(state->p25_vc_freq, snapshot->p25_vc_freq, sizeof(state->p25_vc_freq));
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
-    trunk_scan_restore_p25_encrypted_call_cache_snapshot(state, snapshot);
+    trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
     DSD_MEMCPY(state->trunk_chan_map, snapshot->trunk_chan_map, sizeof(state->trunk_chan_map));
     DSD_MEMCPY(state->trunk_chan_map_used, snapshot->trunk_chan_map_used, sizeof(state->trunk_chan_map_used));
@@ -1175,26 +1157,6 @@ trunk_scan_save_target_snapshot(dsd_trunk_scan_coord* coord, const dsd_state* st
 static dsd_trunk_scan_coord*
 trunk_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(dsd_trunk_scan_coord, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
-}
-
-static void
-trunk_scan_clear_p25_encrypted_call_caches(dsd_state* state) {
-    if (!state) {
-        return;
-    }
-    DSD_MEMSET(state->p25_enc_tg_cache_until, 0, sizeof(state->p25_enc_tg_cache_until));
-    DSD_MEMSET(state->p25_enc_tg_cache_tg, 0, sizeof(state->p25_enc_tg_cache_tg));
-    DSD_MEMSET(state->p25_enc_tg_cache_is_group, 0, sizeof(state->p25_enc_tg_cache_is_group));
-    state->p25_enc_tg_cache_next = 0U;
-
-    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!coord) {
-        return;
-    }
-    for (size_t i = 0; i < coord->count; i++) {
-        trunk_scan_clear_p25_encrypted_call_cache_snapshot(&coord->targets[i].snapshot);
-    }
-    trunk_scan_clear_p25_encrypted_call_cache_snapshot(&coord->scratch_snapshot);
 }
 
 static const dsd_trunk_scan_coord*
@@ -1897,7 +1859,6 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.dmr_ctx = dsd_engine_trunk_scan_active_dmr_ctx;
     hooks.tick = dsd_engine_trunk_scan_tick;
     hooks.dmr_conventional_activity = dsd_engine_trunk_scan_dmr_conventional_activity;
-    hooks.p25_encrypted_call_cache_clear = trunk_scan_clear_p25_encrypted_call_caches;
     dsd_trunk_scan_hooks_set(hooks);
 }
 

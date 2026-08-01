@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -178,7 +179,7 @@ test_lockout_ess_repeats_do_not_mint_epochs(void) {
     event_ticks();
     rc |= expect("lockout fixture blocked", g_state.p25_crypto_state[0] == DSD_P25_CRYPTO_BLOCKED);
 
-    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
     dsd_call_snapshot call;
@@ -215,7 +216,7 @@ test_identity_pending_ess_still_opens_call(void) {
     begin_identified_call();
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
     event_ticks();
-    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
 
@@ -242,7 +243,7 @@ test_reused_key_after_new_assignment_opens_call(void) {
     begin_identified_call();
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
     event_ticks();
-    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
     rc |= expect("lockout epoch recorded", g_state.p25_p1_lockout_epoch.valid != 0U);
@@ -300,7 +301,7 @@ test_stale_same_key_ess_opens_conventional_call(void) {
 
     begin_identified_call();
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
-    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     const uint64_t ended_epoch = slot0_epoch();
     rc |= expect("stale fixture lockout recorded", g_state.p25_p1_lockout_epoch.valid != 0U);
 
@@ -327,7 +328,7 @@ test_lockout_ess_window_slides_with_repeats(void) {
     begin_identified_call();
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE1, 0, TEST_ALGID, TEST_KEYID, 0x1111ULL, TEST_TG);
     event_ticks();
-    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&g_opts, &g_state, 0, TEST_TG, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     event_ticks();
     const uint64_t ended_epoch = slot0_epoch();
     rc |= expect("sliding fixture lockout recorded", g_state.p25_p1_lockout_epoch.valid != 0U);

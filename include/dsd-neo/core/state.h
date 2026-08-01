@@ -24,13 +24,13 @@
 #include <time.h>
 
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/enc_lockout.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
-    DSD_P25_ENC_TG_CACHE_DEPTH = 8,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
@@ -854,11 +854,11 @@ struct dsd_state {
     // transmissions until the inactivity timer expires.
     int p25_sm_mode;
 
-    // Transient encrypted-call cache: blocks encrypted/ambiguous voice grants after proven ENC lockout.
-    time_t p25_enc_tg_cache_until[DSD_P25_ENC_TG_CACHE_DEPTH];
-    uint32_t p25_enc_tg_cache_tg[DSD_P25_ENC_TG_CACHE_DEPTH];
-    uint8_t p25_enc_tg_cache_is_group[DSD_P25_ENC_TG_CACHE_DEPTH]; // 1=group/SG, 0=private destination
-    unsigned int p25_enc_tg_cache_next;
+    // Encrypted-target lockout ledger (session-permanent; core/enc_lockout.h).
+    // Entries at the current key epoch block encrypted voice-grant tuning;
+    // key imports bump the epoch so each target re-verifies with one probe.
+    dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
+    uint64_t enc_lockout_key_epoch;
     // Cached P25 SM tunables (seconds), resolved once at p25_sm_init_ctx()
     double p25_cfg_vc_grace_s;
     double p25_cfg_grant_voice_to_s;

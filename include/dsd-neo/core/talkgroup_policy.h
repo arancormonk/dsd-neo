@@ -52,6 +52,7 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_AUDIO = 1u << 7,
     DSD_TG_POLICY_BLOCK_RECORD = 1u << 8,
     DSD_TG_POLICY_BLOCK_STREAM = 1u << 9,
+    DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */

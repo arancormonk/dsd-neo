@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, int is_group);
+void p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, int is_group, int algid, int keyid);
 
 /**
  * Emit a decoded P25P2 MAC_PTT with the raw metadata needed to coalesce

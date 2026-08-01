@@ -6,6 +6,7 @@
 /* UI command actions — trunking domain */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -105,6 +106,14 @@ ui_handle_trunk_enc_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return 1;
 }
 
+static int
+ui_handle_enc_lockout_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)opts;
+    (void)c;
+    dsd_enc_lockout_clear_all(state);
+    return 1;
+}
+
 const struct dsd_app_command_reg dsd_app_actions_trunk[] = {
     {DSD_APP_CMD_TRUNK_TOGGLE, ui_handle_trunk_toggle},
     {DSD_APP_CMD_SCANNER_TOGGLE, ui_handle_scanner_toggle},
@@ -114,5 +123,6 @@ const struct dsd_app_command_reg dsd_app_actions_trunk[] = {
     {DSD_APP_CMD_TRUNK_PRIV_TOGGLE, ui_handle_trunk_priv_toggle},
     {DSD_APP_CMD_TRUNK_DATA_TOGGLE, ui_handle_trunk_data_toggle},
     {DSD_APP_CMD_TRUNK_ENC_TOGGLE, ui_handle_trunk_enc_toggle},
+    {DSD_APP_CMD_ENC_LOCKOUT_CLEAR, ui_handle_enc_lockout_clear},
     {0, NULL},
 };

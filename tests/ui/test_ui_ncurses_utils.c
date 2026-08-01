@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -12,7 +13,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -155,40 +155,36 @@ test_lockout_label_policy_lookup(void) {
     rc |= expect_int_eq("third target group", token.is_group, 1);
     rc |= expect_int_eq("target iterator end", ui_target_token_next("TG: 789 TGT: 456 SG: 321", &cursor, &token), 0);
 
-    const time_t now = time(NULL);
-    state->p25_enc_tg_cache_tg[0] = 21001U;
-    state->p25_enc_tg_cache_until[0] = now + 10;
-    state->p25_enc_tg_cache_is_group[0] = 1U;
+    (void)dsd_enc_lockout_note(state, 21001U, 1, 0x84, 0x1234);
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
-    rc |= expect_int_eq("transient cache requires p25 sync",
-                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
+    rc |= expect_int_eq("enc lockout badge needs no protocol sync",
+                        ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 1);
     state->synctype = DSD_SYNC_P25P1_POS;
-    rc |= expect_int_eq("transient enc cache locks active TG",
-                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 1);
-    rc |= expect_int_eq("transient enc cache locks active SG",
-                        ui_is_transient_enc_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 21001;"), 1);
-    rc |= expect_int_eq("group transient cache does not lock same numeric private target",
-                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 0);
-    state->p25_enc_tg_cache_tg[1] = 21001U;
-    state->p25_enc_tg_cache_until[1] = now + 10;
-    state->p25_enc_tg_cache_is_group[1] = 0U;
-    rc |= expect_int_eq("private transient cache locks active TGT",
-                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 1);
-    rc |= expect_int_eq("later transient target is evaluated",
-                        ui_is_transient_enc_locked_from_label(state, "TG: 999 TGT: 21001;"), 1);
-    rc |= expect_int_eq("private voice cache does not color data target",
-                        ui_is_transient_enc_locked_from_label(state, "Active Data Ch: 82F2 TGT: 21001;"), 0);
-    rc |= expect_int_eq("transient enc cache does not mutate policy lock helper",
+    rc |= expect_int_eq("enc lockout locks active TG", ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"),
+                        1);
+    rc |= expect_int_eq("enc lockout locks active SG",
+                        ui_is_enc_locked_from_label(state, "MFID90 GRG Grant: 82F2 SG: 21001;"), 1);
+    rc |= expect_int_eq("group lockout does not lock same numeric private target",
+                        ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 0);
+    (void)dsd_enc_lockout_note(state, 21001U, 0, 0x84, 0x1234);
+    rc |= expect_int_eq("private lockout locks active TGT",
+                        ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TGT: 21001;"), 1);
+    rc |= expect_int_eq("later lockout target is evaluated", ui_is_enc_locked_from_label(state, "TG: 999 TGT: 21001;"),
+                        1);
+    rc |= expect_int_eq("voice lockout does not color data target",
+                        ui_is_enc_locked_from_label(state, "Active Data Ch: 82F2 TGT: 21001;"), 0);
+    rc |= expect_int_eq("enc lockout does not mutate policy lock helper",
                         ui_is_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
-    state->p25_enc_tg_cache_until[0] = now - 1;
-    rc |= expect_int_eq("expired transient enc cache does not lock",
-                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
-    state->p25_enc_tg_cache_until[0] = now + 10;
-    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state->lastsynctype = DSD_SYNC_NONE;
-    rc |= expect_int_eq("non-p25 transient enc cache does not lock",
-                        ui_is_transient_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
+    dsd_enc_lockout_bump_key_epoch(state);
+    rc |= expect_int_eq("stale-epoch lockout does not badge",
+                        ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
+    (void)dsd_enc_lockout_note(state, 21001U, 1, 0x84, 0x1234);
+    rc |= expect_int_eq("re-confirmed lockout badges again",
+                        ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 1);
+    (void)dsd_enc_lockout_release(state, 21001U, 1);
+    rc |= expect_int_eq("released lockout does not badge",
+                        ui_is_enc_locked_from_label(state, "Active Ch: 82F2 TG: 21001;"), 0);
 
     dsd_state_ext_free_all(state);
     free(state);

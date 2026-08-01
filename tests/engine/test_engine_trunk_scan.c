@@ -5,6 +5,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -29,7 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -2553,72 +2553,63 @@ test_p25_encrypted_call_cache_state_isolated_per_target(void) {
         test_rc = 1;
     }
 
-    const time_t until0 = time(NULL) + 60;
-    state.p25_enc_tg_cache_until[0] = until0;
-    state.p25_enc_tg_cache_tg[0] = 2468U;
-    state.p25_enc_tg_cache_is_group[0] = 1U;
-    state.p25_enc_tg_cache_next = 5U;
+    (void)dsd_enc_lockout_note(&state, 2468U, 1, 0x84, 0x1234);
 
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_enc_tg_cache_until[0] != 0
-        || state.p25_enc_tg_cache_tg[0] != 0U || state.p25_enc_tg_cache_is_group[0] != 0U) {
-        DSD_FPRINTF(stderr, "encrypted-call cache leaked into target 1 active=%zu enc=%ld/%u\n",
-                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_enc_tg_cache_until[0],
-                    state.p25_enc_tg_cache_tg[0]);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dsd_enc_lockout_lookup(&state, 2468U, 1, NULL)) {
+        DSD_FPRINTF(stderr, "enc lockout ledger leaked into target 1 active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
         test_rc = 1;
     }
 
-    const time_t until1 = time(NULL) + 90;
-    state.p25_enc_tg_cache_until[0] = until1;
-    state.p25_enc_tg_cache_tg[0] = 3579U;
-    state.p25_enc_tg_cache_is_group[0] = 0U;
-    state.p25_enc_tg_cache_next = 7U;
+    (void)dsd_enc_lockout_note(&state, 3579U, 0, 0xAA, 0x0001);
 
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_enc_tg_cache_until[0] != until0
-        || state.p25_enc_tg_cache_tg[0] != 2468U || state.p25_enc_tg_cache_is_group[0] != 1U
-        || state.p25_enc_tg_cache_next != 5U) {
-        DSD_FPRINTF(stderr, "encrypted-call cache target 0 restore failed active=%zu enc=%ld/%u/%u\n",
-                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_enc_tg_cache_until[0],
-                    state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dsd_enc_lockout_entry_active(&state, 2468U, 1)
+        || dsd_enc_lockout_lookup(&state, 3579U, 0, NULL)) {
+        DSD_FPRINTF(stderr, "enc lockout target 0 restore failed active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
         test_rc = 1;
     }
 
     trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_enc_tg_cache_until[0] != until1
-        || state.p25_enc_tg_cache_tg[0] != 3579U || state.p25_enc_tg_cache_is_group[0] != 0U
-        || state.p25_enc_tg_cache_next != 7U) {
-        DSD_FPRINTF(stderr, "encrypted-call cache target 1 restore failed active=%zu enc=%ld/%u/%u\n",
-                    dsd_engine_trunk_scan_active_index(&state), (long)state.p25_enc_tg_cache_until[0],
-                    state.p25_enc_tg_cache_tg[0], state.p25_enc_tg_cache_next);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || !dsd_enc_lockout_entry_active(&state, 3579U, 0)
+        || dsd_enc_lockout_lookup(&state, 2468U, 1, NULL)) {
+        DSD_FPRINTF(stderr, "enc lockout target 1 restore failed active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
         test_rc = 1;
     }
 
-    dsd_trunk_scan_hook_p25_encrypted_call_cache_clear(&state);
-    if (state.p25_enc_tg_cache_until[0] != 0 || state.p25_enc_tg_cache_tg[0] != 0U
-        || state.p25_enc_tg_cache_is_group[0] != 0U || state.p25_enc_tg_cache_next != 0U) {
-        DSD_FPRINTF(stderr, "runtime key invalidation did not clear active target encrypted-call cache\n");
+    // Key material changed: the global epoch moves while entries stay put, so
+    // every target's lockouts (restored snapshots included) stop blocking
+    // until re-confirmed on that target.
+    dsd_enc_lockout_bump_key_epoch(&state);
+    if (!dsd_enc_lockout_lookup(&state, 3579U, 0, NULL) || dsd_enc_lockout_entry_active(&state, 3579U, 0)) {
+        DSD_FPRINTF(stderr, "key epoch bump did not invalidate the active target's lockouts\n");
         test_rc = 1;
     }
 
     trunk_scan_test_set_now(1.04);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.p25_enc_tg_cache_until[0] != 0
-        || state.p25_enc_tg_cache_tg[0] != 0U || state.p25_enc_tg_cache_is_group[0] != 0U
-        || state.p25_enc_tg_cache_next != 0U) {
-        DSD_FPRINTF(stderr, "runtime key invalidation did not clear target 0 encrypted-call snapshot\n");
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || dsd_enc_lockout_entry_active(&state, 2468U, 1)
+        || !dsd_enc_lockout_lookup(&state, 2468U, 1, NULL)) {
+        DSD_FPRINTF(stderr, "key epoch bump did not invalidate target 0's restored lockouts\n");
+        test_rc = 1;
+    }
+
+    // Re-confirmation after the epoch change re-locks the target.
+    if (dsd_enc_lockout_note(&state, 2468U, 1, 0x84, 0x1234) != 1 || !dsd_enc_lockout_entry_active(&state, 2468U, 1)) {
+        DSD_FPRINTF(stderr, "stale entry did not re-lock on re-confirmation\n");
         test_rc = 1;
     }
 
     trunk_scan_test_set_now(1.30);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.p25_enc_tg_cache_until[0] != 0
-        || state.p25_enc_tg_cache_tg[0] != 0U || state.p25_enc_tg_cache_is_group[0] != 0U
-        || state.p25_enc_tg_cache_next != 0U) {
-        DSD_FPRINTF(stderr, "runtime key invalidation did not clear target 1 encrypted-call snapshot\n");
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dsd_enc_lockout_entry_active(&state, 3579U, 0)) {
+        DSD_FPRINTF(stderr, "target 1 snapshot regained blocking without re-confirmation\n");
         test_rc = 1;
     }
 

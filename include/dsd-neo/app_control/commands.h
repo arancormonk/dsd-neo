@@ -89,6 +89,7 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TRUNK_DATA_TOGGLE = 212,
     DSD_APP_CMD_TRUNK_ENC_TOGGLE = 213,
     DSD_APP_CMD_WAV_TOGGLE = 214,
+    DSD_APP_CMD_ENC_LOCKOUT_CLEAR = 215, // forget all encrypted-target lockouts
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,

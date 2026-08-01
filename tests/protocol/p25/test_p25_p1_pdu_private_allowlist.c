@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -194,13 +195,16 @@ p25_patch_sg_key_is_clear(const dsd_state* state, int group) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits, int is_group) {
+p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int tg, int svc_bits, int is_group,
+                                int algid, int keyid) {
     (void)opts;
     (void)state;
     (void)slot;
     (void)tg;
     (void)svc_bits;
     (void)is_group;
+    (void)algid;
+    (void)keyid;
     g_enc_lockout_count++;
 }
 
@@ -247,7 +251,7 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
     (void)channel;
     (void)src;
     if (opts && state && opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0 && (svc_bits & 0x40) && tg > 0) {
-        p25_emit_enc_lockout_once_typed(opts, state, 0, tg, svc_bits, 1);
+        p25_emit_enc_lockout_once_typed(opts, state, 0, tg, svc_bits, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     }
 }
 

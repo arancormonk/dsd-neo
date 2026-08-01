@@ -28,6 +28,7 @@ uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);
 void nxdn_cipher_force(dsd_state* state, uint8_t cipher);
 void nxdn_cipher_class_reset(dsd_state* state);
 int nxdn_cipher_established_enc(const dsd_state* state);
+int nxdn_cipher_established_clear(const dsd_state* state);
 
 #ifdef __cplusplus
 }

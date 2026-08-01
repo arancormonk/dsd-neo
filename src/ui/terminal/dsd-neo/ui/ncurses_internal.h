@@ -31,7 +31,7 @@ int select_k_int_local(int* a, int n, int k);
 int cmp_int_asc(const void* a, const void* b);
 int compute_percentiles_u8(const uint8_t* src, int len, double* p50, double* p95);
 int ui_is_locked_from_label(const dsd_state* state, const char* label);
-int ui_is_transient_enc_locked_from_label(const dsd_state* state, const char* label);
+int ui_is_enc_locked_from_label(const dsd_state* state, const char* label);
 
 typedef struct {
     size_t begin;

@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -64,11 +65,12 @@ main(void) {
     state->trunk_chan_map_used[0] = 0x0123U;
     state->trunk_chan_map_used_count = 1U;
     state->trunk_chan_map_seq = 99U;
-    state->p25_enc_tg_cache_next = 3U;
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        state->p25_enc_tg_cache_until[i] = 1234567890 + i;
-        state->p25_enc_tg_cache_tg[i] = (uint32_t)(2400 + i);
-        state->p25_enc_tg_cache_is_group[i] = (uint8_t)(i % 2);
+    state->enc_lockout_key_epoch = 42U;
+    for (int i = 0; i < DSD_ENC_LOCKOUT_MAX; i++) {
+        state->enc_lockout_entries[i].in_use = 1U;
+        state->enc_lockout_entries[i].target = (uint32_t)(2400 + i);
+        state->enc_lockout_entries[i].is_group = (uint8_t)(i % 2);
+        state->enc_lockout_entries[i].key_epoch = 42U;
     }
     state->rtl_symbol_cache[0] = 1234.0f;
     state->rtl_symbol_cache[DSD_RTL_SYMBOL_CACHE_CAP - 1] = 5678.0f;
@@ -297,16 +299,16 @@ main(void) {
         return 4;
     }
 
-    if (state->p25_enc_tg_cache_next != 0U) {
-        DSD_FPRINTF(stderr, "initState did not reset P25 encrypted TG cache cursor\n");
+    if (state->enc_lockout_key_epoch != 1U) {
+        DSD_FPRINTF(stderr, "initState did not reset the enc lockout key epoch\n");
         freeState(state);
         free(state);
         return 24;
     }
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (state->p25_enc_tg_cache_until[i] != 0 || state->p25_enc_tg_cache_tg[i] != 0U
-            || state->p25_enc_tg_cache_is_group[i] != 0U) {
-            DSD_FPRINTF(stderr, "initState did not reset P25 encrypted TG cache\n");
+    for (int i = 0; i < DSD_ENC_LOCKOUT_MAX; i++) {
+        if (state->enc_lockout_entries[i].in_use != 0U || state->enc_lockout_entries[i].target != 0U
+            || state->enc_lockout_entries[i].is_group != 0U) {
+            DSD_FPRINTF(stderr, "initState did not reset the enc lockout ledger\n");
             freeState(state);
             free(state);
             return 25;
