@@ -315,7 +315,9 @@ main(void) {
 
     rc |= expect_eq("MAC Release tail emitted", g_audio_capture_calls > 0, 1);
     rc |= expect_eq("MAC Release tail left sample", g_first_audio_block[0], 321);
-    rc |= expect_eq("MAC Release tail right sample muted", g_first_audio_block[1], 0);
+    // The companion slot is masked during the tail flush, so its channel
+    // mirrors the flushed slot; the companion's own audio is never emitted.
+    rc |= expect_eq("MAC Release tail right mirrors flushed slot", g_first_audio_block[1], 321);
     rc |= expect_eq("MAC Release tail drained", st.s_l4[0][0], 0);
     rc |= expect_eq("MAC Release crypto reset after flush", st.p25_crypto_state[0], DSD_P25_CRYPTO_UNKNOWN);
     rc |= expect_eq("MAC Release retains active companion", g_return_to_cc_called, 0);

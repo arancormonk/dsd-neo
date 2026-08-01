@@ -430,21 +430,13 @@ dsd_apply_dual_tg_audio_gate(const dsd_opts* opts, const dsd_state* state, int* 
     }
 }
 
-DSD_AUDIO2_INTERNAL int
-dsd_p25p2_encrypted_lockout_slot_muted(const dsd_opts* opts, const dsd_state* state, int slot, int muted) {
-    if (!opts || !state || slot < 0 || slot > 1 || !muted) {
-        return 0;
-    }
-    return p25_crypto_companion_suppressed(state, slot);
-}
-
+// A muted companion slot (encryption lockout included) has already been zeroed
+// out of the interleaved buffer, so duplicating the audible slot into the muted
+// channel can never leak undecodable audio. Always duplicating keeps a
+// locked-out companion call transparent to the clear call's playback.
 static void
-dsd_duplicate_active_float_quad_to_stereo(const dsd_opts* opts, const dsd_state* state, float stereo[4][320], int* encL,
-                                          int* encR) {
+dsd_duplicate_active_float_quad_to_stereo(float stereo[4][320], int* encL, int* encR) {
     if (!*encL && *encR) {
-        if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 1, *encR)) {
-            return;
-        }
         for (int j = 0; j < 4; j++) {
             for (int i = 0; i < 320; i += 2) {
                 stereo[j][i + 1] = stereo[j][i + 0];
@@ -454,9 +446,6 @@ dsd_duplicate_active_float_quad_to_stereo(const dsd_opts* opts, const dsd_state*
         return;
     }
     if (*encL && !*encR) {
-        if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 0, *encL)) {
-            return;
-        }
         for (int j = 0; j < 4; j++) {
             for (int i = 0; i < 320; i += 2) {
                 stereo[j][i + 0] = stereo[j][i + 1];
@@ -544,7 +533,13 @@ dsd_output_s16_18_blocks(dsd_opts* opts, dsd_state* state, short stereo_sf[18][3
     if (opts->audio_out != 1) {
         return;
     }
+    // Skip never-filled blocks: partial-superframe flushes and early emission
+    // (e.g. around a companion slot's call boundaries) leave zero tail blocks
+    // that would otherwise play as inserted silence in the middle of a call.
     for (int j = 0; j < 18; j++) {
+        if (dsd_is_all_zero_s16(stereo_sf[j], 320)) {
+            continue;
+        }
         dsd_output_s16_block(opts, state, stereo_sf[j], 160, 2);
     }
 }
@@ -607,8 +602,11 @@ dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* s
     }
 }
 
+// As with the SS18 policy below, a muted companion slot with an active voice
+// burst must not hold its channel silent: the muted side is zeroed before the
+// copy, so duplication keeps a locked-out companion call transparent.
 static int
-dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encR) {
+dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encR != 0) {
         return 0;
     }
@@ -621,14 +619,14 @@ dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, 
     if (opts->slot_preference == 1 && state->dmrburstR == 16) {
         return 1;
     }
-    if (state->dmrburstR == 16 && state->dmrburstL != 16) {
+    if (state->dmrburstR == 16 && (state->dmrburstL != 16 || encL)) {
         return 1;
     }
     return 0;
 }
 
 static int
-dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL) {
+dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encL != 0) {
         return 0;
     }
@@ -641,7 +639,7 @@ dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, 
     if (opts->slot_preference == 0 && state->dmrburstL == 16) {
         return 1;
     }
-    if (state->dmrburstL == 16 && state->dmrburstR != 16) {
+    if (state->dmrburstL == 16 && (state->dmrburstR != 16 || encR)) {
         return 1;
     }
     return 0;
@@ -655,9 +653,9 @@ dsd_dmr_apply_stereo_output_policy_ss3(const dsd_opts* opts, dsd_state* state, i
     if (encR) {
         DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
     }
-    if (dsd_ss3_should_copy_right_to_left(opts, state, encR)) {
+    if (dsd_ss3_should_copy_right_to_left(opts, state, encL, encR)) {
         DSD_MEMCPY(state->s_l4, state->s_r4, sizeof(state->s_l4));
-    } else if (dsd_ss3_should_copy_left_to_right(opts, state, encL)) {
+    } else if (dsd_ss3_should_copy_left_to_right(opts, state, encL, encR)) {
         DSD_MEMCPY(state->s_r4, state->s_l4, sizeof(state->s_r4));
     }
 }
@@ -675,12 +673,13 @@ dsd_p25p2_apply_slot_preference_ss18(dsd_opts* opts, const dsd_state* state, uns
     }
 }
 
+// The muted companion's channel is duplicated even when its burst hint still
+// shows active voice: a muted slot (encryption lockout, group gate) is zeroed
+// before the copy, and holding its channel silent would make an undecodable
+// companion call audibly change the clear call's playback.
 static int
 dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encR != 0) {
-        return 0;
-    }
-    if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 0, encL)) {
         return 0;
     }
     if (opts->slot1_on == 0 && opts->slot2_on == 1) {
@@ -689,7 +688,7 @@ dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state,
     if (opts->slot_preference == 1 && state->dmrburstR == 21) {
         return 1;
     }
-    if (state->dmrburstR == 21 && state->dmrburstL != 21) {
+    if (state->dmrburstR == 21 && (state->dmrburstL != 21 || encL)) {
         return 1;
     }
     return 0;
@@ -700,16 +699,13 @@ dsd_ss18_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state,
     if (encL != 0) {
         return 0;
     }
-    if (dsd_p25p2_encrypted_lockout_slot_muted(opts, state, 1, encR)) {
-        return 0;
-    }
     if (opts->slot1_on == 1 && opts->slot2_on == 0) {
         return 1;
     }
     if (opts->slot_preference == 0 && state->dmrburstL == 21) {
         return 1;
     }
-    if (state->dmrburstL == 21 && state->dmrburstR != 21) {
+    if (state->dmrburstL == 21 && (state->dmrburstR != 21 || encR)) {
         return 1;
     }
     return 0;
@@ -928,7 +924,13 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
 
     dsd_fs4_pop_gain_frames(opts, state, lf, rf, l_ok, r_ok);
     dsd_fs4_mix_interleaved_frames(lf, rf, encL, encR, l_ok, r_ok, stereo);
-    dsd_duplicate_active_float_quad_to_stereo(opts, state, stereo, &encL, &encR);
+    // Duplication operates on the interleaved buffer, whose muted channel is
+    // already zeroed. The per-slot mute flags must stay untouched: the mono
+    // mixer below reads the raw lf/rf frames, and clearing a flag there would
+    // leak a muted (e.g. encryption-lockout) slot's audio into the mono mix.
+    int outL = encL;
+    int outR = encR;
+    dsd_duplicate_active_float_quad_to_stereo(stereo, &outL, &outR);
 
     if (encL && encR) {
         goto END_FS4;

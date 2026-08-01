@@ -916,6 +916,24 @@ main(void) {
     rc |= expect_eq("slot1 clear algid overrides svc: mbe calls", g_mbe_calls, 2);
     rc |= expect_eq("slot1 clear algid overrides svc: gate open", st.p25_p2_audio_allowed[1], 1);
 
+    // Regression: a muted slot (encryption-lockout companion call) must not
+    // advance its SS18 voice counter. The output trigger fires when either
+    // counter reaches 18 and resets both, so a locked-out companion advancing
+    // its counter forces early, zero-padded superframe emission that pauses
+    // the clear slot's audio at the encrypted call's boundaries.
+    reset_state(&opts, &st);
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 1;
+    st.p25_p2_audio_allowed[1] = 0;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+    st.dmr_soR = 0x40;
+    st.voice_counter[0] = 7; // clear companion call is mid-superframe
+    reset_mbe_calls();
+    process_2V(&opts, &st);
+    rc |= expect_eq("locked-out slot1 keeps voice counter frozen", st.voice_counter[1], 0);
+    rc |= expect_eq("locked-out slot1 leaves clear slot0 counter alone", st.voice_counter[0], 7);
+    rc |= expect_eq("locked-out slot1 buffers stay silent", st.s_r4[0][0], 0);
+
     dsd_state_ext_free_all(&st);
     return rc;
 }
