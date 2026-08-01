@@ -979,9 +979,18 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
 
     const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
-    if (dsd_enc_lockout_note(ctx->state, ctx->target, is_group, (int)algid, (int)kid)) {
+    // payload_algid 0 means the privacy type never resolved (e.g. Motorola
+    // Basic Privacy signaled only by the service option): record the unknown
+    // sentinel rather than a literal ALGID 0, which reads as clear.
+    const int note_algid = (algid == 0U) ? DSD_ENC_LOCKOUT_ALGID_UNKNOWN : (int)algid;
+    if (dsd_enc_lockout_note(ctx->state, ctx->target, is_group, note_algid, (int)kid)) {
         dmr_flco_emit_enc_lockout_event(ctx);
     }
+    // Deliberately unconditional (the event above fires once per lock, the
+    // release action fires per corroborated LC): retrying the synthesized
+    // P_CLEAR until the trunking layer actually drops the channel is what
+    // lets an already-locked target still force a release -- the old
+    // policy-row path skipped this whenever the target had a label.
     dmr_flco_emit_enc_lockout_action(ctx);
 }
 

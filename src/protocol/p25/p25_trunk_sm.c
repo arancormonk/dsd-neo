@@ -4025,7 +4025,10 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
         // A call that classifies clear or decryptable releases any retained
         // lockout entry: this is how a stale-epoch probe converges after new
         // key material, and how mixed clear/encrypted talkgroups recover.
-        if (p25_crypto_audio_ready(state, slot)) {
+        // Only while lockout is enabled, though -- in follow mode the ledger
+        // is suspended, not erased, so entries survive a temporary toggle to
+        // following encrypted calls without owing a fresh probe.
+        if (opts->trunk_tune_enc_calls == 0 && p25_crypto_audio_ready(state, slot)) {
             int rel_is_group = 1;
             const int rel_target = p25_enc_lockout_target(&ctx->slots[slot], tg, &rel_is_group);
             if (rel_target > 0) {

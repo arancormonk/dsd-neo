@@ -2287,6 +2287,10 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         watchdog_event_current(opts, state, 0);
     }
 
+    // Deliberately unconditional (the event above fires once per lock, the
+    // disconnect fires per corroborated VCALL): retrying the synthesized
+    // disconnect until the trunking layer actually drops the channel is what
+    // lets an already-locked target still force a release.
     uint8_t dbits[96];
     DSD_MEMSET(dbits, 0, sizeof(dbits));
     dbits[3] = 1;

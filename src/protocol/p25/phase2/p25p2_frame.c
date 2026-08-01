@@ -938,6 +938,13 @@ p25p2_zero_voice_frame(dsd_state* state, int frame_index) {
     // This matches how an idle slot behaves when a call starts on it
     // mid-superframe (its counter is equally stale), which is exactly the
     // "muted companion is indistinguishable from an idle slot" policy.
+    // Because the counter is frozen, vc_idx is constant for the superframe and
+    // only that one s_l4/s_r4 block is re-zeroed here; the other 17 keep stale
+    // pre-mute audio. That is safe only because every downstream consumer
+    // (dsd_p25p2_apply_stereo_output_policy_ss18 and
+    // dsd_audio_reset_short_stereo_working_state) memsets the muted channel
+    // before copying/reusing it -- if that ever changes, this function must
+    // zero the full 18-block extent instead of one slot.
     if (state->currentslot == 0) {
         int vc_idx = state->voice_counter[0] % 18;
         DSD_MEMSET(state->f_l4[frame_index], 0, sizeof(state->f_l4[frame_index]));

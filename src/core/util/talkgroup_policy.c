@@ -900,7 +900,7 @@ tg_policy_apply_private_tune_blocks(const dsd_opts* opts, int encrypted, int dat
 // Encrypted-target lockout: a ledger entry confirmed at the current key
 // epoch blocks voice tuning for the session. Data calls are exempt, and the
 // ledger itself is inert while encrypted-call tuning is enabled.
-static void DSD_ATTR_USED
+static void
 tg_policy_apply_enc_lockout_block(const dsd_opts* opts, const dsd_state* state, uint32_t target, int is_group,
                                   int data_call, dsd_tg_policy_decision* out) {
     if (!out || data_call) {

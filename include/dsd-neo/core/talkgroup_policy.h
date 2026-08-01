@@ -31,6 +31,9 @@ typedef enum {
     DSD_TG_POLICY_SOURCE_IMPORTED = 0,
     DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS = 1,
     DSD_TG_POLICY_SOURCE_USER_LOCKOUT = 2,
+    // Legacy/reserved: encrypted-call lockout no longer writes policy rows
+    // (it lives in the core/enc_lockout.h ledger), but the value may still
+    // appear in serialized policy tables from older sessions. Do not reuse.
     DSD_TG_POLICY_SOURCE_ENC_LOCKOUT = 3,
 } dsd_tg_policy_entry_source;
 

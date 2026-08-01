@@ -445,6 +445,30 @@ test_cc_noise_ess_does_not_mint_epoch(void) {
     return rc;
 }
 
+/* Follow mode suspends the ledger rather than erasing it: a clear or
+ * decryptable classification while the user follows encrypted calls must not
+ * release a retained lockout entry, or re-enabling lockout would owe a fresh
+ * silent probe for every previously locked target. The same evidence with
+ * lockout enabled does release the entry. */
+static int
+test_follow_mode_decryptable_retains_ledger_entry(void) {
+    int rc = 0;
+    reset_test_state();
+    (void)dsd_enc_lockout_note(&g_state, TEST_TG, 1, TEST_ALGID, TEST_KEYID);
+    rc |= expect("follow fixture entry armed", dsd_enc_lockout_entry_active(&g_state, TEST_TG, 1));
+
+    begin_identified_call();
+    g_opts.trunk_tune_enc_calls = 1;
+    g_state.p25_crypto_state[0] = DSD_P25_CRYPTO_DECRYPTABLE;
+    p25_sm_emit_enc(&g_opts, &g_state, 0, TEST_ALGID, TEST_KEYID, TEST_TG);
+    rc |= expect("follow-mode decryptable retains entry", dsd_enc_lockout_entry_active(&g_state, TEST_TG, 1));
+
+    g_opts.trunk_tune_enc_calls = 0;
+    p25_sm_emit_enc(&g_opts, &g_state, 0, TEST_ALGID, TEST_KEYID, TEST_TG);
+    rc |= expect("lockout-mode decryptable releases entry", !dsd_enc_lockout_lookup(&g_state, TEST_TG, 1, NULL));
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -457,6 +481,7 @@ main(void) {
     rc |= test_reused_key_after_new_assignment_opens_call();
     rc |= test_ess_after_cryptoless_end_still_opens_call();
     rc |= test_stale_same_key_ess_opens_conventional_call();
+    rc |= test_follow_mode_decryptable_retains_ledger_entry();
 
     if (g_state.event_history_s != NULL) {
         free(g_state.event_history_s);

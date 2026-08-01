@@ -1562,7 +1562,9 @@ test_encrypted_flco_lockout_inserts_policy_and_event_history(void) {
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_enc_lockout_entry ledger_entry;
     assert(dsd_enc_lockout_lookup(&state, 1234U, 1, &ledger_entry) == 1);
-    assert(ledger_entry.algid == 0);
+    // The privacy type never resolved (service-option bit only), so the entry
+    // must carry the unknown sentinel, not ALGID 0 (which reads as clear).
+    assert(ledger_entry.algid == DSD_ENC_LOCKOUT_ALGID_UNKNOWN);
     assert(strstr(history[0].Event_History_Items[0].internal_str, "Target: 1234; has been locked out;") != NULL);
     dsd_state_ext_free_all(&state);
 }

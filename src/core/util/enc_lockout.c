@@ -11,6 +11,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <stdio.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -32,18 +33,42 @@ enc_lockout_find_const(const dsd_state* state, uint32_t target, int is_group) {
 }
 
 static dsd_enc_lockout_entry*
+enc_lockout_find(dsd_state* state, uint32_t target, int is_group) {
+    if (!state || target == 0U) {
+        return NULL;
+    }
+    const uint8_t want_group = is_group ? 1U : 0U;
+    for (int i = 0; i < DSD_ENC_LOCKOUT_MAX; i++) {
+        dsd_enc_lockout_entry* e = &state->enc_lockout_entries[i];
+        if (e->in_use && e->target == target && e->is_group == want_group) {
+            return e;
+        }
+    }
+    return NULL;
+}
+
+static dsd_enc_lockout_entry*
 enc_lockout_choose_slot(dsd_state* state) {
-    dsd_enc_lockout_entry* oldest = NULL;
+    // Eviction order: free slot, then a stale-epoch entry (no longer blocking
+    // until re-confirmed, so dropping it only costs the one probe it already
+    // owed), then the least recently confirmed current-epoch entry.
+    dsd_enc_lockout_entry* victim = NULL;
     for (int i = 0; i < DSD_ENC_LOCKOUT_MAX; i++) {
         dsd_enc_lockout_entry* e = &state->enc_lockout_entries[i];
         if (!e->in_use) {
             return e;
         }
-        if (!oldest || e->last_seen < oldest->last_seen) {
-            oldest = e;
+        const int e_stale = (e->key_epoch != state->enc_lockout_key_epoch);
+        const int victim_stale = victim && (victim->key_epoch != state->enc_lockout_key_epoch);
+        if (!victim || (e_stale && !victim_stale) || (e_stale == victim_stale && e->last_seen < victim->last_seen)) {
+            victim = e;
         }
     }
-    return oldest;
+    if (victim) {
+        DSD_FPRINTF(stderr, "enc lockout: ledger full (%d entries); evicting %s %u -- it re-probes on its next grant\n",
+                    (int)DSD_ENC_LOCKOUT_MAX, victim->is_group ? "TG" : "target", victim->target);
+    }
+    return victim;
 }
 
 int
@@ -53,13 +78,16 @@ dsd_enc_lockout_note(dsd_state* state, uint32_t target, int is_group, int algid,
     }
 
     const time_t now = time(NULL);
-    dsd_enc_lockout_entry* e = (dsd_enc_lockout_entry*)enc_lockout_find_const(state, target, is_group);
+    dsd_enc_lockout_entry* e = enc_lockout_find(state, target, is_group);
     int newly_locking = 0;
     if (!e) {
         e = enc_lockout_choose_slot(state);
         if (!e) {
             return 0;
         }
+        // in_use drops first: UI threads read the ledger unsynchronized, and
+        // memset clears the identity fields before the trailing in_use flag.
+        e->in_use = 0;
         DSD_MEMSET(e, 0, sizeof(*e));
         e->target = target;
         e->is_group = is_group ? 1U : 0U;
@@ -115,13 +143,13 @@ dsd_enc_lockout_release(dsd_state* state, uint32_t target, int is_group) {
     if (!state || target == 0U) {
         return 0;
     }
-    const uint8_t want_group = is_group ? 1U : 0U;
-    for (int i = 0; i < DSD_ENC_LOCKOUT_MAX; i++) {
-        dsd_enc_lockout_entry* e = &state->enc_lockout_entries[i];
-        if (e->in_use && e->target == target && e->is_group == want_group) {
-            DSD_MEMSET(e, 0, sizeof(*e));
-            return 1;
-        }
+    dsd_enc_lockout_entry* e = enc_lockout_find(state, target, is_group);
+    if (e) {
+        // in_use drops first so unsynchronized UI readers never see a live
+        // flag beside a partially cleared identity.
+        e->in_use = 0;
+        DSD_MEMSET(e, 0, sizeof(*e));
+        return 1;
     }
     return 0;
 }

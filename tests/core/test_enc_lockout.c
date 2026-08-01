@@ -107,6 +107,26 @@ main(void) {
     rc |= expect_true("overflow still locks new target", dsd_enc_lockout_entry_active(state, 5000U, 1));
     rc |= expect_true("overflow keeps table at capacity", dsd_enc_lockout_active_count(state) == DSD_ENC_LOCKOUT_MAX);
 
+    // Eviction prefers a stale-epoch entry (no longer blocking anyway) over
+    // current-epoch entries, regardless of recency.
+    dsd_enc_lockout_clear_all(state);
+    for (uint32_t i = 0; i < (uint32_t)DSD_ENC_LOCKOUT_MAX; i++) {
+        (void)dsd_enc_lockout_note(state, 2000U + i, 1, 0x84, (int)i);
+    }
+    dsd_enc_lockout_bump_key_epoch(state);
+    for (uint32_t i = 0; i < (uint32_t)DSD_ENC_LOCKOUT_MAX; i++) {
+        if (i == 37U) {
+            continue; // stays at the stale epoch
+        }
+        (void)dsd_enc_lockout_note(state, 2000U + i, 1, 0x84, (int)i);
+    }
+    (void)dsd_enc_lockout_note(state, 6000U, 1, 0x84, 7);
+    rc |= expect_true("overflow evicts the stale entry first", !dsd_enc_lockout_lookup(state, 2037U, 1, NULL));
+    rc |= expect_true("current-epoch entries survive eviction",
+                      dsd_enc_lockout_entry_active(state, 2000U, 1)
+                          && dsd_enc_lockout_entry_active(state, 2000U + (uint32_t)DSD_ENC_LOCKOUT_MAX - 1U, 1));
+    rc |= expect_true("new target locked after stale eviction", dsd_enc_lockout_entry_active(state, 6000U, 1));
+
     free(state);
     free(opts);
     return rc;
