@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1852,7 +1853,7 @@ main(void) {
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_emit_enc_lockout_once_typed(&opts, &state, 0, 0x1234, /*svc_bits*/ 0, 1);
+        p25_emit_enc_lockout_once_typed(&opts, &state, 0, 0x1234, /*svc_bits*/ 0, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
 
         MAC[1] = 0x42; // Group Voice Channel Grant Update - Implicit
         MAC[2] = 0x10;
@@ -2316,7 +2317,8 @@ main(void) {
         state.p25_iden_fdma[iden].populated = 1;
         state.p25_chan_tdma_explicit[iden] = 1;
         p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
-        p25_emit_enc_lockout_once_typed(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40, 1);
+        p25_emit_enc_lockout_once_typed(&opts, &state, 0, 0x1234, /*svc_bits*/ 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN,
+                                        0);
 
         MAC[1] = 0x25;
         MAC[2] = 0x40; // cached encrypted group

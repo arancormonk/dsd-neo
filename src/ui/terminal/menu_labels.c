@@ -10,6 +10,7 @@
 
 #include "menu_labels.h"
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/io/tcp_input.h>
@@ -169,7 +170,15 @@ const char*
 lbl_p25_enc_lockout(const void* v, char* b, size_t n) {
     UiCtx* c = (UiCtx*)v;
     int on = (c && c->opts) ? ((c->opts->trunk_tune_enc_calls == 0) ? 1 : 0) : 0;
-    DSD_SNPRINTF(b, n, "P25 Encrypted Call Lockout [%s]", on ? "On" : "Off");
+    DSD_SNPRINTF(b, n, "Encrypted Call Lockout [%s]", on ? "On" : "Off");
+    return b;
+}
+
+const char*
+lbl_enc_lockout_clear(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    const int count = (c && c->state) ? dsd_enc_lockout_active_count(c->state) : 0;
+    DSD_SNPRINTF(b, n, "Clear Encryption Lockouts [%d]", count);
     return b;
 }
 

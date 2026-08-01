@@ -327,6 +327,12 @@ act_p25_enc_lockout(void* v) {
 }
 
 void
+act_enc_lockout_clear(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_action(DSD_APP_CMD_ENC_LOCKOUT_CLEAR);
+}
+
+void
 act_setmod_bw(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_int_async("Setmod BW (Hz)", c->opts->setmod_bw, cb_setmod_bw, c);

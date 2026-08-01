@@ -35,6 +35,7 @@ const char* lbl_trunk(const void* v, char* b, size_t n);
 const char* lbl_scan(const void* v, char* b, size_t n);
 const char* lbl_lcw(const void* v, char* b, size_t n);
 const char* lbl_p25_enc_lockout(const void* v, char* b, size_t n);
+const char* lbl_enc_lockout_clear(const void* v, char* b, size_t n);
 const char* lbl_crc_relax(const void* v, char* b, size_t n);
 const char* lbl_allow(const void* v, char* b, size_t n);
 const char* lbl_tune_group(const void* v, char* b, size_t n);

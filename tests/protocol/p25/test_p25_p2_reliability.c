@@ -1134,7 +1134,9 @@ test_duid_abort_resolves_staged_rekey(void) {
     rc |= expect_int("abort rekey partial drain calls", g_ss18_calls, 1);
     rc |= expect_int("abort rekey pending during drain", g_ss18_pending_at_call, 1);
     rc |= expect_int("abort rekey old key during drain", g_ss18_keyid_at_call, 0x2468);
-    rc |= expect_int("abort rekey partial frame count", g_ss18_voice_count_at_call, 2);
+    // The 2V frames here are muted (slot gate closed), and muted frames no
+    // longer advance voice_counter, so the drain sees an empty buffer.
+    rc |= expect_int("abort rekey partial frame count", g_ss18_voice_count_at_call, 0);
     rc |= expect_int("abort rekey transition cleared", state.p25_p2_rekey[0].pending, 0);
     rc |= expect_int("abort rekey alg promoted", state.payload_algid, 0xAA);
     rc |= expect_int("abort rekey key promoted", state.payload_keyid, 0x1357);

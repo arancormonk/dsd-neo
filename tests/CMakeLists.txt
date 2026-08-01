@@ -1299,6 +1299,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_trunk.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_logging.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
 target_include_directories(
     dsd-neo_test_app_control_actions
@@ -1348,6 +1350,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_labels
         ui/test_ui_menu_labels.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels
@@ -1362,6 +1365,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_labels_radio
         ui/test_ui_menu_labels_radio.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_labels.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     )
     target_include_directories(
         dsd-neo_test_ui_menu_labels_radio
@@ -2031,6 +2035,7 @@ add_executable(
     dsd-neo_test_app_control_snapshot_event_history
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -2619,10 +2624,19 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_talkgroup_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_TALKGROUP_POLICY COMMAND dsd-neo_test_core_talkgroup_policy)
 
+add_executable(dsd-neo_test_enc_lockout core/test_enc_lockout.c)
+target_include_directories(
+    dsd-neo_test_enc_lockout
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_enc_lockout PRIVATE dsd-neo_core)
+add_test(NAME CORE_ENC_LOCKOUT COMMAND dsd-neo_test_enc_lockout)
+
 add_executable(
     dsd-neo_test_core_tg_policy_alloc_fail
     core/test_core_tg_policy_alloc_fail.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_compile_definitions(
@@ -3217,6 +3231,7 @@ add_executable(
     dsd-neo_test_engine_trunk_scan
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan
@@ -4908,6 +4923,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_cmove.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
@@ -4937,6 +4953,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_force_release.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
@@ -4966,6 +4983,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_move_release.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
@@ -4995,6 +5013,7 @@ add_executable(
     protocol/dmr/test_dmr_t3_ann_wd_tscc.c
     ${PROJECT_SOURCE_DIR}/src/core/time/dsd_time_state.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
@@ -5951,6 +5970,7 @@ add_executable(
     protocol/dmr/test_dmr_talker_alias_header_len.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
 )
 target_include_directories(
@@ -6146,6 +6166,7 @@ add_executable(
     protocol/p25/test_p25_p1_pdu_private_allowlist.c
     ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase1/p25p1_pdu_trunking.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )

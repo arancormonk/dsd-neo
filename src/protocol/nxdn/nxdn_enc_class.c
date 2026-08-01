@@ -89,3 +89,8 @@ int
 nxdn_cipher_established_enc(const dsd_state* state) {
     return state->nxdn_cipher_class > 1U && state->nxdn_cipher_class_est != 0U;
 }
+
+int
+nxdn_cipher_established_clear(const dsd_state* state) {
+    return state->nxdn_cipher_class == 1U && state->nxdn_cipher_class_est != 0U;
+}

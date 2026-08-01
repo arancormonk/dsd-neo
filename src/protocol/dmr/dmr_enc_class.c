@@ -97,3 +97,9 @@ dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot) {
     const uint8_t idx = dmr_enc_class_slot_index(slot);
     return state->dmr_enc_class[idx] == DMR_ENC_CLASS_ENC && state->dmr_enc_class_est[idx] != 0U;
 }
+
+int
+dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot) {
+    const uint8_t idx = dmr_enc_class_slot_index(slot);
+    return state->dmr_enc_class[idx] == DMR_ENC_CLASS_CLEAR && state->dmr_enc_class_est[idx] != 0U;
+}

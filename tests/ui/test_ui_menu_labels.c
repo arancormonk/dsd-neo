@@ -124,7 +124,7 @@ test_visibility_and_state_labels(void) {
     opts.p25_lcw_retune = 1;
     rc |= expect_str("lcw active", lbl_lcw(&ctx, b, sizeof(b)), "Toggle P25 LCW Retune [Active]");
     opts.trunk_tune_enc_calls = 0;
-    rc |= expect_str("p25 enc lockout on", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "P25 Encrypted Call Lockout [On]");
+    rc |= expect_str("enc lockout on", lbl_p25_enc_lockout(&ctx, b, sizeof(b)), "Encrypted Call Lockout [On]");
     opts.aggressive_framesync = 0;
     rc |= expect_str("crc relaxed active", lbl_crc_relax(&ctx, b, sizeof(b)), "Toggle Relaxed CRC checks [Active]");
     opts.trunk_use_allow_list = 1;

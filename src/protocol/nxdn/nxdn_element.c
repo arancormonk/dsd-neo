@@ -19,6 +19,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
@@ -2247,40 +2248,35 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
     }
 }
 
-static int
-nxdn_vcall_lockout_label(dsd_state* state, uint16_t destination_id, char gm[8], char gn[50]) {
-    dsd_tg_policy_entry lockout_entry;
-    if (destination_id != 0 && dsd_tg_policy_lookup_label(state, destination_id, gm, 8, gn, 50)) {
-        return 1;
-    }
-    if (dsd_tg_policy_make_exact_entry(destination_id, "DE", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
-            == 0
-        && dsd_tg_policy_upsert_exact(state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0) {
-        DSD_SNPRINTF(gm, 8, "%s", "DE");
-        DSD_SNPRINTF(gn, 50, "%s", "ENC LO");
-        return 0;
-    }
-    return 1;
-}
-
 static void
 nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (opts->trunk_enable != 1 || opts->trunk_tune_enc_calls != 0 || info->message_type != 0x01U
-        || state->dmr_encL != 1) {
+        || info->destination_id == 0) {
         return;
     }
-    // The blocking talkgroup entry is permanent for the session and the synthesized disconnect
-    // drops the channel, so the lockout acts only on CRC-verified, corroborated evidence: a
-    // lone non-clear observation stays tentative (or quarantined) in the hysteresis above and
-    // must repeat -- one superframe -- before it may lock the talkgroup out.
+    const int is_group = (info->call_type == 4U) ? 0 : 1;
+    if (state->dmr_encL != 1) {
+        // Corroborated clear -- or encrypted-but-decryptable -- voice on this
+        // target releases any retained lockout entry so a talkgroup that
+        // stopped encrypting (or gained a key) recovers.
+        const int established_recoverable =
+            nxdn_cipher_established_clear(state)
+            || (nxdn_cipher_established_enc(state) && nxdn_vcall_has_key(state, (uint8_t)state->nxdn_cipher_type));
+        if (state->NxdnElementsContent.VCallCrcIsGood != 0U && established_recoverable) {
+            (void)dsd_enc_lockout_release(state, info->destination_id, is_group);
+        }
+        return;
+    }
+    // The lockout entry is permanent for the session and the synthesized disconnect drops the
+    // channel, so the lockout acts only on CRC-verified, corroborated evidence: a lone
+    // non-clear observation stays tentative (or quarantined) in the hysteresis above and must
+    // repeat -- one superframe -- before it may lock the talkgroup out.
     if (state->NxdnElementsContent.VCallCrcIsGood == 0U || !nxdn_cipher_established_enc(state)) {
         return;
     }
 
-    char gm[8] = {0};
-    char gn[50] = {0};
-    const int locked = nxdn_vcall_lockout_label(state, info->destination_id, gm, gn);
-    if (info->destination_id != 0 && locked == 0) {
+    if (dsd_enc_lockout_note(state, info->destination_id, is_group, (int)state->nxdn_cipher_type,
+                             (int)state->nxdn_key)) {
         dsd_event_history_transaction transaction;
         dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[0].Event_History_Items[0].internal_str,
@@ -2291,13 +2287,15 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         watchdog_event_current(opts, state, 0);
     }
 
+    // Deliberately unconditional (the event above fires once per lock, the
+    // disconnect fires per corroborated VCALL): retrying the synthesized
+    // disconnect until the trunking layer actually drops the channel is what
+    // lets an already-locked target still force a release.
     uint8_t dbits[96];
     DSD_MEMSET(dbits, 0, sizeof(dbits));
     dbits[3] = 1;
     dbits[7] = 1;
-    if ((strcmp(gm, "DE") == 0) && (strcmp(gn, "ENC LO") == 0)) {
-        NXDN_Elements_Content_decode(opts, state, 1, dbits, sizeof(dbits));
-    }
+    NXDN_Elements_Content_decode(opts, state, 1, dbits, sizeof(dbits));
 }
 
 // Release and disconnect variants that reach nxdn_vcall_process. TX_REL_EX (0x07) ends the epoch

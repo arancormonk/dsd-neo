@@ -11,6 +11,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
@@ -32,7 +33,6 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
-#include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -332,6 +332,10 @@ ui_cmd_reset_key_mute_state(dsd_opts* opts, dsd_state* state) {
     state->keyloader = 0;
     state->payload_keyid = state->payload_keyidR = 0;
     opts->dmr_mute_encL = opts->dmr_mute_encR = 0;
+    // Every direct key mutation funnels through here: invalidate the
+    // encrypted-target lockout ledger so each locked target re-verifies once
+    // against the new key material.
+    dsd_enc_lockout_bump_key_epoch(state);
 }
 
 static int
@@ -365,7 +369,6 @@ apply_cmd_key_management_basic(dsd_opts* opts, dsd_state* state, const struct ds
                 state->R = v;
                 state->RR = v;
                 ui_cmd_reset_key_mute_state(opts, state);
-                p25_sm_clear_encrypted_call_cache(state);
             }
             return 1;
         }
@@ -436,7 +439,6 @@ apply_cmd_key_aes_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     state->K4 = 0ULL;
     state->hytera_key_segments = 0U;
     ui_cmd_reset_key_mute_state(opts, state);
-    p25_sm_clear_encrypted_call_cache(state);
     return 1;
 }
 
@@ -490,6 +492,7 @@ apply_cmd_key_management_stream_keys(const dsd_opts* opts, dsd_state* state, con
             char s[256];
             if (ui_cmd_copy_payload_string(c, s, entries[i].payload_cap)) {
                 entries[i].fn(state, s, opts->show_keys);
+                dsd_enc_lockout_bump_key_epoch(state);
             }
             return 1;
         }
@@ -1438,7 +1441,7 @@ ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct dsd
             int rc = svc_import_keys_dec(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
-                p25_sm_clear_encrypted_call_cache(state);
+                dsd_enc_lockout_bump_key_epoch(state);
                 ui_set_toast(state, 3, "Applied: Keys (DEC) imported -> %s", path);
             } else {
                 ui_set_toast(state, 4, "Failed: Keys (DEC) import -> %s", path);
@@ -1457,7 +1460,7 @@ ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct dsd
             int rc = svc_import_keys_hex(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
-                p25_sm_clear_encrypted_call_cache(state);
+                dsd_enc_lockout_bump_key_epoch(state);
                 ui_set_toast(state, 3, "Applied: Keys (HEX) imported -> %s", path);
             } else {
                 ui_set_toast(state, 4, "Failed: Keys (HEX) import -> %s", path);
@@ -2224,6 +2227,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_TRUNK_PRIV_TOGGLE,
     DSD_APP_CMD_TRUNK_DATA_TOGGLE,
     DSD_APP_CMD_TRUNK_ENC_TOGGLE,
+    DSD_APP_CMD_ENC_LOCKOUT_CLEAR,
     DSD_APP_CMD_QUIT,
     DSD_APP_CMD_FORCE_PRIV_TOGGLE,
     DSD_APP_CMD_FORCE_RC4_TOGGLE,
@@ -2493,6 +2497,7 @@ apply_cmd_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
             } else {
                 state->M = 1;
             }
+            dsd_enc_lockout_bump_key_epoch(state);
             return 1;
         case DSD_APP_CMD_FORCE_RC4_TOGGLE:
             if (!state) {
@@ -2503,6 +2508,7 @@ apply_cmd_basic_a(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
             } else {
                 state->M = 0x21;
             }
+            dsd_enc_lockout_bump_key_epoch(state);
             return 1;
         case DSD_APP_CMD_TOGGLE_COMPACT:
             opts->frontend_terminal_display.terminal_compact = opts->frontend_terminal_display.terminal_compact ? 0 : 1;

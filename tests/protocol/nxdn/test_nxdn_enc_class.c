@@ -13,6 +13,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -21,7 +22,6 @@
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -226,16 +226,18 @@ test_vcall_enc_lockout_requires_corroboration(void) {
     NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 2U);
     assert(state.dmr_encL == 1);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
 
-    // The matching repeat corroborates and the lockout acts.
+    // The matching repeat corroborates and the lockout acts -- in the session
+    // ledger, never as a talkgroup-policy row.
     build_vcall(bits, 2U, 5U, 100U, 1234U);
     NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    dsd_enc_lockout_entry ledger_entry;
+    assert(dsd_enc_lockout_lookup(&state, 1234U, 1, &ledger_entry) == 1);
+    assert(ledger_entry.algid == 2);
     assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lookup.entry.mode, "DE") == 0);
-    assert(strcmp(lookup.entry.name, "ENC LO") == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
     dsd_state_ext_free_all(&state);
 }
 
@@ -254,6 +256,7 @@ test_crc_failed_vcall_mutates_nothing(void) {
     assert(state.nxdn_cipher_type == 0U);
     assert(state.dmr_encL == 0);
     assert(nxdn_cipher_established_enc(&state) == 0);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
     assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
     assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
     dsd_state_ext_free_all(&state);
@@ -265,7 +268,6 @@ test_lone_contradicting_vcall_does_not_flap_established_clear(void) {
     static dsd_state state;
     static Event_History_I history[2];
     uint8_t bits[96];
-    dsd_tg_policy_lookup lookup;
     dsd_call_snapshot call;
 
     reset_fixture(&opts, &state, history);
@@ -282,8 +284,7 @@ test_lone_contradicting_vcall_does_not_flap_established_clear(void) {
     NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 0U);
     assert(state.dmr_encL == 0);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.crypto == DSD_CALL_CRYPTO_CLEAR);
     assert(call.audio_permitted == 1U);
@@ -293,9 +294,7 @@ test_lone_contradicting_vcall_does_not_flap_established_clear(void) {
     build_vcall(bits, 2U, 5U, 100U, 1234U);
     NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 2U);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lookup.entry.mode, "DE") == 0);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_state_ext_free_all(&state);
 }
 

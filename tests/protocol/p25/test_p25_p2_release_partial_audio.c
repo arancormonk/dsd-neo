@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -190,7 +191,7 @@ main(void) {
     // A synthetic pre-tune lockout is a notice, not the end of a call.
     g_finalizing_notice_called = 0;
     g_nonfinalizing_notice_called = 0;
-    p25_emit_enc_lockout_once_typed(&opts, &st, 0U, 4321, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&opts, &st, 0U, 4321, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     rc |= expect_eq_int("pre-tune lockout uses nonfinalizing notice", g_nonfinalizing_notice_called, 1);
     rc |= expect_eq_int("pre-tune lockout avoids finalizing notice", g_finalizing_notice_called, 0);
 

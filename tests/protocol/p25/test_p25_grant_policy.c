@@ -8,6 +8,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -132,22 +133,8 @@ tg_policy_is_absent(const dsd_state* st, uint32_t tg) {
 }
 
 static int
-enc_call_cache_index(const dsd_state* st, uint32_t target, int is_group) {
-    if (!st) {
-        return -1;
-    }
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (st->p25_enc_tg_cache_tg[i] == target && st->p25_enc_tg_cache_is_group[i] == (uint8_t)(is_group ? 1 : 0)
-            && st->p25_enc_tg_cache_until[i] > 0) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static int
 enc_call_cache_is_absent(const dsd_state* st, uint32_t target, int is_group) {
-    return enc_call_cache_index(st, target, is_group) < 0;
+    return !dsd_enc_lockout_entry_active(st, target, is_group);
 }
 
 static int
@@ -370,13 +357,12 @@ main(void) {
 
         rc |= expect_true("missing AES key classifies probe blocked",
                           classify_current_call_without_key(&cache_opts, &cache_st, 1300) == DSD_P25_CRYPTO_BLOCKED);
-        int cache_idx = enc_call_cache_index(&cache_st, 1300U, 1);
-        rc |= expect_true("blocked group probe arms typed cache", cache_idx >= 0);
+        rc |= expect_true("blocked group probe arms typed lockout", !enc_call_cache_is_absent(&cache_st, 1300U, 1));
         mark_cc_reacquired(&cache_st);
-        if (cache_idx >= 0) {
-            cache_st.p25_enc_tg_cache_until[cache_idx] = time(NULL) + 1;
-        }
-        time_t short_until = (cache_idx >= 0) ? cache_st.p25_enc_tg_cache_until[cache_idx] : 0;
+        dsd_enc_lockout_entry lockout_entry;
+        rc |= expect_true("blocked probe records crypto evidence",
+                          dsd_enc_lockout_lookup(&cache_st, 1300U, 1, &lockout_entry) && lockout_entry.algid == 0x84
+                              && lockout_entry.keyid == 0x2714);
         before = cache_st.p25_sm_tune_count;
         cache_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
@@ -387,12 +373,7 @@ main(void) {
                                        .src = 2301,
                                        .svc_bits = P25_SM_SVC_UNKNOWN,
                                        .is_group = 1});
-        rc |= expect_true("unknown-svc grant suppressed by blocked-call cache", cache_st.p25_sm_tune_count == before);
-        // An ambiguous update carries no encryption evidence: it may not slide
-        // the expiry window, or a falsely-cached clear talkgroup stays blocked
-        // for as long as the control channel keeps announcing its call.
-        rc |= expect_true("suppressed ambiguous grant does not extend blocked-call expiry",
-                          cache_idx >= 0 && cache_st.p25_enc_tg_cache_until[cache_idx] == short_until);
+        rc |= expect_true("unknown-svc grant suppressed by lockout", cache_st.p25_sm_tune_count == before);
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -401,11 +382,9 @@ main(void) {
                                        .src = 2301,
                                        .svc_bits = 0x40,
                                        .is_group = 1});
-        rc |= expect_true("explicit encrypted grant suppressed by blocked-call cache",
-                          cache_st.p25_sm_tune_count == before);
-        rc |= expect_true("explicit encrypted grant refreshes blocked-call expiry",
-                          cache_idx >= 0 && cache_st.p25_enc_tg_cache_until[cache_idx] > short_until);
-        rc |= expect_true("transient enc cache does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
+        rc |= expect_true("explicit encrypted grant suppressed by lockout", cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("lockout stays armed with no retry backoff", !enc_call_cache_is_absent(&cache_st, 1300U, 1));
+        rc |= expect_true("enc lockout does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
 
         cache_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
@@ -416,19 +395,19 @@ main(void) {
                                        .src = 2302,
                                        .svc_bits = 0x00,
                                        .is_group = 1});
-        rc |=
-            expect_true("explicit clear grant bypasses transient enc cache", cache_st.p25_sm_tune_count == before + 1);
-        rc |= expect_true("explicit clear grant clears transient enc cache", enc_tg_cache_is_absent(&cache_st, 1300U));
+        rc |= expect_true("explicit clear grant bypasses enc lockout", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("explicit clear grant releases enc lockout", enc_tg_cache_is_absent(&cache_st, 1300U));
         rc |= expect_true("explicit clear grant does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
         p25_sm_release(p25_sm_get_ctx(), &cache_opts, &cache_st, "explicit-release");
         mark_cc_reacquired(&cache_st);
 
-        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1301, 1);
-        cache_idx = enc_call_cache_index(&cache_st, 1301U, 1);
-        rc |= expect_true("seed expiring group cache", cache_idx >= 0);
-        if (cache_idx >= 0) {
-            cache_st.p25_enc_tg_cache_until[cache_idx] = time(NULL) - 1;
-        }
+        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1301, 1, 0x84, 0x2714);
+        rc |= expect_true("seed locked group target", !enc_tg_cache_is_absent(&cache_st, 1301U));
+        // New key material bumps the epoch: the entry is retained but stale,
+        // so the next grant is admitted as one re-verification probe.
+        dsd_enc_lockout_bump_key_epoch(&cache_st);
+        rc |= expect_true("key change leaves entry stale", enc_tg_cache_is_absent(&cache_st, 1301U)
+                                                               && dsd_enc_lockout_lookup(&cache_st, 1301U, 1, NULL));
         before = cache_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -438,11 +417,14 @@ main(void) {
                                        .src = 2303,
                                        .svc_bits = P25_SM_SVC_UNKNOWN,
                                        .is_group = 1});
-        rc |= expect_true("expired blocked-call cache permits new probe", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("stale-epoch lockout permits new probe", cache_st.p25_sm_tune_count == before + 1);
+        rc |= expect_true("probe re-confirmation re-locks at current epoch",
+                          classify_current_call_without_key(&cache_opts, &cache_st, 1301) == DSD_P25_CRYPTO_BLOCKED
+                              && !enc_tg_cache_is_absent(&cache_st, 1301U));
         p25_sm_release(p25_sm_get_ctx(), &cache_opts, &cache_st, "explicit-release");
         mark_cc_reacquired(&cache_st);
 
-        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1302, 1);
+        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1302, 1, 0x84, 0x2714);
         cache_opts.trunk_tune_enc_calls = 1;
         before = cache_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
@@ -458,7 +440,7 @@ main(void) {
         mark_cc_reacquired(&cache_st);
         cache_opts.trunk_tune_enc_calls = 0;
 
-        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1303, 1);
+        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1303, 1, 0x84, 0x2714);
         p25_patch_set_kas(&cache_st, 1303, /*key*/ 0, /*alg*/ 0x84, /*ssn*/ 1);
         before = cache_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
@@ -478,7 +460,7 @@ main(void) {
 
         // Group and private calls with the same numeric target retain separate
         // identities, and clear grants remove only the matching type.
-        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1400, 1);
+        p25_sm_note_encrypted_call_typed(&cache_opts, &cache_st, 1400, 1, 0x84, 0x2714);
         before = cache_st.p25_sm_tune_count;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
@@ -691,7 +673,7 @@ main(void) {
         p25_sm_release(p25_sm_get_ctx(), &data_opts, &data_st, "explicit-release");
         mark_cc_reacquired(&data_st);
 
-        p25_emit_enc_lockout_once_typed(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40, 1);
+        p25_emit_enc_lockout_once_typed(&data_opts, &data_st, 0, 3105, /*svc*/ 0x40, 1, 0x84, 0x2714);
         rc |= expect_true("seed transient voice enc cache", !enc_tg_cache_is_absent(&data_st, 3105U));
         before = data_st.p25_sm_tune_count;
         data_opts.trunk_is_tuned = 0;

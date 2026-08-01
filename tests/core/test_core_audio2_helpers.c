@@ -740,34 +740,33 @@ test_dmr_ss3_decrypt_hold_and_copy_policy_helpers(void) {
 }
 
 static int
-test_p25p2_encrypted_lockout_slot_helper(void) {
+test_dmr_ss3_enc_locked_companion_duplicates_clear_slot(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
 
     int rc = 0;
-    state.payload_algidR = 0x81;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    rc |= expect_int("p25p2 right encrypted without key locks out",
-                     dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
-    state.RR = 0x1234;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_DECRYPTABLE;
-    rc |= expect_int("p25p2 right key suppresses lockout", dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1),
-                     0);
-    state.RR = 0;
-    opts.trunk_tune_enc_calls = 1;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
-    rc |= expect_int("p25p2 pending state remains slot-suppressed",
-                     dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
-    opts.trunk_tune_enc_calls = 0;
-    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
-    rc |= expect_int("p25p2 existing lockout label stays muted",
-                     dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 1), 1);
-    rc |=
-        expect_int("p25p2 unmuted slot skips lockout", dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 1, 0), 0);
-    rc |=
-        expect_int("p25p2 invalid slot skips lockout", dsd_p25p2_encrypted_lockout_slot_muted(&opts, &state, 2, 1), 0);
+    // Regression: dual active voice bursts with the right slot enc-muted must
+    // still duplicate the clear left slot into the muted right channel.
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.dmrburstL = 16;
+    state.dmrburstR = 16;
+    state.s_l4[0][0] = 11;
+    state.s_r4[0][0] = 99;
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, 0, 1);
+    rc |= expect_int("ss3 enc right companion cleared before copy", state.s_r4[0][0], 11);
+    rc |= expect_int("ss3 enc right companion keeps clear left", state.s_l4[0][0], 11);
+
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    state.s_l4[0][0] = 55;
+    state.s_r4[0][0] = 22;
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, 1, 0);
+    rc |= expect_int("ss3 enc left companion cleared before copy", state.s_l4[0][0], 22);
+    rc |= expect_int("ss3 enc left companion keeps clear right", state.s_r4[0][0], 22);
     return rc;
 }
 
@@ -803,7 +802,7 @@ test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     state.payload_algid = 0x81;
     state.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
-    rc |= expect_int("ss18 encrypted left lockout blocks right-to-left copy", state.s_l4[0][0], 0);
+    rc |= expect_int("ss18 locked-out left still receives right-to-left copy", state.s_l4[0][0], 20);
     rc |= expect_int("ss18 right retained when left lockout", state.s_r4[0][0], 20);
 
     state.s_l4[0][0] = 10;
@@ -821,7 +820,7 @@ test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     state.aes_key_loaded[1] = 0;
     state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
-    rc |= expect_int("ss18 encrypted right lockout blocks left-to-right copy", state.s_r4[0][1], 0);
+    rc |= expect_int("ss18 locked-out right still receives left-to-right copy", state.s_r4[0][1], 30);
 
     state.s_l4[0][1] = 30;
     state.s_r4[0][1] = 40;
@@ -830,6 +829,110 @@ test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
     rc |= expect_int("ss18 keyed right allows left-to-right copy", state.s_r4[0][1], 30);
 
+    // Regression: an enc-locked-out companion with an active voice burst hint
+    // (dmrburst 21 on both slots) must not hold the muted channel silent.
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.dmrburstL = 21;
+    state.dmrburstR = 21;
+    state.s_l4[0][0] = 12;
+    state.s_r4[0][0] = 99;
+    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 0, 1);
+    rc |= expect_int("ss18 dual-burst enc right companion duplicates left", state.s_r4[0][0], 12);
+
+    DSD_MEMSET(state.s_l4, 0, sizeof(state.s_l4));
+    DSD_MEMSET(state.s_r4, 0, sizeof(state.s_r4));
+    state.s_l4[0][0] = 99;
+    state.s_r4[0][0] = 34;
+    dsd_p25p2_apply_stereo_output_policy_ss18(&opts, &state, 1, 0);
+    rc |= expect_int("ss18 dual-burst enc left companion duplicates right", state.s_l4[0][0], 34);
+
+    return rc;
+}
+
+static int
+test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_sink_capture();
+    reset_gate_capture();
+
+    // Clear call on slot 1, encryption-lockout companion call on slot 2, and a
+    // partially filled superframe (9 of 18 blocks) as produced by a flush or an
+    // early emission at the companion call's boundary.
+    opts.audio_out = 1;
+    opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+    state.dmrburstL = 21;
+    state.dmrburstR = 21;
+    state.voice_counter[0] = 9; // clear slot filled 9 blocks before the flush
+    for (int j = 0; j < 9; j++) {
+        for (int i = 0; i < 160; i++) {
+            state.s_l4[j][i] = 100;
+        }
+    }
+
+    playSynthesizedVoiceSS18(&opts, &state);
+
+    int rc = 0;
+    // Zero tail blocks must not play as inserted silence.
+    rc |= expect_int("ss18 partial superframe emits only filled blocks", g_udp_blast_calls, 9);
+    rc |= expect_size("ss18 emitted block is a full stereo frame", g_udp_blast_bytes, 320U * sizeof(short));
+    short last_block[2] = {0, 0};
+    DSD_MEMCPY(last_block, g_udp_blast_data, sizeof(last_block));
+    rc |= expect_int("ss18 clear slot present in left channel", last_block[0], 100);
+    rc |= expect_int("ss18 locked-out companion channel mirrors clear slot", last_block[1], 100);
+    rc |= expect_int("ss18 working buffers reset after playback", state.s_l4[0][0], 0);
+    return rc;
+}
+
+static int
+test_ss18_keeps_legit_silence_inside_filled_extent(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_sink_capture();
+    reset_gate_capture();
+
+    // A clear call whose decoded audio contains a genuinely all-zero block
+    // (block 4) inside the filled extent: that block is real silence in the
+    // call timeline and must still be emitted; only the never-filled tail
+    // blocks past the extent are dropped.
+    opts.audio_out = 1;
+    opts.audio_out_type = 8; // UDP sink counts one blast per emitted block
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_p2_audio_allowed[1] = 0;
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.dmrburstL = 21;
+    state.voice_counter[0] = 9;
+    for (int j = 0; j < 9; j++) {
+        if (j == 4) {
+            continue; // decoded silence: block stays all zero
+        }
+        for (int i = 0; i < 160; i++) {
+            state.s_l4[j][i] = 100;
+        }
+    }
+
+    playSynthesizedVoiceSS18(&opts, &state);
+
+    int rc = 0;
+    rc |= expect_int("ss18 silence inside extent still emits all filled blocks", g_udp_blast_calls, 9);
     return rc;
 }
 
@@ -1144,8 +1247,10 @@ main(void) {
     rc |= test_output_ring_reset_helpers_preserve_below_threshold_and_clear_at_limit();
     rc |= test_dmr_slot_mute_and_duplication_helpers();
     rc |= test_dmr_ss3_decrypt_hold_and_copy_policy_helpers();
-    rc |= test_p25p2_encrypted_lockout_slot_helper();
+    rc |= test_dmr_ss3_enc_locked_companion_duplicates_clear_slot();
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
+    rc |= test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot();
+    rc |= test_ss18_keeps_legit_silence_inside_filled_extent();
     rc |= test_fs4_mono_mixer_averages_available_unmuted_slots();
     rc |= test_short_dmr_mono_honors_slot_controls_and_one_channel_output();
     rc |= test_float_playback_orchestrators_emit_expected_blocks();

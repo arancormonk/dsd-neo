@@ -927,13 +927,31 @@ p25p2_store_decoded_voice_frame(dsd_state* state, int frame_index, int push_ring
 
 static void
 p25p2_zero_voice_frame(dsd_state* state, int frame_index) {
+    // Muted frames must not advance voice_counter: the SS18 output trigger
+    // fires when either slot's counter reaches a full superframe and then
+    // resets both, so a slot that contributes no audible audio (e.g. an
+    // encryption-lockout companion call) advancing its counter de-phases the
+    // clear slot's cadence and forces early, zero-padded superframe emission.
+    // Accepted trade-off: a slot that un-mutes mid-superframe resumes writing
+    // at its frozen index rather than the companion's phase, skewing its audio
+    // within that one superframe until the shared reset realigns both slots.
+    // This matches how an idle slot behaves when a call starts on it
+    // mid-superframe (its counter is equally stale), which is exactly the
+    // "muted companion is indistinguishable from an idle slot" policy.
+    // Because the counter is frozen, vc_idx is constant for the superframe and
+    // only that one s_l4/s_r4 block is re-zeroed here; the other 17 keep stale
+    // pre-mute audio. That is safe only because every downstream consumer
+    // (dsd_p25p2_apply_stereo_output_policy_ss18 and
+    // dsd_audio_reset_short_stereo_working_state) memsets the muted channel
+    // before copying/reusing it -- if that ever changes, this function must
+    // zero the full 18-block extent instead of one slot.
     if (state->currentslot == 0) {
-        int vc_idx = p25p2_next_voice_slot(state, 0);
+        int vc_idx = state->voice_counter[0] % 18;
         DSD_MEMSET(state->f_l4[frame_index], 0, sizeof(state->f_l4[frame_index]));
         DSD_MEMSET(state->s_l4[vc_idx], 0, sizeof(state->s_l4[0]));
         return;
     }
-    int vc_idx = p25p2_next_voice_slot(state, 1);
+    int vc_idx = state->voice_counter[1] % 18;
     DSD_MEMSET(state->f_r4[frame_index], 0, sizeof(state->f_r4[frame_index]));
     DSD_MEMSET(state->s_r4[vc_idx], 0, sizeof(state->s_r4[0]));
 }
