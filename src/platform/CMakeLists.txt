@@ -28,6 +28,11 @@ else()
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
 endif()
 
+if(ANDROID)
+    # liblog carries __android_log_* for the runtime's platform log sink.
+    target_link_libraries(dsd-neo_platform PUBLIC log)
+endif()
+
 # Platform-independent sources (compiled on all platforms including host tests)
 target_sources(
     dsd-neo_platform
