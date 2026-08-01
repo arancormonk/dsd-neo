@@ -6831,6 +6831,25 @@ if(DSD_AUDIO_BACKEND STREQUAL "none")
     add_test(NAME PLATFORM_AUDIO_NULL COMMAND dsd-neo_test_platform_audio_null)
 endif()
 
+# The AAudio backend only builds for Android, but the test compiles it against a
+# stub NDK header with fake AAudio entry points, so it stays covered on the host.
+if(NOT WIN32)
+    add_executable(
+        dsd-neo_test_platform_audio_aaudio
+        platform/test_platform_audio_aaudio.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_audio_aaudio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/platform/aaudio_stub
+            ${PROJECT_SOURCE_DIR}/include
+    )
+    add_test(
+        NAME PLATFORM_AUDIO_AAUDIO
+        COMMAND dsd-neo_test_platform_audio_aaudio
+    )
+endif()
+
 if(DSD_AUDIO_BACKEND STREQUAL "pulse")
     add_executable(
         dsd-neo_test_platform_audio_pulse_guards

@@ -259,7 +259,10 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_AUDIO_BACKEND=auto|pulse|portaudio|aaudio|none` — Select the audio backend (default `auto`:
     PortAudio on Windows, PulseAudio elsewhere). `none` builds a discard/silence backend that needs no
     audio library — device-audio output becomes a no-op instead of a configure failure. `aaudio` is
-    Android-only.
+    Android-only; it plays through AAudio, resamples when the device refuses the requested rate, and
+    reopens the stream by itself across route changes (headphones, Bluetooth).
+  - `DSD_NEO_AUDIO_STATS=1` in the environment prints per-stream output counters (underruns, drops)
+    when a stream closes; the AAudio backend also reports the format the device actually granted.
   - `-DDSD_USE_PORTAUDIO=ON` — Deprecated alias for `-DDSD_AUDIO_BACKEND=portaudio`.
 - Radio backend selection:
   - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.
