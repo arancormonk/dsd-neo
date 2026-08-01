@@ -57,7 +57,13 @@ include(GNUInstallDirs)
 install(TARGETS dsd-neo DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # man page from executable help output
+#
+# help2man runs the freshly built binary, so it cannot work when cross
+# compiling — the host cannot execute the target binary.
 find_program(HELP2MAN_FOUND help2man)
+if(CMAKE_CROSSCOMPILING)
+    set(HELP2MAN_FOUND OFF)
+endif()
 if(HELP2MAN_FOUND)
     add_custom_command(
         TARGET dsd-neo
