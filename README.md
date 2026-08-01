@@ -256,7 +256,11 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_TSAN=ON` — ThreadSanitizer in Debug builds; use a separate build from ASan/UBSan.
   - `-DDSD_ENABLE_FUZZING=ON` — Enable libFuzzer instrumentation and fuzz targets (Clang/libFuzzer builds).
 - Audio backend selection:
-  - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
+  - `-DDSD_AUDIO_BACKEND=auto|pulse|portaudio|aaudio|none` — Select the audio backend (default `auto`:
+    PortAudio on Windows, PulseAudio elsewhere). `none` builds a discard/silence backend that needs no
+    audio library — device-audio output becomes a no-op instead of a configure failure. `aaudio` is
+    Android-only.
+  - `-DDSD_USE_PORTAUDIO=ON` — Deprecated alias for `-DDSD_AUDIO_BACKEND=portaudio`.
 - Radio backend selection:
   - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.
   - `-DDSD_ENABLE_SOAPYSDR=ON|OFF` — Enable/disable SoapySDR backend discovery.

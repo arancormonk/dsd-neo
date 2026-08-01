@@ -754,39 +754,77 @@ find_package(CODEC2)
 find_package(CURL 7.56.0)
 
 # Audio backend selection
-option(
-    DSD_USE_PORTAUDIO
-    "Use PortAudio for cross-platform audio (required on Windows)"
-    OFF
+set(DSD_AUDIO_BACKEND
+    "auto"
+    CACHE STRING
+    "Audio backend: auto|pulse|portaudio|aaudio|none"
+)
+set_property(
+    CACHE DSD_AUDIO_BACKEND
+    PROPERTY STRINGS auto pulse portaudio aaudio none
 )
 
-# Windows requires PortAudio (no PulseAudio available)
-if(WIN32)
-    set(DSD_USE_PORTAUDIO ON CACHE BOOL "Use PortAudio on Windows" FORCE)
+# Deprecated alias kept for existing scripts and CI invocations.
+option(DSD_USE_PORTAUDIO "Deprecated: use DSD_AUDIO_BACKEND=portaudio" OFF)
+if(DSD_USE_PORTAUDIO AND DSD_AUDIO_BACKEND STREQUAL "auto")
+    message(
+        WARNING
+        "DSD_USE_PORTAUDIO is deprecated; use -DDSD_AUDIO_BACKEND=portaudio instead."
+    )
+    set(DSD_AUDIO_BACKEND "portaudio")
 endif()
 
-if(DSD_USE_PORTAUDIO)
+# "auto": PortAudio on Windows (no PulseAudio available), PulseAudio elsewhere.
+if(DSD_AUDIO_BACKEND STREQUAL "auto")
+    if(WIN32)
+        set(DSD_AUDIO_BACKEND "portaudio")
+    else()
+        set(DSD_AUDIO_BACKEND "pulse")
+    endif()
+endif()
+
+if(NOT DSD_AUDIO_BACKEND MATCHES "^(pulse|portaudio|aaudio|none)$")
+    message(
+        FATAL_ERROR
+        "Unknown DSD_AUDIO_BACKEND '${DSD_AUDIO_BACKEND}' (expected auto|pulse|portaudio|aaudio|none)"
+    )
+endif()
+if(WIN32 AND DSD_AUDIO_BACKEND STREQUAL "pulse")
+    message(FATAL_ERROR "DSD_AUDIO_BACKEND=pulse is not supported on Windows")
+endif()
+if(DSD_AUDIO_BACKEND STREQUAL "aaudio" AND NOT ANDROID)
+    message(FATAL_ERROR "DSD_AUDIO_BACKEND=aaudio requires an Android build")
+endif()
+
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     find_package(PortAudio REQUIRED)
     add_compile_definitions(DSD_USE_PORTAUDIO)
     message(STATUS "Audio backend: PortAudio")
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     find_package(PulseAudio REQUIRED)
     message(STATUS "Audio backend: PulseAudio")
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    message(STATUS "Audio backend: AAudio")
+else()
+    message(STATUS "Audio backend: none (device audio is a no-op sink)")
 endif()
 
 set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${_MBE_TARGET_INCLUDE_DIRS})
 
 # Audio backend includes and libraries
 set(AUDIO_SYSTEM_LIBS "")
-if(DSD_USE_PORTAUDIO)
+set(AUDIO_LIBS "")
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PORTAUDIO_LIBRARY})
     if(WIN32)
         list(APPEND AUDIO_SYSTEM_LIBS winmm ole32 uuid setupapi)
     endif()
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     list(APPEND _PUBLIC_INCLUDES ${PULSEAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    set(AUDIO_LIBS aaudio)
 endif()
 
 set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS})

@@ -46,7 +46,8 @@ Generated (do not edit/commit):
 - Target: `dsd-neo_platform`
 - Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses
   compatibility)
-  - Audio backends: PulseAudio (default) or PortAudio (`DSD_USE_PORTAUDIO`, forced ON for Windows)
+  - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
+    elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android)
 - Build files: `src/platform/CMakeLists.txt`
 
 ## Core

@@ -94,7 +94,7 @@ function(dsd_neo_link_dsp_test target_name)
             dsd-neo_io_iq
             dsd-neo_platform
         )
-        if(DSD_USE_PORTAUDIO)
+        if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
             target_link_libraries(
                 ${target_name}
                 PRIVATE PortAudio::PortAudio ${AUDIO_SYSTEM_LIBS}
@@ -6815,7 +6815,23 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_platform_nonce PRIVATE dsd-neo_platform)
 add_test(NAME PLATFORM_NONCE COMMAND dsd-neo_test_platform_nonce)
 
-if(NOT DSD_USE_PORTAUDIO)
+if(DSD_AUDIO_BACKEND STREQUAL "none")
+    add_executable(
+        dsd-neo_test_platform_audio_null
+        platform/test_platform_audio_null.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_audio_null
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_audio_null
+        PRIVATE dsd-neo_platform
+    )
+    add_test(NAME PLATFORM_AUDIO_NULL COMMAND dsd-neo_test_platform_audio_null)
+endif()
+
+if(DSD_AUDIO_BACKEND STREQUAL "pulse")
     add_executable(
         dsd-neo_test_platform_audio_pulse_guards
         platform/test_platform_audio_pulse_guards.c
