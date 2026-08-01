@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -842,14 +843,6 @@ init_state_p25_patch_defaults(dsd_state* state) {
 }
 
 static void
-init_state_p25_encrypted_call_cache_defaults(dsd_state* state) {
-    DSD_MEMSET(state->p25_enc_tg_cache_until, 0, sizeof(state->p25_enc_tg_cache_until));
-    DSD_MEMSET(state->p25_enc_tg_cache_tg, 0, sizeof(state->p25_enc_tg_cache_tg));
-    DSD_MEMSET(state->p25_enc_tg_cache_is_group, 0, sizeof(state->p25_enc_tg_cache_is_group));
-    state->p25_enc_tg_cache_next = 0;
-}
-
-static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
     state->p2_wacn = 0;
@@ -906,7 +899,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_vc_freq[1] = 0;
 
     init_state_p25_patch_defaults(state);
-    init_state_p25_encrypted_call_cache_defaults(state);
+    dsd_enc_lockout_init(state);
 
     //edacs - may need to make these user configurable instead for stability on non-ea systems
     state->ea_mode = -1;   //init on -1, 0 is standard, 1 is ea

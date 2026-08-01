@@ -9,6 +9,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -110,17 +111,8 @@ expect_true(const char* tag, int cond) {
 }
 
 static int
-p25_encrypted_call_cache_empty(const dsd_state* state) {
-    if (!state || state->p25_enc_tg_cache_next != 0U) {
-        return 0;
-    }
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (state->p25_enc_tg_cache_until[i] != 0 || state->p25_enc_tg_cache_tg[i] != 0U
-            || state->p25_enc_tg_cache_is_group[i] != 0U) {
-            return 0;
-        }
-    }
-    return 1;
+enc_lockout_inert(const dsd_state* state) {
+    return state != NULL && dsd_enc_lockout_active_count(state) == 0;
 }
 
 static int
@@ -293,10 +285,7 @@ test_command_api(void) {
     dsd_app_hytera_key_payload hytera = {0xAU, 1U, 2U, 3U, 4U};
     dsd_app_aes_key_payload aes = {9U, 10U, 11U, 12U};
     dsd_app_dsp_payload dsp = {0};
-    state.p25_enc_tg_cache_until[0] = 1234567890;
-    state.p25_enc_tg_cache_tg[0] = 2468U;
-    state.p25_enc_tg_cache_is_group[0] = 1U;
-    state.p25_enc_tg_cache_next = 1U;
+    (void)dsd_enc_lockout_note(&state, 2468U, 1, 0x84, 0x1234);
 
     rc |= expect_int("typed action posts", dsd_app_command_action(DSD_APP_CMD_UI_SHOW_CHANNELS_TOGGLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -346,28 +335,28 @@ test_command_api(void) {
     rc |= expect_int("typed aes key load flag", state.aes_key_loaded[0], 1);
     rc |= expect_int("typed canonical aes key byte 7", state.aes_key[7], 9);
     rc |= expect_int("typed canonical aes key byte 15", state.aes_key[15], 10);
-    rc |=
-        expect_true("manual RC4/AES key changes clear P25 blocked-call cache", p25_encrypted_call_cache_empty(&state));
+    rc |= expect_true("manual RC4/AES key changes invalidate enc lockouts", enc_lockout_inert(&state));
+    rc |= expect_true("key changes retain stale entries for re-verification",
+                      dsd_enc_lockout_lookup(&state, 2468U, 1, NULL));
 
-    state.p25_enc_tg_cache_until[0] = 1234567890;
-    state.p25_enc_tg_cache_tg[0] = 9753U;
-    state.p25_enc_tg_cache_is_group[0] = 0U;
-    state.p25_enc_tg_cache_next = 2U;
+    (void)dsd_enc_lockout_note(&state, 9753U, 0, 0xAA, 0x0002);
     rc |=
         expect_int("standalone AES key change posts", dsd_app_command_set_aes_key(&aes), DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("standalone AES key change applied", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |=
-        expect_true("standalone AES key change clears P25 blocked-call cache", p25_encrypted_call_cache_empty(&state));
+    rc |= expect_true("standalone AES key change invalidates enc lockouts", enc_lockout_inert(&state));
 
-    state.p25_enc_tg_cache_until[0] = 1234567890;
-    state.p25_enc_tg_cache_tg[0] = 8642U;
-    state.p25_enc_tg_cache_is_group[0] = 1U;
-    state.p25_enc_tg_cache_next = 3U;
+    (void)dsd_enc_lockout_note(&state, 8642U, 1, 0x81, 0x0003);
     rc |= expect_int("standalone RC4/DES key change posts", dsd_app_command_set_u64(DSD_APP_CMD_KEY_RC4DES_SET, 0xAAU),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("standalone RC4/DES key change applied", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("standalone RC4/DES key change clears P25 blocked-call cache",
-                      p25_encrypted_call_cache_empty(&state));
+    rc |= expect_true("standalone RC4/DES key change invalidates enc lockouts", enc_lockout_inert(&state));
+
+    (void)dsd_enc_lockout_note(&state, 8642U, 1, 0x81, 0x0003);
+    rc |= expect_true("re-noted target locks at the new epoch", !enc_lockout_inert(&state));
+    rc |= expect_int("enc lockout purge posts", dsd_app_command_action(DSD_APP_CMD_ENC_LOCKOUT_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("enc lockout purge applied", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("enc lockout purge drops every entry", !dsd_enc_lockout_lookup(&state, 8642U, 1, NULL));
 
     freeState(&state);
     return rc;
@@ -586,14 +575,10 @@ test_file_network_and_import_commands(void) {
     rc |= expect_str("key import path copied", opts.key_in_file, missing_csv);
     rc |= expect_contains("key import failure toast", state.ui_msg, "Failed: Keys (HEX)");
 
-    state.p25_enc_tg_cache_until[0] = 1234567890;
-    state.p25_enc_tg_cache_tg[0] = 3579U;
-    state.p25_enc_tg_cache_is_group[0] = 0U;
-    state.p25_enc_tg_cache_next = 4U;
+    (void)dsd_enc_lockout_note(&state, 3579U, 0, 0xAA, 0x0004);
     post_string(DSD_APP_CMD_IMPORT_KEYS_DEC, key_csv);
     rc |= expect_int("successful runtime key import applied", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("successful runtime key import clears P25 blocked-call cache",
-                      p25_encrypted_call_cache_empty(&state));
+    rc |= expect_true("successful runtime key import invalidates enc lockouts", enc_lockout_inert(&state));
 
     post_string(DSD_APP_CMD_EVENT_LOG_SET, "events.log");
     rc |= expect_int("event log set applied", dsd_app_drain_cmds(&opts, &state), 1);

@@ -97,7 +97,7 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 | `w` | Toggle allow/white-list mode (uses imported group list) |
 | `u` | Toggle follow private calls |
 | `d` | Toggle follow data calls |
-| `e` | Toggle follow encrypted calls (P25) |
+| `e` | Toggle encrypted call lockout (P25/DMR/NXDN trunking) |
 | `k` / `l` | Set/clear talkgroup hold from the most recent TG (slot-aware) |
 | `!` / `@` | Lock out slot 1 / slot 2 (where applicable) |
 

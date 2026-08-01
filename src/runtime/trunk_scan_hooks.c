@@ -40,8 +40,8 @@ dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_st
 }
 
 void
-dsd_trunk_scan_hook_p25_encrypted_call_cache_clear(dsd_state* state) {
-    if (g_trunk_scan_hooks.p25_encrypted_call_cache_clear) {
-        g_trunk_scan_hooks.p25_encrypted_call_cache_clear(state);
+dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state) {
+    if (g_trunk_scan_hooks.enc_lockout_clear_snapshots) {
+        g_trunk_scan_hooks.enc_lockout_clear_snapshots(state);
     }
 }

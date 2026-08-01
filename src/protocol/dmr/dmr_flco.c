@@ -16,6 +16,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/embedded_alias.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
@@ -896,52 +897,107 @@ dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
 }
 
 static void
-dmr_flco_prepare_enc_lockout_labels(dmr_flco_ctx* ctx, unsigned int* lo, char* gm, size_t gm_sz, char* gn,
-                                    size_t gn_sz) {
-    dsd_tg_policy_entry lockout_entry;
-    *lo = 0;
-    if (ctx->target != 0 && dsd_tg_policy_lookup_label(ctx->state, ctx->target, gm, gm_sz, gn, gn_sz)) {
-        *lo = 1;
-    }
-    if (*lo == 0) {
-        if (dsd_tg_policy_make_exact_entry(ctx->target, "B", "ENC LO", DSD_TG_POLICY_SOURCE_ENC_LOCKOUT, &lockout_entry)
-                == 0
-            && dsd_tg_policy_upsert_exact(ctx->state, &lockout_entry, DSD_TG_POLICY_UPSERT_ADD_IF_MISSING) == 0) {
-            DSD_SNPRINTF(gm, gm_sz, "%s", "B");
-            DSD_SNPRINTF(gn, gn_sz, "%s", "ENC LO");
-        } else {
-            *lo = 1;
-        }
-    }
-}
-
-static void
-dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx, const char* gm, const char* gn) {
+dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
     int eslot = ctx->state->currentslot & 1;
     int other = eslot ^ 1;
     int other_voice = (other == 0) ? (ctx->state->dmrburstL == 16) : (ctx->state->dmrburstR == 16);
     if (!other_voice) {
+        // Synthesize a P_CLEAR so the trunking layer releases the channel.
+        // The bit buffer must span the full 12-octet CSPDU: handlers may read
+        // bits ahead of their opcode check.
         uint8_t dummy[12];
+        uint8_t dbits_local[96];
         DSD_MEMSET(dummy, 0, sizeof(dummy));
+        DSD_MEMSET(dbits_local, 0, sizeof(dbits_local));
         dummy[0] = 46;
         dummy[1] = 255;
-        if ((strcmp(gm, "B") == 0) && (strcmp(gn, "ENC LO") == 0)) {
-            uint8_t dbits_local[1] = {0};
-            dmr_cspdu(ctx->opts, ctx->state, dbits_local, dummy, 1, 0);
-        }
+        dmr_cspdu(ctx->opts, ctx->state, dbits_local, dummy, 1, 0);
     } else if (ctx->opts->verbose > 0) {
         DSD_FPRINTF(stderr, " ENC lockout: other slot active with clear voice; stay on VC, mute enc slot. ");
     }
 }
 
+/* Key-aware: non-zero when the loaded key material can decrypt this slot's
+ * call, so it is followed rather than locked out. */
+static int
+dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
+    const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
+    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
+    if (algid == 0U) {
+        return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
+    }
+    return dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
+}
+
+static void
+dmr_flco_emit_enc_lockout_event(dmr_flco_ctx* ctx) {
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(ctx->state, &transaction);
+    DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
+                 sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
+                 "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
+    dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
+    dsd_event_history_transaction_end(&transaction);
+    watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
+}
+
+// Arm the ledger for a corroborated, undecryptable encrypted transmission and force the
+// channel release. The caller has already established that encryption lockout is the active
+// policy and that this LC is not a terminator.
+static void
+dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
+    // Locking the talkgroup out is permanent for the session and the forced P_CLEAR release
+    // drops the channel, so only an established (corroborated) encrypted classification may
+    // act -- a lone corrupt LC observing the privacy bit stays quarantined by the hysteresis.
+    if (!dmr_enc_class_established_enc(ctx->state, eslot) || ctx->target == 0) {
+        return;
+    }
+    if (dmr_flco_slot_can_decrypt(ctx)) {
+        // Decryptable also releases any retained entry (e.g. a stale-epoch
+        // probe after the matching key was loaded).
+        (void)dsd_enc_lockout_release(ctx->state, ctx->target, is_group);
+        return;
+    }
+
+    const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
+    const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
+    // payload_algid 0 means the privacy type never resolved (e.g. Motorola
+    // Basic Privacy signaled only by the service option): record the unknown
+    // sentinel rather than a literal ALGID 0, which reads as clear.
+    const int note_algid = (algid == 0U) ? DSD_ENC_LOCKOUT_ALGID_UNKNOWN : (int)algid;
+    if (dsd_enc_lockout_note(ctx->state, ctx->target, is_group, note_algid, (int)kid)) {
+        dmr_flco_emit_enc_lockout_event(ctx);
+    }
+    // Deliberately unconditional (the event above fires once per lock, the
+    // release action fires per corroborated LC): retrying the synthesized
+    // P_CLEAR until the trunking layer actually drops the channel is what
+    // lets an already-locked target still force a release -- the old
+    // policy-row path skipped this whenever the target had a label.
+    dmr_flco_emit_enc_lockout_action(ctx);
+}
+
 static void
 dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
+    const uint8_t eslot = (uint8_t)(ctx->state->currentslot & 1);
+    const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
+    // The ledger is suspended -- not erased -- whenever encryption lockout is not
+    // the active policy, so neither arming nor releasing may run while following
+    // encrypted calls (or with trunking off). Matches the P25 handle_enc release
+    // guard and the NXDN VCALL early return; without it a clear DMR LC in follow
+    // mode would drop entries that then owe a fresh probe once lockout returns.
+    const int lockout_active = (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0);
     if (!(ctx->so & 0x40)) {
+        // Corroborated clear voice on this target releases any retained
+        // lockout entry so a talkgroup that stopped encrypting recovers.
+        if (lockout_active && ctx->target != 0 && ctx->type != 2U
+            && dmr_enc_class_established_clear(ctx->state, eslot)) {
+            (void)dsd_enc_lockout_release(ctx->state, ctx->target, is_group);
+        }
         return;
     }
     DSD_FPRINTF(stderr, "%s", KRED);
     DSD_FPRINTF(stderr, "Encrypted ");
-    if (!(ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0)) {
+    if (!lockout_active) {
         return;
     }
     // A terminator's privacy bit describes the transmission that just ended; blocking the
@@ -950,28 +1006,7 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     if (ctx->type == 2U) {
         return;
     }
-    // Blocking the talkgroup is permanent for the session and the forced P_CLEAR release
-    // drops the channel, so only an established (corroborated) encrypted classification may
-    // act -- a lone corrupt LC observing the privacy bit stays quarantined above.
-    if (!dmr_enc_class_established_enc(ctx->state, (uint8_t)(ctx->state->currentslot & 1))) {
-        return;
-    }
-
-    unsigned int lo = 0;
-    char gm[8] = {0};
-    char gn[50] = {0};
-    dmr_flco_prepare_enc_lockout_labels(ctx, &lo, gm, sizeof(gm), gn, sizeof(gn));
-    if (ctx->target != 0 && lo == 0) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(ctx->state, &transaction);
-        DSD_SNPRINTF(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str,
-                     sizeof(ctx->state->event_history_s[ctx->slot].Event_History_Items[0].internal_str),
-                     "Target: %d; has been locked out; Encryption Lock Out Enabled.", ctx->target);
-        dsd_event_history_mark_dirty(&ctx->state->event_history_s[ctx->slot]);
-        dsd_event_history_transaction_end(&transaction);
-        watchdog_event_current(ctx->opts, ctx->state, ctx->slot);
-    }
-    dmr_flco_emit_enc_lockout_action(ctx, gm, gn);
+    dmr_flco_arm_enc_lockout(ctx, eslot, is_group);
 }
 
 static void

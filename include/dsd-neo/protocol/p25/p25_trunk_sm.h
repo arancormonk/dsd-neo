@@ -1026,8 +1026,8 @@ void p25_ga_tick(dsd_state* state);
 /**
  * @brief Emit a single encryption lockout event for a group or private target.
  *
- * Records transient encrypted-call state and pushes the corresponding event to history/log exactly once per TG until
- * scrubbed.
+ * Arms the session-permanent encrypted-target ledger (core/enc_lockout.h) and
+ * pushes the corresponding event to history/log.
  *
  * @param opts Decoder options.
  * @param state Decoder state.
@@ -1035,19 +1035,11 @@ void p25_ga_tick(dsd_state* state);
  * @param target Group or private target.
  * @param svc_bits Optional service bits (pass 0 if unknown).
  * @param is_group Nonzero for a group target, zero for a private target.
+ * @param algid Confirmed ALGID, or DSD_ENC_LOCKOUT_ALGID_UNKNOWN.
+ * @param keyid Confirmed key id (0 when unknown).
  */
 void p25_emit_enc_lockout_once_typed(dsd_opts* opts, dsd_state* state, uint8_t slot, int target, int svc_bits,
-                                     int is_group);
-
-/**
- * @brief Clear all transient blocked-call classifications.
- *
- * Runtime key-management paths call this after successfully changing key
- * material so the next encrypted grant can be classified with the new keys.
- *
- * @param state Decoder state.
- */
-void p25_sm_clear_encrypted_call_cache(dsd_state* state);
+                                     int is_group, int algid, int keyid);
 
 #ifdef __cplusplus
 }

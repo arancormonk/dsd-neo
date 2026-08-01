@@ -31,6 +31,9 @@ typedef enum {
     DSD_TG_POLICY_SOURCE_IMPORTED = 0,
     DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS = 1,
     DSD_TG_POLICY_SOURCE_USER_LOCKOUT = 2,
+    // Legacy/reserved: encrypted-call lockout no longer writes policy rows
+    // (it lives in the core/enc_lockout.h ledger), but the value may still
+    // appear in serialized policy tables from older sessions. Do not reuse.
     DSD_TG_POLICY_SOURCE_ENC_LOCKOUT = 3,
 } dsd_tg_policy_entry_source;
 
@@ -52,6 +55,7 @@ typedef enum {
     DSD_TG_POLICY_BLOCK_AUDIO = 1u << 7,
     DSD_TG_POLICY_BLOCK_RECORD = 1u << 8,
     DSD_TG_POLICY_BLOCK_STREAM = 1u << 9,
+    DSD_TG_POLICY_BLOCK_ENC_LOCKOUT = 1u << 10,
 } dsd_tg_policy_block_reason;
 
 /** @brief Return the highest-priority diagnostic label for a block-reason mask. */

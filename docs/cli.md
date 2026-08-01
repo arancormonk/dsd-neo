@@ -332,12 +332,20 @@ Notes
 - CSV formats and examples: `docs/csv-formats.md` and `examples/`
 - Use group list as allow/whitelist: `-W`
 - Tune controls: `-E` disable group calls, `-p` disable private calls, `-e` enable data calls, `--enc-lockout`
-  enable key-aware P25 encryption lockout, `--enc-follow` follow encrypted grants without lockout (default)
+  enable key-aware encryption lockout (P25, DMR, NXDN), `--enc-follow` follow encrypted grants without lockout
+  (default)
   - With `--enc-lockout`, otherwise allowed P25 voice grants whose encryption is set or not yet known are tuned briefly
     as silent classification probes. Voice is not decoded, played, recorded, or streamed during classification.
   - HDU/LDU2 (Phase 1) or MAC_PTT/ESS (Phase 2) metadata confirms whether the call is clear or has a matching,
     complete key for a supported algorithm. Clear and decryptable calls continue; missing-key and unsupported calls
     are suppressed. On Phase 2, a clear companion slot remains active and on its original stereo side.
+  - A target confirmed encrypted without a usable key is locked out for the rest of the session — grants for it are
+    skipped without retuning, with no retry backoff. Lockouts release when a grant or corroborated voice shows the
+    target clear (or decryptable), when key material changes (each locked target then re-verifies with one silent
+    probe on its next grant), or via the menu's "Clear Encryption Lockouts" action, which purges every target's
+    ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
+    writing "ENC LO" rows into the group list. While `--enc-follow` is active the ledger is suspended rather than
+    erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
 - Hold talkgroup: `-I <dec>`
 - rigctl over TCP: `-U <port>` (SDR++ default 4532)
 - Set rigctl bandwidth (Hz): `-B <hertz>` (e.g., 7000–48000 by mode)

@@ -22,8 +22,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -192,15 +192,7 @@ seed_exact(uint32_t id, const char* mode, const char* name) {
 
 static int
 encrypted_call_cache_has(uint32_t target, int is_group) {
-    const time_t now = time(NULL);
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (g_state.p25_enc_tg_cache_tg[i] == target
-            && g_state.p25_enc_tg_cache_is_group[i] == (uint8_t)(is_group ? 1 : 0)
-            && g_state.p25_enc_tg_cache_until[i] > now) {
-            return 1;
-        }
-    }
-    return 0;
+    return dsd_enc_lockout_entry_active(&g_state, target, is_group);
 }
 
 // Test: Init sets correct initial state

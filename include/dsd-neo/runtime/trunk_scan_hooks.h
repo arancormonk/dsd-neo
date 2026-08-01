@@ -28,7 +28,7 @@ typedef struct {
     void (*tick)(dsd_opts* opts, dsd_state* state);
     void (*dmr_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                       int is_private, int encrypted, int data_call);
-    void (*p25_encrypted_call_cache_clear)(dsd_state* state);
+    void (*enc_lockout_clear_snapshots)(const dsd_state* state);
 } dsd_trunk_scan_hooks;
 
 void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
@@ -38,7 +38,16 @@ void* dsd_trunk_scan_hook_dmr_ctx(void);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);
-void dsd_trunk_scan_hook_p25_encrypted_call_cache_clear(dsd_state* state);
+
+/**
+ * @brief Drop the encrypted-target lockout ledger held in every scan-target snapshot.
+ *
+ * dsd_enc_lockout_clear_all() only purges the live ledger; each trunk-scan
+ * target parks its own copy, so a user purge must scrub those too or switching
+ * targets restores the entries the user just forgot. No-op when trunk scan is
+ * not installed.
+ */
+void dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state);
 
 #ifdef __cplusplus
 }

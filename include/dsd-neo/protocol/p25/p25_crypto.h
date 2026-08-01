@@ -40,7 +40,10 @@ p25_crypto_audio_ready(const dsd_state* state, int slot) {
            || state->p25_crypto_state[slot] == DSD_P25_CRYPTO_DECRYPTABLE;
 }
 
-/** Return non-zero when stereo duplication must not fill this companion slot. */
+/** Return non-zero while this slot carries an unresolved/locked-out encrypted
+ *  call; used to suppress voice-activity events for the slot. Audio mixing is
+ *  unaffected: a locked-out companion call stays transparent to the clear
+ *  slot's playback (its own audio is zeroed at decode time). */
 static inline int
 p25_crypto_companion_suppressed(const dsd_state* state, int slot) {
     if (!state || slot < 0 || slot > 1) {

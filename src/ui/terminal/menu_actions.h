@@ -38,6 +38,7 @@ void act_trunk_toggle(void* v);
 void act_scan_toggle(void* v);
 void act_lcw_toggle(void* v);
 void act_p25_enc_lockout(void* v);
+void act_enc_lockout_clear(void* v);
 void act_setmod_bw(void* v);
 void act_import_chan(void* v);
 void act_import_group(void* v);

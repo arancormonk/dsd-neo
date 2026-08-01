@@ -47,6 +47,7 @@ unsigned int dmr_enc_class_observe(dsd_state* state, uint8_t slot, unsigned int 
 void dmr_enc_class_force(dsd_state* state, uint8_t slot, int encrypted);
 void dmr_enc_class_reset(dsd_state* state, uint8_t slot);
 int dmr_enc_class_established_enc(const dsd_state* state, uint8_t slot);
+int dmr_enc_class_established_clear(const dsd_state* state, uint8_t slot);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);

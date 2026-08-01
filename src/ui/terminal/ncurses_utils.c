@@ -7,7 +7,7 @@
  * Shared utility functions for ncurses UI modules
  */
 
-#include <dsd-neo/core/state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/ui/ncurses_internal.h>
@@ -15,7 +15,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "dsd-neo/core/state_fwd.h"
 
@@ -127,24 +126,18 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) {
 }
 
 int
-ui_is_transient_enc_locked_from_label(const dsd_state* state, const char* label) {
-    if (!state
-        || !(DSD_SYNC_IS_P25P1(state->synctype) || DSD_SYNC_IS_P25P2(state->synctype)
-             || DSD_SYNC_IS_P25P1(state->lastsynctype) || DSD_SYNC_IS_P25P2(state->lastsynctype))) {
+ui_is_enc_locked_from_label(const dsd_state* state, const char* label) {
+    if (!state) {
         return 0;
     }
     if (label && strstr(label, "Data") != NULL) {
         return 0;
     }
-    const time_t now = time(NULL);
     size_t cursor = 0U;
     ui_target_token token;
     while (ui_target_token_next(label, &cursor, &token)) {
-        for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-            if (state->p25_enc_tg_cache_tg[i] == token.id && state->p25_enc_tg_cache_is_group[i] == token.is_group
-                && state->p25_enc_tg_cache_until[i] > now) {
-                return 1;
-            }
+        if (dsd_enc_lockout_entry_active(state, token.id, token.is_group)) {
+            return 1;
         }
     }
     return 0;

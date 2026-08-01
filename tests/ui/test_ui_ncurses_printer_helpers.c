@@ -211,7 +211,7 @@ ui_is_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(m
 }
 
 int
-ui_is_transient_enc_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
+ui_is_enc_locked_from_label(const dsd_state* state, const char* label) { // NOLINT(misc-use-internal-linkage)
     (void)state;
     return label != NULL && strstr(label, "TransientEnc") != NULL;
 }

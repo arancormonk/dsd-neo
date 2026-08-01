@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dsd-neo/core/enc_lockout.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -367,7 +368,7 @@ main(void) {
     s4.payload_algid = 0x84;
     s4.payload_keyid = 0x1234;
     s4.payload_miP = 0x1122334455667788ULL;
-    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     assert(s4_history[0].revision > 0U);
     assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 1234") != NULL);
     dsd_call_snapshot lockout_call;
@@ -375,17 +376,10 @@ main(void) {
     assert(s4.payload_algid == 0x84);
     assert(s4.payload_keyid == 0x1234);
     assert(s4.payload_miP == 0x1122334455667788ULL);
-    int enc_cache_seen = 0;
-    for (int i = 0; i < DSD_P25_ENC_TG_CACHE_DEPTH; i++) {
-        if (s4.p25_enc_tg_cache_tg[i] == 1234U && s4.p25_enc_tg_cache_is_group[i] == 1U
-            && s4.p25_enc_tg_cache_until[i] > time(NULL)) {
-            enc_cache_seen = 1;
-        }
-    }
-    assert(enc_cache_seen == 1);
+    assert(dsd_enc_lockout_entry_active(&s4, 1234U, 1));
     // re-emit should not create a runtime policy block
     const uint64_t first_lockout_revision = s4_history[0].revision;
-    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 1234, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     assert(s4_history[0].revision == first_lockout_revision);
     assert(s4_history[0].Event_History_Items[2].internal_str[0] == '\0');
     dsd_tg_policy_lookup lockout_lookup;
@@ -401,7 +395,7 @@ main(void) {
     old_call.ota_source_id = 3333U;
     old_call.observed_m = 1.0;
     assert(dsd_call_state_observe(&s4, &old_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 2222, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 2222, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     assert(dsd_call_state_get(&s4, 0U, &lockout_call) == 1);
     assert(lockout_call.phase == DSD_CALL_PHASE_ENDED);
     assert(lockout_call.ota_target_id == 2222U);
@@ -418,7 +412,7 @@ main(void) {
     assert(s4_history[0].revision == ended_lockout_revision);
     assert(s4_history[0].Event_History_Items[2].target_id == 1234U);
     s4.lastsynctype = DSD_SYNC_P25P1_POS;
-    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 5678, 0x40, 1);
+    p25_emit_enc_lockout_once_typed(&o4, &s4, 0, 5678, 0x40, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN, 0);
     assert(s4_history[0].Event_History_Items[1].target_id == 5678U);
     assert(s4_history[0].Event_History_Items[1].source_id == 0U);
     assert(strstr(s4_history[0].Event_History_Items[1].internal_str, "Target: 5678") != NULL);

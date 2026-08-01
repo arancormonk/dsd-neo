@@ -11,6 +11,7 @@
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -1554,11 +1555,16 @@ test_encrypted_flco_lockout_inserts_policy_and_event_history(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
 
     assert(irr == 0);
+    // The lockout lives in the session ledger and never aliases the user's
+    // talkgroup policy table.
     assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lookup.entry.mode, "B") == 0);
-    assert(strcmp(lookup.entry.name, "ENC LO") == 0);
-    assert(lookup.entry.source == DSD_TG_POLICY_SOURCE_ENC_LOCKOUT);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+    dsd_enc_lockout_entry ledger_entry;
+    assert(dsd_enc_lockout_lookup(&state, 1234U, 1, &ledger_entry) == 1);
+    // The privacy type never resolved (service-option bit only), so the entry
+    // must carry the unknown sentinel, not ALGID 0 (which reads as clear).
+    assert(ledger_entry.algid == DSD_ENC_LOCKOUT_ALGID_UNKNOWN);
     assert(strstr(history[0].Event_History_Items[0].internal_str, "Target: 1234; has been locked out;") != NULL);
     dsd_state_ext_free_all(&state);
 }
@@ -1633,6 +1639,7 @@ test_encrypted_flco_allowed_tuning_skips_lockout_policy(void) {
     assert(irr == 0);
     assert(dsd_tg_policy_lookup_id(&state, 4321U, &lookup) == 0);
     assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 4321U, 1, NULL));
     assert(history[0].Event_History_Items[0].internal_str[0] == '\0');
     dsd_state_ext_free_all(&state);
 }
@@ -1664,17 +1671,64 @@ test_embedded_lc_enc_requires_corroboration_for_lockout(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
     assert(irr == 0);
     assert((state.dmr_so & 0x40U) != 0U);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
 
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
     assert(irr == 0);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lookup.entry.mode, "B") == 0);
-    assert(strcmp(lookup.entry.name, "ENC LO") == 0);
+    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    dsd_state_ext_free_all(&state);
+}
+
+// The ledger is suspended -- not erased -- while the user follows encrypted calls, so clear
+// voice observed in follow mode must leave existing entries alone. Erasing them there would
+// make a temporary toggle cost a fresh classification probe per target once lockout returns.
+static void
+test_clear_voice_in_follow_mode_keeps_lockout_entry(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+
+    // Arm the entry under lockout policy (corroborated encrypted embedded LCs).
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+
+    // Follow encrypted calls: corroborated clear voice must not erase the entry.
+    opts.trunk_tune_enc_calls = 1;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(dmr_enc_class_established_clear(&state, 0U));
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+
+    // Back under lockout policy the same clear evidence releases it.
+    opts.trunk_tune_enc_calls = 0;
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x00U, 1234U, 5678U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
     dsd_state_ext_free_all(&state);
 }
 
@@ -1689,7 +1743,6 @@ test_lone_contradicting_emb_does_not_flap_established_clear(void) {
     static Event_History_I history[2];
     uint8_t bits[80];
     uint32_t irr = 0;
-    dsd_tg_policy_lookup lookup;
     dsd_call_snapshot call;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -1713,8 +1766,7 @@ test_lone_contradicting_emb_does_not_flap_established_clear(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
     assert(irr == 0);
     assert((state.dmr_so & 0x40U) == 0U);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
     assert(dsd_call_state_get(&state, 0U, &call) > 0);
     assert(call.crypto == DSD_CALL_CRYPTO_CLEAR);
     assert(call.audio_permitted == 1U);
@@ -1725,9 +1777,7 @@ test_lone_contradicting_emb_does_not_flap_established_clear(void) {
     dmr_flco(&opts, &state, bits, 1U, &irr, 3U);
     assert(irr == 0);
     assert((state.dmr_so & 0x40U) != 0U);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lookup.entry.mode, "B") == 0);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_state_ext_free_all(&state);
 }
 
@@ -1740,7 +1790,6 @@ test_terminator_privacy_bit_does_not_lock_out(void) {
     static Event_History_I history[2];
     uint8_t bits[80];
     uint32_t irr = 0;
-    dsd_tg_policy_lookup lookup;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1755,8 +1804,7 @@ test_terminator_privacy_bit_does_not_lock_out(void) {
     build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
     dmr_flco(&opts, &state, bits, 1U, &irr, 2U);
     assert(irr == 0);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
     dsd_state_ext_free_all(&state);
 }
 
@@ -1771,7 +1819,6 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     static Event_History_I history[2];
     uint8_t bits[80];
     uint32_t irr = 0;
-    dsd_tg_policy_lookup lookup;
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -1787,16 +1834,13 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     dmr_flco(&opts, &state, bits, 0U, &irr, 1U);
     assert(irr == 0);
     assert((state.dmr_so & 0x40U) != 0U);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
 
     irr = 0;
     build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
     dmr_flco(&opts, &state, bits, 0U, &irr, 3U);
     assert(irr == 0);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
-    assert(strcmp(lookup.entry.mode, "B") == 0);
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_state_ext_free_all(&state);
 }
 
@@ -2160,6 +2204,7 @@ main(void) {
     test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_embedded_lc_enc_requires_corroboration_for_lockout();
+    test_clear_voice_in_follow_mode_keeps_lockout_entry();
     test_lone_contradicting_emb_does_not_flap_established_clear();
     test_terminator_privacy_bit_does_not_lock_out();
     test_crc_failed_header_enc_requires_repeat_for_lockout();
