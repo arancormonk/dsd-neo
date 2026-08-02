@@ -31,7 +31,9 @@ ensure_hooks_mu_init(void) {
         return;
     }
 
-    while (atomic_load(&g_telemetry_hooks_mu_state) != 2) {}
+    while (atomic_load(&g_telemetry_hooks_mu_state) != 2) {
+        dsd_thread_yield();
+    }
 }
 
 static dsd_telemetry_hooks

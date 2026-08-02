@@ -34,7 +34,9 @@ ensure_opts_mu_init(void) {
         atomic_store(&g_opts_mu_init, 2);
         return;
     }
-    while (atomic_load(&g_opts_mu_init) != 2) {}
+    while (atomic_load(&g_opts_mu_init) != 2) {
+        dsd_thread_yield();
+    }
 }
 
 void

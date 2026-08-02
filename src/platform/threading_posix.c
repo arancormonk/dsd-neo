@@ -282,4 +282,9 @@ dsd_thread_set_affinity(int cpu_index) {
 #endif
 }
 
+void
+dsd_thread_yield(void) {
+    (void)sched_yield();
+}
+
 #endif /* !DSD_PLATFORM_WIN_NATIVE */

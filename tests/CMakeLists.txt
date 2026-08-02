@@ -6990,6 +6990,22 @@ add_test(
     COMMAND dsd-neo_test_platform_monotonic_cond
 )
 
+add_executable(
+    dsd-neo_test_platform_thread_yield
+    platform/test_platform_thread_yield.c
+)
+target_include_directories(
+    dsd-neo_test_platform_thread_yield
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_thread_yield
+    PRIVATE dsd-neo_platform
+)
+add_test(NAME PLATFORM_THREAD_YIELD COMMAND dsd-neo_test_platform_thread_yield)
+# A yield that blocks shows up as a hang, not a failed assert.
+set_tests_properties(PLATFORM_THREAD_YIELD PROPERTIES TIMEOUT 60)
+
 set(_sndfile_fwd_contract_src
     "${_DSD_PUBLIC_HEADER_TEST_DIR}/CORE_SNDFILE_FWD_CONTRACT.c"
 )
