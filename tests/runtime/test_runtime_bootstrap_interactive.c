@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
@@ -168,68 +169,53 @@ expect_str(const char* tag, const char* got, const char* want) {
 #if !defined(_WIN32)
 typedef void (*bootstrap_interactive_fn)(dsd_opts* opts, dsd_state* state);
 
+/*
+ * Point stdin at a script and run the wizard.
+ *
+ * freopen() rather than dup2() over fd 0: dup2 leaves whatever glibc had already
+ * buffered for stdin in place, so the wizard's first reads can come from the
+ * process's real stdin instead of the script. That is invisible when the harness
+ * inherits /dev/null and turns into shifted answers when it inherits a pipe, as
+ * it does under CTest on some hosts. freopen resets the stream itself, so the
+ * result no longer depends on what the caller's stdin happened to be.
+ */
 static int
 with_stdin_text(const char* text, bootstrap_interactive_fn fn, dsd_opts* opts, dsd_state* state) {
-    int rc = 0;
-    FILE* f = tmpfile();
-    if (!f) {
-        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
-        return 1;
-    }
-    if (fputs(text, f) < 0) {
-        DSD_FPRINTF(stderr, "fputs failed\n");
-        fclose(f);
-        return 1;
-    }
-    if (fseek(f, 0, SEEK_SET) != 0) {
-        DSD_FPRINTF(stderr, "fseek(input) failed: %s\n", strerror(errno));
-        fclose(f);
-        return 1;
-    }
-    clearerr(f);
-
-    int stdin_fd = fileno(stdin);
-    if (stdin_fd < 0) {
-        DSD_FPRINTF(stderr, "fileno(stdin) failed: %s\n", strerror(errno));
-        fclose(f);
-        return 1;
-    }
-    int input_fd = fileno(f);
-    if (input_fd < 0) {
-        DSD_FPRINTF(stderr, "fileno(input) failed: %s\n", strerror(errno));
-        fclose(f);
+    char path[] = "dsd_neo_bootstrap_stdin_XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "mkstemp failed: %s\n", strerror(errno));
         return 1;
     }
 
-    int saved = dup(stdin_fd);
-    if (saved < 0) {
-        DSD_FPRINTF(stderr, "dup(stdin) failed: %s\n", strerror(errno));
-        fclose(f);
+    size_t len = strlen(text);
+    while (len > 0) {
+        ssize_t written = write(fd, text, len);
+        if (written <= 0) {
+            DSD_FPRINTF(stderr, "write(script) failed: %s\n", strerror(errno));
+            close(fd);
+            unlink(path);
+            return 1;
+        }
+        text += (size_t)written;
+        len -= (size_t)written;
+    }
+    close(fd);
+
+    if (!freopen(path, "r", stdin)) {
+        DSD_FPRINTF(stderr, "freopen(script, stdin) failed: %s\n", strerror(errno));
+        unlink(path);
         return 1;
     }
-    if (fflush(stdin) != 0) {
-        DSD_FPRINTF(stderr, "fflush(stdin) failed: %s\n", strerror(errno));
-        close(saved);
-        fclose(f);
-        return 1;
-    }
-    if (dup2(input_fd, stdin_fd) < 0) {
-        DSD_FPRINTF(stderr, "dup2(input, stdin) failed: %s\n", strerror(errno));
-        close(saved);
-        fclose(f);
-        return 1;
-    }
-    clearerr(stdin);
 
     fn(opts, state);
 
-    if (dup2(saved, stdin_fd) < 0) {
-        DSD_FPRINTF(stderr, "dup2(saved, stdin) failed: %s\n", strerror(errno));
+    int rc = 0;
+    if (!freopen("/dev/null", "r", stdin)) {
+        DSD_FPRINTF(stderr, "freopen(/dev/null, stdin) failed: %s\n", strerror(errno));
         rc = 1;
     }
-    clearerr(stdin);
-    close(saved);
-    fclose(f);
+    unlink(path);
     return rc;
 }
 
