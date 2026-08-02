@@ -85,12 +85,20 @@ CPPCHECK_ARGS=(
   --std=c++14
   "-D__has_include(x)=0"
   --suppress=missingIncludeSystem
+  "-DQ_OBJECT="
+  "-DQ_PROPERTY(x)="
+  "-DQ_ENUM(x)="
+  "-DQ_SIGNALS=public"
+  "-DQ_SLOTS="
+  "-DQ_INVOKABLE="
+  "-DQ_EMIT="
   --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
   --inline-suppr
   -I include
   -I src/dsp
   -I src/ui/terminal
   -I src/ui/terminal/menus
+  -I src/ui/qt
   -I src/third_party
   -I src/third_party/pffft
   -j "$NPROC"
@@ -110,12 +118,20 @@ if [[ $STRICT -eq 1 ]]; then
     --std=c++14
     "-D__has_include(x)=0"
     --suppress=missingIncludeSystem
+    "-DQ_OBJECT="
+    "-DQ_PROPERTY(x)="
+    "-DQ_ENUM(x)="
+    "-DQ_SIGNALS=public"
+    "-DQ_SLOTS="
+    "-DQ_INVOKABLE="
+    "-DQ_EMIT="
     --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
     --inline-suppr
     -I include
     -I src/dsp
     -I src/ui/terminal
     -I src/ui/terminal/menus
+    -I src/ui/qt
     -I src/third_party
     -I src/third_party/pffft
     -j "$NPROC"

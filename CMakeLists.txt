@@ -75,6 +75,7 @@ option(
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
+option(DSD_ENABLE_QT_UI "Enable the Qt Quick frontend (src/ui/qt)" OFF)
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
