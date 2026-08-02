@@ -160,8 +160,12 @@ dependency_scan_targets=()
 missing_worktree_paths=()
 skipped_missing_paths=()
 for p in "${changed_paths[@]}"; do
+  # Vendored upstream snapshots are never formatted or analyzed: they are carried
+  # as-is so they can be diffed against upstream and re-synced. The build glue
+  # around them (android/third_party/CMakeLists.txt) is ours and stays in scope.
   case "$p" in
     build/* | src/third_party/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
   esac
 
   track_semgrep=0

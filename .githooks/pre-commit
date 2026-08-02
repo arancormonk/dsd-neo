@@ -8,8 +8,12 @@ mapfile -t staged_paths < <(git diff --cached --name-only --diff-filter=ACMR | g
 
 files=()
 for p in "${staged_paths[@]}"; do
+  # Vendored upstream snapshots keep upstream formatting so they stay diffable
+  # against the release they came from. .clang-format-ignore covers these paths as
+  # well; skipping them here means the hook never even offers them.
   case "$p" in
     build/* | src/third_party/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
   esac
   files+=("$p")
 done
