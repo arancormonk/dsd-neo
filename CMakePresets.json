@@ -210,6 +210,30 @@
         "DSD_ENABLE_SOAPYSDR": "OFF",
         "DSD_WARNINGS_AS_ERRORS": "ON"
       }
+    },
+    {
+      "name": "android-app",
+      "displayName": "Android app (Qt Quick UI + APK)",
+      "description": "arm64-v8a app build: vcpkg chainloads the Qt Android toolchain, which chainloads the NDK; needs VCPKG_ROOT, ANDROID_SDK_ROOT, ANDROID_NDK_ROOT (the NDK the Qt release is qualified with), QT_ANDROID_ROOT and QT_HOST_ROOT",
+      "binaryDir": "${sourceDir}/build/android-app",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_CHAINLOAD_TOOLCHAIN_FILE": "$env{QT_ANDROID_ROOT}/lib/cmake/Qt6/qt.toolchain.cmake",
+        "VCPKG_TARGET_TRIPLET": "arm64-android-static",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
+        "QT_HOST_PATH": "$env{QT_HOST_ROOT}",
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-29",
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "OFF",
+        "DSD_ENABLE_TERMINAL_UI": "OFF",
+        "DSD_ENABLE_QT_UI": "ON",
+        "DSD_AUDIO_BACKEND": "aaudio",
+        "DSD_FORCE_RADIO_PIPELINE": "ON",
+        "DSD_ENABLE_RTLSDR": "OFF",
+        "DSD_ENABLE_SOAPYSDR": "OFF",
+        "DSD_WARNINGS_AS_ERRORS": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -315,6 +339,14 @@
       "name": "android-arm64-release",
       "configurePreset": "android-arm64-release",
       "configuration": "Release"
+    },
+    {
+      "name": "android-app",
+      "configurePreset": "android-app",
+      "displayName": "Android app (APK)",
+      "targets": [
+        "apk"
+      ]
     }
   ],
   "testPresets": [

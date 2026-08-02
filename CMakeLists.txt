@@ -1014,6 +1014,10 @@ add_subdirectory(src/engine)
 add_subdirectory(src/app_control)
 add_subdirectory(src/ui)
 add_subdirectory(apps)
+# Android app shell (Qt Quick frontend + JNI lifecycle glue).
+if(ANDROID AND DSD_ENABLE_QT_UI)
+    add_subdirectory(android)
+endif()
 # Unit tests are built when BUILD_TESTING is enabled.
 if(BUILD_TESTING)
     add_subdirectory(tests)

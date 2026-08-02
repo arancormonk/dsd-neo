@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<resources>
+    <string name="app_name">DSD-neo</string>
+    <string name="channel_name">Decoder</string>
+    <string name="action_stop">Stop</string>
+    <string name="decoder_starting">Starting…</string>
+    <string name="decoder_running">Decoding</string>
+    <string name="decoder_stopping">Stopping…</string>
+</resources>
