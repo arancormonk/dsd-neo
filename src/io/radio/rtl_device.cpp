@@ -4956,9 +4956,10 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->if_gain_count = 0;
 
     int r = 0;
-#if defined(__ANDROID__) && defined(USE_RTLSDR)
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
     /* An injected descriptor means the app already picked and opened the device and
-     * libusb discovery is off, so opening by index cannot work. */
+     * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
+     * project patch on the vendored tree; the configure step proves it is there. */
     const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
     if (preopened_fd >= 0) {
         r = rtlsdr_open_fd(&dev->dev, preopened_fd);

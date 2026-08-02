@@ -805,12 +805,22 @@ set_property(
 
 # Deprecated alias kept for existing scripts and CI invocations.
 option(DSD_USE_PORTAUDIO "Deprecated: use DSD_AUDIO_BACKEND=portaudio" OFF)
-if(DSD_USE_PORTAUDIO AND DSD_AUDIO_BACKEND STREQUAL "auto")
-    message(
-        WARNING
-        "DSD_USE_PORTAUDIO is deprecated; use -DDSD_AUDIO_BACKEND=portaudio instead."
-    )
-    set(DSD_AUDIO_BACKEND "portaudio")
+if(DSD_USE_PORTAUDIO)
+    if(DSD_AUDIO_BACKEND STREQUAL "auto")
+        message(
+            WARNING
+            "DSD_USE_PORTAUDIO is deprecated; use -DDSD_AUDIO_BACKEND=portaudio instead."
+        )
+        set(DSD_AUDIO_BACKEND "portaudio")
+    else()
+        # Never silently: a stale -DDSD_USE_PORTAUDIO=ON in a caller's script would
+        # otherwise look honoured while a different backend was built.
+        message(
+            WARNING
+            "DSD_USE_PORTAUDIO=ON is ignored because DSD_AUDIO_BACKEND was set explicitly to "
+            "'${DSD_AUDIO_BACKEND}'. Drop the deprecated option."
+        )
+    endif()
 endif()
 
 # "auto": PortAudio on Windows (no PulseAudio available), PulseAudio elsewhere.
@@ -939,15 +949,21 @@ if(DSD_HAS_RTLSDR)
         INTERFACE ${RTLSDR_INCLUDE_DIRS}
     )
 
-    # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
+    # Detect optional entry points in the librtlsdr being linked:
+    # - rtlsdr_set_bias_tee, absent from older releases
+    # - rtlsdr_open_fd, a project patch carried only by the vendored Android tree
     if(DSD_ANDROID_VENDORED_RTLSDR)
         # The vendored library is built from this tree, so it does not exist yet
         # and a link probe cannot run. Header and implementation are the same
         # snapshot, so the declaration is the answer.
         unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        unset(HAVE_RTLSDR_OPEN_FD CACHE)
         file(READ "${RTLSDR_INCLUDE_DIRS}/rtl-sdr.h" _DSD_RTLSDR_HEADER)
         if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_set_bias_tee")
             set(HAVE_RTLSDR_BIAS_TEE ON)
+        endif()
+        if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_open_fd")
+            set(HAVE_RTLSDR_OPEN_FD ON)
         endif()
         unset(_DSD_RTLSDR_HEADER)
     else()
@@ -957,11 +973,13 @@ if(DSD_HAS_RTLSDR)
         set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
         set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
         unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        unset(HAVE_RTLSDR_OPEN_FD CACHE)
         check_symbol_exists(
             rtlsdr_set_bias_tee
             "rtl-sdr.h"
             HAVE_RTLSDR_BIAS_TEE
         )
+        check_symbol_exists(rtlsdr_open_fd "rtl-sdr.h" HAVE_RTLSDR_OPEN_FD)
         set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
         set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
         unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
@@ -971,6 +989,22 @@ if(DSD_HAS_RTLSDR)
         target_compile_definitions(
             dsd-neo_feature_rtlsdr
             INTERFACE USE_RTLSDR_BIAS_TEE
+        )
+    endif()
+    if(HAVE_RTLSDR_OPEN_FD)
+        target_compile_definitions(
+            dsd-neo_feature_rtlsdr
+            INTERFACE USE_RTLSDR_OPEN_FD
+        )
+    elseif(ANDROID)
+        # USB-OTG descriptor injection is the only way an app can reach a dongle,
+        # so a librtlsdr without it makes the RTL-SDR backend dead weight. Fail
+        # here rather than at link time, or at runtime on the device.
+        message(
+            FATAL_ERROR
+            "librtlsdr on Android must provide rtlsdr_open_fd() for USB-OTG descriptor injection. "
+            "Build the vendored tree with -DDSD_ANDROID_VENDORED_RTLSDR=ON, or disable the backend "
+            "with -DDSD_ENABLE_RTLSDR=OFF (rtl_tcp still works via -DDSD_FORCE_RADIO_PIPELINE=ON)."
         )
     endif()
 else()
