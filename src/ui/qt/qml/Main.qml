@@ -205,7 +205,7 @@ ApplicationWindow {
                             id: rtlFreq
                             Layout.fillWidth: true
                             visible: root.inputKey === "usb" || root.inputKey === "rtltcp"
-                            text: "769.76875M"
+                            text: "851.375M"
                             placeholderText: qsTr("e.g. 851.375M")
                         }
 
