@@ -47,6 +47,8 @@ static struct {
     int32_t device_rate;
     int32_t device_channels;
     int32_t frames_per_burst;
+    int32_t buffer_capacity_frames;
+    int32_t requested_capacity_frames;
     int32_t buffer_size_frames;
     int start_calls;
     int stop_calls;
@@ -66,6 +68,14 @@ static struct {
     int frames_read_error;
     int thread_create_calls;
     int thread_join_calls;
+    /* Drives the device queue during a pump wait: each timed wait plays this
+     * many frames, so a buffered device drains toward starvation the way a real
+     * one does. */
+    int64_t frames_played_per_wait;
+    int cond_timedwait_calls;
+    /* Fake monotonic clock, so "was the decoder producing just now" is decided
+     * by the test rather than by how fast it happens to run. */
+    uint64_t now_ns;
     int16_t captured[FAKE_CAPTURE_SAMPLES];
     size_t captured_samples;
 } g;
@@ -76,7 +86,16 @@ reset_fakes(void) {
     g.device_rate = 8000;
     g.device_channels = 2;
     g.frames_per_burst = 96;
+    g.buffer_capacity_frames = 16000;
+    g.requested_capacity_frames = 0;
     g.frames_read_step = INT64_MAX / 4;
+    /* Nonzero: a zero timestamp reads as "the decoder never wrote". */
+    g.now_ns = 1000000000ULL;
+}
+
+uint64_t
+dsd_time_monotonic_ns(void) {
+    return g.now_ns;
 }
 
 /*============================================================================
@@ -143,6 +162,13 @@ dsd_cond_timedwait(dsd_cond_t* cond, dsd_mutex_t* mutex, unsigned int timeout_ms
     (void)cond;
     (void)mutex;
     (void)timeout_ms;
+    g.cond_timedwait_calls++;
+    if (g.frames_played_per_wait > 0) {
+        g.frames_read += g.frames_played_per_wait;
+        if (g.frames_read > g.frames_written) {
+            g.frames_read = g.frames_written;
+        }
+    }
     return 0;
 }
 
@@ -374,6 +400,18 @@ AAudioStream_getFramesPerBurst(AAudioStream* stream) {
 }
 
 int32_t
+AAudioStream_getBufferCapacityInFrames(AAudioStream* stream) {
+    (void)stream;
+    return g.buffer_capacity_frames;
+}
+
+void
+AAudioStreamBuilder_setBufferCapacityInFrames(AAudioStreamBuilder* builder, int32_t frames) {
+    (void)builder;
+    g.requested_capacity_frames = frames;
+}
+
+int32_t
 AAudioStream_getXRunCount(AAudioStream* stream) {
     (void)stream;
     return 0;
@@ -468,11 +506,17 @@ test_open_output_native_format(void) {
     assert(g.last_format == AAUDIO_FORMAT_PCM_I16);
     assert(g.last_rate == 8000);
     assert(g.last_channels == 2);
-    assert(g.last_performance == AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    assert(g.last_performance == AAUDIO_PERFORMANCE_MODE_NONE);
     assert(g.last_usage == AAUDIO_USAGE_MEDIA && g.usage_calls == 1);
     assert(g.delete_calls == 1);
     assert(g.start_calls == 1);
-    assert(g.buffer_size_frames == g.frames_per_burst * DSD_AAUDIO_BUFFER_BURSTS);
+    /* The device buffer covers the pump's target depth, rounded up to whole
+     * bursts: 160 ms at 8 kHz is 1280 frames, i.e. 14 bursts of 96. */
+    assert(g.requested_capacity_frames == 8000 * DSD_AAUDIO_BUFFER_CAPACITY_MS / 1000);
+    assert(g.buffer_size_frames == 14 * g.frames_per_burst);
+    assert(g.buffer_size_frames >= 8000 * DSD_AAUDIO_BUFFER_TARGET_MS / 1000);
+    assert(g.buffer_size_frames > g.frames_per_burst * DSD_AAUDIO_BUFFER_BURSTS);
+    assert(g.buffer_size_frames > g.frames_per_burst * DSD_AAUDIO_BUFFER_BURSTS);
     assert(stream->needs_convert == 0);
     assert(stream->use_async == 0);
 
@@ -492,6 +536,20 @@ test_open_output_native_format(void) {
     assert(dsd_audio_drain(stream) == 0);
     dsd_audio_close(stream);
     assert(g.stop_calls == 1 && g.close_calls == 1);
+}
+
+/* A device that grants less capacity than the target depth must be respected:
+ * asking for more than the capacity is an error, not a bigger buffer. */
+static void
+test_output_buffer_size_clamped_to_capacity(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+
+    reset_fakes();
+    g.buffer_capacity_frames = 480;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(g.buffer_size_frames == 480);
+    dsd_audio_close(stream);
 }
 
 static void
@@ -799,6 +857,107 @@ test_async_output_setup_and_pump(void) {
     assert(g.thread_join_calls == 1);
 }
 
+/*
+ * An empty ring is not a starvation while the device still holds audio. The pump
+ * must wait for real audio instead of queueing concealment ahead of it, and only
+ * conceal once the device is down to DSD_AAUDIO_CONCEAL_LOW_WATER_MS.
+ */
+static void
+test_pump_waits_while_device_is_buffered(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+
+    reset_fakes();
+    params.async_output = 1;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+
+    /* Something has played, so concealment is available. */
+    stream->conceal_inited = 1;
+    stream->conceal_has_good = 1;
+    stream->priming = 0;
+    assert(stream->ring_samples_count == 0);
+
+    /* Device holds 1000 ms; each wait plays one 20 ms chunk. */
+    g.frames_read_step = 0;
+    g.frames_written = 8000;
+    g.frames_read = 0;
+    g.frames_played_per_wait = 160;
+    g.cond_timedwait_calls = 0;
+
+    assert(aaudio_output_wait_for_work_locked(stream) == 1);
+
+    /* It concealed only once the queue fell under the low-water mark (80 ms =
+     * 640 frames), i.e. after roughly (8000 - 640) / 160 waits -- not on the
+     * first timeout the way an empty ring alone would have triggered. */
+    assert(g.cond_timedwait_calls > 40);
+    assert(g.frames_written - g.frames_read < 640);
+
+    /* A gap must not put the pump back into priming: on a real-time feed that
+     * withholds output from a device that is already low. */
+    assert(stream->priming == 0);
+
+    stream->stop = 1;
+    dsd_audio_close(stream);
+}
+
+/* With the device already dry, concealment is the right answer immediately. */
+static void
+test_pump_conceals_when_device_is_dry(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+
+    reset_fakes();
+    params.async_output = 1;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+
+    stream->conceal_inited = 1;
+    stream->conceal_has_good = 1;
+    stream->priming = 0;
+
+    g.frames_read_step = 0;
+    g.frames_written = 4096;
+    g.frames_read = 4096; /* nothing queued */
+    g.frames_played_per_wait = 0;
+    g.cond_timedwait_calls = 0;
+
+    assert(aaudio_output_wait_for_work_locked(stream) == 1);
+    assert(g.cond_timedwait_calls == 1);
+
+    stream->stop = 1;
+    dsd_audio_close(stream);
+}
+
+/* Concealment landing while the decoder is still producing is the audible
+ * failure, and is counted apart from ordinary idle-time padding. */
+static void
+test_underrun_classification(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+    int16_t frames[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    reset_fakes();
+    params.async_output = 1;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+
+    /* Idle: no decoder write has ever happened, so nothing is mid-speech. */
+    aaudio_output_prepare_chunk_locked(stream, 1);
+    assert(stream->underruns == 1);
+    assert(stream->underruns_partial == 0);
+    assert(stream->underruns_midspeech == 0);
+
+    /* A partial chunk is a fragment of real audio padded with concealment. */
+    assert(dsd_audio_write(stream, frames, 4) == 4);
+    assert(stream->in_samples == 8);
+    aaudio_output_prepare_chunk_locked(stream, 0);
+    assert(stream->underruns == 2);
+    assert(stream->underruns_partial == 1);
+    /* The write above was just now, so this one landed inside speech. */
+    assert(stream->underruns_midspeech == 1);
+
+    stream->stop = 1;
+    dsd_audio_close(stream);
+}
+
 static void
 test_api_guards(void) {
     dsd_audio_params params = valid_params(8000, 2);
@@ -849,6 +1008,7 @@ int
 main(void) {
     test_size_and_ring_helpers();
     test_open_output_native_format();
+    test_output_buffer_size_clamped_to_capacity();
     test_open_output_rate_fallback();
     test_channel_conversion();
     test_write_recovery_paths();
@@ -856,6 +1016,9 @@ main(void) {
     test_input_stream();
     test_drain_paths();
     test_async_output_setup_and_pump();
+    test_pump_waits_while_device_is_buffered();
+    test_pump_conceals_when_device_is_dry();
+    test_underrun_classification();
     test_api_guards();
     return 0;
 }

@@ -262,7 +262,11 @@ These are CMake cache options (set at configure time via `-D...`).
     Android-only; it plays through AAudio, resamples when the device refuses the requested rate, and
     reopens the stream by itself across route changes (headphones, Bluetooth).
   - `DSD_NEO_AUDIO_STATS=1` in the environment prints per-stream output counters (underruns, drops)
-    when a stream closes; the AAudio backend also reports the format the device actually granted.
+    when a stream closes; the AAudio backend also reports the format the device actually granted, plus
+    `in_frames` (what the decoder handed over, against `frames` = what the device accepted),
+    `underruns_partial` (a fragment of speech padded out to a full chunk) and `underruns_midspeech`
+    (concealment landing inside a call rather than after one). On a healthy stream the last two stay at
+    or near zero; concealment during idle gaps is expected and is just silence.
   - `-DDSD_USE_PORTAUDIO=ON` — Deprecated alias for `-DDSD_AUDIO_BACKEND=portaudio`.
 - Radio backend selection:
   - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.

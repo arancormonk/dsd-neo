@@ -39,14 +39,38 @@
  * Tunables
  *============================================================================*/
 
-#define DSD_AAUDIO_OUTPUT_RING_MS    1000
-#define DSD_AAUDIO_OUTPUT_CHUNK_MS   20
-#define DSD_AAUDIO_BUFFER_BURSTS     3
-#define DSD_AAUDIO_IO_TIMEOUT_NS     500000000LL /* 500 ms */
-#define DSD_AAUDIO_DRAIN_POLL_MS     5
-#define DSD_AAUDIO_DRAIN_TIMEOUT_MS  2000
-#define DSD_AAUDIO_MAX_CONV_CHANNELS 2
-#define DSD_AAUDIO_REOPEN_BACKOFF_MS 500
+#define DSD_AAUDIO_OUTPUT_RING_MS       1000
+#define DSD_AAUDIO_OUTPUT_CHUNK_MS      20
+#define DSD_AAUDIO_BUFFER_BURSTS        3
+/* Device-side buffer the pump keeps ahead of the mixer. Three bursts is the
+ * latency-first default and is far too tight for a decoder: the pump wakes on a
+ * 20 ms cadence from an ordinary thread, so any scheduling jitter past the buffer
+ * depth is an audible xrun. Several chunk periods of slack cost latency nobody
+ * hears on a scanner and remove the stutter. */
+#define DSD_AAUDIO_BUFFER_TARGET_MS     160
+/* Cushion the pump builds once, before it first feeds the device. Decoder output
+ * is bursty -- a voice frame arrives, then nothing until the next one -- so
+ * starting playback on the very first chunk leaves the device with no runway.
+ * One cushion's worth of added latency is inaudible on a scanner. It is
+ * deliberately not rebuilt after a gap; see aaudio_output_wait_for_work_locked. */
+#define DSD_AAUDIO_OUTPUT_PRIME_MS      100
+/* A tail shorter than the cushion still has to play: after this long with data
+ * waiting but not enough of it, give up on filling the cushion and flush. */
+#define DSD_AAUDIO_PRIME_FLUSH_MS       200
+/* How little the device may still hold before an empty ring counts as a real
+ * starvation. Above this the device has enough runway to wait for real audio;
+ * below it, concealment is what keeps the mixer from hard-underrunning. Must
+ * stay well under DSD_AAUDIO_BUFFER_TARGET_MS or the pump conceals constantly. */
+#define DSD_AAUDIO_CONCEAL_LOW_WATER_MS 80
+/* How recently the decoder must have produced audio for concealment to count as
+ * landing inside a call rather than after it. Three chunk periods. */
+#define DSD_AAUDIO_MIDSPEECH_MS         60
+#define DSD_AAUDIO_BUFFER_CAPACITY_MS   500
+#define DSD_AAUDIO_IO_TIMEOUT_NS        500000000LL /* 500 ms */
+#define DSD_AAUDIO_DRAIN_POLL_MS        5
+#define DSD_AAUDIO_DRAIN_TIMEOUT_MS     2000
+#define DSD_AAUDIO_MAX_CONV_CHANNELS    2
+#define DSD_AAUDIO_REOPEN_BACKOFF_MS    500
 
 /*============================================================================
  * Module State
@@ -214,9 +238,19 @@ aaudio_build_and_open(const dsd_audio_stream* stream, int32_t sample_rate, AAudi
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setChannelCount(builder, stream->channels);
     AAudioStreamBuilder_setSampleRate(builder, sample_rate);
-    AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    /* Deliberately not LOW_LATENCY: a scanner has no use for a few ms of latency,
+     * and the shallow fast-path buffer that comes with it starves whenever the pump
+     * thread is scheduled late (measured: ~280 device xruns/s, audibly stuttering).
+     * The normal mixer path with a deep buffer runs xrun-free. */
+    AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_NONE);
     if (!stream->is_input) {
         AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_MEDIA);
+        /* Ask for room up front: the granted capacity caps the buffer size set
+         * after the open, and the default capacity can be only a few bursts. */
+        const size_t capacity_frames = ms_to_frames(sample_rate, DSD_AAUDIO_BUFFER_CAPACITY_MS);
+        if (capacity_frames > 0 && capacity_frames <= (size_t)INT32_MAX) {
+            AAudioStreamBuilder_setBufferCapacityInFrames(builder, (int32_t)capacity_frames);
+        }
     }
 
     res = AAudioStreamBuilder_openStream(builder, out);
@@ -259,6 +293,33 @@ aaudio_init_conversion(dsd_audio_stream* stream) {
     return 1;
 }
 
+/**
+ * @brief Size the device-side buffer the pump keeps ahead of the mixer.
+ *
+ * Rounded up to whole bursts and clamped to the capacity the device granted.
+ */
+static void
+aaudio_apply_output_buffer_size(const dsd_audio_stream* stream, AAudioStream* handle) {
+    const int32_t burst = AAudioStream_getFramesPerBurst(handle);
+    if (burst <= 0) {
+        return;
+    }
+
+    int32_t want = burst * DSD_AAUDIO_BUFFER_BURSTS;
+    const size_t target = ms_to_frames(stream->device_sample_rate, DSD_AAUDIO_BUFFER_TARGET_MS);
+    if (target > (size_t)want && target <= (size_t)INT32_MAX) {
+        /* Round up to a whole number of bursts; AAudio works in bursts. */
+        want = (int32_t)(((target + (size_t)burst - 1U) / (size_t)burst) * (size_t)burst);
+    }
+
+    const int32_t capacity = AAudioStream_getBufferCapacityInFrames(handle);
+    if (capacity > 0 && want > capacity) {
+        want = capacity;
+    }
+
+    (void)AAudioStream_setBufferSizeInFrames(handle, want);
+}
+
 static int
 aaudio_stream_open(dsd_audio_stream* stream) {
     AAudioStream* handle = NULL;
@@ -286,10 +347,7 @@ aaudio_stream_open(dsd_audio_stream* stream) {
     }
 
     if (!stream->is_input) {
-        int32_t burst = AAudioStream_getFramesPerBurst(handle);
-        if (burst > 0) {
-            (void)AAudioStream_setBufferSizeInFrames(handle, burst * DSD_AAUDIO_BUFFER_BURSTS);
-        }
+        aaudio_apply_output_buffer_size(stream, handle);
     }
 
     res = AAudioStream_requestStart(handle);
@@ -541,6 +599,54 @@ aaudio_wait_drained(dsd_audio_stream* stream) {
     return -1;
 }
 
+/**
+ * @brief Frames written to the device but not yet played, or -1 if unknown.
+ *
+ * This is the cushion the device itself is still holding. The pump uses it to
+ * tell a real starvation (device about to run dry) from a decoder gap that the
+ * device buffer is already covering.
+ */
+static int64_t
+aaudio_queued_frames(const dsd_audio_stream* stream) {
+    if (!stream->handle) {
+        return -1;
+    }
+
+    int64_t written = AAudioStream_getFramesWritten(stream->handle);
+    int64_t played = AAudioStream_getFramesRead(stream->handle);
+    if (written < 0 || played < 0 || played > written) {
+        return -1;
+    }
+
+    return written - played;
+}
+
+/**
+ * @brief Whether the device is close enough to running dry to need concealment.
+ *
+ * An empty ring is not by itself a starvation: the device is still holding
+ * everything written to it, and the decoder is bursty, so audio very often
+ * arrives well before the device runs out. Concealment written in that window is
+ * not filling a gap -- it is queued *ahead* of the next real chunk, so it lands
+ * inside the call and delays the speech behind it. Only once the device is down
+ * to its last few milliseconds is padding the right answer.
+ *
+ * An unknown queue depth (stream being recovered) counts as starved, which is
+ * the conservative direction: keep the device fed.
+ */
+static int
+aaudio_output_device_starved(const dsd_audio_stream* stream) {
+    const int64_t queued = aaudio_queued_frames(stream);
+    if (queued < 0) {
+        return 1;
+    }
+
+    const int rate = stream->device_sample_rate > 0 ? stream->device_sample_rate : stream->sample_rate;
+    const size_t low_water = ms_to_frames(rate, DSD_AAUDIO_CONCEAL_LOW_WATER_MS);
+
+    return queued < (int64_t)low_water;
+}
+
 /*============================================================================
  * Async Output Pump
  *============================================================================*/
@@ -553,23 +659,78 @@ aaudio_output_request_stop(dsd_audio_stream* stream) {
     dsd_mutex_unlock(&stream->mu);
 }
 
+/* What the pump should do after one timed wait. */
+enum aaudio_wait_step {
+    AAUDIO_WAIT_CONTINUE = 0, /* keep waiting for real audio */
+    AAUDIO_WAIT_PLAY,         /* push what is queued */
+    AAUDIO_WAIT_CONCEAL,      /* device is running dry; pad it */
+};
+
+static enum aaudio_wait_step
+aaudio_output_classify_wait_locked(const dsd_audio_stream* stream, int waited_ms) {
+    if (stream->stop || stream->drain_requested) {
+        return AAUDIO_WAIT_PLAY; /* the caller re-checks both */
+    }
+
+    if (stream->ring_samples_count == 0U) {
+        if (stream->conceal_inited && stream->conceal_has_good && aaudio_output_device_starved(stream)) {
+            return AAUDIO_WAIT_CONCEAL;
+        }
+        return AAUDIO_WAIT_CONTINUE;
+    }
+
+    if (waited_ms >= DSD_AAUDIO_PRIME_FLUSH_MS) {
+        /* Data is waiting but the cushion never filled: this is a tail. */
+        return AAUDIO_WAIT_PLAY;
+    }
+
+    return AAUDIO_WAIT_CONTINUE;
+}
+
 static int
 aaudio_output_wait_for_work_locked(dsd_audio_stream* stream) {
     int synthesize_underrun = 0;
+    int waited_ms = 0;
 
-    /* Sleep until we have audio to push or a control event (drain/stop). Once a
-     * good chunk exists, timed waits let the pump bridge total starvation with a
-     * few attenuated repeats instead of letting the device underrun abruptly. */
-    while (!stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
-        if (stream->conceal_inited && stream->conceal_has_good) {
-            int ret = dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_AAUDIO_OUTPUT_CHUNK_MS);
-            if (ret != 0 && !stream->stop && !stream->drain_requested && stream->ring_samples_count == 0) {
-                synthesize_underrun = 1;
-                break;
-            }
-        } else {
-            (void)dsd_cond_wait(&stream->cv, &stream->mu);
+    /* Sleep until enough audio is queued to push, or a control event (drain/stop)
+     * arrives. While priming, "enough" is the cushion; once playing, any queued
+     * samples go out immediately so the pump stays paced by the device. */
+    while (!stream->stop && !stream->drain_requested) {
+        const size_t have = stream->ring_samples_count;
+        const size_t need = stream->priming ? stream->prime_samples : 1U;
+        if (have >= need) {
+            break;
         }
+
+        /* An untimed wait is only safe with the ring completely empty and nothing
+         * to conceal with; anything else must be able to give up, or a tail shorter
+         * than the cushion would never play. */
+        if (have == 0U && !(stream->conceal_inited && stream->conceal_has_good)) {
+            (void)dsd_cond_wait(&stream->cv, &stream->mu);
+            continue;
+        }
+
+        (void)dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_AAUDIO_OUTPUT_CHUNK_MS);
+        waited_ms += DSD_AAUDIO_OUTPUT_CHUNK_MS;
+
+        const enum aaudio_wait_step step = aaudio_output_classify_wait_locked(stream, waited_ms);
+        if (step == AAUDIO_WAIT_CONCEAL) {
+            synthesize_underrun = 1;
+            break;
+        }
+        if (step == AAUDIO_WAIT_PLAY) {
+            break;
+        }
+    }
+
+    /* The cushion is built once, at stream start. Rebuilding it after every gap
+     * is actively harmful on a real-time feed: the decoder only ever supplies
+     * audio as fast as it arrives, so withholding output until a fresh cushion
+     * accumulates starves a device that is already low and turns one gap into a
+     * self-sustaining stutter. Past the initial fill, the device buffer is the
+     * cushion and DSD_AAUDIO_CONCEAL_LOW_WATER_MS is what protects it. */
+    if (stream->priming && stream->ring_samples_count >= stream->prime_samples) {
+        stream->priming = 0;
     }
 
     if (stream->stop) {
@@ -631,6 +792,18 @@ aaudio_output_prepare_chunk_locked(dsd_audio_stream* stream, int synthesize_unde
 
     if (take < stream->chunk_samples) {
         stream->underruns++;
+        if (take > 0) {
+            stream->underruns_partial++;
+        }
+        if (stream->last_write_ns != 0U) {
+            /* Concealment this soon after real audio is a gap inside a call, not
+             * the tail of one. */
+            const uint64_t now_ns = dsd_time_monotonic_ns();
+            if (now_ns >= stream->last_write_ns
+                && (now_ns - stream->last_write_ns) < (uint64_t)DSD_AAUDIO_MIDSPEECH_MS * 1000000U) {
+                stream->underruns_midspeech++;
+            }
+        }
         if (stream->conceal_inited && stream->conceal_has_good) {
             size_t missing_frames = (stream->chunk_samples - take) / (size_t)stream->channels;
             size_t written = audio_conceal_on_underrun(&stream->conceal, stream->chunk + take, missing_frames);
@@ -705,7 +878,11 @@ aaudio_output_init_async_state(dsd_audio_stream* stream, int async_output) {
     stream->drain_completed = 0;
     stream->drain_failed = 0;
     stream->underruns = 0;
+    stream->underruns_partial = 0;
+    stream->underruns_midspeech = 0;
+    stream->last_write_ns = 0;
     stream->drops = 0;
+    stream->in_samples = 0;
     stream->conceal_has_good = 0;
 }
 
@@ -740,12 +917,28 @@ aaudio_output_prepare_async_buffers(dsd_audio_stream* stream) {
     if (!size_mul_nonzero(stream->chunk_frames, 8U, &min_ring_frames)) {
         return 0;
     }
+    /* Cushion, bounded so it can never exceed what the ring can hold. */
+    {
+        size_t prime_frames = ms_to_frames(stream->sample_rate, DSD_AAUDIO_OUTPUT_PRIME_MS);
+        if (prime_frames < stream->chunk_frames) {
+            prime_frames = stream->chunk_frames;
+        }
+        if (!size_mul_nonzero(prime_frames, channel_count, &stream->prime_samples)) {
+            return 0;
+        }
+        stream->priming = 1;
+    }
+
     ring_frames = ms_to_frames(stream->sample_rate, DSD_AAUDIO_OUTPUT_RING_MS);
     if (ring_frames < min_ring_frames) {
         ring_frames = min_ring_frames;
     }
     if (!size_mul_nonzero(ring_frames, channel_count, &stream->ring_samples_capacity)) {
         return 0;
+    }
+
+    if (stream->prime_samples > stream->ring_samples_capacity / 2U) {
+        stream->prime_samples = stream->ring_samples_capacity / 2U;
     }
 
     stream->ring = calloc(stream->ring_samples_capacity, sizeof(int16_t));
@@ -825,11 +1018,15 @@ aaudio_report_stats(const dsd_audio_stream* stream) {
     int32_t xruns = stream->handle ? AAudioStream_getXRunCount(stream->handle) : -1;
 
     DSD_FPRINTF(stderr,
-                "AAudio %s stats: rate=%d ch=%d dev_rate=%d dev_ch=%d converted=%d async=%d frames=%llu "
-                "reopens=%d underruns=%llu drops=%llu device_drops=%llu xruns=%d\n",
+                "AAudio %s stats: rate=%d ch=%d dev_rate=%d dev_ch=%d converted=%d async=%d in_frames=%llu "
+                "frames=%llu reopens=%d underruns=%llu underruns_partial=%llu underruns_midspeech=%llu drops=%llu "
+                "device_drops=%llu "
+                "xruns=%d\n",
                 stream->is_input ? "input" : "output", stream->sample_rate, stream->channels,
                 stream->device_sample_rate, stream->device_channels, stream->needs_convert, stream->use_async,
+                (unsigned long long)(stream->channels > 0 ? stream->in_samples / (uint64_t)stream->channels : 0U),
                 (unsigned long long)stream->device_frames, stream->reopen_count, (unsigned long long)stream->underruns,
+                (unsigned long long)stream->underruns_partial, (unsigned long long)stream->underruns_midspeech,
                 (unsigned long long)stream->drops, (unsigned long long)stream->device_drops, (int)xruns);
 }
 
@@ -1031,6 +1228,9 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
         dsd_mutex_unlock(&stream->mu);
         return -1;
     }
+
+    stream->in_samples += samples;
+    stream->last_write_ns = dsd_time_monotonic_ns();
 
     /* During drain, ignore new writes to guarantee completion. */
     if (stream->drain_requested) {

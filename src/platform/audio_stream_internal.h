@@ -86,6 +86,29 @@ struct dsd_audio_stream {
      * only the single writer (pump thread, or the caller in sync mode) touches
      * it, without holding the ring mutex. */
     uint64_t device_drops;
+    /* Playback cushion built once, before the pump first feeds the device: it
+     * withholds output until the ring holds this many samples so the device
+     * starts with runway. Deliberately never rebuilt after a gap -- on a
+     * real-time feed the decoder can only refill it in wall-clock time, during
+     * which an already-low device runs dry and one gap becomes a self-sustaining
+     * stutter. Past the initial fill the device buffer is the cushion. */
+    size_t prime_samples;
+    int priming;
+    /* Samples handed to the backend by the decoder. Compared against
+     * `device_frames` this separates "the decoder produced nothing" from "the
+     * backend lost what it was given". */
+    uint64_t in_samples;
+    /* Subset of `underruns` where the ring held some audio but less than a whole
+     * chunk, i.e. a real fragment of speech was padded with concealment rather
+     * than the stream simply being idle. This is the one that sounds broken. */
+    uint64_t underruns_partial;
+    /* Subset of `underruns` synthesized while the decoder was still actively
+     * producing, i.e. concealment landed in the middle of a call instead of
+     * after it. This is the one that sounds broken; idle-time concealment is
+     * just silence and is expected. */
+    uint64_t underruns_midspeech;
+    /* When the decoder last handed over audio, for the check above. */
+    uint64_t last_write_ns;
 #endif
 };
 

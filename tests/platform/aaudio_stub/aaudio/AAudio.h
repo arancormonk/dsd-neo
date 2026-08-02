@@ -70,6 +70,7 @@ void AAudioStreamBuilder_setChannelCount(AAudioStreamBuilder* builder, int32_t c
 void AAudioStreamBuilder_setSampleRate(AAudioStreamBuilder* builder, int32_t sample_rate);
 void AAudioStreamBuilder_setPerformanceMode(AAudioStreamBuilder* builder, aaudio_performance_mode_t mode);
 void AAudioStreamBuilder_setUsage(AAudioStreamBuilder* builder, aaudio_usage_t usage);
+void AAudioStreamBuilder_setBufferCapacityInFrames(AAudioStreamBuilder* builder, int32_t frames);
 aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* builder, AAudioStream** stream);
 aaudio_result_t AAudioStreamBuilder_delete(AAudioStreamBuilder* builder);
 
@@ -82,6 +83,7 @@ aaudio_result_t AAudioStream_setBufferSizeInFrames(AAudioStream* stream, int32_t
 int32_t AAudioStream_getSampleRate(AAudioStream* stream);
 int32_t AAudioStream_getChannelCount(AAudioStream* stream);
 int32_t AAudioStream_getFramesPerBurst(AAudioStream* stream);
+int32_t AAudioStream_getBufferCapacityInFrames(AAudioStream* stream);
 int32_t AAudioStream_getXRunCount(AAudioStream* stream);
 int64_t AAudioStream_getFramesWritten(AAudioStream* stream);
 int64_t AAudioStream_getFramesRead(AAudioStream* stream);
