@@ -159,31 +159,50 @@ jobs:
             echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
           } >> "$GITHUB_ENV"
 
-      - name: Install Qt (host)
-        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+      # Qt is installed with aqtinstall rather than a Qt-installing action: every
+      # action used here must be hash-pinned, transitively, and the available
+      # actions are not.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          version: ${{ env.ANDROID_QT_VERSION }}
-          host: linux
-          target: desktop
-          arch: linux_gcc_64
-          cache: true
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/aqtinstall.txt
 
-      - name: Record the host Qt location
+      - name: Record the Qt locations
         shell: bash
-        run: echo "QT_HOST_ROOT=${QT_ROOT_DIR:?}" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/qt"
+          {
+            echo "QT_INSTALL_ROOT=$root"
+            echo "QT_HOST_ROOT=$root/$ANDROID_QT_VERSION/gcc_64"
+            echo "QT_ANDROID_ROOT=$root/$ANDROID_QT_VERSION/android_arm64_v8a"
+          } >> "$GITHUB_ENV"
 
-      - name: Install Qt (android_arm64_v8a)
-        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          version: ${{ env.ANDROID_QT_VERSION }}
-          host: linux
-          target: android
-          arch: android_arm64_v8a
-          cache: true
+          path: ${{ env.QT_INSTALL_ROOT }}
+          key: qt-${{ env.ANDROID_QT_VERSION }}-linux-android_arm64_v8a-aqt3.3.0
 
-      - name: Record the Android Qt location
+      - name: Install Qt (host kit and android_arm64_v8a kit)
+        if: steps.qt-cache.outputs.cache-hit != 'true'
         shell: bash
-        run: echo "QT_ANDROID_ROOT=${QT_ROOT_DIR:?}" >> "$GITHUB_ENV"
+        run: |
+          set -euxo pipefail
+          python -m pip install --require-hashes -r .github/requirements/aqtinstall.txt
+          aqt install-qt linux desktop "$ANDROID_QT_VERSION" linux_gcc_64 -O "$QT_INSTALL_ROOT"
+          # Qt 6.8+ publishes the Android kits under the host-agnostic "all_os".
+          aqt install-qt all_os android "$ANDROID_QT_VERSION" android_arm64_v8a -O "$QT_INSTALL_ROOT"
+
+      - name: Verify the Qt kits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x "$QT_HOST_ROOT/bin/qmake"
+          test -f "$QT_ANDROID_ROOT/lib/cmake/Qt6/qt.toolchain.cmake"
 
       - name: Prepare cache directories
         shell: bash
