@@ -95,9 +95,22 @@ obtained in Java and injected:
    index 0 whenever a descriptor is set. The app is what selected the device.
 
 Java keeps ownership of the descriptor throughout: `libusb_wrap_sys_device()` does
-not take it over, and `DecoderService.onDestroy()` releases the connection only
-after the engine thread has unwound. A detach event stops the engine first and
-clears the slot afterwards, which also puts enumeration back the way it was.
+not take it over. Closing the `UsbDeviceConnection` while the engine still has the
+descriptor wrapped is a use-after-close, so `UsbSourceManager.release()` clears the
+native slot immediately — that only affects the *next* open — and then hands the
+close to a background thread that waits for `nativeIsRunning()` to go false. Both
+callers (a detach broadcast, `DecoderService.onDestroy()`) therefore return without
+blocking. If the engine never stops, the connection is deliberately leaked: one
+descriptor held for the rest of the process's life beats pulling it out from under
+an in-flight USB transfer.
+
+Note that discovery does not come back. `rtlsdr_open_fd()` sets libusb's
+process-global `LIBUSB_OPTION_NO_DEVICE_DISCOVERY`, which has no counterpart —
+and costs nothing here, since an app cannot enumerate `/dev/bus/usb` anyway.
+
+`rtlsdr_open_fd()` exists only in the vendored tree, so configuring an Android
+build with `DSD_ENABLE_RTLSDR=ON` and `DSD_ANDROID_VENDORED_RTLSDR=OFF` fails at
+configure time rather than at link time or on the device.
 
 Attaching a listed dongle launches the app through the manifest's
 `USB_DEVICE_ATTACHED` filter, which is the only way Android grants device

@@ -57,11 +57,20 @@ class DecoderService : Service() {
         stopDecoding()
         joinEngineThread()
         if (initialized) {
-            DsdNative.nativeDestroy()
-            initialized = false
+            // Only a successful teardown frees the native side. nativeDestroy refuses
+            // while the engine is still running, and clearing the flag anyway would
+            // wedge the service: the next start calls nativeInit, which refuses in
+            // turn because the old objects are still alive.
+            val rc = DsdNative.nativeDestroy()
+            if (rc == DsdNative.STATUS_OK) {
+                initialized = false
+            } else {
+                Log.e(TAG, "nativeDestroy rejected ($rc); leaving the engine initialized")
+            }
         }
-        // Only now is the descriptor certainly out of the engine's hands. It is held
-        // across runs so a second start does not re-prompt for permission.
+        // release() waits for the engine to let go of the descriptor on its own. The
+        // connection is held across runs so a second start does not re-prompt for
+        // permission.
         UsbSourceManager.release()
         releaseWakeLock()
         super.onDestroy()
@@ -139,7 +148,11 @@ class DecoderService : Service() {
             Thread.currentThread().interrupt()
         }
         if (thread.isAlive) {
+            // Leave both the handle and the state as the still-running engine thread
+            // will find them: forcing IDLE here advertises a service that can be
+            // started again, and the native side would then reject every attempt.
             Log.e(TAG, "engine thread did not stop within ${ENGINE_JOIN_TIMEOUT_MS}ms")
+            return
         }
         engineThread = null
         synchronized(lock) { state = State.IDLE }

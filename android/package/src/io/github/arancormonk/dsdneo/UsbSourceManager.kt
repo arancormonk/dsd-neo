@@ -33,6 +33,10 @@ object UsbSourceManager {
     private const val TAG = "dsd-neo"
     private const val ACTION_USB_PERMISSION = "io.github.arancormonk.dsdneo.action.USB_PERMISSION"
 
+    /** How long release() waits for the engine before it gives up and leaks the fd. */
+    private const val RELEASE_TIMEOUT_MS = 10000L
+    private const val RELEASE_POLL_MS = 50L
+
     /**
      * RTL2832U vendor/product ids, the same set librtlsdr recognises. Kept in sync
      * with `res/xml/device_filter.xml`, which drives the attach intent filter.
@@ -80,7 +84,8 @@ object UsbSourceManager {
                     if (device == null || device.deviceName == synchronized(lock) { attachedName }) {
                         Log.i(TAG, "SDR detached; stopping the engine")
                         // The engine is mid-transfer on a descriptor that just went
-                        // away: stop first, release once it has unwound.
+                        // away: ask it to stop, and let release() close the connection
+                        // once it has actually unwound.
                         DsdNative.nativeStop()
                         release()
                         setStatus("Device detached")
@@ -146,9 +151,16 @@ object UsbSourceManager {
     /**
      * Drop the descriptor and close the connection.
      *
-     * Must not run while the engine is still using it — callers stop the engine
-     * first. Clearing the native slot also puts device enumeration back the way it
-     * was, so a later rtl_tcp or host-side run is unaffected.
+     * Clearing the native slot only affects the *next* open: a device the engine
+     * already has wrapped in libusb keeps working, and closing the connection
+     * underneath it would be a use-after-close. The close therefore happens on a
+     * background thread once the engine has actually stopped — callers (a detach
+     * broadcast, service teardown) must not block waiting for that, and the engine
+     * may take a moment to unwind.
+     *
+     * Note that discovery does not come back: `rtlsdr_open_fd()` sets libusb's
+     * process-global LIBUSB_OPTION_NO_DEVICE_DISCOVERY, which cannot be undone. That
+     * costs nothing here, because an app cannot enumerate `/dev/bus/usb` anyway.
      */
     @JvmStatic
     fun release() {
@@ -162,11 +174,45 @@ object UsbSourceManager {
             return
         }
         DsdNative.nativeSetUsbFd(-1)
+        Thread({ closeWhenEngineStops(open) }, "dsd-neo-usb-release").start()
+    }
+
+    /**
+     * Waits for the engine to let go of the descriptor, then closes the connection.
+     *
+     * If it never lets go the connection is deliberately leaked: one file descriptor
+     * held for the rest of the process's life is a far better outcome than pulling it
+     * out from under an in-flight USB transfer.
+     */
+    private fun closeWhenEngineStops(open: UsbDeviceConnection) {
+        var waited = 0L
+        while (DsdNative.nativeIsRunning()) {
+            if (waited >= RELEASE_TIMEOUT_MS) {
+                Log.e(TAG, "engine still running after ${RELEASE_TIMEOUT_MS}ms; leaking the USB connection")
+                return
+            }
+            try {
+                Thread.sleep(RELEASE_POLL_MS)
+            } catch (e: InterruptedException) {
+                Log.w(TAG, "interrupted waiting for the engine to release the descriptor", e)
+                Thread.currentThread().interrupt()
+                return
+            }
+            waited += RELEASE_POLL_MS
+        }
         open.close()
+        Log.i(TAG, "usb: connection closed")
     }
 
     private fun open(context: Context, device: UsbDevice) {
         val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        // Below API 33 a dynamically registered receiver is implicitly exported, so a
+        // broadcast claiming permission was granted is not by itself trustworthy. Ask
+        // the framework rather than believing the extra.
+        if (!manager.hasPermission(device)) {
+            setStatus("No permission for ${describe(device)}")
+            return
+        }
         val opened = manager.openDevice(device)
         if (opened == null) {
             setStatus("Could not open ${describe(device)}")

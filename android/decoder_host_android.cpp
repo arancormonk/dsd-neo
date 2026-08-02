@@ -32,6 +32,10 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
         return nullptr;
     }
     jobjectArray array = env->NewObjectArray(static_cast<jsize>(values.size()), string_class, nullptr);
+    /* The Qt main thread stays attached to the VM with no enclosing Java frame, so
+     * local refs are never reclaimed for us: every one has to be released by hand
+     * or the (512-entry) table fills up over the process's life. */
+    env->DeleteLocalRef(string_class);
     if (array == nullptr) {
         return nullptr;
     }
