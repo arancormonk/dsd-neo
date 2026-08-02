@@ -3200,11 +3200,16 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         dsd-neo_test_engine_rtl_preopened_fd
         PRIVATE ${PROJECT_SOURCE_DIR}/include
     )
+    # dsd-neo_io_radio is listed explicitly so its undefined librtlsdr references
+    # are already pending when ${LIBS} introduces librtlsdr: linkers that default
+    # to --as-needed (Debian/Ubuntu) otherwise drop the library before the radio
+    # archive is read.
     target_link_libraries(
         dsd-neo_test_engine_rtl_preopened_fd
         PRIVATE
             "-Wl,--start-group"
             dsd-neo_engine
+            dsd-neo_io_radio
             "-Wl,--end-group"
             "-Wl,--wrap=rtlsdr_get_device_count"
             "-Wl,--wrap=rtlsdr_get_device_usb_strings"
