@@ -16,6 +16,15 @@ ApplicationWindow {
 
     readonly property bool running: decoderHost ? decoderHost.running : false
 
+    // Keyed rather than indexed: the visibility bindings below would otherwise all
+    // shift every time an input source is added.
+    readonly property string inputKey: inputMode.currentValue ? inputMode.currentValue : "usb"
+
+    // A directly attached dongle needs no permission gesture on desktop; on Android
+    // the host has to obtain the descriptor first.
+    readonly property bool localDeviceBlocked:
+        inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady
+
     // Closing the window finishes the Android Activity, and Qt then terminates the
     // process — taking the service that owns the engine with it. Background instead.
     onClosing: function (close) {
@@ -23,19 +32,31 @@ ApplicationWindow {
         decoderHost.moveToBackground()
     }
 
+    // Frequency/gain/PPM/bandwidth tail shared by the local dongle and rtl_tcp — the
+    // same tuner options either way, only the transport differs.
+    function tuningTail() {
+        if (rtlFreq.text.length === 0)
+            return ""
+        return ":" + rtlFreq.text + ":" + rtlGain.text + ":" + rtlPpm.text + ":" + rtlBw.text + ":0:2"
+    }
+
     // Builds the CLI-shaped argv the host hands to the engine. Reusing the CLI
     // parser is what buys the whole option surface for free.
     function buildArgs() {
         var args = ["--frontend", "none"]
+        var spec = ""
 
-        if (inputMode.currentIndex === 0) {
-            var spec = "rtltcp:" + rtlHost.text + ":" + rtlPort.text
-            if (rtlFreq.text.length > 0)
-                spec += ":" + rtlFreq.text + ":" + rtlGain.text + ":" + rtlPpm.text + ":" + rtlBw.text + ":0:2"
+        if (root.inputKey === "usb") {
+            spec = "rtl:0" + root.tuningTail()
+            if (biasTee.checked)
+                spec += ":bias"
             args.push("-i", spec)
-        } else if (inputMode.currentIndex === 1) {
+        } else if (root.inputKey === "rtltcp") {
+            spec = "rtltcp:" + rtlHost.text + ":" + rtlPort.text + root.tuningTail()
+            args.push("-i", spec)
+        } else if (root.inputKey === "udp") {
             args.push("-i", "udp:0.0.0.0:" + udpPort.text)
-        } else if (inputMode.currentIndex === 2) {
+        } else if (root.inputKey === "tcp") {
             args.push("-i", "tcp:" + tcpHost.text + ":" + tcpPort.text)
         } else {
             args.push("-i", filePath.text)
@@ -130,76 +151,113 @@ ApplicationWindow {
                         ComboBox {
                             id: inputMode
                             Layout.fillWidth: true
-                            model: [qsTr("RTL-TCP"), qsTr("UDP PCM"), qsTr("TCP PCM"), qsTr("Local file")]
+                            textRole: "label"
+                            valueRole: "key"
+                            model: [
+                                { label: qsTr("RTL-SDR (USB)"), key: "usb" },
+                                { label: qsTr("RTL-TCP"), key: "rtltcp" },
+                                { label: qsTr("UDP PCM"), key: "udp" },
+                                { label: qsTr("TCP PCM"), key: "tcp" },
+                                { label: qsTr("Local file"), key: "file" }
+                            ]
                         }
 
-                        Label { text: qsTr("Host"); visible: inputMode.currentIndex === 0 }
+                        Label { text: qsTr("Device"); visible: root.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            visible: root.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered
+
+                            Label {
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                text: (decoderHost && decoderHost.localDeviceStatus.length > 0)
+                                      ? decoderHost.localDeviceStatus
+                                      : qsTr("not connected")
+                            }
+
+                            Button {
+                                text: qsTr("Connect")
+                                enabled: !root.running
+                                onClicked: decoderHost.requestLocalDeviceAccess()
+                            }
+                        }
+
+                        Label { text: qsTr("Host"); visible: root.inputKey === "rtltcp" }
                         TextField {
                             id: rtlHost
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 0
+                            visible: root.inputKey === "rtltcp"
                             text: "192.168.1.10"
                             inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
                         }
 
-                        Label { text: qsTr("Port"); visible: inputMode.currentIndex === 0 }
+                        Label { text: qsTr("Port"); visible: root.inputKey === "rtltcp" }
                         TextField {
                             id: rtlPort
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 0
+                            visible: root.inputKey === "rtltcp"
                             text: "1234"
                             inputMethodHints: Qt.ImhDigitsOnly
                         }
 
-                        Label { text: qsTr("Frequency"); visible: inputMode.currentIndex === 0 }
+                        Label { text: qsTr("Frequency"); visible: root.inputKey === "usb" || root.inputKey === "rtltcp" }
                         TextField {
                             id: rtlFreq
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 0
+                            visible: root.inputKey === "usb" || root.inputKey === "rtltcp"
                             text: "769.76875M"
                             placeholderText: qsTr("e.g. 851.375M")
                         }
 
-                        Label { text: qsTr("Gain / PPM / BW"); visible: inputMode.currentIndex === 0 }
+                        Label { text: qsTr("Gain / PPM / BW"); visible: root.inputKey === "usb" || root.inputKey === "rtltcp" }
                         RowLayout {
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 0
+                            visible: root.inputKey === "usb" || root.inputKey === "rtltcp"
                             TextField { id: rtlGain; Layout.fillWidth: true; text: "13"; inputMethodHints: Qt.ImhDigitsOnly }
                             TextField { id: rtlPpm; Layout.fillWidth: true; text: "-2" }
                             TextField { id: rtlBw; Layout.fillWidth: true; text: "48"; inputMethodHints: Qt.ImhDigitsOnly }
                         }
 
-                        Label { text: qsTr("Bind port"); visible: inputMode.currentIndex === 1 }
+                        // Only for the local dongle: over rtl_tcp the bias tee belongs
+                        // to whoever runs the server.
+                        Label { text: qsTr("Bias tee"); visible: root.inputKey === "usb" }
+                        CheckBox {
+                            id: biasTee
+                            visible: root.inputKey === "usb"
+                            text: qsTr("power an LNA over the antenna feed")
+                        }
+
+                        Label { text: qsTr("Bind port"); visible: root.inputKey === "udp" }
                         TextField {
                             id: udpPort
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 1
+                            visible: root.inputKey === "udp"
                             text: "7355"
                             inputMethodHints: Qt.ImhDigitsOnly
                         }
 
-                        Label { text: qsTr("Host"); visible: inputMode.currentIndex === 2 }
+                        Label { text: qsTr("Host"); visible: root.inputKey === "tcp" }
                         TextField {
                             id: tcpHost
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 2
+                            visible: root.inputKey === "tcp"
                             text: "127.0.0.1"
                             inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
                         }
 
-                        Label { text: qsTr("Port"); visible: inputMode.currentIndex === 2 }
+                        Label { text: qsTr("Port"); visible: root.inputKey === "tcp" }
                         TextField {
                             id: tcpPort
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 2
+                            visible: root.inputKey === "tcp"
                             text: "7355"
                             inputMethodHints: Qt.ImhDigitsOnly
                         }
 
-                        Label { text: qsTr("File"); visible: inputMode.currentIndex === 3 }
+                        Label { text: qsTr("File"); visible: root.inputKey === "file" }
                         RowLayout {
                             Layout.fillWidth: true
-                            visible: inputMode.currentIndex === 3
+                            visible: root.inputKey === "file"
 
                             TextField {
                                 id: filePath
@@ -284,12 +342,18 @@ ApplicationWindow {
             spacing: 8
 
             Button {
-                text: root.running ? qsTr("Stop") : qsTr("Start")
+                // Starting without a descriptor would just fail in the engine, so the
+                // button asks for the dongle first when that is what is missing.
+                text: root.running
+                      ? qsTr("Stop")
+                      : (root.localDeviceBlocked ? qsTr("Connect dongle") : qsTr("Start"))
                 highlighted: true
                 Layout.fillWidth: true
                 onClicked: {
                     if (root.running)
                         decoderHost.stop()
+                    else if (root.localDeviceBlocked)
+                        decoderHost.requestLocalDeviceAccess()
                     else
                         decoderHost.start(root.buildArgs())
                 }

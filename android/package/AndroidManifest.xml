@@ -12,6 +12,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
+    <!-- required="false" on purpose: rtl_tcp, UDP and file inputs all work without
+         USB host support, so a phone that lacks OTG should still be able to install. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
     <!-- %%INSERT_PERMISSIONS -->
     <!-- %%INSERT_FEATURES -->
 
@@ -44,6 +48,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Plugging a listed dongle in launches the app and grants it permission
+                 for that device, which is the only way to skip the prompt. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
 
             <meta-data
                 android:name="android.app.lib_name"

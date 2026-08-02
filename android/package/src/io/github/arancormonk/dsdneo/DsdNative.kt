@@ -35,4 +35,13 @@ object DsdNative {
     external fun nativeDestroy(): Int
 
     external fun nativeIsRunning(): Boolean
+
+    /**
+     * Hand the engine an already-open USB device descriptor, or -1 to clear it.
+     *
+     * An app cannot open `/dev/bus/usb` nodes, so the descriptor comes from
+     * [android.hardware.usb.UsbDeviceConnection]. Java keeps ownership: the
+     * connection must stay open for as long as the engine is running.
+     */
+    external fun nativeSetUsbFd(fd: Int): Int
 }

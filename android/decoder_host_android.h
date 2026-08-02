@@ -29,19 +29,32 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool isRunning() const override;
     QString statusText() const override;
 
+    /** @brief True: an app has to obtain the USB descriptor from Java. */
+    bool
+    localDeviceBrokered() const override {
+        return true;
+    }
+
+    bool localDeviceReady() const override;
+    QString localDeviceStatus() const override;
+
     bool start(const QStringList& argv) override;
     void stop() override;
     void moveToBackground() override;
     void refresh() override;
+    void requestLocalDeviceAccess() override;
 
     /** @brief Materialize a SAF content URI into cacheDir; returns "" on failure. */
     QString importContentUri(const QString& reference, const QString& fileName) override;
 
   private:
     void setStatus(const QString& text);
+    void setLocalDeviceState(bool ready, const QString& text);
 
     bool m_running = false;
     QString m_status = QStringLiteral("Idle");
+    bool m_usb_ready = false;
+    QString m_usb_status;
 };
 
 } // namespace dsd_android

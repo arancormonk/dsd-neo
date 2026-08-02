@@ -60,6 +60,9 @@ class DecoderService : Service() {
             DsdNative.nativeDestroy()
             initialized = false
         }
+        // Only now is the descriptor certainly out of the engine's hands. It is held
+        // across runs so a second start does not re-prompt for permission.
+        UsbSourceManager.release()
         releaseWakeLock()
         super.onDestroy()
     }

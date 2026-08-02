@@ -27,6 +27,9 @@ class DecoderHost : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
+    Q_PROPERTY(bool localDeviceBrokered READ localDeviceBrokered CONSTANT)
+    Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)
+    Q_PROPERTY(QString localDeviceStatus READ localDeviceStatus NOTIFY localDeviceChanged)
 
   public:
     explicit DecoderHost(QObject* parent = nullptr);
@@ -37,6 +40,31 @@ class DecoderHost : public QObject {
 
     /** @brief Short human-readable host state (also used for platform notifications). */
     virtual QString statusText() const = 0;
+
+    /**
+     * @brief Whether this platform has to broker access to a directly attached SDR.
+     *
+     * An Android app cannot open a USB device itself: the host obtains a descriptor,
+     * with a permission prompt in between, and hands it to the engine. Hosts that let
+     * the engine open the device directly answer false, and the UI then offers the
+     * local-device input with no extra gesture.
+     */
+    virtual bool
+    localDeviceBrokered() const {
+        return false;
+    }
+
+    /** @brief Whether a directly attached SDR can be used right now. */
+    virtual bool
+    localDeviceReady() const {
+        return true;
+    }
+
+    /** @brief Short human-readable state of the directly attached SDR. */
+    virtual QString
+    localDeviceStatus() const {
+        return QString();
+    }
 
   public Q_SLOTS:
     /**
@@ -84,9 +112,20 @@ class DecoderHost : public QObject {
         return reference;
     }
 
+    /**
+     * @brief Ask the platform for access to a directly attached SDR.
+     *
+     * May show a permission prompt, so the answer arrives later: watch
+     * @c localDeviceReady and @c localDeviceStatus rather than a return value.
+     * Hosts that do not broker access do nothing.
+     */
+    virtual void
+    requestLocalDeviceAccess() {}
+
   Q_SIGNALS:
     void runningChanged();
     void statusTextChanged();
+    void localDeviceChanged();
 };
 
 } // namespace dsd_qt

@@ -17,6 +17,7 @@ namespace {
 
 constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderService";
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
+constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 
 QJniObject
 android_context(void) {
@@ -61,6 +62,27 @@ DecoderHostAndroid::isRunning() const {
 QString
 DecoderHostAndroid::statusText() const {
     return m_status;
+}
+
+bool
+DecoderHostAndroid::localDeviceReady() const {
+    return m_usb_ready;
+}
+
+QString
+DecoderHostAndroid::localDeviceStatus() const {
+    return m_usb_status;
+}
+
+void
+DecoderHostAndroid::requestLocalDeviceAccess() {
+    QJniObject context = android_context();
+    if (!context.isValid()) {
+        return;
+    }
+    /* The permission dialog answers asynchronously; the poll tick picks the result
+     * up through refresh(). */
+    QJniObject::callStaticMethod<void>(kUsbClass, "requestAccess", "(Landroid/content/Context;)V", context.object());
 }
 
 bool
@@ -145,6 +167,10 @@ DecoderHostAndroid::refresh() {
         text = QStringLiteral("Idle");
     }
     setStatus(text);
+
+    const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
+    QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
+    setLocalDeviceState(usb_ready, usb_status.isValid() ? usb_status.toString() : QString());
 }
 
 void
@@ -154,6 +180,16 @@ DecoderHostAndroid::setStatus(const QString& text) {
     }
     m_status = text;
     Q_EMIT statusTextChanged();
+}
+
+void
+DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text) {
+    if (m_usb_ready == ready && m_usb_status == text) {
+        return;
+    }
+    m_usb_ready = ready;
+    m_usb_status = text;
+    Q_EMIT localDeviceChanged();
 }
 
 } // namespace dsd_android

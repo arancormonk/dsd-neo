@@ -38,6 +38,9 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/shutdown.h>
+#ifdef USE_RADIO
+#include <dsd-neo/io/rtl_device.h>
+#endif
 
 #include "dsdneo_jni.h"
 
@@ -378,6 +381,23 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
     g_state = nullptr;
     g_configured = false;
     return kStatusOk;
+}
+
+JNIEXPORT jint JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass clazz, jint sys_fd) {
+    (void)env;
+    (void)clazz;
+
+#ifdef USE_RADIO
+    /* Java owns the descriptor: it comes from a UsbDeviceConnection that the service
+     * holds open for the engine's lifetime, and -1 clears the slot on detach. The
+     * engine reads it during input setup, so it has to be set before nativeRun. */
+    rtl_device_set_preopened_fd(static_cast<int>(sys_fd));
+    return kStatusOk;
+#else
+    (void)sys_fd;
+    return kStatusError;
+#endif
 }
 
 JNIEXPORT jboolean JNICALL
