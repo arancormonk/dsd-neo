@@ -14,6 +14,8 @@ should be included via `#include <dsd-neo/...>`.
 - `docs/` — documentation
 - `examples/` — sample CSV inputs (channel maps, groups, keys) used by the config system and tooling
 - `packaging/` — packaging assets/scripts (AppImage, macOS)
+- `android/` — Android app shell: Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr
+  (`android/README.md`); built only for `ANDROID` with `DSD_ENABLE_QT_UI=ON`
 - `images/` — screenshots and other project assets used by docs/README
 - `vcpkg.json`, `vcpkg-configuration.json`, `vcpkg-ports/`, `vcpkg-triplets/` — vcpkg dependency management
 
@@ -213,7 +215,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 ## UI
 
 - Path: `src/ui`
-- Target: `dsd-neo_ui_terminal`
+- Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
+  (option `DSD_ENABLE_QT_UI`, default OFF)
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
@@ -222,7 +225,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     integrations.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
 
-Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
+Qt Quick frontend (`src/ui/qt`):
+
+- QML plus C++ view-models (metrics, event log, command bridge) that poll app-control on a timer; used by the Android
+  app today and intended as the shared basis for a desktop GUI.
+- Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
+  internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
+  interface, implemented per host (`android/decoder_host_android.cpp` today).
+- Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions.
+
+Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`, `src/ui/qt/CMakeLists.txt`
 
 Key public headers:
 

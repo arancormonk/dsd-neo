@@ -40,6 +40,40 @@ project from `android/package/`.
 For a headless CLI binary (no UI, no APK) use the `android-arm64-release` preset;
 it needs only `ANDROID_NDK_HOME` and `VCPKG_ROOT`.
 
+The NDK, SDK platform, build-tools and Qt versions CI builds against are pinned in
+`tools/ci-dependency-pins.env` (`ANDROID_NDK_VERSION`, `ANDROID_COMPILE_SDK`,
+`ANDROID_BUILD_TOOLS_VERSION`, `ANDROID_QT_VERSION`). Newer ones generally work;
+those are the combination the tree is known good with.
+
+## Continuous integration
+
+Three jobs keep this path from rotting, none of which needs a device. They run on
+pull requests as well as pushes to `main`:
+
+- **`android-ci` / arm64 CLI (NDK cross build)** — cross-compiles the headless
+  `android-arm64-release` preset: engine, AAudio backend, and the vendored libusb
+  and librtlsdr below. Asserts the binary is AArch64 with 16 KB page alignment.
+- **`android-ci` / APK (Qt Quick app)** — builds the `android-app` preset through
+  androiddeployqt, then unpacks the APK and asserts the same alignment for every
+  packaged `.so` (ours and Qt's) and that `arm64-v8a` is the only ABI inside. The
+  APK is uploaded as a build artifact.
+- **`linux-ci` / android shape (headless, forced radio pipeline)** — the same
+  option set on the host without an NDK, and deliberately without PulseAudio or
+  ncurses installed. This is the only place the Android configuration gets test
+  coverage: `--iq-replay` needs the radio pipeline, so the `DECODE_IQ_*` cases
+  only register when it is forced on.
+
+`tools/check_android_elf_alignment.sh` is the alignment check and runs locally
+against any ELF (it finds `llvm-readelf` in `$ANDROID_NDK_HOME`):
+
+```sh
+tools/check_android_elf_alignment.sh build/android-arm64-release/apps/dsd-cli/dsd-neo
+```
+
+What CI does not cover is everything that needs hardware — decoding, audio, the
+USB descriptor path, and battery/thermal behavior are verified by hand on a
+device.
+
 ## USB-OTG: how the descriptor gets to librtlsdr
 
 An Android application cannot open `/dev/bus/usb` nodes, so librtlsdr cannot
@@ -90,6 +124,10 @@ privately for the Android app only.
 | --- | --- | --- | --- |
 | libusb | v1.0.30 | `87a55632db62c9bdc58cd31d3ccfa673f1bb017f` | The exact source list upstream's own `android/jni/libusb.mk` builds — the `linux_usbfs` backend plus the POSIX event/thread shims — with upstream's `android/config.h` |
 | librtlsdr | v2.0.2 (osmocom) | `619ac3186ea0ffc092615e1f59f7397e5e6f668c` | The library only: `librtlsdr.c`, the five tuner drivers and `include/`; the `rtl_*` command-line tools and their helpers are dropped |
+
+librtlsdr is GPL-2.0-or-later and libusb is LGPL-2.1-or-later; both upstream
+license texts travel with the snapshots (`*/COPYING`) and both are listed in the
+repository's `THIRD_PARTY.md`.
 
 These trees keep upstream formatting and are excluded from every repo tool
 (`.clang-format-ignore`, `tools/format.sh`, `.githooks/pre-push`), so do not

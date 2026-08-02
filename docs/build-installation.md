@@ -60,6 +60,28 @@ Known limits:
 - Release artifacts should be compared within the same source, toolchain,
   platform, build options, and packaging environment.
 
+## Android Cross Builds
+
+Android is built as a cross-compile from a Linux (or macOS) host, not installed
+through the conventions below: the deliverable is an APK, and the CMake install
+rules do not target it.
+
+- `android-arm64-release` — headless arm64-v8a CLI. Needs `ANDROID_NDK_HOME` and
+  `VCPKG_ROOT`; vcpkg chainloads the NDK toolchain via the
+  `arm64-android-static` overlay triplet.
+- `android-app` — the Qt Quick app. Needs a Qt for Android kit and its matching
+  host kit; vcpkg chainloads Qt's toolchain, which chainloads the NDK, and
+  androiddeployqt drives the Gradle side.
+
+Both presets are release-only, set `BUILD_TESTING=OFF` (the test suite cannot run
+on the build host), and select the Android-specific option shape: AAudio audio
+backend, no terminal UI, and the RTL-SDR backend satisfied from the vendored
+libusb/librtlsdr under `android/third_party`. The same option shape minus the NDK
+is built and tested on the host by CI so the configuration keeps test coverage.
+
+Toolchain versions CI pins are in `tools/ci-dependency-pins.env`. Build details,
+prerequisites, and known limits: `android/README.md`.
+
 ## Installation Conventions
 
 Install with CMake:

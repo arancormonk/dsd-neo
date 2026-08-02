@@ -120,6 +120,10 @@ OS package hints
 - Windows:
   - Preferred binary: the native MSVC ZIP.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` presets in `CMakePresets.json`.
+- Android (arm64-v8a app, work in progress):
+  - Cross-compiled with the NDK and vcpkg: preset `android-arm64-release` for a headless CLI, preset `android-app`
+    for the Qt Quick APK. Inputs include a USB-OTG RTL-SDR, `rtl_tcp`, UDP/TCP PCM, and local files.
+  - Prerequisites, the USB descriptor flow, and known limits: [android/README.md](android/README.md).
 
 MBE vocoder dependency (mbelib-neo)
 
@@ -276,8 +280,12 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_FORCE_RADIO_PIPELINE=ON` — Build the radio pipeline even with no SDR library present. Keeps
     `rtl_tcp` input and radio-path I/Q replay working (real USB opens fail cleanly); used by targets that
     cannot link librtlsdr/SoapySDR.
+  - `-DDSD_ANDROID_VENDORED_RTLSDR=ON` — Android only: build the vendored libusb/librtlsdr under
+    `android/third_party` and satisfy the RTL-SDR backend from them (needed for USB-OTG dongles).
 - UI and behavior toggles:
   - `-DDSD_ENABLE_TERMINAL_UI=ON|OFF` — Build the ncurses/PDCurses terminal frontend (default ON).
+  - `-DDSD_ENABLE_QT_UI=ON|OFF` — Build the Qt Quick frontend in `src/ui/qt` (default OFF; requires Qt 6). Used by
+    the Android app today and shared with the planned desktop GUI.
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
 - Protocol and feature knobs:
@@ -294,6 +302,8 @@ These are CMake cache options (set at configure time via `-D...`).
 
 - CI treats backend availability as a build contract, not a best-effort option.
 - Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
+- Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
+  library, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull request.
 - Release/packaging/static-analysis jobs that are expected to exercise radio backends configure with:
   - `-DDSD_REQUIRE_RTLSDR=ON`
   - `-DDSD_REQUIRE_SOAPYSDR=ON`
@@ -399,6 +409,7 @@ Quick examples
 - Trunking and trunk scan CSV formats: `docs/csv-formats.md` (examples in `examples/`)
 - Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
+- Android app build, USB-OTG flow, and limits: `android/README.md`
 - RTL UDP retune control protocol: `docs/udp-control.md`
 - Module overview and build targets: `docs/code_map.md`
 - Build and installation policy: `docs/build-installation.md`
@@ -423,6 +434,8 @@ Quick examples
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES, ECDSA, and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
+- UI: `src/ui/terminal` (ncurses frontend, target `dsd-neo_ui_terminal`), `src/ui/qt` (Qt Quick frontend, target `dsd-neo_ui_qt`, option `DSD_ENABLE_QT_UI`).
+- Android app: `android/` — Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr for USB‑OTG dongles.
 - Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (STATIC target `dsd-neo_pffft`).
 
 ## Tooling
