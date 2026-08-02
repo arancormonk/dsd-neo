@@ -92,6 +92,17 @@ option(
     "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"
     OFF
 )
+option(
+    DSD_ANDROID_VENDORED_RTLSDR
+    "Build the vendored libusb + librtlsdr under android/third_party instead of searching for them"
+    OFF
+)
+if(DSD_ANDROID_VENDORED_RTLSDR AND NOT ANDROID)
+    message(
+        FATAL_ERROR
+        "DSD_ANDROID_VENDORED_RTLSDR=ON is Android-only; the vendored tree targets Bionic and usbfs via a wrapped descriptor."
+    )
+endif()
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -618,7 +629,17 @@ if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     )
 endif()
 if(DSD_ENABLE_RTLSDR)
-    find_package(RTLSDR)
+    if(DSD_ANDROID_VENDORED_RTLSDR)
+        # Adds the libusb/librtlsdr static targets and publishes the same
+        # RTLSDR_* variables FindRTLSDR.cmake would have produced. It has to run
+        # here, ahead of the DSD_HAS_RTLSDR decision below.
+        add_subdirectory(
+            android/third_party
+            "${CMAKE_BINARY_DIR}/android-third-party"
+        )
+    else()
+        find_package(RTLSDR)
+    endif()
 endif()
 
 if(DSD_ENABLE_SOAPYSDR)
@@ -919,17 +940,33 @@ if(DSD_HAS_RTLSDR)
     )
 
     # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
-    include(CheckSymbolExists)
-    set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
-    set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
-    set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
-    set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
-    unset(HAVE_RTLSDR_BIAS_TEE CACHE)
-    check_symbol_exists(rtlsdr_set_bias_tee "rtl-sdr.h" HAVE_RTLSDR_BIAS_TEE)
-    set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
-    set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
-    unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
-    unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    if(DSD_ANDROID_VENDORED_RTLSDR)
+        # The vendored library is built from this tree, so it does not exist yet
+        # and a link probe cannot run. Header and implementation are the same
+        # snapshot, so the declaration is the answer.
+        unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        file(READ "${RTLSDR_INCLUDE_DIRS}/rtl-sdr.h" _DSD_RTLSDR_HEADER)
+        if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_set_bias_tee")
+            set(HAVE_RTLSDR_BIAS_TEE ON)
+        endif()
+        unset(_DSD_RTLSDR_HEADER)
+    else()
+        include(CheckSymbolExists)
+        set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+        set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+        set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
+        set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
+        unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        check_symbol_exists(
+            rtlsdr_set_bias_tee
+            "rtl-sdr.h"
+            HAVE_RTLSDR_BIAS_TEE
+        )
+        set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+        set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+        unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+        unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    endif()
     if(HAVE_RTLSDR_BIAS_TEE)
         target_compile_definitions(
             dsd-neo_feature_rtlsdr
