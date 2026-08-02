@@ -1,0 +1,283 @@
+name: android-ci
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+    tags:
+      - "v*.*.*"
+    paths-ignore:
+      - ".*"
+      - "**/*.md"
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build-cli:
+    name: arm64 CLI (NDK cross build)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Install the pinned NDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$sdk/ndk/$ANDROID_NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare cache directories
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-android-static.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
+
+      - name: Configure (android-arm64-release)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --preset android-arm64-release -G Ninja \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build (android-arm64-release)
+        shell: bash
+        run: cmake --build --preset android-arm64-release -j
+
+      - name: Verify the CLI is arm64 with 16 KB page alignment
+        shell: bash
+        run: tools/check_android_elf_alignment.sh build/android-arm64-release/apps/dsd-cli/dsd-neo
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
+  build-apk:
+    name: APK (Qt Quick app)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          {
+            echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION"
+            echo "ANDROID_COMPILE_SDK=$ANDROID_COMPILE_SDK"
+            echo "ANDROID_BUILD_TOOLS_VERSION=$ANDROID_BUILD_TOOLS_VERSION"
+            echo "ANDROID_QT_VERSION=$ANDROID_QT_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install the pinned NDK and SDK platform
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;$ANDROID_NDK_VERSION" \
+            "platforms;android-$ANDROID_COMPILE_SDK" \
+            "build-tools;$ANDROID_BUILD_TOOLS_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$sdk/ndk/$ANDROID_NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Qt (host)
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.ANDROID_QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          cache: true
+
+      - name: Record the host Qt location
+        shell: bash
+        run: echo "QT_HOST_ROOT=${QT_ROOT_DIR:?}" >> "$GITHUB_ENV"
+
+      - name: Install Qt (android_arm64_v8a)
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: ${{ env.ANDROID_QT_VERSION }}
+          host: linux
+          target: android
+          arch: android_arm64_v8a
+          cache: true
+
+      - name: Record the Android Qt location
+        shell: bash
+        run: echo "QT_ANDROID_ROOT=${QT_ROOT_DIR:?}" >> "$GITHUB_ENV"
+
+      - name: Prepare cache directories
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-android-static.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
+
+      - name: Configure (android-app)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --preset android-app -G Ninja \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build the APK
+        shell: bash
+        run: cmake --build --preset android-app -j
+
+      - name: Locate the APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find build/android-app -name '*.apk' | sort)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "No APK produced under build/android-app" >&2
+            exit 1
+          fi
+          printf 'Found: %s\n' "${apks[@]}"
+          echo "APK_PATH=${apks[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify every packaged library is arm64 with 16 KB page alignment
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.apk.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          unzip -q "$APK_PATH" 'lib/*' -d "$workdir" || true
+          if [ ! -d "$workdir/lib" ]; then
+            echo "APK contains no native libraries" >&2
+            exit 1
+          fi
+          mapfile -t libs < <(find "$workdir/lib" -name '*.so' | sort)
+          if [ "${#libs[@]}" -eq 0 ]; then
+            echo "APK contains no native libraries" >&2
+            exit 1
+          fi
+          echo "Checking ${#libs[@]} packaged libraries"
+          tools/check_android_elf_alignment.sh "${libs[@]}"
+          # arm64-v8a only: any other ABI directory means androiddeployqt was
+          # not restricted to the supported ABI.
+          if find "$workdir/lib" -mindepth 1 -maxdepth 1 -type d ! -name 'arm64-v8a' | grep -q .; then
+            echo "APK contains ABIs other than arm64-v8a" >&2
+            exit 1
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dsd-neo-android-arm64-apk
+          path: ${{ steps.apk.outputs.APK_PATH }}
+          retention-days: 7
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
