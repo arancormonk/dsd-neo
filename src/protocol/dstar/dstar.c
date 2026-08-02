@@ -6,7 +6,6 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/dstar/dstar_const.h>
@@ -56,7 +55,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
         }
 
         //since we are in a long loop, use this to improve response time in ncurses
-        if (dsd_opts_frontend_active(opts)) {
+        if (dsd_telemetry_is_active()) {
             dsd_telemetry_publish_both_and_redraw(opts, state);
         }
 

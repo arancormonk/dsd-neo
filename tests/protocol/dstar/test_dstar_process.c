@@ -3,7 +3,6 @@
  * Focused checks for D-STAR voice/header processing loop boundaries.
  */
 
-#include "dsd-neo/core/frontend_types.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -37,6 +36,8 @@ static int mbe_frame_calls;
 static int voice_play_calls;
 static int slow_data_calls;
 static int ui_calls;
+/* Publishing now follows the installed telemetry hooks, not the frontend kind. */
+static int telemetry_active;
 static int watchdog_history_calls;
 static int watchdog_current_calls;
 static int header_decode_soft_calls;
@@ -52,6 +53,7 @@ reset_counters(void) {
     voice_play_calls = 0;
     slow_data_calls = 0;
     ui_calls = 0;
+    telemetry_active = 0;
     watchdog_history_calls = 0;
     watchdog_current_calls = 0;
     header_decode_soft_calls = 0;
@@ -130,6 +132,11 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     slow_data_calls++;
 }
 
+int
+dsd_telemetry_is_active(void) {
+    return telemetry_active;
+}
+
 void
 dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
@@ -182,7 +189,7 @@ assert_slow_data_starts_after_first_voice_frame(void) {
 }
 
 static void
-test_voice_process_without_ncurses(void) {
+test_voice_process_without_telemetry(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -201,15 +208,15 @@ test_voice_process_without_ncurses(void) {
 }
 
 static void
-test_voice_process_with_ncurses_refresh(void) {
+test_voice_process_with_telemetry_attached(void) {
     static dsd_opts opts;
     static dsd_state state;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.floating_point = 0;
     opts.pulse_digi_out_channels = 2;
-    opts.frontend_kind = DSD_FRONTEND_TERMINAL;
     reset_counters();
+    telemetry_active = 1;
 
     processDSTAR(&opts, &state);
 
@@ -239,8 +246,8 @@ test_header_process_captures_header_then_voice(void) {
 
 int
 main(void) {
-    test_voice_process_without_ncurses();
-    test_voice_process_with_ncurses_refresh();
+    test_voice_process_without_telemetry();
+    test_voice_process_with_telemetry_attached();
     test_header_process_captures_header_then_voice();
     printf("DSTAR_PROCESS: OK\n");
     return 0;

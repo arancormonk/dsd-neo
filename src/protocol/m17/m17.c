@@ -2302,7 +2302,7 @@ m17_str_handle_tx_idle(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
 
 static void
 m17_str_iter_tail(m17_str_ctx* ctx) {
-    if (dsd_opts_frontend_active(ctx->opts)) {
+    if (dsd_telemetry_is_active()) {
         dsd_telemetry_publish_both_and_redraw(ctx->opts, ctx->state);
     }
     dsd_event_sync_slot(ctx->opts, ctx->state, 0);
@@ -3369,7 +3369,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
             m17_ip_dispatch_frame(opts, state, ip_frame, err);
         }
 
-        if (dsd_opts_frontend_active(opts)) {
+        if (dsd_telemetry_is_active()) {
             dsd_telemetry_publish_both_and_redraw(opts, state);
         }
         dsd_event_sync_slot(opts, state, 0);

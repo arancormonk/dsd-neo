@@ -1637,7 +1637,7 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
     dsd_event_sync_slot(opts, state, 0);
     dsd_event_sync_slot(opts, state, 1);
 
-    if (dsd_opts_frontend_active(opts)) {
+    if (dsd_telemetry_is_active()) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 

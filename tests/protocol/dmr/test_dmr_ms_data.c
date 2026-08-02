@@ -207,6 +207,12 @@ playSynthesizedVoiceSS3(dsd_opts* opts, dsd_state* state) {
     g_play_ss3_calls++;
 }
 
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_telemetry_is_active(void) {
+    return 1;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_telemetry_publish_both_and_redraw(const dsd_opts* opts, const dsd_state* state) {
