@@ -73,6 +73,11 @@ static struct {
      * one does. */
     int64_t frames_played_per_wait;
     int cond_timedwait_calls;
+    /* Ring-mutex depth, and whether any AAudio query ran while it was held. The
+     * decoder contends for that mutex on every write, so a device call underneath
+     * it puts AAudio's own lock on the decoder's hot path. */
+    int mutex_depth;
+    int queries_under_mutex;
     /* Fake monotonic clock, so "was the decoder producing just now" is decided
      * by the test rather than by how fast it happens to run. */
     uint64_t now_ns;
@@ -117,12 +122,14 @@ dsd_mutex_destroy(dsd_mutex_t* mutex) {
 int
 dsd_mutex_lock(dsd_mutex_t* mutex) {
     (void)mutex;
+    g.mutex_depth++;
     return 0;
 }
 
 int
 dsd_mutex_unlock(dsd_mutex_t* mutex) {
     (void)mutex;
+    g.mutex_depth--;
     return 0;
 }
 
@@ -420,12 +427,18 @@ AAudioStream_getXRunCount(AAudioStream* stream) {
 int64_t
 AAudioStream_getFramesWritten(AAudioStream* stream) {
     (void)stream;
+    if (g.mutex_depth > 0) {
+        g.queries_under_mutex++;
+    }
     return g.frames_written;
 }
 
 int64_t
 AAudioStream_getFramesRead(AAudioStream* stream) {
     (void)stream;
+    if (g.mutex_depth > 0) {
+        g.queries_under_mutex++;
+    }
     if (g.frames_read_error) {
         return AAUDIO_ERROR_INVALID_STATE;
     }
@@ -883,14 +896,23 @@ test_pump_waits_while_device_is_buffered(void) {
     g.frames_read = 0;
     g.frames_played_per_wait = 160;
     g.cond_timedwait_calls = 0;
+    g.queries_under_mutex = 0;
 
+    /* Entered the way the pump enters it, so the mutex bookkeeping is faithful. */
+    dsd_mutex_lock(&stream->mu);
     assert(aaudio_output_wait_for_work_locked(stream) == 1);
+    dsd_mutex_unlock(&stream->mu);
+    assert(g.mutex_depth == 0);
 
     /* It concealed only once the queue fell under the low-water mark (80 ms =
      * 640 frames), i.e. after roughly (8000 - 640) / 160 waits -- not on the
      * first timeout the way an empty ring alone would have triggered. */
     assert(g.cond_timedwait_calls > 40);
     assert(g.frames_written - g.frames_read < 640);
+
+    /* Every one of those queue reads dropped the ring mutex first: holding it
+     * across an AAudio call puts AAudio's lock on the decoder's write path. */
+    assert(g.queries_under_mutex == 0);
 
     /* A gap must not put the pump back into priming: on a real-time feed that
      * withholds output from a device that is already low. */
@@ -919,9 +941,65 @@ test_pump_conceals_when_device_is_dry(void) {
     g.frames_read = 4096; /* nothing queued */
     g.frames_played_per_wait = 0;
     g.cond_timedwait_calls = 0;
+    g.queries_under_mutex = 0;
 
+    dsd_mutex_lock(&stream->mu);
     assert(aaudio_output_wait_for_work_locked(stream) == 1);
+    dsd_mutex_unlock(&stream->mu);
+
     assert(g.cond_timedwait_calls == 1);
+    assert(g.mutex_depth == 0);
+    assert(g.queries_under_mutex == 0);
+
+    stream->stop = 1;
+    dsd_audio_close(stream);
+}
+
+/*
+ * Overflowing the ring drops both the audio already queued and the head of the
+ * incoming buffer that will not fit. Counting only the former understated the
+ * loss in exactly the case the counter exists to expose.
+ */
+static void
+test_ring_overflow_drop_accounting(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+    int16_t seed[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    static int16_t oversized[20000];
+
+    reset_fakes();
+    params.async_output = 1;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+
+    const size_t capacity = stream->ring_samples_capacity;
+    assert(capacity > 0U && capacity < sizeof oversized / sizeof oversized[0]);
+
+    /* Queue a little first, so the pre-existing ring content is also a drop. */
+    assert(dsd_audio_write(stream, seed, 4) == 4);
+    assert(stream->ring_samples_count == 8U);
+    assert(stream->drops == 0U);
+
+    /* One write strictly larger than the ring: only the newest window survives. */
+    const size_t frames = (capacity / 2U) + 100U;
+    const size_t samples = frames * 2U;
+    for (size_t i = 0; i < samples; i++) {
+        oversized[i] = (int16_t)((i & 0x7FFFU) | 1U);
+    }
+    assert(dsd_audio_write(stream, oversized, frames) == (int)frames);
+
+    assert(stream->ring_samples_count == capacity);
+    assert(stream->drops == 8U + (samples - capacity));
+    /* The tail of the buffer is what was kept, not the head. */
+    assert(stream->ring[(stream->ring_samples_tail + capacity - 1U) % capacity] == oversized[samples - 1U]);
+
+    /* A write into a full ring drops exactly the shortfall, as before. */
+    const uint64_t drops_before = stream->drops;
+    assert(dsd_audio_write(stream, seed, 4) == 4);
+    assert(stream->ring_samples_count == capacity);
+    assert(stream->drops == drops_before + 8U);
+
+    /* in_samples counts what the decoder handed over, overflow included. */
+    assert(stream->in_samples == 8U + samples + 8U);
 
     stream->stop = 1;
     dsd_audio_close(stream);
@@ -1018,6 +1096,7 @@ main(void) {
     test_async_output_setup_and_pump();
     test_pump_waits_while_device_is_buffered();
     test_pump_conceals_when_device_is_dry();
+    test_ring_overflow_drop_accounting();
     test_underrun_classification();
     test_api_guards();
     return 0;

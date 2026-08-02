@@ -633,6 +633,9 @@ aaudio_queued_frames(const dsd_audio_stream* stream) {
  *
  * An unknown queue depth (stream being recovered) counts as starved, which is
  * the conservative direction: keep the device fed.
+ *
+ * Must be called with stream->mu released: the AAudio getters take the stream's
+ * own lock, and stream->mu is on the decoder's write path.
  */
 static int
 aaudio_output_device_starved(const dsd_audio_stream* stream) {
@@ -666,14 +669,20 @@ enum aaudio_wait_step {
     AAUDIO_WAIT_CONCEAL,      /* device is running dry; pad it */
 };
 
+/**
+ * @brief Decide what to do after one timed wait.
+ *
+ * @param device_starved Queue depth verdict sampled by the caller with the ring
+ *                       mutex released; only consulted when the ring is empty.
+ */
 static enum aaudio_wait_step
-aaudio_output_classify_wait_locked(const dsd_audio_stream* stream, int waited_ms) {
+aaudio_output_classify_wait_locked(const dsd_audio_stream* stream, int waited_ms, int device_starved) {
     if (stream->stop || stream->drain_requested) {
         return AAUDIO_WAIT_PLAY; /* the caller re-checks both */
     }
 
     if (stream->ring_samples_count == 0U) {
-        if (stream->conceal_inited && stream->conceal_has_good && aaudio_output_device_starved(stream)) {
+        if (device_starved && stream->conceal_inited && stream->conceal_has_good) {
             return AAUDIO_WAIT_CONCEAL;
         }
         return AAUDIO_WAIT_CONTINUE;
@@ -685,6 +694,34 @@ aaudio_output_classify_wait_locked(const dsd_audio_stream* stream, int waited_ms
     }
 
     return AAUDIO_WAIT_CONTINUE;
+}
+
+/**
+ * @brief Sample the device queue for the wait loop, with the ring mutex dropped.
+ *
+ * Entered and left holding stream->mu, but the AAudio query itself runs without it:
+ * the getters take the stream's own lock, and every dsd_audio_write() from the
+ * decoder contends for stream->mu, so holding it across the call would put AAudio's
+ * lock on the decoder's hot path. Only the pump thread opens, closes or replaces
+ * stream->handle, so it cannot change across the window, and the caller re-reads
+ * everything the answer is combined with after the relock.
+ *
+ * @return Nonzero when the device is close to running dry and concealment is
+ *         available to cover it; 0 when there is nothing to decide.
+ */
+static int
+aaudio_output_sample_starvation_locked(dsd_audio_stream* stream) {
+    if (stream->stop || stream->drain_requested || stream->ring_samples_count != 0U) {
+        return 0;
+    }
+    if (!stream->conceal_inited || !stream->conceal_has_good) {
+        return 0;
+    }
+
+    dsd_mutex_unlock(&stream->mu);
+    const int starved = aaudio_output_device_starved(stream);
+    dsd_mutex_lock(&stream->mu);
+    return starved;
 }
 
 static int
@@ -713,7 +750,8 @@ aaudio_output_wait_for_work_locked(dsd_audio_stream* stream) {
         (void)dsd_cond_timedwait(&stream->cv, &stream->mu, DSD_AAUDIO_OUTPUT_CHUNK_MS);
         waited_ms += DSD_AAUDIO_OUTPUT_CHUNK_MS;
 
-        const enum aaudio_wait_step step = aaudio_output_classify_wait_locked(stream, waited_ms);
+        const int device_starved = aaudio_output_sample_starvation_locked(stream);
+        const enum aaudio_wait_step step = aaudio_output_classify_wait_locked(stream, waited_ms, device_starved);
         if (step == AAUDIO_WAIT_CONCEAL) {
             synthesize_underrun = 1;
             break;
@@ -1245,9 +1283,11 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
     }
 
     if (samples >= stream->ring_samples_capacity) {
-        /* Keep only the newest window. */
+        /* Keep only the newest window. Both the ring content being thrown away and
+         * the head of this buffer that cannot fit are drops; counting only the
+         * former hid the larger loss in exactly the case the counter exists for. */
         const int16_t* src = buffer + (samples - stream->ring_samples_capacity);
-        stream->drops += stream->ring_samples_count;
+        stream->drops += stream->ring_samples_count + (samples - stream->ring_samples_capacity);
         stream->ring_samples_head = 0;
         stream->ring_samples_tail = 0;
         stream->ring_samples_count = 0;
