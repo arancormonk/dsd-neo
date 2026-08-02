@@ -6,6 +6,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/curses_compat.h>
@@ -18,7 +19,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../app_control/snapshot_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"

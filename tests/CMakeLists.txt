@@ -433,6 +433,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_snapshot
+  HEADERS_PUBLIC_APP_CONTROL_SNAPSHOT
+  dsd-neo/app_control/snapshot.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_frontend_types
   HEADERS_PUBLIC_CORE_FRONTEND_TYPES
   dsd-neo/core/frontend_types.h

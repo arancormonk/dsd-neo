@@ -20,6 +20,19 @@ extern "C" {
 
 void dsd_app_frontend_runtime_start(const dsd_opts* initial_opts, const dsd_state* initial_state);
 void dsd_app_frontend_runtime_stop(void);
+
+/**
+ * @brief Raise the pending-redraw flag consumed by @ref dsd_app_frontend_redraw_consume.
+ *
+ * Safe from any thread. Backends raise it through the telemetry hooks; a frontend
+ * calls it directly after changing something it rendered itself.
+ */
+void dsd_app_request_redraw(void);
+
+/**
+ * @brief Take the pending-redraw flag.
+ * @return Nonzero when a redraw was requested since the last call; clears the flag.
+ */
 int dsd_app_frontend_redraw_consume(void);
 
 #ifdef __cplusplus

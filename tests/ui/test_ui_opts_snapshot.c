@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 
+#include <dsd-neo/app_control/snapshot.h>
 #include "snapshot_internal.h"
 
 static void

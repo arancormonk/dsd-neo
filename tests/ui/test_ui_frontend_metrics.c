@@ -7,13 +7,13 @@
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
-#include "../../src/app_control/snapshot_internal.h"
 
 static const dsd_opts* g_latest_opts;
 static const dsd_state* g_latest_state;

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -11,7 +12,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "snapshot_internal.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>

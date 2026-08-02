@@ -10,6 +10,7 @@
 #include <curses.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
