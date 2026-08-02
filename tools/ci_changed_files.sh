@@ -177,7 +177,9 @@ dependency_scan_targets=()
 
 for p in "${changed_paths[@]}"; do
   case "$p" in
-    build/* | src/third_party/*) continue ;;
+    # Vendored upstream snapshots are excluded from every repository tool; the
+    # pre-push hook skips the same paths.
+    build/* | src/third_party/* | android/third_party/*) continue ;;
   esac
 
   if [[ ! -e "$p" && ! -L "$p" ]]; then
