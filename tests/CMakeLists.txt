@@ -3190,6 +3190,36 @@ else()
 endif()
 add_test(NAME ENGINE_RUN_SETUP COMMAND dsd-neo_test_engine_run_setup)
 
+# Needs the real librtlsdr symbols to exist so --wrap has something to intercept.
+if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_rtl_preopened_fd
+        engine/test_engine_rtl_preopened_fd.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_rtl_preopened_fd
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_rtl_preopened_fd
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=rtlsdr_get_device_count"
+            "-Wl,--wrap=rtlsdr_get_device_usb_strings"
+            "-Wl,--wrap=rtl_stream_create"
+            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_destroy"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_RTL_PREOPENED_FD
+        COMMAND dsd-neo_test_engine_rtl_preopened_fd
+    )
+endif()
+
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_engine_synced_trunk_scan_tick
@@ -7187,6 +7217,20 @@ if(DSD_HAS_RADIO)
         NAME IO_RTL_REPLAY_EOF_AND_CF32
         COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32
     )
+
+    add_executable(
+        dsd-neo_test_io_rtl_preopened_fd
+        io/test_io_rtl_preopened_fd.c
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_preopened_fd
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_preopened_fd
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
 endif()
 
 add_executable(

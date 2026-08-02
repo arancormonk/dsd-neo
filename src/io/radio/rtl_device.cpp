@@ -4897,6 +4897,22 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
     }
 }
 
+/*
+ * Descriptor handed down from an Android app (USB-OTG). Written before the engine
+ * starts and read on the engine/open path, so the two threads need it atomic.
+ */
+static std::atomic<int> g_preopened_usb_fd{-1};
+
+void
+rtl_device_set_preopened_fd(int sys_fd) {
+    g_preopened_usb_fd.store((sys_fd < 0) ? -1 : sys_fd, std::memory_order_release);
+}
+
+int
+rtl_device_preopened_fd_is_set(void) {
+    return (g_preopened_usb_fd.load(std::memory_order_acquire) >= 0) ? 1 : 0;
+}
+
 /**
  * @brief Create and initialize an RTL-SDR device.
  *
@@ -4940,6 +4956,21 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->if_gain_count = 0;
 
     int r = 0;
+#if defined(__ANDROID__) && defined(USE_RTLSDR)
+    /* An injected descriptor means the app already picked and opened the device and
+     * libusb discovery is off, so opening by index cannot work. */
+    const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
+    if (preopened_fd >= 0) {
+        r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+        if (r < 0) {
+            DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
+            rtl_device_cleanup_common_state(dev);
+            free(dev);
+            return NULL;
+        }
+        return dev;
+    }
+#endif
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
     __try {
         r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);

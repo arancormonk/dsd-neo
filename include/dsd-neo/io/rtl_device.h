@@ -58,6 +58,30 @@ struct rtl_soapy_config {
 struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring);
 
 /**
+ * @brief Hand the next USB open an already-open device file descriptor.
+ *
+ * Android applications cannot open `/dev/bus/usb` nodes themselves: the descriptor
+ * comes from `UsbDeviceConnection.getFileDescriptor()` in Java. While one is set,
+ * USB device discovery is bypassed — the engine skips enumeration (which would
+ * report no devices) and rtl_device_create() wraps this descriptor instead of
+ * opening by index. The caller keeps ownership and must keep it open for the
+ * lifetime of the device.
+ *
+ * Off Android the value is recorded but never consumed, so the host build stays
+ * uniform.
+ *
+ * @param sys_fd Open USB file descriptor, or -1 to clear.
+ */
+void rtl_device_set_preopened_fd(int sys_fd);
+
+/**
+ * @brief Whether a pre-opened USB descriptor is currently set.
+ *
+ * @return 1 when set, 0 otherwise.
+ */
+int rtl_device_preopened_fd_is_set(void);
+
+/**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
  *
  * Connects to an rtl_tcp server (default port 1234) and configures the
