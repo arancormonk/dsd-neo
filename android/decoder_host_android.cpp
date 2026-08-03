@@ -34,11 +34,18 @@ android_context(void) {
     return QNativeInterface::QAndroidApplication::context();
 }
 
-/** @brief Builds a Java String[] from @p values. Local ref, valid for one call. */
+/**
+ * @brief Builds a Java String[] from @p values. Local ref, valid for one call.
+ *
+ * Returns nullptr on failure, always with no exception left pending: an allocation
+ * failure here raises one, the caller goes straight on to more JNI calls, and JNI
+ * calls made with a pending exception are undefined — in practice an abort rather
+ * than the failed start the caller is written to report.
+ */
 jobjectArray
 to_java_string_array(QJniEnvironment& env, const QStringList& values) {
     jclass string_class = env->FindClass("java/lang/String");
-    if (string_class == nullptr) {
+    if (env.checkAndClearExceptions() || string_class == nullptr) {
         return nullptr;
     }
     jobjectArray array = env->NewObjectArray(static_cast<jsize>(values.size()), string_class, nullptr);
@@ -46,12 +53,16 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
      * local refs are never reclaimed for us: every one has to be released by hand
      * or the (512-entry) table fills up over the process's life. */
     env->DeleteLocalRef(string_class);
-    if (array == nullptr) {
+    if (env.checkAndClearExceptions() || array == nullptr) {
         return nullptr;
     }
     for (qsizetype i = 0; i < values.size(); i++) {
         QJniObject item = QJniObject::fromString(values.at(i));
         env->SetObjectArrayElement(array, static_cast<jsize>(i), item.object());
+        if (env.checkAndClearExceptions()) {
+            env->DeleteLocalRef(array);
+            return nullptr;
+        }
     }
     return array;
 }

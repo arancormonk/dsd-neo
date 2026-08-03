@@ -29,7 +29,6 @@ import android.util.Log
  */
 class DecoderService : Service() {
 
-    private var engineThread: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -84,10 +83,11 @@ class DecoderService : Service() {
                 Log.e(TAG, "nativeDestroy rejected ($rc); leaving the engine initialized")
             }
         }
-        // release() waits for the engine to let go of the descriptor on its own. The
-        // connection is held across runs so a second start does not re-prompt for
-        // permission.
-        UsbSourceManager.release()
+        // The USB connection is deliberately not released here. onDestroy runs at the
+        // end of every session — the engine thread calls stopSelf() when nativeRun
+        // returns — so releasing would drop the descriptor after every run and leave
+        // the user reconnecting the dongle before each one. UsbSourceManager holds it
+        // for the process instead and releases it on detach; process death closes it.
         releaseWakeLock()
         super.onDestroy()
     }
@@ -126,11 +126,20 @@ class DecoderService : Service() {
         val thread = Thread({
             val rc = DsdNative.nativeRun()
             Log.i(TAG, "engine run returned $rc")
-            synchronized(lock) { state = State.IDLE }
+            synchronized(lock) {
+                state = State.IDLE
+                // Only if it is still ours: a start that raced a timed-out join has
+                // already installed its own thread here.
+                if (engineThread === Thread.currentThread()) {
+                    engineThread = null
+                }
+            }
             stopSelf()
         }, "dsd-neo-engine")
-        engineThread = thread
-        synchronized(lock) { state = State.RUNNING }
+        synchronized(lock) {
+            engineThread = thread
+            state = State.RUNNING
+        }
         updateNotification(getString(R.string.decoder_running))
         thread.start()
     }
@@ -167,7 +176,7 @@ class DecoderService : Service() {
     }
 
     private fun joinEngineThread() {
-        val thread = engineThread ?: return
+        val thread = synchronized(lock) { engineThread } ?: return
         try {
             thread.join(ENGINE_JOIN_TIMEOUT_MS)
         } catch (e: InterruptedException) {
@@ -178,11 +187,19 @@ class DecoderService : Service() {
             // Leave both the handle and the state as the still-running engine thread
             // will find them: forcing IDLE here advertises a service that can be
             // started again, and the native side would then reject every attempt.
+            // Both live in the companion object, so a service created after this one
+            // is destroyed still sees this thread and can join it in turn.
             Log.e(TAG, "engine thread did not stop within ${ENGINE_JOIN_TIMEOUT_MS}ms")
             return
         }
-        engineThread = null
-        synchronized(lock) { state = State.IDLE }
+        // The thread clears these on its way out; this only settles a join that
+        // returned before the tail of that lambda ran.
+        synchronized(lock) {
+            if (engineThread === thread) {
+                engineThread = null
+                state = State.IDLE
+            }
+        }
     }
 
     private fun acquireWakeLock() {
@@ -287,6 +304,16 @@ class DecoderService : Service() {
 
         private val lock = Any()
         private var state = State.IDLE
+
+        /**
+         * The running engine's thread, held with [state] rather than on the instance.
+         *
+         * A join that times out leaves the engine running and this service destroyed.
+         * The instance that replaces it has to be able to find that thread and join it
+         * in turn, which an instance field cannot express: it would come back null and
+         * strand a lifecycle the static [state] still describes as busy.
+         */
+        private var engineThread: Thread? = null
         private var initialized = false
         private var lastError = ""
 

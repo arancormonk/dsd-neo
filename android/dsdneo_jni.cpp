@@ -64,6 +64,17 @@ std::atomic<bool> g_log_pump_started{false};
 /* Mirrors "g_opts/g_state exist" for nativeStop, which must not take g_lock; see
  * there. Written under g_lock by nativeInit/nativeDestroy. */
 std::atomic<bool> g_initialized{false};
+/* Latches a stop that arrives before the engine loop is watching the exit flag.
+ *
+ * dsd_engine_run_with_lifecycle() zeroes the flag on entry so a second run in one
+ * process is not killed by the previous run's shutdown, but the service publishes
+ * RUNNING (and so starts accepting stops) before the engine thread gets that far.
+ * A stop landing in between would raise the flag only for the engine to clear it,
+ * and the session would then decode with no way left to stop it. The latch is
+ * cleared in nativeConfigure -- while the service is still STARTING and rejecting
+ * stops, so nothing can be dropped -- and re-asserted from the lifecycle start
+ * hook, which runs after the engine's reset and before the decode loop. */
+std::atomic<bool> g_stop_requested{false};
 
 /**
  * @brief Drains the redirected stdout/stderr pipe into logcat, one line per record.
@@ -169,13 +180,46 @@ start_log_pump(void) {
     close_if_open(saved_err);
 }
 
+/**
+ * @brief Reports and clears a pending JNI exception.
+ *
+ * Every JNI call made while one is pending is undefined, so a failure has to be
+ * absorbed here rather than carried into the next call.
+ *
+ * @return True when an exception was pending.
+ */
+bool
+clear_pending_exception(JNIEnv* env) {
+    if (env == nullptr || env->ExceptionCheck() == JNI_FALSE) {
+        return false;
+    }
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return true;
+}
+
+/**
+ * @brief Converts a Java string to UTF-8.
+ *
+ * @param ok Set to false when the conversion failed. A failure otherwise looks
+ *           exactly like a legitimately empty string, and silently substituting one
+ *           for the other turns an allocation failure into a bogus CLI argument.
+ * @return The converted text, or an empty string on failure.
+ */
 std::string
-jstring_to_utf8(JNIEnv* env, jstring value) {
+jstring_to_utf8(JNIEnv* env, jstring value, bool* ok) {
+    if (ok != nullptr) {
+        *ok = true;
+    }
     if (env == nullptr || value == nullptr) {
         return std::string();
     }
     const char* chars = env->GetStringUTFChars(value, nullptr);
     if (chars == nullptr) {
+        clear_pending_exception(env);
+        if (ok != nullptr) {
+            *ok = false;
+        }
         return std::string();
     }
     std::string out(chars);
@@ -185,8 +229,9 @@ jstring_to_utf8(JNIEnv* env, jstring value) {
 
 void
 set_env_from_jstring(JNIEnv* env, const char* name, jstring value) {
-    const std::string text = jstring_to_utf8(env, value);
-    if (text.empty()) {
+    bool ok = false;
+    const std::string text = jstring_to_utf8(env, value, &ok);
+    if (!ok || text.empty()) {
         return;
     }
     (void)setenv(name, text.c_str(), 1);
@@ -251,9 +296,21 @@ build_argv(JNIEnv* env, jobjectArray args, cli_argv* out) {
 
     for (jsize i = 0; i < extra; i++) {
         jstring item = static_cast<jstring>(env->GetObjectArrayElement(args, i));
-        const std::string text = jstring_to_utf8(env, item);
+        if (clear_pending_exception(env)) {
+            free_argv(out);
+            return false;
+        }
+        bool converted = false;
+        const std::string text = jstring_to_utf8(env, item, &converted);
         if (item != nullptr) {
             env->DeleteLocalRef(item);
+        }
+        /* Failing the whole configure beats handing the bootstrap an argv with an
+         * empty element in it: the run would fail later, on an option unrelated to
+         * what actually went wrong. */
+        if (!converted) {
+            free_argv(out);
+            return false;
         }
         out->argv[i + 1] = strdup(text.c_str());
         out->owned[i + 1] = out->argv[i + 1];
@@ -264,6 +321,24 @@ build_argv(JNIEnv* env, jobjectArray args, cli_argv* out) {
     }
 
     return true;
+}
+
+/**
+ * @brief Re-asserts a stop that was requested before the decode loop started.
+ *
+ * The engine calls this after its own shutdown-flag reset and immediately before
+ * live processing begins, which is the only point at which a stop latched during
+ * startup can still be honoured. Returning 0 lets the run proceed and unwind
+ * through the normal stop path rather than reporting a failed start.
+ */
+int
+engine_lifecycle_start(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)context;
+    if (g_stop_requested.load()) {
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "stop requested during startup; shutting down immediately");
+        dsd_request_shutdown(opts, state);
+    }
+    return 0;
 }
 
 } // namespace
@@ -333,8 +408,11 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeConfigure(JNIEnv* env, jclass 
     }
 
     /* A completed run leaves the shutdown flag raised; main() never restarts, an
-     * embedding host always does. */
+     * embedding host always does. Safe to clear both here and nowhere else: the
+     * service is STARTING for the whole of this call and rejects stops, so no stop
+     * request for the run being configured can exist yet. */
     dsd_exitflag_store(0);
+    g_stop_requested.store(false);
 
     int exit_rc = 0;
     const int rc = dsd_runtime_bootstrap(cli.argc, cli.argv, g_opts, g_state, nullptr, &exit_rc);
@@ -370,7 +448,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeRun(JNIEnv* env, jclass clazz)
     /* Installs the telemetry hooks and control pump the UI's app-control reads and
      * command submits need; the CLI's frontend-none path never does this. */
     dsd_app_frontend_runtime_start(opts, state);
-    const int rc = dsd_engine_run_with_lifecycle(opts, state, nullptr);
+    dsd_engine_lifecycle_hooks hooks = {};
+    hooks.start = engine_lifecycle_start;
+    const int rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
     dsd_app_frontend_runtime_stop();
 
     {
@@ -395,6 +475,9 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
     if (!g_initialized.load()) {
         return kStatusBadState;
     }
+    /* Latched as well as raised: a stop arriving before the engine loop starts would
+     * otherwise be lost to the engine's own shutdown-flag reset. See g_stop_requested. */
+    g_stop_requested.store(true);
     dsd_request_shutdown(nullptr, nullptr);
     return kStatusOk;
 }
@@ -426,6 +509,14 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeSetUsbFd(JNIEnv* env, jclass c
     (void)clazz;
 
 #ifdef USE_RADIO
+    /* USE_RADIO alone is not enough: the radio pipeline builds without an SDR library
+     * (rtl_tcp only), and there the descriptor is recorded but nothing ever opens from
+     * it. Reporting success would leave the app showing a ready USB source that fails
+     * at start with nothing pointing at the missing backend. Clearing stays a success
+     * either way, so release paths need no build knowledge. */
+    if (sys_fd >= 0 && !rtl_device_preopened_fd_supported()) {
+        return kStatusError;
+    }
     /* Java owns the descriptor: it comes from a UsbDeviceConnection that the service
      * holds open for the engine's lifetime, and -1 clears the slot on detach. The
      * engine reads it during input setup, so it has to be set before nativeRun. */

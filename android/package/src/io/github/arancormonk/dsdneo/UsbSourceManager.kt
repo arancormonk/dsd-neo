@@ -26,9 +26,10 @@ import android.util.Log
  * then wraps it instead of enumerating, which is why the engine also skips its own
  * device scan while a descriptor is set.
  *
- * The connection outlives a single decode run and is released only on detach or when
- * the service goes away: Java keeps ownership of the descriptor for as long as the
- * engine might use it.
+ * The connection outlives a single decode run and is released only on detach: Java
+ * keeps ownership of the descriptor for as long as the engine might use it, and the
+ * decoder service deliberately leaves it alone when it is destroyed, which happens
+ * at the end of every session. Whatever survives that is closed by process death.
  */
 object UsbSourceManager {
     private const val TAG = "dsd-neo"
