@@ -44,4 +44,15 @@ object DsdNative {
      * connection must stay open for as long as the engine is running.
      */
     external fun nativeSetUsbFd(fd: Int): Int
+
+    /**
+     * Whether the engine currently has the descriptor wrapped in libusb.
+     *
+     * The window this reports is narrower than a run: the engine takes the
+     * descriptor during input setup and gives it back when the device closes, both
+     * well inside [nativeRun]. Closing the connection while this is true would pull
+     * the file out from under an in-flight transfer, so [UsbSourceManager] waits for
+     * it to clear before releasing.
+     */
+    external fun nativeIsUsbFdInUse(): Boolean
 }

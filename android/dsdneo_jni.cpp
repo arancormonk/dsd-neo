@@ -535,4 +535,17 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsRunning(JNIEnv* env, jclass 
     return g_running.load() ? JNI_TRUE : JNI_FALSE;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsUsbFdInUse(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+
+#ifdef USE_RADIO
+    return rtl_device_preopened_fd_in_use() ? JNI_TRUE : JNI_FALSE;
+#else
+    /* No radio pipeline, so nothing can have taken the descriptor. */
+    return JNI_FALSE;
+#endif
+}
+
 } // extern "C"

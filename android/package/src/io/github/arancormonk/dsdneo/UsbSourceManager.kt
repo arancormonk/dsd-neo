@@ -211,13 +211,20 @@ object UsbSourceManager {
     /**
      * Waits for the engine to let go of the descriptor, then closes the connection.
      *
+     * Both conditions matter. [DsdNative.nativeIsUsbFdInUse] is the precise one — it
+     * brackets exactly the period during which libusb has the descriptor wrapped —
+     * while [DsdNative.nativeIsRunning] additionally covers a run that is about to
+     * take it but has not reached input setup yet. Waiting on "running" alone would
+     * be both too coarse and, in the moment between a configured start and the engine
+     * thread being scheduled, too narrow.
+     *
      * If it never lets go the connection is deliberately leaked: one file descriptor
      * held for the rest of the process's life is a far better outcome than pulling it
      * out from under an in-flight USB transfer.
      */
     private fun closeWhenEngineStops(open: UsbDeviceConnection) {
         var waited = 0L
-        while (DsdNative.nativeIsRunning()) {
+        while (DsdNative.nativeIsRunning() || DsdNative.nativeIsUsbFdInUse()) {
             if (waited >= RELEASE_TIMEOUT_MS) {
                 Log.e(TAG, "engine still running after ${RELEASE_TIMEOUT_MS}ms; leaking the USB connection")
                 return
