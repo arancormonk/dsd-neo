@@ -305,7 +305,21 @@ class DecoderService : Service() {
         private const val TAG = "dsd-neo"
         private const val CHANNEL_ID = "dsdneo_decoder"
         private const val NOTIFICATION_ID = 1
-        private const val ENGINE_JOIN_TIMEOUT_MS = 5000L
+        /**
+         * How long [onDestroy] waits for the engine thread before giving up on it.
+         *
+         * Deliberately short, because this runs on the main thread. The ordinary
+         * teardown does not spend it at all: the engine thread calls stopSelf() only
+         * after nativeRun has returned, so by the time onDestroy is delivered the
+         * thread is already at the tail of its lambda and the join is immediate. The
+         * budget is only ever drawn on when the service is destroyed *while* a run is
+         * live — a swipe-away, or a stop the engine is slow to honour — and there a
+         * longer wait buys nothing: joinEngineThread() already handles the timeout
+         * correctly by leaving the thread, the state and the wake lock for the run to
+         * unwind on its own. Trading a frozen UI for a slightly better chance of a
+         * tidy join is the wrong way round.
+         */
+        private const val ENGINE_JOIN_TIMEOUT_MS = 1000L
 
         const val ACTION_START = "io.github.arancormonk.dsdneo.action.START"
         const val ACTION_STOP = "io.github.arancormonk.dsdneo.action.STOP"
