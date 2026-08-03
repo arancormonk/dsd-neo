@@ -87,6 +87,13 @@ option(
     "Fail configure when SoapySDR is enabled but not found"
     OFF
 )
+# Codec2 and libcurl are auto-detected, and a build that silently loses either
+# still links: M17 just stops emitting voice, and rdio uploads disappear. Cross
+# builds cannot be smoke-tested on the build host, so let them demand the
+# dependency instead of degrading quietly. Use
+# CMAKE_DISABLE_FIND_PACKAGE_CODEC2/CURL to turn detection off outright.
+option(DSD_REQUIRE_CODEC2 "Fail configure when Codec2 is not found" OFF)
+option(DSD_REQUIRE_CURL "Fail configure when libcurl is not found" OFF)
 option(
     DSD_FORCE_RADIO_PIPELINE
     "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"
@@ -792,6 +799,55 @@ endif()
 find_package(CODEC2)
 find_package(CURL 7.56.0)
 
+# Catch the contradictory pair explicitly: CMAKE_DISABLE_FIND_PACKAGE_* is the
+# off switch (tools/install_linux.sh drives Codec2 that way), so pairing it with
+# a require option would otherwise fail below with a misleading "not found".
+if(DSD_REQUIRE_CODEC2 AND CMAKE_DISABLE_FIND_PACKAGE_CODEC2)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_CODEC2=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON."
+    )
+endif()
+
+if(DSD_REQUIRE_CURL AND CMAKE_DISABLE_FIND_PACKAGE_CURL)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_CURL=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_CURL=ON."
+    )
+endif()
+
+# Normalize to ON/OFF so the status lines below stay greppable; the find modules
+# report found-ness in their own spellings.
+set(DSD_HAS_CODEC2 OFF)
+if(CODEC2_FOUND)
+    set(DSD_HAS_CODEC2 ON)
+endif()
+
+set(DSD_HAS_CURL OFF)
+if(CURL_FOUND)
+    set(DSD_HAS_CURL ON)
+endif()
+
+if(DSD_REQUIRE_CODEC2 AND NOT DSD_HAS_CODEC2)
+    message(
+        FATAL_ERROR
+        "Codec2 was required but not found. Install a Codec2 development package or disable DSD_REQUIRE_CODEC2."
+    )
+endif()
+
+if(DSD_REQUIRE_CURL AND NOT DSD_HAS_CURL)
+    message(
+        FATAL_ERROR
+        "libcurl >= 7.56.0 was required but not found. Install a libcurl development package or disable DSD_REQUIRE_CURL."
+    )
+endif()
+
+# Both degrade silently when absent and the binary still links: M17 simply stops
+# emitting voice, and rdio uploads disappear. Report either way so a build that
+# quietly lost one is visible in the configure log.
+message(STATUS "Codec2 available: ${DSD_HAS_CODEC2} (M17 voice)")
+message(STATUS "libcurl available: ${DSD_HAS_CURL} (rdio API uploads)")
+
 # Audio backend selection
 set(DSD_AUDIO_BACKEND
     "auto"
@@ -1012,7 +1068,7 @@ else()
     add_library(dsd-neo_feature_rtlsdr INTERFACE)
 endif()
 
-if(CODEC2_FOUND)
+if(DSD_HAS_CODEC2)
     list(APPEND LIBS ${CODEC2_LIBRARIES})
 
     # Interface target for USE_CODEC2 compile definition
@@ -1028,7 +1084,7 @@ else()
     add_library(dsd-neo_feature_codec2 INTERFACE)
 endif()
 
-if(CURL_FOUND)
+if(DSD_HAS_CURL)
     add_library(dsd-neo_feature_curl INTERFACE)
     target_compile_definitions(dsd-neo_feature_curl INTERFACE USE_CURL)
     target_link_libraries(dsd-neo_feature_curl INTERFACE CURL::libcurl)

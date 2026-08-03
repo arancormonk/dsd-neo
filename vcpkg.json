@@ -9,10 +9,7 @@
     "mbe-neo",
     "openssl",
     "libsndfile",
-    {
-      "name": "curl",
-      "platform": "!android"
-    },
+    "curl",
     {
       "name": "portaudio",
       "platform": "!android"
@@ -30,7 +27,7 @@
     },
     {
       "name": "codec2",
-      "platform": "windows"
+      "platform": "windows | android"
     },
     {
       "name": "pdcurses",

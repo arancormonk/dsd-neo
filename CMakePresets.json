@@ -163,7 +163,9 @@
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows-dynamic",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
-        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed"
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
+        "DSD_REQUIRE_CODEC2": "ON",
+        "DSD_REQUIRE_CURL": "ON"
       }
     },
     {
@@ -186,7 +188,9 @@
         "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
         "BUILD_TESTING": "OFF",
         "DSD_ENABLE_LTO": "ON",
-        "DSD_ENABLE_FAST_MATH": "ON"
+        "DSD_ENABLE_FAST_MATH": "ON",
+        "DSD_REQUIRE_CODEC2": "ON",
+        "DSD_REQUIRE_CURL": "ON"
       }
     },
     {
@@ -209,6 +213,8 @@
         "DSD_ENABLE_RTLSDR": "ON",
         "DSD_ANDROID_VENDORED_RTLSDR": "ON",
         "DSD_ENABLE_SOAPYSDR": "OFF",
+        "DSD_REQUIRE_CODEC2": "ON",
+        "DSD_REQUIRE_CURL": "ON",
         "DSD_WARNINGS_AS_ERRORS": "ON"
       }
     },
@@ -234,6 +240,8 @@
         "DSD_ENABLE_RTLSDR": "ON",
         "DSD_ANDROID_VENDORED_RTLSDR": "ON",
         "DSD_ENABLE_SOAPYSDR": "OFF",
+        "DSD_REQUIRE_CODEC2": "ON",
+        "DSD_REQUIRE_CURL": "ON",
         "DSD_WARNINGS_AS_ERRORS": "ON"
       }
     }

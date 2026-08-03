@@ -561,21 +561,19 @@ configure_build_install_dsd_neo() {
     off)
       cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON"
       ;;
-    auto | required)
+    auto)
       cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF"
+      ;;
+    required)
+      cmake_args="$cmake_args -DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=OFF -DDSD_REQUIRE_CODEC2=ON"
       ;;
   esac
 
   # shellcheck disable=SC2086
   run cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Ninja $cmake_args
 
-  if [ "$CODEC2_MODE" = required ] && [ "$DRY_RUN" -eq 0 ]; then
-    if ! grep -q '^CODEC2_LIBRARY:FILEPATH=.*[^-]$' "$BUILD_DIR/CMakeCache.txt" ||
-      grep -q '^CODEC2_LIBRARY:FILEPATH=.*NOTFOUND' "$BUILD_DIR/CMakeCache.txt"; then
-      echo "Codec2 was required but was not found by CMake." >&2
-      exit 1
-    fi
-  fi
+  # No CMakeCache.txt inspection here: DSD_REQUIRE_CODEC2 makes the configure
+  # above fail on its own, before anything is built.
 
   run cmake --build "$BUILD_DIR" -j "$(jobs_count)"
 
