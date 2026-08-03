@@ -12,6 +12,11 @@
 #   cmake -P cmake/vcpkg_dependency_contract.cmake
 #
 
+# Script mode leaves policies unset, so language behaviour would otherwise
+# depend on the host CMake: string(JSON) needs 3.19, and the newer parsing
+# rules must not be left to chance.
+cmake_minimum_required(VERSION 3.20)
+
 if(NOT DEFINED CMAKE_SCRIPT_MODE_FILE)
     message(
         FATAL_ERROR
@@ -182,7 +187,10 @@ foreach(
     win-msvc-debug
     win-msvc-release
 )
-    if(NOT _adc_expected IN_LIST _ADC_SEEN_PRESETS)
+    # list(FIND) rather than IN_LIST: this runs under `cmake -P`, where CMP0057
+    # is unset and IN_LIST is a hard error on CMake 3.x.
+    list(FIND _ADC_SEEN_PRESETS "${_adc_expected}" _adc_found_at)
+    if(_adc_found_at EQUAL -1)
         _adc_error(
             "CMakePresets.json: expected a vcpkg-driven preset named ${_adc_expected}"
         )
