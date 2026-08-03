@@ -355,9 +355,10 @@ aaudio_stream_open(dsd_audio_stream* stream) {
  * @brief Tear the device stream down and schedule a reopen.
  *
  * Route changes (headphones, Bluetooth) disconnect the stream, and a device in
- * the middle of such a transition also refuses to reopen for a while. Output is
- * therefore best-effort: drop audio, retry roughly every
- * DSD_AAUDIO_REOPEN_BACKOFF_MS, and come back on its own once the route settles.
+ * the middle of such a transition also refuses to reopen for a while. Both
+ * directions are therefore best-effort: drop the audio that cannot be moved,
+ * retry roughly every DSD_AAUDIO_REOPEN_BACKOFF_MS, and come back on their own
+ * once the route settles.
  */
 static void
 aaudio_schedule_reopen(dsd_audio_stream* stream) {
@@ -374,9 +375,9 @@ aaudio_schedule_reopen(dsd_audio_stream* stream) {
 /**
  * @brief Make the device handle usable again if the backoff has been paid.
  *
- * @param pending_frames Frames the caller is about to write (and will drop when
- *                       this returns 0), used to pay down the backoff.
- * @return 1 when the stream is open, 0 while output is unavailable.
+ * @param pending_frames Frames the caller is about to move (and will drop, or fail
+ *                       to read, when this returns 0), used to pay down the backoff.
+ * @return 1 when the stream is open, 0 while the device is unavailable.
  */
 static int
 aaudio_recover_handle(dsd_audio_stream* stream, size_t pending_frames) {
@@ -1266,13 +1267,20 @@ dsd_audio_open_output(const dsd_audio_params* params) {
 
 int
 dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
-    if (!stream || !stream->handle || !buffer) {
+    /* A NULL handle is legal here, as it is for output: capture between a disconnect
+     * and a successful reopen still has a stream, just not a device. */
+    if (!stream || !buffer) {
         set_error("Invalid arguments");
         return -1;
     }
 
     if (!stream->is_input) {
         set_error("Cannot read from output stream");
+        return -1;
+    }
+
+    if (!aaudio_recover_handle(stream, frames)) {
+        set_error("AAudio input stream is disconnected");
         return -1;
     }
 
@@ -1288,17 +1296,21 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
             remaining -= (size_t)res;
             cursor += (size_t)res * stride;
             stream->device_frames += (uint64_t)res;
+            stream->recovery_streak = 0;
             continue;
         }
         if (res == AAUDIO_ERROR_DISCONNECTED && !reopened) {
-            /* Capture follows the route too; reopen once, then give up cleanly. */
+            /* Capture follows the route too. Reopen once inline, so an ordinary route
+             * change costs nothing but the samples already lost; if the device is
+             * still mid-transition, report the disconnect and leave the reopen owed.
+             * A later call pays the backoff down and tries again — abandoning the
+             * handle here would make one bad moment permanent. */
             reopened = 1;
-            aaudio_discard_handle(stream->handle);
-            stream->handle = NULL;
-            if (aaudio_stream_open(stream) == 0) {
-                stream->reopen_count++;
+            aaudio_schedule_reopen(stream);
+            if (aaudio_recover_handle(stream, remaining)) {
                 continue;
             }
+            set_error_aaudio(res);
             return -1;
         }
         set_error_aaudio(res == 0 ? AAUDIO_ERROR_TIMEOUT : res);
@@ -1328,9 +1340,16 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
         return (int)frames;
     }
 
-    size_t samples = frames * (size_t)stream->channels;
-    if (samples == 0) {
-        return 0;
+    size_t samples = 0;
+    if (!size_mul_nonzero(frames, (size_t)stream->channels, &samples)) {
+        /* Nothing to write is a no-op; the channel count is validated at open, so the
+         * only other way to get here is an overflow. Sizing the ring write off a
+         * wrapped sample count would read past what the caller allocated. */
+        if (frames == 0) {
+            return 0;
+        }
+        set_error("Frame count overflows the sample count");
+        return -1;
     }
 
     /* Sampled before the lock: stream->mu is the one the pump goes out of its way not

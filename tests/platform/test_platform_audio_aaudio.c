@@ -846,6 +846,91 @@ test_input_stream(void) {
     assert(strcmp(dsd_audio_get_error(), "AAudio granted an unusable rate/channel combination") == 0);
 }
 
+/*
+ * Capture survives a route change whose first reopen attempt fails.
+ *
+ * The reopen used to be a single inline attempt: if the device was still
+ * mid-transition the handle stayed NULL for good, and every later read failed the
+ * argument guard rather than retrying, reporting "Invalid arguments" for a stream
+ * that was merely disconnected. Input now shares the output backoff.
+ */
+static void
+test_input_reopen_recovery(void) {
+    dsd_audio_params params = valid_params(8000, 1);
+    int16_t buffer[4] = {0};
+
+    /* A route change with the device available again recovers inline, costing
+     * nothing but the samples already lost. */
+    reset_fakes();
+    g.device_rate = 8000;
+    g.device_channels = 1;
+    dsd_audio_stream* stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    assert(dsd_audio_read(stream, buffer, 4) == 4);
+    assert(stream->recovery_streak == 0);
+
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_ERROR_DISCONNECTED;
+    assert(dsd_audio_read(stream, buffer, 4) == 4);
+    assert(stream->handle != NULL);
+    assert(g.open_calls == 2);
+    assert(stream->reopen_count == 1);
+
+    /* A device still in transition leaves the reopen owed rather than abandoning
+     * the stream, and says so. */
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_ERROR_DISCONNECTED;
+    g.open_result = AAUDIO_ERROR_INVALID_STATE;
+    assert(dsd_audio_read(stream, buffer, 4) == -1);
+    assert(stream->handle == NULL);
+    assert(strcmp(dsd_audio_get_error(), "AAUDIO_ERROR_DISCONNECTED") == 0);
+    assert(stream->reopen_debt_frames == 4000); /* 500 ms at 8 kHz */
+
+    /* Reads during the backoff report the disconnect and pay it down; they do not
+     * hammer the device with an open per call. */
+    const int open_calls_during_backoff = g.open_calls;
+    assert(dsd_audio_read(stream, buffer, 4) == -1);
+    assert(strcmp(dsd_audio_get_error(), "AAudio input stream is disconnected") == 0);
+    assert(g.open_calls == open_calls_during_backoff);
+    assert(stream->reopen_debt_frames == 3996);
+
+    /* Once the route settles and the debt is paid, capture comes back on its own —
+     * no reopen from the caller, and no restart of the session. */
+    g.open_result = AAUDIO_OK;
+    stream->reopen_debt_frames = 0;
+    assert(dsd_audio_read(stream, buffer, 4) == 4);
+    assert(stream->handle != NULL);
+    dsd_audio_close(stream);
+}
+
+/*
+ * A frame count that would wrap the sample count is refused, not truncated.
+ *
+ * Every other size in the backend goes through size_mul_nonzero(); this one used to
+ * be a bare multiplication, so a wrapped count would slip under the ring capacity
+ * check and size a copy from a buffer the caller never sized that way.
+ */
+static void
+test_write_rejects_overflowing_frame_count(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+    int16_t frames[4] = {1, 2, 3, 4};
+
+    reset_fakes();
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    stream->use_async = 1; /* the guarded path is the async ring write */
+
+    assert(dsd_audio_write(stream, frames, SIZE_MAX / 2U + 1U) == -1);
+    assert(strcmp(dsd_audio_get_error(), "Frame count overflows the sample count") == 0);
+    assert(stream->in_samples == 0);
+
+    /* Nothing to write stays a no-op rather than becoming that error. */
+    assert(dsd_audio_write(stream, frames, 0) == 0);
+
+    stream->use_async = 0;
+    dsd_audio_close(stream);
+}
+
 static void
 test_drain_paths(void) {
     dsd_audio_params params = valid_params(8000, 2);
@@ -1295,6 +1380,8 @@ main(void) {
     test_write_recovery_paths();
     test_open_failure_paths();
     test_input_stream();
+    test_input_reopen_recovery();
+    test_write_rejects_overflowing_frame_count();
     test_drain_paths();
     test_async_output_setup_and_pump();
     test_pump_waits_while_device_is_buffered();
