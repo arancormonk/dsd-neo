@@ -1127,6 +1127,15 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     RENAME pffft-FFTPACK.txt
 )
+# The Qt frontend compiles DejaVu Sans Mono into its resource bundle, so the notice
+# ships with whatever bundles the frontend rather than with a particular platform.
+if(DSD_ENABLE_QT_UI)
+    install(
+        FILES src/ui/qt/fonts/DejaVu-LICENSE.txt
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+        RENAME dejavu-fonts-Bitstream-Vera.txt
+    )
+endif()
 
 add_subdirectory(src/platform)
 add_subdirectory(src/core)

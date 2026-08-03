@@ -17,6 +17,15 @@ for file-specific license/provenance details.
   `android/third_party/libusb/COPYING`. Trimmed v1.0.30 snapshot (the `linux_usbfs` backend and POSIX shims upstream's
   own Android build uses) built into the Android app. Not part of any non-Android build.
 
+## Bundled Assets
+
+- **DejaVu Sans Mono** (`src/ui/qt/fonts/DejaVuSansMono.ttf`; DejaVu Fonts project, derived from Bitstream Vera and
+  Arev) - Bitstream Vera Fonts Copyright (permissive, notice must accompany every copy); DejaVu changes are public
+  domain and Arev-derived glyphs are (c) Tavmjong Bah under the same terms. License text
+  `src/ui/qt/fonts/DejaVu-LICENSE.txt` (installed as `share/doc/dsd-neo/licenses/dejavu-fonts-Bitstream-Vera.txt`).
+  Compiled into the Qt Quick frontend's resource bundle, so it is redistributed by any build with `DSD_ENABLE_QT_UI=ON`
+  — today that is the Android app.
+
 ## Embedded Provenance-Bearing Code
 
 - **EDACS-FME / EDACS helpers** (`src/protocol/edacs/edacs-fme.c`) - source comments credit EDACS-FM, sp5wwp/ledacs,
@@ -53,4 +62,5 @@ for file-specific license/provenance details.
     licensed GPL.
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
-license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`.
+license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the
+DejaVu font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.

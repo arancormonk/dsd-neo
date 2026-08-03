@@ -46,6 +46,14 @@ configure_file(
     COPYONLY
 )
 
+# Compiled into the Qt resource bundle (src/ui/qt/CMakeLists.txt), so every APK
+# redistributes the font and has to carry its notice.
+configure_file(
+    "${REPO_DIR}/src/ui/qt/fonts/DejaVu-LICENSE.txt"
+    "${_doc_dir}/licenses/dejavu-fonts-Bitstream-Vera.txt"
+    COPYONLY
+)
+
 # Only the Android build links these two, so only this asset ships their notices.
 configure_file(
     "${REPO_DIR}/android/third_party/libusb/COPYING"
