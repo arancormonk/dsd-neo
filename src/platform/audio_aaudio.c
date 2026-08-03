@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
 #define DSD_NEO_AUDIO_BACKEND_AAUDIO 1
+#include "audio_error_internal.h"
 #include "audio_stream_internal.h"
 
 /*============================================================================
@@ -77,21 +78,10 @@
  *============================================================================*/
 
 static int s_initialized = 0;
-static char s_last_error[512] = "";
 
 /*============================================================================
  * Internal Helpers
  *============================================================================*/
-
-static void
-set_error(const char* msg) {
-    if (msg) {
-        DSD_STRNCPY(s_last_error, msg, sizeof(s_last_error) - 1);
-        s_last_error[sizeof(s_last_error) - 1] = '\0';
-    } else {
-        s_last_error[0] = '\0';
-    }
-}
 
 static void
 set_error_aaudio(aaudio_result_t res) {
@@ -433,13 +423,25 @@ aaudio_map_frame(const int16_t* in, int in_channels, int16_t* out, int out_chann
     }
 }
 
+/** @brief Device frames @p src_frames logical frames turn into, ignoring phase. */
+static size_t
+aaudio_device_frames_for(const dsd_audio_stream* stream, size_t src_frames) {
+    if (!stream->needs_convert) {
+        return src_frames;
+    }
+    uint64_t frames = ((uint64_t)src_frames * (uint64_t)stream->device_sample_rate) / (uint64_t)stream->sample_rate;
+    return (frames > SIZE_MAX) ? SIZE_MAX : (size_t)frames;
+}
+
 static size_t
 aaudio_convert_capacity(const dsd_audio_stream* stream, size_t src_frames) {
-    uint64_t frames = ((uint64_t)src_frames * (uint64_t)stream->device_sample_rate) / (uint64_t)stream->sample_rate;
+    const size_t frames = aaudio_device_frames_for(stream, src_frames);
     if (frames > SIZE_MAX - 2U) {
         return 0;
     }
-    return (size_t)frames + 2U;
+    /* Two frames of slack: the Q16 step truncates, so a chunk can yield one more
+     * output frame than the exact ratio, and the carried phase can add another. */
+    return frames + 2U;
 }
 
 static int
@@ -517,7 +519,16 @@ aaudio_convert_frames(dsd_audio_stream* stream, const int16_t* src, size_t src_f
  * Device Writes
  *============================================================================*/
 
-static int
+/**
+ * @brief Push device-format frames at the device, dropping what it will not take.
+ *
+ * Deliberately returns nothing: a failed device write is never fatal here. The
+ * stream is recycled, the rest of the buffer is dropped and a later write reopens
+ * it, because audio must never stall or permanently kill the decoder. Only
+ * aaudio_write_frames() has a failure worth reporting (a conversion buffer it
+ * could not allocate).
+ */
+static void
 aaudio_write_device_frames(dsd_audio_stream* stream, const int16_t* buf, size_t frames) {
     const size_t stride = (size_t)stream->device_channels;
     const int16_t* cursor = buf;
@@ -534,15 +545,12 @@ aaudio_write_device_frames(dsd_audio_stream* stream, const int16_t* buf, size_t 
             continue;
         }
 
-        /* No progress at all: a disconnect, a device error, or a long stall.
-         * Recycle the stream, drop the rest of this buffer and let a later one
-         * reopen — audio must never stall or permanently kill the decoder. */
+        /* No progress at all: a disconnect, a device error, or a long stall. */
         set_error_aaudio(res == 0 ? AAUDIO_ERROR_TIMEOUT : res);
         aaudio_schedule_reopen(stream);
         stream->device_drops += remaining * stride;
-        return 0;
+        return;
     }
-    return 0;
 }
 
 static int
@@ -551,11 +559,15 @@ aaudio_write_frames(dsd_audio_stream* stream, const int16_t* buf, size_t frames)
         return 0;
     }
     if (!aaudio_recover_handle(stream, frames)) {
-        stream->device_drops += frames * (size_t)stream->device_channels;
+        /* Counted in device samples like every other device_drops update, so the
+         * two sides of the stats line stay in the same unit when the resampling
+         * fallback is engaged and a logical frame is not a device frame. */
+        stream->device_drops += aaudio_device_frames_for(stream, frames) * (size_t)stream->device_channels;
         return 0;
     }
     if (!stream->needs_convert) {
-        return aaudio_write_device_frames(stream, buf, frames);
+        aaudio_write_device_frames(stream, buf, frames);
+        return 0;
     }
 
     size_t capacity = aaudio_convert_capacity(stream, frames);
@@ -567,7 +579,8 @@ aaudio_write_frames(dsd_audio_stream* stream, const int16_t* buf, size_t frames)
     if (converted == 0) {
         return 0;
     }
-    return aaudio_write_device_frames(stream, stream->convert_buf, converted);
+    aaudio_write_device_frames(stream, stream->convert_buf, converted);
+    return 0;
 }
 
 /**
@@ -1389,7 +1402,7 @@ dsd_audio_drain(dsd_audio_stream* stream) {
 
 const char*
 dsd_audio_get_error(void) {
-    return s_last_error;
+    return audio_error_get();
 }
 
 const char*

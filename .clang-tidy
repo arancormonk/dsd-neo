@@ -36,7 +36,10 @@ Checks: >
   -misc-include-cleaner,
   -performance-enum-size
 WarningsAsErrors: 'clang-analyzer-*,security-*,bugprone-*,performance-*,portability-*,misc-redundant-expression,misc-static-assert,misc-use-internal-linkage,misc-unused-parameters,readability-suspicious-call-argument,cert-str34-c,cert-flp30-c,clang-diagnostic-sign-compare,clang-diagnostic-implicit-fallthrough,clang-diagnostic-tautological-pointer-compare'
-HeaderFilterRegex: '(^|.*/)(include|apps|src/(core|crypto|dsp|fec|io|platform|protocol|runtime|ui))/'
+# The android/ arm matches only headers sitting directly in android/ (the JNI and
+# host glue). llvm::Regex has no lookahead, so vendored android/third_party/ is kept
+# out by requiring no further '/' rather than by a negative assertion.
+HeaderFilterRegex: '(^|.*/)(include|apps|src/(core|crypto|dsp|fec|io|platform|protocol|runtime|ui))/|(^|.*/)android/[^/]*\.h$'
 FormatStyle: none
 CheckOptions:
   - key: bugprone-branch-clone.MinLines

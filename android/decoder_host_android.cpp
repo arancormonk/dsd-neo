@@ -230,9 +230,10 @@ DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
          * so its own record would be stale. */
         failure = reason.isEmpty() ? m_failure : reason;
         if (failure.isEmpty()) {
-            QJniObject reason = QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
-            if (reason.isValid()) {
-                failure = reason.toString();
+            QJniObject service_reason =
+                QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
+            if (service_reason.isValid()) {
+                failure = service_reason.toString();
             }
         }
         if (failure.isEmpty()) {

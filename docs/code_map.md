@@ -49,7 +49,9 @@ Generated (do not edit/commit):
 - Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses
   compatibility)
   - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
-    elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android)
+    elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
+    backend translation unit is compiled per build; the shared last-error store lives in
+    `src/platform/audio_error_internal.h`
 - Build files: `src/platform/CMakeLists.txt`
 
 ## Core
@@ -58,6 +60,9 @@ Generated (do not edit/commit):
 - Target: `dsd-neo_core`
 - Responsibilities: cross-protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import),
   misc/util
+- API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
+  `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically; out-of-tree
+  callers of the old name need updating
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime

@@ -113,6 +113,11 @@ dsd_mutex_init(dsd_mutex_t* mutex) {
     return 0;
 }
 
+void
+dsd_thread_yield(void) {
+    /* Nothing to yield to: this test drives the pump body inline. */
+}
+
 int
 dsd_mutex_destroy(dsd_mutex_t* mutex) {
     (void)mutex;
@@ -600,6 +605,51 @@ test_open_output_rate_fallback(void) {
     size_t second = g.captured_samples / 2;
     assert(second >= 959 && second <= 962);
     assert(first + second >= 1919 && first + second <= 1922);
+
+    dsd_audio_close(stream);
+}
+
+/*
+ * device_drops is a count of *device* samples wherever it is touched, so the two
+ * halves of the stats line stay comparable. The drop taken while the device is
+ * unavailable used to multiply logical frames by device channels, understating the
+ * loss by the resampling ratio in exactly the configuration the fallback exists for.
+ */
+static void
+test_device_drop_accounting_while_converting(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+    int16_t block[320] = {0};
+
+    reset_fakes();
+    g.reject_explicit_rate = 1;
+    g.device_rate = 48000;
+
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(stream->needs_convert == 1);
+
+    /* Fail a write so the device is torn down, then fail the reopen so the backoff
+     * arms and the following write is dropped outright rather than converted. */
+    g.write_result_pending = 1;
+    g.write_result = AAUDIO_ERROR_DISCONNECTED;
+    assert(dsd_audio_write(stream, block, 160) == 160);
+    assert(stream->handle == NULL);
+    const uint64_t after_write_failure = stream->device_drops;
+    /* Whatever the converter had already produced, counted in device samples. */
+    assert(after_write_failure >= (uint64_t)959 * 2 && after_write_failure <= (uint64_t)962 * 2);
+
+    g.open_result = AAUDIO_ERROR_INVALID_STATE;
+    stream->reopen_debt_frames = 0;
+    assert(dsd_audio_write(stream, block, 160) == 160);
+    assert(stream->handle == NULL);
+    assert(stream->reopen_debt_frames > 0U);
+
+    /* 160 logical frames at 8 kHz are 960 device frames at 48 kHz, and the device
+     * is stereo: 1920 device samples, not the 320 the logical count would give. */
+    stream->reopen_debt_frames = 0;
+    const uint64_t before_backoff_drop = stream->device_drops;
+    assert(dsd_audio_write(stream, block, 160) == 160);
+    assert(stream->device_drops - before_backoff_drop == (uint64_t)960 * 2);
 
     dsd_audio_close(stream);
 }
@@ -1096,6 +1146,7 @@ main(void) {
     test_async_output_setup_and_pump();
     test_pump_waits_while_device_is_buffered();
     test_pump_conceals_when_device_is_dry();
+    test_device_drop_accounting_while_converting();
     test_ring_overflow_drop_accounting();
     test_underrun_classification();
     test_api_guards();

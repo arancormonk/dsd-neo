@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #define DSD_NEO_AUDIO_BACKEND_PORTAUDIO 1
+#include "audio_error_internal.h"
 #include "audio_stream_internal.h"
 
 /*============================================================================
@@ -40,21 +41,10 @@
  *============================================================================*/
 
 static int s_initialized = 0;
-static char s_last_error[512] = "";
 
 /*============================================================================
  * Internal Helpers
  *============================================================================*/
-
-static void
-set_error(const char* msg) {
-    if (msg) {
-        DSD_STRNCPY(s_last_error, msg, sizeof(s_last_error) - 1);
-        s_last_error[sizeof(s_last_error) - 1] = '\0';
-    } else {
-        s_last_error[0] = '\0';
-    }
-}
 
 static void
 set_error_pa(PaError err) {
@@ -1032,7 +1022,7 @@ dsd_audio_drain(dsd_audio_stream* stream) {
 
 const char*
 dsd_audio_get_error(void) {
-    return s_last_error;
+    return audio_error_get();
 }
 
 const char*

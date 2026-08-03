@@ -187,7 +187,9 @@ for p in "${changed_paths[@]}"; do
   fi
 
   case "$p" in
-    src/* | include/* | apps/* | tests/* | tools/* | .github/workflows/*.yml | .github/workflows/*.yaml)
+    # android/ is project-owned JNI and host glue; the vendored subtree under it
+    # was already dropped above.
+    src/* | include/* | apps/* | tests/* | tools/* | android/* | .github/workflows/*.yml | .github/workflows/*.yaml)
       semgrep_targets+=("$p")
       ;;
   esac

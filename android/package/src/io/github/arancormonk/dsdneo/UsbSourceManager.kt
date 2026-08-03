@@ -14,6 +14,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -36,6 +37,9 @@ object UsbSourceManager {
     /** How long release() waits for the engine before it gives up and leaks the fd. */
     private const val RELEASE_TIMEOUT_MS = 10000L
     private const val RELEASE_POLL_MS = 50L
+
+    /** How long to wait for a permission broadcast before assuming it was lost. */
+    private const val REQUEST_TIMEOUT_MS = 60000L
 
     /**
      * RTL2832U vendor/product ids, the same set librtlsdr recognises. Kept in sync
@@ -62,6 +66,7 @@ object UsbSourceManager {
     private var status: String = ""
     private var receiverRegistered = false
     private var requestPending = false
+    private var requestedAtMs = 0L
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -136,11 +141,20 @@ object UsbSourceManager {
             return
         }
 
+        // The permission broadcast can go missing — the dialog is dismissed by a
+        // configuration change, or the process is backgrounded while it is up — and a
+        // flag that only the result clears would then wedge this object for the rest
+        // of the process's life. Re-prompt once the wait has clearly overrun instead.
         synchronized(lock) {
-            if (requestPending) {
+            val now = SystemClock.elapsedRealtime()
+            if (requestPending && now - requestedAtMs < REQUEST_TIMEOUT_MS) {
                 return
             }
+            if (requestPending) {
+                Log.w(TAG, "no permission result after ${REQUEST_TIMEOUT_MS}ms; asking again")
+            }
             requestPending = true
+            requestedAtMs = now
         }
         setStatus("Requesting permission for ${describe(device)}")
         val intent = Intent(ACTION_USB_PERMISSION).setPackage(appContext.packageName)

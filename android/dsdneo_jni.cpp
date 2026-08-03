@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -60,6 +61,9 @@ dsd_state* g_state = nullptr;
 bool g_configured = false;
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_log_pump_started{false};
+/* Mirrors "g_opts/g_state exist" for nativeStop, which must not take g_lock; see
+ * there. Written under g_lock by nativeInit/nativeDestroy. */
+std::atomic<bool> g_initialized{false};
 
 /**
  * @brief Drains the redirected stdout/stderr pipe into logcat, one line per record.
@@ -107,6 +111,13 @@ log_pump_thread(void* arg) {
     return nullptr;
 }
 
+void
+close_if_open(int fd) {
+    if (fd >= 0) {
+        (void)close(fd);
+    }
+}
+
 /** @brief Redirect fds 1 and 2 into logcat. Installed once per process. */
 void
 start_log_pump(void) {
@@ -121,6 +132,15 @@ start_log_pump(void) {
         return;
     }
 
+    /* A pipe whose reader is gone is fatal to the decoder: writes to it raise
+     * SIGPIPE, whose default disposition kills the process, and a full pipe with
+     * no reader blocks every stderr write forever. Neither is acceptable for a
+     * logging convenience, so keep the originals to fall back on and make the
+     * failure mode "logs go nowhere" rather than "the app dies". */
+    const int saved_out = dup(STDOUT_FILENO);
+    const int saved_err = dup(STDERR_FILENO);
+    (void)signal(SIGPIPE, SIG_IGN);
+
     (void)dup2(fds[1], STDOUT_FILENO);
     (void)dup2(fds[1], STDERR_FILENO);
     (void)close(fds[1]);
@@ -132,10 +152,21 @@ start_log_pump(void) {
 
     pthread_t tid;
     if (pthread_create(&tid, nullptr, log_pump_thread, reinterpret_cast<void*>(static_cast<intptr_t>(fds[0]))) != 0) {
+        /* Put the process's own streams back before the unread pipe can fill. */
+        if (saved_out >= 0) {
+            (void)dup2(saved_out, STDOUT_FILENO);
+        }
+        if (saved_err >= 0) {
+            (void)dup2(saved_err, STDERR_FILENO);
+        }
         (void)close(fds[0]);
+        close_if_open(saved_out);
+        close_if_open(saved_err);
         return;
     }
     (void)pthread_detach(tid);
+    close_if_open(saved_out);
+    close_if_open(saved_err);
 }
 
 std::string
@@ -283,6 +314,7 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeInit(JNIEnv* env, jclass clazz
     initOpts(g_opts);
     initState(g_state);
     g_configured = false;
+    g_initialized.store(true);
     return kStatusOk;
 }
 
@@ -354,12 +386,16 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeStop(JNIEnv* env, jclass clazz
     (void)env;
     (void)clazz;
 
-    /* Safe from any thread: it only raises the atomic exit flag and nudges IO. */
-    std::lock_guard<std::mutex> guard(g_lock);
-    if (g_opts == nullptr || g_state == nullptr) {
+    /* Deliberately lock-free. This is called from the main thread on a USB detach
+     * broadcast, and nativeConfigure holds g_lock across the whole bootstrap, which
+     * can block on an rtl_tcp connect — waiting for it here would be an ANR. There
+     * is nothing to protect: dsd_request_shutdown() ignores both arguments and only
+     * raises the process exit flag, so the guard below is purely "has the engine
+     * been initialized". */
+    if (!g_initialized.load()) {
         return kStatusBadState;
     }
-    dsd_request_shutdown(g_opts, g_state);
+    dsd_request_shutdown(nullptr, nullptr);
     return kStatusOk;
 }
 
@@ -372,6 +408,7 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeDestroy(JNIEnv* env, jclass cl
     if (g_running.load()) {
         return kStatusBadState;
     }
+    g_initialized.store(false);
     if (g_state != nullptr) {
         freeState(g_state);
     }

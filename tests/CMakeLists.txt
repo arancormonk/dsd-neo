@@ -7015,6 +7015,26 @@ add_test(
     COMMAND dsd-neo_test_platform_monotonic_cond
 )
 
+# Shared by every audio backend, so it is built regardless of which one is selected.
+add_executable(
+    dsd-neo_test_platform_audio_error_store
+    platform/test_platform_audio_error_store.c
+)
+target_include_directories(
+    dsd-neo_test_platform_audio_error_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_audio_error_store
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME PLATFORM_AUDIO_ERROR_STORE
+    COMMAND dsd-neo_test_platform_audio_error_store
+)
+# A store that deadlocks shows up as a hang, not a failed assert.
+set_tests_properties(PLATFORM_AUDIO_ERROR_STORE PROPERTIES TIMEOUT 120)
+
 add_executable(
     dsd-neo_test_platform_thread_yield
     platform/test_platform_thread_yield.c

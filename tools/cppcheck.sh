@@ -157,7 +157,10 @@ CPPCHECK_ARGS+=(
   --suppress=checkersReport
   --suppress='*:src/third_party/*'
   --suppress='*:*/src/third_party/*'
+  --suppress='*:android/third_party/*'
+  --suppress='*:*/android/third_party/*'
   -i src/third_party
+  -i android/third_party
 )
 
 LOG_FILE=".cppcheck.local.out"
@@ -167,7 +170,7 @@ if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
   for f in "${REQUESTED_FILES[@]}"; do
     f="${f#./}"
     case "$f" in
-      build/* | src/third_party/*) continue ;;
+      build/* | src/third_party/* | android/third_party/*) continue ;;
     esac
     case "$f" in
       *.c | *.cc | *.cpp | *.cxx) FILES+=("$f") ;;
@@ -182,12 +185,12 @@ if [[ ${#REQUESTED_FILES[@]} -gt 0 ]]; then
   mapfile -t FILES < <(printf '%s\n' "${FILES[@]}" | sort -u)
   echo "Analyzing ${#FILES[@]} file(s) with cppcheck..."
 else
-  echo "Analyzing src/ and include/ directories..."
+  echo "Analyzing src/, include/ and android/ directories..."
 fi
 echo ""
 
 # Select analysis targets.
-CPPCHECK_TARGETS=(src/ include/)
+CPPCHECK_TARGETS=(src/ include/ android/)
 if [[ ${#FILES[@]} -gt 0 ]]; then
   CPPCHECK_TARGETS=("${FILES[@]}")
 fi

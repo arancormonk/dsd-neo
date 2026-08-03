@@ -337,3 +337,11 @@ exist on Android, `rdio_export.c` points libcurl at the system trust store
 - **SoapySDR is not supported** and is not planned.
 - **No mic input in the UI.** The AAudio backend implements capture, but
   `RECORD_AUDIO` is deliberately not requested.
+- **An open output stream is never idle.** Once a chunk of real audio has played,
+  `conceal_has_good` stays set for the life of the stream, so the pump keeps waking
+  on its 20 ms cadence and topping the device up with concealment whenever the ring
+  is empty and the device queue falls below `DSD_AAUDIO_CONCEAL_LOW_WATER_MS`. That
+  is what stops a decoder gap from becoming an audible stutter, and the writes are
+  paced by the blocking `AAudioStream_write`, but it does mean the pump plus the
+  AAudio mixer stay resident for as long as a run lasts rather than only while a
+  call is on air. This is the first thing to measure in the battery soak below.

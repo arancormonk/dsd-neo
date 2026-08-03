@@ -40,13 +40,29 @@ class DecoderService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Unconditional, and before anything that can return early. startDecoder()
+        // uses startForegroundService(), which obliges this service to call
+        // startForeground() for that start — including the ones we go on to reject
+        // (a duplicate START while already RUNNING) and the ones we do not
+        // recognise. Skipping it there risks ForegroundServiceDidNotStartInTime.
+        startForegroundNotification(currentStatusText())
+
         when (intent?.action) {
             ACTION_START -> {
                 val args = intent.getStringArrayExtra(EXTRA_ARGS) ?: emptyArray()
                 startDecoding(args)
             }
-            ACTION_STOP -> stopDecoding()
-            else -> Log.w(TAG, "ignoring intent with action ${intent?.action}")
+            ACTION_STOP -> {
+                stopDecoding()
+                // A stop aimed at a service that is not running still promoted us
+                // above; drop back out of the foreground rather than sitting there
+                // with no decoder behind the notification.
+                stopIfIdle()
+            }
+            else -> {
+                Log.w(TAG, "ignoring intent with action ${intent?.action}")
+                stopIfIdle()
+            }
         }
         // A dead process stays dead until the user relaunches: restarting the engine
         // without its configuration would be worse than not restarting at all.
@@ -86,7 +102,7 @@ class DecoderService : Service() {
             lastError = ""
         }
 
-        startForegroundNotification(getString(R.string.decoder_starting))
+        updateNotification(getString(R.string.decoder_starting))
         acquireWakeLock()
 
         if (!initialized) {
@@ -234,6 +250,27 @@ class DecoderService : Service() {
 
     private fun stopForegroundCompat() {
         stopForeground(STOP_FOREGROUND_REMOVE)
+    }
+
+    /** Notification text matching the current phase, for the unconditional promotion. */
+    private fun currentStatusText(): String = when (synchronized(lock) { state }) {
+        State.STARTING -> getString(R.string.decoder_starting)
+        State.RUNNING -> getString(R.string.decoder_running)
+        State.STOPPING -> getString(R.string.decoder_stopping)
+        State.IDLE -> getString(R.string.decoder_starting)
+    }
+
+    /**
+     * Undoes the promotion above for an intent that started nothing, so an
+     * unrecognised action cannot leave a foreground service with no decoder behind it.
+     */
+    private fun stopIfIdle() {
+        if (synchronized(lock) { state } != State.IDLE) {
+            return
+        }
+        releaseWakeLock()
+        stopForegroundCompat()
+        stopSelf()
     }
 
     private enum class State { IDLE, STARTING, RUNNING, STOPPING }
