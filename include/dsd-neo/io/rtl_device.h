@@ -67,8 +67,12 @@ struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* inp
  * opening by index. The caller keeps ownership and must keep it open for the
  * lifetime of the device.
  *
- * Off Android the value is recorded but never consumed, so the host build stays
- * uniform.
+ * Recording the descriptor and bypassing enumeration are platform-uniform, which
+ * keeps the engine's decision reachable from a host test. Actually opening from it
+ * is not: only builds where rtl_device_preopened_fd_supported() is true can, and
+ * anywhere else the open falls through to opening by index — which, with
+ * enumeration bypassed, means opening whichever device sits at the configured
+ * index. Callers that can be built either way must check support first.
  *
  * @param sys_fd Open USB file descriptor, or -1 to clear.
  */
@@ -80,6 +84,16 @@ void rtl_device_set_preopened_fd(int sys_fd);
  * @return 1 when set, 0 otherwise.
  */
 int rtl_device_preopened_fd_is_set(void);
+
+/**
+ * @brief Whether this build can open a device from a pre-opened descriptor.
+ *
+ * Requires Android and a librtlsdr providing `rtlsdr_open_fd()`. Where this is 0,
+ * rtl_device_set_preopened_fd() records a descriptor that nothing will consume.
+ *
+ * @return 1 when supported, 0 otherwise.
+ */
+int rtl_device_preopened_fd_supported(void);
 
 /**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.

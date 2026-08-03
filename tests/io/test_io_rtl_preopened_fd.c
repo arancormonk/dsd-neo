@@ -73,6 +73,35 @@ test_any_negative_value_clears(void) {
     return rc;
 }
 
+/*
+ * Recording a descriptor is platform-uniform; opening from one is not.
+ *
+ * Keeping the slot itself uniform is deliberate — it keeps the engine's enumeration
+ * bypass reachable from a host test. The open is where builds differ: without
+ * rtlsdr_open_fd() nothing consumes the descriptor and the open falls through to
+ * opening by index, with enumeration already bypassed. Hosts that can be built
+ * either way have to ask before offering a descriptor at all.
+ */
+static int
+test_support_query_describes_the_build(void) {
+#ifdef __ANDROID__
+    /* The descriptor path is Android-only; a host test cannot pin its other half. */
+    return 0;
+#else
+    int rc = 0;
+    rc |= expect_int("descriptor open unsupported off Android", rtl_device_preopened_fd_supported(), 0);
+
+    /* The query describes the build, not the slot: setting one must not make an
+     * unusable descriptor look usable. */
+    rtl_device_set_preopened_fd(11);
+    rc |= expect_int("support unchanged while set", rtl_device_preopened_fd_supported(), 0);
+    rc |= expect_int("descriptor still recorded", rtl_device_preopened_fd_is_set(), 1);
+
+    rtl_device_set_preopened_fd(-1);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -81,6 +110,7 @@ main(void) {
     rc |= test_set_and_clear_round_trip();
     rc |= test_zero_is_a_real_descriptor();
     rc |= test_any_negative_value_clears();
+    rc |= test_support_query_describes_the_build();
 
     if (rc == 0) {
         DSD_FPRINTF(stderr, "IO_RTL_PREOPENED_FD: OK\n");

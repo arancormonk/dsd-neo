@@ -4913,6 +4913,18 @@ rtl_device_preopened_fd_is_set(void) {
     return (g_preopened_usb_fd.load(std::memory_order_acquire) >= 0) ? 1 : 0;
 }
 
+int
+rtl_device_preopened_fd_supported(void) {
+    /* Must match the guard on the open path in rtl_device_create() exactly: a build
+     * that records a descriptor it cannot open from advertises a USB source that can
+     * never work. */
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 /**
  * @brief Create and initialize an RTL-SDR device.
  *
