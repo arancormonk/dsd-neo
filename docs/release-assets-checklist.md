@@ -39,6 +39,12 @@ Required license/notice files in every shipped asset:
         `licenses/librtlsdr-GPL-2.0-or-later.txt` for the vendored Android
         libraries (`cmake/stage_android_package.cmake` stages them; `android-ci`
         fails the build if any are missing).
+  - [ ] `aapt2 dump badging` reports `application-label:'DSD-neo'`, a non-empty
+        `application-icon-*`, `versionName` equal to the tag without its `v`, and
+        `versionCode` equal to `(major * 10000 + minor * 100 + patch) * 1000` —
+        a tagged release is always a round thousand, since its commit distance is
+        zero (`android-ci` asserts the shape, so this is a spot check that the
+        published asset is the one CI built from the tag and not from `main`).
 
 ## CI-side sanity
 

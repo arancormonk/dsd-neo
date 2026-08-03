@@ -79,9 +79,64 @@ set_property(
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_MIN_SDK_VERSION 29)
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_TARGET_SDK_VERSION 36)
+
+# Without these two androiddeployqt substitutes the CMake target name into
+# android:label and drops android:icon outright, so the app installs as
+# "dsd-neo-app" with the stock Android robot. Both are resource references
+# resolved out of android/package/res.
+set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_APP_NAME "@string/app_name")
 set_property(
     TARGET dsd-neo-app
-    PROPERTY QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
+    PROPERTY QT_ANDROID_APP_ICON "@mipmap/ic_launcher"
 )
-set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_VERSION_CODE 1)
+
+# The CLI banner and the terminal UI header both print GIT_TAG (set in the root
+# CMakeLists), but the Qt UI shows no version at all, so android:versionName is
+# the app's only version surface. Use the same string, so a nightly APK
+# identifies itself the way a nightly desktop build does. Android's versionName
+# carries no "v" prefix, and on a tag GIT_TAG is exactly "vX.Y.Z", so this
+# resolves to plain PROJECT_VERSION for releases and for git-less tarballs.
+string(REGEX REPLACE "^v" "" dsd_neo_android_version_name "${GIT_TAG}")
+set_property(
+    TARGET dsd-neo-app
+    PROPERTY QT_ANDROID_VERSION_NAME "${dsd_neo_android_version_name}"
+)
+
+# Android compares version codes, not names, so the hardcoded 1 this replaces
+# made every build look like the same release and blocked upgrade installs.
+#
+# PROJECT_VERSION alone is not enough either: it only moves at release time and
+# the tag sits on the bump commit itself, so every nightly in a release window
+# would carry the same code as the release it follows. Scale the release code up
+# and add git describe's commit distance - tagged builds stay round, nightlies
+# increment, and the next release clears every nightly before it.
+#
+# Minor and patch are assumed to stay below 100 and a release window below 1000
+# commits. The scheme tops out at major version 210, against the platform's
+# 2100000000 ceiling.
+if(GIT_TAG MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+-([0-9]+)-g[0-9a-f]+$")
+    set(dsd_neo_android_commit_distance "${CMAKE_MATCH_1}")
+else()
+    # A tag, or a tarball with no git metadata: this is the release itself.
+    set(dsd_neo_android_commit_distance 0)
+endif()
+
+if(dsd_neo_android_commit_distance GREATER 999)
+    message(
+        FATAL_ERROR
+        "${dsd_neo_android_commit_distance} commits since the last release tag "
+        "overflows the Android version code's nightly field. Cut a release, or "
+        "widen the multiplier below and in the android-ci launcher-identity check."
+    )
+endif()
+
+math(
+    EXPR
+    dsd_neo_android_version_code
+    "(${PROJECT_VERSION_MAJOR} * 10000 + ${PROJECT_VERSION_MINOR} * 100 + ${PROJECT_VERSION_PATCH}) * 1000 + ${dsd_neo_android_commit_distance}"
+)
+set_property(
+    TARGET dsd-neo-app
+    PROPERTY QT_ANDROID_VERSION_CODE "${dsd_neo_android_version_code}"
+)
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_ABIS "arm64-v8a")

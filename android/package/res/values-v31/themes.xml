@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- Android 12 replaced the pre-first-frame window with the platform splash
+     screen, which is drawn from these attributes rather than windowBackground.
+     Pointing the icon at the adaptive launcher icon keeps the system mask and
+     inset, so the splash and the launcher tile show the same artwork. -->
+<resources>
+    <style name="Theme.DsdNeo" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowBackground">@color/dsdneo_background</item>
+        <item name="android:windowSplashScreenBackground">@color/dsdneo_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+    </style>
+</resources>

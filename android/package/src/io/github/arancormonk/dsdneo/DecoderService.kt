@@ -201,7 +201,7 @@ class DecoderService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_headset)
+            .setSmallIcon(R.drawable.ic_stat_dsdneo)
             .setOngoing(true)
             .addAction(Notification.Action.Builder(null, getString(R.string.action_stop), stopPending).build())
             .build()

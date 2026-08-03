@@ -53,6 +53,52 @@ to `android/package/` as usual — never to the staged copy, which is overwritte
 For a headless CLI binary (no UI, no APK) use the `android-arm64-release` preset;
 it needs only `ANDROID_NDK_HOME` and `VCPKG_ROOT`.
 
+### App identity
+
+The launcher shows **DSD-neo**, from `@string/app_name` in
+`android/package/res/values/strings.xml`. That indirection only works because
+`android/CMakeLists.txt` sets `QT_ANDROID_APP_NAME` and `QT_ANDROID_APP_ICON`:
+without them androiddeployqt substitutes the CMake target name into
+`android:label` and deletes `android:icon` outright, so the app installs as
+`dsd-neo-app` with the stock Android robot.
+
+The version surfaces both come from `GIT_TAG`, the same `git describe` string the
+CLI banner and terminal UI header print — the Qt UI shows no version of its own,
+so `android:versionName` is all the app has:
+
+| build | `versionName` | `versionCode` |
+| --- | --- | --- |
+| tag `v2.5.1` | `2.5.1` | `20501000` |
+| nightly, 6 commits later | `2.5.1-6-gfa336d4` | `20501006` |
+| next tag `v2.5.2` | `2.5.2` | `20502000` |
+
+`PROJECT_VERSION` only moves at release time and the tag sits on the bump commit
+itself, so deriving the code from it alone would give every nightly in a release
+window the same code as the release it follows — installable, but invisible to
+anything that compares version codes to detect an update. Scaling the release
+code up and adding `git describe`'s commit distance keeps tagged builds round,
+lets nightlies increment, and has the next release clear every nightly before it.
+
+Minor and patch are assumed to stay below 100 and a release window below 1000
+commits; configure fails loudly if the latter is ever exceeded. The scheme tops
+out at major version 210, against the platform's 2100000000 ceiling. A tarball
+with no git metadata falls back to the plain release version.
+
+The launcher, themed, notification and splash bitmaps under
+`android/package/res/mipmap-*` and `res/drawable-*` are generated from
+`images/dsd-neo.png` and committed — the Android CI job has no ImageMagick, and
+androiddeployqt packages `res/` as-is. Regenerate them only when the logo
+changes:
+
+```sh
+tools/gen_android_icons.sh
+```
+
+The hand-written pieces live alongside them: `mipmap-anydpi-v26/ic_launcher.xml`
+(the adaptive icon, including the Android 13 `<monochrome>` layer),
+`values/colors.xml` (the one near-black backdrop the transparent logo is drawn
+on), `drawable/splash.xml` and `values{,-v31}/themes.xml`.
+
 The NDK, SDK platform, build-tools and Qt versions CI builds against are pinned in
 `tools/ci-dependency-pins.env` (`ANDROID_NDK_VERSION`, `ANDROID_COMPILE_SDK`,
 `ANDROID_BUILD_TOOLS_VERSION`, `ANDROID_QT_VERSION`). Newer ones generally work;
@@ -69,7 +115,9 @@ pull requests as well as pushes to `main`:
 - **`android-ci` / APK (Qt Quick app)** — builds the `android-app` preset through
   androiddeployqt, signs the APK, then unpacks it and asserts the same alignment
   for every packaged `.so` (ours and Qt's), that `arm64-v8a` is the only ABI
-  inside, and that the license files are present. The APK is uploaded as a build
+  inside, that the license files are present, and that the launcher identity is
+  intact (label `DSD-neo`, a declared icon, a non-placeholder version code and
+  the icon/splash/theme resources). The APK is uploaded as a build
   artifact, and on `main` and release tags the `Publish APK` job attaches it to a
   release (see [Release signing](#release-signing)).
 - **`linux-ci` / android shape (headless, forced radio pipeline)** — the same
@@ -246,5 +294,3 @@ exist on Android, `rdio_export.c` points libcurl at the system trust store
 - **SoapySDR is not supported** and is not planned.
 - **No mic input in the UI.** The AAudio backend implements capture, but
   `RECORD_AUDIO` is deliberately not requested.
-- The launcher label reads `dsd-neo-app`: androiddeployqt uses the CMake target
-  name rather than `strings.xml`.

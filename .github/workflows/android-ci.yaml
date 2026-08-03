@@ -442,6 +442,56 @@ jobs:
           done
           echo "All required license files are packaged."
 
+      - name: Verify the APK's launcher name and icon
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          aapt2="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          badging=$("$aapt2" dump badging "$APK_PATH")
+          # Unless QT_ANDROID_APP_NAME/QT_ANDROID_APP_ICON stay set,
+          # androiddeployqt substitutes the CMake target name into android:label
+          # and drops android:icon entirely, and the app installs as
+          # "dsd-neo-app" with the stock Android robot.
+          if ! printf '%s\n' "$badging" | grep -qxF "application-label:'DSD-neo'"; then
+            echo "ERROR: unexpected launcher label" >&2
+            printf '%s\n' "$badging" | grep '^application-label' >&2 || true
+            exit 1
+          fi
+          if ! printf '%s\n' "$badging" | grep -qE "^application-icon-[0-9]+:'[^']"; then
+            echo "ERROR: the APK declares no launcher icon" >&2
+            exit 1
+          fi
+          # The version code is the release version scaled up with git describe's
+          # commit distance added, so it is always seven digits or more. A
+          # smaller one means the derivation regressed to a placeholder or to
+          # bare PROJECT_VERSION, either of which gives nightlies the same code
+          # as the release they follow.
+          version_code=$(printf '%s\n' "$badging" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)
+          if [ -z "$version_code" ] || [ "$version_code" -lt 1000000 ]; then
+            echo "ERROR: unexpected versionCode '${version_code}'" >&2
+            exit 1
+          fi
+          # aapt2 renames res/ paths in a release APK, so assert on the resource
+          # table rather than on the archive entries.
+          names=$("$aapt2" dump resources "$APK_PATH" | awk '$1 == "resource" {print $3}')
+          required=(
+            mipmap/ic_launcher
+            mipmap/ic_launcher_foreground
+            mipmap/ic_launcher_monochrome
+            drawable/ic_stat_dsdneo
+            drawable/splash
+            style/Theme.DsdNeo
+          )
+          for res in "${required[@]}"; do
+            if ! printf '%s\n' "$names" | grep -qxF "$res"; then
+              echo "ERROR: missing resource in the APK: $res" >&2
+              exit 1
+            fi
+          done
+          echo "Launcher identity OK: DSD-neo with the adaptive icon."
+
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
