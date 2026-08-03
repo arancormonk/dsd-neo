@@ -169,10 +169,18 @@ the release keystore before pushing it to a device:
 
 ```sh
 "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" sign \
-  --ks /path/to/dsd-neo-release.jks --ks-key-alias dsd-neo \
+  --ks /path/to/dsd-neo-release.jks --ks-key-alias "$ANDROID_KEY_ALIAS" \
   --out /tmp/dsd-neo-app.apk \
   build/android-app/android/android-build/dsd-neo-app.apk
 adb install -r /tmp/dsd-neo-app.apk
+```
+
+The alias is whatever the keystore was generated with — the same value CI passes as
+`ANDROID_KEY_ALIAS` — so read it off the keystore rather than assuming, since a wrong
+alias fails only after the password prompt:
+
+```sh
+keytool -list -keystore /path/to/dsd-neo-release.jks
 ```
 
 `apksigner` prompts for the keystore password when no `--ks-pass` is given, which

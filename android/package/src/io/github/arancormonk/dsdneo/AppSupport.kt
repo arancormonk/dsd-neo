@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import android.util.Log
 import java.io.File
 
@@ -37,6 +38,39 @@ object AppSupport {
     }
 
     /**
+     * The name to give the materialized copy.
+     *
+     * Only the provider knows what a document is called: a SAF URI's last path segment
+     * is an opaque document id, and for the Downloads provider it is the whole source
+     * path percent-encoded into one segment. Naming the cache file after it produced
+     * `raw%3A%2Fstorage%2Femulated%2F0%2FDownload%2Fcapture.wav`, and for providers
+     * whose ids are bare numbers it would drop the extension the engine dispatches on.
+     * So ask the resolver first and treat anything derived from the URI as a fallback.
+     */
+    private fun displayNameFor(context: Context, uri: Uri, fallback: String): String {
+        val resolved = try {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "display name lookup failed for $uri", e)
+            null
+        }
+
+        // Decoded, because a fallback drawn from the URI text is still percent-encoded.
+        val candidate = resolved
+            ?: fallback.takeIf { it.isNotBlank() }?.let { Uri.decode(it) }
+            ?: Uri.decode(uri.lastPathSegment.orEmpty())
+
+        // File(..).name strips directory components: the name reaches us from outside
+        // the app, and it is about to be joined onto cacheDir.
+        val basename = File(candidate.substringAfterLast('/')).name.trim()
+        return if (basename.isEmpty() || basename == "." || basename == "..") "import.bin" else basename
+    }
+
+    /**
      * Copy a SAF content URI into cacheDir and return the real path.
      *
      * The C core opens real filesystem paths, so a content URI has to be materialized
@@ -48,8 +82,7 @@ object AppSupport {
     fun copyContentUriToCache(context: Context, uriText: String, fileName: String): String {
         return try {
             val uri = Uri.parse(uriText)
-            val safeName = if (fileName.isBlank()) "import.bin" else File(fileName).name
-            val target = File(context.cacheDir, safeName)
+            val target = File(context.cacheDir, displayNameFor(context, uri, fileName))
             context.contentResolver.openInputStream(uri).use { input ->
                 if (input == null) {
                     return ""
