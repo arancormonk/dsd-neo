@@ -70,20 +70,17 @@ MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {}
 MetricsModel::~MetricsModel() = default;
 
 void
-MetricsModel::clear() {
-    m_stream_active = false;
-    m_snr_db = 0.0;
-    m_snr_valid = false;
-    m_symbol_rate_hz = 0;
-    m_output_rate_hz = 0;
-    m_carrier_lock = false;
-    m_cfo_hz = 0.0;
-    m_tuner_gain_text.clear();
-    m_radio_input = false;
-    m_slot_text[0].clear();
-    m_slot_text[1].clear();
-    m_message_text.clear();
+MetricsModel::publish(const View& next) {
+    if (next == m_view) {
+        return;
+    }
+    m_view = next;
     Q_EMIT changed();
+}
+
+void
+MetricsModel::clear() {
+    publish(View());
 }
 
 void
@@ -102,16 +99,20 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
         return;
     }
 
+    /* Built whole, then published in one step, so a frame that reads identically to
+     * the last one costs no binding re-evaluation. See MetricsModel::View. */
+    View next;
+
     /* Drives whether the tuner-facing rows are shown at all. Taken from the options
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */
-    m_radio_input = opts_snapshot->audio_in_type == AUDIO_IN_RTL;
+    next.radio_input = opts_snapshot->audio_in_type == AUDIO_IN_RTL;
 
-    m_stream_active = metrics.stream_active != 0;
-    m_symbol_rate_hz = metrics.symbol_rate_hz;
-    m_output_rate_hz = static_cast<int>(metrics.output_rate_hz);
-    m_carrier_lock = metrics.carrier_lock != 0;
-    m_cfo_hz = metrics.cfo_hz;
+    next.stream_active = metrics.stream_active != 0;
+    next.symbol_rate_hz = metrics.symbol_rate_hz;
+    next.output_rate_hz = static_cast<int>(metrics.output_rate_hz);
+    next.carrier_lock = metrics.carrier_lock != 0;
+    next.cfo_hz = metrics.cfo_hz;
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
      * a GFSK stream. Nothing reads at all on an input with no demodulator behind it
@@ -119,23 +120,23 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * other. Publishing the estimator's no-reading sentinel would put "-100.0 dB" on
      * screen as though it were a measurement. */
     const dsd_frontend_snr_readout snr = dsd_app_frontend_snr_for_mod(&metrics, snapshot->rf_mod);
-    m_snr_valid = snr.valid != 0;
-    m_snr_db = m_snr_valid ? snr.snr_db : 0.0;
+    next.snr_valid = snr.valid != 0;
+    next.snr_db = next.snr_valid ? snr.snr_db : 0.0;
 
     if (metrics.tuner_gain_is_auto != 0) {
-        m_tuner_gain_text = QStringLiteral("auto");
+        next.tuner_gain_text = QStringLiteral("auto");
     } else if (metrics.tuner_gain_valid != 0) {
-        m_tuner_gain_text = QStringLiteral("%1 dB").arg(metrics.tuner_gain_tenth_db / 10.0, 0, 'f', 1);
+        next.tuner_gain_text = QStringLiteral("%1 dB").arg(metrics.tuner_gain_tenth_db / 10.0, 0, 'f', 1);
     } else {
-        m_tuner_gain_text = QStringLiteral("—");
+        next.tuner_gain_text = QStringLiteral("—");
     }
 
     const double now_m = dsd_time_now_monotonic_s();
-    m_slot_text[0] = call_text(snapshot, 0, now_m);
-    m_slot_text[1] = call_text(snapshot, 1, now_m);
-    m_message_text = QString::fromUtf8(snapshot->ui_msg);
+    next.slot_text[0] = call_text(snapshot, 0, now_m);
+    next.slot_text[1] = call_text(snapshot, 1, now_m);
+    next.message_text = QString::fromUtf8(snapshot->ui_msg);
 
-    Q_EMIT changed();
+    publish(next);
 }
 
 } // namespace dsd_qt
