@@ -2017,6 +2017,15 @@ target_include_directories(
 )
 add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
 
+# Same arrangement for the slot-line decay: header-only and free of Qt so the hold
+# window can be tested without an Android build.
+add_executable(dsd-neo_test_ui_qt_call_line ui/test_ui_qt_call_line.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
+
 add_executable(
     dsd-neo_test_app_control_history_state
     ui/test_ui_history_state.c

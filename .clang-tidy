@@ -1,4 +1,9 @@
 # Default clang-tidy checks. This is the CI/pre-push check set.
+#
+# performance-enum-size is off: it is a C++-only check, so it never fires on the C tree
+# and only appears when a C++ translation unit includes one of the shared C headers --
+# where its advice (narrow the base type) would change the ABI of enums that sit inside
+# snapshot structs passed across the boundary.
 Checks: >
   -*,
   clang-analyzer-*,
@@ -28,7 +33,8 @@ Checks: >
   -readability-non-const-parameter,
   -readability-math-missing-parentheses,
   -misc-no-recursion,
-  -misc-include-cleaner
+  -misc-include-cleaner,
+  -performance-enum-size
 WarningsAsErrors: 'clang-analyzer-*,security-*,bugprone-*,performance-*,portability-*,misc-redundant-expression,misc-static-assert,misc-use-internal-linkage,misc-unused-parameters,readability-suspicious-call-argument,cert-str34-c,cert-flp30-c,clang-diagnostic-sign-compare,clang-diagnostic-implicit-fallthrough,clang-diagnostic-tautological-pointer-compare'
 HeaderFilterRegex: '(^|.*/)(include|apps|src/(core|crypto|dsp|fec|io|platform|protocol|runtime|ui))/'
 FormatStyle: none

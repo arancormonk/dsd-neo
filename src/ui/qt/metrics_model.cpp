@@ -8,7 +8,10 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/state.h>
+
+#include "call_line.h"
 
 namespace dsd_qt {
 
@@ -27,12 +30,17 @@ crypto_text(const dsd_call_snapshot& call) {
 }
 
 QString
-call_text(const dsd_state* snapshot, quint8 slot) {
-    dsd_call_snapshot call;
-    if (snapshot == nullptr || dsd_call_state_get(snapshot, slot, &call) <= 0) {
+call_text(const dsd_state* snapshot, quint8 slot, double now_m) {
+    dsd_call_snapshot call = {};
+    const int lookup = (snapshot != nullptr) ? dsd_call_state_get(snapshot, slot, &call) : -1;
+    const CallLineState line = call_line_state(lookup, call, now_m);
+    if (line == kCallLineNone) {
         return QStringLiteral("—");
     }
-    if (call.phase == DSD_CALL_PHASE_IDLE) {
+    // An ended epoch outlives the transmission by design; past the hold window the slot
+    // is quiet and has to say so, or the last call of the day stays on screen as though
+    // it were still up. See call_line.h.
+    if (line == kCallLineIdle) {
         return QStringLiteral("idle");
     }
 
@@ -46,8 +54,11 @@ call_text(const dsd_state* snapshot, quint8 slot) {
     if (!crypto.isEmpty()) {
         text += QStringLiteral(" [%1]").arg(crypto);
     }
-    if (call.phase == DSD_CALL_PHASE_ENDED) {
-        text += QStringLiteral(" (ended)");
+    // Leads rather than trails: the label elides on the right, and an alias-bearing line
+    // on a phone is long enough that a trailing marker is the first thing cut -- which
+    // would render a finished call identically to a live one.
+    if (line == kCallLineEnded) {
+        text.prepend(QStringLiteral("ended · "));
     }
     return text;
 }
@@ -98,8 +109,9 @@ MetricsModel::refresh() {
     }
 
     const dsd_state* snapshot = dsd_app_get_latest_snapshot();
-    m_slot_text[0] = call_text(snapshot, 0);
-    m_slot_text[1] = call_text(snapshot, 1);
+    const double now_m = dsd_time_now_monotonic_s();
+    m_slot_text[0] = call_text(snapshot, 0, now_m);
+    m_slot_text[1] = call_text(snapshot, 1, now_m);
     m_message_text = (snapshot != nullptr) ? QString::fromUtf8(snapshot->ui_msg) : QString();
 
     Q_EMIT changed();
