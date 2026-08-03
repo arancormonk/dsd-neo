@@ -752,8 +752,32 @@ jobs:
           chmod 600 "$HOME/.ssh/aur"
           ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
 
-      - name: Clone AUR package
+      # aur.archlinux.org gates its SSH git endpoint behind a maintenance flag
+      # (e.g. the 2026 AUR supply-chain incident), which makes every clone fail
+      # with exit 128 and turns main red even though the build is fine. Probe
+      # git-serve first and skip the update when it reports maintenance; any
+      # other probe failure (auth, DNS, host key) still fails the job loudly.
+      - name: Check AUR availability
+        id: aur_up
         if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          ssh_opts=(-i "$HOME/.ssh/aur" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30)
+          probe_out="$(ssh "${ssh_opts[@]}" aur@aur.archlinux.org help 2>&1)" && probe_rc=0 || probe_rc=$?
+          printf '%s\n' "$probe_out"
+          if [ "$probe_rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$probe_out" | grep -qi 'down due to maintenance'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=AUR update skipped::aur.archlinux.org is in maintenance mode; the AUR package was not updated for this run."
+            exit 0
+          fi
+          echo "AUR SSH probe failed with exit $probe_rc for a reason other than maintenance." >&2
+          exit "$probe_rc"
+
+      - name: Clone AUR package
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
           GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo-git.git aur-package
@@ -761,7 +785,7 @@ jobs:
 
       - name: Compute new pkgver
         id: pkgver
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           cd "$GITHUB_WORKSPACE"
           ref="origin/main"
@@ -776,7 +800,7 @@ jobs:
           echo "Computed pkgver from $ref ($(git rev-parse --short=7 "$ref")): $new_pkgver"
 
       - name: Validate AUR VCS metadata
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -803,7 +827,7 @@ jobs:
 
       - name: Check if update needed
         id: check
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           cd aur-package
           current_pkgver=$(grep -E '^\s*pkgver=' PKGBUILD | sed 's/.*pkgver=//')
@@ -818,7 +842,7 @@ jobs:
           fi
 
       - name: Update PKGBUILD
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -828,7 +852,7 @@ jobs:
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Commit and push to AUR
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           git config user.name "github-actions[bot]"
@@ -899,8 +923,30 @@ jobs:
           chmod 600 "$HOME/.ssh/aur"
           ssh-keyscan -t ed25519 aur.archlinux.org >> "$HOME/.ssh/known_hosts"
 
-      - name: Clone AUR package
+      # Same maintenance gate as update-aur-git. This skip is louder (warning,
+      # not notice) because a tagged release that never reaches the AUR needs
+      # to be pushed by hand once maintenance lifts.
+      - name: Check AUR availability
+        id: aur_up
         if: steps.aur_key.outputs.has_key == 'true'
+        run: |
+          ssh_opts=(-i "$HOME/.ssh/aur" -o IdentitiesOnly=yes -o "UserKnownHostsFile=$HOME/.ssh/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=30)
+          probe_out="$(ssh "${ssh_opts[@]}" aur@aur.archlinux.org help 2>&1)" && probe_rc=0 || probe_rc=$?
+          printf '%s\n' "$probe_out"
+          if [ "$probe_rc" -eq 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$probe_out" | grep -qi 'down due to maintenance'; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=AUR release update skipped::aur.archlinux.org is in maintenance mode; ${GITHUB_REF_NAME} was NOT published to the AUR. Re-run this job or update the package manually once maintenance lifts."
+            exit 0
+          fi
+          echo "AUR SSH probe failed with exit $probe_rc for a reason other than maintenance." >&2
+          exit "$probe_rc"
+
+      - name: Clone AUR package
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           aur_ssh_command="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
           GIT_SSH_COMMAND="$aur_ssh_command" git clone ssh://aur@aur.archlinux.org/dsd-neo.git aur-package
@@ -908,7 +954,7 @@ jobs:
 
       - name: Compute release metadata
         id: release_meta
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           pkgver="${GITHUB_REF_NAME#v}"
           source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
@@ -921,7 +967,7 @@ jobs:
           echo "Computed release metadata: pkgver=$pkgver sha256=$sha256"
 
       - name: Ensure PKGBUILD exists
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -970,7 +1016,7 @@ jobs:
 
       - name: Check if update needed
         id: check
-        if: steps.aur_key.outputs.has_key == 'true'
+        if: steps.aur_up.outputs.available == 'true'
         run: |
           cd aur-package
           current_pkgver=$(sed -n 's/^pkgver=//p' PKGBUILD | head -n1)
@@ -989,7 +1035,7 @@ jobs:
           fi
 
       - name: Update PKGBUILD
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           set -euo pipefail
           cd aur-package
@@ -1000,14 +1046,14 @@ jobs:
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --printsrcinfo > .SRCINFO"
 
       - name: Validate AUR release source
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           set -euo pipefail
           cd aur-package
           runuser -u "$AUR_MAKEPKG_USER" -- bash -lc "cd '$PWD' && makepkg --verifysource --nodeps --noconfirm"
 
       - name: Commit and push to AUR
-        if: steps.aur_key.outputs.has_key == 'true' && steps.check.outputs.needs_update == 'true'
+        if: steps.aur_up.outputs.available == 'true' && steps.check.outputs.needs_update == 'true'
         run: |
           cd aur-package
           git config user.name "github-actions[bot]"
