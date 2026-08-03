@@ -42,7 +42,9 @@ call_state_alloc_mutex_init(void) {
         atomic_store(&g_call_state_alloc_mutex_state, 2);
         return;
     }
-    while (atomic_load(&g_call_state_alloc_mutex_state) != 2) {}
+    while (atomic_load(&g_call_state_alloc_mutex_state) != 2) {
+        dsd_thread_yield();
+    }
 }
 
 static void*

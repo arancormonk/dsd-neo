@@ -28,7 +28,9 @@ ensure_control_pump_mu_init(void) {
         return;
     }
 
-    while (atomic_load(&g_control_pump_mu_state) != 2) {}
+    while (atomic_load(&g_control_pump_mu_state) != 2) {
+        dsd_thread_yield();
+    }
 }
 
 void
