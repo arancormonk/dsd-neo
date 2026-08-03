@@ -102,6 +102,35 @@ test_support_query_describes_the_build(void) {
 #endif
 }
 
+/*
+ * "Recorded" and "in use" are different questions, and the descriptor's owner needs
+ * the second one.
+ *
+ * The engine takes the descriptor part way into a run and gives it back before the
+ * run ends, so neither the slot being occupied nor the engine running brackets the
+ * period during which closing the file would pull it out from under an in-flight USB
+ * transfer. Only rtl_device_create() raises the in-use flag, so the slot alone must
+ * never imply it -- an owner that conflated the two would close early.
+ */
+static int
+test_in_use_is_not_implied_by_the_slot(void) {
+    int rc = 0;
+
+    rc |= expect_int("nothing in use at rest", rtl_device_preopened_fd_in_use(), 0);
+
+    rtl_device_set_preopened_fd(5);
+    rc |= expect_int("descriptor set", rtl_device_preopened_fd_is_set(), 1);
+    /* Recording it hands it to nobody: no device has wrapped it yet. */
+    rc |= expect_int("recorded is not in use", rtl_device_preopened_fd_in_use(), 0);
+
+    /* Clearing the slot must not claim the descriptor came back either -- it only
+     * affects the next open, by design, and a device already holding one keeps it. */
+    rtl_device_set_preopened_fd(-1);
+    rc |= expect_int("clearing does not report a release", rtl_device_preopened_fd_in_use(), 0);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -111,6 +140,7 @@ main(void) {
     rc |= test_zero_is_a_real_descriptor();
     rc |= test_any_negative_value_clears();
     rc |= test_support_query_describes_the_build();
+    rc |= test_in_use_is_not_implied_by_the_slot();
 
     if (rc == 0) {
         DSD_FPRINTF(stderr, "IO_RTL_PREOPENED_FD: OK\n");
