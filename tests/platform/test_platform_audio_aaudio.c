@@ -17,6 +17,7 @@
 
 #include <assert.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../src/platform/audio_aaudio.c"
@@ -1086,6 +1087,158 @@ test_underrun_classification(void) {
     dsd_audio_close(stream);
 }
 
+/*
+ * aaudio_map_frame() must always write the output slot it is handed. The conversion
+ * buffer comes from realloc(), which does not zero, so a frame the mapper skipped is
+ * a frame of uninitialized heap sent to the device. It used to clamp the source width
+ * defensively but trust the output width, so a non-positive one fell through both the
+ * downmix and the copy loop and returned having written nothing.
+ */
+static void
+test_map_frame_always_writes_its_slot(void) {
+    static const int k_widths[] = {-1, 0, 1, 2, 3, 99};
+    const int16_t stereo[2] = {1000, -1000};
+
+    for (size_t i = 0; i < sizeof k_widths / sizeof k_widths[0]; i++) {
+        for (size_t j = 0; j < sizeof k_widths / sizeof k_widths[0]; j++) {
+            int16_t out[DSD_AAUDIO_MAX_CONV_CHANNELS];
+            out[0] = 0x5A5A;
+            aaudio_map_frame(stereo, k_widths[i], out, k_widths[j]);
+            assert(out[0] != 0x5A5A);
+        }
+    }
+
+    /* And the layouts that actually occur still map the way they always did. */
+    int16_t downmixed = 0;
+    aaudio_map_frame(stereo, 2, &downmixed, 1);
+    assert(downmixed == 0);
+
+    int16_t upmixed[2] = {0, 0};
+    const int16_t mono = 777;
+    aaudio_map_frame(&mono, 1, upmixed, 2);
+    assert(upmixed[0] == 777 && upmixed[1] == 777);
+}
+
+/*
+ * The conversion buffer has to hold whatever the conversion loop can emit, for any
+ * buffer size a caller may hand to dsd_audio_write(). The loop advances by a Q16 step
+ * truncated *down*, so it emits slightly more frames than the exact rate ratio, and
+ * that surplus grows with the input length -- a fixed slack over the ideal count is
+ * outgrown past a few thousand frames, after which the tail of the buffer was silently
+ * dropped and the carried phase reset to zero. The async pump only passes 20 ms chunks,
+ * but synchronous mode passes the caller's buffer straight through.
+ */
+static void
+test_convert_capacity_covers_long_buffers(void) {
+    static const size_t k_sizes[] = {1U, 7U, 160U, 960U, 2730U, 2731U, 8000U, 48000U};
+    dsd_audio_params params = valid_params(8000, 1);
+
+    reset_fakes();
+    g.reject_explicit_rate = 1;
+    g.device_rate = 48000;
+    g.device_channels = 1;
+
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(stream->needs_convert == 1);
+
+    for (size_t i = 0; i < sizeof k_sizes / sizeof k_sizes[0]; i++) {
+        const size_t src_frames = k_sizes[i];
+
+        /* Derived here rather than taken from the function under test: starting from
+         * a zero phase the loop runs while phase < src_frames << 16, advancing by the
+         * truncated step, so this is exactly how many frames it emits. A capacity
+         * that does not cover it is one that truncates the input. */
+        const uint64_t span = (uint64_t)src_frames << 16;
+        const uint64_t step = (uint64_t)stream->resample_step_q16;
+        const size_t required = (size_t)((span + step - 1U) / step);
+
+        const size_t capacity = aaudio_convert_capacity(stream, src_frames);
+        assert(capacity >= required);
+
+        int16_t* src = calloc(src_frames, sizeof(int16_t));
+        /* One frame of headroom past the reported capacity: a converter that ran
+         * over its budget would corrupt it, and the sentinel below would catch that
+         * rather than the overrun landing outside the allocation. */
+        int16_t* dst = calloc(capacity + 1U, sizeof(int16_t));
+        assert(src != NULL && dst != NULL);
+        dst[capacity] = 0x5A5A;
+        src[src_frames - 1U] = 4242; /* a tail that a truncated pass would not reach */
+
+        aaudio_reset_resampler(stream);
+        const size_t produced = aaudio_convert_frames(stream, src, src_frames, dst, capacity);
+
+        assert(produced == required);
+        assert(dst[capacity] == 0x5A5A);
+        /* The last input frame made it into the output, so nothing was dropped. */
+        assert(dst[produced - 1U] != 0);
+
+        /* The whole input span was consumed: the pass ended by running past the end
+         * of the input, leaving a carry below one step, not by hitting the capacity. */
+        assert(stream->resample_phase_q16 < stream->resample_step_q16);
+
+        /* And the rate stays honest: 8 kHz into 48 kHz is six device frames per
+         * source frame. The truncated step runs a hair fast by a margin that grows
+         * with the buffer (~0.006%), which is precisely why the capacity cannot be a
+         * fixed slack over the ideal count. */
+        const size_t ideal = src_frames * 6U;
+        assert(produced >= ideal);
+        assert(produced <= ideal + (ideal / 1000U) + 1U);
+
+        free(src);
+        free(dst);
+    }
+
+    dsd_audio_close(stream);
+}
+
+/*
+ * The playback cushion is built once, at stream start. Clearing `priming` only when
+ * the ring actually reached prime_samples left it set when a short tail was released
+ * by DSD_AAUDIO_PRIME_FLUSH_MS instead -- so the *next* burst waited out the same
+ * 200 ms, and on a channel whose first transmission is shorter than the cushion, so
+ * did every burst after it.
+ */
+static void
+test_prime_flush_ends_priming(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+
+    reset_fakes();
+    params.async_output = 1;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(stream->priming == 1);
+
+    /* A burst far shorter than the cushion, and nothing to conceal with, so the only
+     * way out of the wait is the prime flush. */
+    assert(stream->prime_samples > 8U);
+    stream->conceal_inited = 0;
+    stream->conceal_has_good = 0;
+    ring_write_samples(stream, (const int16_t[]){1, 1, 1, 1, 1, 1, 1, 1}, 8);
+    g.cond_timedwait_calls = 0;
+
+    dsd_mutex_lock(&stream->mu);
+    assert(aaudio_output_wait_for_work_locked(stream) == 0);
+    dsd_mutex_unlock(&stream->mu);
+
+    /* It did wait out the flush window rather than breaking out early... */
+    assert(g.cond_timedwait_calls >= DSD_AAUDIO_PRIME_FLUSH_MS / DSD_AAUDIO_OUTPUT_CHUNK_MS);
+    /* ...and the cushion is done, even though the ring never reached prime_samples. */
+    assert(stream->ring_samples_count < stream->prime_samples);
+    assert(stream->priming == 0);
+
+    /* So the next equally short burst goes out on the first pass, with no wait. */
+    ring_write_samples(stream, (const int16_t[]){2, 2, 2, 2}, 4);
+    g.cond_timedwait_calls = 0;
+    dsd_mutex_lock(&stream->mu);
+    assert(aaudio_output_wait_for_work_locked(stream) == 0);
+    dsd_mutex_unlock(&stream->mu);
+    assert(g.cond_timedwait_calls == 0);
+
+    stream->stop = 1;
+    dsd_audio_close(stream);
+}
+
 static void
 test_api_guards(void) {
     dsd_audio_params params = valid_params(8000, 2);
@@ -1147,6 +1300,9 @@ main(void) {
     test_pump_waits_while_device_is_buffered();
     test_pump_conceals_when_device_is_dry();
     test_device_drop_accounting_while_converting();
+    test_map_frame_always_writes_its_slot();
+    test_convert_capacity_covers_long_buffers();
+    test_prime_flush_ends_priming();
     test_ring_overflow_drop_accounting();
     test_underrun_classification();
     test_api_guards();

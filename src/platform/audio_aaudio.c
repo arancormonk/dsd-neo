@@ -401,10 +401,19 @@ aaudio_recover_handle(dsd_audio_stream* stream, size_t pending_frames) {
  * Format Conversion (output fallback path)
  *============================================================================*/
 
+/**
+ * @brief Map one interpolated source frame onto the device's channel layout.
+ *
+ * Conversion is gated to mono/stereo when the stream opens, and an open that reports
+ * a non-positive channel count is rejected outright. Both widths are clamped anyway:
+ * @p in_channels so the fixed-size interpolation frame can never be indexed out of
+ * range, and @p out_channels because it decides how much of the caller's output slot
+ * this writes. Leaving the output width untrusted meant a non-positive value returned
+ * with the slot never written at all, handing a frame of uninitialized heap straight
+ * to the device -- the conversion buffer comes from realloc(), which does not zero.
+ */
 static void
 aaudio_map_frame(const int16_t* in, int in_channels, int16_t* out, int out_channels) {
-    /* Conversion is gated to mono/stereo when the stream opens; clamp anyway so
-     * the fixed-size interpolation frame can never be indexed out of range. */
     int src_channels = in_channels;
     if (src_channels > DSD_AAUDIO_MAX_CONV_CHANNELS) {
         src_channels = DSD_AAUDIO_MAX_CONV_CHANNELS;
@@ -413,11 +422,19 @@ aaudio_map_frame(const int16_t* in, int in_channels, int16_t* out, int out_chann
         src_channels = 1;
     }
 
-    if (src_channels == 2 && out_channels == 1) {
+    int dst_channels = out_channels;
+    if (dst_channels > DSD_AAUDIO_MAX_CONV_CHANNELS) {
+        dst_channels = DSD_AAUDIO_MAX_CONV_CHANNELS;
+    }
+    if (dst_channels < 1) {
+        dst_channels = 1;
+    }
+
+    if (src_channels == 2 && dst_channels == 1) {
         out[0] = (int16_t)(((int32_t)in[0] + (int32_t)in[1]) / 2);
         return;
     }
-    for (int c = 0; c < out_channels; c++) {
+    for (int c = 0; c < dst_channels; c++) {
         const int src = (c < src_channels) ? c : (src_channels - 1);
         out[c] = in[src];
     }
@@ -433,15 +450,37 @@ aaudio_device_frames_for(const dsd_audio_stream* stream, size_t src_frames) {
     return (frames > SIZE_MAX) ? SIZE_MAX : (size_t)frames;
 }
 
+/**
+ * @brief Output frames aaudio_convert_frames() can emit for @p src_frames input.
+ *
+ * Derived from the loop's own arithmetic rather than from the exact rate ratio: the
+ * loop runs while `phase < src_frames << 16`, advancing by the *truncated*
+ * resample_step_q16 from a carried phase in [0, step), so it takes at most
+ * ceil((src_frames << 16) / step) iterations. That bound is exact.
+ *
+ * A fixed slack over the exact ratio does not work here. The step's truncation error
+ * is a per-iteration deficit, so the surplus over the ideal frame count grows with
+ * src_frames -- at 8 kHz into 48 kHz a constant two frames of headroom is outgrown
+ * past ~2730 input frames, and the conversion then silently drops the tail of the
+ * buffer. The async pump only ever passes 20 ms chunks, but dsd_audio_write() hands
+ * the caller's buffer straight through in synchronous mode.
+ */
 static size_t
 aaudio_convert_capacity(const dsd_audio_stream* stream, size_t src_frames) {
-    const size_t frames = aaudio_device_frames_for(stream, src_frames);
-    if (frames > SIZE_MAX - 2U) {
+    if (!stream->needs_convert) {
+        return src_frames;
+    }
+    if (src_frames == 0 || stream->resample_step_q16 == 0) {
         return 0;
     }
-    /* Two frames of slack: the Q16 step truncates, so a chunk can yield one more
-     * output frame than the exact ratio, and the carried phase can add another. */
-    return frames + 2U;
+    if (src_frames > (SIZE_MAX >> 16)) {
+        return 0;
+    }
+
+    const uint64_t span = (uint64_t)src_frames << 16;
+    const uint64_t step = (uint64_t)stream->resample_step_q16;
+    /* step >= 1, so the quotient never exceeds span and stays inside size_t. */
+    return (size_t)((span + step - 1U) / step);
 }
 
 static int
@@ -511,7 +550,15 @@ aaudio_convert_frames(dsd_audio_stream* stream, const int16_t* src, size_t src_f
         }
         stream->resample_prev_valid = 1;
     }
-    stream->resample_phase_q16 = (phase > src_span) ? (uint32_t)(phase - src_span) : 0;
+    if (phase >= src_span) {
+        stream->resample_phase_q16 = (uint32_t)(phase - src_span);
+    } else {
+        /* Capacity-bound exit: the unconsumed tail of this buffer is dropped, so only
+         * the sub-sample offset can carry. Zeroing the whole phase would restart the
+         * interpolation mid-sample. Unreachable while aaudio_convert_capacity() is
+         * derived from the same step; kept correct rather than merely unreached. */
+        stream->resample_phase_q16 = (uint32_t)(phase & 0xFFFFU);
+    }
     return out_frames;
 }
 
@@ -774,15 +821,21 @@ aaudio_output_wait_for_work_locked(dsd_audio_stream* stream) {
         }
     }
 
-    /* The cushion is built once, at stream start. Rebuilding it after every gap
-     * is actively harmful on a real-time feed: the decoder only ever supplies
-     * audio as fast as it arrives, so withholding output until a fresh cushion
-     * accumulates starves a device that is already low and turns one gap into a
-     * self-sustaining stutter. Past the initial fill, the device buffer is the
-     * cushion and DSD_AAUDIO_CONCEAL_LOW_WATER_MS is what protects it. */
-    if (stream->priming && stream->ring_samples_count >= stream->prime_samples) {
-        stream->priming = 0;
-    }
+    /* The cushion is built once, at stream start, and every exit from the loop above
+     * other than a stop leads straight into feeding the device -- so the initial fill
+     * is over here regardless of whether the ring ever reached prime_samples.
+     *
+     * Clearing this only on the ring >= prime_samples exit left priming set when a
+     * short tail was released by DSD_AAUDIO_PRIME_FLUSH_MS instead, which put the
+     * *next* burst behind the same 200 ms wait. On a channel whose first transmission
+     * is shorter than the cushion, that is every burst of the session.
+     *
+     * Rebuilding the cushion after a gap is actively harmful on a real-time feed: the
+     * decoder only ever supplies audio as fast as it arrives, so withholding output
+     * until a fresh cushion accumulates starves a device that is already low and turns
+     * one gap into a self-sustaining stutter. Past the initial fill, the device buffer
+     * is the cushion and DSD_AAUDIO_CONCEAL_LOW_WATER_MS is what protects it. */
+    stream->priming = 0;
 
     if (stream->stop) {
         return -1;
@@ -888,6 +941,13 @@ static DSD_THREAD_RETURN_TYPE
 aaudio_output_pump_thread(void* arg) {
     dsd_audio_stream* stream = (dsd_audio_stream*)arg;
     if (!stream || !stream->handle) {
+        /* Raise stop before leaving: dsd_audio_drain() waits on drain_completed or
+         * stop, and a pump that exits without setting either turns a startup failure
+         * into a hang. Unreachable while the thread is only started after a
+         * successful open, which is exactly why it must not be left to chance. */
+        if (stream) {
+            aaudio_output_request_stop(stream);
+        }
         DSD_THREAD_RETURN;
     }
 
@@ -1273,6 +1333,11 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
         return 0;
     }
 
+    /* Sampled before the lock: stream->mu is the one the pump goes out of its way not
+     * to hold across anything slow (see aaudio_output_sample_starvation_locked), and
+     * this is the decoder's hot path. */
+    const uint64_t write_ns = dsd_time_monotonic_ns();
+
     dsd_mutex_lock(&stream->mu);
 
     if (stream->stop) {
@@ -1281,7 +1346,7 @@ dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) 
     }
 
     stream->in_samples += samples;
-    stream->last_write_ns = dsd_time_monotonic_ns();
+    stream->last_write_ns = write_ns;
 
     /* During drain, ignore new writes to guarantee completion. */
     if (stream->drain_requested) {

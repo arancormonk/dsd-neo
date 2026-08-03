@@ -177,9 +177,13 @@ dependency_scan_targets=()
 
 for p in "${changed_paths[@]}"; do
   case "$p" in
-    # Vendored upstream snapshots are excluded from every repository tool; the
-    # pre-push hook skips the same paths.
-    build/* | src/third_party/* | android/third_party/*) continue ;;
+    # Vendored upstream snapshots are excluded from every repository tool. Listed
+    # per library rather than as the whole android/third_party subtree, so the build
+    # glue that sits beside them (android/third_party/CMakeLists.txt) stays in scope
+    # -- that file is ours. Keep in step with .githooks/pre-push, which drops exactly
+    # these paths.
+    build/* | src/third_party/*) continue ;;
+    android/third_party/libusb/* | android/third_party/librtlsdr/*) continue ;;
   esac
 
   if [[ ! -e "$p" && ! -L "$p" ]]; then

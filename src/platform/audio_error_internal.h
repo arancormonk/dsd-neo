@@ -19,8 +19,13 @@
  * caller. Cross-thread visibility is preserved: an error the pump reports is still
  * what the decoder thread reads.
  *
- * Exactly one backend translation unit is compiled per build (see
- * src/platform/CMakeLists.txt), so defining the store here costs no duplication.
+ * The store has internal linkage, so an including translation unit gets its own copy
+ * rather than a link error, and a set_error() in a second one would be invisible to
+ * dsd_audio_get_error(). Two things hold that to a single process-wide copy:
+ * src/platform/CMakeLists.txt compiles exactly one audio backend, and the ARCH_RULES
+ * ctest case rejects any includer under src/ that is not one of those mutually
+ * exclusive backends. A standalone test may include it directly to unit-test the
+ * store; that copy links into a test binary containing no backend at all.
  */
 
 #ifndef DSD_NEO_SRC_PLATFORM_AUDIO_ERROR_INTERNAL_H
