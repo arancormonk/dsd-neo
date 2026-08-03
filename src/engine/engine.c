@@ -77,6 +77,7 @@ struct CODEC2;
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif
 #ifdef USE_RTLSDR
+#include <dsd-neo/io/rtl_device.h>
 #include <rtl-sdr.h>
 #endif
 
@@ -883,6 +884,18 @@ dsd_engine_setup_update_rtl_spec_with_selected_index(dsd_opts* opts) {
 static int
 dsd_engine_setup_enumerate_rtl_devices(const dsd_opts* opts, char* vendor, char* product, char* serial) {
     int device_count = 0;
+
+    if (rtl_device_preopened_fd_is_set()) {
+        /* The device was chosen in the app, which handed down an open descriptor;
+         * USB discovery is disabled in that mode, so rtlsdr_get_device_count()
+         * reports zero and would hard-fail the run below. */
+        DSD_SNPRINTF(vendor, 256, "%s", "USB");
+        DSD_SNPRINTF(product, 256, "%s", "RTL-SDR");
+        DSD_SNPRINTF(serial, 256, "%s", "");
+        LOG_INFO("NOTICE: Using a pre-opened USB descriptor; skipping device enumeration.\n");
+        return 1;
+    }
+
 #if defined(_MSC_VER) && defined(_WIN32)
     __try {
         device_count = (int)rtlsdr_get_device_count();
@@ -2661,8 +2674,16 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
         return 0;
     }
 
-    signal(SIGINT, dsd_engine_signal_handler);
-    signal(SIGTERM, dsd_engine_signal_handler);
+    /* Embedded in a host process (Android service, GUI shell), the library must
+     * not steal the process signal dispositions; the host drives shutdown with
+     * dsd_request_shutdown() instead. */
+    {
+        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+        if (!cfg || !cfg->no_signal_handlers_enable) {
+            signal(SIGINT, dsd_engine_signal_handler);
+            signal(SIGTERM, dsd_engine_signal_handler);
+        }
+    }
     dsd_engine_parse_m17_userdata(opts, state);
     return 0;
 }

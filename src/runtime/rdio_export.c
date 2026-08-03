@@ -777,6 +777,32 @@ dsd_rdio_ensure_curl_global_ready(void) {
     return (curl_global_state < 0) ? -1 : 0;
 }
 
+#ifdef __ANDROID__
+/*
+ * OpenSSL compiles in /etc/ssl/certs as its default trust store, and Android has
+ * no such directory: every https:// upload would fail certificate verification
+ * while http:// kept working. Android keeps the system roots in OpenSSL's own
+ * hashed-CApath layout, under the APEX module since API 34 with the older
+ * location still present on most devices. Point libcurl at the first one that
+ * exists rather than weakening verification.
+ */
+static const char* const k_android_trust_stores[] = {
+    "/apex/com.android.conscrypt/cacerts",
+    "/system/etc/security/cacerts",
+};
+
+static const char*
+dsd_rdio_android_ca_path(void) {
+    for (size_t i = 0; i < sizeof(k_android_trust_stores) / sizeof(k_android_trust_stores[0]); i++) {
+        dsd_stat_t st;
+        if (dsd_stat_path(k_android_trust_stores[i], &st) == 0 && S_ISDIR(st.st_mode)) {
+            return k_android_trust_stores[i];
+        }
+    }
+    return NULL;
+}
+#endif
+
 static void
 dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoint, int timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_URL, endpoint);
@@ -792,6 +818,14 @@ dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoin
 #endif
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "dsd-neo/rdio-export");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dsd_rdio_discard_write_cb);
+#ifdef __ANDROID__
+    {
+        const char* ca_path = dsd_rdio_android_ca_path();
+        if (ca_path != NULL) {
+            curl_easy_setopt(curl, CURLOPT_CAPATH, ca_path);
+        }
+    }
+#endif
 }
 
 static void

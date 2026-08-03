@@ -210,6 +210,8 @@ typedef struct dsdneoRuntimeConfig {
     int ftz_daz_enable;
     int no_bootstrap_is_set;
     int no_bootstrap_enable;
+    int no_signal_handlers_is_set;
+    int no_signal_handlers_enable;
 
     /* Debug/tuning toggles */
     int debug_sync_is_set;

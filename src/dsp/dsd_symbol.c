@@ -1235,6 +1235,12 @@ symbol_read_sample_wav(dsd_opts* opts, dsd_state* state, float* sample_out) {
         }
         symbol_close_audio_in_file(opts);
         DSD_FPRINTF(stderr, "\nEnd of %s\n", opts->audio_in_dev);
+        /* Deliberately still the frontend kind, not dsd_telemetry_is_active(): the
+         * question here is whether an interactive terminal session is driving this
+         * process and would expect to keep going on live input after the file runs
+         * out, not whether anything is consuming telemetry. A GUI or embedding host
+         * gets the headless answer -- end of input ends the run -- and re-runs the
+         * engine itself when it wants another source. */
         if (opts->audio_out_type == 0 && dsd_opts_frontend_active(opts)) {
             return symbol_open_pulse_input_and_reconfigure_output(opts, state);
         }
@@ -1731,6 +1737,7 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             *symbol_out = 0.0f;
             return 1;
         }
+        /* Frontend kind on purpose; same reasoning as the PCM end-of-file path above. */
         if (opts->audio_out_type == 0 && dsd_opts_frontend_active(opts)) {
             (void)symbol_open_pulse_input_and_reconfigure_output(opts, state);
             *symbol_out = 0.0f;

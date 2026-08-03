@@ -2041,9 +2041,9 @@ m17_str_apply_filters_and_gain(m17_str_ctx* ctx) {
         }
     }
     if (ctx->opts->use_hpf == 1) {
-        hpf(ctx->state, ctx->voice1, 160);
+        dsd_hpf(ctx->state, ctx->voice1, 160);
         if (ctx->st == 2) {
-            hpf(ctx->state, ctx->voice2, 160);
+            dsd_hpf(ctx->state, ctx->voice2, 160);
         }
     }
     if (ctx->opts->use_pbf == 1) {
@@ -2302,7 +2302,7 @@ m17_str_handle_tx_idle(m17_str_ctx* ctx, const m17_str_frame_ctx* frame) {
 
 static void
 m17_str_iter_tail(m17_str_ctx* ctx) {
-    if (dsd_opts_frontend_active(ctx->opts)) {
+    if (dsd_telemetry_is_active()) {
         dsd_telemetry_publish_both_and_redraw(ctx->opts, ctx->state);
     }
     dsd_event_sync_slot(ctx->opts, ctx->state, 0);
@@ -2365,6 +2365,10 @@ m17_str_init(m17_str_ctx* ctx, dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
     opts->frame_m17 = 1;
     state->m17encoder_tx = 1;
+    /* Frontend kind on purpose, not dsd_telemetry_is_active(): this asks whether a
+     * terminal session is present to key the transmitter by hand. Without one -- a
+     * headless run, or a host driving the engine programmatically -- transmission has
+     * to start on its own or nothing would ever key it. */
     if (dsd_opts_frontend_active(opts) && state->m17_vox == 0) {
         state->m17encoder_tx = 0;
     }
@@ -3369,7 +3373,7 @@ processM17IPF(dsd_opts* opts, dsd_state* state) {
             m17_ip_dispatch_frame(opts, state, ip_frame, err);
         }
 
-        if (dsd_opts_frontend_active(opts)) {
+        if (dsd_telemetry_is_active()) {
             dsd_telemetry_publish_both_and_redraw(opts, state);
         }
         dsd_event_sync_slot(opts, state, 0);

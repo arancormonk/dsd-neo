@@ -1,0 +1,8 @@
+# Vendored upstream code keeps upstream formatting so it stays diffable against the
+# release it was taken from. tools/format.sh and .githooks/pre-push skip these paths
+# too; this file also stops format-on-save in editors.
+#
+# Patterns are relative to this file and `*` does not cross a `/`, hence the `**`.
+src/third_party/**
+android/third_party/libusb/**
+android/third_party/librtlsdr/**

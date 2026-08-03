@@ -363,9 +363,9 @@ edacs_process_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, s
         lpf(state, analog3, 960);
     }
     if (opts->use_hpf == 1) {
-        hpf(state, analog1, 960);
-        hpf(state, analog2, 960);
-        hpf(state, analog3, 960);
+        dsd_hpf(state, analog1, 960);
+        dsd_hpf(state, analog2, 960);
+        dsd_hpf(state, analog3, 960);
     }
     if (opts->use_pbf == 1) {
         pbf(state, analog1, 960);
@@ -515,7 +515,7 @@ edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs,
         DSD_FPRINTF(stderr, "Analog Floating Point Output Not Supported");
     }
 
-    if (dsd_opts_frontend_active(opts)) {
+    if (dsd_telemetry_is_active()) {
         dsd_telemetry_publish_both_and_redraw(opts, state);
     }
 }

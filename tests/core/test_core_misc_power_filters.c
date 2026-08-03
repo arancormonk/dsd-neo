@@ -89,7 +89,7 @@ test_audio_filter_helpers(void) {
     assert(lpf_float[3] >= lpf_float[0]);
 
     short hpf_samples[] = {0, 12000, 12000, 12000};
-    hpf(&state, hpf_samples, 4);
+    dsd_hpf(&state, hpf_samples, 4);
     assert(hpf_samples[1] > 0);
 
     float hpf_float[] = {0.0f, 12000.0f, 12000.0f, 12000.0f};
@@ -121,7 +121,7 @@ test_audio_filter_helpers(void) {
 
     short empty[] = {1234};
     lpf(&state, empty, 0);
-    hpf(&state, empty, 0);
+    dsd_hpf(&state, empty, 0);
     pbf(&state, empty, 0);
     assert(empty[0] == 1234);
 }

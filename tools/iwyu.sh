@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Run include-what-you-use (IWYU) using the project's compilation database.
 # - Supports targeted translation units
-# - Excludes build/ and src/third_party/
+# - Excludes build/, src/third_party/ and android/third_party/
 # - Optional strict mode fails on include suggestions
 
 ROOT_DIR=$(git rev-parse --show-toplevel 2> /dev/null || pwd)
@@ -143,7 +143,7 @@ def normalize_file(entry):
 
     if rel.parts and rel.parts[0] == "build":
         return None, None
-    if len(rel.parts) >= 2 and rel.parts[0] == "src" and rel.parts[1] == "third_party":
+    if len(rel.parts) >= 2 and rel.parts[0] in ("src", "android") and rel.parts[1] == "third_party":
         return None, None
 
     return rel.as_posix(), str(file_path)
@@ -212,7 +212,7 @@ def normalize_requested(path_str):
     rel_str = rel.as_posix()
     if rel.parts and rel.parts[0] == "build":
         return None
-    if len(rel.parts) >= 2 and rel.parts[0] == "src" and rel.parts[1] == "third_party":
+    if len(rel.parts) >= 2 and rel.parts[0] in ("src", "android") and rel.parts[1] == "third_party":
         return None
     return rel_str
 

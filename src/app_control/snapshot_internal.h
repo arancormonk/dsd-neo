@@ -17,14 +17,13 @@
 extern "C" {
 #endif
 
-const dsd_state* dsd_app_get_latest_snapshot(void);
-const dsd_opts* dsd_app_get_latest_opts_snapshot(void);
+/* Public frontend surface, declared elsewhere: the snapshot read accessors live in
+ * <dsd-neo/app_control/snapshot.h> and dsd_app_request_redraw() in
+ * <dsd-neo/app_control/frontend_runtime.h>. */
 
 void dsd_app_install_telemetry_hooks(void);
 void dsd_app_telemetry_publish_snapshot(const dsd_state* state);
 void dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts);
-
-void dsd_app_request_redraw(void);
 
 #ifdef DSD_NEO_TEST_HOOKS
 typedef struct {

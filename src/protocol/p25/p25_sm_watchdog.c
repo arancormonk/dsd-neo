@@ -11,6 +11,7 @@
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/exitflag.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -72,11 +73,14 @@ static DSD_THREAD_RETURN_TYPE
         if (g_opts && g_state) {
             p25_sm_try_tick(g_opts, g_state);
         }
-        // Compute watchdog cadence. Prefer env override when provided;
-        // otherwise, tick faster under ncurses to reduce perceived wedges.
+        // Compute watchdog cadence. Prefer env override when provided; otherwise
+        // tick faster whenever a frontend is watching, so a wedge is corrected
+        // before anyone notices it. Gate on telemetry rather than on the frontend
+        // kind: a native GUI consumes the same publishes without ever becoming the
+        // terminal frontend, and it wants the same responsiveness.
         int ms = g_p25_sm_wd_ms;
         if (ms <= 0) {
-            ms = dsd_opts_frontend_active(g_opts) ? 200 : 400; // 200ms frontend, 400ms headless
+            ms = dsd_telemetry_is_active() ? 200 : 400; // 200ms frontend, 400ms headless
         }
         if (ms < 20) {
             ms = 20; // clamp to sane bounds

@@ -244,6 +244,15 @@ int dsd_thread_set_realtime_priority(int priority);
  */
 int dsd_thread_set_affinity(int cpu_index);
 
+/**
+ * @brief Offer the rest of this thread's time slice to another runnable thread.
+ *
+ * For the short spin loops that wait on a one-time initialization: on a phone's
+ * little cores, or anywhere the spinner outranks the thread it is waiting for,
+ * a bare spin can hold the CPU for a whole slice. Never fails and never blocks.
+ */
+void dsd_thread_yield(void);
+
 #ifdef __cplusplus
 }
 #endif

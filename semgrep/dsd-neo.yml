@@ -5,12 +5,14 @@ rules:
     message: Use the dsd-neo safe API wrapper instead of the raw C memory/string API.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
         - /include/dsd-neo/core/safe_api.h
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: memcpy(...)
@@ -31,11 +33,13 @@ rules:
     message: Do not invoke shells or spawn processes from project-owned C/C++ code without explicit design review.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: system(...)
@@ -57,11 +61,13 @@ rules:
       declarator for portable project-owned C/C++ declarations.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-regex: '\[\s*static\b'
 
@@ -73,11 +79,13 @@ rules:
       large decoder objects never consume stack space.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-regex: '^\s*(?!(?:static|thread_local)\b)(?:(?:const\s+)?(?:struct\s+)?(?:dsd_state|dsd_opts)\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:=|\{|,|\[|;)|(?:const\s+)?auto\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:dsd_state|dsd_opts)\s*(?:\{|\())'
 
@@ -89,10 +97,12 @@ rules:
       out under NDEBUG.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern: assert(...)
 
@@ -142,10 +152,12 @@ rules:
       Do not use process-global rand()/srand(); use a purpose-specific RNG, nonce, or unique-name helper.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: rand(...)
@@ -157,10 +169,12 @@ rules:
     message: Use checked strto* parsing or a project parse helper instead of atoi/atol/atoll/atof.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: atoi(...)
@@ -178,10 +192,12 @@ rules:
     message: Check the strto* end pointer and range instead of passing NULL for endptr.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - pattern: strtol($S, NULL, $B)
@@ -215,10 +231,12 @@ rules:
     message: Use project file/path compatibility helpers instead of raw file open/temp APIs in project-owned code.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
         - /src/platform/file_compat_posix.c
         - /src/platform/file_compat_win32.c
@@ -242,12 +260,14 @@ rules:
     message: Function parameters have pointer size in C; pass the explicit destination capacity to DSD_SNPRINTF.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
         - /include/dsd-neo/core/safe_api.h
+        - /android/third_party/**
         - /src/third_party/**
     pattern-either:
       - patterns:
@@ -276,10 +296,12 @@ rules:
       # bounds are compile-time constants, and a reintroduced removed helper is a link
       # error there anyway.
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
         - /include/dsd-neo/core/bit_packing.h
         - /src/core/util/bit_packing.c
@@ -304,11 +326,13 @@ rules:
     message: Use a project-owned wrapper/target instead of directly including bundled third-party headers.
     paths:
       include:
+        - /android/**
         - /apps/**
         - /include/**
         - /src/**
         - /tests/**
       exclude:
+        - /android/third_party/**
         - /src/third_party/**
         - /src/fec/ez.cpp
         - /src/io/radio/rtl_metrics.cpp

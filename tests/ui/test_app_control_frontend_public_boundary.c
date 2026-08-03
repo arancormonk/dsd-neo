@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/frontend_types.h>
 
 #if defined(DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H)
@@ -41,10 +42,14 @@ main(void) {
     (void)&dsd_app_frontend_runtime_start;
     (void)&dsd_app_frontend_runtime_stop;
     (void)&dsd_app_frontend_redraw_consume;
+    (void)&dsd_app_request_redraw;
     (void)&dsd_app_frontend_history_get_mode;
     (void)&dsd_app_frontend_history_set_mode;
     (void)&dsd_app_frontend_history_cycle_mode;
     (void)&dsd_app_frontend_history_compact_event_text;
     (void)&dsd_app_frontend_history_event_sort_time;
+    (void)&dsd_app_get_latest_snapshot;
+    (void)&dsd_app_get_latest_opts_snapshot;
+    (void)&dsd_app_frontend_get_metrics_for_snapshot;
     return 0;
 }

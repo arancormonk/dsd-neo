@@ -8,9 +8,12 @@
   "dependencies": [
     "mbe-neo",
     "openssl",
-    "curl",
     "libsndfile",
-    "portaudio",
+    "curl",
+    {
+      "name": "portaudio",
+      "platform": "!android"
+    },
     {
       "name": "rtlsdr",
       "platform": "windows",
@@ -24,7 +27,7 @@
     },
     {
       "name": "codec2",
-      "platform": "windows"
+      "platform": "windows | android"
     },
     {
       "name": "pdcurses",

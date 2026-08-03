@@ -94,7 +94,7 @@ function(dsd_neo_link_dsp_test target_name)
             dsd-neo_io_iq
             dsd-neo_platform
         )
-        if(DSD_USE_PORTAUDIO)
+        if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
             target_link_libraries(
                 ${target_name}
                 PRIVATE PortAudio::PortAudio ${AUDIO_SYSTEM_LIBS}
@@ -124,6 +124,13 @@ add_test(
 add_test(
     NAME UI_NATIVE_BOUNDARY
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
+)
+
+add_test(
+    NAME VCPKG_DEPENDENCY_CONTRACT
+    COMMAND
+        ${CMAKE_COMMAND} -P
+        ${PROJECT_SOURCE_DIR}/cmake/vcpkg_dependency_contract.cmake
 )
 
 set(_DSD_PUBLIC_HEADER_TEST_DIR
@@ -430,6 +437,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_history
   HEADERS_PUBLIC_APP_CONTROL_HISTORY
   dsd-neo/app_control/history.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_snapshot
+  HEADERS_PUBLIC_APP_CONTROL_SNAPSHOT
+  dsd-neo/app_control/snapshot.h
   C
 )
 dsd_neo_add_public_header_smoke_test(
@@ -1763,6 +1776,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_snr_readout
         ui/test_ui_snr_readout.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/frontend_snr.c
     )
     target_include_directories(
         dsd-neo_test_ui_snr_readout
@@ -1779,6 +1793,24 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_SNR_READOUT COMMAND dsd-neo_test_ui_snr_readout)
+
+    add_executable(
+        dsd-neo_test_app_control_frontend_snr
+        ui/test_app_control_frontend_snr.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/frontend_snr.c
+    )
+    target_include_directories(
+        dsd-neo_test_app_control_frontend_snr
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_app_control_frontend_snr
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME APP_CONTROL_FRONTEND_SNR
+        COMMAND dsd-neo_test_app_control_frontend_snr
+    )
 
     add_executable(
         dsd-neo_test_ui_snr_readout_no_radio
@@ -1994,6 +2026,24 @@ if(DSD_ENABLE_TERMINAL_UI)
         COMMAND dsd-neo_test_ui_prompt_validation
     )
 endif()
+
+# The Qt Quick frontend itself only builds for Android, but the session-phase
+# mapping it binds to is deliberately free of Qt and JNI so it can be tested here.
+add_executable(dsd-neo_test_ui_qt_session_state ui/test_ui_qt_session_state.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_session_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/android
+)
+add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
+
+# Same arrangement for the slot-line decay: header-only and free of Qt so the hold
+# window can be tested without an Android build.
+add_executable(dsd-neo_test_ui_qt_call_line ui/test_ui_qt_call_line.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 
 add_executable(
     dsd-neo_test_app_control_history_state
@@ -3183,6 +3233,41 @@ else()
     )
 endif()
 add_test(NAME ENGINE_RUN_SETUP COMMAND dsd-neo_test_engine_run_setup)
+
+# Needs the real librtlsdr symbols to exist so --wrap has something to intercept.
+if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_rtl_preopened_fd
+        engine/test_engine_rtl_preopened_fd.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_rtl_preopened_fd
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    # dsd-neo_io_radio is listed explicitly so its undefined librtlsdr references
+    # are already pending when ${LIBS} introduces librtlsdr: linkers that default
+    # to --as-needed (Debian/Ubuntu) otherwise drop the library before the radio
+    # archive is read.
+    target_link_libraries(
+        dsd-neo_test_engine_rtl_preopened_fd
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            dsd-neo_io_radio
+            "-Wl,--end-group"
+            "-Wl,--wrap=rtlsdr_get_device_count"
+            "-Wl,--wrap=rtlsdr_get_device_usb_strings"
+            "-Wl,--wrap=rtl_stream_create"
+            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_destroy"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_RTL_PREOPENED_FD
+        COMMAND dsd-neo_test_engine_rtl_preopened_fd
+    )
+endif()
 
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
@@ -6836,7 +6921,42 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_platform_nonce PRIVATE dsd-neo_platform)
 add_test(NAME PLATFORM_NONCE COMMAND dsd-neo_test_platform_nonce)
 
-if(NOT DSD_USE_PORTAUDIO)
+if(DSD_AUDIO_BACKEND STREQUAL "none")
+    add_executable(
+        dsd-neo_test_platform_audio_null
+        platform/test_platform_audio_null.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_audio_null
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_platform_audio_null
+        PRIVATE dsd-neo_platform
+    )
+    add_test(NAME PLATFORM_AUDIO_NULL COMMAND dsd-neo_test_platform_audio_null)
+endif()
+
+# The AAudio backend only builds for Android, but the test compiles it against a
+# stub NDK header with fake AAudio entry points, so it stays covered on the host.
+if(NOT WIN32)
+    add_executable(
+        dsd-neo_test_platform_audio_aaudio
+        platform/test_platform_audio_aaudio.c
+    )
+    target_include_directories(
+        dsd-neo_test_platform_audio_aaudio
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/tests/platform/aaudio_stub
+            ${PROJECT_SOURCE_DIR}/include
+    )
+    add_test(
+        NAME PLATFORM_AUDIO_AAUDIO
+        COMMAND dsd-neo_test_platform_audio_aaudio
+    )
+endif()
+
+if(DSD_AUDIO_BACKEND STREQUAL "pulse")
     add_executable(
         dsd-neo_test_platform_audio_pulse_guards
         platform/test_platform_audio_pulse_guards.c
@@ -6913,6 +7033,42 @@ add_test(
     NAME PLATFORM_MONOTONIC_COND
     COMMAND dsd-neo_test_platform_monotonic_cond
 )
+
+# Shared by every audio backend, so it is built regardless of which one is selected.
+add_executable(
+    dsd-neo_test_platform_audio_error_store
+    platform/test_platform_audio_error_store.c
+)
+target_include_directories(
+    dsd-neo_test_platform_audio_error_store
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_audio_error_store
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME PLATFORM_AUDIO_ERROR_STORE
+    COMMAND dsd-neo_test_platform_audio_error_store
+)
+# A store that deadlocks shows up as a hang, not a failed assert.
+set_tests_properties(PLATFORM_AUDIO_ERROR_STORE PROPERTIES TIMEOUT 120)
+
+add_executable(
+    dsd-neo_test_platform_thread_yield
+    platform/test_platform_thread_yield.c
+)
+target_include_directories(
+    dsd-neo_test_platform_thread_yield
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_thread_yield
+    PRIVATE dsd-neo_platform
+)
+add_test(NAME PLATFORM_THREAD_YIELD COMMAND dsd-neo_test_platform_thread_yield)
+# A yield that blocks shows up as a hang, not a failed assert.
+set_tests_properties(PLATFORM_THREAD_YIELD PROPERTIES TIMEOUT 60)
 
 set(_sndfile_fwd_contract_src
     "${_DSD_PUBLIC_HEADER_TEST_DIR}/CORE_SNDFILE_FWD_CONTRACT.c"
@@ -7146,6 +7302,20 @@ if(DSD_HAS_RADIO)
         NAME IO_RTL_REPLAY_EOF_AND_CF32
         COMMAND dsd-neo_test_io_rtl_replay_eof_and_cf32
     )
+
+    add_executable(
+        dsd-neo_test_io_rtl_preopened_fd
+        io/test_io_rtl_preopened_fd.c
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_preopened_fd
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_preopened_fd
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(NAME IO_RTL_PREOPENED_FD COMMAND dsd-neo_test_io_rtl_preopened_fd)
 endif()
 
 add_executable(
@@ -7571,4 +7741,28 @@ if(DSD_HAS_RADIO)
         "Site ID \\[02\\]\\[002\\]"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_M17 m17 -fz "SRC: N0CALL")
+
+    # Restart safety: bootstrap + engine lifecycle twice inside one process, the
+    # shape an embedding host (Android service, GUI shell) uses. Lives here
+    # because it replays an I/Q fixture and therefore needs the radio pipeline.
+    add_executable(dsd-neo_test_engine_restart engine/test_engine_restart.c)
+    target_include_directories(
+        dsd-neo_test_engine_restart
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_restart
+        PRIVATE "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${_DSD_NEO_IQ_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_restart
+        PRIVATE
+            dsd-neo_engine
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(NAME ENGINE_RESTART COMMAND dsd-neo_test_engine_restart)
+    set_tests_properties(ENGINE_RESTART PROPERTIES TIMEOUT 240)
 endif()

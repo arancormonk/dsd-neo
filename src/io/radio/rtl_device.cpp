@@ -302,6 +302,10 @@ rtl_tuner_type_name(int tuner_type) {
 // Internal RTL device structure
 struct rtl_device {
     rtlsdr_dev_t* dev = nullptr;
+    /* Set when this device wrapped the app-supplied USB descriptor, so closing it
+     * knows to hand the descriptor back to its owner. See
+     * rtl_device_preopened_fd_in_use(). */
+    int owns_preopened_fd = 0;
     dsd_thread_t thread{};
     struct input_ring_state* input_ring = nullptr;
     struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
@@ -4897,6 +4901,49 @@ rtl_device_cleanup_common_state(struct rtl_device* dev) {
     }
 }
 
+/*
+ * Descriptor handed down from an Android app (USB-OTG). Written before the engine
+ * starts and read on the engine/open path, so the two threads need it atomic.
+ */
+static std::atomic<int> g_preopened_usb_fd{-1};
+
+/*
+ * Whether the descriptor is currently wrapped by libusb, as opposed to merely
+ * recorded. Its owner (the Android app) has to close the connection eventually and
+ * needs to know when that is safe; "is the engine running" is a poor proxy, because
+ * the descriptor is taken and released well inside a run. Raised before the wrap is
+ * attempted and lowered once the device is closed, so it is never clear while a
+ * transfer could still be in flight.
+ */
+static std::atomic<int> g_preopened_usb_fd_in_use{0};
+
+void
+rtl_device_set_preopened_fd(int sys_fd) {
+    g_preopened_usb_fd.store((sys_fd < 0) ? -1 : sys_fd, std::memory_order_release);
+}
+
+int
+rtl_device_preopened_fd_is_set(void) {
+    return (g_preopened_usb_fd.load(std::memory_order_acquire) >= 0) ? 1 : 0;
+}
+
+int
+rtl_device_preopened_fd_in_use(void) {
+    return g_preopened_usb_fd_in_use.load(std::memory_order_acquire);
+}
+
+int
+rtl_device_preopened_fd_supported(void) {
+    /* Must match the guard on the open path in rtl_device_create() exactly: a build
+     * that records a descriptor it cannot open from advertises a USB source that can
+     * never work. */
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 /**
  * @brief Create and initialize an RTL-SDR device.
  *
@@ -4940,6 +4987,27 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
     dev->if_gain_count = 0;
 
     int r = 0;
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    /* An injected descriptor means the app already picked and opened the device and
+     * libusb discovery is off, so opening by index cannot work. rtlsdr_open_fd() is a
+     * project patch on the vendored tree; the configure step proves it is there. */
+    const int preopened_fd = g_preopened_usb_fd.load(std::memory_order_acquire);
+    if (preopened_fd >= 0) {
+        /* Claimed before the wrap, not after: the owner must not be told the
+         * descriptor is free while libusb is part way through taking it. */
+        g_preopened_usb_fd_in_use.store(1, std::memory_order_release);
+        r = rtlsdr_open_fd(&dev->dev, preopened_fd);
+        if (r < 0) {
+            g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+            DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
+            rtl_device_cleanup_common_state(dev);
+            free(dev);
+            return NULL;
+        }
+        dev->owns_preopened_fd = 1;
+        return dev;
+    }
+#endif
 #if defined(_MSC_VER) && DSD_PLATFORM_WIN_NATIVE
     __try {
         r = rtlsdr_open(&dev->dev, (uint32_t)dev_index);
@@ -5401,6 +5469,12 @@ rtl_device_close_backend_resources(struct rtl_device* dev) {
     }
     if (dev->backend == RTL_BACKEND_USB && dev->dev) {
         rtlsdr_close(dev->dev);
+        if (dev->owns_preopened_fd) {
+            /* Released only now that libusb is done with it: the owner polls this to
+             * decide when closing the underlying connection is safe. */
+            dev->owns_preopened_fd = 0;
+            g_preopened_usb_fd_in_use.store(0, std::memory_order_release);
+        }
     }
     if (dev->backend == RTL_BACKEND_TCP && dev->sockfd != DSD_INVALID_SOCKET) {
         dsd_socket_close(dev->sockfd);

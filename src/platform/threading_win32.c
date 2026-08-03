@@ -234,4 +234,11 @@ dsd_thread_set_affinity(int cpu_index) {
     return 0;
 }
 
+void
+dsd_thread_yield(void) {
+    /* SwitchToThread rather than Sleep(0): it will yield to a *lower*-priority
+     * thread on this core, which is exactly the thread a spin is waiting for. */
+    (void)SwitchToThread();
+}
+
 #endif /* DSD_PLATFORM_WIN_NATIVE */

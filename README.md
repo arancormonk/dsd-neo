@@ -19,13 +19,18 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - Linux AppImage (aarch64): `dsd-neo-linux-aarch64-portable-<version>.AppImage`
   - macOS DMG (arm64): `dsd-neo-macos-arm64-portable-<version>.dmg`
   - Windows native ZIP (MSVC x86_64): `dsd-neo-msvc-x86_64-native-<version>.zip`
+  - Android APK (arm64-v8a): `dsd-neo-android-arm64-app-<version>.apk`
 - Nightly builds:
   - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
   - Windows native ZIP (MSVC x86_64): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
+  - Android APK (arm64-v8a): [dsd-neo-android-arm64-app-nightly.apk](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-android-arm64-app-nightly.apk)
 - Arch Linux (AUR): [dsd-neo](https://aur.archlinux.org/packages/dsd-neo) for stable releases,
   or [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git) for main-branch snapshots.
+
+The Android APK is side-loaded: arm64-v8a only, Android 10 (API 29) or newer. Every published APK is
+signed with the project release key, so nightly and stable builds install over each other.
 
 ## Project Status
 
@@ -89,7 +94,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - See [docs/cli.md](docs/cli.md) for environment variable reference.
 
 - Portable, ready‑to‑run builds
-  - Linux AppImage, macOS DMG, and Windows portable ZIP releases.
+  - Linux AppImage, macOS DMG, Windows portable ZIP, and Android APK releases.
 
 ### How this compares at a glance
 
@@ -120,6 +125,11 @@ OS package hints
 - Windows:
   - Preferred binary: the native MSVC ZIP.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` presets in `CMakePresets.json`.
+- Android (arm64-v8a app, work in progress):
+  - Preferred binary: the signed APK from the [Downloads](#downloads) section.
+  - Cross-compiled with the NDK and vcpkg: preset `android-arm64-release` for a headless CLI, preset `android-app`
+    for the Qt Quick APK. Inputs include a USB-OTG RTL-SDR, `rtl_tcp`, UDP/TCP PCM, and local files.
+  - Prerequisites, the USB descriptor flow, and known limits: [android/README.md](android/README.md).
 
 MBE vocoder dependency (mbelib-neo)
 
@@ -256,14 +266,32 @@ These are CMake cache options (set at configure time via `-D...`).
   - `-DDSD_ENABLE_TSAN=ON` — ThreadSanitizer in Debug builds; use a separate build from ASan/UBSan.
   - `-DDSD_ENABLE_FUZZING=ON` — Enable libFuzzer instrumentation and fuzz targets (Clang/libFuzzer builds).
 - Audio backend selection:
-  - `-DDSD_USE_PORTAUDIO=ON` — Use PortAudio instead of PulseAudio (default on Windows).
+  - `-DDSD_AUDIO_BACKEND=auto|pulse|portaudio|aaudio|none` — Select the audio backend (default `auto`:
+    PortAudio on Windows, PulseAudio elsewhere). `none` builds a discard/silence backend that needs no
+    audio library — device-audio output becomes a no-op instead of a configure failure. `aaudio` is
+    Android-only; it plays through AAudio, resamples when the device refuses the requested rate, and
+    reopens the stream by itself across route changes (headphones, Bluetooth).
+  - `DSD_NEO_AUDIO_STATS=1` in the environment prints per-stream output counters (underruns, drops)
+    when a stream closes; the AAudio backend also reports the format the device actually granted, plus
+    `in_frames` (what the decoder handed over, against `frames` = what the device accepted),
+    `underruns_partial` (a fragment of speech padded out to a full chunk) and `underruns_midspeech`
+    (concealment landing inside a call rather than after one). On a healthy stream the last two stay at
+    or near zero; concealment during idle gaps is expected and is just silence.
+  - `-DDSD_USE_PORTAUDIO=ON` — Deprecated alias for `-DDSD_AUDIO_BACKEND=portaudio`.
 - Radio backend selection:
   - `-DDSD_ENABLE_RTLSDR=ON|OFF` — Enable/disable RTL-SDR backend discovery.
   - `-DDSD_ENABLE_SOAPYSDR=ON|OFF` — Enable/disable SoapySDR backend discovery.
   - `-DDSD_REQUIRE_RTLSDR=ON|OFF` — Fail configure when RTL-SDR is enabled but unavailable.
   - `-DDSD_REQUIRE_SOAPYSDR=ON|OFF` — Fail configure when SoapySDR >= 0.8.1 is enabled but unavailable.
+  - `-DDSD_FORCE_RADIO_PIPELINE=ON` — Build the radio pipeline even with no SDR library present. Keeps
+    `rtl_tcp` input and radio-path I/Q replay working (real USB opens fail cleanly); used by targets that
+    cannot link librtlsdr/SoapySDR.
+  - `-DDSD_ANDROID_VENDORED_RTLSDR=ON` — Android only: build the vendored libusb/librtlsdr under
+    `android/third_party` and satisfy the RTL-SDR backend from them (needed for USB-OTG dongles).
 - UI and behavior toggles:
   - `-DDSD_ENABLE_TERMINAL_UI=ON|OFF` — Build the ncurses/PDCurses terminal frontend (default ON).
+  - `-DDSD_ENABLE_QT_UI=ON|OFF` — Build the Qt Quick frontend in `src/ui/qt` (default OFF; requires Qt 6). Used by
+    the Android app today and shared with the planned desktop GUI.
   - `-DCOLORS=OFF` — Disable ncurses color output.
   - `-DCOLORSLOGS=OFF` — Disable colored terminal/log output.
 - Protocol and feature knobs:
@@ -273,13 +301,21 @@ These are CMake cache options (set at configure time via `-D...`).
 - Optional features (auto‑detected):
   - RTL‑SDR support is enabled when `librtlsdr` is found.
   - SoapySDR support is enabled when SoapySDR >= 0.8.1 is found through a CMake package that exports an imported target.
-  - Codec2 support is enabled when `codec2` is found.
-  - rdio API upload support is enabled when libcurl is found.
+  - Codec2 support is enabled when `codec2` is found. Both degrade silently, so pass `-DDSD_REQUIRE_CODEC2=ON` to fail
+    configure instead; `-DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON` turns detection off outright.
+  - rdio API upload support is enabled when libcurl is found. `-DDSD_REQUIRE_CURL=ON` and
+    `-DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON` are the matching switches.
 
 ## CI Backend Policy
 
 - CI treats backend availability as a build contract, not a best-effort option.
 - Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
+- Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
+  library, no Codec2, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull
+  request, then signs and publishes the APK from `main` and release tags.
+- The Android and `win-msvc-*` presets require Codec2 and libcurl, so a vcpkg detection regression fails configure
+  rather than shipping a build that decodes no M17 voice. The host job above covers the opposite case: that the
+  degraded build still works.
 - Release/packaging/static-analysis jobs that are expected to exercise radio backends configure with:
   - `-DDSD_REQUIRE_RTLSDR=ON`
   - `-DDSD_REQUIRE_SOAPYSDR=ON`
@@ -385,6 +421,7 @@ Quick examples
 - Trunking and trunk scan CSV formats: `docs/csv-formats.md` (examples in `examples/`)
 - Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
+- Android app build, USB-OTG flow, and limits: `android/README.md`
 - RTL UDP retune control protocol: `docs/udp-control.md`
 - Module overview and build targets: `docs/code_map.md`
 - Build and installation policy: `docs/build-installation.md`
@@ -409,6 +446,8 @@ Quick examples
 - FEC: `src/fec`, headers `<dsd-neo/fec/...>` — BCH, Golay, Hamming, RS, BPTC, CRC/FCS.
 - Crypto: `src/crypto`, headers `<dsd-neo/crypto/...>` — RC2/RC4/DES/AES, ECDSA, and helpers.
 - Protocols: `src/protocol/<name>`, headers `<dsd-neo/protocol/<name>/...>` — DMR, dPMR, D‑STAR, NXDN, P25, X2‑TDMA, EDACS, ProVoice, M17, YSF.
+- UI: `src/ui/terminal` (ncurses frontend, target `dsd-neo_ui_terminal`), `src/ui/qt` (Qt Quick frontend, target `dsd-neo_ui_qt`, option `DSD_ENABLE_QT_UI`).
+- Android app: `android/` — Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr for USB‑OTG dongles.
 - Third‑party: `src/third_party/ezpwd` (INTERFACE target `dsd-neo_ezpwd`), `src/third_party/pffft` (STATIC target `dsd-neo_pffft`).
 
 ## Tooling

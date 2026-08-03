@@ -1,0 +1,622 @@
+name: android-ci
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main, master]
+    tags:
+      - "v*.*.*"
+    paths-ignore:
+      - ".*"
+      - "**/*.md"
+  pull_request:
+    branches: [main, master]
+    # Two NDK cross builds plus a Qt install is not worth spending on a docs-only
+    # change; keep this in step with the push filter above.
+    paths-ignore:
+      - ".*"
+      - "**/*.md"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build-cli:
+    name: arm64 CLI (NDK cross build)
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Install the pinned NDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ANDROID_NDK_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$sdk/ndk/$ANDROID_NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare cache directories
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-android-static.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-android-cli-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
+
+      - name: Configure (android-arm64-release)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-cli.log"
+          cmake --preset android-arm64-release -G Ninja \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
+          # The presets set DSD_REQUIRE_CODEC2/DSD_REQUIRE_CURL, so configure
+          # already failed if either was missing; assert the archives too, since
+          # the static triplet means a skipped port is invisible until link time.
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          lib=build/android-arm64-release/vcpkg_installed/arm64-android-static/lib
+          test -f "$lib/libcodec2.a"
+          test -f "$lib/libcurl.a"
+
+      - name: Build (android-arm64-release)
+        shell: bash
+        run: cmake --build --preset android-arm64-release -j
+
+      # Proves the code was linked in, not merely that the package was found.
+      - name: Verify codec2 and libcurl reached the CLI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          nm="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          syms=$("$nm" --defined-only build/android-arm64-release/apps/dsd-cli/dsd-neo)
+          grep -qE '(^| )codec2_create$' <<< "$syms"
+          grep -qE '(^| )curl_easy_init$' <<< "$syms"
+
+      - name: Verify the CLI is arm64 with 16 KB page alignment
+        shell: bash
+        run: tools/check_android_elf_alignment.sh build/android-arm64-release/apps/dsd-cli/dsd-neo
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
+  build-apk:
+    name: APK (Qt Quick app)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    outputs:
+      signed: ${{ steps.sign.outputs.SIGNED }}
+      art_name: ${{ steps.names.outputs.ART_NAME }}
+      apk_path: ${{ steps.names.outputs.APK_PATH }}
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          {
+            echo "ANDROID_NDK_VERSION=$ANDROID_NDK_VERSION"
+            echo "ANDROID_COMPILE_SDK=$ANDROID_COMPILE_SDK"
+            echo "ANDROID_BUILD_TOOLS_VERSION=$ANDROID_BUILD_TOOLS_VERSION"
+            echo "ANDROID_QT_VERSION=$ANDROID_QT_VERSION"
+          } >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ccache
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install the pinned NDK and SDK platform
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sdk="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" --install \
+            "ndk;$ANDROID_NDK_VERSION" \
+            "platforms;android-$ANDROID_COMPILE_SDK" \
+            "build-tools;$ANDROID_BUILD_TOOLS_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$sdk/ndk/$ANDROID_NDK_VERSION"
+            echo "ANDROID_NDK_ROOT=$sdk/ndk/$ANDROID_NDK_VERSION"
+          } >> "$GITHUB_ENV"
+
+      # Qt is installed with aqtinstall rather than a Qt-installing action: every
+      # action used here must be hash-pinned, transitively, and the available
+      # actions are not.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/aqtinstall.txt
+
+      - name: Record the Qt locations
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/qt"
+          {
+            echo "QT_INSTALL_ROOT=$root"
+            echo "QT_HOST_ROOT=$root/$ANDROID_QT_VERSION/gcc_64"
+            echo "QT_ANDROID_ROOT=$root/$ANDROID_QT_VERSION/android_arm64_v8a"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.QT_INSTALL_ROOT }}
+          key: qt-${{ env.ANDROID_QT_VERSION }}-linux-android_arm64_v8a-aqt3.3.0
+
+      - name: Install Qt (host kit and android_arm64_v8a kit)
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --require-hashes -r .github/requirements/aqtinstall.txt
+          aqt install-qt linux desktop "$ANDROID_QT_VERSION" linux_gcc_64 -O "$QT_INSTALL_ROOT"
+          # Qt 6.8+ publishes the Android kits under the host-agnostic "all_os".
+          aqt install-qt all_os android "$ANDROID_QT_VERSION" android_arm64_v8a -O "$QT_INSTALL_ROOT"
+
+      - name: Verify the Qt kits
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x "$QT_HOST_ROOT/bin/qmake"
+          test -f "$QT_ANDROID_ROOT/lib/cmake/Qt6/qt.toolchain.cmake"
+
+      - name: Prepare cache directories
+        shell: bash
+        run: mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE" "$CCACHE_DIR"
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'vcpkg-triplets/arm64-android-static.cmake', 'vcpkg-ports/**') }}
+          restore-keys: |
+            vcpkg-arm64-android-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-android-apk-${{ env.ANDROID_NDK_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=500M
+          ccache --set-config=compression=true
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
+        with:
+          # run-vcpkg requires a full 40-char SHA1.
+          # Keep this in sync with vcpkg.json's builtin-baseline.
+          vcpkgGitCommitId: "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3"
+
+      - name: Configure (android-app)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-app.log"
+          cmake --preset android-app -G Ninja \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          lib=build/android-app/vcpkg_installed/arm64-android-static/lib
+          test -f "$lib/libcodec2.a"
+          test -f "$lib/libcurl.a"
+
+      - name: Build the APK
+        shell: bash
+        run: cmake --build --preset android-app -j
+
+      - name: Locate the APK
+        id: apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t apks < <(find build/android-app -name '*.apk' | sort)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "No APK produced under build/android-app" >&2
+            exit 1
+          fi
+          printf 'Found: %s\n' "${apks[@]}"
+          # androiddeployqt copies the Gradle output next to the build tree, so
+          # several paths are byte-identical. Anything else means the build
+          # produced more than one APK and picking the first would be a coin toss.
+          mapfile -t digests < <(sha256sum "${apks[@]}" | awk '{ print $1 }' | sort -u)
+          if [ "${#digests[@]}" -ne 1 ]; then
+            echo "build/android-app contains more than one distinct APK" >&2
+            exit 1
+          fi
+          echo "APK_PATH=${apks[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare artifact naming
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            art="dsd-neo-android-arm64-app-${REF_NAME}"
+          else
+            art="dsd-neo-android-arm64-app-nightly"
+          fi
+          mkdir -p dist
+          {
+            echo "APK_PATH=dist/${art}.apk"
+            echo "ART_NAME=${art}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign the APK
+        id: sign
+        shell: bash
+        env:
+          BUILT_APK: ${{ steps.apk.outputs.APK_PATH }}
+          OUT_APK: ${{ steps.names.outputs.APK_PATH }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            if [ "${IS_TAG}" = 'true' ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not configured; a release tag cannot ship an unsigned APK" >&2
+              exit 1
+            fi
+            # Pull requests never see the secrets, so only a push that was meant
+            # to publish deserves a warning annotation.
+            if [ "${IS_PR}" = 'true' ]; then
+              echo "Pull request build: leaving the APK unsigned."
+            else
+              echo "::warning::Android signing secrets are not configured; the APK stays unsigned and is not published"
+            fi
+            cp "${BUILT_APK}" "${OUT_APK}"
+            echo "SIGNED=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          : "${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
+          : "${KEY_ALIAS:?ANDROID_KEY_ALIAS is required alongside ANDROID_KEYSTORE_BASE64}"
+          : "${KEY_PASSWORD:?ANDROID_KEY_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
+          keystore="$RUNNER_TEMP/android-release.jks"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "$keystore"
+          tools="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
+          # androiddeployqt's release output is already 16 KB aligned and
+          # apksigner preserves that, so re-running zipalign would only risk
+          # undoing it; the alignment checks below run on the signed APK.
+          "$tools/apksigner" sign \
+            --ks "$keystore" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --ks-key-alias "${KEY_ALIAS}" \
+            --out "${OUT_APK}" \
+            "${BUILT_APK}"
+          "$tools/apksigner" verify --verbose --print-certs "${OUT_APK}"
+          "$tools/zipalign" -c -P 16 4 "${OUT_APK}"
+          echo "SIGNED=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify every packaged library is arm64 with 16 KB page alignment
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          unzip -q "$APK_PATH" 'lib/*' -d "$workdir" || true
+          if [ ! -d "$workdir/lib" ]; then
+            echo "APK contains no native libraries" >&2
+            exit 1
+          fi
+          mapfile -t libs < <(find "$workdir/lib" -name '*.so' | sort)
+          if [ "${#libs[@]}" -eq 0 ]; then
+            echo "APK contains no native libraries" >&2
+            exit 1
+          fi
+          echo "Checking ${#libs[@]} packaged libraries"
+          tools/check_android_elf_alignment.sh "${libs[@]}"
+          # arm64-v8a only: any other ABI directory means androiddeployqt was
+          # not restricted to the supported ABI.
+          if find "$workdir/lib" -mindepth 1 -maxdepth 1 -type d ! -name 'arm64-v8a' | grep -q .; then
+            echo "APK contains ABIs other than arm64-v8a" >&2
+            exit 1
+          fi
+
+      - name: Verify the APK carries the required license files
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          docdir="assets/doc/dsd-neo"
+          required=(
+            LICENSE
+            COPYRIGHT
+            THIRD_PARTY.md
+            licenses/ezpwd-LGPL-2.1-or-later.txt
+            licenses/pffft-FFTPACK.txt
+            licenses/libusb-LGPL-2.1-or-later.txt
+            licenses/librtlsdr-GPL-2.0-or-later.txt
+            licenses/dejavu-fonts-Bitstream-Vera.txt
+          )
+          for f in "${required[@]}"; do
+            # unzip exits 11 when the pattern matches no entry.
+            if ! unzip -l "$APK_PATH" "$docdir/$f" > /dev/null 2>&1; then
+              echo "ERROR: missing required license file in the APK: $docdir/$f" >&2
+              exit 1
+            fi
+          done
+          echo "All required license files are packaged."
+
+      - name: Verify the APK's launcher name and icon
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          aapt2="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          badging=$("$aapt2" dump badging "$APK_PATH")
+          # Unless QT_ANDROID_APP_NAME/QT_ANDROID_APP_ICON stay set,
+          # androiddeployqt substitutes the CMake target name into android:label
+          # and drops android:icon entirely, and the app installs as
+          # "dsd-neo-app" with the stock Android robot.
+          if ! printf '%s\n' "$badging" | grep -qxF "application-label:'DSD-neo'"; then
+            echo "ERROR: unexpected launcher label" >&2
+            printf '%s\n' "$badging" | grep '^application-label' >&2 || true
+            exit 1
+          fi
+          if ! printf '%s\n' "$badging" | grep -qE "^application-icon-[0-9]+:'[^']"; then
+            echo "ERROR: the APK declares no launcher icon" >&2
+            exit 1
+          fi
+          # The version code is the release version scaled up with git describe's
+          # commit distance added, so it is always seven digits or more. A
+          # smaller one means the derivation regressed to a placeholder or to
+          # bare PROJECT_VERSION, either of which gives nightlies the same code
+          # as the release they follow.
+          version_code=$(printf '%s\n' "$badging" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -n1)
+          if [ -z "$version_code" ] || [ "$version_code" -lt 1000000 ]; then
+            echo "ERROR: unexpected versionCode '${version_code}'" >&2
+            exit 1
+          fi
+          # aapt2 renames res/ paths in a release APK, so assert on the resource
+          # table rather than on the archive entries.
+          names=$("$aapt2" dump resources "$APK_PATH" | awk '$1 == "resource" {print $3}')
+          required=(
+            mipmap/ic_launcher
+            mipmap/ic_launcher_foreground
+            mipmap/ic_launcher_monochrome
+            drawable/ic_stat_dsdneo
+            drawable/splash
+            style/Theme.DsdNeo
+          )
+          for res in "${required[@]}"; do
+            if ! printf '%s\n' "$names" | grep -qxF "$res"; then
+              echo "ERROR: missing resource in the APK: $res" >&2
+              exit 1
+            fi
+          done
+          echo "Launcher identity OK: DSD-neo with the adaptive icon."
+
+      - name: Upload APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}
+          path: ${{ steps.names.outputs.APK_PATH }}
+          retention-days: 7
+
+      - name: Generate APK SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.names.outputs.APK_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.names.outputs.APK_PATH }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      - name: Attest APK provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.names.outputs.APK_PATH }}
+
+      - name: Attest APK SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.names.outputs.APK_PATH }}
+          sbom-path: ${{ steps.names.outputs.APK_PATH }}.spdx.json
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
+  publish-apk:
+    name: Publish APK
+    needs: build-apk
+    runs-on: ubuntu-latest
+    # An unsigned APK cannot be installed, so a build that could not sign
+    # publishes nothing rather than shipping a broken download.
+    if: >-
+      github.repository == 'arancormonk/dsd-neo' &&
+      needs.build-apk.outputs.signed == 'true' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')))
+    permissions:
+      actions: read
+      contents: write
+    env:
+      APK_PATH: ${{ needs.build-apk.outputs.apk_path }}
+      ART_NAME: ${{ needs.build-apk.outputs.art_name }}
+    steps:
+      - name: Checkout release helpers
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-apk.outputs.art_name }}
+          path: dist
+
+      - name: Download APK SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-apk.outputs.art_name }}.spdx.json
+          path: dist
+
+      - name: Normalize downloaded SBOM filename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv -f "dist/${ART_NAME}.spdx.json" "${APK_PATH}.spdx.json"
+
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${APK_PATH}"
+          test -f "${APK_PATH}.spdx.json"
+
+      - name: Wait for release metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: tools/ci_wait_for_release.sh
+
+      - name: Upload APK release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${APK_PATH}" \
+            "${APK_PATH}.spdx.json" \
+            --repo "${RELEASE_REPOSITORY}" \
+            --clobber
+
+      - name: Upload APK nightly assets (overwrite)
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          tag_name: nightly
+          name: nightly
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ needs.build-apk.outputs.apk_path }}
+            ${{ needs.build-apk.outputs.apk_path }}.spdx.json
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}

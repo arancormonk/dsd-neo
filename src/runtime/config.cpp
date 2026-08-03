@@ -622,6 +622,10 @@ config_init_bootstrap_and_debug(dsdneoRuntimeConfig& c) {
     c.no_bootstrap_is_set = env_is_set(nb);
     c.no_bootstrap_enable = c.no_bootstrap_is_set ? (env_is_falsey(nb) ? 0 : 1) : 0;
 
+    const char* nsh = getenv("DSD_NEO_NO_SIGNAL_HANDLERS");
+    c.no_signal_handlers_is_set = env_is_set(nsh);
+    c.no_signal_handlers_enable = c.no_signal_handlers_is_set ? (env_is_falsey(nsh) ? 0 : 1) : 0;
+
     /* Debug/tuning toggles */
     const char* ds = getenv("DSD_NEO_DEBUG_SYNC");
     c.debug_sync_is_set = env_is_set(ds);

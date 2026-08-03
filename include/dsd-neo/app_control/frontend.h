@@ -8,13 +8,17 @@
  * @brief Frontend-facing app-control metrics API.
  *
  * This boundary exposes plain metric values without leaking live
- * dsd_opts/dsd_state pointers or IO-layer RTL types.
+ * dsd_opts/dsd_state pointers or IO-layer RTL types. The one accessor that does
+ * take those pointers reads published snapshots, never the live objects — see
+ * dsd_app_frontend_get_metrics_for_snapshot().
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 #include "dsd-neo/platform/platform.h"
 
@@ -107,6 +111,47 @@ enum {
 
 int dsd_app_frontend_get_metrics(dsd_frontend_metrics* out);
 int dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks);
+
+/**
+ * @brief Metrics read from snapshots the caller already holds.
+ *
+ * The accessors above take a fresh snapshot each time. A frontend that reads both
+ * metrics and snapshot fields to build one frame would therefore consume twice, and
+ * a publish landing in between leaves the two halves of that frame describing
+ * different generations. Consume once per frame (see app_control/snapshot.h) and
+ * pass the result here.
+ *
+ * @param opts          Options snapshot from dsd_app_get_latest_opts_snapshot().
+ * @param state         State snapshot from dsd_app_get_latest_snapshot().
+ * @param out           Receives the metrics.
+ * @param snr_fallbacks DSD_FRONTEND_SNR_FALLBACK_* mask.
+ * @return 0 on success, negative on failure.
+ */
+int dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                              unsigned int snr_fallbacks);
+
+/** @brief One SNR reading, and whether an estimator actually produced it. */
+typedef struct {
+    double snr_db; /**< Reading in dB. Only meaningful while @c valid is nonzero. */
+    int valid;     /**< Nonzero when an estimator reported; zero when none has yet. */
+} dsd_frontend_snr_readout;
+
+/**
+ * @brief Pick the SNR estimator that matches @p rf_mod, applying the fallbacks.
+ *
+ * There is one estimator per modulation and they do not stand in for one another: a
+ * GFSK stream reads nothing on the C4FM estimator, and a session with no demodulator
+ * at all (UDP, file, rtl_tcp) reads nothing anywhere. Each estimator reports a large
+ * negative sentinel until it has a measurement, so a frontend that publishes the
+ * value unconditionally prints that sentinel as though it were a reading.
+ *
+ * Every frontend selects the same way through this: by modulation, then the eye or
+ * constellation fallback for that modulation, and only then reports invalid.
+ *
+ * @param metrics Metrics filled with DSD_FRONTEND_SNR_FALLBACK_ALL, or NULL.
+ * @param rf_mod  Modulation from dsd_state::rf_mod (0 C4FM, 1 QPSK, 2 GFSK).
+ */
+dsd_frontend_snr_readout dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod);
 
 int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);

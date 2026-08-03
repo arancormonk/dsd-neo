@@ -28,6 +28,11 @@ else()
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
 endif()
 
+if(ANDROID)
+    # liblog carries __android_log_* for the runtime's platform log sink.
+    target_link_libraries(dsd-neo_platform PUBLIC log)
+endif()
+
 # Platform-independent sources (compiled on all platforms including host tests)
 target_sources(
     dsd-neo_platform
@@ -39,14 +44,14 @@ target_sources(
 )
 
 # Audio backend sources
-if(DSD_USE_PORTAUDIO)
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     target_sources(dsd-neo_platform PRIVATE audio_portaudio.c)
     target_link_libraries(dsd-neo_platform PUBLIC PortAudio::PortAudio)
     target_include_directories(
         dsd-neo_platform
         PUBLIC ${PORTAUDIO_INCLUDE_DIRS}
     )
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     target_sources(dsd-neo_platform PRIVATE audio_pulse.c)
     target_link_libraries(
         dsd-neo_platform
@@ -56,6 +61,11 @@ else()
         dsd-neo_platform
         PUBLIC ${PULSEAUDIO_INCLUDE_DIRS}
     )
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    target_sources(dsd-neo_platform PRIVATE audio_aaudio.c)
+    target_link_libraries(dsd-neo_platform PUBLIC aaudio log)
+else()
+    target_sources(dsd-neo_platform PRIVATE audio_null.c)
 endif()
 
 target_include_directories(

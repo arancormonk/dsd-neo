@@ -75,6 +75,7 @@ option(
 option(DSD_ENABLE_RTLSDR "Enable RTL-SDR backend support" ON)
 option(DSD_ENABLE_SOAPYSDR "Enable SoapySDR backend support" ON)
 option(DSD_ENABLE_TERMINAL_UI "Enable ncurses/PDCurses terminal frontend" ON)
+option(DSD_ENABLE_QT_UI "Enable the Qt Quick frontend (src/ui/qt)" OFF)
 set(DSD_SOAPYSDR_MIN_VERSION "0.8.1")
 option(
     DSD_REQUIRE_RTLSDR
@@ -86,6 +87,29 @@ option(
     "Fail configure when SoapySDR is enabled but not found"
     OFF
 )
+# Codec2 and libcurl are auto-detected, and a build that silently loses either
+# still links: M17 just stops emitting voice, and rdio uploads disappear. Cross
+# builds cannot be smoke-tested on the build host, so let them demand the
+# dependency instead of degrading quietly. Use
+# CMAKE_DISABLE_FIND_PACKAGE_CODEC2/CURL to turn detection off outright.
+option(DSD_REQUIRE_CODEC2 "Fail configure when Codec2 is not found" OFF)
+option(DSD_REQUIRE_CURL "Fail configure when libcurl is not found" OFF)
+option(
+    DSD_FORCE_RADIO_PIPELINE
+    "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"
+    OFF
+)
+option(
+    DSD_ANDROID_VENDORED_RTLSDR
+    "Build the vendored libusb + librtlsdr under android/third_party instead of searching for them"
+    OFF
+)
+if(DSD_ANDROID_VENDORED_RTLSDR AND NOT ANDROID)
+    message(
+        FATAL_ERROR
+        "DSD_ANDROID_VENDORED_RTLSDR=ON is Android-only; the vendored tree targets Bionic and usbfs via a wrapped descriptor."
+    )
+endif()
 
 # -----------------------------------------------------------------------------
 # Common warning flags (target-scoped)
@@ -100,7 +124,7 @@ target_include_directories(
     dsd-neo_safe_api
     INTERFACE ${PROJECT_SOURCE_DIR}/include
 )
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     target_compile_definitions(dsd-neo_safe_api INTERFACE _GNU_SOURCE)
 endif()
 if(MSVC)
@@ -509,7 +533,11 @@ find_package(OpenSSL 3.0 REQUIRED)
 # soft-decision frame decode and result-based processing APIs used by dsd-neo.
 set(_DSD_MBE_REQUIRED_VERSION 2.0)
 find_package(mbe-neo ${_DSD_MBE_REQUIRED_VERSION} CONFIG REQUIRED)
-if(TARGET mbe_neo::mbe_shared)
+if(ANDROID AND TARGET mbe_neo::mbe_static)
+    # Every shared library an Android app uses has to be bundled into the APK
+    # and loaded by name; link mbe-neo statically so there is one less.
+    set(MBE_LINK_TARGET mbe_neo::mbe_static)
+elseif(TARGET mbe_neo::mbe_shared)
     set(MBE_LINK_TARGET mbe_neo::mbe_shared)
 else()
     message(
@@ -608,7 +636,17 @@ if(NOT DSD_HAVE_MBE_NEO_SOFT_API)
     )
 endif()
 if(DSD_ENABLE_RTLSDR)
-    find_package(RTLSDR)
+    if(DSD_ANDROID_VENDORED_RTLSDR)
+        # Adds the libusb/librtlsdr static targets and publishes the same
+        # RTLSDR_* variables FindRTLSDR.cmake would have produced. It has to run
+        # here, ahead of the DSD_HAS_RTLSDR decision below.
+        add_subdirectory(
+            android/third_party
+            "${CMAKE_BINARY_DIR}/android-third-party"
+        )
+    else()
+        find_package(RTLSDR)
+    endif()
 endif()
 
 if(DSD_ENABLE_SOAPYSDR)
@@ -668,8 +706,13 @@ if(DSD_ENABLE_SOAPYSDR AND NOT DSD_HAS_SOAPYSDR AND NOT DSD_REQUIRE_SOAPYSDR)
     )
 endif()
 
+# The radio pipeline builds without an SDR library: rtl_device.cpp carries
+# complete rtlsdr_* stubs when USE_RTLSDR is undefined, so rtl_tcp (plain BSD
+# sockets) and radio-path I/Q replay still work while real USB opens fail
+# cleanly. Forcing it on is how targets with no SDR library (Android) keep
+# network SDR input.
 set(DSD_HAS_RADIO OFF)
-if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR)
+if(DSD_HAS_RTLSDR OR DSD_HAS_SOAPYSDR OR DSD_FORCE_RADIO_PIPELINE)
     set(DSD_HAS_RADIO ON)
 endif()
 
@@ -681,7 +724,10 @@ message(
     STATUS
     "SoapySDR backend enabled: ${DSD_ENABLE_SOAPYSDR} (available: ${DSD_HAS_SOAPYSDR})"
 )
-message(STATUS "Radio pipeline available: ${DSD_HAS_RADIO}")
+message(
+    STATUS
+    "Radio pipeline available: ${DSD_HAS_RADIO} (forced: ${DSD_FORCE_RADIO_PIPELINE})"
+)
 
 # Curses library selection:
 # - Windows: PDCurses
@@ -753,40 +799,137 @@ endif()
 find_package(CODEC2)
 find_package(CURL 7.56.0)
 
-# Audio backend selection
-option(
-    DSD_USE_PORTAUDIO
-    "Use PortAudio for cross-platform audio (required on Windows)"
-    OFF
-)
-
-# Windows requires PortAudio (no PulseAudio available)
-if(WIN32)
-    set(DSD_USE_PORTAUDIO ON CACHE BOOL "Use PortAudio on Windows" FORCE)
+# Catch the contradictory pair explicitly: CMAKE_DISABLE_FIND_PACKAGE_* is the
+# off switch (tools/install_linux.sh drives Codec2 that way), so pairing it with
+# a require option would otherwise fail below with a misleading "not found".
+if(DSD_REQUIRE_CODEC2 AND CMAKE_DISABLE_FIND_PACKAGE_CODEC2)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_CODEC2=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON."
+    )
 endif()
 
+if(DSD_REQUIRE_CURL AND CMAKE_DISABLE_FIND_PACKAGE_CURL)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_CURL=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_CURL=ON."
+    )
+endif()
+
+# Normalize to ON/OFF so the status lines below stay greppable; the find modules
+# report found-ness in their own spellings.
+set(DSD_HAS_CODEC2 OFF)
+if(CODEC2_FOUND)
+    set(DSD_HAS_CODEC2 ON)
+endif()
+
+set(DSD_HAS_CURL OFF)
+if(CURL_FOUND)
+    set(DSD_HAS_CURL ON)
+endif()
+
+if(DSD_REQUIRE_CODEC2 AND NOT DSD_HAS_CODEC2)
+    message(
+        FATAL_ERROR
+        "Codec2 was required but not found. Install a Codec2 development package or disable DSD_REQUIRE_CODEC2."
+    )
+endif()
+
+if(DSD_REQUIRE_CURL AND NOT DSD_HAS_CURL)
+    message(
+        FATAL_ERROR
+        "libcurl >= 7.56.0 was required but not found. Install a libcurl development package or disable DSD_REQUIRE_CURL."
+    )
+endif()
+
+# Both degrade silently when absent and the binary still links: M17 simply stops
+# emitting voice, and rdio uploads disappear. Report either way so a build that
+# quietly lost one is visible in the configure log.
+message(STATUS "Codec2 available: ${DSD_HAS_CODEC2} (M17 voice)")
+message(STATUS "libcurl available: ${DSD_HAS_CURL} (rdio API uploads)")
+
+# Audio backend selection
+set(DSD_AUDIO_BACKEND
+    "auto"
+    CACHE STRING
+    "Audio backend: auto|pulse|portaudio|aaudio|none"
+)
+set_property(
+    CACHE DSD_AUDIO_BACKEND
+    PROPERTY STRINGS auto pulse portaudio aaudio none
+)
+
+# Deprecated alias kept for existing scripts and CI invocations.
+option(DSD_USE_PORTAUDIO "Deprecated: use DSD_AUDIO_BACKEND=portaudio" OFF)
 if(DSD_USE_PORTAUDIO)
+    if(DSD_AUDIO_BACKEND STREQUAL "auto")
+        message(
+            WARNING
+            "DSD_USE_PORTAUDIO is deprecated; use -DDSD_AUDIO_BACKEND=portaudio instead."
+        )
+        set(DSD_AUDIO_BACKEND "portaudio")
+    else()
+        # Never silently: a stale -DDSD_USE_PORTAUDIO=ON in a caller's script would
+        # otherwise look honoured while a different backend was built.
+        message(
+            WARNING
+            "DSD_USE_PORTAUDIO=ON is ignored because DSD_AUDIO_BACKEND was set explicitly to "
+            "'${DSD_AUDIO_BACKEND}'. Drop the deprecated option."
+        )
+    endif()
+endif()
+
+# "auto": PortAudio on Windows (no PulseAudio available), PulseAudio elsewhere.
+if(DSD_AUDIO_BACKEND STREQUAL "auto")
+    if(WIN32)
+        set(DSD_AUDIO_BACKEND "portaudio")
+    else()
+        set(DSD_AUDIO_BACKEND "pulse")
+    endif()
+endif()
+
+if(NOT DSD_AUDIO_BACKEND MATCHES "^(pulse|portaudio|aaudio|none)$")
+    message(
+        FATAL_ERROR
+        "Unknown DSD_AUDIO_BACKEND '${DSD_AUDIO_BACKEND}' (expected auto|pulse|portaudio|aaudio|none)"
+    )
+endif()
+if(WIN32 AND DSD_AUDIO_BACKEND STREQUAL "pulse")
+    message(FATAL_ERROR "DSD_AUDIO_BACKEND=pulse is not supported on Windows")
+endif()
+if(DSD_AUDIO_BACKEND STREQUAL "aaudio" AND NOT ANDROID)
+    message(FATAL_ERROR "DSD_AUDIO_BACKEND=aaudio requires an Android build")
+endif()
+
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     find_package(PortAudio REQUIRED)
     add_compile_definitions(DSD_USE_PORTAUDIO)
     message(STATUS "Audio backend: PortAudio")
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     find_package(PulseAudio REQUIRED)
     message(STATUS "Audio backend: PulseAudio")
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    message(STATUS "Audio backend: AAudio")
+else()
+    message(STATUS "Audio backend: none (device audio is a no-op sink)")
 endif()
 
 set(_PUBLIC_INCLUDES ${LIBSNDFILE_INCLUDE_DIR} ${_MBE_TARGET_INCLUDE_DIRS})
 
 # Audio backend includes and libraries
 set(AUDIO_SYSTEM_LIBS "")
-if(DSD_USE_PORTAUDIO)
+set(AUDIO_LIBS "")
+if(DSD_AUDIO_BACKEND STREQUAL "portaudio")
     list(APPEND _PUBLIC_INCLUDES ${PORTAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PORTAUDIO_LIBRARY})
     if(WIN32)
         list(APPEND AUDIO_SYSTEM_LIBS winmm ole32 uuid setupapi)
     endif()
-else()
+elseif(DSD_AUDIO_BACKEND STREQUAL "pulse")
     list(APPEND _PUBLIC_INCLUDES ${PULSEAUDIO_INCLUDE_DIRS})
     set(AUDIO_LIBS ${PULSEAUDIO_SIMPLE_LIBRARY} ${PULSEAUDIO_LIBRARY})
+elseif(DSD_AUDIO_BACKEND STREQUAL "aaudio")
+    set(AUDIO_LIBS aaudio)
 endif()
 
 set(LIBS ${MBE_LINK_TARGET} ${LIBSNDFILE_LIBRARIES} ${AUDIO_LIBS})
@@ -862,22 +1005,62 @@ if(DSD_HAS_RTLSDR)
         INTERFACE ${RTLSDR_INCLUDE_DIRS}
     )
 
-    # Detect rtlsdr_set_bias_tee availability in the installed librtlsdr
-    include(CheckSymbolExists)
-    set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
-    set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
-    set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
-    set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
-    unset(HAVE_RTLSDR_BIAS_TEE CACHE)
-    check_symbol_exists(rtlsdr_set_bias_tee "rtl-sdr.h" HAVE_RTLSDR_BIAS_TEE)
-    set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
-    set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
-    unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
-    unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    # Detect optional entry points in the librtlsdr being linked:
+    # - rtlsdr_set_bias_tee, absent from older releases
+    # - rtlsdr_open_fd, a project patch carried only by the vendored Android tree
+    if(DSD_ANDROID_VENDORED_RTLSDR)
+        # The vendored library is built from this tree, so it does not exist yet
+        # and a link probe cannot run. Header and implementation are the same
+        # snapshot, so the declaration is the answer.
+        unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        unset(HAVE_RTLSDR_OPEN_FD CACHE)
+        file(READ "${RTLSDR_INCLUDE_DIRS}/rtl-sdr.h" _DSD_RTLSDR_HEADER)
+        if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_set_bias_tee")
+            set(HAVE_RTLSDR_BIAS_TEE ON)
+        endif()
+        if(_DSD_RTLSDR_HEADER MATCHES "rtlsdr_open_fd")
+            set(HAVE_RTLSDR_OPEN_FD ON)
+        endif()
+        unset(_DSD_RTLSDR_HEADER)
+    else()
+        include(CheckSymbolExists)
+        set(_CMAKE_REQUIRED_INCLUDES_SAVE "${CMAKE_REQUIRED_INCLUDES}")
+        set(_CMAKE_REQUIRED_LIBRARIES_SAVE "${CMAKE_REQUIRED_LIBRARIES}")
+        set(CMAKE_REQUIRED_INCLUDES ${RTLSDR_INCLUDE_DIRS})
+        set(CMAKE_REQUIRED_LIBRARIES ${RTLSDR_LIBRARIES})
+        unset(HAVE_RTLSDR_BIAS_TEE CACHE)
+        unset(HAVE_RTLSDR_OPEN_FD CACHE)
+        check_symbol_exists(
+            rtlsdr_set_bias_tee
+            "rtl-sdr.h"
+            HAVE_RTLSDR_BIAS_TEE
+        )
+        check_symbol_exists(rtlsdr_open_fd "rtl-sdr.h" HAVE_RTLSDR_OPEN_FD)
+        set(CMAKE_REQUIRED_INCLUDES "${_CMAKE_REQUIRED_INCLUDES_SAVE}")
+        set(CMAKE_REQUIRED_LIBRARIES "${_CMAKE_REQUIRED_LIBRARIES_SAVE}")
+        unset(_CMAKE_REQUIRED_INCLUDES_SAVE)
+        unset(_CMAKE_REQUIRED_LIBRARIES_SAVE)
+    endif()
     if(HAVE_RTLSDR_BIAS_TEE)
         target_compile_definitions(
             dsd-neo_feature_rtlsdr
             INTERFACE USE_RTLSDR_BIAS_TEE
+        )
+    endif()
+    if(HAVE_RTLSDR_OPEN_FD)
+        target_compile_definitions(
+            dsd-neo_feature_rtlsdr
+            INTERFACE USE_RTLSDR_OPEN_FD
+        )
+    elseif(ANDROID)
+        # USB-OTG descriptor injection is the only way an app can reach a dongle,
+        # so a librtlsdr without it makes the RTL-SDR backend dead weight. Fail
+        # here rather than at link time, or at runtime on the device.
+        message(
+            FATAL_ERROR
+            "librtlsdr on Android must provide rtlsdr_open_fd() for USB-OTG descriptor injection. "
+            "Build the vendored tree with -DDSD_ANDROID_VENDORED_RTLSDR=ON, or disable the backend "
+            "with -DDSD_ENABLE_RTLSDR=OFF (rtl_tcp still works via -DDSD_FORCE_RADIO_PIPELINE=ON)."
         )
     endif()
 else()
@@ -885,7 +1068,7 @@ else()
     add_library(dsd-neo_feature_rtlsdr INTERFACE)
 endif()
 
-if(CODEC2_FOUND)
+if(DSD_HAS_CODEC2)
     list(APPEND LIBS ${CODEC2_LIBRARIES})
 
     # Interface target for USE_CODEC2 compile definition
@@ -901,7 +1084,7 @@ else()
     add_library(dsd-neo_feature_codec2 INTERFACE)
 endif()
 
-if(CURL_FOUND)
+if(DSD_HAS_CURL)
     add_library(dsd-neo_feature_curl INTERFACE)
     target_compile_definitions(dsd-neo_feature_curl INTERFACE USE_CURL)
     target_link_libraries(dsd-neo_feature_curl INTERFACE CURL::libcurl)
@@ -944,6 +1127,15 @@ install(
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
     RENAME pffft-FFTPACK.txt
 )
+# The Qt frontend compiles DejaVu Sans Mono into its resource bundle, so the notice
+# ships with whatever bundles the frontend rather than with a particular platform.
+if(DSD_ENABLE_QT_UI)
+    install(
+        FILES src/ui/qt/fonts/DejaVu-LICENSE.txt
+        DESTINATION ${CMAKE_INSTALL_DOCDIR}/licenses
+        RENAME dejavu-fonts-Bitstream-Vera.txt
+    )
+endif()
 
 add_subdirectory(src/platform)
 add_subdirectory(src/core)
@@ -958,6 +1150,10 @@ add_subdirectory(src/engine)
 add_subdirectory(src/app_control)
 add_subdirectory(src/ui)
 add_subdirectory(apps)
+# Android app shell (Qt Quick frontend + JNI lifecycle glue).
+if(ANDROID AND DSD_ENABLE_QT_UI)
+    add_subdirectory(android)
+endif()
 # Unit tests are built when BUILD_TESTING is enabled.
 if(BUILD_TESTING)
     add_subdirectory(tests)

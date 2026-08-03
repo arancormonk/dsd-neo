@@ -5,6 +5,7 @@
 
 #include <dsd-neo/runtime/cli.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
@@ -380,9 +381,69 @@ test_iq_missing_value_forms_are_removed_safely(void) {
     return rc;
 }
 
+/**
+ * @brief Compaction shifts survivors down and leaves stale aliases in the tail.
+ *
+ * A host that heap-allocates argv (the Android JNI layer does) must free through
+ * its own record of the allocations, never through the compacted array: the tail
+ * slots still point at strings that also live at lower indices, so freeing all
+ * argc slots double-frees them. This pins the aliasing so the hazard cannot be
+ * quietly designed away, and — because the strings are heap-allocated — a wrong
+ * free here is a real double free under the ASan preset.
+ */
+static int
+test_compaction_leaves_aliases_in_the_tail(void) {
+    const char* const words[] = {"dsd-neo", "--frontend", "none", "-f1", "-o", "pulse"};
+    const int argc = (int)(sizeof(words) / sizeof(words[0]));
+    char* owned[sizeof(words) / sizeof(words[0])];
+    char* argv[(sizeof(words) / sizeof(words[0])) + 1U];
+    int rc = 0;
+    int aliases = 0;
+
+    for (int i = 0; i < argc; i++) {
+        const size_t len = strlen(words[i]) + 1U;
+        owned[i] = (char*)malloc(len);
+        if (owned[i] == NULL) {
+            DSD_FPRINTF(stderr, "allocation failed\n");
+            for (int j = 0; j < i; j++) {
+                free(owned[j]);
+            }
+            return 1;
+        }
+        DSD_MEMCPY(owned[i], words[i], len);
+        argv[i] = owned[i];
+    }
+    argv[argc] = NULL;
+
+    const int new_argc = dsd_cli_compact_args(argc, argv);
+    if (new_argc != 4) {
+        DSD_FPRINTF(stderr, "expected new_argc=4, got %d\n", new_argc);
+        rc = 1;
+    }
+
+    for (int i = new_argc; i < argc; i++) {
+        for (int j = 0; j < new_argc; j++) {
+            if (argv[i] != NULL && argv[i] == argv[j]) {
+                aliases++;
+            }
+        }
+    }
+    if (aliases == 0) {
+        DSD_FPRINTF(stderr, "expected the compacted tail to alias a surviving entry\n");
+        rc = 1;
+    }
+
+    /* Free through the ownership record, which compaction never touched. */
+    for (int i = 0; i < argc; i++) {
+        free(owned[i]);
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_compaction_leaves_aliases_in_the_tail();
     rc |= test_config_without_path_does_not_consume_next_arg();
     rc |= test_config_with_path_consumes_only_path();
     rc |= test_config_equals_form_is_removed();

@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -11,7 +12,6 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "snapshot_internal.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -35,6 +35,23 @@ frontend_metrics_defaults(dsd_frontend_metrics* out, const dsd_opts* opts) {
 static int
 frontend_snr_value_is_valid(double snr_db) {
     return snr_db > (double)FRONTEND_SNR_INVALID_DB;
+}
+
+/*
+ * Whether anything below the decoder is a radio at all.
+ *
+ * Every reading gathered further down comes from the RTL stream, whose state is
+ * process-global and outlives the session that produced it. A host that runs a
+ * second session on a different input -- the Android app is the only frontend
+ * that can, since the CLI is one input per process -- would otherwise republish
+ * the previous run's carrier lock, CFO, SNR and output rate as though a decoder
+ * with no demodulator behind it had measured them. The input type is what says
+ * whether any of it applies; it is re-parsed per session, so it cannot go stale
+ * the way the stream globals do.
+ */
+static int
+frontend_input_is_radio(const dsd_opts* opts) {
+    return opts != NULL && opts->audio_in_type == AUDIO_IN_RTL;
 }
 
 static void
@@ -132,6 +149,13 @@ frontend_get_metrics(const dsd_opts* opts, const dsd_state* state, dsd_frontend_
         return -1;
     }
     frontend_metrics_defaults(out, opts);
+    if (!frontend_input_is_radio(opts)) {
+        /* The defaults are the whole truth here: no tuner, no demodulator, and an
+         * invalid-SNR sentinel that keeps the estimators' no-reading value off the
+         * screen. See frontend_input_is_radio(). */
+        (void)state;
+        return 0;
+    }
     frontend_metrics_from_runtime_hooks(out);
 #ifdef USE_RADIO
     frontend_metrics_from_radio(opts, state, out);
@@ -148,7 +172,13 @@ frontend_get_metrics_with_snr_fallbacks(const dsd_opts* opts, const dsd_state* s
     if (rc != 0) {
         return rc;
     }
-    frontend_metrics_add_snr_fallbacks(out, snr_fallbacks);
+    /* The fallbacks are estimators of last resort, and they read the same stream
+     * globals: on a non-radio input every primary reading is the invalid sentinel,
+     * so asking for them would substitute a previous session's eye measurement for
+     * the "no estimator reported" the caller is owed. */
+    if (frontend_input_is_radio(opts)) {
+        frontend_metrics_add_snr_fallbacks(out, snr_fallbacks);
+    }
     return 0;
 }
 
@@ -161,6 +191,12 @@ int
 dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks) {
     return frontend_get_metrics_with_snr_fallbacks(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(),
                                                    out, snr_fallbacks);
+}
+
+int
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    return frontend_get_metrics_with_snr_fallbacks(opts, state, out, snr_fallbacks);
 }
 
 int

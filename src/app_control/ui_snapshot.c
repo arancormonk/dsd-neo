@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -137,7 +138,9 @@ ensure_mu_init(void) {
         atomic_store(&g_mu_state, 2);
         return;
     }
-    while (atomic_load(&g_mu_state) != 2) {}
+    while (atomic_load(&g_mu_state) != 2) {
+        dsd_thread_yield();
+    }
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

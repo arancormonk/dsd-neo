@@ -1,0 +1,7 @@
+# Vendored upstream snapshots: carried verbatim so they stay diffable against the
+# release they came from. Marking them keeps them out of language statistics and
+# collapsed in review, and matches the tooling exclusions in .clang-format-ignore,
+# tools/format.sh and .githooks/pre-push.
+src/third_party/** linguist-vendored
+android/third_party/libusb/** linguist-vendored
+android/third_party/librtlsdr/** linguist-vendored

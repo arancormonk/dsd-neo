@@ -148,7 +148,7 @@ normal runtime path unless explicitly enabled:
 ```sh
 DSD_NEO_RTL_PERF_CSV=1 \
 DSD_NEO_RTL_PERF_INTERVAL_MS=1000 \
-build/perf-bench/apps/dsd-cli/dsd-neo -i rtl:0:769.76875M:3:-2:48:0:2:bias -mq -T --enc-lockout
+build/perf-bench/apps/dsd-cli/dsd-neo -i rtl:0:851.375M:3:-2:48:0:2:bias -mq -T --enc-lockout
 ```
 
 `DSD_NEO_RTL_PERF_CSV` enables logging to `dsd-neo-rtl-perf.csv` in the current

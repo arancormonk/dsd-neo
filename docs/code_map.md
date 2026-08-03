@@ -14,6 +14,8 @@ should be included via `#include <dsd-neo/...>`.
 - `docs/` — documentation
 - `examples/` — sample CSV inputs (channel maps, groups, keys) used by the config system and tooling
 - `packaging/` — packaging assets/scripts (AppImage, macOS)
+- `android/` — Android app shell: Kotlin foreground service, JNI lifecycle glue, and vendored libusb/librtlsdr
+  (`android/README.md`); built only for `ANDROID` with `DSD_ENABLE_QT_UI=ON`
 - `images/` — screenshots and other project assets used by docs/README
 - `vcpkg.json`, `vcpkg-configuration.json`, `vcpkg-ports/`, `vcpkg-triplets/` — vcpkg dependency management
 
@@ -46,7 +48,10 @@ Generated (do not edit/commit):
 - Target: `dsd-neo_platform`
 - Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses
   compatibility)
-  - Audio backends: PulseAudio (default) or PortAudio (`DSD_USE_PORTAUDIO`, forced ON for Windows)
+  - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
+    elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
+    backend translation unit is compiled per build; the shared last-error store lives in
+    `src/platform/audio_error_internal.h`
 - Build files: `src/platform/CMakeLists.txt`
 
 ## Core
@@ -55,6 +60,11 @@ Generated (do not edit/commit):
 - Target: `dsd-neo_core`
 - Responsibilities: cross-protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import),
   misc/util
+- API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
+  `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
+  duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
+  the others (`lpf`, `lpf_f`, `hpf_f`, `hpf_dL`, `hpf_dR`, `pbf`), so renaming them would break out-of-tree
+  callers for no benefit. Out-of-tree callers of `hpf()` need updating
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -104,6 +114,13 @@ depending directly on protocol headers. The runtime provides a small hook table 
   - Command queue dispatch and menu service helpers
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
+- Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
+  input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
+  the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,
+  UDP, TCP or symbol-file session they would be a previous run's measurements rather than the current one's.
+  Such sessions therefore report the defaults — no carrier lock, no CFO, no output/symbol rate, and the
+  invalid-SNR sentinel — and a frontend should omit those rows rather than render them as zeros. Applies to
+  every frontend, not just the Android app
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## DSP
@@ -212,7 +229,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 ## UI
 
 - Path: `src/ui`
-- Target: `dsd-neo_ui_terminal`
+- Targets: `dsd-neo_ui_terminal` (option `DSD_ENABLE_TERMINAL_UI`, default ON), `dsd-neo_ui_qt`
+  (option `DSD_ENABLE_QT_UI`, default OFF)
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
@@ -221,7 +239,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     integrations.
   - Radio-driven UI controls are gated by `USE_RADIO`; visualizers consume app-control frontend metric APIs.
 
-Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`
+Qt Quick frontend (`src/ui/qt`):
+
+- QML plus C++ view-models (metrics, event log, command bridge) that poll app-control on a timer; used by the Android
+  app today and intended as the shared basis for a desktop GUI.
+- Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
+  internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
+  interface, implemented per host (`android/decoder_host_android.cpp` today).
+- Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions.
+
+Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`, `src/ui/qt/CMakeLists.txt`
 
 Key public headers:
 
@@ -294,8 +321,8 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 - `dsd-neo_feature_radio` — `USE_RADIO` when any radio backend is available (`DSD_HAS_RADIO`)
 - `dsd-neo_feature_rtlsdr` — `USE_RTLSDR` (+ `USE_RTLSDR_BIAS_TEE` when supported by librtlsdr)
 - `dsd-neo_feature_soapy` — `USE_SOAPYSDR` + SoapySDR >= 0.8.1 imported-target link/includes when available
-- `dsd-neo_feature_codec2` — `USE_CODEC2`
-- `dsd-neo_feature_curl` — `USE_CURL` + libcurl link when available
+- `dsd-neo_feature_codec2` — `USE_CODEC2` (require with `DSD_REQUIRE_CODEC2=ON`)
+- `dsd-neo_feature_curl` — `USE_CURL` + libcurl link when available (require with `DSD_REQUIRE_CURL=ON`)
 
 External dependencies (resolved via CMake):
 

@@ -155,6 +155,72 @@ jobs:
       - name: Test
         run: ctest --preset dev-debug --output-on-failure
 
+  android-shape-host:
+    name: android shape (headless, forced radio pipeline)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Deliberately no libpulse-dev, no libncurses-dev and no libcodec2-dev:
+      # this configuration is the Android build shape on the host, and it must
+      # not need any of them. The build-linux jobs above cover the codec2-present
+      # side, so leaving it out here keeps this the one job that proves the
+      # graceful-degradation path still configures, builds and passes ctest.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config git \
+            libsndfile1-dev libssl-dev
+
+      - name: Build and install mbelib-neo
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      - name: Prepare local dependency environment
+        run: |
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      # Same option set the Android presets carry, minus the NDK: no audio
+      # library, no terminal UI, no SDR library, but the radio pipeline forced on
+      # so rtl_tcp and radio-path I/Q replay stay covered by ctest.
+      - name: Configure (android shape)
+        run: |
+          set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-shape.log"
+          cmake --preset dev-debug \
+            -DDSD_AUDIO_BACKEND=none \
+            -DDSD_ENABLE_TERMINAL_UI=OFF \
+            -DDSD_ENABLE_RTLSDR=OFF \
+            -DDSD_ENABLE_SOAPYSDR=OFF \
+            -DDSD_FORCE_RADIO_PIPELINE=ON \
+            2>&1 | tee "$log"
+          grep -F "RTL-SDR backend enabled: OFF (available: OFF)" "$log"
+          grep -F "SoapySDR backend enabled: OFF (available: OFF)" "$log"
+          grep -F "Radio pipeline available: ON" "$log"
+          # No libcodec2-dev on this runner: the Android presets require Codec2,
+          # but the degraded build must still work. libcurl is not asserted --
+          # the runner image ships it whether or not this job asks for it.
+          grep -F "Codec2 available: OFF (M17 voice)" "$log"
+
+      - name: Build (android shape)
+        run: cmake --build --preset dev-debug -j
+
+      - name: Test (android shape)
+        run: ctest --preset dev-debug --output-on-failure
+
   build-linux:
     runs-on: ubuntu-latest
     steps:

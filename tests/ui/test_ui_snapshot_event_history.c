@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>

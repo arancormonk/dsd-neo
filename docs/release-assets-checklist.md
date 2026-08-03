@@ -8,6 +8,11 @@ Required license/notice files in every shipped asset:
 - `licenses/ezpwd-LGPL-2.1-or-later.txt` (from `src/third_party/ezpwd/lesser.txt`)
 - `licenses/pffft-FFTPACK.txt` (from `src/third_party/pffft/COPYING`)
 
+Assets that bundle the Qt Quick frontend (`DSD_ENABLE_QT_UI=ON`, today the APK)
+additionally require `licenses/dejavu-fonts-Bitstream-Vera.txt` (from
+`src/ui/qt/fonts/DejaVu-LICENSE.txt`): the font is compiled into the frontend's
+resource bundle, so it travels with the binary rather than as a separate file.
+
 ## TODOs per uploaded asset
 
 ### Linux (AppImage)
@@ -29,6 +34,24 @@ Required license/notice files in every shipped asset:
 
 - [ ] Download `dsd-neo-msvc-x86_64-native-*.zip`.
   - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files.
+
+### Android (APK)
+
+- [ ] Download `dsd-neo-android-arm64-app-*.apk`.
+  - [ ] `apksigner verify --print-certs` reports the project release key.
+  - [ ] `unzip -l` shows all required files under `assets/doc/dsd-neo/`, plus
+        `licenses/libusb-LGPL-2.1-or-later.txt` and
+        `licenses/librtlsdr-GPL-2.0-or-later.txt` for the vendored Android
+        libraries, and `licenses/dejavu-fonts-Bitstream-Vera.txt` for the font
+        compiled into the Qt resource bundle
+        (`cmake/stage_android_package.cmake` stages them; `android-ci` fails the
+        build if any are missing).
+  - [ ] `aapt2 dump badging` reports `application-label:'DSD-neo'`, a non-empty
+        `application-icon-*`, `versionName` equal to the tag without its `v`, and
+        `versionCode` equal to `(major * 10000 + minor * 100 + patch) * 1000` —
+        a tagged release is always a round thousand, since its commit distance is
+        zero (`android-ci` asserts the shape, so this is a spot check that the
+        published asset is the one CI built from the tag and not from `main`).
 
 ## CI-side sanity
 

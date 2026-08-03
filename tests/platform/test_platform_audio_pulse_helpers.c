@@ -50,6 +50,11 @@ dsd_mutex_init(dsd_mutex_t* mutex) {
     return 0;
 }
 
+void
+dsd_thread_yield(void) {
+    /* Nothing to yield to: this test drives the pump body inline. */
+}
+
 int
 dsd_mutex_destroy(dsd_mutex_t* mutex) {
     (void)mutex;

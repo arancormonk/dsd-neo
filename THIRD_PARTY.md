@@ -9,6 +9,22 @@ for file-specific license/provenance details.
 - **ezpwd Reed-Solomon** (`src/third_party/ezpwd`, target `dsd-neo_ezpwd`; Hard Consulting Corporation; vendored from https://github.com/arancormonk/ezpwd-reed-solomon) - GPL-3.0-or-later; `rs_base` is LGPL-2.1-or-later (per upstream notice). LGPL text: `src/third_party/ezpwd/lesser.txt` (installed as `share/doc/dsd-neo/licenses/ezpwd-LGPL-2.1-or-later.txt`).
 - **pffft** (`src/third_party/pffft`, target `dsd-neo_pffft`; Julien Pommier, based on FFTPACKv4 by Dr Paul Swarztrauber/NCAR) - BSD-like FFTPACK license; `src/third_party/pffft/COPYING` (installed as `share/doc/dsd-neo/licenses/pffft-FFTPACK.txt`).
 - **Tiny AES** (`src/crypto/crypt-aes.c`) - Unlicense/public domain; original upstream https://github.com/kokke/tiny-AES-c.
+- **librtlsdr** (`android/third_party/librtlsdr`; osmocom, https://gitea.osmocom.org/sdr/rtl-sdr) - GPL-2.0-or-later;
+  license text `android/third_party/librtlsdr/COPYING`. Trimmed v2.0.2 snapshot (library sources only) built into the
+  Android app; carries one project patch adding `rtlsdr_open_fd()` for USB-OTG descriptor injection, kept as
+  `android/third_party/patches/0001-librtlsdr-add-rtlsdr_open_fd.patch`. Not part of any non-Android build.
+- **libusb** (`android/third_party/libusb`; https://github.com/libusb/libusb) - LGPL-2.1-or-later; license text
+  `android/third_party/libusb/COPYING`. Trimmed v1.0.30 snapshot (the `linux_usbfs` backend and POSIX shims upstream's
+  own Android build uses) built into the Android app. Not part of any non-Android build.
+
+## Bundled Assets
+
+- **DejaVu Sans Mono** (`src/ui/qt/fonts/DejaVuSansMono.ttf`; DejaVu Fonts project, derived from Bitstream Vera and
+  Arev) - Bitstream Vera Fonts Copyright (permissive, notice must accompany every copy); DejaVu changes are public
+  domain and Arev-derived glyphs are (c) Tavmjong Bah under the same terms. License text
+  `src/ui/qt/fonts/DejaVu-LICENSE.txt` (installed as `share/doc/dsd-neo/licenses/dejavu-fonts-Bitstream-Vera.txt`).
+  Compiled into the Qt Quick frontend's resource bundle, so it is redistributed by any build with `DSD_ENABLE_QT_UI=ON`
+  — today that is the Android app.
 
 ## Embedded Provenance-Bearing Code
 
@@ -46,4 +62,5 @@ for file-specific license/provenance details.
     licensed GPL.
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
-license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`.
+license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the
+DejaVu font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.

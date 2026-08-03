@@ -35,6 +35,18 @@ typedef struct {
 void dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks);
 
 /**
+ * @brief Whether any frontend is currently consuming telemetry.
+ *
+ * Producers gate their (deep-copying) publishes on this rather than on the
+ * frontend kind: a frontend runtime installs these hooks when it attaches, and
+ * a native GUI attaches without ever becoming the terminal frontend. Cheap and
+ * safe to call from decoder threads.
+ *
+ * @return Nonzero when at least one telemetry hook is installed.
+ */
+int dsd_telemetry_is_active(void);
+
+/**
  * @brief Publish a snapshot of the current demod state for the UI.
  *
  * Thread-safe. Called from decoder threads to update UI display.

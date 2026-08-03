@@ -1,0 +1,276 @@
+librtlsdr: add rtlsdr_open_fd() for Android USB-OTG
+
+Android applications cannot open /dev/bus/usb nodes, so the device file
+descriptor is obtained in Java (UsbDeviceConnection.getFileDescriptor()) and
+handed to native code. Disable libusb device discovery, wrap the descriptor
+with libusb_wrap_sys_device(), and run the normal claim/probe sequence.
+
+The claim/probe tail of rtlsdr_open() is split into rtlsdr_init_opened_device()
+so both open paths share it verbatim.
+
+Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
+
+--- a/include/rtl-sdr.h	2026-08-02 11:58:25.788423961 -0500
++++ b/include/rtl-sdr.h	2026-08-02 11:58:25.790134466 -0500
+@@ -62,6 +62,20 @@
+ 
+ RTLSDR_API int rtlsdr_open(rtlsdr_dev_t **dev, uint32_t index);
+ 
++/*!
++ * Open a device from an already-open USB file descriptor.
++ *
++ * Device discovery is disabled for the process, so no enumeration is performed and
++ * no /dev/bus/usb access is required. Intended for Android, where the application
++ * obtains the descriptor from UsbDeviceConnection.getFileDescriptor(). The caller
++ * keeps ownership of \p sys_fd and must keep it open for the lifetime of the device.
++ *
++ * \param dev output, device handle
++ * \param sys_fd an open USB file descriptor
++ * \return 0 on success
++ */
++RTLSDR_API int rtlsdr_open_fd(rtlsdr_dev_t **dev, int sys_fd);
++
+ RTLSDR_API int rtlsdr_close(rtlsdr_dev_t *dev);
+ 
+ /* configuration functions */
+--- a/src/librtlsdr.c	2026-08-02 11:58:25.787572794 -0500
++++ b/src/librtlsdr.c	2026-08-02 11:58:25.789363688 -0500
+@@ -1442,66 +1442,13 @@
+ }
+ 
+ 
+-int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
++/* Everything that follows a successful USB open: claim the interface, reset the
++ * baseband and probe the tuner. Split out of rtlsdr_open() so that rtlsdr_open_fd()
++ * can reuse it verbatim; the caller owns @dev and its teardown on failure. */
++static int rtlsdr_init_opened_device(rtlsdr_dev_t *dev)
+ {
+ 	int r;
+-	int i;
+-	libusb_device **list;
+-	rtlsdr_dev_t *dev = NULL;
+-	libusb_device *device = NULL;
+-	uint32_t device_count = 0;
+-	struct libusb_device_descriptor dd;
+ 	uint8_t reg;
+-	ssize_t cnt;
+-
+-	dev = malloc(sizeof(rtlsdr_dev_t));
+-	if (NULL == dev)
+-		return -ENOMEM;
+-
+-	memset(dev, 0, sizeof(rtlsdr_dev_t));
+-	memcpy(dev->fir, fir_default, sizeof(fir_default));
+-
+-	r = libusb_init(&dev->ctx);
+-	if(r < 0){
+-		free(dev);
+-		return -1;
+-	}
+-
+-	dev->dev_lost = 1;
+-
+-	cnt = libusb_get_device_list(dev->ctx, &list);
+-
+-	for (i = 0; i < cnt; i++) {
+-		device = list[i];
+-
+-		libusb_get_device_descriptor(list[i], &dd);
+-
+-		if (find_known_device(dd.idVendor, dd.idProduct)) {
+-			device_count++;
+-		}
+-
+-		if (index == device_count - 1)
+-			break;
+-
+-		device = NULL;
+-	}
+-
+-	if (!device) {
+-		r = -1;
+-		goto err;
+-	}
+-
+-	r = libusb_open(device, &dev->devh);
+-	if (r < 0) {
+-		libusb_free_device_list(list, 1);
+-		fprintf(stderr, "usb_open error %d\n", r);
+-		if(r == LIBUSB_ERROR_ACCESS)
+-			fprintf(stderr, "Please fix the device permissions, e.g. "
+-			"by installing the udev rules file rtl-sdr.rules\n");
+-		goto err;
+-	}
+-
+-	libusb_free_device_list(list, 1);
+ 
+ 	if (libusb_kernel_driver_active(dev->devh, 0) == 1) {
+ 		dev->driver_active = 1;
+@@ -1511,7 +1458,7 @@
+ 			fprintf(stderr, "Detached kernel driver\n");
+ 		} else {
+ 			fprintf(stderr, "Detaching kernel driver failed!");
+-			goto err;
++			return -1;
+ 		}
+ #else
+ 		fprintf(stderr, "\nKernel driver is active, or device is "
+@@ -1526,7 +1473,7 @@
+ 	r = libusb_claim_interface(dev->devh, 0);
+ 	if (r < 0) {
+ 		fprintf(stderr, "usb_claim_interface error %d\n", r);
+-		goto err;
++		return r;
+ 	}
+ 
+ 	dev->rtl_xtal = DEF_RTL_XTAL_FREQ;
+@@ -1639,6 +1586,73 @@
+ 
+ 	rtlsdr_set_i2c_repeater(dev, 0);
+ 
++	return 0;
++}
++
++int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
++{
++	int r;
++	int i;
++	libusb_device **list;
++	rtlsdr_dev_t *dev = NULL;
++	libusb_device *device = NULL;
++	uint32_t device_count = 0;
++	struct libusb_device_descriptor dd;
++	ssize_t cnt;
++
++	dev = malloc(sizeof(rtlsdr_dev_t));
++	if (NULL == dev)
++		return -ENOMEM;
++
++	memset(dev, 0, sizeof(rtlsdr_dev_t));
++	memcpy(dev->fir, fir_default, sizeof(fir_default));
++
++	r = libusb_init(&dev->ctx);
++	if(r < 0){
++		free(dev);
++		return -1;
++	}
++
++	dev->dev_lost = 1;
++
++	cnt = libusb_get_device_list(dev->ctx, &list);
++
++	for (i = 0; i < cnt; i++) {
++		device = list[i];
++
++		libusb_get_device_descriptor(list[i], &dd);
++
++		if (find_known_device(dd.idVendor, dd.idProduct)) {
++			device_count++;
++		}
++
++		if (index == device_count - 1)
++			break;
++
++		device = NULL;
++	}
++
++	if (!device) {
++		r = -1;
++		goto err;
++	}
++
++	r = libusb_open(device, &dev->devh);
++	if (r < 0) {
++		libusb_free_device_list(list, 1);
++		fprintf(stderr, "usb_open error %d\n", r);
++		if(r == LIBUSB_ERROR_ACCESS)
++			fprintf(stderr, "Please fix the device permissions, e.g. "
++			"by installing the udev rules file rtl-sdr.rules\n");
++		goto err;
++	}
++
++	libusb_free_device_list(list, 1);
++
++	r = rtlsdr_init_opened_device(dev);
++	if (r < 0)
++		goto err;
++
+ 	*out_dev = dev;
+ 
+ 	return 0;
+@@ -1656,6 +1670,75 @@
+ 	return r;
+ }
+ 
++/* Open a device from a file descriptor that was obtained elsewhere — on Android an
++ * app cannot open /dev/bus/usb nodes itself, so Java hands over an already-open fd
++ * from UsbDeviceConnection.getFileDescriptor(). Device discovery has to be disabled
++ * before the context exists, which is why the enumeration path cannot be reused. */
++int rtlsdr_open_fd(rtlsdr_dev_t **out_dev, int sys_fd)
++{
++#if defined(LIBUSB_API_VERSION) && (LIBUSB_API_VERSION >= 0x01000108)
++	int r;
++	rtlsdr_dev_t *dev = NULL;
++
++	if (!out_dev || sys_fd < 0)
++		return -1;
++
++	dev = malloc(sizeof(rtlsdr_dev_t));
++	if (NULL == dev)
++		return -ENOMEM;
++
++	memset(dev, 0, sizeof(rtlsdr_dev_t));
++	memcpy(dev->fir, fir_default, sizeof(fir_default));
++
++	/* NULL context on purpose: the option has to be set before libusb_init(). */
++	r = libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
++	if (r < 0) {
++		fprintf(stderr, "libusb_set_option error %d\n", r);
++		free(dev);
++		return -1;
++	}
++
++	r = libusb_init(&dev->ctx);
++	if (r < 0) {
++		free(dev);
++		return -1;
++	}
++
++	dev->dev_lost = 1;
++
++	r = libusb_wrap_sys_device(dev->ctx, (intptr_t)sys_fd, &dev->devh);
++	if (r < 0) {
++		fprintf(stderr, "libusb_wrap_sys_device error %d\n", r);
++		goto err;
++	}
++
++	r = rtlsdr_init_opened_device(dev);
++	if (r < 0)
++		goto err;
++
++	*out_dev = dev;
++
++	return 0;
++err:
++	if (dev) {
++		if (dev->devh)
++			libusb_close(dev->devh);
++
++		if (dev->ctx)
++			libusb_exit(dev->ctx);
++
++		free(dev);
++	}
++
++	return r;
++#else
++	(void)out_dev;
++	(void)sys_fd;
++	fprintf(stderr, "rtlsdr_open_fd needs libusb >= 1.0.24\n");
++	return -1;
++#endif
++}
++
+ int rtlsdr_close(rtlsdr_dev_t *dev)
+ {
+ 	if (!dev)

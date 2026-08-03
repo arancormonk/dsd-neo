@@ -58,6 +58,63 @@ struct rtl_soapy_config {
 struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring);
 
 /**
+ * @brief Hand the next USB open an already-open device file descriptor.
+ *
+ * Android applications cannot open `/dev/bus/usb` nodes themselves: the descriptor
+ * comes from `UsbDeviceConnection.getFileDescriptor()` in Java. While one is set,
+ * USB device discovery is bypassed — the engine skips enumeration (which would
+ * report no devices) and rtl_device_create() wraps this descriptor instead of
+ * opening by index. The caller keeps ownership and must keep it open for the
+ * lifetime of the device.
+ *
+ * Recording the descriptor and bypassing enumeration are platform-uniform, which
+ * keeps the engine's decision reachable from a host test. Actually opening from it
+ * is not: only builds where rtl_device_preopened_fd_supported() is true can, and
+ * anywhere else the open falls through to opening by index — which, with
+ * enumeration bypassed, means opening whichever device sits at the configured
+ * index. Callers that can be built either way must check support first.
+ *
+ * @param sys_fd Open USB file descriptor, or -1 to clear.
+ */
+void rtl_device_set_preopened_fd(int sys_fd);
+
+/**
+ * @brief Whether a pre-opened USB descriptor is currently set.
+ *
+ * @return 1 when set, 0 otherwise.
+ */
+int rtl_device_preopened_fd_is_set(void);
+
+/**
+ * @brief Whether the engine currently has the pre-opened descriptor wrapped.
+ *
+ * Distinct from rtl_device_preopened_fd_is_set(), which only reports that one was
+ * recorded. This is what the descriptor's owner must poll before closing the
+ * connection behind it: the engine takes the descriptor part way into a run and
+ * gives it back before the run ends, so neither "a descriptor is set" nor "the
+ * engine is running" brackets the period during which closing it would pull the
+ * file out from under an in-flight USB transfer.
+ *
+ * Raised before the wrap is attempted and lowered only after the device is closed,
+ * so it is never clear while libusb still holds the descriptor. Clearing the slot
+ * with rtl_device_set_preopened_fd(-1) does not lower it -- a device already open
+ * keeps working, by design.
+ *
+ * @return 1 while the descriptor is in use, 0 otherwise.
+ */
+int rtl_device_preopened_fd_in_use(void);
+
+/**
+ * @brief Whether this build can open a device from a pre-opened descriptor.
+ *
+ * Requires Android and a librtlsdr providing `rtlsdr_open_fd()`. Where this is 0,
+ * rtl_device_set_preopened_fd() records a descriptor that nothing will consume.
+ *
+ * @return 1 when supported, 0 otherwise.
+ */
+int rtl_device_preopened_fd_supported(void);
+
+/**
  * @brief Create and initialize a remote RTL-SDR stream via rtl_tcp.
  *
  * Connects to an rtl_tcp server (default port 1234) and configures the

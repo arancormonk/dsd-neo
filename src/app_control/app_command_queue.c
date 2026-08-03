@@ -84,11 +84,22 @@ static atomic_int g_mu_init = 0;
 static atomic_int g_overflow = 0;
 static atomic_int g_overflow_warn_gate = 0;
 
+/* 0 = uninitialized, 1 = initialization in flight, 2 = ready. The loser of the
+ * first-call race must wait: taking a mutex another thread has not finished
+ * initializing is undefined behavior. */
 static void
 ensure_mu_init(void) {
+    if (atomic_load(&g_mu_init) == 2) {
+        return;
+    }
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_mu_init, &expected, 1)) {
-        dsd_mutex_init(&g_mu);
+        (void)dsd_mutex_init(&g_mu);
+        atomic_store(&g_mu_init, 2);
+        return;
+    }
+    while (atomic_load(&g_mu_init) != 2) {
+        dsd_thread_yield();
     }
 }
 
