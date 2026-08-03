@@ -59,6 +59,21 @@ MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {}
 MetricsModel::~MetricsModel() = default;
 
 void
+MetricsModel::clear() {
+    m_stream_active = false;
+    m_snr_db = 0.0;
+    m_symbol_rate_hz = 0;
+    m_output_rate_hz = 0;
+    m_carrier_lock = false;
+    m_cfo_hz = 0.0;
+    m_tuner_gain_text.clear();
+    m_slot_text[0].clear();
+    m_slot_text[1].clear();
+    m_message_text.clear();
+    Q_EMIT changed();
+}
+
+void
 MetricsModel::refresh() {
     dsd_frontend_metrics metrics;
     /* 0 is success here, negative is failure — not a count. */

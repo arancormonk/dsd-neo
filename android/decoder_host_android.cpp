@@ -19,6 +19,16 @@ constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderServi
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 
+/* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
+ * mapping below hands one straight to the other. */
+static_assert(static_cast<int>(kSessionIdle) == static_cast<int>(dsd_qt::DecoderHost::Idle), "phase enum drift");
+static_assert(static_cast<int>(kSessionStarting) == static_cast<int>(dsd_qt::DecoderHost::Starting),
+              "phase enum drift");
+static_assert(static_cast<int>(kSessionRunning) == static_cast<int>(dsd_qt::DecoderHost::Running), "phase enum drift");
+static_assert(static_cast<int>(kSessionStopping) == static_cast<int>(dsd_qt::DecoderHost::Stopping),
+              "phase enum drift");
+static_assert(static_cast<int>(kSessionFailed) == static_cast<int>(dsd_qt::DecoderHost::Failed), "phase enum drift");
+
 QJniObject
 android_context(void) {
     return QNativeInterface::QAndroidApplication::context();
@@ -46,6 +56,18 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
     return array;
 }
 
+/** @brief Prose for the toolbar and the platform notification. */
+QString
+phase_text(SessionPhase phase) {
+    switch (phase) {
+        case kSessionStarting: return QStringLiteral("Starting…");
+        case kSessionRunning: return QStringLiteral("Decoding");
+        case kSessionStopping: return QStringLiteral("Stopping…");
+        case kSessionFailed: return QStringLiteral("Start failed");
+        default: return QStringLiteral("Idle");
+    }
+}
+
 } // namespace
 
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(parent) {
@@ -66,6 +88,16 @@ DecoderHostAndroid::isRunning() const {
 QString
 DecoderHostAndroid::statusText() const {
     return m_status;
+}
+
+dsd_qt::DecoderHost::SessionState
+DecoderHostAndroid::sessionState() const {
+    return static_cast<SessionState>(m_published_phase);
+}
+
+QString
+DecoderHostAndroid::failureText() const {
+    return m_failure;
 }
 
 bool
@@ -91,25 +123,37 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
 
 bool
 DecoderHostAndroid::start(const QStringList& argv) {
+    /* Clears the previous attempt's reason; setSessionPhase publishes that. */
+    m_phase.note_start_requested();
+
     QJniObject context = android_context();
     if (!context.isValid()) {
-        setStatus(QStringLiteral("No Android context"));
-        return false;
+        return failStart(QStringLiteral("No Android context"));
     }
 
     QJniEnvironment env;
     jobjectArray args = to_java_string_array(env, argv);
     if (args == nullptr) {
-        setStatus(QStringLiteral("Could not marshal arguments"));
-        return false;
+        return failStart(QStringLiteral("Could not marshal arguments"));
     }
 
     QJniObject::callStaticMethod<void>(kServiceClass, "startDecoder", "(Landroid/content/Context;[Ljava/lang/String;)V",
                                        context.object(), args);
     env->DeleteLocalRef(args);
 
+    setSessionPhase(m_phase.phase());
     setStatus(QStringLiteral("Starting…"));
     return true;
+}
+
+bool
+DecoderHostAndroid::failStart(const QString& reason) {
+    m_phase.note_start_failed();
+    /* m_failure is only ever written by setSessionPhase, so that it can still see the
+     * previous reason and tell one failure from the next. */
+    setSessionPhase(m_phase.phase(), reason);
+    setStatus(reason);
+    return false;
 }
 
 void
@@ -156,21 +200,13 @@ DecoderHostAndroid::refresh() {
     }
 
     /* The service owns the transitions; native running-state alone cannot tell
-     * "starting" from "idle". */
+     * "starting" from "idle", nor a failed start from one that never happened. */
     QJniObject state = QJniObject::callStaticObjectMethod(kServiceClass, "stateName", "()Ljava/lang/String;");
-    const QString name = state.isValid() ? state.toString() : QStringLiteral("IDLE");
+    const QByteArray name = state.isValid() ? state.toString().toUtf8() : QByteArrayLiteral("IDLE");
 
-    QString text;
-    if (name == QLatin1String("RUNNING")) {
-        text = running ? QStringLiteral("Decoding") : QStringLiteral("Starting…");
-    } else if (name == QLatin1String("STARTING")) {
-        text = QStringLiteral("Starting…");
-    } else if (name == QLatin1String("STOPPING")) {
-        text = QStringLiteral("Stopping…");
-    } else {
-        text = QStringLiteral("Idle");
-    }
-    setStatus(text);
+    const SessionPhase phase = m_phase.update(name.constData(), running);
+    setSessionPhase(phase);
+    setStatus(phase_text(phase));
 
     const bool usb_ready = QJniObject::callStaticMethod<jboolean>(kUsbClass, "isReady", "()Z") != JNI_FALSE;
     QJniObject usb_status = QJniObject::callStaticObjectMethod(kUsbClass, "statusText", "()Ljava/lang/String;");
@@ -184,6 +220,32 @@ DecoderHostAndroid::setStatus(const QString& text) {
     }
     m_status = text;
     Q_EMIT statusTextChanged();
+}
+
+void
+DecoderHostAndroid::setSessionPhase(SessionPhase phase, const QString& reason) {
+    QString failure;
+    if (phase == kSessionFailed) {
+        /* A reason the host produced itself wins: the service never saw that attempt,
+         * so its own record would be stale. */
+        failure = reason.isEmpty() ? m_failure : reason;
+        if (failure.isEmpty()) {
+            QJniObject reason = QJniObject::callStaticObjectMethod(kServiceClass, "lastError", "()Ljava/lang/String;");
+            if (reason.isValid()) {
+                failure = reason.toString();
+            }
+        }
+        if (failure.isEmpty()) {
+            failure = QStringLiteral("The decoder could not be started. Check the input settings.");
+        }
+    }
+
+    if (phase == m_published_phase && failure == m_failure) {
+        return;
+    }
+    m_published_phase = phase;
+    m_failure = failure;
+    Q_EMIT sessionStateChanged();
 }
 
 void

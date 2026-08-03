@@ -27,11 +27,26 @@ class DecoderHost : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool running READ isRunning NOTIFY runningChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusTextChanged)
+    Q_PROPERTY(SessionState sessionState READ sessionState NOTIFY sessionStateChanged)
+    Q_PROPERTY(bool sessionActive READ sessionActive NOTIFY sessionStateChanged)
+    Q_PROPERTY(bool transitioning READ transitioning NOTIFY sessionStateChanged)
+    Q_PROPERTY(QString failureText READ failureText NOTIFY sessionStateChanged)
     Q_PROPERTY(bool localDeviceBrokered READ localDeviceBrokered CONSTANT)
     Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceStatus READ localDeviceStatus NOTIFY localDeviceChanged)
 
   public:
+    /**
+     * @brief What the UI is showing, as opposed to what the engine is doing.
+     *
+     * @c running alone cannot drive the screen: it is false both before a start has
+     * landed and after one has failed, and those are different pictures. The values
+     * are pinned because the Android host static_asserts them against its own
+     * Qt-free copy (android/session_state_map.h).
+     */
+    enum SessionState { Idle = 0, Starting = 1, Running = 2, Stopping = 3, Failed = 4 };
+    Q_ENUM(SessionState)
+
     explicit DecoderHost(QObject* parent = nullptr);
     ~DecoderHost() override;
 
@@ -40,6 +55,48 @@ class DecoderHost : public QObject {
 
     /** @brief Short human-readable host state (also used for platform notifications). */
     virtual QString statusText() const = 0;
+
+    /**
+     * @brief Lifecycle phase the UI branches on.
+     *
+     * The default collapses to the two states a host with no transition reporting can
+     * distinguish; hosts that own a real state machine override it.
+     */
+    virtual SessionState
+    sessionState() const {
+        return isRunning() ? Running : Idle;
+    }
+
+    /**
+     * @brief Whether a session is on screen — starting, decoding or winding down.
+     *
+     * This is the monitoring-view predicate: the status and event panes exist exactly
+     * while it is true, so a start that is still coming up already has somewhere to
+     * report progress.
+     */
+    bool
+    sessionActive() const {
+        const SessionState state = sessionState();
+        return state == Starting || state == Running || state == Stopping;
+    }
+
+    /** @brief Whether the session is mid-transition, so the primary action must wait. */
+    bool
+    transitioning() const {
+        const SessionState state = sessionState();
+        return state == Starting || state == Stopping;
+    }
+
+    /**
+     * @brief Why the last start failed, or empty when it did not.
+     *
+     * A start that dies inside the platform layer otherwise leaves nothing on screen
+     * but a return to idle, which reads as "nothing happened".
+     */
+    virtual QString
+    failureText() const {
+        return QString();
+    }
 
     /**
      * @brief Whether this platform has to broker access to a directly attached SDR.
@@ -125,6 +182,7 @@ class DecoderHost : public QObject {
   Q_SIGNALS:
     void runningChanged();
     void statusTextChanged();
+    void sessionStateChanged();
     void localDeviceChanged();
 };
 

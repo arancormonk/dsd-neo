@@ -23,6 +23,7 @@ namespace dsd_qt {
 
 class EventLogModel : public QAbstractListModel {
     Q_OBJECT
+    Q_PROPERTY(int count READ count NOTIFY countChanged)
 
   public:
     enum Roles { TextRole = Qt::UserRole + 1, SlotRole, SeverityRole };
@@ -34,8 +35,27 @@ class EventLogModel : public QAbstractListModel {
     QVariant data(const QModelIndex& index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
+    /** @brief Row count for QML; rowCount() cannot be a property, it takes an index. */
+    int
+    count() const {
+        return static_cast<int>(m_rows.size());
+    }
+
     /** @brief Re-read the snapshot ring. Call from the UI poll tick only. */
     void refresh();
+
+    /**
+     * @brief Drop every row, keeping the revision guard.
+     *
+     * The revisions deliberately survive: dsd_app_get_latest_snapshot() keeps handing
+     * back the finished run's buffer after teardown, so a reset guard would let the
+     * rows we just dropped repopulate on the very next tick. A genuinely new run
+     * allocates its own history and moves the revisions, which refills the list.
+     */
+    void clear();
+
+  Q_SIGNALS:
+    void countChanged();
 
   private:
     struct Row {

@@ -19,10 +19,11 @@
 #include <QObject>
 #include <QTimer>
 
+#include "decoder_host.h"
+
 namespace dsd_qt {
 
 class CommandBridge;
-class DecoderHost;
 class EventLogModel;
 class MetricsModel;
 
@@ -45,11 +46,13 @@ class UiController : public QObject {
 
   private:
     void tick();
+    void onSessionStateChanged();
 
     DecoderHost* m_host = nullptr;
     MetricsModel* m_metrics = nullptr;
     EventLogModel* m_events = nullptr;
     QTimer m_timer;
+    DecoderHost::SessionState m_session = DecoderHost::Idle;
 };
 
 } // namespace dsd_qt

@@ -3,7 +3,6 @@
 
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import QtQuick.Layouts
 
 ApplicationWindow {
@@ -14,16 +13,38 @@ ApplicationWindow {
     height: 900
     title: qsTr("DSD-neo")
 
+    // One screen with two purposes. Idle is for configuring a session; the moment one
+    // is asked for, the screen becomes about watching it, and it changes back when the
+    // session ends. Status and events exist only in the second — a phone cannot show
+    // both jobs at once, and panels reporting on a decoder that is not running are
+    // worse than absent, because they keep their last live values.
+    readonly property bool monitorMode: decoderHost ? decoderHost.sessionActive : false
     readonly property bool running: decoderHost ? decoderHost.running : false
-
-    // Keyed rather than indexed: the visibility bindings below would otherwise all
-    // shift every time an input source is added.
-    readonly property string inputKey: inputMode.currentValue ? inputMode.currentValue : "usb"
+    readonly property bool transitioning: decoderHost ? decoderHost.transitioning : false
+    readonly property string failureText: decoderHost ? decoderHost.failureText : ""
 
     // A directly attached dongle needs no permission gesture on desktop; on Android
     // the host has to obtain the descriptor first.
     readonly property bool localDeviceBlocked:
-        inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady
+        setup.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady
+
+    // The exact argv the running session was started with, for the summary chip.
+    property var sessionArgs: []
+    // Suppresses a failure banner the user has read. Reset on the next start so a
+    // repeat of the same failure is reported again rather than swallowed.
+    property string dismissedFailure: ""
+    readonly property bool showFailure:
+        !monitorMode && failureText.length > 0 && failureText !== dismissedFailure
+
+    onMonitorModeChanged: {
+        if (!monitorMode)
+            return
+        // Bring the session into view rather than merely revealing it: the frequency
+        // field usually still holds focus, so the keyboard would cover the panes that
+        // just appeared, and the list has to start at the newest row.
+        Qt.inputMethod.hide()
+        monitor.scrollToNewest()
+    }
 
     // Closing the window finishes the Android Activity, and Qt then terminates the
     // process — taking the service that owns the engine with it. Background instead.
@@ -32,68 +53,11 @@ ApplicationWindow {
         decoderHost.moveToBackground()
     }
 
-    // Frequency/gain/PPM/bandwidth tail shared by the local dongle and rtl_tcp — the
-    // same tuner options either way, only the transport differs.
-    function tuningTail() {
-        if (rtlFreq.text.length === 0)
-            return ""
-        return ":" + rtlFreq.text + ":" + rtlGain.text + ":" + rtlPpm.text + ":" + rtlBw.text + ":0:2"
-    }
-
-    // Builds the CLI-shaped argv the host hands to the engine. Reusing the CLI
-    // parser is what buys the whole option surface for free.
-    function buildArgs() {
-        var args = ["--frontend", "none"]
-        var spec = ""
-
-        if (root.inputKey === "usb") {
-            spec = "rtl:0" + root.tuningTail()
-            if (biasTee.checked)
-                spec += ":bias"
-            args.push("-i", spec)
-        } else if (root.inputKey === "rtltcp") {
-            spec = "rtltcp:" + rtlHost.text + ":" + rtlPort.text + root.tuningTail()
-            args.push("-i", spec)
-        } else if (root.inputKey === "udp") {
-            args.push("-i", "udp:0.0.0.0:" + udpPort.text)
-        } else if (root.inputKey === "tcp") {
-            args.push("-i", "tcp:" + tcpHost.text + ":" + tcpPort.text)
-        } else {
-            args.push("-i", filePath.text)
-        }
-
-        args.push("-o", "pulse")
-
-        if (decodeMode.currentValue.length > 0)
-            args.push(decodeMode.currentValue)
-        if (modulation.currentValue.length > 0)
-            args.push(modulation.currentValue)
-        if (trunking.checked)
-            args.push("-T")
-        if (encLockout.checked)
-            args.push("--enc-lockout")
-
-        var extra = extraArgs.text.trim()
-        if (extra.length > 0) {
-            var parts = extra.split(/\s+/)
-            for (var i = 0; i < parts.length; i++)
-                args.push(parts[i])
-        }
-        return args
-    }
-
-    // The engine opens real filesystem paths, so whatever the platform picker hands
-    // back is materialized by the host first.
-    FileDialog {
-        id: fileDialog
-
-        onAccepted: {
-            var reference = selectedFile.toString()
-            var name = reference.substring(reference.lastIndexOf('/') + 1)
-            var path = decoderHost.importContentUri(reference, name)
-            if (path.length > 0)
-                filePath.text = path
-        }
+    function startSession() {
+        root.dismissedFailure = ""
+        var args = setup.buildArgs()
+        root.sessionArgs = args
+        decoderHost.start(args)
     }
 
     header: ToolBar {
@@ -120,219 +84,58 @@ ApplicationWindow {
         anchors.margins: 12
         spacing: 10
 
-        // Two scroll surfaces, side by side rather than nested: the settings above
-        // and the event log below. A phone cannot show all of this at once, and a
-        // list inside a scrolling page fights the user for the drag gesture.
-        ScrollView {
-            id: settingsScroll
-
+        // A start that dies inside the platform layer otherwise leaves nothing behind
+        // but a return to the setup screen, which reads as "nothing happened".
+        Frame {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            // Configure when idle, watch when running.
-            Layout.preferredHeight: root.running ? 2 : 5
-            clip: true
-            contentWidth: availableWidth
+            visible: root.showFailure
 
-            ColumnLayout {
-                width: settingsScroll.availableWidth
-                spacing: 10
+            RowLayout {
+                anchors.fill: parent
+                spacing: 8
 
-                GroupBox {
-                    title: qsTr("Input")
+                Label {
                     Layout.fillWidth: true
-
-                    GridLayout {
-                        anchors.fill: parent
-                        columns: 2
-                        columnSpacing: 8
-                        rowSpacing: 6
-
-                        Label { text: qsTr("Source") }
-                        ComboBox {
-                            id: inputMode
-                            Layout.fillWidth: true
-                            textRole: "label"
-                            valueRole: "key"
-                            model: [
-                                { label: qsTr("RTL-SDR (USB)"), key: "usb" },
-                                { label: qsTr("RTL-TCP"), key: "rtltcp" },
-                                { label: qsTr("UDP PCM"), key: "udp" },
-                                { label: qsTr("TCP PCM"), key: "tcp" },
-                                { label: qsTr("Local file"), key: "file" }
-                            ]
-                        }
-
-                        Label { text: qsTr("Device"); visible: root.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered
-
-                            Label {
-                                Layout.fillWidth: true
-                                elide: Text.ElideRight
-                                text: (decoderHost && decoderHost.localDeviceStatus.length > 0)
-                                      ? decoderHost.localDeviceStatus
-                                      : qsTr("not connected")
-                            }
-
-                            Button {
-                                text: qsTr("Connect")
-                                enabled: !root.running
-                                onClicked: decoderHost.requestLocalDeviceAccess()
-                            }
-                        }
-
-                        Label { text: qsTr("Host"); visible: root.inputKey === "rtltcp" }
-                        TextField {
-                            id: rtlHost
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "rtltcp"
-                            text: "192.168.1.10"
-                            inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
-                        }
-
-                        Label { text: qsTr("Port"); visible: root.inputKey === "rtltcp" }
-                        TextField {
-                            id: rtlPort
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "rtltcp"
-                            text: "1234"
-                            inputMethodHints: Qt.ImhDigitsOnly
-                        }
-
-                        Label { text: qsTr("Frequency"); visible: root.inputKey === "usb" || root.inputKey === "rtltcp" }
-                        TextField {
-                            id: rtlFreq
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "usb" || root.inputKey === "rtltcp"
-                            text: "851.375M"
-                            placeholderText: qsTr("e.g. 851.375M")
-                        }
-
-                        Label { text: qsTr("Gain / PPM / BW"); visible: root.inputKey === "usb" || root.inputKey === "rtltcp" }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "usb" || root.inputKey === "rtltcp"
-                            TextField { id: rtlGain; Layout.fillWidth: true; text: "13"; inputMethodHints: Qt.ImhDigitsOnly }
-                            TextField { id: rtlPpm; Layout.fillWidth: true; text: "-2" }
-                            TextField { id: rtlBw; Layout.fillWidth: true; text: "48"; inputMethodHints: Qt.ImhDigitsOnly }
-                        }
-
-                        // Only for the local dongle: over rtl_tcp the bias tee belongs
-                        // to whoever runs the server.
-                        Label { text: qsTr("Bias tee"); visible: root.inputKey === "usb" }
-                        CheckBox {
-                            id: biasTee
-                            visible: root.inputKey === "usb"
-                            text: qsTr("power an LNA over the antenna feed")
-                        }
-
-                        Label { text: qsTr("Bind port"); visible: root.inputKey === "udp" }
-                        TextField {
-                            id: udpPort
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "udp"
-                            text: "7355"
-                            inputMethodHints: Qt.ImhDigitsOnly
-                        }
-
-                        Label { text: qsTr("Host"); visible: root.inputKey === "tcp" }
-                        TextField {
-                            id: tcpHost
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "tcp"
-                            text: "127.0.0.1"
-                            inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
-                        }
-
-                        Label { text: qsTr("Port"); visible: root.inputKey === "tcp" }
-                        TextField {
-                            id: tcpPort
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "tcp"
-                            text: "7355"
-                            inputMethodHints: Qt.ImhDigitsOnly
-                        }
-
-                        Label { text: qsTr("File"); visible: root.inputKey === "file" }
-                        RowLayout {
-                            Layout.fillWidth: true
-                            visible: root.inputKey === "file"
-
-                            TextField {
-                                id: filePath
-                                Layout.fillWidth: true
-                                placeholderText: qsTr("pick a .wav or .bin")
-                                inputMethodHints: Qt.ImhNoAutoUppercase
-                            }
-
-                            Button {
-                                text: qsTr("Browse")
-                                onClicked: fileDialog.open()
-                            }
-                        }
-                    }
+                    wrapMode: Text.Wrap
+                    text: root.failureText
                 }
 
-                GroupBox {
-                    title: qsTr("Decode")
-                    Layout.fillWidth: true
+                ToolButton {
+                    text: "✕"
+                    onClicked: root.dismissedFailure = root.failureText
+                }
+            }
+        }
 
-                    GridLayout {
-                        anchors.fill: parent
-                        columns: 2
-                        columnSpacing: 8
-                        rowSpacing: 6
+        // Both panes stay instantiated: a Loader would discard whatever the user has
+        // typed into the setup form every time a session starts.
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
 
-                        Label { text: qsTr("Mode") }
-                        ComboBox {
-                            id: decodeMode
-                            Layout.fillWidth: true
-                            textRole: "label"
-                            valueRole: "flag"
-                            // "Default" passes no -f flag, i.e. the decoder's own default
-                            // frame sync. "-fa" (Auto) enables every decoder at once, which
-                            // on a trunked control channel synthesises audio out of data.
-                            model: [
-                                { label: qsTr("Default"), flag: "" },
-                                { label: qsTr("Auto (all decoders)"), flag: "-fa" },
-                                { label: qsTr("P25 Phase 1"), flag: "-f1" },
-                                { label: qsTr("P25 Phase 2"), flag: "-f2" },
-                                { label: qsTr("DMR"), flag: "-fs" },
-                                { label: qsTr("NXDN48"), flag: "-fi" },
-                                { label: qsTr("NXDN96"), flag: "-fn" },
-                                { label: qsTr("D-STAR"), flag: "-fd" },
-                                { label: qsTr("YSF"), flag: "-fy" },
-                                { label: qsTr("M17"), flag: "-fz" }
-                            ]
-                        }
+            SetupPane {
+                id: setup
+                anchors.fill: parent
+                opacity: root.monitorMode ? 0.0 : 1.0
+                visible: opacity > 0.0
+                enabled: opacity > 0.9
 
-                        Label { text: qsTr("Modulation") }
-                        ComboBox {
-                            id: modulation
-                            Layout.fillWidth: true
-                            textRole: "label"
-                            valueRole: "flag"
-                            model: [
-                                { label: qsTr("Default"), flag: "" },
-                                { label: qsTr("C4FM"), flag: "-mc" },
-                                { label: qsTr("QPSK"), flag: "-mq" },
-                                { label: qsTr("GFSK"), flag: "-mg" },
-                                { label: qsTr("Auto"), flag: "-ma" }
-                            ]
-                        }
+                Behavior on opacity {
+                    NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+                }
+            }
 
-                        CheckBox { id: trunking; text: qsTr("Trunking (-T)"); checked: true }
-                        CheckBox { id: encLockout; text: qsTr("Enc lockout"); checked: true }
+            MonitorPane {
+                id: monitor
+                anchors.fill: parent
+                opacity: root.monitorMode ? 1.0 : 0.0
+                visible: opacity > 0.0
+                enabled: opacity > 0.9
+                summaryText: setup.summaryText
+                onSummaryClicked: argsSheet.open()
 
-                        Label { text: qsTr("Extra args") }
-                        TextField {
-                            id: extraArgs
-                            Layout.fillWidth: true
-                            placeholderText: qsTr("e.g. -C chan.csv -G group.csv")
-                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        }
-                    }
+                Behavior on opacity {
+                    NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
                 }
             }
         }
@@ -341,13 +144,26 @@ ApplicationWindow {
             Layout.fillWidth: true
             spacing: 8
 
+            BusyIndicator {
+                visible: root.transitioning
+                running: root.transitioning
+                implicitWidth: 28
+                implicitHeight: 28
+            }
+
             Button {
                 // Starting without a descriptor would just fail in the engine, so the
-                // button asks for the dongle first when that is what is missing.
-                text: root.running
-                      ? qsTr("Stop")
-                      : (root.localDeviceBlocked ? qsTr("Connect dongle") : qsTr("Start"))
+                // button asks for the dongle first when that is what is missing. While
+                // the service is mid-transition it says so and refuses input: the
+                // second tap it used to accept was rejected further down with no sign
+                // of it on screen.
+                text: root.transitioning
+                      ? decoderHost.statusText
+                      : (root.running
+                         ? qsTr("Stop")
+                         : (root.localDeviceBlocked ? qsTr("Connect dongle") : qsTr("Start")))
                 highlighted: true
+                enabled: !root.transitioning
                 Layout.fillWidth: true
                 onClicked: {
                     if (root.running)
@@ -355,90 +171,112 @@ ApplicationWindow {
                     else if (root.localDeviceBlocked)
                         decoderHost.requestLocalDeviceAccess()
                     else
-                        decoderHost.start(root.buildArgs())
+                        root.startSession()
                 }
             }
 
+            // Both act on the live engine, so they belong to the session rather than
+            // to the screen that configures one.
             Button {
                 text: qsTr("Mute")
+                visible: root.monitorMode
                 enabled: root.running
                 onClicked: commands.toggleMute()
             }
 
             Button {
                 text: qsTr("Lockout")
+                visible: root.monitorMode
                 enabled: root.running
                 onClicked: commands.lockoutSlot(0)
             }
         }
 
-        GroupBox {
-            title: qsTr("Status")
+        // The finished session's log stays one tap away instead of on screen: it is
+        // history the moment the engine stops, not status.
+        ItemDelegate {
             Layout.fillWidth: true
+            visible: !root.monitorMode && eventLog.count > 0
+            text: qsTr("Last session — %1 events").arg(eventLog.count)
+            onClicked: logSheet.open()
+        }
+    }
 
-            GridLayout {
-                anchors.fill: parent
-                columns: 2
-                columnSpacing: 8
-                rowSpacing: 2
+    Popup {
+        id: logSheet
 
-                Label { text: qsTr("Stream") }
+        anchors.centerIn: Overlay.overlay
+        width: Math.round(root.width * 0.92)
+        height: Math.round(root.height * 0.8)
+        modal: true
+        padding: 12
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 8
+
+            RowLayout {
+                Layout.fillWidth: true
+
                 Label {
                     Layout.fillWidth: true
-                    font.family: monoFontFamily
-                    text: (metrics.streamActive ? qsTr("active") : qsTr("idle"))
-                          + "  " + metrics.symbolRateHz + " sym/s  " + metrics.outputRateHz + " Hz"
+                    font.pixelSize: 16
+                    text: qsTr("Last session")
                 }
 
-                Label { text: qsTr("SNR") }
-                Label {
-                    Layout.fillWidth: true
-                    font.family: monoFontFamily
-                    text: metrics.snrDb.toFixed(1) + " dB   "
-                          + (metrics.carrierLock ? qsTr("lock") : qsTr("no lock"))
-                          + "   " + metrics.cfoHz.toFixed(0) + " Hz"
+                Button {
+                    text: qsTr("Close")
+                    onClicked: logSheet.close()
                 }
+            }
 
-                Label { text: qsTr("Gain") }
-                Label { Layout.fillWidth: true; font.family: monoFontFamily; text: metrics.tunerGainText }
-
-                Label { text: qsTr("Slot 1") }
-                Label { Layout.fillWidth: true; elide: Text.ElideRight; font.family: monoFontFamily; text: metrics.slot1Text }
-
-                Label { text: qsTr("Slot 2") }
-                Label { Layout.fillWidth: true; elide: Text.ElideRight; font.family: monoFontFamily; text: metrics.slot2Text }
+            EventLogView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
             }
         }
+    }
 
-        Label {
-            Layout.fillWidth: true
-            visible: metrics.messageText.length > 0
-            wrapMode: Text.Wrap
-            text: metrics.messageText
-        }
+    // What the collapsed chip expands to. The argv is the whole truth about how the
+    // session was configured, and unlike the form it cannot drift from it.
+    Popup {
+        id: argsSheet
 
-        GroupBox {
-            title: qsTr("Events")
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.preferredHeight: root.running ? 5 : 2
+        anchors.centerIn: Overlay.overlay
+        width: Math.round(root.width * 0.92)
+        modal: true
+        padding: 12
 
-            ListView {
-                id: eventView
-                anchors.fill: parent
-                clip: true
-                model: eventLog
-                spacing: 1
+        // No height and no anchors: the popup takes its height from this layout, so
+        // filling the parent instead would make the two depend on each other.
+        ColumnLayout {
+            spacing: 8
 
-                delegate: Label {
-                    width: eventView.width
-                    font.family: monoFontFamily
-                    font.pixelSize: 12
-                    wrapMode: Text.Wrap
-                    text: model.text
-                }
+            Label {
+                Layout.fillWidth: true
+                font.pixelSize: 16
+                text: qsTr("Session options")
+            }
 
-                ScrollBar.vertical: ScrollBar {}
+            Label {
+                Layout.fillWidth: true
+                font.family: monoFontFamily
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                text: root.sessionArgs.join(" ")
+            }
+
+            Label {
+                Layout.fillWidth: true
+                opacity: 0.7
+                wrapMode: Text.Wrap
+                text: qsTr("Changing these takes effect the next time you start.")
+            }
+
+            Button {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Close")
+                onClicked: argsSheet.close()
             }
         }
     }

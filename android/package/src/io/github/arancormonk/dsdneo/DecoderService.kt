@@ -83,6 +83,7 @@ class DecoderService : Service() {
                 return
             }
             state = State.STARTING
+            lastError = ""
         }
 
         startForegroundNotification(getString(R.string.decoder_starting))
@@ -91,7 +92,7 @@ class DecoderService : Service() {
         if (!initialized) {
             val rc = DsdNative.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
             if (rc != DsdNative.STATUS_OK) {
-                failStart("nativeInit failed ($rc)")
+                failStart("nativeInit failed ($rc)", getString(R.string.error_init_failed, rc))
                 return
             }
             initialized = true
@@ -99,7 +100,10 @@ class DecoderService : Service() {
 
         val configureRc = DsdNative.nativeConfigure(args)
         if (configureRc != DsdNative.STATUS_OK) {
-            failStart("nativeConfigure failed ($configureRc)")
+            failStart(
+                "nativeConfigure failed ($configureRc)",
+                getString(R.string.error_configure_failed, configureRc)
+            )
             return
         }
 
@@ -115,9 +119,16 @@ class DecoderService : Service() {
         thread.start()
     }
 
-    private fun failStart(reason: String) {
+    /**
+     * Abandons a start. [reason] goes to logcat; [userMessage] is what the UI shows,
+     * because dropping back to IDLE with nothing on screen reads as "nothing happened".
+     */
+    private fun failStart(reason: String, userMessage: String) {
         Log.e(TAG, reason)
-        synchronized(lock) { state = State.IDLE }
+        synchronized(lock) {
+            state = State.IDLE
+            lastError = userMessage
+        }
         releaseWakeLock()
         stopForegroundCompat()
         stopSelf()
@@ -240,6 +251,7 @@ class DecoderService : Service() {
         private val lock = Any()
         private var state = State.IDLE
         private var initialized = false
+        private var lastError = ""
 
         /** Called from the Qt host (DecoderHostAndroid) to start decoding. */
         @JvmStatic
@@ -260,5 +272,12 @@ class DecoderService : Service() {
         /** Service-side view of the lifecycle, for UI status text. */
         @JvmStatic
         fun stateName(): String = synchronized(lock) { state.name }
+
+        /**
+         * Why the last start was abandoned, or "" if none was. Read by the Qt host when
+         * it sees a start end without the engine ever running; cleared by the next start.
+         */
+        @JvmStatic
+        fun lastError(): String = synchronized(lock) { lastError }
     }
 }

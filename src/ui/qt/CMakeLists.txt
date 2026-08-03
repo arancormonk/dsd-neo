@@ -24,6 +24,10 @@ qt_add_resources(
     "/dsdneo"
     FILES
         qml/Main.qml
+        qml/EventLogView.qml
+        qml/MonitorPane.qml
+        qml/SetupPane.qml
+        qml/StatusCard.qml
         fonts/DejaVuSansMono.ttf
 )
 

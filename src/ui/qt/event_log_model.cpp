@@ -126,6 +126,18 @@ EventLogModel::refresh() {
     beginResetModel();
     m_rows = rows;
     endResetModel();
+    Q_EMIT countChanged();
+}
+
+void
+EventLogModel::clear() {
+    if (m_rows.isEmpty()) {
+        return;
+    }
+    beginResetModel();
+    m_rows.clear();
+    endResetModel();
+    Q_EMIT countChanged();
 }
 
 } // namespace dsd_qt

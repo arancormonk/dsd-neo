@@ -2008,6 +2008,15 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
 endif()
 
+# The Qt Quick frontend itself only builds for Android, but the session-phase
+# mapping it binds to is deliberately free of Qt and JNI so it can be tested here.
+add_executable(dsd-neo_test_ui_qt_session_state ui/test_ui_qt_session_state.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_session_state
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/android
+)
+add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
+
 add_executable(
     dsd-neo_test_app_control_history_state
     ui/test_ui_history_state.c

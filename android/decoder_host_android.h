@@ -18,6 +18,7 @@
 #include <QStringList>
 
 #include "decoder_host.h"
+#include "session_state_map.h"
 
 namespace dsd_android {
 
@@ -28,6 +29,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool isRunning() const override;
     QString statusText() const override;
+    SessionState sessionState() const override;
+    QString failureText() const override;
 
     /** @brief True: an app has to obtain the USB descriptor from Java. */
     bool
@@ -48,11 +51,19 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     QString importContentUri(const QString& reference, const QString& fileName) override;
 
   private:
+    /** @brief Record a start that never reached the service. Always returns false. */
+    bool failStart(const QString& reason);
+
     void setStatus(const QString& text);
     void setLocalDeviceState(bool ready, const QString& text);
+    /** @brief Publish a phase; @p reason overrides the failure text when non-empty. */
+    void setSessionPhase(SessionPhase phase, const QString& reason = QString());
 
     bool m_running = false;
     QString m_status = QStringLiteral("Idle");
+    SessionPhaseTracker m_phase;
+    SessionPhase m_published_phase = kSessionIdle;
+    QString m_failure;
     bool m_usb_ready = false;
     QString m_usb_status;
 };

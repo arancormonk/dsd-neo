@@ -27,6 +27,10 @@ UiController::UiController(DecoderHost* host, MetricsModel* metrics, EventLogMod
     m_timer.setInterval(kDefaultPollIntervalMs);
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &UiController::tick);
+    if (m_host != nullptr) {
+        m_session = m_host->sessionState();
+        connect(m_host, &DecoderHost::sessionStateChanged, this, &UiController::onSessionStateChanged);
+    }
 }
 
 UiController::~UiController() = default;
@@ -54,6 +58,36 @@ UiController::start() {
 void
 UiController::stop() {
     m_timer.stop();
+}
+
+void
+UiController::onSessionStateChanged() {
+    const DecoderHost::SessionState previous = m_session;
+    m_session = m_host->sessionState();
+    if (m_session == previous) {
+        return;
+    }
+
+    /* Entering a session: the incoming run owns the screen, so clear both models
+     * before the monitoring view appears. Without this the pane opens showing the
+     * previous run's events, which stay until the new engine publishes a revision. */
+    if (m_session == DecoderHost::Starting) {
+        if (m_metrics != nullptr) {
+            m_metrics->clear();
+        }
+        if (m_events != nullptr) {
+            m_events->clear();
+        }
+        return;
+    }
+
+    /* Leaving one: the events are the session's record and stay reachable, but the
+     * metrics describe a decoder that no longer exists. See MetricsModel::clear(). */
+    if (m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
+        if (m_metrics != nullptr) {
+            m_metrics->clear();
+        }
+    }
 }
 
 void

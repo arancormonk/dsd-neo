@@ -7,4 +7,8 @@
     <string name="decoder_starting">Starting…</string>
     <string name="decoder_running">Decoding</string>
     <string name="decoder_stopping">Stopping…</string>
+    <!-- Shown in the app when a start dies before the engine ever runs. The code is
+         carried through because the underlying reason only exists in logcat. -->
+    <string name="error_init_failed">The decoder could not be initialised (code %1$d).</string>
+    <string name="error_configure_failed">Those options were rejected (code %1$d). Check the input settings.</string>
 </resources>

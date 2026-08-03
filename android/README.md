@@ -10,6 +10,29 @@ across JNI, only lifecycle and platform glue.
 Supported inputs: a directly attached RTL-SDR over USB-OTG, `rtl_tcp`, UDP PCM,
 TCP PCM, and local files.
 
+## The two-mode UI
+
+One screen with two jobs, switched on `DecoderHost::sessionState` — a phone cannot
+do both at once:
+
+- **Setup** (`Idle`, `Failed`) — input and decode options, the primary action, a
+  failure banner when a start was abandoned, and a row that reopens the last
+  session's event log.
+- **Monitor** (`Starting`, `Running`, `Stopping`) — the settings collapse to a
+  summary chip, and status and events take the screen.
+
+Both panes stay instantiated and cross-fade, so the setup form keeps whatever was
+typed into it. Status and events exist *only* in the monitoring view: nothing
+upstream invalidates the published snapshot on stop, so `MetricsModel::clear()`
+and `EventLogModel::clear()` are what stop the last live SNR and carrier lock from
+sitting on screen for a decoder that is no longer running. `UiController` drives
+both from the session-state edges — events are cleared when a new session starts,
+not when one ends, so the finished session's log stays reachable.
+
+The service state machine, the native `g_running` atomic and the failure path are
+folded into that one phase by `session_state_map.h`, which is deliberately free of
+Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host.
+
 ## Build
 
 Prerequisites:

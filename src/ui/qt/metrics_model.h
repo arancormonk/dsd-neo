@@ -90,6 +90,16 @@ class MetricsModel : public QObject {
     /** @brief Re-read the boundary. Call from the UI poll tick only. */
     void refresh();
 
+    /**
+     * @brief Return every reading to its unknown state.
+     *
+     * Nothing upstream invalidates on stop: the telemetry hooks are torn down, so the
+     * redraw flag never rises again and refresh() is never called, leaving the last
+     * live SNR and carrier lock on screen for a decoder that is no longer running.
+     * Showing nothing is honest; showing the readings from a minute ago is not.
+     */
+    void clear();
+
   Q_SIGNALS:
     void changed();
 
