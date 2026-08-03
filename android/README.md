@@ -18,8 +18,10 @@ Prerequisites:
 - The NDK the chosen Qt release is qualified with (Qt 6.9–6.11: r27+; r28 is what
   this tree is built and tested with)
 - Qt 6.11 `android_arm64_v8a` kit **and** the matching host kit (`gcc_64` on Linux)
-- vcpkg (the repo's manifest and overlay ports cross-compile mbe-neo, OpenSSL and
-  libsndfile)
+- vcpkg (the repo's manifest and overlay ports cross-compile mbe-neo, OpenSSL,
+  libsndfile, Codec2 and libcurl)
+- a host C compiler: Codec2 builds `generate_codebook` for the build machine and
+  runs it to generate its codebooks, so a container without one cannot build it
 
 ```sh
 export VCPKG_ROOT=$HOME/vcpkg
@@ -164,6 +166,21 @@ cd /tmp/rtlsdr && patch -p1 < <repo>/android/third_party/patches/0001-librtlsdr-
 # then copy src/librtlsdr.c, src/tuner_*.c and include/* over the vendored tree,
 # regenerate the patch against the new baseline, and update the table above
 ```
+
+## Codec2 and libcurl
+
+Both come from vcpkg and both are required by the Android presets
+(`DSD_REQUIRE_CODEC2`, `DSD_REQUIRE_CURL`), so a detection regression fails
+configure rather than producing an APK that quietly decodes no M17 voice. The
+triplet links statically, so they end up inside
+`libdsd-neo-app_arm64-v8a.so` — there is no extra `.so` to package and no
+`System.loadLibrary` change.
+
+libcurl backs the rdio-scanner upload path. `android.permission.INTERNET` is
+already declared, and because OpenSSL's compiled-in `/etc/ssl/certs` does not
+exist on Android, `rdio_export.c` points libcurl at the system trust store
+(`/apex/com.android.conscrypt/cacerts`, falling back to
+`/system/etc/security/cacerts`) so `https://` endpoints verify normally.
 
 ## Known limits
 

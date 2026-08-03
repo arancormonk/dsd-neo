@@ -295,15 +295,21 @@ These are CMake cache options (set at configure time via `-D...`).
 - Optional features (auto‑detected):
   - RTL‑SDR support is enabled when `librtlsdr` is found.
   - SoapySDR support is enabled when SoapySDR >= 0.8.1 is found through a CMake package that exports an imported target.
-  - Codec2 support is enabled when `codec2` is found.
-  - rdio API upload support is enabled when libcurl is found.
+  - Codec2 support is enabled when `codec2` is found. Both degrade silently, so pass `-DDSD_REQUIRE_CODEC2=ON` to fail
+    configure instead; `-DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON` turns detection off outright.
+  - rdio API upload support is enabled when libcurl is found. `-DDSD_REQUIRE_CURL=ON` and
+    `-DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON` are the matching switches.
 
 ## CI Backend Policy
 
 - CI treats backend availability as a build contract, not a best-effort option.
 - Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
 - Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
-  library, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull request.
+  library, no Codec2, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull
+  request.
+- The Android and `win-msvc-*` presets require Codec2 and libcurl, so a vcpkg detection regression fails configure
+  rather than shipping a build that decodes no M17 voice. The host job above covers the opposite case: that the
+  degraded build still works.
 - Release/packaging/static-analysis jobs that are expected to exercise radio backends configure with:
   - `-DDSD_REQUIRE_RTLSDR=ON`
   - `-DDSD_REQUIRE_SOAPYSDR=ON`

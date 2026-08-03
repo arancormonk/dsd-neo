@@ -22,7 +22,10 @@ Optional compiled dependencies are:
 - librtlsdr for RTL-SDR input
 - SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
   export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
-- Codec2 for additional vocoder paths
+- Codec2 for additional vocoder paths. On Windows and Android it comes from the
+  vcpkg manifest, and those presets set `DSD_REQUIRE_CODEC2=ON` (with
+  `DSD_REQUIRE_CURL=ON`) so a missing dependency fails configure instead of
+  silently dropping M17 voice or rdio uploads.
 - libcurl 7.56.0 or newer for rdio-scanner API uploads. Builds older than
   7.85 use the integer protocol-mask option needed by the Ubuntu 20.04
   AppImage toolchain; remove that branch when portable packaging no longer
