@@ -18,6 +18,9 @@
 #include <QObject>
 #include <QString>
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
+
 namespace dsd_qt {
 
 class MetricsModel : public QObject {
@@ -87,8 +90,17 @@ class MetricsModel : public QObject {
         return m_message_text;
     }
 
-    /** @brief Re-read the boundary. Call from the UI poll tick only. */
-    void refresh();
+    /**
+     * @brief Re-read the boundary. Call from the UI poll tick only.
+     *
+     * Takes the snapshots rather than fetching them so that one frame is built from
+     * one generation: fetching here as well would consume a second time, and a
+     * publish in between would leave the readings and the call lines disagreeing.
+     *
+     * @param opts_snapshot Options snapshot, or nullptr before the first publish.
+     * @param snapshot      State snapshot, or nullptr before the first publish.
+     */
+    void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
 
     /**
      * @brief Return every reading to its unknown state.

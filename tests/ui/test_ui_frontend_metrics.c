@@ -17,6 +17,8 @@
 
 static const dsd_opts* g_latest_opts;
 static const dsd_state* g_latest_state;
+static int g_latest_opts_calls;
+static int g_latest_state_calls;
 static int g_snr_c4fm_eye_calls;
 static int g_snr_gfsk_eye_calls;
 static int g_snr_qpsk_const_calls;
@@ -26,11 +28,13 @@ static double g_snr_gfsk = 17.75;
 
 const dsd_opts*
 dsd_app_get_latest_opts_snapshot(void) {
+    g_latest_opts_calls++;
     return g_latest_opts;
 }
 
 const dsd_state*
 dsd_app_get_latest_snapshot(void) {
+    g_latest_state_calls++;
     return g_latest_state;
 }
 
@@ -204,8 +208,57 @@ test_metrics_fallback_and_runtime_hooks(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/*
+ * Metrics read from a snapshot the caller already holds.
+ *
+ * A frontend building one frame reads metrics and snapshot fields both. Through the
+ * implicit accessors that is two consumes, and a publish landing between them leaves
+ * the two halves of the frame describing different generations. This variant exists
+ * so the caller can consume once; the whole point is that it does not consume again.
+ */
+static void
+test_metrics_for_snapshot_does_not_consume(void) {
+    /* Static, like the case below: these are far too large for the stack. */
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frontend_metrics from_accessors;
+    dsd_frontend_metrics from_snapshot;
+
+    fill_metric_inputs(&opts, &state);
+    g_latest_opts = &opts;
+    g_latest_state = &state;
+
+    g_latest_opts_calls = 0;
+    g_latest_state_calls = 0;
+    assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&from_accessors, DSD_FRONTEND_SNR_FALLBACK_ALL) == 0);
+    assert(g_latest_opts_calls == 1);
+    assert(g_latest_state_calls == 1);
+
+    g_latest_opts_calls = 0;
+    g_latest_state_calls = 0;
+    assert(dsd_app_frontend_get_metrics_for_snapshot(&opts, &state, &from_snapshot, DSD_FRONTEND_SNR_FALLBACK_ALL)
+           == 0);
+    assert(g_latest_opts_calls == 0);
+    assert(g_latest_state_calls == 0);
+
+    /* Same inputs, same answer: the two differ only in where the snapshot comes from. */
+    assert(from_snapshot.requested_ppm == from_accessors.requested_ppm);
+    assert(from_snapshot.output_rate_hz == from_accessors.output_rate_hz);
+    assert(from_snapshot.symbol_rate_hz == from_accessors.symbol_rate_hz);
+    assert(from_snapshot.cqpsk_enable == from_accessors.cqpsk_enable);
+
+    /* Missing snapshots are the pre-first-publish state, not an error; a missing
+     * output buffer is the only thing there is to reject. */
+    assert(dsd_app_frontend_get_metrics_for_snapshot(NULL, NULL, &from_snapshot, 0U) == 0);
+    assert(dsd_app_frontend_get_metrics_for_snapshot(&opts, &state, NULL, 0U) < 0);
+
+    g_latest_opts = NULL;
+    g_latest_state = NULL;
+}
+
 int
 main(void) {
+    test_metrics_for_snapshot_does_not_consume();
     test_metrics_fallback_and_runtime_hooks();
     printf("UI_FRONTEND_METRICS: OK\n");
     return 0;

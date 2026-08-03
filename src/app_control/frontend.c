@@ -164,6 +164,12 @@ dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsig
 }
 
 int
+dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                          unsigned int snr_fallbacks) {
+    return frontend_get_metrics_with_snr_fallbacks(opts, state, out, snr_fallbacks);
+}
+
+int
 dsd_app_frontend_constellation_get(float* out_xy, int max_points) {
 #ifdef USE_RADIO
     return rtl_stream_constellation_get(out_xy, max_points);

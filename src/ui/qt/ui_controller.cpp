@@ -6,6 +6,7 @@
 #include "ui_controller.h"
 
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/snapshot.h>
 
 #include "decoder_host.h"
 #include "event_log_model.h"
@@ -101,11 +102,19 @@ UiController::tick() {
     if (dsd_app_frontend_redraw_consume() == 0) {
         return;
     }
+
+    /* Consumed once, here, and handed to both models. Each accessor deep-copies
+     * whenever the publisher has moved on, so fetching per model would let a publish
+     * land mid-frame and leave the status card describing one generation and the
+     * event list another — and would repeat the copy for every fetch. */
+    const dsd_opts* opts_snapshot = dsd_app_get_latest_opts_snapshot();
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+
     if (m_metrics != nullptr) {
-        m_metrics->refresh();
+        m_metrics->refresh(opts_snapshot, snapshot);
     }
     if (m_events != nullptr) {
-        m_events->refresh();
+        m_events->refresh(snapshot);
     }
 }
 

@@ -8,7 +8,6 @@
 #include <algorithm>
 
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/state.h>
 
 namespace dsd_qt {
@@ -68,8 +67,7 @@ EventLogModel::roleNames() const {
 }
 
 void
-EventLogModel::refresh() {
-    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+EventLogModel::refresh(const dsd_state* snapshot) {
     if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
         return;
     }

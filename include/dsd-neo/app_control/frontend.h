@@ -8,13 +8,17 @@
  * @brief Frontend-facing app-control metrics API.
  *
  * This boundary exposes plain metric values without leaking live
- * dsd_opts/dsd_state pointers or IO-layer RTL types.
+ * dsd_opts/dsd_state pointers or IO-layer RTL types. The one accessor that does
+ * take those pointers reads published snapshots, never the live objects — see
+ * dsd_app_frontend_get_metrics_for_snapshot().
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_FRONTEND_H_
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 #include "dsd-neo/platform/platform.h"
 
@@ -107,6 +111,24 @@ enum {
 
 int dsd_app_frontend_get_metrics(dsd_frontend_metrics* out);
 int dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, unsigned int snr_fallbacks);
+
+/**
+ * @brief Metrics read from snapshots the caller already holds.
+ *
+ * The accessors above take a fresh snapshot each time. A frontend that reads both
+ * metrics and snapshot fields to build one frame would therefore consume twice, and
+ * a publish landing in between leaves the two halves of that frame describing
+ * different generations. Consume once per frame (see app_control/snapshot.h) and
+ * pass the result here.
+ *
+ * @param opts          Options snapshot from dsd_app_get_latest_opts_snapshot().
+ * @param state         State snapshot from dsd_app_get_latest_snapshot().
+ * @param out           Receives the metrics.
+ * @param snr_fallbacks DSD_FRONTEND_SNR_FALLBACK_* mask.
+ * @return 0 on success, negative on failure.
+ */
+int dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
+                                              unsigned int snr_fallbacks);
 
 int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);

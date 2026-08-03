@@ -50,5 +50,6 @@ main(void) {
     (void)&dsd_app_frontend_history_event_sort_time;
     (void)&dsd_app_get_latest_snapshot;
     (void)&dsd_app_get_latest_opts_snapshot;
+    (void)&dsd_app_frontend_get_metrics_for_snapshot;
     return 0;
 }

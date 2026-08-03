@@ -19,6 +19,8 @@
 #include <QList>
 #include <QString>
 
+#include <dsd-neo/core/state_fwd.h>
+
 namespace dsd_qt {
 
 class EventLogModel : public QAbstractListModel {
@@ -41,8 +43,15 @@ class EventLogModel : public QAbstractListModel {
         return static_cast<int>(m_rows.size());
     }
 
-    /** @brief Re-read the snapshot ring. Call from the UI poll tick only. */
-    void refresh();
+    /**
+     * @brief Re-read the snapshot ring. Call from the UI poll tick only.
+     *
+     * Takes the snapshot rather than fetching it, so that the whole frame is built
+     * from the generation the caller consumed. See MetricsModel::refresh().
+     *
+     * @param snapshot State snapshot, or nullptr before the first publish.
+     */
+    void refresh(const dsd_state* snapshot);
 
     /**
      * @brief Drop every row, keeping the revision guard.
