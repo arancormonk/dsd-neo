@@ -10,12 +10,10 @@ on:
       - ".*"
       - "**/*.md"
   pull_request:
+    # No paths-ignore here: the Android PR jobs are required status checks, and a
+    # filtered-out workflow never reports them, which would block docs-only PRs.
+    # Keep this in step with windows-ci and macos-ci.
     branches: [main, master]
-    # Two NDK cross builds plus a Qt install is not worth spending on a docs-only
-    # change; keep this in step with the push filter above.
-    paths-ignore:
-      - ".*"
-      - "**/*.md"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
