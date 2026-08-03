@@ -94,9 +94,11 @@ Item {
         id: fileDialog
 
         onAccepted: {
+            // Only a hint: the host asks the content provider for the document's real
+            // display name and falls back to this when there is no provider to ask.
             var reference = selectedFile.toString()
-            var name = reference.substring(reference.lastIndexOf('/') + 1)
-            var path = decoderHost.importContentUri(reference, name)
+            var hint = reference.substring(reference.lastIndexOf('/') + 1)
+            var path = decoderHost.importContentUri(reference, hint)
             if (path.length > 0)
                 filePath.text = path
         }
@@ -141,10 +143,15 @@ Item {
                     Label { text: qsTr("Device"); visible: pane.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered }
                     RowLayout {
                         Layout.fillWidth: true
+                        // Without a floor of zero the status text's natural width becomes
+                        // this column's minimum, and the column is shared with every
+                        // field below it -- see the note on the value column.
+                        Layout.minimumWidth: 0
                         visible: pane.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered
 
                         Label {
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             elide: Text.ElideRight
                             text: (decoderHost && decoderHost.localDeviceStatus.length > 0)
                                   ? decoderHost.localDeviceStatus
@@ -187,19 +194,29 @@ Item {
                     Label { text: qsTr("Gain / PPM / BW"); visible: pane.inputKey === "usb" || pane.inputKey === "rtltcp" }
                     RowLayout {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         visible: pane.inputKey === "usb" || pane.inputKey === "rtltcp"
-                        TextField { id: rtlGain; Layout.fillWidth: true; text: "13"; inputMethodHints: Qt.ImhDigitsOnly }
-                        TextField { id: rtlPpm; Layout.fillWidth: true; text: "-2" }
-                        TextField { id: rtlBw; Layout.fillWidth: true; text: "48"; inputMethodHints: Qt.ImhDigitsOnly }
+                        // dB of tuner gain, tuner error in PPM, and channel bandwidth in
+                        // kHz. 30 dB and 48 kHz suit a P25/DMR control channel on a stock
+                        // dongle; 0 PPM is "uncorrected", which is right until the offset
+                        // has actually been measured for the stick in hand.
+                        TextField { id: rtlGain; Layout.fillWidth: true; Layout.minimumWidth: 0; text: "30"; inputMethodHints: Qt.ImhDigitsOnly }
+                        TextField { id: rtlPpm; Layout.fillWidth: true; Layout.minimumWidth: 0; text: "0" }
+                        TextField { id: rtlBw; Layout.fillWidth: true; Layout.minimumWidth: 0; text: "48"; inputMethodHints: Qt.ImhDigitsOnly }
                     }
 
                     // Only for the local dongle: over rtl_tcp the bias tee belongs
-                    // to whoever runs the server.
-                    Label { text: qsTr("Bias tee"); visible: pane.inputKey === "usb" }
+                    // to whoever runs the server. Spans both columns and carries its own
+                    // label, like the decode checkboxes: given a label column of its own
+                    // the explanatory text set this column's minimum width, and the column
+                    // is shared, so every field above it was pushed off the right edge.
                     CheckBox {
                         id: biasTee
+                        Layout.columnSpan: 2
+                        Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         visible: pane.inputKey === "usb"
-                        text: qsTr("power an LNA over the antenna feed")
+                        text: qsTr("Bias tee (powers an LNA)")
                     }
 
                     Label { text: qsTr("Bind port"); visible: pane.inputKey === "udp" }
@@ -265,12 +282,19 @@ Item {
                         Layout.fillWidth: true
                         textRole: "label"
                         valueRole: "flag"
-                        // "Default" passes no -f flag, i.e. the decoder's own default
-                        // frame sync. "-fa" (Auto) enables every decoder at once, which
-                        // on a trunked control channel synthesises audio out of data.
+                        // The first entry passes no -f flag, which is not "nothing": the
+                        // decoder's own default already has P25 phase 1 and 2, DMR and YSF
+                        // enabled together, and that is what the label has to say. "-fa"
+                        // adds every remaining decoder, which on a trunked control channel
+                        // synthesises audio out of data -- hence the warning, not a name
+                        // that reads like the safer choice.
                         model: [
-                            { label: qsTr("Default"), flag: "" },
-                            { label: qsTr("Auto (all decoders)"), flag: "-fa" },
+                            // No "(default)" suffix on the first entry of either combo:
+                            // it is what the box already displays on a fresh form, and
+                            // the box is one grid column wide on a phone, where anything
+                            // longer than about a dozen capitals elides silently.
+                            { label: qsTr("P25/DMR/YSF"), flag: "" },
+                            { label: qsTr("All decoders"), flag: "-fa" },
                             { label: qsTr("P25 Phase 1"), flag: "-f1" },
                             { label: qsTr("P25 Phase 2"), flag: "-f2" },
                             { label: qsTr("DMR"), flag: "-fs" },
@@ -288,12 +312,25 @@ Item {
                         Layout.fillWidth: true
                         textRole: "label"
                         valueRole: "flag"
+                        // Passing no -m flag leaves the modulation unlocked: the decoder
+                        // starts on C4FM and re-selects if it detects otherwise, which is
+                        // what "Default" used to mean and never said. The label names the
+                        // starting point too, because auto-selection is not free -- this
+                        // P25 LSM system reads at 1.4 dB and never locks until QPSK is
+                        // chosen, and choosing any entry below pins it (mod_cli_lock) so
+                        // the decoder cannot drift back off it.
+                        //
+                        // "LSM" is in the QPSK label deliberately: it is the word on the
+                        // system, not the word in the modulation table.
+                        //
+                        // "-ma" is absent. It sets every optimization at once and the
+                        // engine logs "Don't use the -ma switch" when it does; Extra args
+                        // still reaches it for anyone who means it.
                         model: [
-                            { label: qsTr("Default"), flag: "" },
+                            { label: qsTr("Auto (C4FM first)"), flag: "" },
                             { label: qsTr("C4FM"), flag: "-mc" },
-                            { label: qsTr("QPSK"), flag: "-mq" },
-                            { label: qsTr("GFSK"), flag: "-mg" },
-                            { label: qsTr("Auto"), flag: "-ma" }
+                            { label: qsTr("QPSK / LSM"), flag: "-mq" },
+                            { label: qsTr("GFSK"), flag: "-mg" }
                         ]
                     }
 

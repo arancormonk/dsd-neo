@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 
 #include "call_line.h"
@@ -78,6 +79,7 @@ MetricsModel::clear() {
     m_carrier_lock = false;
     m_cfo_hz = 0.0;
     m_tuner_gain_text.clear();
+    m_radio_input = false;
     m_slot_text[0].clear();
     m_slot_text[1].clear();
     m_message_text.clear();
@@ -100,6 +102,11 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
         return;
     }
 
+    /* Drives whether the tuner-facing rows are shown at all. Taken from the options
+     * the running session was configured with, which is the same authority the
+     * metrics fetch above uses to decide whether any of them mean anything. */
+    m_radio_input = opts_snapshot->audio_in_type == AUDIO_IN_RTL;
+
     m_stream_active = metrics.stream_active != 0;
     m_symbol_rate_hz = metrics.symbol_rate_hz;
     m_output_rate_hz = static_cast<int>(metrics.output_rate_hz);
@@ -107,9 +114,10 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     m_cfo_hz = metrics.cfo_hz;
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
-     * a GFSK stream, and nothing at all reads on an input with no demodulator behind
-     * it (UDP, a file, rtl_tcp). Publishing the estimator's no-reading sentinel would
-     * put "-100.0 dB" on screen as though it were a measurement. */
+     * a GFSK stream. Nothing reads at all on an input with no demodulator behind it
+     * (UDP, TCP, a file) -- rtl_tcp does have one, since it is an RTL input like any
+     * other. Publishing the estimator's no-reading sentinel would put "-100.0 dB" on
+     * screen as though it were a measurement. */
     const dsd_frontend_snr_readout snr = dsd_app_frontend_snr_for_mod(&metrics, snapshot->rf_mod);
     m_snr_valid = snr.valid != 0;
     m_snr_db = m_snr_valid ? snr.snr_db : 0.0;

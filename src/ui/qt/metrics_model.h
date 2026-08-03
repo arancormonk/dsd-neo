@@ -33,6 +33,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool carrierLock READ carrierLock NOTIFY changed)
     Q_PROPERTY(double cfoHz READ cfoHz NOTIFY changed)
     Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY changed)
+    Q_PROPERTY(bool radioInput READ radioInput NOTIFY changed)
     Q_PROPERTY(QString slot1Text READ slot1Text NOTIFY changed)
     Q_PROPERTY(QString slot2Text READ slot2Text NOTIFY changed)
     Q_PROPERTY(QString messageText READ messageText NOTIFY changed)
@@ -80,6 +81,19 @@ class MetricsModel : public QObject {
     const QString&
     tunerGainText() const {
         return m_tuner_gain_text;
+    }
+
+    /**
+     * @brief Whether a tuner sits under this session.
+     *
+     * Signal quality, carrier lock, frequency offset and tuner gain only mean
+     * something when one does. For a PCM feed or a file there is no estimator and no
+     * tuner to report, so a frontend should leave those rows out rather than render
+     * a row of dashes that reads as a fault.
+     */
+    bool
+    radioInput() const {
+        return m_radio_input;
     }
 
     const QString&
@@ -131,6 +145,7 @@ class MetricsModel : public QObject {
     bool m_carrier_lock = false;
     double m_cfo_hz = 0.0;
     QString m_tuner_gain_text;
+    bool m_radio_input = false;
     QString m_slot_text[2];
     QString m_message_text;
 };

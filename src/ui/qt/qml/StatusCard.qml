@@ -38,28 +38,38 @@ GroupBox {
             columnSpacing: 8
             rowSpacing: 2
 
-            Label { text: qsTr("Stream") }
+            // Sample delivery, symbol clock and output rate are all published by the
+            // RTL stream, so they describe a tuner too — see the note on the SNR rows.
+            Label { text: qsTr("Stream"); visible: metrics.radioInput }
             Label {
                 Layout.fillWidth: true
+                visible: metrics.radioInput
                 font.family: monoFontFamily
                 text: (metrics.streamActive ? qsTr("active") : qsTr("idle"))
                       + "  " + metrics.symbolRateHz + " sym/s  " + metrics.outputRateHz + " Hz"
             }
 
-            Label { text: qsTr("SNR") }
+            // Signal quality, carrier lock, frequency offset and tuner gain are
+            // properties of a tuner. A PCM feed or a file has none, and no estimator
+            // reports on one, so these rows are omitted rather than dashed out: a
+            // column of "—" reads as a decoder that is failing to measure, not as one
+            // that has nothing to measure.
+            Label { text: qsTr("SNR"); visible: metrics.radioInput }
             Label {
                 Layout.fillWidth: true
+                visible: metrics.radioInput
                 font.family: monoFontFamily
-                // An estimator that has not reported has no number to show. Inputs with
-                // no demodulator behind them (UDP, a file, rtl_tcp) never get one.
+                // An estimator that has not reported has no number to show; the C4FM
+                // estimator reads nothing on a GFSK stream, for instance.
                 text: (metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "—")
                       + "   " + (metrics.carrierLock ? qsTr("lock") : qsTr("no lock"))
                       + "   " + metrics.cfoHz.toFixed(0) + " Hz"
             }
 
-            Label { text: qsTr("Gain") }
+            Label { text: qsTr("Gain"); visible: metrics.radioInput }
             Label {
                 Layout.fillWidth: true
+                visible: metrics.radioInput
                 font.family: monoFontFamily
                 text: metrics.tunerGainText.length > 0 ? metrics.tunerGainText : "—"
             }

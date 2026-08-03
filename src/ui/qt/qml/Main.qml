@@ -249,8 +249,13 @@ ApplicationWindow {
         padding: 12
 
         // No height and no anchors: the popup takes its height from this layout, so
-        // filling the parent instead would make the two depend on each other.
+        // filling the parent instead would make the two depend on each other. The width
+        // is pinned to the popup's, though: left to itself the layout takes its width
+        // from the argv line's natural length, which is one unbroken run of monospace
+        // wider than any phone, so Layout.fillWidth had nothing to resolve against and
+        // the options this sheet exists to show ran off the right edge unwrapped.
         ColumnLayout {
+            width: argsSheet.availableWidth
             spacing: 8
 
             Label {
@@ -263,7 +268,9 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 font.family: monoFontFamily
                 font.pixelSize: 12
-                wrapMode: Text.Wrap
+                // WrapAnywhere, not Wrap: an input spec is a single long token with no
+                // spaces to break at, so word wrapping alone would still overflow.
+                wrapMode: Text.WrapAnywhere
                 text: root.sessionArgs.join(" ")
             }
 
