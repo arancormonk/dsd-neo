@@ -4,16 +4,16 @@
 #
 #    pip-compile --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file=.github/requirements/zizmor.txt --strip-extras .github/requirements/zizmor.in
 #
-zizmor==1.26.1 \
-    --hash=sha256:0a05acf6068609fb6df3b137276cf18a686226a1e0e207941cb34a85929f16cf \
-    --hash=sha256:0c2cc575007a4db99d89d5acc6120cfa7b61504bc2394c3b50af348c73f1916e \
-    --hash=sha256:44099f426af9da750ff9f548a0084e11d7d83e0158fe1a2778672398d728efdd \
-    --hash=sha256:6a958d8a0941d7e1d0de8436670b5cb7fc64c8028b4d16e3f519ccc77f953cef \
-    --hash=sha256:78083b495593f8b0b9dec14036a0836a5afcddda8a40738336ff4e399476b741 \
-    --hash=sha256:7ea21ca959c8e888de238fee81d73a1fdf89a82067eac75b8f1acdbd23e2eeaf \
-    --hash=sha256:8313cc264dec792f00a7328eb7c8e89e7d62d54f950fc897d1e6a5a6e5762203 \
-    --hash=sha256:bb7ebbe565a3742eb49a590352127ad549bb122b9b4ff9424ebab7525fa3b6b6 \
-    --hash=sha256:c96d7787d69fb298eae939e00dfdf7f534d7dfbd9cc17ab442c0650a56851415 \
-    --hash=sha256:d2744cdf944436ca7a009ae8b626a017a40381ec990216abd6cf6b8beb23323a \
-    --hash=sha256:d3049010b6bd6f849413b6d20c28e0c677b90e0a5b2bc73cbee7f7bd86dc5828
+zizmor==1.28.0 \
+    --hash=sha256:0949f57a6d20deeb9c509705afce8de233c166475e25be305985a1fe553c6e0d \
+    --hash=sha256:149dba59a8bd2897960ee54c40ae8b5801a71293bad71c8d2913c74ab66a294c \
+    --hash=sha256:354e6cb98a15a88593a6f7ac6236b092b83a2aad5c4768ee750f9b3262f668d9 \
+    --hash=sha256:6897f02b0d02fd709f5ebc13cd37d97ad464219e0ba86a03f6d86f7777b7b102 \
+    --hash=sha256:6d5a300b80bf4c12e9cbe78ffd3874ec3f94b65bea78c994ec18157e2846ece0 \
+    --hash=sha256:7b00018cf2cc948c3b3e010c1a1f30fdc001f0d062640469f17e0ef006e74eb7 \
+    --hash=sha256:833c360ba5a9c74ca45007b8c79939826fca0c5ed65144fa08f63a7009cef096 \
+    --hash=sha256:9819f91f0ef486e4af98a6aacfed23c6b4067fabcecb88d49231228a3d43f821 \
+    --hash=sha256:ae2cab67ce713e760e0d1b61ad749d374693ea2b310337aab11cd446748267f3 \
+    --hash=sha256:c93b30d211b0b0c38905a8803cc2653fff37de03eb77105302a02f709773bd4a \
+    --hash=sha256:ef69d198dcf6835c9b6eea8673cbc5c36f10b3f1b98b51d28266b7e01c3704d4
     # via -r zizmor.in
