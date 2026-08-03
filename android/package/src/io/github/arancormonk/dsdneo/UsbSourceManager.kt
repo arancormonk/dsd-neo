@@ -65,9 +65,20 @@ object UsbSourceManager {
     private var connection: UsbDeviceConnection? = null
     private var attachedName: String? = null
     private var status: String = ""
-    private var receiverRegistered = false
     private var requestPending = false
     private var requestedAtMs = 0L
+
+    /** Set while [open] is between claiming the slot and installing a connection. */
+    private var opening = false
+
+    /**
+     * Guards receiver registration only.
+     *
+     * Deliberately not [lock]: registerReceiver is a binder call, and holding the lock
+     * that every setStatus takes across it would put the main thread behind it.
+     */
+    private val receiverLock = Any()
+    private var receiverRegistered = false
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -87,7 +98,12 @@ object UsbSourceManager {
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = usbDeviceExtra(intent)
-                    if (device == null || device.deviceName == synchronized(lock) { attachedName }) {
+                    val attached = synchronized(lock) { attachedName }
+                    // The filter sees every device on the bus, so an unresolvable
+                    // EXTRA_DEVICE counts as ours only when there is an "ours" to lose.
+                    // Without that, unplugging an unrelated accessory would stop an
+                    // rtl_tcp, UDP or file session that never touched USB at all.
+                    if (attached != null && (device == null || device.deviceName == attached)) {
                         Log.i(TAG, "SDR detached; stopping the engine")
                         // The engine is mid-transfer on a descriptor that just went
                         // away: ask it to stop, and let release() close the connection
@@ -228,6 +244,31 @@ object UsbSourceManager {
             setStatus("No permission for ${describe(device)}")
             return
         }
+
+        // Claim the slot before touching the framework. This path runs again for a
+        // device we already hold — the re-prompt in requestAccess racing a late first
+        // dialog result, or, below API 33, a replayed ACTION_USB_PERMISSION, which is
+        // not a protected broadcast. Opening a second connection there leaks the first
+        // descriptor for the life of the process and hands the engine a new fd while
+        // libusb is still transferring on the old one; repeat it and the process runs
+        // out of descriptors. hasPermission above cannot catch this: permission
+        // genuinely is held.
+        synchronized(lock) {
+            if (connection != null || opening) {
+                Log.i(TAG, "usb: already holding a descriptor; ignoring a duplicate open")
+                return
+            }
+            opening = true
+        }
+        try {
+            openClaimed(manager, device)
+        } finally {
+            synchronized(lock) { opening = false }
+        }
+    }
+
+    /** Body of [open], with the open slot claimed so nothing else can install one. */
+    private fun openClaimed(manager: UsbManager, device: UsbDevice) {
         val opened = manager.openDevice(device)
         if (opened == null) {
             setStatus("Could not open ${describe(device)}")
@@ -256,21 +297,30 @@ object UsbSourceManager {
     }
 
     private fun ensureReceiver(context: Context) {
-        synchronized(lock) {
+        synchronized(receiverLock) {
             if (receiverRegistered) {
                 return
             }
+            val filter = IntentFilter().apply {
+                addAction(ACTION_USB_PERMISSION)
+                addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(receiver, filter)
+                }
+            } catch (e: RuntimeException) {
+                // Marking it registered anyway would be permanent: every later
+                // requestAccess would skip registration, so no permission result and no
+                // detach would ever be delivered again and the UI would sit on
+                // "Requesting permission…" for the rest of the process's life.
+                Log.e(TAG, "could not register the USB receiver; will retry", e)
+                return
+            }
             receiverRegistered = true
-        }
-        val filter = IntentFilter().apply {
-            addAction(ACTION_USB_PERMISSION)
-            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
-            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(receiver, filter)
         }
     }
 

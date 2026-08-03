@@ -29,8 +29,6 @@ import android.util.Log
  */
 class DecoderService : Service() {
 
-    private var wakeLock: PowerManager.WakeLock? = null
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -39,6 +37,8 @@ class DecoderService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        synchronized(lock) { lastStartId = startId }
+
         // Unconditional, and before anything that can return early. startDecoder()
         // uses startForegroundService(), which obliges this service to call
         // startForeground() for that start — including the ones we go on to reject
@@ -70,8 +70,8 @@ class DecoderService : Service() {
 
     override fun onDestroy() {
         stopDecoding()
-        joinEngineThread()
-        if (initialized) {
+        val stopped = joinEngineThread()
+        if (stopped && initialized) {
             // Only a successful teardown frees the native side. nativeDestroy refuses
             // while the engine is still running, and clearing the flag anyway would
             // wedge the service: the next start calls nativeInit, which refuses in
@@ -88,7 +88,16 @@ class DecoderService : Service() {
         // returns — so releasing would drop the descriptor after every run and leave
         // the user reconnecting the dongle before each one. UsbSourceManager holds it
         // for the process instead and releases it on detach; process death closes it.
-        releaseWakeLock()
+        if (stopped) {
+            releaseWakeLock()
+        } else {
+            // The engine is still decoding with this service on its way out. Releasing
+            // here would drop the one thing keeping the CPU awake on screen-off, in the
+            // middle of a run that is still producing audio. The wake lock belongs to
+            // the run, not to this instance: the engine thread releases it when
+            // nativeRun finally returns. See joinEngineThread().
+            Log.e(TAG, "engine still running; keeping the wake lock until it returns")
+        }
         super.onDestroy()
     }
 
@@ -103,7 +112,7 @@ class DecoderService : Service() {
         }
 
         updateNotification(getString(R.string.decoder_starting))
-        acquireWakeLock()
+        acquireWakeLock(this)
 
         if (!initialized) {
             val rc = DsdNative.nativeInit(filesDir.absolutePath, cacheDir.absolutePath)
@@ -126,6 +135,10 @@ class DecoderService : Service() {
         val thread = Thread({
             val rc = DsdNative.nativeRun()
             Log.i(TAG, "engine run returned $rc")
+            // Released before the state drops to IDLE. acquireWakeLock is a no-op while
+            // a lock is held, so a start that observes IDLE first would find the lock
+            // still ours and decode with nothing keeping the CPU awake.
+            releaseWakeLock()
             synchronized(lock) {
                 state = State.IDLE
                 // Only if it is still ours: a start that raced a timed-out join has
@@ -134,7 +147,7 @@ class DecoderService : Service() {
                     engineThread = null
                 }
             }
-            stopSelf()
+            stopSelfLatest()
         }, "dsd-neo-engine")
         synchronized(lock) {
             engineThread = thread
@@ -150,13 +163,14 @@ class DecoderService : Service() {
      */
     private fun failStart(reason: String, userMessage: String) {
         Log.e(TAG, reason)
+        // Released before IDLE, for the same reason as the engine thread does it.
+        releaseWakeLock()
         synchronized(lock) {
             state = State.IDLE
             lastError = userMessage
         }
-        releaseWakeLock()
         stopForegroundCompat()
-        stopSelf()
+        stopSelfLatest()
     }
 
     private fun stopDecoding() {
@@ -175,8 +189,9 @@ class DecoderService : Service() {
         DsdNative.nativeStop()
     }
 
-    private fun joinEngineThread() {
-        val thread = synchronized(lock) { engineThread } ?: return
+    /** @return true when no engine thread is left running. */
+    private fun joinEngineThread(): Boolean {
+        val thread = synchronized(lock) { engineThread } ?: return true
         try {
             thread.join(ENGINE_JOIN_TIMEOUT_MS)
         } catch (e: InterruptedException) {
@@ -190,7 +205,7 @@ class DecoderService : Service() {
             // Both live in the companion object, so a service created after this one
             // is destroyed still sees this thread and can join it in turn.
             Log.e(TAG, "engine thread did not stop within ${ENGINE_JOIN_TIMEOUT_MS}ms")
-            return
+            return false
         }
         // The thread clears these on its way out; this only settles a join that
         // returned before the tail of that lambda ran.
@@ -200,26 +215,7 @@ class DecoderService : Service() {
                 state = State.IDLE
             }
         }
-    }
-
-    private fun acquireWakeLock() {
-        if (wakeLock != null) {
-            return
-        }
-        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-        val lock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dsd-neo:decode")
-        lock.setReferenceCounted(false)
-        lock.acquire()
-        wakeLock = lock
-    }
-
-    private fun releaseWakeLock() {
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
-            }
-        }
-        wakeLock = null
+        return true
     }
 
     /**
@@ -287,7 +283,20 @@ class DecoderService : Service() {
         }
         releaseWakeLock()
         stopForegroundCompat()
-        stopSelf()
+        stopSelfLatest()
+    }
+
+    /**
+     * Stops the service against the start it was last handed.
+     *
+     * Bare stopSelf() stops regardless of how many starts have landed since. A run that
+     * ends just as the user begins another one would tear the new session down from
+     * onDestroy, because the destroy is delivered after the new start has already
+     * installed its engine thread. Handing AMS the newest id makes the stop a no-op
+     * once a newer start has arrived.
+     */
+    private fun stopSelfLatest() {
+        stopSelf(synchronized(lock) { lastStartId })
     }
 
     private enum class State { IDLE, STARTING, RUNNING, STOPPING }
@@ -316,6 +325,43 @@ class DecoderService : Service() {
         private var engineThread: Thread? = null
         private var initialized = false
         private var lastError = ""
+
+        /** Newest start id handed to onStartCommand; see [stopSelfLatest]. */
+        private var lastStartId = 0
+
+        /**
+         * The wake lock, held for as long as a run is in flight.
+         *
+         * Kept with [engineThread] rather than on the instance for the same reason: a
+         * join that times out destroys this service while the engine keeps decoding, and
+         * an instance field would leave nobody able to release it — or, worse, invite
+         * onDestroy to release it out from under a run that is still going.
+         */
+        private var wakeLock: PowerManager.WakeLock? = null
+
+        private fun acquireWakeLock(context: Context) {
+            synchronized(lock) {
+                if (wakeLock != null) {
+                    return
+                }
+                val power = context.applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+                val held = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "dsd-neo:decode")
+                held.setReferenceCounted(false)
+                held.acquire()
+                wakeLock = held
+            }
+        }
+
+        private fun releaseWakeLock() {
+            val held = synchronized(lock) {
+                val current = wakeLock
+                wakeLock = null
+                current
+            }
+            if (held != null && held.isHeld) {
+                held.release()
+            }
+        }
 
         /** Called from the Qt host (DecoderHostAndroid) to start decoding. */
         @JvmStatic
