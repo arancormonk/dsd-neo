@@ -137,12 +137,31 @@ jobs:
   build-apk:
     name: APK (Qt Quick app)
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      attestations: write
+      artifact-metadata: write
+      contents: read
+      id-token: write
+    outputs:
+      signed: ${{ steps.sign.outputs.SIGNED }}
+      art_name: ${{ steps.names.outputs.ART_NAME }}
+      apk_path: ${{ steps.names.outputs.APK_PATH }}
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
       CCACHE_DIR: ${{ github.workspace }}/.ccache
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          RELEASE_TAG_CREATED: ${{ github.event.created }}
+        run: tools/ci_validate_release_tag.sh
 
       - name: Read pinned toolchain versions
         shell: bash
@@ -292,12 +311,90 @@ jobs:
             exit 1
           fi
           printf 'Found: %s\n' "${apks[@]}"
+          # androiddeployqt copies the Gradle output next to the build tree, so
+          # several paths are byte-identical. Anything else means the build
+          # produced more than one APK and picking the first would be a coin toss.
+          mapfile -t digests < <(sha256sum "${apks[@]}" | awk '{ print $1 }' | sort -u)
+          if [ "${#digests[@]}" -ne 1 ]; then
+            echo "build/android-app contains more than one distinct APK" >&2
+            exit 1
+          fi
           echo "APK_PATH=${apks[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare artifact naming
+        id: names
+        shell: bash
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = 'tag' ] && [ -n "$REF_NAME" ]; then
+            art="dsd-neo-android-arm64-app-${REF_NAME}"
+          else
+            art="dsd-neo-android-arm64-app-nightly"
+          fi
+          mkdir -p dist
+          {
+            echo "APK_PATH=dist/${art}.apk"
+            echo "ART_NAME=${art}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign the APK
+        id: sign
+        shell: bash
+        env:
+          BUILT_APK: ${{ steps.apk.outputs.APK_PATH }}
+          OUT_APK: ${{ steps.names.outputs.APK_PATH }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            if [ "${IS_TAG}" = 'true' ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not configured; a release tag cannot ship an unsigned APK" >&2
+              exit 1
+            fi
+            # Pull requests never see the secrets, so only a push that was meant
+            # to publish deserves a warning annotation.
+            if [ "${IS_PR}" = 'true' ]; then
+              echo "Pull request build: leaving the APK unsigned."
+            else
+              echo "::warning::Android signing secrets are not configured; the APK stays unsigned and is not published"
+            fi
+            cp "${BUILT_APK}" "${OUT_APK}"
+            echo "SIGNED=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          : "${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
+          : "${KEY_ALIAS:?ANDROID_KEY_ALIAS is required alongside ANDROID_KEYSTORE_BASE64}"
+          : "${KEY_PASSWORD:?ANDROID_KEY_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
+          keystore="$RUNNER_TEMP/android-release.jks"
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "$keystore"
+          tools="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
+          # androiddeployqt's release output is already 16 KB aligned and
+          # apksigner preserves that, so re-running zipalign would only risk
+          # undoing it; the alignment checks below run on the signed APK.
+          "$tools/apksigner" sign \
+            --ks "$keystore" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --ks-key-alias "${KEY_ALIAS}" \
+            --out "${OUT_APK}" \
+            "${BUILT_APK}"
+          "$tools/apksigner" verify --verbose --print-certs "${OUT_APK}"
+          "$tools/zipalign" -c -P 16 4 "${OUT_APK}"
+          echo "SIGNED=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify every packaged library is arm64 with 16 KB page alignment
         shell: bash
         env:
-          APK_PATH: ${{ steps.apk.outputs.APK_PATH }}
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
         run: |
           set -euo pipefail
           workdir=$(mktemp -d)
@@ -320,13 +417,155 @@ jobs:
             exit 1
           fi
 
+      - name: Verify the APK carries the required license files
+        shell: bash
+        env:
+          APK_PATH: ${{ steps.names.outputs.APK_PATH }}
+        run: |
+          set -euo pipefail
+          docdir="assets/doc/dsd-neo"
+          required=(
+            LICENSE
+            COPYRIGHT
+            THIRD_PARTY.md
+            licenses/ezpwd-LGPL-2.1-or-later.txt
+            licenses/pffft-FFTPACK.txt
+            licenses/libusb-LGPL-2.1-or-later.txt
+            licenses/librtlsdr-GPL-2.0-or-later.txt
+          )
+          for f in "${required[@]}"; do
+            # unzip exits 11 when the pattern matches no entry.
+            if ! unzip -l "$APK_PATH" "$docdir/$f" > /dev/null 2>&1; then
+              echo "ERROR: missing required license file in the APK: $docdir/$f" >&2
+              exit 1
+            fi
+          done
+          echo "All required license files are packaged."
+
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dsd-neo-android-arm64-apk
-          path: ${{ steps.apk.outputs.APK_PATH }}
+          name: ${{ steps.names.outputs.ART_NAME }}
+          path: ${{ steps.names.outputs.APK_PATH }}
           retention-days: 7
+
+      - name: Generate APK SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.names.outputs.APK_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.names.outputs.APK_PATH }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART_NAME }}.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      - name: Attest APK provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.names.outputs.APK_PATH }}
+
+      - name: Attest APK SBOM
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.names.outputs.APK_PATH }}
+          sbom-path: ${{ steps.names.outputs.APK_PATH }}.spdx.json
 
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats
+
+  publish-apk:
+    name: Publish APK
+    needs: build-apk
+    runs-on: ubuntu-latest
+    # An unsigned APK cannot be installed, so a build that could not sign
+    # publishes nothing rather than shipping a broken download.
+    if: >-
+      github.repository == 'arancormonk/dsd-neo' &&
+      needs.build-apk.outputs.signed == 'true' &&
+      (startsWith(github.ref, 'refs/tags/v') ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')))
+    permissions:
+      actions: read
+      contents: write
+    env:
+      APK_PATH: ${{ needs.build-apk.outputs.apk_path }}
+      ART_NAME: ${{ needs.build-apk.outputs.art_name }}
+    steps:
+      - name: Checkout release helpers
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download APK artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-apk.outputs.art_name }}
+          path: dist
+
+      - name: Download APK SBOM artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-apk.outputs.art_name }}.spdx.json
+          path: dist
+
+      - name: Normalize downloaded SBOM filename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv -f "dist/${ART_NAME}.spdx.json" "${APK_PATH}.spdx.json"
+
+      - name: Verify downloaded release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${APK_PATH}"
+          test -f "${APK_PATH}.spdx.json"
+
+      - name: Wait for release metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: tools/ci_wait_for_release.sh
+
+      - name: Upload APK release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${APK_PATH}" \
+            "${APK_PATH}.spdx.json" \
+            --repo "${RELEASE_REPOSITORY}" \
+            --clobber
+
+      - name: Upload APK nightly assets (overwrite)
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        with:
+          tag_name: nightly
+          name: nightly
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: |
+            ${{ needs.build-apk.outputs.apk_path }}
+            ${{ needs.build-apk.outputs.apk_path }}.spdx.json
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          token: ${{ github.token }}

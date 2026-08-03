@@ -42,9 +42,40 @@ target_link_options(dsd-neo-app PRIVATE "-Wl,--exclude-libs,ALL")
 # default; r27 (the NDK Qt 6.11 is qualified with) needs it spelled out.
 target_link_options(dsd-neo-app PRIVATE "-Wl,-z,max-page-size=16384")
 
+# Every shipped asset carries the license/notice set (docs/release-assets-checklist.md),
+# and androiddeployqt packages nothing but QT_ANDROID_PACKAGE_SOURCE_DIR. So point that at
+# a staged copy in the build tree and add the license files under assets/, which Gradle
+# packages into the APK. Staging runs on every build rather than at configure time, so
+# edits to android/package/ still reach the APK without re-running CMake.
+set(dsd_neo_android_package_dir "${CMAKE_CURRENT_BINARY_DIR}/package")
+
+# Stage once at configure time as well, so the directory androiddeployqt is pointed at
+# already exists when Qt writes the deployment settings.
+execute_process(
+    COMMAND
+        ${CMAKE_COMMAND} -DREPO_DIR=${PROJECT_SOURCE_DIR}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
+        -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
+        ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
+    COMMAND_ERROR_IS_FATAL ANY
+)
+
+add_custom_target(
+    dsd-neo-app_stage_package
+    COMMAND
+        ${CMAKE_COMMAND} -DREPO_DIR=${PROJECT_SOURCE_DIR}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/package
+        -DSTAGE_DIR=${dsd_neo_android_package_dir} -P
+        ${PROJECT_SOURCE_DIR}/cmake/stage_android_package.cmake
+    COMMENT "Staging the Android package source with license files"
+    VERBATIM
+)
+
+add_dependencies(dsd-neo-app dsd-neo-app_stage_package)
+
 set_property(
     TARGET dsd-neo-app
-    PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/package"
+    PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR "${dsd_neo_android_package_dir}"
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_MIN_SDK_VERSION 29)
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_TARGET_SDK_VERSION 36)

@@ -59,12 +59,21 @@ verification remains mandatory even when repository rulesets are enabled.
 
 Release assets are distributed over GitHub HTTPS. Tag release workflows generate
 SBOMs and GitHub artifact attestations for packaged Linux AppImage, macOS DMG,
-and Windows ZIP assets when the corresponding workflow completes successfully.
+Windows ZIP, and Android APK assets when the corresponding workflow completes
+successfully.
 Release publication jobs use `contents: write` only in trusted upstream
 release/nightly paths and publish with the workflow `GITHUB_TOKEN`.
 Packaging workflows also verify release hardening before upload: Linux ELF
 PIE/RELRO/BIND_NOW, macOS Mach-O PIE and staged dylib `@rpath` install names,
-and Windows PE ASLR/NX/high-entropy virtual addresses.
+and Windows PE ASLR/NX/high-entropy virtual addresses. The Android APK is signed
+with the project release key before upload; an unsigned APK is never published.
+Confirm the signer of a downloaded APK against the fingerprint printed by the
+`android-ci` run that published it, and check that it does not change between
+releases:
+
+```sh
+apksigner verify --print-certs dsd-neo-android-arm64-app-<version>.apk
+```
 
 Download assets from the release page, then verify an artifact attestation with
 GitHub CLI when available:

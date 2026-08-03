@@ -19,13 +19,18 @@ Project homepage: https://github.com/arancormonk/dsd-neo
   - Linux AppImage (aarch64): `dsd-neo-linux-aarch64-portable-<version>.AppImage`
   - macOS DMG (arm64): `dsd-neo-macos-arm64-portable-<version>.dmg`
   - Windows native ZIP (MSVC x86_64): `dsd-neo-msvc-x86_64-native-<version>.zip`
+  - Android APK (arm64-v8a): `dsd-neo-android-arm64-app-<version>.apk`
 - Nightly builds:
   - Linux AppImage (x86_64): [dsd-neo-linux-x86_64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-x86_64-portable-nightly.AppImage)
   - Linux AppImage (aarch64): [dsd-neo-linux-aarch64-portable-nightly.AppImage](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-linux-aarch64-portable-nightly.AppImage)
   - macOS DMG (arm64): [dsd-neo-macos-arm64-portable-nightly.dmg](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-macos-arm64-portable-nightly.dmg)
   - Windows native ZIP (MSVC x86_64): [dsd-neo-msvc-x86_64-native-nightly.zip](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-msvc-x86_64-native-nightly.zip)
+  - Android APK (arm64-v8a): [dsd-neo-android-arm64-app-nightly.apk](https://github.com/arancormonk/dsd-neo/releases/download/nightly/dsd-neo-android-arm64-app-nightly.apk)
 - Arch Linux (AUR): [dsd-neo](https://aur.archlinux.org/packages/dsd-neo) for stable releases,
   or [dsd-neo-git](https://aur.archlinux.org/packages/dsd-neo-git) for main-branch snapshots.
+
+The Android APK is side-loaded: arm64-v8a only, Android 10 (API 29) or newer. Every published APK is
+signed with the project release key, so nightly and stable builds install over each other.
 
 ## Project Status
 
@@ -89,7 +94,7 @@ This project is an active work in progress as we decouple from the upstream fork
   - See [docs/cli.md](docs/cli.md) for environment variable reference.
 
 - Portable, ready‑to‑run builds
-  - Linux AppImage, macOS DMG, and Windows portable ZIP releases.
+  - Linux AppImage, macOS DMG, Windows portable ZIP, and Android APK releases.
 
 ### How this compares at a glance
 
@@ -121,6 +126,7 @@ OS package hints
   - Preferred binary: the native MSVC ZIP.
   - Source builds use CMake presets with vcpkg; set `VCPKG_ROOT` and use `win-msvc-*` presets in `CMakePresets.json`.
 - Android (arm64-v8a app, work in progress):
+  - Preferred binary: the signed APK from the [Downloads](#downloads) section.
   - Cross-compiled with the NDK and vcpkg: preset `android-arm64-release` for a headless CLI, preset `android-app`
     for the Qt Quick APK. Inputs include a USB-OTG RTL-SDR, `rtl_tcp`, UDP/TCP PCM, and local files.
   - Prerequisites, the USB descriptor flow, and known limits: [android/README.md](android/README.md).
@@ -306,7 +312,7 @@ These are CMake cache options (set at configure time via `-D...`).
 - Linux CI runs a backend matrix for `both`, `soapy_only`, `rtl_only`, and `neither`.
 - Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
   library, no Codec2, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull
-  request.
+  request, then signs and publishes the APK from `main` and release tags.
 - The Android and `win-msvc-*` presets require Codec2 and libcurl, so a vcpkg detection regression fails configure
   rather than shipping a build that decodes no M17 voice. The host job above covers the opposite case: that the
   degraded build still works.

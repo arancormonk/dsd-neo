@@ -32,12 +32,23 @@ export QT_HOST_ROOT=$HOME/Qt/6.11.1/gcc_64
 
 cmake --preset android-app
 cmake --build --preset android-app -j          # builds the apk target
-adb install -r build/android-app/android/android-build/build/outputs/apk/**/*.apk
 ```
+
+The APK lands at `build/android-app/android/android-build/dsd-neo-app.apk` and is
+unsigned; see [Release signing](#release-signing) for signing and installing it.
 
 CMake is the outer build: vcpkg chainloads Qt's `qt.toolchain.cmake`, which
 chainloads the NDK toolchain, and androiddeployqt generates and drives the Gradle
 project from `android/package/`.
+
+androiddeployqt is pointed at a staged copy of that directory
+(`build/android-app/android/package`) rather than the source tree, because it
+packages nothing else and the APK has to carry the same license/notice set as
+every other release asset. `cmake/stage_android_package.cmake` copies
+`android/package/` plus `LICENSE`, `COPYRIGHT`, `THIRD_PARTY.md` and the vendored
+notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
+`android/package/` reach the APK without re-running CMake. Add new package files
+to `android/package/` as usual — never to the staged copy, which is overwritten.
 
 For a headless CLI binary (no UI, no APK) use the `android-arm64-release` preset;
 it needs only `ANDROID_NDK_HOME` and `VCPKG_ROOT`.
@@ -56,9 +67,11 @@ pull requests as well as pushes to `main`:
   `android-arm64-release` preset: engine, AAudio backend, and the vendored libusb
   and librtlsdr below. Asserts the binary is AArch64 with 16 KB page alignment.
 - **`android-ci` / APK (Qt Quick app)** — builds the `android-app` preset through
-  androiddeployqt, then unpacks the APK and asserts the same alignment for every
-  packaged `.so` (ours and Qt's) and that `arm64-v8a` is the only ABI inside. The
-  APK is uploaded as a build artifact.
+  androiddeployqt, signs the APK, then unpacks it and asserts the same alignment
+  for every packaged `.so` (ours and Qt's), that `arm64-v8a` is the only ABI
+  inside, and that the license files are present. The APK is uploaded as a build
+  artifact, and on `main` and release tags the `Publish APK` job attaches it to a
+  release (see [Release signing](#release-signing)).
 - **`linux-ci` / android shape (headless, forced radio pipeline)** — the same
   option set on the host without an NDK, and deliberately without PulseAudio or
   ncurses installed. This is the only place the Android configuration gets test
@@ -75,6 +88,50 @@ tools/check_android_elf_alignment.sh build/android-arm64-release/apps/dsd-cli/ds
 What CI does not cover is everything that needs hardware — decoding, audio, the
 USB descriptor path, and battery/thermal behavior are verified by hand on a
 device.
+
+## Release signing
+
+androiddeployqt emits a release APK that Gradle leaves **unsigned**
+(`build/outputs/apk/release/android-build-release-unsigned.apk`, copied alongside
+it as `dsd-neo-app.apk`), and an unsigned APK cannot be installed. Sign it before
+pushing it to a device — the debug keystore is fine for local work:
+
+```sh
+"$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" sign \
+  --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
+  --ks-key-alias androiddebugkey --out /tmp/dsd-neo-app.apk \
+  build/android-app/android/android-build/dsd-neo-app.apk
+adb install -r /tmp/dsd-neo-app.apk
+```
+
+CI signs the same way with the project release key and publishes the result as
+`dsd-neo-android-arm64-app-<version>.apk` (`-nightly` off `main`). It needs four
+repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | `base64 -w0 release.jks` of the release keystore |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore password |
+| `ANDROID_KEY_ALIAS` | key alias inside the keystore |
+| `ANDROID_KEY_PASSWORD` | key password |
+
+Generate the keystore once and keep it out of the repository — Android has no key
+rotation, so losing it means every installed copy has to be uninstalled before an
+upgrade will apply:
+
+```sh
+keytool -genkeypair -v -keystore release.jks -alias dsd-neo -keyalg RSA \
+  -keysize 4096 -validity 10000
+base64 -w0 release.jks   # -> ANDROID_KEYSTORE_BASE64
+```
+
+Without the secrets the workflow still builds and uploads the APK as a build
+artifact, but it stays unsigned, logs a warning, and the publish job is skipped;
+on a release tag the missing keystore is a hard failure instead, because a
+release must not ship an APK nobody can install. CI deliberately does not re-run
+`zipalign`: the Gradle output is already 16 KB page aligned and `apksigner`
+preserves that, so it only verifies the alignment (`zipalign -c -P 16 4`) after
+signing.
 
 ## USB-OTG: how the descriptor gets to librtlsdr
 

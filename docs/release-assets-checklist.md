@@ -30,6 +30,16 @@ Required license/notice files in every shipped asset:
 - [ ] Download `dsd-neo-msvc-x86_64-native-*.zip`.
   - [ ] Unzip and confirm `share/doc/dsd-neo/` contains all required files.
 
+### Android (APK)
+
+- [ ] Download `dsd-neo-android-arm64-app-*.apk`.
+  - [ ] `apksigner verify --print-certs` reports the project release key.
+  - [ ] `unzip -l` shows all required files under `assets/doc/dsd-neo/`, plus
+        `licenses/libusb-LGPL-2.1-or-later.txt` and
+        `licenses/librtlsdr-GPL-2.0-or-later.txt` for the vendored Android
+        libraries (`cmake/stage_android_package.cmake` stages them; `android-ci`
+        fails the build if any are missing).
+
 ## CI-side sanity
 
 - [ ] Release tags use `vX.Y.Z`, match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`, and verify with `git tag -v` against `release-keys/arancormonk-2026.pgp`.
