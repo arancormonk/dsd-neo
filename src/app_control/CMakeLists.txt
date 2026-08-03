@@ -9,6 +9,7 @@ target_sources(
         actions/actions_logging.c
         app_command_queue.c
         frontend.c
+        frontend_snr.c
         ui_snapshot.c
         ui_opts_snapshot.c
         ui_history.c

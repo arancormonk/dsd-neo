@@ -28,11 +28,11 @@ crypto_text(const dsd_call_snapshot& call) {
     }
 }
 
+/** @brief One slot's call line. @p snapshot must not be null; refresh() guarantees it. */
 QString
 call_text(const dsd_state* snapshot, quint8 slot, double now_m) {
     dsd_call_snapshot call = {};
-    const int lookup = (snapshot != nullptr) ? dsd_call_state_get(snapshot, slot, &call) : -1;
-    const CallLineState line = call_line_state(lookup, call, now_m);
+    const CallLineState line = call_line_state(dsd_call_state_get(snapshot, slot, &call), call, now_m);
     if (line == kCallLineNone) {
         return QStringLiteral("—");
     }
@@ -72,6 +72,7 @@ void
 MetricsModel::clear() {
     m_stream_active = false;
     m_snr_db = 0.0;
+    m_snr_valid = false;
     m_symbol_rate_hz = 0;
     m_output_rate_hz = 0;
     m_carrier_lock = false;
@@ -86,15 +87,15 @@ MetricsModel::clear() {
 void
 MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_frontend_metrics metrics;
-    /* 0 is success here, negative is failure — not a count. */
-    const bool have_metrics =
-        dsd_app_frontend_get_metrics_for_snapshot(opts_snapshot, snapshot, &metrics, DSD_FRONTEND_SNR_FALLBACK_ALL)
-        == 0;
-
-    if (!have_metrics) {
-        /* Keeping the last readings would render a failed fetch as a healthy decoder:
-         * a locked carrier and a plausible SNR for something that is not reporting.
-         * Same reasoning as clear(), which is what the caller sees on a stop. */
+    /* A missing snapshot is the real "nothing to show" case, and it has to be tested
+     * for here: the fetch fills defaults for a NULL snapshot rather than failing, so
+     * its result alone never distinguishes no data from a healthy decoder reporting
+     * zeros. Keeping the last readings would render either as a live one — a locked
+     * carrier and a plausible SNR for something that is not reporting. 0 is success
+     * below, negative is failure; it is not a count. */
+    if (opts_snapshot == nullptr || snapshot == nullptr
+        || dsd_app_frontend_get_metrics_for_snapshot(opts_snapshot, snapshot, &metrics, DSD_FRONTEND_SNR_FALLBACK_ALL)
+               != 0) {
         clear();
         return;
     }
@@ -104,7 +105,14 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     m_output_rate_hz = static_cast<int>(metrics.output_rate_hz);
     m_carrier_lock = metrics.carrier_lock != 0;
     m_cfo_hz = metrics.cfo_hz;
-    m_snr_db = (metrics.cqpsk_enable != 0) ? metrics.snr_cqpsk_db : metrics.snr_c4fm_db;
+
+    /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
+     * a GFSK stream, and nothing at all reads on an input with no demodulator behind
+     * it (UDP, a file, rtl_tcp). Publishing the estimator's no-reading sentinel would
+     * put "-100.0 dB" on screen as though it were a measurement. */
+    const dsd_frontend_snr_readout snr = dsd_app_frontend_snr_for_mod(&metrics, snapshot->rf_mod);
+    m_snr_valid = snr.valid != 0;
+    m_snr_db = m_snr_valid ? snr.snr_db : 0.0;
 
     if (metrics.tuner_gain_is_auto != 0) {
         m_tuner_gain_text = QStringLiteral("auto");
@@ -117,7 +125,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     const double now_m = dsd_time_now_monotonic_s();
     m_slot_text[0] = call_text(snapshot, 0, now_m);
     m_slot_text[1] = call_text(snapshot, 1, now_m);
-    m_message_text = (snapshot != nullptr) ? QString::fromUtf8(snapshot->ui_msg) : QString();
+    m_message_text = QString::fromUtf8(snapshot->ui_msg);
 
     Q_EMIT changed();
 }

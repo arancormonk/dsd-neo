@@ -130,6 +130,29 @@ int dsd_app_frontend_get_metrics_with_snr_fallbacks(dsd_frontend_metrics* out, u
 int dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state* state, dsd_frontend_metrics* out,
                                               unsigned int snr_fallbacks);
 
+/** @brief One SNR reading, and whether an estimator actually produced it. */
+typedef struct {
+    double snr_db; /**< Reading in dB. Only meaningful while @c valid is nonzero. */
+    int valid;     /**< Nonzero when an estimator reported; zero when none has yet. */
+} dsd_frontend_snr_readout;
+
+/**
+ * @brief Pick the SNR estimator that matches @p rf_mod, applying the fallbacks.
+ *
+ * There is one estimator per modulation and they do not stand in for one another: a
+ * GFSK stream reads nothing on the C4FM estimator, and a session with no demodulator
+ * at all (UDP, file, rtl_tcp) reads nothing anywhere. Each estimator reports a large
+ * negative sentinel until it has a measurement, so a frontend that publishes the
+ * value unconditionally prints that sentinel as though it were a reading.
+ *
+ * Every frontend selects the same way through this: by modulation, then the eye or
+ * constellation fallback for that modulation, and only then reports invalid.
+ *
+ * @param metrics Metrics filled with DSD_FRONTEND_SNR_FALLBACK_ALL, or NULL.
+ * @param rf_mod  Modulation from dsd_state::rf_mod (0 C4FM, 1 QPSK, 2 GFSK).
+ */
+dsd_frontend_snr_readout dsd_app_frontend_snr_for_mod(const dsd_frontend_metrics* metrics, int rf_mod);
+
 int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);
 int dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate);

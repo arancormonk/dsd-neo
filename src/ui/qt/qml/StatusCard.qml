@@ -50,8 +50,10 @@ GroupBox {
             Label {
                 Layout.fillWidth: true
                 font.family: monoFontFamily
-                text: metrics.snrDb.toFixed(1) + " dB   "
-                      + (metrics.carrierLock ? qsTr("lock") : qsTr("no lock"))
+                // An estimator that has not reported has no number to show. Inputs with
+                // no demodulator behind them (UDP, a file, rtl_tcp) never get one.
+                text: (metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "—")
+                      + "   " + (metrics.carrierLock ? qsTr("lock") : qsTr("no lock"))
                       + "   " + metrics.cfoHz.toFixed(0) + " Hz"
             }
 

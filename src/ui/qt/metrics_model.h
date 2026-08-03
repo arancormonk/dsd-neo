@@ -27,6 +27,7 @@ class MetricsModel : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool streamActive READ streamActive NOTIFY changed)
     Q_PROPERTY(double snrDb READ snrDb NOTIFY changed)
+    Q_PROPERTY(bool snrValid READ snrValid NOTIFY changed)
     Q_PROPERTY(int symbolRateHz READ symbolRateHz NOTIFY changed)
     Q_PROPERTY(int outputRateHz READ outputRateHz NOTIFY changed)
     Q_PROPERTY(bool carrierLock READ carrierLock NOTIFY changed)
@@ -48,6 +49,12 @@ class MetricsModel : public QObject {
     double
     snrDb() const {
         return m_snr_db;
+    }
+
+    /** @brief Whether an estimator has reported; @c snrDb means nothing when false. */
+    bool
+    snrValid() const {
+        return m_snr_valid;
     }
 
     int
@@ -118,6 +125,7 @@ class MetricsModel : public QObject {
   private:
     bool m_stream_active = false;
     double m_snr_db = 0.0;
+    bool m_snr_valid = false;
     int m_symbol_rate_hz = 0;
     int m_output_rate_hz = 0;
     bool m_carrier_lock = false;

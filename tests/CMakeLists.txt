@@ -1776,6 +1776,7 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_snr_readout
         ui/test_ui_snr_readout.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/ui_snr_readout.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/frontend_snr.c
     )
     target_include_directories(
         dsd-neo_test_ui_snr_readout
@@ -1792,6 +1793,24 @@ if(DSD_ENABLE_TERMINAL_UI)
         PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_SNR_READOUT COMMAND dsd-neo_test_ui_snr_readout)
+
+    add_executable(
+        dsd-neo_test_app_control_frontend_snr
+        ui/test_app_control_frontend_snr.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/frontend_snr.c
+    )
+    target_include_directories(
+        dsd-neo_test_app_control_frontend_snr
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_app_control_frontend_snr
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+    )
+    add_test(
+        NAME APP_CONTROL_FRONTEND_SNR
+        COMMAND dsd-neo_test_app_control_frontend_snr
+    )
 
     add_executable(
         dsd-neo_test_ui_snr_readout_no_radio
