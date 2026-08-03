@@ -162,8 +162,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Deliberately no libpulse-dev and no libncurses-dev: this configuration is
-      # the Android build shape on the host, and it must not need either.
+      # Deliberately no libpulse-dev, no libncurses-dev and no libcodec2-dev:
+      # this configuration is the Android build shape on the host, and it must
+      # not need any of them. The build-linux jobs above cover the codec2-present
+      # side, so leaving it out here keeps this the one job that proves the
+      # graceful-degradation path still configures, builds and passes ctest.
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -207,6 +210,10 @@ jobs:
           grep -F "RTL-SDR backend enabled: OFF (available: OFF)" "$log"
           grep -F "SoapySDR backend enabled: OFF (available: OFF)" "$log"
           grep -F "Radio pipeline available: ON" "$log"
+          # No libcodec2-dev on this runner: the Android presets require Codec2,
+          # but the degraded build must still work. libcurl is not asserted --
+          # the runner image ships it whether or not this job asks for it.
+          grep -F "Codec2 available: OFF (M17 voice)" "$log"
 
       - name: Build (android shape)
         run: cmake --build --preset dev-debug -j

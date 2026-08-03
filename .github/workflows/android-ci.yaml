@@ -99,13 +99,32 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-cli.log"
           cmake --preset android-arm64-release -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
+          # The presets set DSD_REQUIRE_CODEC2/DSD_REQUIRE_CURL, so configure
+          # already failed if either was missing; assert the archives too, since
+          # the static triplet means a skipped port is invisible until link time.
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          lib=build/android-arm64-release/vcpkg_installed/arm64-android-static/lib
+          test -f "$lib/libcodec2.a"
+          test -f "$lib/libcurl.a"
 
       - name: Build (android-arm64-release)
         shell: bash
         run: cmake --build --preset android-arm64-release -j
+
+      # Proves the code was linked in, not merely that the package was found.
+      - name: Verify codec2 and libcurl reached the CLI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          nm="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          syms=$("$nm" --defined-only build/android-arm64-release/apps/dsd-cli/dsd-neo)
+          grep -qE '(^| )codec2_create$' <<< "$syms"
+          grep -qE '(^| )curl_easy_init$' <<< "$syms"
 
       - name: Verify the CLI is arm64 with 16 KB page alignment
         shell: bash
@@ -248,9 +267,15 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          log="$RUNNER_TEMP/configure-android-app.log"
           cmake --preset android-app -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
+          grep -F "Codec2 available: ON (M17 voice)" "$log"
+          grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          lib=build/android-app/vcpkg_installed/arm64-android-static/lib
+          test -f "$lib/libcodec2.a"
+          test -f "$lib/libcurl.a"
 
       - name: Build the APK
         shell: bash
