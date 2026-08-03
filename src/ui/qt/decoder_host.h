@@ -139,11 +139,15 @@ class DecoderHost : public QObject {
      *
      * Closing the window is not a neutral act: on Android it finishes the Activity,
      * and Qt then terminates the process — which would take the decoder with it.
-     * Hosts that can background themselves do so here; the default does nothing,
-     * leaving the close to proceed.
+     * Hosts that can background themselves do so here and answer true; the default
+     * answers false, and the caller must then let the close proceed.
+     *
+     * @return true when the host backgrounded itself and the close must be refused.
      */
-    virtual void
-    moveToBackground() {}
+    virtual bool
+    moveToBackground() {
+        return false;
+    }
 
     /**
      * @brief Re-read platform state; called from the UI's single poll tick.

@@ -15,7 +15,11 @@ namespace dsd_qt {
 namespace {
 
 constexpr int kMaxRows = 200;
-constexpr size_t kTextCapacity = 512U;
+/* Sized from the field it renders rather than picked. The compaction truncates at
+ * out_size - 1, so anything shorter silently cuts the long lines — alias and GPS
+ * commits, decoded text messages — and a cut landing inside a UTF-8 sequence comes
+ * back from fromUtf8 with a trailing replacement character. */
+constexpr size_t kTextCapacity = sizeof(Event_History::event_string);
 
 bool
 item_has_content(const Event_History* item) {

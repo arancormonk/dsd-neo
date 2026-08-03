@@ -43,7 +43,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     bool start(const QStringList& argv) override;
     void stop() override;
-    void moveToBackground() override;
+    bool moveToBackground() override;
     void refresh() override;
     void requestLocalDeviceAccess() override;
 

@@ -177,14 +177,17 @@ DecoderHostAndroid::stop() {
     setStatus(QStringLiteral("Stopping…"));
 }
 
-void
+bool
 DecoderHostAndroid::moveToBackground() {
     /* Finishing the Activity would terminate the Qt process, and with it the service
-     * that owns the engine. Backgrounding keeps both alive. */
+     * that owns the engine. Backgrounding keeps both alive. An Activity that will not
+     * go back is reported as such, so the caller lets the close proceed rather than
+     * leaving a window with no way out. */
     QJniObject activity = android_context();
-    if (activity.isValid()) {
-        (void)activity.callMethod<jboolean>("moveTaskToBack", "(Z)Z", JNI_TRUE);
+    if (!activity.isValid()) {
+        return false;
     }
+    return activity.callMethod<jboolean>("moveTaskToBack", "(Z)Z", JNI_TRUE) == JNI_TRUE;
 }
 
 QString

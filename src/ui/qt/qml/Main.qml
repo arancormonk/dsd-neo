@@ -48,9 +48,10 @@ ApplicationWindow {
 
     // Closing the window finishes the Android Activity, and Qt then terminates the
     // process — taking the service that owns the engine with it. Background instead.
+    // Refused only when the host actually took the window somewhere: a host that
+    // cannot background itself would otherwise leave a window nothing can close.
     onClosing: function (close) {
-        close.accepted = false
-        decoderHost.moveToBackground()
+        close.accepted = !decoderHost.moveToBackground()
     }
 
     function startSession() {
