@@ -115,6 +115,11 @@ struct dsd_audio_stream {
      * after it. This is the one that sounds broken; idle-time concealment is
      * just silence and is expected. */
     uint64_t underruns_midspeech;
+    /* Consecutive wholly-synthesized chunks, i.e. how long the pump has been
+     * padding a device the decoder has stopped feeding. Bounds how far past the
+     * end of a transmission concealment is worth writing; see
+     * DSD_AAUDIO_CONCEAL_MAX_MS. Reset by any chunk carrying real audio. */
+    int conceal_run;
     /* When the decoder last handed over audio, for the check above. */
     uint64_t last_write_ns;
 #endif

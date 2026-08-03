@@ -53,7 +53,8 @@
  * is bursty -- a voice frame arrives, then nothing until the next one -- so
  * starting playback on the very first chunk leaves the device with no runway.
  * One cushion's worth of added latency is inaudible on a scanner. It is
- * deliberately not rebuilt after a gap; see aaudio_output_wait_for_work_locked. */
+ * deliberately not rebuilt after a mid-call gap -- only once the stream has gone
+ * fully idle; see aaudio_output_wait_for_work_locked. */
 #define DSD_AAUDIO_OUTPUT_PRIME_MS      100
 /* A tail shorter than the cushion still has to play: after this long with data
  * waiting but not enough of it, give up on filling the cushion and flush. */
@@ -66,6 +67,15 @@
 /* How recently the decoder must have produced audio for concealment to count as
  * landing inside a call rather than after it. Three chunk periods. */
 #define DSD_AAUDIO_MIDSPEECH_MS         60
+/* How long the pump keeps padding a starved device once the decoder has stopped
+ * producing. Concealment exists to cover a gap *inside* a call; past this the gap
+ * is the end of the transmission, and continuing to write costs real power --
+ * a device the pump tops up every 20 ms never reaches standby, so on a scanner
+ * that is idle far more than it is busy the audio HAL would stay awake for the
+ * whole session. Once the run is exhausted the pump falls back to its untimed
+ * wait and the device is allowed to fall silent. The next transmission re-primes
+ * (see aaudio_output_prepare_chunk_locked) so it still starts with runway. */
+#define DSD_AAUDIO_CONCEAL_MAX_MS       500
 #define DSD_AAUDIO_BUFFER_CAPACITY_MS   500
 #define DSD_AAUDIO_IO_TIMEOUT_NS        500000000LL /* 500 ms */
 #define DSD_AAUDIO_DRAIN_POLL_MS        5
@@ -76,6 +86,14 @@
  * merely dropped. Each one costs DSD_AAUDIO_IO_TIMEOUT_NS, so this is seconds of a
  * device taking nothing at all -- well past any load spike. */
 #define DSD_AAUDIO_WRITE_TIMEOUT_LIMIT  3
+
+/* Whole chunk periods DSD_AAUDIO_CONCEAL_MAX_MS covers, floored at one so the
+ * bound stays meaningful if the chunk period is ever raised above it. */
+enum {
+    DSD_AAUDIO_CONCEAL_MAX_CHUNKS = ((DSD_AAUDIO_CONCEAL_MAX_MS / DSD_AAUDIO_OUTPUT_CHUNK_MS) > 0)
+                                        ? (DSD_AAUDIO_CONCEAL_MAX_MS / DSD_AAUDIO_OUTPUT_CHUNK_MS)
+                                        : 1
+};
 
 /*============================================================================
  * Module State
@@ -697,7 +715,14 @@ aaudio_write_frames(dsd_audio_stream* stream, const int16_t* buf, size_t frames)
     }
 
     size_t capacity = aaudio_convert_capacity(stream, frames);
-    if (capacity == 0 || !aaudio_ensure_convert_buf(stream, capacity)) {
+    if (capacity == 0) {
+        /* aaudio_ensure_convert_buf() reports its own failure; this branch has to
+         * report itself, or dsd_audio_get_error() would hand the caller whatever was
+         * last stored and describe an unrelated failure. */
+        set_error("Frame count too large to resample");
+        return -1;
+    }
+    if (!aaudio_ensure_convert_buf(stream, capacity)) {
         return -1;
     }
 
@@ -809,6 +834,19 @@ enum aaudio_wait_step {
 };
 
 /**
+ * @brief Whether the pump still has concealment worth writing.
+ *
+ * Requires both a seeded concealer and a run that has not yet outlived the
+ * transmission it was covering. The second condition is what lets an idle stream
+ * go quiet: with it false the wait loop takes its untimed branch instead of
+ * topping the device up every chunk period. See DSD_AAUDIO_CONCEAL_MAX_MS.
+ */
+static int
+aaudio_output_conceal_available_locked(const dsd_audio_stream* stream) {
+    return stream->conceal_inited && stream->conceal_has_good && stream->conceal_run < DSD_AAUDIO_CONCEAL_MAX_CHUNKS;
+}
+
+/**
  * @brief Decide what to do after one timed wait.
  *
  * @param device_starved Queue depth verdict sampled by the caller with the ring
@@ -821,7 +859,7 @@ aaudio_output_classify_wait_locked(const dsd_audio_stream* stream, int waited_ms
     }
 
     if (stream->ring_samples_count == 0U) {
-        if (device_starved && stream->conceal_inited && stream->conceal_has_good) {
+        if (device_starved && aaudio_output_conceal_available_locked(stream)) {
             return AAUDIO_WAIT_CONCEAL;
         }
         return AAUDIO_WAIT_CONTINUE;
@@ -853,7 +891,9 @@ aaudio_output_sample_starvation_locked(dsd_audio_stream* stream) {
     if (stream->stop || stream->drain_requested || stream->ring_samples_count != 0U) {
         return 0;
     }
-    if (!stream->conceal_inited || !stream->conceal_has_good) {
+    /* Also skips the AAudio query itself once the run is spent: an idle stream has
+     * no decision left to make, and the getters take the device's own lock. */
+    if (!aaudio_output_conceal_available_locked(stream)) {
         return 0;
     }
 
@@ -878,10 +918,12 @@ aaudio_output_wait_for_work_locked(dsd_audio_stream* stream) {
             break;
         }
 
-        /* An untimed wait is only safe with the ring completely empty and nothing
-         * to conceal with; anything else must be able to give up, or a tail shorter
-         * than the cushion would never play. */
-        if (have == 0U && !(stream->conceal_inited && stream->conceal_has_good)) {
+        /* An untimed wait is only safe with the ring completely empty and no
+         * concealment left to write; anything else must be able to give up, or a
+         * tail shorter than the cushion would never play. This is also the branch a
+         * spent conceal run falls into, which is what finally lets the pump -- and
+         * with it the audio device -- go idle between transmissions. */
+        if (have == 0U && !aaudio_output_conceal_available_locked(stream)) {
             (void)dsd_cond_wait(&stream->cv, &stream->mu);
             continue;
         }
@@ -909,11 +951,17 @@ aaudio_output_wait_for_work_locked(dsd_audio_stream* stream) {
      * *next* burst behind the same 200 ms wait. On a channel whose first transmission
      * is shorter than the cushion, that is every burst of the session.
      *
-     * Rebuilding the cushion after a gap is actively harmful on a real-time feed: the
+     * Rebuilding the cushion after a *gap* is actively harmful on a real-time feed: the
      * decoder only ever supplies audio as fast as it arrives, so withholding output
      * until a fresh cushion accumulates starves a device that is already low and turns
      * one gap into a self-sustaining stutter. Past the initial fill, the device buffer
-     * is the cushion and DSD_AAUDIO_CONCEAL_LOW_WATER_MS is what protects it. */
+     * is the cushion and DSD_AAUDIO_CONCEAL_LOW_WATER_MS is what protects it.
+     *
+     * The one exception is a stream that has gone fully idle -- the concealment budget
+     * spent, the device left to fall silent. Nothing is playing to starve there, and
+     * the next transmission would otherwise start on a device holding one chunk, so
+     * aaudio_output_prepare_chunk_locked() re-arms priming at that point and this
+     * clears it again on the way back out. */
     stream->priming = 0;
 
     if (stream->stop) {
@@ -971,6 +1019,25 @@ aaudio_output_prepare_chunk_locked(dsd_audio_stream* stream, int synthesize_unde
 
     if (take > 0) {
         (void)ring_read_samples(stream, stream->chunk, take);
+        /* Any real audio in this chunk means the decoder is producing again, so the
+         * concealment budget is for a gap rather than a finished transmission. */
+        stream->conceal_run = 0;
+    } else {
+        stream->conceal_run++;
+        if (stream->conceal_run >= DSD_AAUDIO_CONCEAL_MAX_CHUNKS) {
+            /* Last padded chunk: from here the wait loop goes untimed and the device
+             * is left to fall silent. Re-prime so the next transmission rebuilds the
+             * cushion before it plays -- without this it would start on a device
+             * holding a single chunk, which is the shallow-buffer case
+             * DSD_AAUDIO_BUFFER_TARGET_MS exists to avoid and which a real-time
+             * decoder can never climb out of on its own.
+             *
+             * Safe here, unlike after a mid-call gap: the run being spent is what
+             * establishes that nothing is playing, so withholding output starves
+             * nobody. A burst shorter than the cushion still escapes via
+             * DSD_AAUDIO_PRIME_FLUSH_MS. */
+            stream->priming = 1;
+        }
     }
 
     if (take < stream->chunk_samples) {
@@ -1070,6 +1137,7 @@ aaudio_output_init_async_state(dsd_audio_stream* stream, int async_output) {
     stream->underruns = 0;
     stream->underruns_partial = 0;
     stream->underruns_midspeech = 0;
+    stream->conceal_run = 0;
     stream->last_write_ns = 0;
     stream->drops = 0;
     stream->in_samples = 0;
@@ -1152,6 +1220,17 @@ aaudio_output_disable_async(dsd_audio_stream* stream, int async_sync_inited) {
     stream->use_async = 0;
 
     if (stream->thread_started) {
+        /* Raise stop before joining. No caller can reach this with a live pump today
+         * -- the thread start is the last step of setup, so a failure that gets here
+         * has not started one -- but a bare join is only correct for as long as that
+         * ordering holds, and a pump parked in its untimed wait would never return.
+         *
+         * Conditioned on the sync primitives existing, because raising the flag takes
+         * stream->mu: without them there is no mutex to take, and no thread to stop
+         * either, since the pump cannot have been started. */
+        if (async_sync_inited) {
+            aaudio_output_request_stop(stream);
+        }
         (void)dsd_thread_join(stream->thread);
         stream->thread_started = 0;
     }

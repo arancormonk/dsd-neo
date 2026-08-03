@@ -1305,6 +1305,78 @@ test_underrun_classification(void) {
 }
 
 /*
+ * Concealment covers a gap inside a call, not the silence after one. Left unbounded
+ * it ran forever: with the decoder idle the ring stays empty and the device stays
+ * below the low-water mark, so the pump topped it up every chunk period for the whole
+ * idle stretch and the audio device never reached standby -- on a scanner, most of
+ * the session. The run is capped instead, after which the pump takes its untimed wait
+ * and the device is allowed to fall silent.
+ */
+static void
+test_conceal_run_is_bounded_and_reprimes(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+    int16_t frames[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    reset_fakes();
+    params.async_output = 1;
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+
+    stream->conceal_inited = 1;
+    stream->conceal_has_good = 1;
+    stream->priming = 0;
+
+    /* Device permanently dry, so every classification that can conceal, will. */
+    g.frames_read_step = 0;
+    g.frames_written = 4096;
+    g.frames_read = 4096;
+    g.frames_played_per_wait = 0;
+
+    /* One short of the cap: still concealing, and still no cushion pending. */
+    for (int i = 0; i < DSD_AAUDIO_CONCEAL_MAX_CHUNKS - 1; i++) {
+        dsd_mutex_lock(&stream->mu);
+        assert(aaudio_output_wait_for_work_locked(stream) == 1);
+        dsd_mutex_unlock(&stream->mu);
+        aaudio_output_prepare_chunk_locked(stream, 1);
+    }
+    assert(stream->conceal_run == DSD_AAUDIO_CONCEAL_MAX_CHUNKS - 1);
+    assert(stream->priming == 0);
+
+    /* The chunk that reaches the cap is the last one padded, and it arms the cushion
+     * so the next transmission still starts with runway behind it. */
+    dsd_mutex_lock(&stream->mu);
+    assert(aaudio_output_wait_for_work_locked(stream) == 1);
+    dsd_mutex_unlock(&stream->mu);
+    aaudio_output_prepare_chunk_locked(stream, 1);
+    assert(stream->conceal_run == DSD_AAUDIO_CONCEAL_MAX_CHUNKS);
+    assert(stream->priming == 1);
+
+    /* Past the cap the pump must stop asking the device anything at all: an idle
+     * stream has no decision left to make, and the getters take the device's lock. */
+    const uint64_t underruns_at_cap = stream->underruns;
+    g.frames_written = 8192;
+    g.frames_read = 8192;
+    dsd_mutex_lock(&stream->mu);
+    assert(aaudio_output_conceal_available_locked(stream) == 0);
+    assert(aaudio_output_sample_starvation_locked(stream) == 0);
+    assert(aaudio_output_classify_wait_locked(stream, 0, 1) == AAUDIO_WAIT_CONTINUE);
+    dsd_mutex_unlock(&stream->mu);
+    assert(stream->underruns == underruns_at_cap);
+
+    /* Real audio means the decoder is producing again: the budget comes back, so a
+     * genuine mid-call gap is still covered. */
+    assert(dsd_audio_write(stream, frames, 4) == 4);
+    aaudio_output_prepare_chunk_locked(stream, 0);
+    assert(stream->conceal_run == 0);
+    dsd_mutex_lock(&stream->mu);
+    assert(aaudio_output_conceal_available_locked(stream) == 1);
+    dsd_mutex_unlock(&stream->mu);
+
+    stream->stop = 1;
+    dsd_audio_close(stream);
+}
+
+/*
  * aaudio_map_frame() must always write the output slot it is handed. The conversion
  * buffer comes from realloc(), which does not zero, so a frame the mapper skipped is
  * a frame of uninitialized heap sent to the device. It used to clamp the source width
@@ -1520,6 +1592,7 @@ main(void) {
     test_async_output_setup_and_pump();
     test_pump_waits_while_device_is_buffered();
     test_pump_conceals_when_device_is_dry();
+    test_conceal_run_is_bounded_and_reprimes();
     test_device_drop_accounting_while_converting();
     test_map_frame_always_writes_its_slot();
     test_convert_capacity_covers_long_buffers();
