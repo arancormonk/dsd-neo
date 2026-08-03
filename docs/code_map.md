@@ -61,8 +61,10 @@ Generated (do not edit/commit):
 - Responsibilities: cross-protocol glue (audio output helpers, vocoder glue, frame helpers, GPS, file import),
   misc/util
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
-  `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically; out-of-tree
-  callers of the old name need updating
+  `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
+  duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
+  the others (`lpf`, `lpf_f`, `hpf_f`, `hpf_dL`, `hpf_dR`, `pbf`), so renaming them would break out-of-tree
+  callers for no benefit. Out-of-tree callers of `hpf()` need updating
 - Build files: `src/core/CMakeLists.txt`
 
 ## Runtime
@@ -112,6 +114,13 @@ depending directly on protocol headers. The runtime provides a small hook table 
   - Command queue dispatch and menu service helpers
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
+- Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
+  input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
+  the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,
+  UDP, TCP or symbol-file session they would be a previous run's measurements rather than the current one's.
+  Such sessions therefore report the defaults — no carrier lock, no CFO, no output/symbol rate, and the
+  invalid-SNR sentinel — and a frontend should omit those rows rather than render them as zeros. Applies to
+  every frontend, not just the Android app
 - Build files: `src/app_control/CMakeLists.txt`
 
 ## DSP

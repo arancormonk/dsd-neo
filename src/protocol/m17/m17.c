@@ -2365,6 +2365,10 @@ m17_str_init(m17_str_ctx* ctx, dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(ctx->nil, 0, sizeof(ctx->nil));
     opts->frame_m17 = 1;
     state->m17encoder_tx = 1;
+    /* Frontend kind on purpose, not dsd_telemetry_is_active(): this asks whether a
+     * terminal session is present to key the transmitter by hand. Without one -- a
+     * headless run, or a host driving the engine programmatically -- transmission has
+     * to start on its own or nothing would ever key it. */
     if (dsd_opts_frontend_active(opts) && state->m17_vox == 0) {
         state->m17encoder_tx = 0;
     }
