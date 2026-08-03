@@ -164,16 +164,28 @@ device.
 
 androiddeployqt emits a release APK that Gradle leaves **unsigned**
 (`build/outputs/apk/release/android-build-release-unsigned.apk`, copied alongside
-it as `dsd-neo-app.apk`), and an unsigned APK cannot be installed. Sign it before
-pushing it to a device — the debug keystore is fine for local work:
+it as `dsd-neo-app.apk`), and an unsigned APK cannot be installed. Sign it with
+the release keystore before pushing it to a device:
 
 ```sh
 "$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS_VERSION/apksigner" sign \
-  --ks ~/.android/debug.keystore --ks-pass pass:android --key-pass pass:android \
-  --ks-key-alias androiddebugkey --out /tmp/dsd-neo-app.apk \
+  --ks /path/to/dsd-neo-release.jks --ks-key-alias dsd-neo \
+  --out /tmp/dsd-neo-app.apk \
   build/android-app/android/android-build/dsd-neo-app.apk
 adb install -r /tmp/dsd-neo-app.apk
 ```
+
+`apksigner` prompts for the keystore password when no `--ks-pass` is given, which
+keeps it out of shell history; `--ks-pass env:VAR` works for scripted signing.
+Prefer `env:` over `file:` — `file:` sources are read sequentially, so pointing
+both `--ks-pass` and `--key-pass` at one file fails with "end of file reached"
+unless the password is repeated on a second line.
+Use the release key rather than `~/.android/debug.keystore` even locally, so a
+device tracking local builds keeps upgrading in place instead of hitting a
+signature mismatch against published APKs. Switching an already-installed
+debug-signed build over is a one-time
+`adb uninstall io.github.arancormonk.dsdneo` first — Android refuses an in-place
+update across a signing identity change.
 
 CI signs the same way with the project release key and publishes the result as
 `dsd-neo-android-arm64-app-<version>.apk` (`-nightly` off `main`). It needs four
@@ -186,15 +198,23 @@ repository secrets:
 | `ANDROID_KEY_ALIAS` | key alias inside the keystore |
 | `ANDROID_KEY_PASSWORD` | key password |
 
-Generate the keystore once and keep it out of the repository — Android has no key
-rotation, so losing it means every installed copy has to be uninstalled before an
-upgrade will apply:
+Generate the keystore once, outside the working tree so no `git add` can reach
+it, and back it up somewhere durable before uploading anything. Android has no
+key rotation: losing the keystore or its password means every installed copy has
+to be uninstalled before an upgrade will apply, and there is no recovery path.
 
 ```sh
-keytool -genkeypair -v -keystore release.jks -alias dsd-neo -keyalg RSA \
-  -keysize 4096 -validity 10000
-base64 -w0 release.jks   # -> ANDROID_KEYSTORE_BASE64
+keytool -genkeypair -v -keystore dsd-neo-release.jks -alias dsd-neo \
+  -keyalg RSA -keysize 4096 -validity 10000
+chmod 600 dsd-neo-release.jks
+base64 -w0 dsd-neo-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
 ```
+
+Piping into `gh secret set` keeps the encoded key out of shell history and off
+disk; the three remaining secrets read from stdin the same way (`gh secret set
+ANDROID_KEYSTORE_PASSWORD`, …) rather than taking `--body`. `keytool` accepts an
+empty key password to reuse the store password, in which case
+`ANDROID_KEY_PASSWORD` is that same value — `apksigner` still wants both.
 
 Without the secrets the workflow still builds and uploads the APK as a build
 artifact, but it stays unsigned, logs a warning, and the publish job is skipped;
