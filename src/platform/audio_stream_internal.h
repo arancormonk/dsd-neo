@@ -71,12 +71,20 @@ struct dsd_audio_stream {
     int resample_prev_valid;
     int16_t* convert_buf;
     size_t convert_buf_samples;
-    /* Frames still to be dropped before another open is attempted, so a wedged
-     * or mid-transition audio device is not reopened once per buffer. */
-    size_t reopen_debt_frames;
-    /* Failed device writes since audio last flowed; the first one recovers
-     * immediately, repeats back off. */
+    /* Monotonic deadline (ns) before which no further open is attempted, so a
+     * wedged or mid-transition audio device is not reopened once per buffer. Zero
+     * means "retry on the next call". Wall-clock rather than a frame count: with no
+     * device open the write path returns immediately, so a caller that is not
+     * rate-limited by a real device would spend a frame-denominated budget in
+     * milliseconds. */
+    uint64_t reopen_not_before_ns;
+    /* Failed device writes since a whole buffer last went through; the first one
+     * recovers immediately, repeats back off. */
     int recovery_streak;
+    /* Consecutive device writes that timed out with nothing taken. A stall is not
+     * a broken device, so it costs the buffer rather than the stream until there
+     * have been enough of them to mean the device really has stopped. */
+    int write_timeouts;
     /* Successful device reopens, i.e. route changes survived. */
     int reopen_count;
     /* Frames accepted by the device across the stream's whole life; unlike

@@ -72,6 +72,10 @@
 #define DSD_AAUDIO_DRAIN_TIMEOUT_MS     2000
 #define DSD_AAUDIO_MAX_CONV_CHANNELS    2
 #define DSD_AAUDIO_REOPEN_BACKOFF_MS    500
+/* Consecutive no-progress device writes before the stream is recycled rather than
+ * merely dropped. Each one costs DSD_AAUDIO_IO_TIMEOUT_NS, so this is seconds of a
+ * device taking nothing at all -- well past any load spike. */
+#define DSD_AAUDIO_WRITE_TIMEOUT_LIMIT  3
 
 /*============================================================================
  * Module State
@@ -259,25 +263,28 @@ aaudio_reset_resampler(dsd_audio_stream* stream) {
 /**
  * @brief Decide how the granted device format maps onto the requested one.
  *
+ * Takes the granted format rather than reading it back off @p stream so the caller
+ * can hold it in locals until it is known to be usable. Writes nothing on failure.
+ *
  * @return 1 when the stream is usable as-is or convertible, 0 when the granted
  *         format cannot be served (input streams are never converted).
  */
 static int
-aaudio_init_conversion(dsd_audio_stream* stream) {
-    stream->needs_convert =
-        (stream->device_sample_rate != stream->sample_rate || stream->device_channels != stream->channels) ? 1 : 0;
-    if (!stream->needs_convert) {
+aaudio_init_conversion(dsd_audio_stream* stream, int device_sample_rate, int device_channels) {
+    if (device_sample_rate == stream->sample_rate && device_channels == stream->channels) {
+        stream->needs_convert = 0;
         return 1;
     }
     if (stream->is_input || stream->channels > DSD_AAUDIO_MAX_CONV_CHANNELS
-        || stream->device_channels > DSD_AAUDIO_MAX_CONV_CHANNELS) {
+        || device_channels > DSD_AAUDIO_MAX_CONV_CHANNELS) {
         return 0;
     }
 
-    uint64_t step = ((uint64_t)stream->sample_rate << 16) / (uint64_t)stream->device_sample_rate;
+    uint64_t step = ((uint64_t)stream->sample_rate << 16) / (uint64_t)device_sample_rate;
     if (step == 0 || step > UINT32_MAX) {
         return 0;
     }
+    stream->needs_convert = 1;
     stream->resample_step_q16 = (uint32_t)step;
     aaudio_reset_resampler(stream);
     return 1;
@@ -310,31 +317,75 @@ aaudio_apply_output_buffer_size(const dsd_audio_stream* stream, AAudioStream* ha
     (void)AAudioStream_setBufferSizeInFrames(handle, want);
 }
 
+/**
+ * @brief Open the output at whatever rate the device will take, with a deep buffer.
+ *
+ * The fallback open has to pass AAUDIO_UNSPECIFIED, and a capacity request is
+ * expressed in frames, which cannot be sized until the rate is known -- so the
+ * builder skips the request entirely and the device volunteers its own capacity,
+ * which can be a few bursts. aaudio_apply_output_buffer_size() then clamps the
+ * buffer to that, and exactly the devices this fallback exists for end up running on
+ * the shallow buffer DSD_AAUDIO_BUFFER_TARGET_MS is there to avoid.
+ *
+ * So: open once to learn the rate, and reopen with a properly sized request when what
+ * the device volunteered is too shallow. A reopen that fails keeps the shallow stream,
+ * which still plays.
+ */
+static aaudio_result_t
+aaudio_open_at_device_rate(const dsd_audio_stream* stream, AAudioStream** out) {
+    aaudio_result_t res = aaudio_build_and_open(stream, AAUDIO_UNSPECIFIED, out);
+    if (res != AAUDIO_OK || !*out) {
+        return res;
+    }
+
+    const int32_t rate = AAudioStream_getSampleRate(*out);
+    const size_t want = ms_to_frames((int)rate, DSD_AAUDIO_BUFFER_TARGET_MS);
+    const int32_t granted = AAudioStream_getBufferCapacityInFrames(*out);
+    if (rate <= 0 || want == 0 || (granted > 0 && (size_t)granted >= want)) {
+        return res;
+    }
+
+    AAudioStream* deeper = NULL;
+    if (aaudio_build_and_open(stream, rate, &deeper) != AAUDIO_OK || !deeper) {
+        return res;
+    }
+    aaudio_discard_handle(*out);
+    *out = deeper;
+    return AAUDIO_OK;
+}
+
 static int
 aaudio_stream_open(dsd_audio_stream* stream) {
     AAudioStream* handle = NULL;
     aaudio_result_t res = aaudio_build_and_open(stream, stream->sample_rate, &handle);
     if (res != AAUDIO_OK && !stream->is_input) {
         /* Devices that refuse an 8 kHz open still open at their own rate. */
-        res = aaudio_build_and_open(stream, AAUDIO_UNSPECIFIED, &handle);
+        res = aaudio_open_at_device_rate(stream, &handle);
     }
     if (res != AAUDIO_OK || !handle) {
         set_error_aaudio(res != AAUDIO_OK ? res : AAUDIO_ERROR_NULL);
         return -1;
     }
 
-    stream->device_sample_rate = (int)AAudioStream_getSampleRate(handle);
-    stream->device_channels = (int)AAudioStream_getChannelCount(handle);
-    if (stream->device_sample_rate <= 0 || stream->device_channels <= 0) {
+    /* Held in locals until the grant is known to be usable. Committing first left a
+     * rejected reopen with a NULL handle and the rejected format still in place, and
+     * the unavailable-device path sizes its drop accounting from exactly those two
+     * fields -- a negative channel count cast to size_t there makes device_drops
+     * nonsense. */
+    const int device_sample_rate = (int)AAudioStream_getSampleRate(handle);
+    const int device_channels = (int)AAudioStream_getChannelCount(handle);
+    if (device_sample_rate <= 0 || device_channels <= 0) {
         set_error("AAudio reported an invalid stream format");
         aaudio_discard_handle(handle);
         return -1;
     }
-    if (!aaudio_init_conversion(stream)) {
+    if (!aaudio_init_conversion(stream, device_sample_rate, device_channels)) {
         set_error("AAudio granted an unusable rate/channel combination");
         aaudio_discard_handle(handle);
         return -1;
     }
+    stream->device_sample_rate = device_sample_rate;
+    stream->device_channels = device_channels;
 
     if (!stream->is_input) {
         aaudio_apply_output_buffer_size(stream, handle);
@@ -366,30 +417,36 @@ aaudio_schedule_reopen(dsd_audio_stream* stream) {
     stream->handle = NULL;
     /* The first failure after healthy playback retries on the next buffer: an
      * ordinary route change has already settled by then, and a half-second of
-     * silence would be audible. Repeated failures back off instead. */
-    stream->reopen_debt_frames =
-        (stream->recovery_streak == 0) ? 0 : ms_to_frames(stream->sample_rate, DSD_AAUDIO_REOPEN_BACKOFF_MS);
+     * silence would be audible. Repeated failures back off instead.
+     *
+     * Denominated in wall-clock time, not in frames the caller is trying to move.
+     * With no device open a write returns immediately, and dsd_audio_should_use_async_
+     * output() is false for WAV, stdin, symbol-file and playfiles input -- so the
+     * decoder runs the loop as fast as it can and pays a frame-denominated debt off in
+     * milliseconds. That turned one route change into AAudio builder and AudioFlinger
+     * opens at tens per second, which is the thrash this exists to prevent. */
+    stream->reopen_not_before_ns =
+        (stream->recovery_streak == 0)
+            ? 0U
+            : dsd_time_monotonic_ns() + ((uint64_t)DSD_AAUDIO_REOPEN_BACKOFF_MS * 1000000ULL);
     stream->recovery_streak++;
 }
 
 /**
- * @brief Make the device handle usable again if the backoff has been paid.
+ * @brief Make the device handle usable again once the backoff has elapsed.
  *
- * @param pending_frames Frames the caller is about to move (and will drop, or fail
- *                       to read, when this returns 0), used to pay down the backoff.
  * @return 1 when the stream is open, 0 while the device is unavailable.
  */
 static int
-aaudio_recover_handle(dsd_audio_stream* stream, size_t pending_frames) {
+aaudio_recover_handle(dsd_audio_stream* stream) {
     if (stream->handle) {
         return 1;
     }
-    if (stream->reopen_debt_frames > pending_frames) {
-        stream->reopen_debt_frames -= pending_frames;
+    if (stream->reopen_not_before_ns != 0U && dsd_time_monotonic_ns() < stream->reopen_not_before_ns) {
         return 0;
     }
 
-    stream->reopen_debt_frames = 0;
+    stream->reopen_not_before_ns = 0U;
     if (aaudio_stream_open(stream) != 0) {
         aaudio_schedule_reopen(stream);
         return 0;
@@ -589,16 +646,37 @@ aaudio_write_device_frames(dsd_audio_stream* stream, const int16_t* buf, size_t 
             remaining -= (size_t)res;
             cursor += (size_t)res * stride;
             stream->device_frames += (uint64_t)res;
-            stream->recovery_streak = 0;
+            stream->write_timeouts = 0;
             continue;
         }
 
-        /* No progress at all: a disconnect, a device error, or a long stall. */
-        set_error_aaudio(res == 0 ? AAUDIO_ERROR_TIMEOUT : res);
+        if (res == 0) {
+            /* Timed out with nothing taken. That is a stall, not a broken device:
+             * AudioFlinger under load comes back on its own, while a reopen throws
+             * away the DSD_AAUDIO_BUFFER_TARGET_MS the device is still holding and
+             * turns a recoverable hiccup into a guaranteed dropout. Cost it the
+             * buffer; only a run of them means the device has really stopped. */
+            set_error_aaudio(AAUDIO_ERROR_TIMEOUT);
+            stream->device_drops += remaining * stride;
+            stream->write_timeouts++;
+            if (stream->write_timeouts >= DSD_AAUDIO_WRITE_TIMEOUT_LIMIT) {
+                aaudio_schedule_reopen(stream);
+            }
+            return;
+        }
+
+        /* A real error: a disconnect, or a stream that cannot be written again. */
+        set_error_aaudio(res);
+        stream->write_timeouts = 0;
         aaudio_schedule_reopen(stream);
         stream->device_drops += remaining * stride;
         return;
     }
+
+    /* Only a buffer that went through in full counts as recovered. Resetting on each
+     * partial write let a stream that never completes one take the zero-backoff
+     * first-failure branch every time, so the backoff never engaged. */
+    stream->recovery_streak = 0;
 }
 
 static int
@@ -606,7 +684,7 @@ aaudio_write_frames(dsd_audio_stream* stream, const int16_t* buf, size_t frames)
     if (frames == 0) {
         return 0;
     }
-    if (!aaudio_recover_handle(stream, frames)) {
+    if (!aaudio_recover_handle(stream)) {
         /* Counted in device samples like every other device_drops update, so the
          * two sides of the stats line stay in the same unit when the resampling
          * fallback is engaged and a logical frame is not a device frame. */
@@ -1279,7 +1357,7 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
-    if (!aaudio_recover_handle(stream, frames)) {
+    if (!aaudio_recover_handle(stream)) {
         set_error("AAudio input stream is disconnected");
         return -1;
     }
@@ -1307,7 +1385,7 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
              * handle here would make one bad moment permanent. */
             reopened = 1;
             aaudio_schedule_reopen(stream);
-            if (aaudio_recover_handle(stream, remaining)) {
+            if (aaudio_recover_handle(stream)) {
                 continue;
             }
             set_error_aaudio(res);

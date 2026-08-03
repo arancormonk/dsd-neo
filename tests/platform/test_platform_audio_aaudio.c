@@ -38,6 +38,10 @@ static struct {
     int open_calls;
     aaudio_result_t open_result;
     int reject_explicit_rate;
+    /* Reject opens at exactly this rate, leaving every other rate openable. Models
+     * the real fallback case -- a device that refuses 8 kHz but takes its own rate --
+     * which reject_explicit_rate cannot, because it refuses the retry as well. */
+    int32_t reject_rate;
     int32_t last_rate;
     int32_t last_channels;
     int32_t last_format;
@@ -58,6 +62,9 @@ static struct {
     aaudio_result_t start_result;
     int write_calls;
     int write_result_pending;
+    /* Calls the pending result waits behind, so a buffer can move some frames and
+     * then fail partway through rather than failing outright. */
+    int write_result_delay;
     aaudio_result_t write_result;
     int32_t write_frame_limit;
     int read_calls;
@@ -309,6 +316,9 @@ AAudioStreamBuilder_openStream(AAudioStreamBuilder* builder, AAudioStream** stre
     if (g.reject_explicit_rate && g.last_rate != AAUDIO_UNSPECIFIED) {
         return AAUDIO_ERROR_INVALID_STATE;
     }
+    if (g.reject_rate != 0 && g.last_rate == g.reject_rate) {
+        return AAUDIO_ERROR_INVALID_STATE;
+    }
     *stream = FAKE_STREAM;
     return AAUDIO_OK;
 }
@@ -348,8 +358,12 @@ AAudioStream_write(AAudioStream* stream, const void* buffer, int32_t frames, int
     g.write_calls++;
 
     if (g.write_result_pending) {
-        g.write_result_pending = 0;
-        return g.write_result;
+        if (g.write_result_delay > 0) {
+            g.write_result_delay--;
+        } else {
+            g.write_result_pending = 0;
+            return g.write_result;
+        }
     }
 
     int32_t take = frames;
@@ -571,6 +585,63 @@ test_output_buffer_size_clamped_to_capacity(void) {
     dsd_audio_close(stream);
 }
 
+/*
+ * The rate fallback still asks for a deep enough device buffer.
+ *
+ * A capacity request is expressed in frames, and the fallback open has to pass
+ * AAUDIO_UNSPECIFIED, so the request used to be skipped entirely -- the device
+ * volunteered its own capacity and aaudio_apply_output_buffer_size() clamped the
+ * buffer to that. Exactly the devices this fallback exists for therefore ended up on
+ * the few-burst buffer DSD_AAUDIO_BUFFER_TARGET_MS is there to avoid.
+ */
+static void
+test_open_output_rate_fallback_requests_capacity(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+
+    /* A device that refuses 8 kHz, runs at 48 kHz, and volunteers a buffer far too
+     * shallow for the pump: 960 frames is 20 ms, against a 160 ms target. */
+    reset_fakes();
+    g.reject_rate = 8000;
+    g.device_rate = 48000;
+    g.buffer_capacity_frames = 960;
+
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    /* Refused at 8 kHz, opened unspecified to learn the rate, reopened at that rate
+     * with a capacity request sized from it. */
+    assert(g.open_calls == 3);
+    assert(g.last_rate == 48000);
+    assert(g.requested_capacity_frames == 48000 * DSD_AAUDIO_BUFFER_CAPACITY_MS / 1000);
+    assert(stream->device_sample_rate == 48000);
+    assert(stream->needs_convert == 1);
+    dsd_audio_close(stream);
+
+    /* A device that already volunteers enough is left alone: no second open. */
+    reset_fakes();
+    g.reject_rate = 8000;
+    g.device_rate = 48000;
+    g.buffer_capacity_frames = 48000 * DSD_AAUDIO_BUFFER_TARGET_MS / 1000;
+
+    stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(g.open_calls == 2);
+    assert(g.last_rate == AAUDIO_UNSPECIFIED);
+    dsd_audio_close(stream);
+
+    /* A reopen the device refuses keeps the shallow stream rather than failing the
+     * open: a shallow buffer still plays, and no audio at all does not. */
+    reset_fakes();
+    g.reject_explicit_rate = 1;
+    g.device_rate = 48000;
+    g.buffer_capacity_frames = 960;
+
+    stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+    assert(stream->handle != NULL);
+    assert(g.buffer_size_frames == 960);
+    dsd_audio_close(stream);
+}
+
 static void
 test_open_output_rate_fallback(void) {
     dsd_audio_params params = valid_params(8000, 2);
@@ -640,14 +711,14 @@ test_device_drop_accounting_while_converting(void) {
     assert(after_write_failure >= (uint64_t)959 * 2 && after_write_failure <= (uint64_t)962 * 2);
 
     g.open_result = AAUDIO_ERROR_INVALID_STATE;
-    stream->reopen_debt_frames = 0;
+    stream->reopen_not_before_ns = 0;
     assert(dsd_audio_write(stream, block, 160) == 160);
     assert(stream->handle == NULL);
-    assert(stream->reopen_debt_frames > 0U);
+    assert(stream->reopen_not_before_ns > 0U);
 
     /* 160 logical frames at 8 kHz are 960 device frames at 48 kHz, and the device
      * is stereo: 1920 device samples, not the 320 the logical count would give. */
-    stream->reopen_debt_frames = 0;
+    stream->reopen_not_before_ns = 0;
     const uint64_t before_backoff_drop = stream->device_drops;
     assert(dsd_audio_write(stream, block, 160) == 160);
     assert(stream->device_drops - before_backoff_drop == (uint64_t)960 * 2);
@@ -705,7 +776,7 @@ test_write_recovery_paths(void) {
     assert(g.close_calls == 1);
     assert(g.open_calls == 1);
     assert(stream->device_drops == 4);
-    assert(stream->reopen_debt_frames == 0);
+    assert(stream->reopen_not_before_ns == 0);
     assert(stream->recovery_streak == 1);
 
     assert(dsd_audio_write(stream, frames, 2) == 2);
@@ -718,31 +789,60 @@ test_write_recovery_paths(void) {
     g.write_result_pending = 1;
     g.write_result = AAUDIO_ERROR_DISCONNECTED;
     assert(dsd_audio_write(stream, frames, 2) == 2);
-    assert(stream->reopen_debt_frames == 0);
+    assert(stream->reopen_not_before_ns == 0);
 
     g.write_result_pending = 1;
     g.write_result = AAUDIO_ERROR_DISCONNECTED;
     assert(dsd_audio_write(stream, frames, 2) == 2);
     assert(g.open_calls == 3);
     assert(stream->handle == NULL);
-    assert(stream->reopen_debt_frames == 4000); /* 500 ms at 8 kHz */
+    /* Wall-clock, not a frame count: a caller with no device to pace it runs the
+     * write path as fast as it can, and a frame-denominated debt would be gone in
+     * milliseconds. */
+    assert(stream->reopen_not_before_ns == g.now_ns + (uint64_t)DSD_AAUDIO_REOPEN_BACKOFF_MS * 1000000ULL);
 
-    /* Audio written during the backoff is dropped, not retried per buffer. */
+    /* Audio written during the backoff is dropped, and no amount of it buys an
+     * earlier retry -- only the clock does. */
+    for (int i = 0; i < 64; i++) {
+        assert(dsd_audio_write(stream, frames, 2) == 2);
+    }
+    assert(g.open_calls == 3);
+
+    /* One nanosecond short of the deadline still waits; the deadline itself retries. */
+    g.now_ns = stream->reopen_not_before_ns - 1U;
     assert(dsd_audio_write(stream, frames, 2) == 2);
     assert(g.open_calls == 3);
-    assert(stream->reopen_debt_frames == 3998);
+    g.now_ns = stream->reopen_not_before_ns;
+    assert(dsd_audio_write(stream, frames, 2) == 2);
+    assert(g.open_calls == 4);
+    assert(stream->handle != NULL);
     dsd_audio_close(stream);
 
-    /* A write that times out with no progress recycles the stream too. */
+    /* A write that times out with no progress costs the buffer, not the stream: the
+     * device is still holding the cushion already queued, and throwing that away
+     * turns a load spike into a guaranteed dropout. Only a run of them recycles it. */
     reset_fakes();
     stream = dsd_audio_open_output(&params);
     assert(stream != NULL);
+    for (int i = 1; i < DSD_AAUDIO_WRITE_TIMEOUT_LIMIT; i++) {
+        g.write_result_pending = 1;
+        g.write_result = AAUDIO_OK;
+        assert(dsd_audio_write(stream, frames, 2) == 2);
+        assert(strcmp(dsd_audio_get_error(), "AAUDIO_ERROR_TIMEOUT") == 0);
+        assert(stream->handle != NULL);
+        assert(stream->write_timeouts == i);
+        assert(stream->device_drops == (uint64_t)i * 4);
+    }
     g.write_result_pending = 1;
     g.write_result = AAUDIO_OK;
     assert(dsd_audio_write(stream, frames, 2) == 2);
     assert(stream->handle == NULL);
-    assert(strcmp(dsd_audio_get_error(), "AAUDIO_ERROR_TIMEOUT") == 0);
-    assert(stream->device_drops == 4);
+    assert(stream->write_timeouts == DSD_AAUDIO_WRITE_TIMEOUT_LIMIT);
+
+    /* A buffer that goes through in full clears the run. */
+    assert(dsd_audio_write(stream, frames, 2) == 2);
+    assert(stream->handle != NULL);
+    assert(stream->write_timeouts == 0);
     dsd_audio_close(stream);
 
     /* A failed reopen re-arms the backoff and still never fails the caller. */
@@ -754,16 +854,47 @@ test_write_recovery_paths(void) {
     assert(dsd_audio_write(stream, frames, 2) == 2);
     assert(strcmp(dsd_audio_get_error(), "AAUDIO_ERROR_INTERNAL") == 0);
 
-    stream->reopen_debt_frames = 0;
+    stream->reopen_not_before_ns = 0;
     g.open_result = AAUDIO_ERROR_INVALID_STATE;
     assert(dsd_audio_write(stream, frames, 2) == 2);
     assert(stream->handle == NULL);
-    assert(stream->reopen_debt_frames == 4000);
+    assert(stream->reopen_not_before_ns == g.now_ns + (uint64_t)DSD_AAUDIO_REOPEN_BACKOFF_MS * 1000000ULL);
 
     g.open_result = AAUDIO_OK;
-    stream->reopen_debt_frames = 0;
+    stream->reopen_not_before_ns = 0;
     assert(dsd_audio_write(stream, frames, 2) == 2);
     assert(stream->handle != NULL);
+    dsd_audio_close(stream);
+}
+
+/*
+ * A partial device write does not count as recovery.
+ *
+ * recovery_streak used to be cleared on every write that moved any frames at all, so
+ * a device taking one frame and then failing reset the streak on each buffer and the
+ * backoff never armed -- the reopen thrash the backoff exists to stop.
+ */
+static void
+test_partial_write_does_not_clear_the_backoff(void) {
+    dsd_audio_params params = valid_params(8000, 2);
+    int16_t frames[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    reset_fakes();
+    dsd_audio_stream* stream = dsd_audio_open_output(&params);
+    assert(stream != NULL);
+
+    for (int i = 1; i <= 3; i++) {
+        /* One frame of this buffer moves, then the device fails partway through it. */
+        g.write_frame_limit = 1;
+        g.write_result_delay = 1;
+        g.write_result_pending = 1;
+        g.write_result = AAUDIO_ERROR_DISCONNECTED;
+        assert(dsd_audio_write(stream, frames, 4) == 4);
+        assert(stream->handle == NULL);
+        assert(stream->recovery_streak == i);
+        /* Let the next round reopen immediately; the backoff itself is covered above. */
+        stream->reopen_not_before_ns = 0;
+    }
     dsd_audio_close(stream);
 }
 
@@ -884,20 +1015,21 @@ test_input_reopen_recovery(void) {
     assert(dsd_audio_read(stream, buffer, 4) == -1);
     assert(stream->handle == NULL);
     assert(strcmp(dsd_audio_get_error(), "AAUDIO_ERROR_DISCONNECTED") == 0);
-    assert(stream->reopen_debt_frames == 4000); /* 500 ms at 8 kHz */
+    assert(stream->reopen_not_before_ns == g.now_ns + (uint64_t)DSD_AAUDIO_REOPEN_BACKOFF_MS * 1000000ULL);
 
-    /* Reads during the backoff report the disconnect and pay it down; they do not
-     * hammer the device with an open per call. */
+    /* Reads during the backoff report the disconnect; they do not hammer the device
+     * with an open per call, however many of them there are. */
     const int open_calls_during_backoff = g.open_calls;
-    assert(dsd_audio_read(stream, buffer, 4) == -1);
-    assert(strcmp(dsd_audio_get_error(), "AAudio input stream is disconnected") == 0);
+    for (int i = 0; i < 64; i++) {
+        assert(dsd_audio_read(stream, buffer, 4) == -1);
+        assert(strcmp(dsd_audio_get_error(), "AAudio input stream is disconnected") == 0);
+    }
     assert(g.open_calls == open_calls_during_backoff);
-    assert(stream->reopen_debt_frames == 3996);
 
-    /* Once the route settles and the debt is paid, capture comes back on its own —
+    /* Once the route settles and the backoff elapses, capture comes back on its own —
      * no reopen from the caller, and no restart of the session. */
     g.open_result = AAUDIO_OK;
-    stream->reopen_debt_frames = 0;
+    g.now_ns = stream->reopen_not_before_ns;
     assert(dsd_audio_read(stream, buffer, 4) == 4);
     assert(stream->handle != NULL);
     dsd_audio_close(stream);
@@ -1376,8 +1508,10 @@ main(void) {
     test_open_output_native_format();
     test_output_buffer_size_clamped_to_capacity();
     test_open_output_rate_fallback();
+    test_open_output_rate_fallback_requests_capacity();
     test_channel_conversion();
     test_write_recovery_paths();
+    test_partial_write_does_not_clear_the_backoff();
     test_open_failure_paths();
     test_input_stream();
     test_input_reopen_recovery();
