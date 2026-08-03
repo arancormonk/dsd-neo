@@ -22,7 +22,9 @@ extern "C" {
 void init_audio_filters(dsd_state* state, int sample_rate_hz);
 void lpf(dsd_state* state, short* input, int len);
 void lpf_f(dsd_state* state, float* input, int len);
-void hpf(dsd_state* state, short* input, int len);
+/** @note Renamed to avoid collision with codec2's hpf symbol when codec2 is
+ *  linked statically (Android). */
+void dsd_hpf(dsd_state* state, short* input, int len);
 void hpf_f(dsd_state* state, float* input, int len);
 void hpf_dL(dsd_state* state, short* input, int len);
 void hpf_dR(dsd_state* state, short* input, int len);

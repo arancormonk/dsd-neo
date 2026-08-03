@@ -495,7 +495,7 @@ clamp_float_to_short(float value) {
 
 // HPF short path
 void
-hpf(dsd_state* state, short* input, int len) {
+dsd_hpf(dsd_state* state, short* input, int len) {
     int i;
     for (i = 0; i < len; i++) {
         input[i] = (short)HPFilter_Update(&state->HRCFilter, (float)input[i]);

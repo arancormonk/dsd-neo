@@ -363,9 +363,9 @@ edacs_process_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, s
         lpf(state, analog3, 960);
     }
     if (opts->use_hpf == 1) {
-        hpf(state, analog1, 960);
-        hpf(state, analog2, 960);
-        hpf(state, analog3, 960);
+        dsd_hpf(state, analog1, 960);
+        dsd_hpf(state, analog2, 960);
+        dsd_hpf(state, analog3, 960);
     }
     if (opts->use_pbf == 1) {
         pbf(state, analog1, 960);

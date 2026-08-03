@@ -2041,9 +2041,9 @@ m17_str_apply_filters_and_gain(m17_str_ctx* ctx) {
         }
     }
     if (ctx->opts->use_hpf == 1) {
-        hpf(ctx->state, ctx->voice1, 160);
+        dsd_hpf(ctx->state, ctx->voice1, 160);
         if (ctx->st == 2) {
-            hpf(ctx->state, ctx->voice2, 160);
+            dsd_hpf(ctx->state, ctx->voice2, 160);
         }
     }
     if (ctx->opts->use_pbf == 1) {
