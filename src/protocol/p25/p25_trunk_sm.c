@@ -6053,6 +6053,24 @@ p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid
 }
 
 void
+p25_sm_note_enc_suppressed(dsd_opts* opts, dsd_state* state, int slot) {
+    (void)opts;
+    if (slot < 0 || slot > 1) {
+        return;
+    }
+    // The gate close matches what the per-repeat lockout action used to
+    // re-assert; it holds even when no suppression context exists.
+    if (state) {
+        state->p25_p2_audio_allowed[slot] = 0;
+    }
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (!ctx->initialized || ctx->slots[slot].last_enc_suppress_m <= 0.0) {
+        return;
+    }
+    ctx->slots[slot].last_enc_suppress_m = dsd_time_now_monotonic_s();
+}
+
+void
 p25_sm_emit_crypto_pending(dsd_opts* opts, dsd_state* state, int slot) {
     p25_sm_event_t ev = p25_sm_ev_crypto_pending(slot);
     p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);

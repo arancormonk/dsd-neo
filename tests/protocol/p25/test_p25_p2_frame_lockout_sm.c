@@ -387,13 +387,14 @@ test_new_transmission_without_grant_revalidation_stays_pending(void) {
     return rc;
 }
 
-// A locked-out encrypted call re-runs its stay-or-release decision on every
-// FEC-accepted ESS repeat (~once per superframe). The companion's clear
-// conversation is a series of transmissions with gaps that MAC_END opens by
-// clearing voice_active and the audio gate -- the exact state the
-// retains-carrier check reads as "inactive". The hangtime window owns those
-// gaps: a repeat inside it must hold the channel, a repeat after it lapses
-// must still release.
+// Every delivered ENC event re-runs the lockout's stay-or-release decision.
+// The crypto layer now edge-triggers delivery, but transitions (a new
+// transmission's first BLOCKED resolve, a key-identity change) still land
+// mid-conversation. The companion's clear conversation is a series of
+// transmissions with gaps that MAC_END opens by clearing voice_active and the
+// audio gate -- the exact state the retains-carrier check reads as
+// "inactive". The hangtime window owns those gaps: an event inside it must
+// hold the channel, an event after it lapses must still release.
 static int
 test_enc_repeat_holds_channel_through_companion_hangtime(void) {
     static dsd_opts opts;
@@ -550,6 +551,146 @@ test_facch_double_end_holds_channel_while_companion_enc_suppressed(void) {
     return rc;
 }
 
+// The crypto layer edge-triggers the ENC event on the classification
+// transition: a FEC-accepted ESS repeat of an already-BLOCKED Phase 2 slot
+// under lockout refreshes the suppression stamp instead of re-running the full
+// lockout action, so it never revisits stay-or-release -- even when the
+// companion's gap has outlived the hangtime. Releasing that emptied channel is
+// the hangtime tick's job.
+static int
+test_enc_blocked_repeat_edge_triggered_tick_owns_release(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    ctx->config.hangtime_s = 2.0;
+    state.event_history_s = calloc(2, sizeof(Event_History_I));
+    if (state.event_history_s == NULL) {
+        return 1;
+    }
+    for (int i = 0; i < 2; i++) {
+        init_event_history(&state.event_history_s[i], 0, 255);
+    }
+    g_return_to_cc_called = 0;
+
+    int rc = 0;
+
+    // Clear transmission decoding on slot 0.
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_eq("clear voice start accepted", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0x00), 1);
+    state.p25_p2_audio_allowed[0] = 1;
+
+    // First BLOCKED resolve is the transition: the full lockout action runs
+    // and arms the suppression stamp; the active companion holds the channel.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2710, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("transition: slot1 blocked", state.p25_crypto_state[1] == DSD_P25_CRYPTO_BLOCKED, 1);
+    rc |= expect_eq("transition: no cc return", g_return_to_cc_called, 0);
+    const double stamp0 = ctx->slots[1].last_enc_suppress_m;
+    rc |= expect_eq("transition: suppression stamp armed", stamp0 > 0.0, 1);
+
+    // A same-identity repeat refreshes the stamp -- the liveness signal the
+    // FACCH double-END hold reads -- without re-running the lockout action.
+    ctx->slots[1].last_enc_suppress_m = stamp0 - 5.0;
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2710, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("repeat: stamp refreshed", ctx->slots[1].last_enc_suppress_m >= stamp0, 1);
+    rc |= expect_eq("repeat: gate stays closed", state.p25_p2_audio_allowed[1], 0);
+    rc |= expect_eq("repeat: still tuned", ctx->state == P25_SM_TUNED, 1);
+
+    // The clear talker un-keys and the conversation ends for good; age the
+    // slot history and the armed hangtime start past the window.
+    rc |= expect_eq("clear transmission end accepted",
+                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_time_now_monotonic_s()), 1);
+    state.p25_p2_audio_allowed[0] = 0;
+    const double past_stop_m = dsd_time_now_monotonic_s() - (ctx->config.hangtime_s + 1.0);
+    ctx->slots[0].last_start_m = past_stop_m - 1.0;
+    ctx->slots[0].last_grant_m = past_stop_m - 1.0;
+    ctx->slots[0].last_stop_m = past_stop_m;
+    ctx->t_hangtime_m = past_stop_m;
+
+    // Pre-fix, this repeat re-ran the lockout action and released the channel
+    // itself. Edge-triggered, it only refreshes the stamp.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2710, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("aged repeat: no release from the repeat", g_return_to_cc_called, 0);
+    rc |= expect_eq("aged repeat: still tuned", ctx->state == P25_SM_TUNED, 1);
+
+    // The hangtime tick sees an inactive channel whose window lapsed and
+    // releases it.
+    p25_sm_tick_ctx(ctx, &opts, &state);
+    rc |= expect_eq("hangtime tick: released to cc", g_return_to_cc_called, 1);
+
+    dsd_state_ext_free_all(&state);
+    free(state.event_history_s);
+    state.event_history_s = NULL;
+    return rc;
+}
+
+// A key-identity change on an already-BLOCKED slot is a transition, not a
+// repeat: the full ENC event re-fires and its stay-or-release decision sees
+// the companion's lapsed gap, releasing immediately.
+static int
+test_enc_key_identity_change_reemits_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    ctx->config.hangtime_s = 2.0;
+    state.event_history_s = calloc(2, sizeof(Event_History_I));
+    if (state.event_history_s == NULL) {
+        return 1;
+    }
+    for (int i = 0; i < 2; i++) {
+        init_event_history(&state.event_history_s[i], 0, 255);
+    }
+    g_return_to_cc_called = 0;
+
+    int rc = 0;
+
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_eq("clear voice start accepted", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0x00), 1);
+    state.p25_p2_audio_allowed[0] = 1;
+
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2710, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("transition: no cc return", g_return_to_cc_called, 0);
+
+    rc |= expect_eq("clear transmission end accepted",
+                    p25_sm_emit_end_call_at(&opts, &state, 0, 1234, 42, dsd_time_now_monotonic_s()), 1);
+    state.p25_p2_audio_allowed[0] = 0;
+    const double past_stop_m = dsd_time_now_monotonic_s() - (ctx->config.hangtime_s + 1.0);
+    ctx->slots[0].last_start_m = past_stop_m - 1.0;
+    ctx->slots[0].last_grant_m = past_stop_m - 1.0;
+    ctx->slots[0].last_stop_m = past_stop_m;
+
+    // Same ALGID, new KID: not a repeat. The re-fired lockout action finds the
+    // companion's gap lapsed and releases.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2711, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("identity change: released to cc", g_return_to_cc_called, 1);
+
+    dsd_state_ext_free_all(&state);
+    free(state.event_history_s);
+    state.event_history_s = NULL;
+    return rc;
+}
+
+// The suppress note must not invent liveness: with no prior lockout action on
+// the slot (no suppression stamp), it leaves the stamp unarmed and only
+// re-asserts the closed gate.
+static int
+test_note_enc_suppressed_requires_prior_suppression(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+
+    state.p25_p2_audio_allowed[1] = 1;
+    p25_sm_note_enc_suppressed(&opts, &state, 1);
+
+    int rc = 0;
+    rc |= expect_eq("no prior suppression: stamp stays unarmed", ctx->slots[1].last_enc_suppress_m <= 0.0, 1);
+    rc |= expect_eq("no prior suppression: gate closed", state.p25_p2_audio_allowed[1], 0);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     install_trunk_tuning_hooks();
@@ -566,5 +707,8 @@ main(void) {
     rc |= test_enc_repeat_holds_channel_through_companion_hangtime();
     rc |= test_enc_lockout_idle_companion_still_releases();
     rc |= test_facch_double_end_holds_channel_while_companion_enc_suppressed();
+    rc |= test_enc_blocked_repeat_edge_triggered_tick_owns_release();
+    rc |= test_enc_key_identity_change_reemits_lockout();
+    rc |= test_note_enc_suppressed_requires_prior_suppression();
     return rc;
 }

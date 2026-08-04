@@ -8,6 +8,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
@@ -437,6 +438,43 @@ p25_crypto_classify_metadata(const dsd_state* state, dsd_p25_crypto_phase phase,
     return p25_crypto_has_complete_key(state, phase, slot, algid) ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
 }
 
+// The ENC event is edge-triggered on the classification transition. A Phase 2
+// ESS repeats every superframe, and each FEC-accepted repeat of a BLOCKED slot
+// used to re-run the full lockout action (~3 Hz for the life of the
+// transmission): re-ending the canonical call, clearing the slot's burst hint,
+// and revisiting stay-or-release inside the companion conversation's talker
+// gaps. Under lockout the repeat carries no new information — MAC_END/MAC_IDLE
+// reset the slot's classification, so every transmission's first BLOCKED
+// resolve is a transition — but it is the liveness proof that the locked-out
+// call still occupies the slot, which the release-hold heuristics consume as a
+// suppression stamp. Hand repeats to that lightweight note instead; the
+// hangtime tick owns releasing an emptied channel once the stamps age out.
+// Phase 1 keeps per-repeat emission: its identity-pending lockout defers
+// inside the handler and relies on a later repeat to fire once the identity
+// resolves. Follow mode (and non-trunked runs) also keep it, because the
+// repeat re-publishes crypto metadata and refreshes the audio gate for calls
+// that stay tuned.
+static int
+p25_crypto_p2_lockout_repeat(const dsd_opts* opts, dsd_p25_crypto_phase phase, const p25_crypto_snapshot* previous,
+                             dsd_p25_crypto_state resolved, int key_identity_changed) {
+    if (phase != DSD_P25_CRYPTO_PHASE2 || resolved != DSD_P25_CRYPTO_BLOCKED
+        || previous->state != DSD_P25_CRYPTO_BLOCKED || key_identity_changed) {
+        return 0;
+    }
+    return opts->trunk_tune_enc_calls == 0 && opts->trunk_enable == 1;
+}
+
+static void
+p25_crypto_emit_enc_or_note(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid,
+                            int keyid, int talkgroup, const p25_crypto_snapshot* previous,
+                            dsd_p25_crypto_state resolved, int key_identity_changed) {
+    if (p25_crypto_p2_lockout_repeat(opts, phase, previous, resolved, key_identity_changed)) {
+        p25_sm_note_enc_suppressed(opts, state, slot);
+        return;
+    }
+    p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);
+}
+
 static void
 p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phase phase, int slot, int algid,
                             int keyid, uint64_t mi, int talkgroup, const p25_crypto_snapshot* previous,
@@ -466,7 +504,8 @@ p25_crypto_apply_resolution(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_pha
     }
 
     if ((resolved == DSD_P25_CRYPTO_DECRYPTABLE || resolved == DSD_P25_CRYPTO_BLOCKED) && opts) {
-        p25_sm_emit_enc(opts, state, slot, algid, keyid, talkgroup);
+        p25_crypto_emit_enc_or_note(opts, state, phase, slot, algid, keyid, talkgroup, previous, resolved,
+                                    key_identity_changed);
     }
 }
 

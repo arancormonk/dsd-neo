@@ -613,6 +613,19 @@ void p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state);
 void p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, int tg);
 
 /**
+ * @brief Note a FEC-accepted ESS repeat of an already-suppressed BLOCKED classification.
+ *
+ * The full ENC event is edge-triggered on the classification transition; this
+ * lightweight note is the per-repeat liveness signal that the locked-out
+ * transmission still occupies its slot. It refreshes the suppression stamp the
+ * release heuristics read and keeps the slot's audio gate closed — it runs no
+ * teardown and no stay-or-release decision. A slot whose lockout action never
+ * ran (no suppression stamp) is left untouched so a stray repeat cannot invent
+ * liveness for an idle slot.
+ */
+void p25_sm_note_enc_suppressed(dsd_opts* opts, dsd_state* state, int slot);
+
+/**
  * @brief Emit an in-band encrypted indication that requires classification.
  *
  * A new transition closes the slot's media gate, clears stale voice activity,
