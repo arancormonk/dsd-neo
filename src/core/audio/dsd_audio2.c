@@ -614,13 +614,18 @@ dsd_dmr_apply_tg_hold_and_slot_preference_ss3(dsd_opts* opts, const dsd_state* s
     }
 }
 
-// As with the SS18 policy below, a muted companion slot with an active voice
-// burst must not hold its channel silent: the muted side is zeroed before the
-// copy, so duplication keeps a locked-out companion call transparent.
+// As with the SS18 policy below, a muted companion slot must not hold its
+// channel silent: the muted side is zeroed before the copy, so duplication
+// keeps a locked-out companion call transparent. The mute flag alone decides
+// it -- an audible slot mid-superframe is not always sitting on burst hint 16,
+// and gating duplication on the hint collapsed those spans into one ear.
 static int
 dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encR != 0) {
         return 0;
+    }
+    if (encL != 0) {
+        return 1;
     }
     if (opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_mono_slot == 1) {
         return 1;
@@ -631,7 +636,7 @@ dsd_ss3_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, 
     if (opts->slot_preference == 1 && state->dmrburstR == 16) {
         return 1;
     }
-    if (state->dmrburstR == 16 && (state->dmrburstL != 16 || encL)) {
+    if (state->dmrburstR == 16 && state->dmrburstL != 16) {
         return 1;
     }
     return 0;
@@ -642,6 +647,9 @@ dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, 
     if (encL != 0) {
         return 0;
     }
+    if (encR != 0) {
+        return 1;
+    }
     if (opts->dmr_mono == 1 && DSD_SYNC_IS_DMR(state->synctype) && state->dmr_mono_slot != 1) {
         return 1;
     }
@@ -651,7 +659,7 @@ dsd_ss3_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state, 
     if (opts->slot_preference == 0 && state->dmrburstL == 16) {
         return 1;
     }
-    if (state->dmrburstL == 16 && (state->dmrburstR != 16 || encR)) {
+    if (state->dmrburstL == 16 && state->dmrburstR != 16) {
         return 1;
     }
     return 0;
@@ -689,10 +697,23 @@ dsd_p25p2_apply_slot_preference_ss18(dsd_opts* opts, const dsd_state* state, uns
 // shows active voice: a muted slot (encryption lockout, group gate) is zeroed
 // before the copy, and holding its channel silent would make an undecodable
 // companion call audibly change the clear call's playback.
+//
+// The mute flags -- not the burst hints -- decide that case. A muted channel
+// carries nothing but zeros, so whenever exactly one channel is audible it must
+// be mirrored regardless of the audible slot's MAC state. Burst hint 21 only
+// means "the last MAC PDU for this slot was MAC_ACTIVE"; a slot sitting on
+// MAC_PTT (20), MAC_HANGTIME (22), MAC_END (23), MAC_IDLE (24), an LCCH marker
+// (30) or a cleared hint still emits voice for the rest of its superframe, and
+// gating duplication on 21 collapsed those spans into one ear. The hints stay
+// in play only to break the tie when both channels are unmuted and just one is
+// actually carrying a voice burst.
 static int
 dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state, int encL, int encR) {
     if (encR != 0) {
         return 0;
+    }
+    if (encL != 0) {
+        return 1;
     }
     if (opts->slot1_on == 0 && opts->slot2_on == 1) {
         return 1;
@@ -700,7 +721,7 @@ dsd_ss18_should_copy_right_to_left(const dsd_opts* opts, const dsd_state* state,
     if (opts->slot_preference == 1 && state->dmrburstR == 21) {
         return 1;
     }
-    if (state->dmrburstR == 21 && (state->dmrburstL != 21 || encL)) {
+    if (state->dmrburstR == 21 && state->dmrburstL != 21) {
         return 1;
     }
     return 0;
@@ -711,13 +732,16 @@ dsd_ss18_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state,
     if (encL != 0) {
         return 0;
     }
+    if (encR != 0) {
+        return 1;
+    }
     if (opts->slot1_on == 1 && opts->slot2_on == 0) {
         return 1;
     }
     if (opts->slot_preference == 0 && state->dmrburstL == 21) {
         return 1;
     }
-    if (state->dmrburstL == 21 && (state->dmrburstR != 21 || encR)) {
+    if (state->dmrburstL == 21 && state->dmrburstR != 21) {
         return 1;
     }
     return 0;
