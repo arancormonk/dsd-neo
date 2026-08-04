@@ -923,13 +923,20 @@ p25p2_increment_fourv_counter(dsd_state* state) {
     }
 }
 
+// Wrap only the slot this burst writes. The output stage resets both counters
+// after playback, so a companion counter sitting at a full 18 is a completed
+// superframe still waiting for the next odd-boundary output check — zeroing it
+// here discards it unplayed. With a muted lockout call occupying the other
+// slot, that companion burst runs this reset between the clear slot's
+// superframe completing and the output boundary that would have played it,
+// silencing the clear call for its entire transmission; an idle companion
+// (no voice bursts) never triggered it, which is why only shared-channel
+// calls lost audio.
 static void
 p25p2_reset_voice_counters_if_needed(dsd_state* state) {
-    if (state->voice_counter[0] >= 18) {
-        state->voice_counter[0] = 0;
-    }
-    if (state->voice_counter[1] >= 18) {
-        state->voice_counter[1] = 0;
+    const int slot = state->currentslot;
+    if ((slot == 0 || slot == 1) && state->voice_counter[slot] >= 18) {
+        state->voice_counter[slot] = 0;
     }
 }
 

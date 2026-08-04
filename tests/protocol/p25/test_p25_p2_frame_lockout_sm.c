@@ -671,6 +671,48 @@ test_enc_key_identity_change_reemits_lockout(void) {
     return rc;
 }
 
+// SS18 playback triggers when either slot's voice counter completes a full
+// 18-frame superframe, checked only at odd-timeslot output boundaries. A
+// companion voice burst (the muted lockout call) runs between the clear
+// slot's superframe completing and that boundary; its per-burst counter wrap
+// must not zero the clear slot's completed-but-unplayed superframe, or the
+// clear call plays nothing for its entire transmission. The wrap still
+// applies to the burst's own slot.
+static int
+test_companion_voice_burst_preserves_clear_superframe(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+
+    int rc = 0;
+
+    // Slot 0's clear superframe is complete and awaiting the output boundary;
+    // slot 1 carries the muted locked-out call (BLOCKED, gate closed) and its
+    // burst arrives first.
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    state.p25_p2_audio_allowed[0] = 1;
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+    state.p25_p2_audio_allowed[1] = 0;
+    state.voice_counter[0] = 18;
+    state.voice_counter[1] = 3;
+    state.currentslot = 1;
+
+    process_2V(&opts, &state);
+    rc |= expect_eq("companion burst: clear superframe preserved", state.voice_counter[0], 18);
+    rc |= expect_eq("companion burst: muted counter frozen", state.voice_counter[1], 3);
+
+    // The wrap still applies to the slot the burst writes: a full counter on
+    // the burst's own slot wraps before its frames store.
+    state.voice_counter[1] = 18;
+    process_2V(&opts, &state);
+    rc |= expect_eq("own slot: full counter wrapped", state.voice_counter[1], 0);
+    rc |= expect_eq("own slot: clear superframe still preserved", state.voice_counter[0], 18);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // The suppress note must not invent liveness: with no prior lockout action on
 // the slot (no suppression stamp), it leaves the stamp unarmed and only
 // re-asserts the closed gate.
@@ -709,6 +751,7 @@ main(void) {
     rc |= test_facch_double_end_holds_channel_while_companion_enc_suppressed();
     rc |= test_enc_blocked_repeat_edge_triggered_tick_owns_release();
     rc |= test_enc_key_identity_change_reemits_lockout();
+    rc |= test_companion_voice_burst_preserves_clear_superframe();
     rc |= test_note_enc_suppressed_requires_prior_suppression();
     return rc;
 }
