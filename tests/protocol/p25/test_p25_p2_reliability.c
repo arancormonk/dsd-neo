@@ -640,6 +640,73 @@ test_ess_aes_slot1_loaded_key_preserves_audio_gate(void) {
     return 1;
 }
 
+// The ESS gate must re-open a slot's audio from the canonical call state, not
+// from the slot's burst hint. dmrburstL/R only records the last MAC PDU decoded
+// for the slot, so a slot still mid-call whose hint reads MAC_END (23),
+// MAC_IDLE (24), the LCCH marker (30) or a hint cleared by a teardown could
+// never re-open its gate once its ESS resolved the classification it had been
+// waiting on -- and the old fallback read a file-scope voice flag, letting one
+// slot's burst decide the other slot's gate.
+static int
+run_ess_burst_hint_case(int slot, int burst) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    prepare_ess_soft_inputs(&state);
+    reset_ess_stubs();
+    set_p25p2_threshold(64);
+
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = slot;
+    for (int i = 0; i < 96; i++) {
+        state.ess_b[slot][i] = 0;
+        state.ess_b_llr[slot][i] = 1;
+    }
+    for (int i = 0; i < 168; i++) {
+        ess_a[slot][i] = 0;
+        ess_a_llr[slot][i] = 1;
+    }
+    seed_p25p2_call(&state, (uint8_t)slot, 1234U, 4321U, 0x00U, 0U, 0U);
+    if (slot == 0) {
+        state.dmrburstL = burst;
+    } else {
+        state.dmrburstR = burst;
+    }
+    set_ess_payload_bits(&state, slot, 0x80, 0x0000, 0x0000000000000000ULL);
+
+    p25p2_process_ess(&opts, &state, 0);
+
+    const int gate = state.p25_p2_audio_allowed[slot];
+    const int crypto = (int)state.p25_crypto_state[slot];
+    const unsigned int ess_ok = state.p25_p2_rs_ess_ok;
+    dsd_state_ext_free_all(&state);
+
+    if (gate == 1 && crypto == DSD_P25_CRYPTO_CLEAR && ess_ok == 1) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "\n  FAIL slot=%d burst=%d gate=%d crypto=%d ess_ok=%u", slot, burst, gate, crypto, ess_ok);
+    return 1;
+}
+
+static int
+test_ess_opens_audio_gate_for_every_burst_hint(void) {
+    static const int bursts[] = {0, 20, 21, 22, 23, 24, 30};
+    const size_t count = sizeof(bursts) / sizeof(bursts[0]);
+    int rc = 0;
+
+    printf("Test 31: ESS opens the audio gate in every MAC state... ");
+    for (int slot = 0; slot < 2; slot++) {
+        for (size_t i = 0; i < count; i++) {
+            rc |= run_ess_burst_hint_case(slot, bursts[i]);
+        }
+    }
+    printf("%s\n", rc == 0 ? "PASS" : "FAIL");
+    return rc;
+}
+
 static int
 test_ess_allow_list_blocks_clear_audio_gate(void) {
     printf("Test 16: ESS allow-list blocks clear audio gate... ");
@@ -1359,6 +1426,7 @@ main(void) {
     failures += test_ess_soft_failure_counts_once();
     failures += test_ess_des_manual_key_preserves_audio_gate();
     failures += test_ess_aes_slot1_loaded_key_preserves_audio_gate();
+    failures += test_ess_opens_audio_gate_for_every_burst_hint();
     failures += test_ess_allow_list_blocks_clear_audio_gate();
     failures += test_ess_decode_failure_refreshes_existing_crypto_state();
     failures += test_ess_decode_failure_refreshes_existing_aes_state();

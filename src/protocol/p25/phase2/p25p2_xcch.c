@@ -240,9 +240,10 @@ p25p2_xcch_flush_partial_audio_on_hangtime(dsd_opts* opts, dsd_state* state, int
     audio_allowed[0] = state->p25_p2_audio_allowed[0];
     audio_allowed[1] = state->p25_p2_audio_allowed[1];
 
-    // Flush before MAC_HANGTIME changes burst 21 to 22; SS18 single-slot
-    // duplication uses those active burst hints. Unlike release, hangtime stays
-    // on the VC, so restore the existing audio gates after the flush.
+    // Flush before MAC_HANGTIME changes burst 21 to 22, so the flushed
+    // superframe is still attributed to the active transmission. Unlike release,
+    // hangtime stays on the VC, so restore the existing audio gates after the
+    // flush -- the flush helper repoints them at the slot it is draining.
     dsd_p25p2_flush_partial_audio_slot(opts, state, slot);
 
     state->p25_p2_audio_allowed[0] = audio_allowed[0];
@@ -352,16 +353,21 @@ p25p2_xcch_reset_ptt_slot_state(dsd_state* state, int slot) {
     p25p2_xcch_set_slot_drop(state, slot, 256);
 }
 
+// Both callers already dropped a PTT their voice-event emit rejected, so
+// reaching here means MAC_PTT really is the last MAC PDU decoded for this slot.
+// The burst hint records that fact and nothing more, so it is set unconditionally
+// and up front: gating it on the audio decision (as the SACCH caller used to,
+// while the FACCH caller always set it) left a slot whose audio was still
+// waiting on crypto classification sitting on a stale or cleared hint, which
+// every consumer then reads as "not in a call". Downstream teardown -- lockout,
+// policy reject -- clears the hint after this and must keep the last word.
 static void
-p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot,
-                           int always_set_burst) {
+p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long long int mac[24], int slot) {
     uint32_t src = p25p2_xcch_src_from_mac(mac);
     int allow_audio = 0;
 
     p25p2_xcch_reset_ptt_slot_state(state, slot);
-    if (always_set_burst) {
-        p25p2_xcch_set_slot_burst(state, slot, 20);
-    }
+    p25p2_xcch_set_slot_burst(state, slot, 20);
 
     DSD_FPRINTF(stderr, "\n VCH %d - ", slot + 1);
     DSD_FPRINTF(stderr, "TG %d ", p25p2_xcch_get_slot_tg(state, slot));
@@ -373,10 +379,6 @@ p25p2_xcch_handle_ptt_slot(dsd_opts* opts, dsd_state* state, const unsigned long
 
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
-
-    if (!always_set_burst && allow_audio) {
-        p25p2_xcch_set_slot_burst(state, slot, 20);
-    }
 }
 
 static void
@@ -530,7 +532,7 @@ p25p2_xcch_handle_sacch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
-    p25p2_xcch_handle_ptt_slot(opts, state, smac, slot, 0);
+    p25p2_xcch_handle_ptt_slot(opts, state, smac, slot);
 
     if (opts->payload == 1) {
         p25p2_xcch_print_payload_dump("MAC_PTT_PAYLOAD_S", mac_offset, res, smac);
@@ -585,6 +587,13 @@ static void
 p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slot, unsigned long long int smac[24]) {
     int allow_audio = 0;
 
+    // Set before the emit below, matching the FACCH path: the hint states that
+    // MAC_ACTIVE was the last MAC PDU decoded for this slot, which is true
+    // whether or not audio is permitted yet, and a rejection downstream still
+    // clears it afterwards. Gating it on allow_audio stranded a slot that was
+    // mid-crypto-classification on a cleared hint.
+    p25p2_xcch_set_slot_burst(state, slot, 21);
+
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
@@ -599,9 +608,6 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
     }
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
     p25p2_xcch_set_slot_audio_allowed(opts, state, slot, allow_audio);
-    if (allow_audio) {
-        p25p2_xcch_set_slot_burst(state, slot, 21);
-    }
 }
 
 static void
@@ -640,7 +646,7 @@ p25p2_xcch_handle_facch_mac_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, 
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
-    p25p2_xcch_handle_ptt_slot(opts, state, fmac, slot, 1);
+    p25p2_xcch_handle_ptt_slot(opts, state, fmac, slot);
 
     if (opts->payload == 1) {
         p25p2_xcch_print_payload_dump("MAC_PTT_PAYLOAD_F", mac_offset, res, fmac);

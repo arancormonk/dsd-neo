@@ -1124,8 +1124,21 @@ p25p2_frame_vc_grace_s(const dsd_state* state, double fallback) {
     return fallback;
 }
 
+// Re-open a slot's audio gate once its ESS resolved the classification the gate
+// was waiting on. The canonical call state is the authority on whether the slot
+// is in a call: dsd_p25p2_decode_audio_allowed() already requires an ACTIVE
+// epoch for this slot, and MAC_END/MAC_IDLE run p25_crypto_reset_slot(), which
+// drops the classification p25_crypto_audio_permitted() checks just above. The
+// burst hint must not gate it. dmrburstL/R only records the last MAC PDU
+// decoded for the slot, so a slot still mid-call whose hint reads MAC_END (23),
+// MAC_IDLE (24), the LCCH marker (30) or a cleared 0 could never re-open its
+// gate -- and the hint is cleared outright when a slot is torn down, which is
+// exactly the state a classification window leaves behind. The old fallback
+// also read the file-scope `voice` flag, letting one slot's burst decide the
+// other slot's gate. The media-rejection latch above is what keeps a denied
+// identity closed here; that guard is independent of any burst state.
 static void
-p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int slot, int alg, int burst) {
+p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int slot, int alg) {
     if (state->p25_p2_media_rejected[slot]) {
         state->p25_p2_audio_allowed[slot] = 0;
         return;
@@ -1137,9 +1150,19 @@ p25p2_ess_maybe_enable_audio_slot(const dsd_opts* opts, dsd_state* state, int sl
     if (state->p25_p2_audio_allowed[slot] != 0) {
         return;
     }
-    int in_call = ((burst >= 20 && burst <= 22) || voice);
-    int allow = in_call && dsd_p25p2_decode_audio_allowed(opts, state, slot, alg);
-    if (allow) {
+    // Only a resolved classification re-opens the gate. UNKNOWN and
+    // ENCRYPTED_PENDING mean this slot's ESS has not classified yet, and under
+    // follow mode the encrypted-audio unmute override makes
+    // p25_crypto_audio_permitted() above answer yes for them -- that override
+    // exists for audio whose classification is settled, not for an unresolved
+    // probe. The burst-hint test this replaced was enforcing that invariant
+    // only by accident, because a slot awaiting classification also tends to
+    // sit outside MAC_PTT/ACTIVE/HANGTIME.
+    const dsd_p25_crypto_state crypto = state->p25_crypto_state[slot];
+    if (crypto == DSD_P25_CRYPTO_UNKNOWN || crypto == DSD_P25_CRYPTO_ENCRYPTED_PENDING) {
+        return;
+    }
+    if (dsd_p25p2_decode_audio_allowed(opts, state, slot, alg)) {
         state->p25_p2_audio_allowed[slot] = 1;
     }
 }
@@ -1148,7 +1171,7 @@ static void
 p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
                              p25p2_active_target(state, 0U));
-    p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid, state->dmrburstL);
+    p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid);
 
     if (state->payload_algid == 0x80 || state->payload_algid == 0x0) {
         return;
@@ -1189,7 +1212,7 @@ static void
 p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* result) {
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
                              p25p2_active_target(state, 1U));
-    p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR, state->dmrburstR);
+    p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR);
 
     if (state->payload_algidR == 0x80 || state->payload_algidR == 0x0) {
         return;
