@@ -3765,11 +3765,12 @@ p25_facch_has_newer_grant(const p25_sm_ctx_t* ctx, double first_end_m) {
 // so to the double-END fast release the carrier looks like it is closing while
 // the site is in fact still transmitting the locked-out call on it, and the
 // ended conversation's next over gets re-granted on this same channel moments
-// later. The suppression action re-runs on every FEC-accepted ESS repeat for
-// as long as that call keeps transmitting, so a stamp fresh within the
-// effective hangtime means "occupied right now" while surviving ESS decode
-// stalls; once the repeats stop, the stamp ages out and the hangtime-expiry
-// tick still owns the release of a genuinely emptied channel.
+// later. The suppression stamp refreshes on every FEC-accepted ESS repeat
+// (via p25_sm_note_enc_suppressed) for as long as that call keeps
+// transmitting, so a stamp fresh within the effective hangtime means
+// "occupied right now" while surviving ESS decode stalls; once the repeats
+// stop, the stamp ages out and the hangtime-expiry tick still owns the
+// release of a genuinely emptied channel.
 static int
 p25_facch_companion_enc_suppressed(const p25_sm_ctx_t* ctx, const dsd_state* state, int slot, double now_m) {
     if (!ctx->vc_is_tdma) {
@@ -4060,15 +4061,15 @@ p25_enc_lockout_target(const p25_sm_slot_ctx_t* slot_ctx, int fallback, int* is_
     return fallback;
 }
 
-// The lockout action re-runs on every FEC-accepted ESS repeat for as long as
-// the locked-out call keeps transmitting, so it revisits stay-or-release well
-// inside the companion conversation's normal talker gaps -- where the
-// retains-carrier check reads the companion as inactive and a release here
-// would tear down the channel the hangtime window is bridging, clipping the
-// head of every following clear transmission. Hold through the companion's
-// unexpired gap; once only the locked-out call remains, the gap outlives the
-// hangtime and the next repeat releases, exactly when the hangtime-expired
-// tick would.
+// The lockout action runs on every classification transition -- each
+// locked-out transmission's first BLOCKED resolve, or a key-identity change
+// -- so it still revisits stay-or-release inside the companion conversation's
+// normal talker gaps, where the retains-carrier check reads the companion as
+// inactive and a release here would tear down the channel the hangtime window
+// is bridging, clipping the head of every following clear transmission. Hold
+// through the companion's unexpired gap; once only the locked-out call
+// remains, the gap outlives the hangtime and the next transition (or the
+// hangtime-expired tick) releases the emptied channel.
 static void
 p25_enc_lockout_release_or_hold(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     const int other = slot ^ 1;

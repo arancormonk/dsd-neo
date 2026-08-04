@@ -753,7 +753,11 @@ dsd_ss18_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state,
 // decoder thread's single timeline. Logged only when the decision vector
 // changes, so a steady state costs one comparison per mixer pass and the log
 // records exactly the transitions: which ear went silent, which gate or copy
-// input moved, and what the decode-side state read at that instant.
+// input moved, and what the decode-side state read at that instant. The
+// free-running ring and voice counters advance on nearly every pass while
+// audio flows, so they sit outside the change trigger — their instantaneous
+// values still print on every logged line for context. Function-local
+// statics: single instance, decoder thread only, like the mixers themselves.
 static void
 dsd_p25p2_mix_diag(dsd_opts* opts, const dsd_state* state, const char* path, int encL, int encR, int copy_rl,
                    int copy_lr, unsigned long TGL, unsigned long TGR) {
@@ -761,9 +765,10 @@ dsd_p25p2_mix_diag(dsd_opts* opts, const dsd_state* state, const char* path, int
         return;
     }
 
-    enum { MIX_DIAG_FIELDS = 19 };
+    // cur[] holds the trigger fields first, then the context-only counters.
+    enum { MIX_DIAG_TRIGGER_FIELDS = 15, MIX_DIAG_FIELDS = 19 };
 
-    static unsigned long prev[MIX_DIAG_FIELDS];
+    static unsigned long prev[MIX_DIAG_TRIGGER_FIELDS];
     static int prev_valid = 0;
     // Invocation count, deliberately outside the change vector: when a change
     // does log, run= reveals how many silent (unchanged) mixer passes happened
@@ -777,10 +782,6 @@ dsd_p25p2_mix_diag(dsd_opts* opts, const dsd_state* state, const char* path, int
                                                 (unsigned long)copy_lr,
                                                 (unsigned long)state->p25_p2_audio_allowed[0],
                                                 (unsigned long)state->p25_p2_audio_allowed[1],
-                                                (unsigned long)state->p25_p2_audio_ring_count[0],
-                                                (unsigned long)state->p25_p2_audio_ring_count[1],
-                                                (unsigned long)state->voice_counter[0],
-                                                (unsigned long)state->voice_counter[1],
                                                 (unsigned long)state->dmrburstL,
                                                 (unsigned long)state->dmrburstR,
                                                 (unsigned long)state->p25_crypto_state[0],
@@ -789,10 +790,14 @@ dsd_p25p2_mix_diag(dsd_opts* opts, const dsd_state* state, const char* path, int
                                                 (unsigned long)opts->slot2_on,
                                                 (unsigned long)opts->slot_preference,
                                                 TGL,
-                                                TGR};
+                                                TGR,
+                                                (unsigned long)state->p25_p2_audio_ring_count[0],
+                                                (unsigned long)state->p25_p2_audio_ring_count[1],
+                                                (unsigned long)state->voice_counter[0],
+                                                (unsigned long)state->voice_counter[1]};
 
     int changed = !prev_valid;
-    for (int i = 0; i < MIX_DIAG_FIELDS; i++) {
+    for (int i = 0; i < MIX_DIAG_TRIGGER_FIELDS; i++) {
         if (prev[i] != cur[i]) {
             changed = 1;
         }
@@ -804,8 +809,8 @@ dsd_p25p2_mix_diag(dsd_opts* opts, const dsd_state* state, const char* path, int
     }
 
     dsd_p25_sm_logf(opts,
-                    "event=audio_mix path=%s run=%lu encL=%lu encR=%lu copy=%s allowed=%lu/%lu ring=%lu/%lu "
-                    "vc=%lu/%lu burst=%lu/%lu crypto=%lu/%lu slot_on=%lu/%lu pref=%lu tgl=%lu tgr=%lu",
+                    "event=audio_mix path=%s run=%lu encL=%lu encR=%lu copy=%s allowed=%lu/%lu burst=%lu/%lu "
+                    "crypto=%lu/%lu slot_on=%lu/%lu pref=%lu tgl=%lu tgr=%lu ring=%lu/%lu vc=%lu/%lu",
                     path, run_count, cur[0], cur[1], cur[2] ? "rl" : (cur[3] ? "lr" : "none"), cur[4], cur[5], cur[6],
                     cur[7], cur[8], cur[9], cur[10], cur[11], cur[12], cur[13], cur[14], cur[15], cur[16], cur[17],
                     cur[18]);

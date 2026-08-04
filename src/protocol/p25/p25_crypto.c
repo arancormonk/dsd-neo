@@ -454,6 +454,16 @@ p25_crypto_classify_metadata(const dsd_state* state, dsd_p25_crypto_phase phase,
 // resolves. Follow mode (and non-trunked runs) also keep it, because the
 // repeat re-publishes crypto metadata and refreshes the audio gate for calls
 // that stay tuned.
+//
+// The repeat identity is deliberately ALG/KID only, not the talkgroup: a
+// target change with no observed MAC boundary is swallowed as a repeat, but
+// the audio stays gated either way, and the next MAC_END/MAC_IDLE resets the
+// classification so the new target's transition fires then. This layer also
+// cannot see whether the trunk SM is actually tuned; when trunking is enabled
+// but the SM is not on a voice channel, repeats used to take the handler's
+// precheck path and re-publish crypto metadata each superframe. Swallowing
+// them there too is accepted: the transition still publishes once per
+// transmission and dsd_event_sync_slot() runs per timeslot regardless.
 static int
 p25_crypto_p2_lockout_repeat(const dsd_opts* opts, dsd_p25_crypto_phase phase, const p25_crypto_snapshot* previous,
                              dsd_p25_crypto_state resolved, int key_identity_changed) {

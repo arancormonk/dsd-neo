@@ -795,7 +795,8 @@ p25p2_active_target(const dsd_state* state, uint8_t slot) {
 // stream. The gate decides whether a slot's vocoder output lands in the
 // playback buffers at all, so a flip between mixer passes is invisible to the
 // mixer trace except as silence; this catches it at the decode chokepoints
-// with the state that drove it. Logged only on change.
+// with the state that drove it. Logged only on change. Function-local
+// statics: single instance, decoder thread only, like the decode path.
 static void
 p25p2_audio_gate_diag(dsd_opts* opts, const dsd_state* state, const char* at) {
     if (!dsd_p25_sm_log_enabled(opts)) {
