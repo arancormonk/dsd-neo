@@ -959,11 +959,33 @@ main(void) {
     (void)dsd_recent_activity_publish(&pf0_st, 1U, &slot_two_data, "slot two data channel", 1U);
     build_p_clear(bits, bytes, 0U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("p_clear data clears slot 2 burst state", pf0_st.dmrburstL == 9 && pf0_st.dmrburstR == 9);
+    rc |= expect_true("p_clear data clears slot 2 burst state", pf0_st.dmrburstR == 9);
+    rc |= expect_true("p_clear data leaves companion burst hint alone", pf0_st.dmrburstL == 6);
     rc |= expect_true("p_clear data clears slot 2 activity", recent_activity_is_empty(&pf0_st, 1U));
     rc |= expect_true("p_clear data does not create a call", no_active_call(&pf0_st, 1U));
     rc |= expect_true("p_clear data does not force release", pf0_st.trunk_sm_force_release == 0);
     rc |= expect_true("p_clear data does not return to cc", pf0_st.p25_sm_release_count == 0);
+
+    // A P_CLEAR for one slot must not force-release the channel while the
+    // companion slot's canonical call epoch is ACTIVE, whatever the
+    // companion's burst hint reads: the hint records the last burst decoded,
+    // and a slot mid-call sits on TLC/data/stale values between voice bursts.
+    static const unsigned int companion_hints[] = {2U, 6U, 9U, 15U, 17U};
+    for (size_t h = 0; h < sizeof(companion_hints) / sizeof(companion_hints[0]); h++) {
+        init_env(&pf0_opts, &pf0_st);
+        pf0_opts.trunk_is_tuned = 1;
+        pf0_st.currentslot = 0;
+        pf0_st.dmrburstL = 9;
+        pf0_st.dmrburstR = companion_hints[h];
+        seed_voice_call(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 7700U, 8800U);
+        build_p_clear(bits, bytes, 0U);
+        dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("p_clear active companion does not force release", pf0_st.trunk_sm_force_release == 0);
+        rc |= expect_true("p_clear active companion does not return to cc", pf0_st.p25_sm_release_count == 0);
+        rc |= expect_true("p_clear active companion keeps its burst hint", pf0_st.dmrburstR == companion_hints[h]);
+        rc |= expect_true("p_clear active companion call stays active",
+                          active_call_matches(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 7700U, 8800U));
+    }
 
     init_env(&pf0_opts, &pf0_st);
     pf0_st.trunk_chan_map[lpcn] = freq;

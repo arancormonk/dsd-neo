@@ -927,12 +927,26 @@ dmr_cspdu_pf0_handle_p_protect(const dsd_opts* opts, dsd_state* state, uint8_t c
 }
 
 static int
+dmr_cspdu_pf0_slot_call_active(const dsd_state* state, uint8_t slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
+// The companion slot is busy when its canonical call epoch is ACTIVE, not just
+// when its burst hint shows voice: the hint records the last burst decoded, so
+// a slot mid-call can sit on a TLC, data or stale hint between voice bursts,
+// and misreading that as free would force-release the channel out from under
+// the companion call. The hint values stay as corroboration for late entry,
+// where bursts decode before any LC has opened a canonical epoch.
+static int
 dmr_cspdu_pf0_p_clear_from_voice(const dsd_state* state) {
     int clear = 0;
-    if (state->currentslot == 0 && (state->dmrburstR != 16 && state->dmrburstR != 0 && state->dmrburstR != 1)) {
+    if (state->currentslot == 0 && (state->dmrburstR != 16 && state->dmrburstR != 0 && state->dmrburstR != 1)
+        && !dmr_cspdu_pf0_slot_call_active(state, 1U)) {
         clear = 2;
     }
-    if (state->currentslot == 1 && (state->dmrburstL != 16 && state->dmrburstL != 0 && state->dmrburstL != 1)) {
+    if (state->currentslot == 1 && (state->dmrburstL != 16 && state->dmrburstL != 0 && state->dmrburstL != 1)
+        && !dmr_cspdu_pf0_slot_call_active(state, 0U)) {
         clear = 3;
     }
     return clear;
@@ -975,16 +989,19 @@ dmr_cspdu_pf0_p_clear_compute(const dsd_opts* opts, const dsd_state* state) {
     return clear;
 }
 
+// Only the P_CLEAR's own slot goes idle. The companion's burst hint records
+// what that slot last decoded, and this teardown is not an observation of the
+// companion: stomping it mid-call would hand every hint consumer a false
+// "idle" for a slot whose call is still running. A genuinely idle companion
+// re-records 9 from its own idle bursts within a burst period.
 static void
 dmr_cspdu_pf0_p_clear_mark_slots_idle(dsd_state* state) {
     if (state->currentslot == 0) {
         state->dmrburstL = 9;
-        state->dmrburstR = 9;
         (void)dsd_recent_activity_clear(state, 0U);
         return;
     }
     state->dmrburstR = 9;
-    state->dmrburstL = 9;
     (void)dsd_recent_activity_clear(state, 1U);
 }
 
