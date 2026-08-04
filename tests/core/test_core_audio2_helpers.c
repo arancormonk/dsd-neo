@@ -770,6 +770,66 @@ test_dmr_ss3_enc_locked_companion_duplicates_clear_slot(void) {
     return rc;
 }
 
+// The mute flag alone must drive duplication, not the burst hint. dmrburstL/R
+// record the last burst decoded for a slot, so an audible slot keeps emitting
+// voice while its hint reads PI (0), VLC (1), TLC (2), DATA (6), IDLE (9), NULL
+// (15) or the ERR init value (17). Gating the copy on hint 16 collapsed all of
+// those spans into one ear next to a locked-out companion.
+static int
+run_ss3_muted_companion_burst_hint_case(int clear_slot, int clear_burst, int companion_burst) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    char tag[96];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.slot_preference = 2;
+
+    // The muted companion still holds pre-mute audio, which must never survive
+    // into either channel.
+    if (clear_slot == 0) {
+        state.dmrburstL = clear_burst;
+        state.dmrburstR = companion_burst;
+        state.s_l4[0][0] = 33;
+        state.s_r4[0][0] = -3000;
+    } else {
+        state.dmrburstR = clear_burst;
+        state.dmrburstL = companion_burst;
+        state.s_r4[0][0] = 33;
+        state.s_l4[0][0] = -3000;
+    }
+
+    dsd_dmr_apply_stereo_output_policy_ss3(&opts, &state, (clear_slot == 0) ? 0 : 1, (clear_slot == 0) ? 1 : 0);
+
+    DSD_SNPRINTF(tag, sizeof(tag), "ss3 burst hint clear=%d/%d companion=%d left", clear_slot, clear_burst,
+                 companion_burst);
+    rc |= expect_int(tag, state.s_l4[0][0], 33);
+    DSD_SNPRINTF(tag, sizeof(tag), "ss3 burst hint clear=%d/%d companion=%d right", clear_slot, clear_burst,
+                 companion_burst);
+    rc |= expect_int(tag, state.s_r4[0][0], 33);
+    return rc;
+}
+
+static int
+test_dmr_ss3_muted_companion_burst_hint_matrix(void) {
+    static const int bursts[] = {0, 1, 2, 6, 9, 15, 16, 17};
+    const size_t count = sizeof(bursts) / sizeof(bursts[0]);
+    int rc = 0;
+
+    for (int clear_slot = 0; clear_slot < 2; clear_slot++) {
+        for (size_t clear_idx = 0; clear_idx < count; clear_idx++) {
+            for (size_t companion_idx = 0; companion_idx < count; companion_idx++) {
+                rc |= run_ss3_muted_companion_burst_hint_case(clear_slot, bursts[clear_idx], bursts[companion_idx]);
+            }
+        }
+    }
+    return rc;
+}
+
 static int
 test_p25p2_ss18_slot_preference_and_copy_policy_helpers(void) {
     static dsd_opts opts;
@@ -1248,6 +1308,7 @@ main(void) {
     rc |= test_dmr_slot_mute_and_duplication_helpers();
     rc |= test_dmr_ss3_decrypt_hold_and_copy_policy_helpers();
     rc |= test_dmr_ss3_enc_locked_companion_duplicates_clear_slot();
+    rc |= test_dmr_ss3_muted_companion_burst_hint_matrix();
     rc |= test_p25p2_ss18_slot_preference_and_copy_policy_helpers();
     rc |= test_ss18_partial_superframe_skips_zero_blocks_and_duplicates_clear_slot();
     rc |= test_ss18_keeps_legit_silence_inside_filled_extent();
