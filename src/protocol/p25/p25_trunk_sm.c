@@ -61,6 +61,7 @@ static void p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts*
                                                     const char* slot_log);
 static void handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
 static void handle_crypto_pending(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+static double p25_sm_effective_hangtime(const dsd_state* state, double hangtime);
 
 typedef enum {
     // Positive per-transmission evidence: MAC_PTT / MAC_ACTIVE or an
@@ -3890,6 +3891,26 @@ p25_voice_clear_slot_burst(dsd_state* state, int slot) {
     }
 }
 
+// Whether the companion slot sits inside the hangtime window of a transmission
+// that just ended on it. The retains-carrier check reads exactly that instant
+// as inactive -- MAC_END clears voice_active and the audio gate -- but the
+// window is the SM's promise to bridge a conversation's talker gaps. The
+// companion's own stop timestamp decides it rather than the global hangtime
+// timer, which the locked-out slot's suppressed voice starts re-arm on every
+// repeat and which therefore cannot distinguish the companion's bridged gap
+// from an enc-only carrier that must still release. Once the gap outlives the
+// effective hangtime the caller releases as before, and a companion with no
+// recorded stop (never carried a call, or torn down without an END) never
+// holds at all.
+static int
+p25_voice_companion_gap_within_hangtime(const p25_sm_ctx_t* ctx, const dsd_state* state, int other, double now_m) {
+    const p25_sm_slot_ctx_t* other_ctx = &ctx->slots[other];
+    if (other_ctx->last_stop_m <= 0.0 || now_m < other_ctx->last_stop_m) {
+        return 0;
+    }
+    return (now_m - other_ctx->last_stop_m) < p25_sm_effective_hangtime(state, ctx->config.hangtime_s);
+}
+
 static void
 p25_voice_release_or_preserve_companion(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot,
                                         const char* release_reason, const char* slot_diag, const char* slot_log) {
@@ -4007,6 +4028,30 @@ p25_enc_lockout_target(const p25_sm_slot_ctx_t* slot_ctx, int fallback, int* is_
     return fallback;
 }
 
+// The lockout action re-runs on every FEC-accepted ESS repeat for as long as
+// the locked-out call keeps transmitting, so it revisits stay-or-release well
+// inside the companion conversation's normal talker gaps -- where the
+// retains-carrier check reads the companion as inactive and a release here
+// would tear down the channel the hangtime window is bridging, clipping the
+// head of every following clear transmission. Hold through the companion's
+// unexpired gap; once only the locked-out call remains, the gap outlives the
+// hangtime and the next repeat releases, exactly when the hangtime-expired
+// tick would.
+static void
+p25_enc_lockout_release_or_hold(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
+    const int other = slot ^ 1;
+    const double now_m = dsd_time_now_monotonic_s();
+    if (ctx->vc_is_tdma && !p25_voice_other_slot_active(ctx, state, other)
+        && p25_voice_companion_gap_within_hangtime(ctx, state, other, now_m)) {
+        p25_sm_diagf(opts, state, ctx, "enc_lockout_hangtime_hold", "slot=%d other=%d gap=%.3f", slot, other,
+                     now_m - ctx->slots[other].last_stop_m);
+        sm_log(opts, state, "enc-lockout-hangtime-hold");
+        return;
+    }
+    p25_voice_release_or_preserve_companion(ctx, opts, state, slot, "enc-lockout", "enc_lockout_slot_only",
+                                            "enc-lockout-slot-only");
+}
+
 static void
 handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev) {
     if (!ctx || !ev || !opts || !state) {
@@ -4070,8 +4115,7 @@ handle_enc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_eve
     ctx->slots[slot].voice_active = 0;
     p25_voice_clear_slot_grant(ctx, state, slot);
     p25_voice_clear_slot_burst(state, slot);
-    p25_voice_release_or_preserve_companion(ctx, opts, state, slot, "enc-lockout", "enc_lockout_slot_only",
-                                            "enc-lockout-slot-only");
+    p25_enc_lockout_release_or_hold(ctx, opts, state, slot);
 
     // Record last, after the slot teardown above. The teardown runs
     // p25_crypto_reset_slot(), which clears the lockout epoch -- recording any
