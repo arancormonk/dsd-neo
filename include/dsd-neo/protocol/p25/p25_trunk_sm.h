@@ -169,6 +169,9 @@ typedef struct {
     double ptt_last_seen_m;                            // Last observation of that PTT, including retransmissions
     int ptt_signature_valid;                           // 1 while no accepted call boundary/replacement intervened
     uint64_t ptt_canonical_epoch;                      // Canonical epoch that most recently accepted a MAC_PTT
+    double last_enc_suppress_m; // Monotonic timestamp of the last enc-lockout suppression action on this slot.
+                                // The suppressed transmission occupies the carrier with no assignment, epoch,
+                                // or audio trace, so this is the only evidence of it that survives the teardown.
 } p25_sm_slot_ctx_t;
 
 typedef struct {
@@ -608,6 +611,19 @@ void p25_sm_emit_tdu(dsd_opts* opts, dsd_state* state);
  * @param tg Talkgroup associated with this call.
  */
 void p25_sm_emit_enc(dsd_opts* opts, dsd_state* state, int slot, int algid, int keyid, int tg);
+
+/**
+ * @brief Note a FEC-accepted ESS repeat of an already-suppressed BLOCKED classification.
+ *
+ * The full ENC event is edge-triggered on the classification transition; this
+ * lightweight note is the per-repeat liveness signal that the locked-out
+ * transmission still occupies its slot. It refreshes the suppression stamp the
+ * release heuristics read and keeps the slot's audio gate closed — it runs no
+ * teardown and no stay-or-release decision. A slot whose lockout action never
+ * ran (no suppression stamp) is left untouched so a stray repeat cannot invent
+ * liveness for an idle slot.
+ */
+void p25_sm_note_enc_suppressed(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
  * @brief Emit an in-band encrypted indication that requires classification.

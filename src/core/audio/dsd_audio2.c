@@ -15,6 +15,7 @@
 #include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -747,6 +748,74 @@ dsd_ss18_should_copy_left_to_right(const dsd_opts* opts, const dsd_state* state,
     return 0;
 }
 
+// Diagnostic trace of the P25p2 mixer's audible-slot decision into the
+// --p25-sm-log stream, where it interleaves with the trunk SM's events on the
+// decoder thread's single timeline. Logged only when the decision vector
+// changes, so a steady state costs one comparison per mixer pass and the log
+// records exactly the transitions: which ear went silent, which gate or copy
+// input moved, and what the decode-side state read at that instant. The
+// free-running ring and voice counters advance on nearly every pass while
+// audio flows, so they sit outside the change trigger — their instantaneous
+// values still print on every logged line for context. Function-local
+// statics: single instance, decoder thread only, like the mixers themselves.
+static void
+dsd_p25p2_mix_diag(dsd_opts* opts, const dsd_state* state, const char* path, int encL, int encR, int copy_rl,
+                   int copy_lr, unsigned long TGL, unsigned long TGR) {
+    if (!dsd_p25_sm_log_enabled(opts)) {
+        return;
+    }
+
+    // cur[] holds the trigger fields first, then the context-only counters.
+    enum { MIX_DIAG_TRIGGER_FIELDS = 15, MIX_DIAG_FIELDS = 19 };
+
+    static unsigned long prev[MIX_DIAG_TRIGGER_FIELDS];
+    static int prev_valid = 0;
+    // Invocation count, deliberately outside the change vector: when a change
+    // does log, run= reveals how many silent (unchanged) mixer passes happened
+    // since the previous line — distinguishing "ran steadily" from "never ran".
+    static unsigned long run_count = 0;
+    run_count++;
+
+    const unsigned long cur[MIX_DIAG_FIELDS] = {(unsigned long)encL,
+                                                (unsigned long)encR,
+                                                (unsigned long)copy_rl,
+                                                (unsigned long)copy_lr,
+                                                (unsigned long)state->p25_p2_audio_allowed[0],
+                                                (unsigned long)state->p25_p2_audio_allowed[1],
+                                                (unsigned long)state->dmrburstL,
+                                                (unsigned long)state->dmrburstR,
+                                                (unsigned long)state->p25_crypto_state[0],
+                                                (unsigned long)state->p25_crypto_state[1],
+                                                (unsigned long)opts->slot1_on,
+                                                (unsigned long)opts->slot2_on,
+                                                (unsigned long)opts->slot_preference,
+                                                TGL,
+                                                TGR,
+                                                (unsigned long)state->p25_p2_audio_ring_count[0],
+                                                (unsigned long)state->p25_p2_audio_ring_count[1],
+                                                (unsigned long)state->voice_counter[0],
+                                                (unsigned long)state->voice_counter[1]};
+
+    int changed = !prev_valid;
+    for (int i = 0; i < MIX_DIAG_TRIGGER_FIELDS; i++) {
+        if (prev[i] != cur[i]) {
+            changed = 1;
+        }
+        prev[i] = cur[i];
+    }
+    prev_valid = 1;
+    if (!changed) {
+        return;
+    }
+
+    dsd_p25_sm_logf(opts,
+                    "event=audio_mix path=%s run=%lu encL=%lu encR=%lu copy=%s allowed=%lu/%lu burst=%lu/%lu "
+                    "crypto=%lu/%lu slot_on=%lu/%lu pref=%lu tgl=%lu tgr=%lu ring=%lu/%lu vc=%lu/%lu",
+                    path, run_count, cur[0], cur[1], cur[2] ? "rl" : (cur[3] ? "lr" : "none"), cur[4], cur[5], cur[6],
+                    cur[7], cur[8], cur[9], cur[10], cur[11], cur[12], cur[13], cur[14], cur[15], cur[16], cur[17],
+                    cur[18]);
+}
+
 DSD_AUDIO2_INTERNAL void
 dsd_p25p2_apply_stereo_output_policy_ss18(const dsd_opts* opts, dsd_state* state, int encL, int encR) {
     if (encL) {
@@ -957,6 +1026,8 @@ playSynthesizedVoiceFS4(dsd_opts* opts, dsd_state* state) {
     dsd_set_p25p2_slot_mute_flags(state, &encL, &encR);
     dsd_apply_slot_hard_mute_flags(opts, &encL, &encR);
     dsd_apply_dual_tg_audio_gate(opts, state, &encL, &encR);
+    dsd_p25p2_mix_diag(opts, state, "fs4", encL, encR, encL && !encR, !encL && encR, dsd_audio_call_target(state, 0U),
+                       dsd_audio_call_target(state, 1U));
 
     dsd_fs4_pop_gain_frames(opts, state, lf, rf, l_ok, r_ok);
     dsd_fs4_mix_interleaved_frames(lf, rf, encL, encR, l_ok, r_ok, stereo);
@@ -1178,6 +1249,8 @@ playSynthesizedVoiceSS18(dsd_opts* opts, dsd_state* state) {
 
     dsd_p25p2_apply_slot_preference_ss18(opts, state, TGL, TGR);
     dsd_hpf_short_18_if_enabled(opts, state);
+    dsd_p25p2_mix_diag(opts, state, "ss18", encL, encR, dsd_ss18_should_copy_right_to_left(opts, state, encL, encR),
+                       dsd_ss18_should_copy_left_to_right(opts, state, encL, encR), TGL, TGR);
     dsd_p25p2_apply_stereo_output_policy_ss18(opts, state, encL, encR);
 
     //check this last

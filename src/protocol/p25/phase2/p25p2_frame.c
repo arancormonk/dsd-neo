@@ -791,6 +791,36 @@ p25p2_active_target(const dsd_state* state, uint8_t slot) {
     return (int)call.ota_target_id;
 }
 
+// Diagnostic trace of decode-side audio gate transitions into the --p25-sm-log
+// stream. The gate decides whether a slot's vocoder output lands in the
+// playback buffers at all, so a flip between mixer passes is invisible to the
+// mixer trace except as silence; this catches it at the decode chokepoints
+// with the state that drove it. Logged only on change. Function-local
+// statics: single instance, decoder thread only, like the decode path.
+static void
+p25p2_audio_gate_diag(dsd_opts* opts, const dsd_state* state, const char* at) {
+    if (!dsd_p25_sm_log_enabled(opts)) {
+        return;
+    }
+    static int prev[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    const int cur[8] = {state->p25_p2_audio_allowed[0],  state->p25_p2_audio_allowed[1],
+                        (int)state->p25_crypto_state[0], (int)state->p25_crypto_state[1],
+                        state->p25_p2_media_rejected[0], state->p25_p2_media_rejected[1],
+                        (int)state->dmrburstL,           (int)state->dmrburstR};
+    int changed = 0;
+    for (int i = 0; i < 8; i++) {
+        if (prev[i] != cur[i]) {
+            changed = 1;
+            prev[i] = cur[i];
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    dsd_p25_sm_logf(opts, "event=audio_gate at=%s allowed=%d/%d crypto=%d/%d rejected=%d/%d burst=%d/%d", at, cur[0],
+                    cur[1], cur[2], cur[3], cur[4], cur[5], cur[6], cur[7]);
+}
+
 static void
 p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -802,6 +832,7 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
     }
     if (state->p25_p2_media_rejected[slot]) {
         state->p25_p2_audio_allowed[slot] = 0;
+        p25p2_audio_gate_diag(opts, state, "prepare-rejected");
         return;
     }
     const int svc = (slot == 0) ? state->dmr_so : state->dmr_soR;
@@ -812,6 +843,7 @@ p25p2_prepare_voice_crypto(dsd_opts* opts, dsd_state* state) {
         const int alg = (slot == 0) ? state->payload_algid : state->payload_algidR;
         state->p25_p2_audio_allowed[slot] = dsd_p25p2_decode_audio_allowed(opts, state, slot, alg);
     }
+    p25p2_audio_gate_diag(opts, state, "prepare-voice");
 }
 
 static int
@@ -892,13 +924,20 @@ p25p2_increment_fourv_counter(dsd_state* state) {
     }
 }
 
+// Wrap only the slot this burst writes. The output stage resets both counters
+// after playback, so a companion counter sitting at a full 18 is a completed
+// superframe still waiting for the next odd-boundary output check — zeroing it
+// here discards it unplayed. With a muted lockout call occupying the other
+// slot, that companion burst runs this reset between the clear slot's
+// superframe completing and the output boundary that would have played it,
+// silencing the clear call for its entire transmission; an idle companion
+// (no voice bursts) never triggered it, which is why only shared-channel
+// calls lost audio.
 static void
 p25p2_reset_voice_counters_if_needed(dsd_state* state) {
-    if (state->voice_counter[0] >= 18) {
-        state->voice_counter[0] = 0;
-    }
-    if (state->voice_counter[1] >= 18) {
-        state->voice_counter[1] = 0;
+    const int slot = state->currentslot;
+    if ((slot == 0 || slot == 1) && state->voice_counter[slot] >= 18) {
+        state->voice_counter[slot] = 0;
     }
 }
 
@@ -1160,6 +1199,7 @@ p25p2_ess_apply_slot0(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 0, result->algid, result->keyid, result->mi,
                              p25p2_active_target(state, 0U));
     p25p2_ess_maybe_enable_audio_slot(opts, state, 0, state->payload_algid);
+    p25p2_audio_gate_diag(opts, state, "ess-slot0");
 
     if (state->payload_algid == 0x80 || state->payload_algid == 0x0) {
         return;
@@ -1201,6 +1241,7 @@ p25p2_ess_apply_slot1(dsd_opts* opts, dsd_state* state, const p25p2_ess_result* 
     (void)p25_crypto_resolve(opts, state, DSD_P25_CRYPTO_PHASE2, 1, result->algid, result->keyid, result->mi,
                              p25p2_active_target(state, 1U));
     p25p2_ess_maybe_enable_audio_slot(opts, state, 1, state->payload_algidR);
+    p25p2_audio_gate_diag(opts, state, "ess-slot1");
 
     if (state->payload_algidR == 0x80 || state->payload_algidR == 0x0) {
         return;

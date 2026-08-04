@@ -26,6 +26,7 @@
 #include "core/audio/dsd_audio_internal.h"
 #include "dsd-neo/core/audio.h"
 #include "dsd-neo/core/audio_filters.h"
+#include "dsd-neo/core/file_io.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -39,6 +40,20 @@
 void
 dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
     (void)level;
+    (void)format;
+}
+
+// The mixer's decision-trace diagnostic writes through the P25 SM log; these
+// helpers link dsd_audio2.c standalone, so stub it disabled.
+int
+dsd_p25_sm_log_enabled(const dsd_opts* opts) {
+    (void)opts;
+    return 0;
+}
+
+void
+dsd_p25_sm_logf(dsd_opts* opts, const char* format, ...) {
+    (void)opts;
     (void)format;
 }
 
