@@ -55,6 +55,6 @@ resource bundle, so it travels with the binary rather than as a separate file.
 
 ## CI-side sanity
 
-- [ ] Release tags use `vX.Y.Z`, match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`, and verify with `git tag -v` against `release-keys/arancormonk-2026.pgp`.
+- [ ] Release tags use `vX.Y.Z`, match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`, and verify with `git tag -v` against one of the trusted keys in `release-keys/` (`arancormonk-desktop-2026.pgp` or `arancormonk-laptop-2026.pgp`).
 - [ ] For each workflow run, verify the staging steps did not emit “missing required license file” errors.
 - [ ] Spot-check nightly and tag builds across all OSes after any packaging changes.

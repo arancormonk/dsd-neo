@@ -33,18 +33,19 @@ Inspect the tag and commit:
 git show --show-signature vX.Y.Z
 ```
 
-Verify the signature with the trusted DSD-neo release key checked into the repository:
+Verify the signature with the trusted DSD-neo release keys checked into the repository:
 
 ```sh
-gpg --import release-keys/arancormonk-2026.pgp
+gpg --import release-keys/arancormonk-desktop-2026.pgp release-keys/arancormonk-laptop-2026.pgp
 git tag -v vX.Y.Z
 ```
 
-The release workflow pins this exact primary key fingerprint before trusting the
-checked-in key file:
+The release workflow pins these exact primary key fingerprints before trusting the
+checked-in key files:
 
 ```text
-5FAF 0C47 C8E1 F95D 33CD 83B1 E42E 43AD D853 F280
+5FAF 0C47 C8E1 F95D 33CD 83B1 E42E 43AD D853 F280  (desktop)
+3561 9AC5 0DF5 FB9E A053 296E 5C77 FAD4 4C3E 67A7  (laptop)
 ```
 
 `DSD_Author.pgp` is retained only for upstream attribution and is not a
