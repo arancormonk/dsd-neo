@@ -169,6 +169,9 @@ typedef struct {
     double ptt_last_seen_m;                            // Last observation of that PTT, including retransmissions
     int ptt_signature_valid;                           // 1 while no accepted call boundary/replacement intervened
     uint64_t ptt_canonical_epoch;                      // Canonical epoch that most recently accepted a MAC_PTT
+    double last_enc_suppress_m; // Monotonic timestamp of the last enc-lockout suppression action on this slot.
+                                // The suppressed transmission occupies the carrier with no assignment, epoch,
+                                // or audio trace, so this is the only evidence of it that survives the teardown.
 } p25_sm_slot_ctx_t;
 
 typedef struct {

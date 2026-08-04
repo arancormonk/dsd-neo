@@ -488,6 +488,68 @@ test_enc_lockout_idle_companion_still_releases(void) {
     return rc;
 }
 
+// The FACCH double-END fast release infers "channel closing" from an
+// otherwise idle companion slot, but encryption lockout erases the suppressed
+// call's assignment, epoch, and audio gate -- everything that check reads --
+// while the site keeps transmitting the locked-out call on the carrier. A
+// double END from the clear conversation must hold the channel while the
+// companion's suppression stamp is fresh, and must still release once the
+// stamp outlives the hangtime.
+static int
+test_facch_double_end_holds_channel_while_companion_enc_suppressed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    ctx->config.hangtime_s = 2.0;
+    state.event_history_s = calloc(2, sizeof(Event_History_I));
+    if (state.event_history_s == NULL) {
+        return 1;
+    }
+    for (int i = 0; i < 2; i++) {
+        init_event_history(&state.event_history_s[i], 0, 255);
+    }
+    g_return_to_cc_called = 0;
+
+    int rc = 0;
+
+    // Clear transmission decoding on slot 0.
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_eq("clear voice start accepted", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0x00), 1);
+    state.p25_p2_audio_allowed[0] = 1;
+
+    // Slot 1 carries the locked-out encrypted call: its ESS classifies BLOCKED
+    // and the lockout action erases the slot's assignment and audio trace,
+    // leaving only the suppression stamp as evidence the carrier is occupied.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2710, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("companion suppressed: still tuned", ctx->state == P25_SM_TUNED, 1);
+    rc |= expect_eq("companion suppressed: stamp recorded", ctx->slots[1].last_enc_suppress_m > 0.0, 1);
+
+    // The clear talker un-keys; the FACCH END repeat lands 0.2 s later while
+    // the locked-out call is still transmitting. Reading that repeat as the
+    // channel closing would bounce to the CC and clip the conversation's next
+    // over, which the site re-grants on this same channel moments later.
+    const double end_m = dsd_time_now_monotonic_s();
+    rc |= expect_eq("first facch end applied", p25_sm_emit_facch_end_call_at(&opts, &state, 0, 1234, 42, end_m),
+                    P25_SM_END_APPLIED);
+    state.p25_p2_audio_allowed[0] = 0;
+    (void)p25_sm_emit_facch_end_call_at(&opts, &state, 0, 1234, 42, end_m + 0.2);
+    rc |= expect_eq("double end inside suppression: still tuned", ctx->state == P25_SM_TUNED, 1);
+    rc |= expect_eq("double end inside suppression: no cc return", g_return_to_cc_called, 0);
+    rc |= expect_eq("double end inside suppression: tuner still on vc", opts.trunk_is_tuned, 1);
+
+    // Once the suppression stamp outlives the hangtime -- the locked-out call
+    // stopped repeating -- the same double END releases as before.
+    ctx->slots[1].last_enc_suppress_m = end_m - (ctx->config.hangtime_s + 1.0);
+    (void)p25_sm_emit_facch_end_call_at(&opts, &state, 0, 1234, 42, end_m + 0.4);
+    rc |= expect_eq("double end past suppression: released to cc", g_return_to_cc_called, 1);
+
+    dsd_state_ext_free_all(&state);
+    free(state.event_history_s);
+    state.event_history_s = NULL;
+    return rc;
+}
+
 int
 main(void) {
     install_trunk_tuning_hooks();
@@ -503,5 +565,6 @@ main(void) {
     rc |= test_new_transmission_without_grant_revalidation_stays_pending();
     rc |= test_enc_repeat_holds_channel_through_companion_hangtime();
     rc |= test_enc_lockout_idle_companion_still_releases();
+    rc |= test_facch_double_end_holds_channel_while_companion_enc_suppressed();
     return rc;
 }
