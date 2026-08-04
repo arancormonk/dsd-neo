@@ -1593,7 +1593,11 @@ test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
     state.dmrburstL = 16;
     state.dmrburstR = 9;
     seed_voice_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+    // The companion slot's call already ended: a companion whose canonical
+    // epoch is still ACTIVE now blocks the forced release (covered by the
+    // preserves-active-companion matrix below).
     seed_voice_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+    assert(dsd_call_state_end(&state, 1U, 0.0) > 0);
 
     dmr_sm_init(&opts, &state);
     dmr_sm_get_ctx()->state = DMR_SM_TUNED;
@@ -1612,6 +1616,72 @@ test_encrypted_flco_lockout_return_keeps_canonical_calls_ended(void) {
     assert_call(&state, 0U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
     assert_call(&state, 1U, DSD_CALL_PHASE_ENDED, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
     dsd_state_ext_free_all(&state);
+}
+
+// The lockout's stay-or-release decision must read the companion's canonical
+// call state, not its burst hint: a clear call keeps the canonical epoch
+// ACTIVE while the hint walks through PI (0), VLC (1), TLC (2), DATA (6),
+// IDLE (9), NULL (15), VOICE (16) and the ERR init value (17), and the action
+// retries on every corroborated LC, so any hint misread as "no call" would
+// synthesize a P_CLEAR that tears the clear companion call down.
+static void
+test_encrypted_flco_lockout_preserves_active_companion_call(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const unsigned int companion_hints[] = {0U, 1U, 2U, 6U, 9U, 15U, 16U, 17U};
+    uint8_t bits[80];
+
+    for (int eslot = 0; eslot < 2; eslot++) {
+        for (size_t h = 0; h < sizeof(companion_hints) / sizeof(companion_hints[0]); h++) {
+            const int other = eslot ^ 1;
+            uint32_t irr = 0U;
+
+            DSD_MEMSET(&opts, 0, sizeof(opts));
+            DSD_MEMSET(&state, 0, sizeof(state));
+            DSD_MEMSET(history, 0, sizeof(history));
+            init_event_history(&history[0], 0, 1);
+            init_event_history(&history[1], 0, 1);
+            state.event_history_s = history;
+            opts.trunk_enable = 1;
+            opts.trunk_tune_enc_calls = 0;
+            opts.trunk_is_tuned = 1;
+            state.dmr_stereo = 1;
+            state.currentslot = eslot;
+            state.trunk_cc_freq = 851250000L;
+            state.trunk_vc_freq[0] = 852000000L;
+            state.trunk_vc_freq[1] = 852000000L;
+            if (eslot == 0) {
+                state.dmrburstL = 16;
+                state.dmrburstR = companion_hints[h];
+            } else {
+                state.dmrburstR = 16;
+                state.dmrburstL = companion_hints[h];
+            }
+            seed_voice_call(&state, (uint8_t)eslot, DSD_CALL_KIND_GROUP_VOICE, 1234U, 5678U);
+            seed_voice_call(&state, (uint8_t)other, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+
+            dmr_sm_init(&opts, &state);
+            dmr_sm_get_ctx()->state = DMR_SM_TUNED;
+            s_return_to_cc_calls = 0;
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+                .return_to_cc_request = capture_return_to_cc_ending_calls,
+            });
+
+            build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 1234U, 5678U);
+            dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+            dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+
+            assert(irr == 0U);
+            // The lockout still arms the session ledger...
+            assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
+            // ...but the channel is retained for the companion's clear call.
+            assert(s_return_to_cc_calls == 0);
+            assert(opts.trunk_is_tuned == 1);
+            assert_call(&state, (uint8_t)other, DSD_CALL_PHASE_ACTIVE, DSD_CALL_KIND_GROUP_VOICE, 4321U, 8765U);
+            dsd_state_ext_free_all(&state);
+        }
+    }
 }
 
 static void
@@ -2202,6 +2272,7 @@ main(void) {
     test_cach_fragment_counter_overflow_resets_fragments();
     test_encrypted_flco_lockout_inserts_policy_and_event_history();
     test_encrypted_flco_lockout_return_keeps_canonical_calls_ended();
+    test_encrypted_flco_lockout_preserves_active_companion_call();
     test_encrypted_flco_allowed_tuning_skips_lockout_policy();
     test_embedded_lc_enc_requires_corroboration_for_lockout();
     test_clear_voice_in_follow_mode_keeps_lockout_entry();
