@@ -1032,6 +1032,18 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
     return p25_grant_eval_group_policy(opts, state, ev, &policy_ctx, out_decision);
 }
 
+// A blocked grant never arms the encryption-lockout ledger. Grants only carry
+// the service-options encryption bit, which is one uncorroborated observation
+// and, on a simulcast site, one the demodulator can invent; the ledger's
+// contract is that entries come from confirmed undecryptable *voice*
+// (handle_enc), and an encrypted-looking grant is instead admitted as a single
+// silent classification probe by p25_grant_apply_crypto_probe(). That probe is
+// also why DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED cannot reach a group voice
+// call here: the probe clears encrypted_call before policy evaluation, and the
+// only survivor -- a data call -- is not a voice call. The emission that used
+// to live here was therefore dead, and it named slot 0 unconditionally, so if
+// it were ever revived a slot-1 target would write its lockout notice over
+// whatever unrelated call slot 0 was carrying.
 static int
 p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx,
                               const dsd_tg_policy_decision* decision) {
@@ -1044,11 +1056,6 @@ p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_
                  eval_ctx->svc, eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv,
                  decision->block_reasons);
     sm_log(opts, state, grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons));
-    if (p25_grant_is_voice_call(eval_ctx) && !eval_ctx->is_indiv && eval_ctx->tg > 0
-        && (decision->block_reasons & DSD_TG_POLICY_BLOCK_ENCRYPTED_DISABLED)) {
-        p25_emit_enc_lockout_once_typed(opts, state, 0, eval_ctx->tg, eval_ctx->svc, 1, DSD_ENC_LOCKOUT_ALGID_UNKNOWN,
-                                        0);
-    }
     return 1;
 }
 
