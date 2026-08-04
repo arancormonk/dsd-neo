@@ -677,7 +677,7 @@ test_slot_ptt_and_end_helpers(void) {
     seed_call(&state, 0U, DSD_CALL_KIND_GROUP_VOICE, 0x1234U, 0x010203U);
     fill_mac(mac, 0x84, 0x2468, 0x010203, 0x1234);
 
-    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0, 0);
+    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0);
     rc |= expect_int("slot0 canonical call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
     rc |= expect_int("slot0 source", (int)call.ota_source_id, 0x010203);
     rc |= expect_int("slot0 target", (int)call.ota_target_id, 0x1234);
@@ -701,7 +701,7 @@ test_slot_ptt_and_end_helpers(void) {
     seed_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x4567U, 0xAAAAAAU);
     fill_mac(mac, 0x80, 0x1111, 0, 0x4567);
 
-    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 1, 1);
+    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 1);
     rc |= expect_int("slot1 canonical call", dsd_call_state_get(&state, 1U, &call) > 0, 1);
     rc |= expect_int("slot1 zero source preserves source", (int)call.ota_source_id, 0xAAAAAA);
     rc |= expect_int("slot1 target", (int)call.ota_target_id, 0x4567);
@@ -719,7 +719,7 @@ test_slot_ptt_and_end_helpers(void) {
     seed_call(&state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, 0xABCDEFU, 0x010203U);
     fill_mac(mac, 0x80, 0, 0x010203, 0x4567);
 
-    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0, 1);
+    p25p2_xcch_handle_ptt_slot(&opts, &state, mac, 0);
     rc |= expect_int("private PTT canonical call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
     rc |= expect_int("private PTT destination preserved", (int)call.ota_target_id, 0xABCDEF);
     rc |= expect_int("private PTT source updated", (int)call.ota_source_id, 0x010203);
@@ -1190,6 +1190,29 @@ test_sacch_end_idle_active_hangtime_dispatch(void) {
     rc |= expect_int("sacch active identity src", g_active_src[1], 0x123456);
     rc |= expect_int("sacch active identity group", g_active_is_group[1], 1);
     rc |= expect_int("sacch active identity svc", g_active_svc[1], 0x81);
+
+    // An accepted MAC_ACTIVE whose audio is still denied -- crypto has not
+    // classified, or policy withholds the slot -- must still record the burst
+    // hint. The hint states which MAC PDU was last decoded for the slot, and
+    // consumers (the ESS gate that re-opens audio once classification resolves,
+    // the SS18 tie-break, the UI) read a stale or cleared hint as "not in a
+    // call". Setting it only when audio was already allowed stranded a slot
+    // mid-classification with the gate shut and no way to reopen.
+    reset_stubs();
+    DSD_MEMSET(&state, 0, sizeof(state));
+    g_audio_allow = 0;
+    state.currentslot = 0;
+    seed_call(&state, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x3456U, 0U);
+    state.p25_crypto_state[1] = DSD_P25_CRYPTO_ENCRYPTED_PENDING;
+    g_voice_identity_result = 1;
+    g_voice_identity.tg = 0x4567;
+    g_voice_identity.src = 0x123456;
+    g_voice_identity.is_group = 1;
+    pack_payload_from_mac(payload, 180, mac, 0x4, 0, 0);
+
+    process_SACCH_MAC_PDU(&opts, &state, payload);
+    rc |= expect_int("sacch active denied audio still records burst", (int)state.dmrburstR, 21);
+    rc |= expect_int("sacch active denied audio keeps gate closed", state.p25_p2_audio_allowed[1], 0);
 
     reset_stubs();
     DSD_MEMSET(&state, 0, sizeof(state));

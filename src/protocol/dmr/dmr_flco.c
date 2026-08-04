@@ -896,11 +896,27 @@ dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
     }
 }
 
+// The canonical call state -- not the slot's burst hint, which only records the
+// last burst decoded -- decides whether the companion slot is mid-call. A slot
+// carrying voice can sit on a VLC/PI/TLC or stale hint between voice bursts,
+// and this action retries on every corroborated LC, so a single misread would
+// synthesize a P_CLEAR that tears the clear companion call down. The voice
+// hint stays as corroboration for late entry, where voice bursts decode before
+// any LC has opened a canonical epoch.
+static int
+dmr_flco_slot_call_active(const dsd_state* state, int slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+}
+
 static void
 dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
     int eslot = ctx->state->currentslot & 1;
     int other = eslot ^ 1;
     int other_voice = (other == 0) ? (ctx->state->dmrburstL == 16) : (ctx->state->dmrburstR == 16);
+    if (!other_voice) {
+        other_voice = dmr_flco_slot_call_active(ctx->state, other);
+    }
     if (!other_voice) {
         // Synthesize a P_CLEAR so the trunking layer releases the channel.
         // The bit buffer must span the full 12-octet CSPDU: handlers may read

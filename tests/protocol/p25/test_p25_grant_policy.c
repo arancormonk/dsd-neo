@@ -9,6 +9,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -20,6 +21,8 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -324,6 +327,83 @@ main(void) {
                                    .is_group = 1});
     rc |= expect_true("later clear mixed-mode grant tunes", st.p25_sm_tune_count == before + 1);
     opts.trunk_tune_enc_calls = 1;
+
+    // A grant blocked while a TDMA companion slot carries an unrelated clear
+    // call must leave that slot alone. Blocked grants no longer emit a lockout
+    // notice at all -- the ledger is armed from confirmed voice, not from the
+    // service-options bit -- and the notice they used to emit named slot 0
+    // unconditionally, so a slot-1 target overwrote slot 0's live call row.
+    {
+        static dsd_opts comp_opts;
+        static dsd_state comp_st;
+        DSD_MEMSET(&comp_opts, 0, sizeof comp_opts);
+        DSD_MEMSET(&comp_st, 0, sizeof comp_st);
+        comp_opts.trunk_enable = 1;
+        comp_opts.trunk_tune_group_calls = 1;
+        comp_opts.trunk_tune_enc_calls = 0;
+        comp_opts.trunk_use_allow_list = 1; // makes the unlisted grant below blocked
+        comp_st.p25_cc_freq = 851000000;
+        comp_st.lastsynctype = DSD_SYNC_P25P2_POS;
+        comp_st.synctype = DSD_SYNC_P25P2_POS;
+        seed_tdma_iden(&comp_st, id);
+        comp_st.event_history_s = calloc(2, sizeof(Event_History_I));
+        rc |= expect_true("companion history allocated", comp_st.event_history_s != NULL);
+        if (comp_st.event_history_s != NULL) {
+            for (int i = 0; i < 2; i++) {
+                init_event_history(&comp_st.event_history_s[i], 0, 255);
+            }
+            p25_sm_init_ctx(p25_sm_get_ctx(), &comp_opts, &comp_st);
+
+            const dsd_call_observation clear_call = {
+                .protocol = DSD_SYNC_P25P2_POS,
+                .slot = 0U,
+                .kind = DSD_CALL_KIND_GROUP_VOICE,
+                .ota_target_id = 2000,
+                .policy_target_id = 2000,
+                .ota_source_id = 2400,
+                .observed_m = dsd_time_now_monotonic_s(),
+            };
+            rc |= expect_true("companion clear call seeded",
+                              dsd_call_state_observe(&comp_st, &clear_call, DSD_CALL_BOUNDARY_BEGIN) > 0);
+            for (int i = 0; i < 3; i++) {
+                watchdog_event_current(&comp_opts, &comp_st, 0);
+                watchdog_event_history(&comp_opts, &comp_st, 0);
+            }
+
+            dsd_call_snapshot before_call;
+            rc |= expect_true("companion clear call active", dsd_call_state_get(&comp_st, 0U, &before_call) > 0
+                                                                 && before_call.phase == DSD_CALL_PHASE_ACTIVE);
+            char before_row[sizeof(comp_st.event_history_s[0].Event_History_Items[0].event_string)];
+            DSD_SNPRINTF(before_row, sizeof before_row, "%s",
+                         comp_st.event_history_s[0].Event_History_Items[0].event_string);
+
+            // Encrypted-flagged grant for the companion slot's target. The row
+            // is compared before the next event tick, which would rebuild it
+            // from the canonical call and hide a transient flush.
+            p25_sm_event(p25_sm_get_ctx(), &comp_opts, &comp_st,
+                         &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
+                                           .slot = -1,
+                                           .channel = ch,
+                                           .tg = 2001,
+                                           .src = 2401,
+                                           .svc_bits = 0x40,
+                                           .is_group = 1});
+
+            rc |= expect_true("blocked grant does not arm the ledger", enc_tg_cache_is_absent(&comp_st, 2001U));
+            rc |= expect_true("blocked grant leaves companion event row intact",
+                              strcmp(before_row, comp_st.event_history_s[0].Event_History_Items[0].event_string) == 0);
+            dsd_call_snapshot after_call;
+            rc |= expect_true(
+                "blocked grant leaves companion call active",
+                dsd_call_state_get(&comp_st, 0U, &after_call) > 0 && after_call.phase == DSD_CALL_PHASE_ACTIVE
+                    && after_call.ota_target_id == before_call.ota_target_id && after_call.epoch == before_call.epoch);
+
+            free(comp_st.event_history_s);
+            comp_st.event_history_s = NULL;
+        }
+        dsd_state_ext_free_all(&comp_st);
+        p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);
+    }
 
     // A target is probed once, retained only after authoritative crypto
     // metadata proves it cannot be decrypted, and recovered by a clear grant.

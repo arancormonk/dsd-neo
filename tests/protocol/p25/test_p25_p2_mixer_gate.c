@@ -544,6 +544,90 @@ run_ss18_partial_flush_case(void) {
     return rc;
 }
 
+// A muted companion (encryption lockout) must mirror the audible slot in every
+// MAC state that slot can be sitting in, not just MAC_ACTIVE. Burst hint 21
+// only records the last MAC PDU seen for the slot; voice keeps flowing through
+// MAC_PTT (20), MAC_HANGTIME (22), MAC_END (23), MAC_IDLE (24), the LCCH marker
+// (30) and a cleared hint, and gating duplication on 21 dropped the clear call
+// into one ear for those spans.
+static int
+run_ss18_muted_companion_burst_hint_case(int clear_slot, int clear_burst, int companion_burst) {
+    static dsd_opts opts;
+    static dsd_state st;
+    int rc = 0;
+    char tag[96];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&st, 0, sizeof(st));
+    reset_capture();
+
+    opts.audio_out = 1;
+    opts.audio_out_type = 8;
+    opts.floating_point = 0;
+    opts.pulse_digi_rate_out = 8000;
+    opts.slot1_on = 1;
+    opts.slot2_on = 1;
+    opts.trunk_tune_enc_calls = 0;
+    st.synctype = DSD_SYNC_P25P2_POS;
+    st.p25_p2_audio_allowed[clear_slot] = 1;
+    st.p25_p2_audio_allowed[clear_slot ^ 1] = 0;
+    st.p25_crypto_state[clear_slot] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_crypto_state[clear_slot ^ 1] = DSD_P25_CRYPTO_BLOCKED;
+    if (clear_slot == 0) {
+        st.dmrburstL = clear_burst;
+        st.dmrburstR = companion_burst;
+    } else {
+        st.dmrburstR = clear_burst;
+        st.dmrburstL = companion_burst;
+    }
+
+    // Full superframe on the clear slot; the muted slot still holds pre-mute
+    // audio, which must never reach the output.
+    for (int block = 0; block < 18; block++) {
+        for (int i = 0; i < 160; i++) {
+            st.s_l4[block][i] = (clear_slot == 0) ? 100 : -3000;
+            st.s_r4[block][i] = (clear_slot == 1) ? 100 : -3000;
+        }
+    }
+    st.voice_counter[clear_slot] = 18;
+    st.voice_counter[clear_slot ^ 1] = 7; // frozen mid-superframe by the mute
+
+    playSynthesizedVoiceSS18(&opts, &st);
+
+    short out[160 * 2] = {0};
+    const size_t expected_bytes = (size_t)160 * 2U * sizeof(out[0]);
+    DSD_SNPRINTF(tag, sizeof(tag), "ss18 burst hint clear=%d/%d companion=%d captured", clear_slot, clear_burst,
+                 companion_burst);
+    rc |= expect_eq(tag, g_audio_capture_calls, 18);
+    int copied = copy_capture_bytes(tag, out, expected_bytes);
+    rc |= copied;
+    if (copied == 0) {
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 burst hint clear=%d/%d companion=%d left", clear_slot, clear_burst,
+                     companion_burst);
+        rc |= expect_eq(tag, out[0], 100);
+        DSD_SNPRINTF(tag, sizeof(tag), "ss18 burst hint clear=%d/%d companion=%d right", clear_slot, clear_burst,
+                     companion_burst);
+        rc |= expect_eq(tag, out[1], 100);
+    }
+    return rc;
+}
+
+static int
+run_ss18_muted_companion_burst_hint_matrix(void) {
+    static const int bursts[] = {0, 20, 21, 22, 23, 24, 30};
+    const size_t count = sizeof(bursts) / sizeof(bursts[0]);
+    int rc = 0;
+
+    for (int clear_slot = 0; clear_slot < 2; clear_slot++) {
+        for (size_t clear_idx = 0; clear_idx < count; clear_idx++) {
+            for (size_t companion_idx = 0; companion_idx < count; companion_idx++) {
+                rc |= run_ss18_muted_companion_burst_hint_case(clear_slot, bursts[clear_idx], bursts[companion_idx]);
+            }
+        }
+    }
+    return rc;
+}
+
 static int
 run_ss18_partial_flush_guard_case(void) {
     static dsd_opts opts;
@@ -974,6 +1058,7 @@ main(void) {
                                      /*muted_slot_aes_loaded*/ 0, /*muted_slot_key*/ 1ULL);
     rc |= run_ss18_clear_plus_blocked_hold_case(/*clear_slot*/ 0);
     rc |= run_ss18_clear_plus_blocked_hold_case(/*clear_slot*/ 1);
+    rc |= run_ss18_muted_companion_burst_hint_matrix();
     rc |= run_ss18_partial_flush_case();
     rc |= run_ss18_partial_flush_guard_case();
     rc |= run_ss18_partial_flush_slot_case();
