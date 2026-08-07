@@ -20,6 +20,12 @@ constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderServi
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
 
+/* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON. Namespace scope,
+ * not function-local: QJniObject::callMethod takes its arguments by forwarding
+ * reference, which odr-uses the constant, and the keep-awake lambda below has
+ * no capture-default to pick a local up with. */
+constexpr int kFlagKeepScreenOn = 128;
+
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
 static_assert(static_cast<int>(kSessionIdle) == static_cast<int>(dsd_qt::DecoderHost::Idle), "phase enum drift");
@@ -135,8 +141,6 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
 
 void
 DecoderHostAndroid::setKeepScreenAwake(bool on) {
-    /* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON */
-    constexpr int kFlagKeepScreenOn = 128;
     /* The flag belongs to the Activity's window and must be flipped on the Android
      * main thread, not the Qt one. */
     QNativeInterface::QAndroidApplication::runOnAndroidMainThread([on]() -> QVariant {
