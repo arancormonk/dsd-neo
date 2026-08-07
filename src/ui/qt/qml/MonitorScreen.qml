@@ -518,6 +518,25 @@ Item {
                 clip: true
                 model: monitorView
 
+                // Newest-first, and held at the top so the pane keeps showing the
+                // call that just ended. A prepend below the top moves the content,
+                // not the view: it holds the rows being read still and puts the
+                // new call above the viewport, so a pane left scrolled never comes
+                // back on its own. Same rule as the history screen — the top is
+                // re-asserted when a call lands and the pane is at rest within a
+                // row of it — minus the new-calls pill, which four rows have no
+                // room for and which the hero above already covers.
+                readonly property bool atLatest: contentY - originY < Theme.rowHeight
+
+                function pinToLatest() {
+                    if (atLatest && !moving && contentY !== originY)
+                        positionViewAtBeginning()
+                }
+
+                // Deferred: inside the signal the view is still applying the
+                // model change, and a position asserted there does not survive it.
+                onCountChanged: Qt.callLater(pinToLatest)
+
                 delegate: CallRow {
                     width: ListView.view.width
                     name: model.name

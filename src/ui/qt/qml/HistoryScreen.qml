@@ -121,6 +121,65 @@ Item {
         enabled: !confirmClear.visible
         model: historyView
 
+        // The log is newest-first, so the latest call is the top row — and a
+        // reader parked at the top keeps it in view as calls land. That has to be
+        // asserted: a prepend below the top does not move the view, it moves the
+        // content, holding the rows being read still and putting the new call
+        // above the viewport. A list left off the top therefore never comes back
+        // on its own, and every call after that lands out of sight — the log
+        // quietly stops tracking the latest call, which is the bug this fixes.
+        //
+        // Whether the reader is on the latest call is not a mode they manage —
+        // it is read off the list where they left it, each time a call lands.
+        // Nothing to get stuck, and one flick back to the top resumes it.
+        //
+        // Within a row of the top still counts as the latest: a stray touch, an
+        // overscroll bounce or the keyboard resizing the view leaves the list a
+        // few pixels down, and none of those mean "I am reading further back".
+        readonly property bool atLatest: contentY - originY < Theme.rowHeight
+        // Calls that landed while the reader was away from the top.
+        property int unseen: 0
+        property int lastCount: 0
+
+        // Re-assert the exact top. Never mid-movement: that is a flick still
+        // settling, and yanking it would fight the reader's hand.
+        function pinToLatest() {
+            if (atLatest && !moving && contentY !== originY)
+                positionViewAtBeginning()
+        }
+
+        function jumpToLatest() {
+            positionViewAtBeginning()
+            unseen = 0
+        }
+
+        // Deferred, and every count change goes through here: inside the signal
+        // the view is still applying the model change — count itself still reads
+        // one behind, and a position asserted there does not survive it.
+        // Coalesced calls stay correct because the tally is a delta.
+        function reconcile() {
+            if (atLatest) {
+                unseen = 0
+                pinToLatest()
+            } else if (count > lastCount) {
+                unseen += count - lastCount
+            } else if (count < unseen) {
+                // Trimmed or cleared underneath us; never offer to jump to more
+                // calls than the log still holds.
+                unseen = count
+            }
+            lastCount = count
+        }
+
+        onCountChanged: Qt.callLater(reconcile)
+
+        // A new search or filter is a new question: answer it from the top, and
+        // never count the rows it revealed as calls that just landed.
+        Connections {
+            target: historyView
+            function onFilterChanged() { logList.jumpToLatest() }
+        }
+
         section.property: "dayLabel"
         section.delegate: MicroLabel {
             required property string section
@@ -166,6 +225,84 @@ Item {
         }
     }
 
+    // Says what the reader is missing while they read further back, in the same
+    // mono annunciator voice as the monitor's LIVE pill — a readout of state,
+    // not another chip to choose from. A sibling of the view, not a child: a
+    // declared child is reparented into contentItem and would scroll off with
+    // the rows it is reporting on.
+    Rectangle {
+        id: latestPill
+
+        readonly property bool shown: logList.unseen > 0 && !logList.atLatest && logList.count > 0
+
+        anchors.horizontalCenter: logList.horizontalCenter
+        anchors.top: logList.top
+        anchors.topMargin: 8
+        // The outer capsule is a cut-out in the background colour: it floats over
+        // rows, and a flat design with no shadows needs the gap to keep the row
+        // text under it from running into the label.
+        width: capsule.width + 8
+        height: capsule.height + 8
+        radius: height / 2
+        color: Theme.bg
+        opacity: shown ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: shown && !confirmClear.visible
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+
+        Rectangle {
+            id: capsule
+
+            anchors.centerIn: parent
+            // 34 high like the filter pills above it: the mono readout says what
+            // this is, but the size has to say it can be tapped.
+            width: latestRow.implicitWidth + 28
+            height: 34
+            radius: height / 2
+            // Opaque: the cyan tint the filter pills lay straight onto the
+            // background has to be blended into a solid fill to cover rows.
+            color: Qt.tint(Theme.panel, Theme.chipSelectedFill)
+            border.width: 1
+            border.color: Theme.cyan
+
+            Row {
+                id: latestRow
+
+                anchors.centerIn: parent
+                spacing: 7
+
+                // Points at where the tap takes you: the top of the log.
+                Caret {
+                    anchors.verticalCenter: parent.verticalCenter
+                    rotation: 180
+                    color: Theme.cyan
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    // "call" is what this screen calls a row everywhere else ("No
+                    // calls yet", "1 logged call is hidden"), notices included.
+                    // Counts are whole strings, never one %n plural — see the
+                    // empty state below for why.
+                    text: logList.unseen === 1 ? qsTr("1 new call")
+                                               : qsTr("%1 new calls").arg(logList.unseen)
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    font.letterSpacing: 1.4
+                    font.capitalization: Font.AllUppercase
+                    color: Theme.cyan
+                }
+            }
+        }
+
+        TapHandler {
+            onTapped: logList.jumpToLatest()
+        }
+    }
+
     // A sibling of the view, not a child: ListView reparents declared children
     // into its contentItem, where `parent.count` is undefined and the empty state
     // would never show.
@@ -179,6 +316,14 @@ Item {
         // first must say the calls are hidden, not gone, or the filter pill left
         // active yesterday reads as a decoder that stopped logging.
         readonly property bool filtered: callHistory.count > 0
+        // Each count spelled as a whole sentence rather than one %n plural: the
+        // app installs no QTranslator, and an untranslated %n form substitutes the
+        // number but never picks a plural form — this read "1 logged call(s) are
+        // hidden". Two strings also let the verb agree.
+        readonly property string hiddenText:
+            callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.")
+                                    : qsTr("%1 logged calls are hidden by the search or filters.")
+                                        .arg(callHistory.count)
 
         Text {
             width: parent.width
@@ -193,8 +338,7 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? qsTr("%n logged call(s) are hidden by the search or filters.", "",
-                                         callHistory.count)
+            text: parent.filtered ? parent.hiddenText
                                   : qsTr("Start listening on a system and every call lands here.")
             font.family: Theme.sans
             font.pixelSize: 13

@@ -52,4 +52,8 @@ QtObject {
     readonly property int screenPadding: 18
     readonly property int cardPadding: 16
     readonly property int gap: 13
+
+    // One call row. Also the slack the call lists allow around the top before
+    // they stop treating the reader as parked on the latest call.
+    readonly property int rowHeight: 58
 }
