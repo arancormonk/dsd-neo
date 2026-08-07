@@ -37,6 +37,18 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString slot1Text READ slot1Text NOTIFY changed)
     Q_PROPERTY(QString slot2Text READ slot2Text NOTIFY changed)
     Q_PROPERTY(QString messageText READ messageText NOTIFY changed)
+    Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY changed)
+    Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY changed)
+    Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY changed)
+    Q_PROPERTY(QString slot2CallName READ slot2CallName NOTIFY changed)
+    Q_PROPERTY(QString slot1TgText READ slot1TgText NOTIFY changed)
+    Q_PROPERTY(QString slot2TgText READ slot2TgText NOTIFY changed)
+    Q_PROPERTY(QString slot1SrcText READ slot1SrcText NOTIFY changed)
+    Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY changed)
+    Q_PROPERTY(bool slot1CallEnc READ slot1CallEnc NOTIFY changed)
+    Q_PROPERTY(bool slot2CallEnc READ slot2CallEnc NOTIFY changed)
+    Q_PROPERTY(int slot1CallSeconds READ slot1CallSeconds NOTIFY changed)
+    Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY changed)
 
   public:
     explicit MetricsModel(QObject* parent = nullptr);
@@ -112,6 +124,72 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Structured call identity per slot, for the monitor's hero panel.
+     *
+     * The state values mirror CallLineState (0 none, 1 idle, 2 active, 3 recently
+     * ended); the strings are display-ready so QML never parses a slot line.
+     */
+    int
+    slot1CallState() const {
+        return m_view.slot_call[0].state;
+    }
+
+    int
+    slot2CallState() const {
+        return m_view.slot_call[1].state;
+    }
+
+    const QString&
+    slot1CallName() const {
+        return m_view.slot_call[0].name;
+    }
+
+    const QString&
+    slot2CallName() const {
+        return m_view.slot_call[1].name;
+    }
+
+    const QString&
+    slot1TgText() const {
+        return m_view.slot_call[0].tg_text;
+    }
+
+    const QString&
+    slot2TgText() const {
+        return m_view.slot_call[1].tg_text;
+    }
+
+    const QString&
+    slot1SrcText() const {
+        return m_view.slot_call[0].src_text;
+    }
+
+    const QString&
+    slot2SrcText() const {
+        return m_view.slot_call[1].src_text;
+    }
+
+    bool
+    slot1CallEnc() const {
+        return m_view.slot_call[0].enc;
+    }
+
+    bool
+    slot2CallEnc() const {
+        return m_view.slot_call[1].enc;
+    }
+
+    int
+    slot1CallSeconds() const {
+        return m_view.slot_call[0].seconds;
+    }
+
+    int
+    slot2CallSeconds() const {
+        return m_view.slot_call[1].seconds;
+    }
+
+    /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
      * Takes the snapshots rather than fetching them so that one frame is built from
@@ -151,6 +229,22 @@ class MetricsModel : public QObject {
      * and assign it, rather than resetting eleven members by hand and leaving the
      * next field added to be forgotten in one of the two places.
      */
+    /** @brief One slot's structured call identity; see the slotNCall* properties. */
+    struct SlotCall {
+        int state = 0; // CallLineState values: 0 none, 1 idle, 2 active, 3 ended
+        QString name;
+        QString tg_text;
+        QString src_text;
+        bool enc = false;
+        int seconds = 0;
+
+        bool
+        operator==(const SlotCall& other) const {
+            return state == other.state && name == other.name && tg_text == other.tg_text && src_text == other.src_text
+                   && enc == other.enc && seconds == other.seconds;
+        }
+    };
+
     struct View {
         bool stream_active = false;
         double snr_db = 0.0;
@@ -163,6 +257,7 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         QString slot_text[2];
         QString message_text;
+        SlotCall slot_call[2];
 
         bool
         operator==(const View& other) const {
@@ -175,12 +270,16 @@ class MetricsModel : public QObject {
                    && carrier_lock == other.carrier_lock && cfo_hz == other.cfo_hz
                    && tuner_gain_text == other.tuner_gain_text && radio_input == other.radio_input
                    && slot_text[0] == other.slot_text[0] && slot_text[1] == other.slot_text[1]
-                   && message_text == other.message_text;
+                   && message_text == other.message_text && slot_call[0] == other.slot_call[0]
+                   && slot_call[1] == other.slot_call[1];
         }
     };
 
     /** @brief Replace the published frame, signalling only if it actually moved. */
     void publish(const View& next);
+
+    /** @brief Build one slot's structured call identity from the snapshot. */
+    static SlotCall slotCallView(const dsd_state* snapshot, quint8 slot, double now_m);
 
     View m_view;
 };

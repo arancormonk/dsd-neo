@@ -47,10 +47,10 @@ configure_file(
 )
 
 # Compiled into the Qt resource bundle (src/ui/qt/CMakeLists.txt), so every APK
-# redistributes the font and has to carry its notice.
+# redistributes the fonts and has to carry their notice.
 configure_file(
-    "${REPO_DIR}/src/ui/qt/fonts/DejaVu-LICENSE.txt"
-    "${_doc_dir}/licenses/dejavu-fonts-Bitstream-Vera.txt"
+    "${REPO_DIR}/src/ui/qt/fonts/IBMPlex-LICENSE.txt"
+    "${_doc_dir}/licenses/ibm-plex-OFL-1.1.txt"
     COPYONLY
 )
 

@@ -8,6 +8,7 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 
+#include "call_history_model.h"
 #include "decoder_host.h"
 #include "event_log_model.h"
 #include "metrics_model.h"
@@ -23,8 +24,9 @@ constexpr int kDefaultPollIntervalMs = 250;
 
 } // namespace
 
-UiController::UiController(DecoderHost* host, MetricsModel* metrics, EventLogModel* events, QObject* parent)
-    : QObject(parent), m_host(host), m_metrics(metrics), m_events(events) {
+UiController::UiController(DecoderHost* host, MetricsModel* metrics, EventLogModel* events, CallHistoryModel* history,
+                           QObject* parent)
+    : QObject(parent), m_host(host), m_metrics(metrics), m_events(events), m_history(history) {
     m_timer.setInterval(kDefaultPollIntervalMs);
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &UiController::tick);
@@ -115,6 +117,11 @@ UiController::tick() {
     }
     if (m_events != nullptr) {
         m_events->refresh(snapshot);
+    }
+    /* The call history is persistent by design, so unlike the two models above it is
+     * never cleared on session boundaries — only fed. */
+    if (m_history != nullptr) {
+        m_history->refresh(snapshot);
     }
 }
 

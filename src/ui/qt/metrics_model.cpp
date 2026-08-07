@@ -65,6 +65,44 @@ call_text(const dsd_state* snapshot, quint8 slot, double now_m) {
 
 } // namespace
 
+/**
+ * @brief Structured identity for one slot, display-ready for the hero panel.
+ *
+ * The friendly name prefers the CSV-imported group name staged on the slot's active
+ * history row, but only when that row is about the same talkgroup — the staged row
+ * outlives a call by design and must not caption the next one.
+ */
+MetricsModel::SlotCall
+MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m) {
+    MetricsModel::SlotCall out;
+    dsd_call_snapshot call = {};
+    const CallLineState line = call_line_state(dsd_call_state_get(snapshot, slot, &call), call, now_m);
+    out.state = static_cast<int>(line);
+    if (line != kCallLineActive && line != kCallLineEnded) {
+        return out;
+    }
+
+    const QString target = (call.target_text[0] != '\0') ? QString::fromUtf8(call.target_text)
+                                                         : QString::number(static_cast<qulonglong>(call.ota_target_id));
+    out.tg_text = target;
+    out.src_text = (call.source_text[0] != '\0') ? QString::fromUtf8(call.source_text)
+                                                 : QString::number(static_cast<qulonglong>(call.ota_source_id));
+
+    out.name = target;
+    if (snapshot->event_history_s != nullptr) {
+        const Event_History* staged = &snapshot->event_history_s[slot].Event_History_Items[0];
+        if (staged->t_name[0] != '\0' && staged->target_id == static_cast<uint32_t>(call.ota_target_id)) {
+            out.name = QString::fromUtf8(staged->t_name);
+        }
+    }
+
+    out.enc = call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    const double ref_m = (line == kCallLineEnded) ? call.ended_m : now_m;
+    const double elapsed = ref_m - call.started_m;
+    out.seconds = (elapsed > 0.0) ? static_cast<int>(elapsed) : 0;
+    return out;
+}
+
 MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {}
 
 MetricsModel::~MetricsModel() = default;
@@ -134,6 +172,8 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     const double now_m = dsd_time_now_monotonic_s();
     next.slot_text[0] = call_text(snapshot, 0, now_m);
     next.slot_text[1] = call_text(snapshot, 1, now_m);
+    next.slot_call[0] = slotCallView(snapshot, 0, now_m);
+    next.slot_call[1] = slotCallView(snapshot, 1, now_m);
     next.message_text = QString::fromUtf8(snapshot->ui_msg);
 
     publish(next);
