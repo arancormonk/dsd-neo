@@ -17,6 +17,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QTimer>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -25,28 +26,34 @@ namespace dsd_qt {
 
 class MetricsModel : public QObject {
     Q_OBJECT
-    Q_PROPERTY(double snrDb READ snrDb NOTIFY changed)
-    Q_PROPERTY(bool snrValid READ snrValid NOTIFY changed)
-    Q_PROPERTY(bool carrierLock READ carrierLock NOTIFY changed)
-    Q_PROPERTY(double cfoHz READ cfoHz NOTIFY changed)
-    Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY changed)
-    Q_PROPERTY(bool radioInput READ radioInput NOTIFY changed)
-    Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY changed)
-    Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY changed)
-    Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY changed)
-    Q_PROPERTY(QString slot2CallName READ slot2CallName NOTIFY changed)
-    Q_PROPERTY(QString slot1TgText READ slot1TgText NOTIFY changed)
-    Q_PROPERTY(QString slot2TgText READ slot2TgText NOTIFY changed)
-    Q_PROPERTY(qulonglong slot1TgId READ slot1TgId NOTIFY changed)
-    Q_PROPERTY(qulonglong slot2TgId READ slot2TgId NOTIFY changed)
-    Q_PROPERTY(QString slot1SrcText READ slot1SrcText NOTIFY changed)
-    Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY changed)
-    Q_PROPERTY(bool slot1CallEnc READ slot1CallEnc NOTIFY changed)
-    Q_PROPERTY(bool slot2CallEnc READ slot2CallEnc NOTIFY changed)
-    Q_PROPERTY(int slot1CallSeconds READ slot1CallSeconds NOTIFY changed)
-    Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY changed)
-    Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY changed)
-    Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY changed)
+    /* NOTIFY is grouped by what moves together, not one shared signal: the
+     * per-second call timer and SNR jitter would otherwise re-evaluate every
+     * binding in the status card on every poll tick. A signal-strip change must
+     * not repaint the hero canvas, and a ticking call must not re-lay-out the
+     * signal strip. */
+    Q_PROPERTY(double snrDb READ snrDb NOTIFY tunerChanged)
+    Q_PROPERTY(bool snrValid READ snrValid NOTIFY tunerChanged)
+    Q_PROPERTY(bool carrierLock READ carrierLock NOTIFY tunerChanged)
+    Q_PROPERTY(double cfoHz READ cfoHz NOTIFY tunerChanged)
+    Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY tunerChanged)
+    Q_PROPERTY(bool radioInput READ radioInput NOTIFY tunerChanged)
+    Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
+    Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2CallName READ slot2CallName NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1TgText READ slot1TgText NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2TgText READ slot2TgText NOTIFY slot2Changed)
+    Q_PROPERTY(qulonglong slot1TgId READ slot1TgId NOTIFY slot1Changed)
+    Q_PROPERTY(qulonglong slot2TgId READ slot2TgId NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1SrcText READ slot1SrcText NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY slot2Changed)
+    Q_PROPERTY(bool slot1CallEnc READ slot1CallEnc NOTIFY slot1Changed)
+    Q_PROPERTY(bool slot2CallEnc READ slot2CallEnc NOTIFY slot2Changed)
+    Q_PROPERTY(int slot1CallSeconds READ slot1CallSeconds NOTIFY slot1Changed)
+    Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY slot2Changed)
+    Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
+    Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
+    Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
     explicit MetricsModel(QObject* parent = nullptr);
@@ -194,6 +201,20 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief The engine's transient command acknowledgement, empty when none.
+     *
+     * Commands only enqueue a request; this is the engine saying what actually
+     * happened ("Output: Muted", "Output: open failed"). Carried through the
+     * snapshot with its expiry stamp, and cleared here when that stamp passes —
+     * the display must not depend on the engine publishing again to take an
+     * expired message down.
+     */
+    const QString&
+    uiMessage() const {
+        return m_view.ui_message;
+    }
+
+    /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
      * Takes the snapshots rather than fetching them so that one frame is built from
@@ -216,22 +237,24 @@ class MetricsModel : public QObject {
     void clear();
 
   Q_SIGNALS:
-    void changed();
+    void tunerChanged();
+    void slot1Changed();
+    void slot2Changed();
+    void controlChanged();
+    void uiMessageChanged();
 
   private:
     /**
      * @brief Everything the model publishes, as one comparable value.
      *
-     * Grouped so a refresh can build the new frame, compare it whole and signal only
-     * when something moved. Every property above is NOTIFY changed, so emitting
-     * unconditionally re-evaluates every binding in the status card on each poll
-     * tick -- most of them onto the value they already held. A decoder sitting idle
-     * publishes nothing new for minutes at a time, and on a phone that is work the
-     * battery pays for.
+     * Grouped so a refresh can build the new frame, compare it group by group and
+     * signal only the groups that moved -- a decoder sitting idle publishes
+     * nothing new for minutes at a time, and on a phone every needless binding
+     * re-evaluation is work the battery pays for.
      *
      * It also gives clear() a single definition of "unknown": default-construct one
-     * and assign it, rather than resetting eleven members by hand and leaving the
-     * next field added to be forgotten in one of the two places.
+     * and assign it, rather than resetting members by hand and leaving the next
+     * field added to be forgotten in one of the two places.
      */
     /** @brief One slot's structured call identity; see the slotNCall* properties. */
     struct SlotCall {
@@ -259,28 +282,36 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         bool audio_muted = false;
         qulonglong held_tg = 0;
+        QString ui_message;
         SlotCall slot_call[2];
 
+        /* Exact comparison is right for the two doubles: they are carried through
+         * unmodified from the metrics boundary, so "unchanged" means the identical
+         * bits arrived again, not that two computations landed close together. A
+         * tolerance here would suppress small real movements instead. */
         bool
-        operator==(const View& other) const {
-            /* Exact comparison is right for the two doubles: they are carried through
-             * unmodified from the metrics boundary, so "unchanged" means the identical
-             * bits arrived again, not that two computations landed close together. A
-             * tolerance here would suppress small real movements instead. */
+        tunerEquals(const View& other) const {
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
-                   && radio_input == other.radio_input && audio_muted == other.audio_muted && held_tg == other.held_tg
-                   && slot_call[0] == other.slot_call[0] && slot_call[1] == other.slot_call[1];
+                   && radio_input == other.radio_input;
+        }
+
+        bool
+        controlEquals(const View& other) const {
+            return audio_muted == other.audio_muted && held_tg == other.held_tg;
         }
     };
 
-    /** @brief Replace the published frame, signalling only if it actually moved. */
+    /** @brief Replace the published frame, signalling only the groups that moved. */
     void publish(const View& next);
 
     /** @brief Build one slot's structured call identity from the snapshot. */
     static SlotCall slotCallView(const dsd_state* snapshot, quint8 slot, double now_m);
 
     View m_view;
+    /* Armed for a live ui_message's expiry stamp, so the message leaves the screen
+     * on time even when the idle engine never publishes another frame. */
+    QTimer m_messageTimer;
 };
 
 } // namespace dsd_qt

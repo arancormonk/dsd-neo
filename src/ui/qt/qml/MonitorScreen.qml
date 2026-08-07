@@ -12,7 +12,12 @@ Item {
     // The saved-system map the session was started from (may be null for a
     // network/file quick start).
     property var system: null
-    property string systemName: system ? system.name : qsTr("Listening")
+    // After an Activity restart the reattached session has no saved-system map,
+    // but the persisted session label still names what is playing — the header
+    // should agree with the history rows it sits above.
+    property string systemName: system ? system.name
+                                       : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel
+                                                                             : qsTr("Listening")
 
     // Which slot the hero shows: an active call wins, then a recently ended one.
     readonly property int heroSlot: {
@@ -311,6 +316,19 @@ Item {
                 enabled: decoderHost.running && screen.heroSlot !== 0
                 onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
             }
+        }
+
+        // The engine's answer to the last command ("Output: Muted", "Output:
+        // open failed") — without it a tap that failed inside the engine reads
+        // as a button that did nothing.
+        Text {
+            width: parent.width
+            visible: metrics.uiMessage.length > 0
+            text: metrics.uiMessage
+            font.family: Theme.mono
+            font.pixelSize: 12
+            color: Theme.cyan
+            elide: Text.ElideRight
         }
 
         // The concurrent TDMA call on the non-hero slot: identity plus its own

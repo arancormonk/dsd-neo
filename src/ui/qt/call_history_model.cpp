@@ -63,7 +63,27 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(kSaveDelayMs);
     connect(&m_saveTimer, &QTimer::timeout, this, [this]() { saveNow(); });
+    /* Day sections are derived from the current date at read time; when midnight
+     * passes, every "TODAY" on screen is wrong until the rows are re-read. */
+    m_dayTimer.setSingleShot(true);
+    m_dayTimer.setTimerType(Qt::VeryCoarseTimer);
+    connect(&m_dayTimer, &QTimer::timeout, this, [this]() {
+        if (!m_rows.isEmpty()) {
+            Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {DayLabelRole});
+        }
+        scheduleDayRollover();
+    });
+    scheduleDayRollover();
     load();
+}
+
+void
+CallHistoryModel::scheduleDayRollover() {
+    const QDateTime now = QDateTime::currentDateTime();
+    const QDateTime nextMidnight = QDate::currentDate().addDays(1).startOfDay();
+    /* A second past the boundary, so a coarse timer that fires marginally early
+     * cannot re-derive the very labels it was meant to retire. */
+    m_dayTimer.start(static_cast<int>(qMin<qint64>(now.msecsTo(nextMidnight) + 1000, 86400000)));
 }
 
 CallHistoryModel::~CallHistoryModel() {
@@ -255,10 +275,12 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot) {
             const qint64 start = static_cast<qint64>(item->event_start_time);
             const qint64 end = static_cast<qint64>(item->event_time);
             const qint64 when = (start > 0) ? start : end;
-            if (when <= m_clearedThrough) {
+            if (qMax(when, end) <= m_clearedThrough) {
                 // Cleared by the user; the ring still holds the row (and will until
                 // the session ends), so it must stay invisible even after m_seen is
-                // rebuilt by a relaunched UI.
+                // rebuilt by a relaunched UI. Judged by the row's end, not its
+                // start: a call still airing when Clear was tapped commits later
+                // and is new activity, not part of what was wiped.
                 continue;
             }
             const bool voice = kind == KindVoice;

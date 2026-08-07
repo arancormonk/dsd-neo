@@ -27,13 +27,34 @@ Item {
         anchors.margins: Theme.screenPadding
         spacing: Theme.gap
 
-        Text {
-            text: qsTr("History")
-            font.family: Theme.sans
-            font.pixelSize: 24
-            font.weight: Font.Bold
-            font.letterSpacing: -0.24
-            color: Theme.textPrimary
+        Item {
+            width: parent.width
+            height: 32
+
+            Text {
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("History")
+                font.family: Theme.sans
+                font.pixelSize: 24
+                font.weight: Font.Bold
+                font.letterSpacing: -0.24
+                color: Theme.textPrimary
+            }
+
+            Text {
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: callHistory.count > 0
+                text: qsTr("Clear")
+                font.family: Theme.sans
+                font.pixelSize: 14
+                color: Theme.textSecondary
+
+                TapHandler {
+                    onTapped: confirmClear.visible = true
+                }
+            }
         }
 
         PlexTextField {
@@ -82,6 +103,9 @@ Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         clip: true
+        // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
+        // would also scroll the list under the overlay.
+        enabled: !confirmClear.visible
         model: historyView
 
         section.property: "dayLabel"
@@ -156,6 +180,69 @@ Item {
             font.pixelSize: 13
             color: Theme.textSubdued
             wrapMode: Text.Wrap
+        }
+    }
+
+    // Clearing is destructive and irreversible (the persisted log goes too),
+    // so it hides behind a confirm — same shape as the home screen's manage
+    // sheet.
+    Rectangle {
+        id: confirmClear
+
+        anchors.fill: parent
+        visible: false
+        color: Qt.alpha("#000000", 0.5)
+
+        TapHandler {
+            onTapped: confirmClear.visible = false
+        }
+
+        UiPanel {
+            anchors.centerIn: parent
+            width: parent.width - 2 * Theme.screenPadding
+            height: confirmColumn.height + 2 * Theme.cardPadding
+
+            Column {
+                id: confirmColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Theme.cardPadding
+                spacing: 12
+
+                Text {
+                    width: parent.width
+                    text: qsTr("Clear call history?")
+                    font.family: Theme.sans
+                    font.pixelSize: 17
+                    font.weight: Font.Bold
+                    color: Theme.textPrimary
+                }
+
+                Text {
+                    width: parent.width
+                    text: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
+                    font.family: Theme.sans
+                    font.pixelSize: 13
+                    color: Theme.textSubdued
+                    wrapMode: Text.Wrap
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Clear history")
+                    onClicked: {
+                        callHistory.clearAll()
+                        confirmClear.visible = false
+                    }
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Cancel")
+                    onClicked: confirmClear.visible = false
+                }
+            }
         }
     }
 }

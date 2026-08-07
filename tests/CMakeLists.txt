@@ -2061,6 +2061,32 @@ add_test(
     COMMAND dsd-neo_test_ui_qt_call_history_merge
 )
 
+# The persistence layer itself (json_store atomic writes, the saved-systems
+# field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
+# policy tests above it links Qt and is registered only when the Qt frontend
+# is enabled — any box with Qt6 can run it via -DDSD_ENABLE_QT_UI=ON.
+if(DSD_ENABLE_QT_UI)
+    find_package(Qt6 REQUIRED COMPONENTS Core)
+    add_executable(
+        dsd-neo_test_ui_qt_persistence
+        ui/test_ui_qt_persistence.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_persistence
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_persistence PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_persistence
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
+endif()
+
 add_executable(
     dsd-neo_test_app_control_history_state
     ui/test_ui_history_state.c

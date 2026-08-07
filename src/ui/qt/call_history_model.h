@@ -178,6 +178,8 @@ class CallHistoryModel : public QAbstractListModel {
     void saveNow() const;
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
     void pruneSeen();
+    /** @brief Arm m_dayTimer for the next local midnight. */
+    void scheduleDayRollover();
 
     QList<Row> m_rows; // newest first
     QHash<QString, SeenState> m_seen;
@@ -188,6 +190,9 @@ class CallHistoryModel : public QAbstractListModel {
     quint64 m_revision[2] = {0U, 0U};
     bool m_seeded = false;
     QTimer m_saveTimer;
+    /* Fires at local midnight: "TODAY"/"YESTERDAY" section labels are derived
+     * from the current date, and nothing else re-reads them when it rolls over. */
+    QTimer m_dayTimer;
     QSettings m_settings;
 };
 

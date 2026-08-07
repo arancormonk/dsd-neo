@@ -5,6 +5,8 @@
 
 #include "metrics_model.h"
 
+#include <QDateTime>
+
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
@@ -66,21 +68,48 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     return out;
 }
 
-MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {}
+MetricsModel::MetricsModel(QObject* parent) : QObject(parent) {
+    m_messageTimer.setSingleShot(true);
+    connect(&m_messageTimer, &QTimer::timeout, this, [this]() {
+        View next = m_view;
+        next.ui_message.clear();
+        publish(next);
+    });
+}
 
 MetricsModel::~MetricsModel() = default;
 
 void
 MetricsModel::publish(const View& next) {
-    if (next == m_view) {
+    const bool tunerMoved = !next.tunerEquals(m_view);
+    const bool slot1Moved = !(next.slot_call[0] == m_view.slot_call[0]);
+    const bool slot2Moved = !(next.slot_call[1] == m_view.slot_call[1]);
+    const bool controlMoved = !next.controlEquals(m_view);
+    const bool messageMoved = next.ui_message != m_view.ui_message;
+    if (!tunerMoved && !slot1Moved && !slot2Moved && !controlMoved && !messageMoved) {
         return;
     }
     m_view = next;
-    Q_EMIT changed();
+    if (tunerMoved) {
+        Q_EMIT tunerChanged();
+    }
+    if (slot1Moved) {
+        Q_EMIT slot1Changed();
+    }
+    if (slot2Moved) {
+        Q_EMIT slot2Changed();
+    }
+    if (controlMoved) {
+        Q_EMIT controlChanged();
+    }
+    if (messageMoved) {
+        Q_EMIT uiMessageChanged();
+    }
 }
 
 void
 MetricsModel::clear() {
+    m_messageTimer.stop();
     publish(View());
 }
 
@@ -139,6 +168,16 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * assume a fresh session's defaults. */
     next.audio_muted = opts_snapshot->audio_out == 0;
     next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
+
+    /* The engine's command acknowledgement, shown until its own expiry stamp. The
+     * timer takes an expired message down without waiting for another publish —
+     * an idle engine may not raise the redraw flag again for minutes. */
+    const qint64 message_remaining_s =
+        static_cast<qint64>(snapshot->ui_msg_expire) - QDateTime::currentSecsSinceEpoch();
+    if (snapshot->ui_msg[0] != '\0' && message_remaining_s > 0) {
+        next.ui_message = QString::fromUtf8(snapshot->ui_msg);
+        m_messageTimer.start(static_cast<int>(qMin<qint64>(message_remaining_s, 30) * 1000) + 100);
+    }
 
     publish(next);
 }

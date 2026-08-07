@@ -32,6 +32,7 @@ Item {
     property alias ppmText: ppmField.text
     property alias bwText: bwField.text
     property bool biasTee: false
+    property alias extraText: extraField.text
 
     // Step 3 state
     property alias nameText: nameField.text
@@ -74,6 +75,7 @@ Item {
         ppmField.text = ""
         bwField.text = ""
         biasTee = false
+        extraField.text = ""
         nameField.text = ""
     }
 
@@ -93,6 +95,7 @@ Item {
         ppmField.text = sys.ppm
         bwField.text = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : ""
         biasTee = sys.biasTee
+        extraField.text = sys.extraArgs
         nameField.text = sys.name
     }
 
@@ -137,6 +140,7 @@ Item {
             ppm: ppmText,
             bandwidthKhz: bwText.length > 0 ? intOr(bwText, -1) : -1,
             biasTee: biasTee,
+            extraArgs: extraText.trim(),
             filePath: fileText
         }
         if (editRow >= 0) {
@@ -539,9 +543,10 @@ Item {
                     }
                 }
 
+                // Every source type gets the panel (the extra-flags field applies
+                // to all of them); the tuner rows inside gate on radioSource.
                 UiPanel {
                     width: parent.width
-                    visible: wizard.radioSource
                     height: advHeader.height + (wizard.advancedOpen ? advBody.height + 6 : 0)
                     clip: true
 
@@ -575,7 +580,9 @@ Item {
 
                             Text {
                                 width: parent.width
-                                text: qsTr("Gain, PPM, bandwidth, bias tee — defaults work")
+                                text: wizard.radioSource
+                                      ? qsTr("Gain, PPM, bandwidth, bias tee — defaults work")
+                                      : qsTr("Extra decoder flags — defaults work")
                                 font.family: Theme.sans
                                 font.pixelSize: 13
                                 color: Theme.textSubdued
@@ -614,6 +621,7 @@ Item {
 
                         Row {
                             width: parent.width
+                            visible: wizard.radioSource
                             spacing: 10
 
                             Column {
@@ -729,6 +737,28 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                                 checked: wizard.biasTee
                                 onToggled: function (state) { wizard.biasTee = state }
+                            }
+                        }
+
+                        Column {
+                            width: parent.width
+                            spacing: 6
+
+                            Text {
+                                text: qsTr("Extra CLI flags")
+                                font.family: Theme.sans
+                                font.pixelSize: 12
+                                color: Theme.textSecondary
+                            }
+
+                            PlexTextField {
+                                id: extraField
+                                width: parent.width
+                                mono: true
+                                // Appended after the app-wide extras from Settings;
+                                // per-system channel/group imports live here.
+                                placeholderText: qsTr("e.g. -C chan.csv -G group.csv")
+                                inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
                             }
                         }
 
