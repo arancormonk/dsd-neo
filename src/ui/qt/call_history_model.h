@@ -9,10 +9,10 @@
  *        monitor's recent-calls panel.
  *
  * Rows are ingested from the published snapshot's event-history ring — committed
- * voice rows only, keyed so a ring that shifts under us never double-counts — and
- * persisted as JSON so the log survives sessions and process death, which the
- * in-memory event ring deliberately does not. Refreshed from the single UI poll
- * tick only.
+ * voice rows plus data/control notices (SMS, LRRP positions, data calls), keyed
+ * so a ring that shifts under us never double-counts — and persisted as JSON so
+ * the log survives sessions and process death, which the in-memory event ring
+ * deliberately does not. Refreshed from the single UI poll tick only.
  *
  * This model is the store alone: every view that shows it binds through its own
  * CallHistoryFilterModel, so one screen's search or pills never filter another.
@@ -22,8 +22,8 @@
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
 
 #include <QAbstractListModel>
+#include <QHash>
 #include <QList>
-#include <QSet>
 #include <QSettings>
 #include <QString>
 #include <QTimer>
@@ -48,8 +48,14 @@ class CallHistoryModel : public QAbstractListModel {
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         DayLabelRole, // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
-        TimeTextRole  // "12:04"
+        TimeTextRole, // "12:04"
+        KindRole,     // RowKind: voice call or data/control notice
+        DetailRole    // notice payload: decoded text message or GPS string
     };
+
+    /** @brief What a row logs; pinned values because rows persist as JSON. */
+    enum RowKind { KindVoice = 0, KindNotice = 1 };
+    Q_ENUM(RowKind)
 
     explicit CallHistoryModel(QObject* parent = nullptr);
     ~CallHistoryModel() override;
@@ -97,7 +103,7 @@ class CallHistoryModel : public QAbstractListModel {
     void sessionLabelChanged();
 
   public:
-    /** @brief One logged call. Public only so file-local helpers can build one. */
+    /** @brief One logged call or notice. Public only so file-local helpers can build one. */
     struct Row {
         qint64 when = 0;
         QString name;
@@ -106,13 +112,49 @@ class CallHistoryModel : public QAbstractListModel {
         bool enc = false;
         int durationSecs = -1;
         QString systemName;
+        int kind = KindVoice;
+        QString detail;
     };
 
   private:
+    /**
+     * @brief What was last read from a ring row, keyed by its content key.
+     *
+     * The core merges reacquired segments into a committed row in place — the
+     * end stamp extends, src fills 0 -> real — without changing the row's key.
+     * Comparing against these values is what lets those merges re-ingest as
+     * updates instead of being skipped forever. Persisted alongside the rows:
+     * after an Activity restart the service's ring still holds every fragment
+     * this process's predecessor absorbed, and forgetting their keys would
+     * re-ingest each one as a duplicate conversation.
+     */
+    struct SeenState {
+        qint64 when = 0;
+        qint64 end = 0;
+        qulonglong src = 0;
+        bool enc = false;
+    };
+
+    /** @brief A ring row worth ingesting: brand new, or a seen row that advanced. */
+    struct FreshRow {
+        Row row;
+        bool isUpdate = false;
+    };
+
+    /** @brief noteSeen() verdicts. */
+    enum SeenVerdict { SeenUnchanged = 0, SeenNew = 1, SeenAdvanced = 2 };
+
     static QString keyFor(const Row& row);
 
-    /** @brief Scan the ring for committed voice rows not seen before. */
-    QList<Row> collectFresh(const dsd_state* snapshot);
+    /**
+     * @brief Record what was just read from a ring row and say what to do with it.
+     * @return SeenNew for a first sighting, SeenAdvanced when a voice row already
+     *         ingested has since learned something, SeenUnchanged otherwise.
+     */
+    int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice);
+
+    /** @brief Scan the ring for committed rows not seen before, or seen but advanced. */
+    QList<FreshRow> collectFresh(const dsd_state* snapshot);
 
     /**
      * @brief Absorb @p row into a recent same-target row when the two overlap
@@ -123,16 +165,22 @@ class CallHistoryModel : public QAbstractListModel {
 
     /**
      * @brief Merge @p row into the log or insert it at its sorted position.
+     *
+     * An update (a seen ring row that advanced) may only refine an existing row;
+     * if its row cannot be found it is dropped, never inserted as a duplicate.
+     *
      * @return true when a new row was inserted (the count changed).
      */
-    bool ingestRow(const Row& row);
+    bool ingestRow(const Row& row, bool isUpdate);
 
     void load();
     void scheduleSave();
     void saveNow() const;
+    /** @brief Bound m_seen once it is well past what the ring could resurrect. */
+    void pruneSeen();
 
     QList<Row> m_rows; // newest first
-    QSet<QString> m_seen;
+    QHash<QString, SeenState> m_seen;
     QString m_sessionLabel;
     /* Rows starting at or before this stamp were cleared by the user; persisted so
      * the still-populated ring cannot resurrect them after an Activity restart. */

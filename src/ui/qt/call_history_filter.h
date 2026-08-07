@@ -52,7 +52,7 @@ class CallHistoryFilterModel : public QSortFilterProxyModel {
 
     void setFilterSystem(const QString& system);
 
-    /** @brief Call-type filter: 0 = all calls, 1 = clear only, 2 = encrypted only. */
+    /** @brief Row-type filter: 0 = everything, 1 = clear calls, 2 = encrypted calls, 3 = messages/notices. */
     int
     filterKind() const {
         return m_filterKind;

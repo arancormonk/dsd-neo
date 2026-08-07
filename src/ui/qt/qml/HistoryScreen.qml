@@ -9,8 +9,9 @@ import "Util.js" as Util
 Item {
     id: screen
 
-    // Cycles: 0 all calls, 1 clear only, 2 encrypted only.
-    readonly property var kindLabels: [qsTr("All calls"), qsTr("Clear calls"), qsTr("Encrypted")]
+    // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
+    // (SMS, GPS positions, data and control notices).
+    readonly property var kindLabels: [qsTr("All activity"), qsTr("Clear calls"), qsTr("Encrypted"), qsTr("Messages")]
 
     Rectangle {
         anchors.fill: parent
@@ -67,7 +68,7 @@ Item {
             FilterPill {
                 text: screen.kindLabels[historyView.filterKind]
                 active: historyView.filterKind !== 0
-                onClicked: historyView.filterKind = (historyView.filterKind + 1) % 3
+                onClicked: historyView.filterKind = (historyView.filterKind + 1) % screen.kindLabels.length
             }
         }
     }
@@ -99,6 +100,18 @@ Item {
             width: ListView.view.width
             name: model.name
             metaText: {
+                // A notice row's payload (the SMS body, the GPS string) is its
+                // meta line; identity only where it exists.
+                if (model.kind === 1) {
+                    var parts = []
+                    if (model.tg > 0)
+                        parts.push("TG " + model.tg)
+                    if (model.src > 0)
+                        parts.push("SRC " + model.src)
+                    if (model.detail.length > 0)
+                        parts.push(model.detail)
+                    return parts.length > 0 ? parts.join(" · ") : qsTr("data message")
+                }
                 // "encrypted" states what the call was, nothing more: whether it was
                 // skipped depended on the lockout toggle and loaded keys at the time,
                 // which a logged row does not know. The duration is measured either way.

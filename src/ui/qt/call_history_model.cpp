@@ -11,9 +11,11 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLocale>
+#include <QRegularExpression>
 
 #include <dsd-neo/core/state.h>
 
+#include "call_history_merge.h"
 #include "json_store.h"
 
 namespace dsd_qt {
@@ -21,17 +23,32 @@ namespace dsd_qt {
 namespace {
 
 constexpr const char kStoreFileName[] = "call_history.json";
+constexpr const char kSeenStoreFileName[] = "call_history_seen.json";
 constexpr const char kSessionLabelKey[] = "callHistory/sessionLabel";
 constexpr const char kClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
+/* Bound on the persisted seen map. The ring holds at most 254 rows per slot, so
+ * anything beyond the newest ~4x that can no longer be re-ingested and is dead
+ * weight in the store. */
+constexpr int kMaxSeenEntries = 2048;
 /* Sanity bound on the ring's own start/end stamps: a span longer than this is a
  * corrupt or clock-shifted row, not a measured call, so it renders as unknown. */
 constexpr qint64 kMaxPlausibleDurationSecs = 3600;
 constexpr int kSaveDelayMs = 3000;
-/* Trunk-following mints a committed row per tune attempt, so one keyed-up
- * talkgroup can shed several near-simultaneous fragments. Within this window a
- * same-target row is the same conversation, not a new call. */
-constexpr qint64 kMergeWindowSecs = 20;
+
+/** @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections. */
+QString
+day_label(qint64 when) {
+    const QDate day = QDateTime::fromSecsSinceEpoch(when).date();
+    const QDate today = QDate::currentDate();
+    if (day == today) {
+        return QStringLiteral("TODAY");
+    }
+    if (day == today.addDays(-1)) {
+        return QStringLiteral("YESTERDAY");
+    }
+    return QLocale().toString(day, QStringLiteral("ddd d MMM")).toUpper();
+}
 
 } // namespace
 
@@ -74,18 +91,10 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
         case WhenRole: return row.when;
         case DurationSecsRole: return row.durationSecs;
         case SystemNameRole: return row.systemName;
-        case DayLabelRole: {
-            const QDate day = QDateTime::fromSecsSinceEpoch(row.when).date();
-            const QDate today = QDate::currentDate();
-            if (day == today) {
-                return QStringLiteral("TODAY");
-            }
-            if (day == today.addDays(-1)) {
-                return QStringLiteral("YESTERDAY");
-            }
-            return QLocale().toString(day, QStringLiteral("ddd d MMM")).toUpper();
-        }
+        case DayLabelRole: return day_label(row.when);
         case TimeTextRole: return QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("HH:mm"));
+        case KindRole: return row.kind;
+        case DetailRole: return row.detail;
         default: return QVariant();
     }
 }
@@ -102,6 +111,8 @@ CallHistoryModel::roleNames() const {
     roles.insert(SystemNameRole, QByteArrayLiteral("systemName"));
     roles.insert(DayLabelRole, QByteArrayLiteral("dayLabel"));
     roles.insert(TimeTextRole, QByteArrayLiteral("timeText"));
+    roles.insert(KindRole, QByteArrayLiteral("kind"));
+    roles.insert(DetailRole, QByteArrayLiteral("detail"));
     return roles;
 }
 
@@ -128,6 +139,37 @@ CallHistoryModel::systemLabels() const {
 
 namespace {
 
+/**
+ * @brief Which display kind a committed ring item ingests as, or -1 to skip it.
+ *
+ * Voice rows need a nameable target; notices need any payload at all. STATUS and
+ * SYSTEM rows (per-frame churn, the startup banner) are not log material.
+ */
+int
+ring_item_display_kind(const Event_History* item) {
+    if (item->category == DSD_EVENT_CATEGORY_VOICE) {
+        if (item->target_id == 0U && item->tgt_str[0] == '\0') {
+            return -1;
+        }
+        return CallHistoryModel::KindVoice;
+    }
+    if (item->category != DSD_EVENT_CATEGORY_DATA && item->category != DSD_EVENT_CATEGORY_CONTROL) {
+        return -1;
+    }
+    if (item->event_string[0] == '\0' && item->text_message[0] == '\0' && item->gps_s[0] == '\0') {
+        return -1;
+    }
+    return CallHistoryModel::KindNotice;
+}
+
+/** @brief The notice text minus the "YYYY-MM-DD HH:MM:SS " prefix the emitter stamps. */
+QString
+notice_summary(const Event_History* item) {
+    static const QRegularExpression datePrefix(QStringLiteral("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} "));
+    QString text = QString::fromUtf8(item->event_string);
+    return text.remove(datePrefix).trimmed();
+}
+
 /** @brief One committed ring item as a display row. */
 CallHistoryModel::Row
 row_from_item(const Event_History* item, const QString& sessionLabel) {
@@ -135,7 +177,21 @@ row_from_item(const Event_History* item, const QString& sessionLabel) {
     row.tg = static_cast<qulonglong>(item->target_id);
     row.src = static_cast<qulonglong>(item->source_id);
     row.enc = item->enc != 0U;
-    if (item->t_name[0] != '\0') {
+    row.kind = item->category == DSD_EVENT_CATEGORY_VOICE ? CallHistoryModel::KindVoice : CallHistoryModel::KindNotice;
+    if (row.kind == CallHistoryModel::KindNotice) {
+        /* The emitter's summary line names what happened ("SMS from 1234",
+         * "LRRP position"); the payload — the decoded message or GPS string —
+         * rides in detail so the delegate can show both. */
+        row.name = notice_summary(item);
+        if (item->text_message[0] != '\0') {
+            row.detail = QString::fromUtf8(item->text_message);
+        } else if (item->gps_s[0] != '\0') {
+            row.detail = QString::fromUtf8(item->gps_s);
+        }
+        if (row.name.isEmpty()) {
+            row.name = !row.detail.isEmpty() ? row.detail : QStringLiteral("Data message");
+        }
+    } else if (item->t_name[0] != '\0') {
         row.name = QString::fromUtf8(item->t_name);
     } else if (item->tgt_str[0] != '\0') {
         row.name = QString::fromUtf8(item->tgt_str);
@@ -150,7 +206,8 @@ row_from_item(const Event_History* item, const QString& sessionLabel) {
     const qint64 start = static_cast<qint64>(item->event_start_time);
     const qint64 end = static_cast<qint64>(item->event_time);
     row.when = (start > 0) ? start : end;
-    if (start > 0 && end >= start && end - start <= kMaxPlausibleDurationSecs) {
+    if (row.kind == CallHistoryModel::KindVoice && start > 0 && end >= start
+        && end - start <= kMaxPlausibleDurationSecs) {
         row.durationSecs = static_cast<int>(end - start);
     }
     return row;
@@ -158,18 +215,38 @@ row_from_item(const Event_History* item, const QString& sessionLabel) {
 
 } // namespace
 
-QList<CallHistoryModel::Row>
+int
+CallHistoryModel::noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice) {
+    auto seen = m_seen.find(key);
+    if (seen == m_seen.end()) {
+        m_seen.insert(key, SeenState{when, end, src, enc});
+        return SeenNew;
+    }
+    // Seen is not final: the core merges a reacquired segment into its committed
+    // row in place — the end extends, src fills 0 -> real, the crypto verdict can
+    // flip on — and the key does not change when it does. Re-read the row as an
+    // update whenever it advanced. Notices are immutable, so only voice re-reads.
+    if (!voice || !call_history_seen_row_advanced(seen->end, seen->src, seen->enc, end, src, enc)) {
+        return SeenUnchanged;
+    }
+    seen->end = std::max(seen->end, end);
+    if (seen->src == 0U) {
+        seen->src = src;
+    }
+    seen->enc = seen->enc || enc;
+    return SeenAdvanced;
+}
+
+QList<CallHistoryModel::FreshRow>
 CallHistoryModel::collectFresh(const dsd_state* snapshot) {
-    QList<Row> fresh;
+    QList<FreshRow> fresh;
     for (int slot = 0; slot < 2; slot++) {
         // Index 0 is the still-active staged row; only committed rows (1..254) are
         // finished calls that belong in a log.
         for (int idx = 1; idx < 255; idx++) {
             const Event_History* item = &snapshot->event_history_s[slot].Event_History_Items[idx];
-            if (item->category != DSD_EVENT_CATEGORY_VOICE) {
-                continue;
-            }
-            if (item->target_id == 0U && item->tgt_str[0] == '\0') {
+            const int kind = ring_item_display_kind(item);
+            if (kind < 0) {
                 continue;
             }
             // Key from the raw fields before building the Row: rescans are frequent
@@ -184,36 +261,63 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot) {
                 // rebuilt by a relaunched UI.
                 continue;
             }
-            const QString key = QStringLiteral("%1|%2").arg(when).arg(item->target_id);
-            if (m_seen.contains(key)) {
+            const bool voice = kind == KindVoice;
+            const qulonglong src = static_cast<qulonglong>(item->source_id);
+            // Must match keyFor(): notices are immutable once committed, so their
+            // key may (and must, to keep two same-second notices apart) carry the
+            // source id that a voice row's key deliberately excludes.
+            const QString key = voice ? QStringLiteral("%1|%2").arg(when).arg(item->target_id)
+                                      : QStringLiteral("%1|%2|N|%3").arg(when).arg(item->target_id).arg(src);
+            const int verdict = noteSeen(key, when, end, src, item->enc != 0U, voice);
+            if (verdict == SeenUnchanged) {
                 continue;
             }
-            m_seen.insert(key);
-            fresh.append(row_from_item(item, m_sessionLabel));
+            fresh.append(FreshRow{row_from_item(item, m_sessionLabel), verdict == SeenAdvanced});
         }
     }
     return fresh;
 }
 
+namespace {
+
+/** @brief Whether two voice rows are one conversation the merge may fold together. */
+bool
+rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (existing.kind != CallHistoryModel::KindVoice) {
+        return false;
+    }
+    // A zero source id is "not yet learned", not a distinct unit: late-entry
+    // fragments commit before the ring learns the src, and refusing to absorb
+    // them would leave one conversation split across two rows.
+    const bool srcCompatible = existing.src == row.src || existing.src == 0 || row.src == 0;
+    if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName) {
+        return false;
+    }
+    const qint64 existingEnd = existing.when + qMax(existing.durationSecs, 0);
+    const qint64 rowEnd = row.when + qMax(row.durationSecs, 0);
+    // Matched sources get the full retune window; a src-unknown pairing gets
+    // the tight one, or two distinct back-to-back calls on a busy talkgroup
+    // collapse into one row (the wildcard above cannot tell units apart).
+    const bool srcKnownMatch = existing.src != 0 && existing.src == row.src;
+    return call_history_merge_within_window(existing.when, existingEnd, row.when, rowEnd, srcKnownMatch);
+}
+
+} // namespace
+
 int
 CallHistoryModel::tryMerge(const Row& row) {
+    if (row.kind != KindVoice) {
+        // Notices are discrete deliveries: two SMS a second apart are two
+        // messages, never fragments of one.
+        return -1;
+    }
     for (int i = 0; i < m_rows.size() && i < 32; i++) {
         Row& existing = m_rows[i];
-        // A zero source id is "not yet learned", not a distinct unit: late-entry
-        // fragments commit before the ring learns the src, and refusing to absorb
-        // them would leave one conversation split across two rows.
-        const bool srcCompatible = existing.src == row.src || existing.src == 0 || row.src == 0;
-        if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName) {
+        if (!rows_mergeable(existing, row)) {
             continue;
         }
-        // The window extends off each fragment's end, not its start: one keyed-up
-        // talkgroup sheds a fragment per retune, and a fixed window off the first
-        // start would leak a duplicate row every window-length of activity.
         const qint64 existingEnd = existing.when + qMax(existing.durationSecs, 0);
         const qint64 rowEnd = row.when + qMax(row.durationSecs, 0);
-        if (row.when > existingEnd + kMergeWindowSecs || existing.when > rowEnd + kMergeWindowSecs) {
-            continue;
-        }
         const qint64 start = qMin(existing.when, row.when);
         const qint64 span = qMax(existingEnd, rowEnd) - start;
         existing.when = start;
@@ -233,14 +337,18 @@ QString
 CallHistoryModel::keyFor(const Row& row) {
     // Content-derived so it survives persistence: the Android service outlives the
     // Activity, and a relaunched UI must not re-ingest rows it already logged.
-    // Deliberately excludes the source id: the ring fills a committed row's src in
-    // place when a reacquisition merge learns it (0 -> real id), and a src-bearing
-    // key would re-ingest that same row as a permanent duplicate.
+    // A voice key deliberately excludes the source id: the ring fills a committed
+    // row's src in place when a reacquisition merge learns it (0 -> real id), and
+    // a src-bearing key would read as a brand-new row. Notice rows are immutable,
+    // so their key carries the src to keep two same-second notices apart.
+    if (row.kind != KindVoice) {
+        return QStringLiteral("%1|%2|N|%3").arg(row.when).arg(row.tg).arg(row.src);
+    }
     return QStringLiteral("%1|%2").arg(row.when).arg(row.tg);
 }
 
 bool
-CallHistoryModel::ingestRow(const Row& row) {
+CallHistoryModel::ingestRow(const Row& row, bool isUpdate) {
     // Coalesce fragments into the call they belong to, with granular model
     // signals: a merge is a dataChanged on the absorbing row, a new call inserts
     // at its sorted (newest-first) position. Never a reset — delegates and the
@@ -262,6 +370,13 @@ CallHistoryModel::ingestRow(const Row& row) {
             m_rows.move(merged, newPos);
             endMoveRows();
         }
+        return false;
+    }
+    if (isUpdate) {
+        // A seen row that advanced refines a call this model already logged; if
+        // its row cannot be found (absorbed and trimmed, or deeper than the merge
+        // scan), inserting it would mint the duplicate the seen map exists to
+        // prevent. Drop it instead.
         return false;
     }
     int pos = 0;
@@ -289,28 +404,55 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
     m_revision[1] = revision[1];
     m_seeded = true;
 
-    const QList<Row> fresh = collectFresh(snapshot);
+    const QList<FreshRow> fresh = collectFresh(snapshot);
 
     if (fresh.isEmpty()) {
         return;
     }
 
     bool rowsChanged = false;
-    for (const Row& row : fresh) {
-        rowsChanged = ingestRow(row) || rowsChanged;
+    for (const FreshRow& item : fresh) {
+        rowsChanged = ingestRow(item.row, item.isUpdate) || rowsChanged;
     }
+    // Trimmed rows keep their seen entry: the ring may still hold them, and
+    // forgetting the key would re-ingest (and re-trim) each one every tick. The
+    // map itself is bounded below instead.
     while (m_rows.size() > kMaxRows) {
         const int last = static_cast<int>(m_rows.size()) - 1;
         beginRemoveRows(QModelIndex(), last, last);
-        m_seen.remove(keyFor(m_rows.last()));
         m_rows.removeLast();
         endRemoveRows();
         rowsChanged = true;
     }
+    pruneSeen();
     if (rowsChanged) {
         Q_EMIT countChanged();
     }
     scheduleSave();
+}
+
+void
+CallHistoryModel::pruneSeen() {
+    // Drop the oldest entries once the map is well past what the ring could
+    // still resurrect (at most 254 committed rows per slot). Oldest-first by the
+    // stamp inside the value, so keys stay opaque.
+    if (m_seen.size() <= static_cast<qsizetype>(kMaxSeenEntries) * 2) {
+        return;
+    }
+    QList<qint64> stamps;
+    stamps.reserve(m_seen.size());
+    for (const SeenState& state : m_seen) {
+        stamps.append(state.when);
+    }
+    std::sort(stamps.begin(), stamps.end());
+    const qint64 cutoff = stamps.at(stamps.size() - kMaxSeenEntries);
+    for (auto it = m_seen.begin(); it != m_seen.end();) {
+        if (it->when < cutoff) {
+            it = m_seen.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 void
@@ -334,7 +476,7 @@ void
 CallHistoryModel::load() {
     QList<Row> rows;
     const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
-    for (const QJsonValue& value : array) {
+    for (const auto& value : array) {
         if (!value.isObject()) {
             continue;
         }
@@ -347,6 +489,8 @@ CallHistoryModel::load() {
         row.enc = obj.value(QLatin1String("enc")).toBool();
         row.durationSecs = obj.value(QLatin1String("durationSecs")).toInt(-1);
         row.systemName = obj.value(QLatin1String("systemName")).toString();
+        row.kind = obj.value(QLatin1String("kind")).toInt(KindVoice);
+        row.detail = obj.value(QLatin1String("detail")).toString();
         rows.append(row);
     }
     beginResetModel();
@@ -354,12 +498,33 @@ CallHistoryModel::load() {
     // Oldest first through the same merge the ingest path uses, so a log written
     // before fragment-coalescing existed collapses on its first load.
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
-        m_seen.insert(keyFor(*it));
+        m_seen.insert(keyFor(*it), SeenState{it->when, it->when + qMax(it->durationSecs, 0), it->src, it->enc});
         if (tryMerge(*it) < 0) {
             m_rows.prepend(*it);
         }
     }
     std::stable_sort(m_rows.begin(), m_rows.end(), [](const Row& a, const Row& b) { return a.when > b.when; });
+    // The persisted seen map wins over what the merged rows imply: it still holds
+    // the keys of every absorbed fragment, which exist nowhere in the rows above,
+    // and without them a service ring that outlived this process would re-ingest
+    // each fragment as a duplicate conversation.
+    const QJsonArray seenArray = json_store_load_array(QLatin1String(kSeenStoreFileName));
+    for (const auto& value : seenArray) {
+        if (!value.isObject()) {
+            continue;
+        }
+        const QJsonObject obj = value.toObject();
+        const QString key = obj.value(QLatin1String("key")).toString();
+        if (key.isEmpty()) {
+            continue;
+        }
+        SeenState state;
+        state.when = obj.value(QLatin1String("when")).toVariant().toLongLong();
+        state.end = obj.value(QLatin1String("end")).toVariant().toLongLong();
+        state.src = obj.value(QLatin1String("src")).toVariant().toULongLong();
+        state.enc = obj.value(QLatin1String("enc")).toBool();
+        m_seen.insert(key, state);
+    }
     endResetModel();
     Q_EMIT countChanged();
 }
@@ -383,9 +548,37 @@ CallHistoryModel::saveNow() const {
         obj.insert(QLatin1String("enc"), row.enc);
         obj.insert(QLatin1String("durationSecs"), row.durationSecs);
         obj.insert(QLatin1String("systemName"), row.systemName);
+        obj.insert(QLatin1String("kind"), row.kind);
+        if (!row.detail.isEmpty()) {
+            obj.insert(QLatin1String("detail"), row.detail);
+        }
         array.append(obj);
     }
     json_store_save_array(QLatin1String(kStoreFileName), array);
+
+    // Newest first and capped: the seen map only has to outlive what the ring can
+    // still resurrect, not the whole persisted log.
+    QList<QPair<QString, SeenState>> entries;
+    entries.reserve(m_seen.size());
+    for (auto it = m_seen.cbegin(); it != m_seen.cend(); ++it) {
+        entries.append(qMakePair(it.key(), it.value()));
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const QPair<QString, SeenState>& a, const QPair<QString, SeenState>& b) {
+                  return a.second.when > b.second.when;
+              });
+    QJsonArray seenArray;
+    for (qsizetype i = 0; i < entries.size() && i < kMaxSeenEntries; i++) {
+        const SeenState& state = entries.at(i).second;
+        QJsonObject obj;
+        obj.insert(QLatin1String("key"), entries.at(i).first);
+        obj.insert(QLatin1String("when"), state.when);
+        obj.insert(QLatin1String("end"), state.end);
+        obj.insert(QLatin1String("src"), static_cast<qint64>(state.src));
+        obj.insert(QLatin1String("enc"), state.enc);
+        seenArray.append(obj);
+    }
+    json_store_save_array(QLatin1String(kSeenStoreFileName), seenArray);
 }
 
 } // namespace dsd_qt

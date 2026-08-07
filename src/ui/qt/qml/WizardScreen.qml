@@ -96,12 +96,25 @@ Item {
         nameField.text = sys.name
     }
 
+    // parseInt alone lets a hardware-keyboard "abc" become NaN, which QVariant
+    // then reads as 0 — and a gain of 0 is a meaningful override, not "unset".
+    // NaN must collapse to the field's explicit "no override" value instead.
+    function intOr(text, fallback) {
+        var v = parseInt(text, 10)
+        return isNaN(v) ? fallback : v
+    }
+
+    function portValid() {
+        var p = parseInt(portText, 10)
+        return !isNaN(p) && p >= 1 && p <= 65535
+    }
+
     function stepValid() {
         if (step === 0) {
             if (sourceType === "rtltcp" || sourceType === "tcp")
-                return hostText.length > 0 && portText.length > 0
+                return hostText.length > 0 && portValid()
             if (sourceType === "udp")
-                return portText.length > 0
+                return portValid()
             if (sourceType === "file")
                 return fileText.length > 0
             return true
@@ -116,13 +129,13 @@ Item {
             name: nameText.trim(),
             sourceType: sourceType,
             host: hostText,
-            port: portText.length > 0 ? parseInt(portText) : 0,
+            port: portText.length > 0 ? intOr(portText, 0) : 0,
             freqMhz: freqText,
             decodeFlag: decodeFlag,
             trunking: trunking,
-            gainDb: gainText.length > 0 ? parseInt(gainText) : -1,
+            gainDb: gainText.length > 0 ? intOr(gainText, -1) : -1,
             ppm: ppmText,
-            bandwidthKhz: bwText.length > 0 ? parseInt(bwText) : -1,
+            bandwidthKhz: bwText.length > 0 ? intOr(bwText, -1) : -1,
             biasTee: biasTee,
             filePath: fileText
         }
@@ -330,7 +343,14 @@ Item {
                         width: parent.width
                         mono: true
                         text: "1234"
+                        // The hint only picks the soft keyboard; without the
+                        // validator a hardware-keyboard "7,355" truncates to
+                        // port 7 with no error.
                         inputMethodHints: Qt.ImhDigitsOnly
+                        input.validator: IntValidator {
+                            bottom: 1
+                            top: 65535
+                        }
                     }
                 }
 
@@ -612,7 +632,15 @@ Item {
                                     width: parent.width
                                     mono: true
                                     placeholderText: String(prefs.gainDb)
+                                    // Like the PPM field: the hint does not
+                                    // constrain hardware keyboards, and a
+                                    // non-numeric entry would otherwise read
+                                    // back as an explicit 0 dB override.
                                     inputMethodHints: Qt.ImhDigitsOnly
+                                    input.validator: IntValidator {
+                                        bottom: 0
+                                        top: 99
+                                    }
                                 }
                             }
 
@@ -660,6 +688,10 @@ Item {
                                     mono: true
                                     placeholderText: String(prefs.bandwidthKhz)
                                     inputMethodHints: Qt.ImhDigitsOnly
+                                    input.validator: IntValidator {
+                                        bottom: 1
+                                        top: 9999
+                                    }
                                 }
                             }
                         }
@@ -667,7 +699,10 @@ Item {
                         Item {
                             width: parent.width
                             height: 34
-                            visible: wizard.sourceType === "usb"
+                            // rtl-tcp too: the engine applies the bias token on
+                            // remote dongles, and an LNA on the far end needs it
+                            // just as much as a local one.
+                            visible: wizard.radioSource
 
                             Column {
                                 anchors.left: parent.left

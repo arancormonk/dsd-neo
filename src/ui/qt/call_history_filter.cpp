@@ -9,6 +9,30 @@
 
 namespace dsd_qt {
 
+namespace {
+
+/** @brief Whether a row survives the row-type pill (all / clear / encrypted / messages). */
+bool
+kind_accepts(int filterKind, bool voice, bool enc) {
+    switch (filterKind) {
+        case 1: return voice && !enc;
+        case 2: return voice && enc;
+        case 3: return !voice;
+        default: return true;
+    }
+}
+
+/** @brief Case-insensitive search over identity and payload text. */
+bool
+text_matches(const QAbstractItemModel* source, const QModelIndex& idx, const QString& text) {
+    return source->data(idx, CallHistoryModel::NameRole).toString().contains(text, Qt::CaseInsensitive)
+           || source->data(idx, CallHistoryModel::TgRole).toString().contains(text)
+           || source->data(idx, CallHistoryModel::SrcRole).toString().contains(text)
+           || source->data(idx, CallHistoryModel::DetailRole).toString().contains(text, Qt::CaseInsensitive);
+}
+
+} // namespace
+
 CallHistoryFilterModel::CallHistoryFilterModel(QObject* parent) : QSortFilterProxyModel(parent) {
     // count is a convenience for QML empty states; keep it live across every way
     // the mapped row set can move.
@@ -70,15 +94,11 @@ CallHistoryFilterModel::filterAcceptsRow(int source_row, const QModelIndex& sour
         return false;
     }
     const bool enc = source->data(idx, CallHistoryModel::EncRole).toBool();
-    if ((m_filterKind == 1 && enc) || (m_filterKind == 2 && !enc)) {
+    const bool voice = source->data(idx, CallHistoryModel::KindRole).toInt() == CallHistoryModel::KindVoice;
+    if (!kind_accepts(m_filterKind, voice, enc)) {
         return false;
     }
-    if (m_filterText.isEmpty()) {
-        return true;
-    }
-    return source->data(idx, CallHistoryModel::NameRole).toString().contains(m_filterText, Qt::CaseInsensitive)
-           || source->data(idx, CallHistoryModel::TgRole).toString().contains(m_filterText)
-           || source->data(idx, CallHistoryModel::SrcRole).toString().contains(m_filterText);
+    return m_filterText.isEmpty() || text_matches(source, idx, m_filterText);
 }
 
 } // namespace dsd_qt

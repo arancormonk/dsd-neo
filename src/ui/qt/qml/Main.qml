@@ -24,7 +24,15 @@ Window {
     readonly property string hostFailure: decoderHost ? decoderHost.failureText : ""
     // A start the UI refused before the host was ever asked (bad saved config).
     property string startError: ""
-    readonly property string failureText: startError.length > 0 ? startError : hostFailure
+    // Set while a USB start is blocked on device access, so the platform's live
+    // detail ("USB permission denied", "No RTL-SDR attached") reaches the screen
+    // as it changes — the permission dialog answers long after the tap that
+    // asked. Cleared once the device is ready or another system starts.
+    property bool awaitingUsbAccess: false
+    readonly property string usbAccessText:
+        awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
+    readonly property string failureText: startError.length > 0 ? startError
+                                          : usbAccessText.length > 0 ? usbAccessText : hostFailure
 
     property int currentTab: 0
     property bool wizardOpen: false
@@ -65,15 +73,33 @@ Window {
         if (!sys || !sys.sourceType)
             return
         if (sys.sourceType === "usb" && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady) {
+            // Not a silent return: the platform's status line is the only thing
+            // that can say why ("USB permission denied", "No RTL-SDR attached"),
+            // and it keeps updating as the permission dialog resolves.
+            mainRoot.dismissedFailure = ""
+            mainRoot.startError = ""
+            mainRoot.awaitingUsbAccess = true
             decoderHost.requestLocalDeviceAccess()
             return
         }
         mainRoot.dismissedFailure = ""
         mainRoot.startError = ""
+        mainRoot.awaitingUsbAccess = false
         var args = Util.buildArgs(sys, prefs)
         if (!args) {
-            mainRoot.startError =
-                qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+            // buildArgs refuses for exactly two reasons; blame the field that is
+            // actually wrong or the user re-checks a frequency that was fine.
+            mainRoot.startError = !Util.freqValid(sys.freqMhz)
+                ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+                : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
+            return
+        }
+        // Side effects only after the host accepts: a refused start must not
+        // stamp lastHeard, re-attribute history rows, or hide the previous
+        // session's calls from the monitor pane.
+        if (!decoderHost.start(args)) {
+            if (decoderHost.failureText.length === 0)
+                mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name)
             return
         }
         mainRoot.sessionSystem = sys
@@ -81,7 +107,6 @@ Window {
         // The monitor's recent-calls pane shows this session, not the whole log.
         monitorView.minWhen = Math.floor(Date.now() / 1000)
         savedSystems.touch(row)
-        decoderHost.start(args)
     }
 
     // ---- Tab shell ----

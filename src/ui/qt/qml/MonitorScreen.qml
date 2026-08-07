@@ -434,9 +434,13 @@ Item {
                 delegate: CallRow {
                     width: ListView.view.width
                     name: model.name
-                    metaText: "TG " + model.tg
-                              + (model.enc ? " · " + qsTr("encrypted") : "")
-                              + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
+                    metaText: {
+                        if (model.kind === 1)
+                            return model.detail.length > 0 ? model.detail : qsTr("data message")
+                        return "TG " + model.tg
+                               + (model.enc ? " · " + qsTr("encrypted") : "")
+                               + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
+                    }
                     rightText: Util.shortAge(model.when)
                     enc: model.enc
                 }

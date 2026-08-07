@@ -2045,6 +2045,22 @@ target_include_directories(
 )
 add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 
+# And for the call-history merge/re-ingest policy (call_history_merge.h): the
+# window choices and the seen-row advance ratchet are what keep one conversation
+# one row without collapsing two distinct calls into it.
+add_executable(
+    dsd-neo_test_ui_qt_call_history_merge
+    ui/test_ui_qt_call_history_merge.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_call_history_merge
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(
+    NAME UI_QT_CALL_HISTORY_MERGE
+    COMMAND dsd-neo_test_ui_qt_call_history_merge
+)
+
 add_executable(
     dsd-neo_test_app_control_history_state
     ui/test_ui_history_state.c

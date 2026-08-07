@@ -14,7 +14,11 @@ var DECODE_MODES = [
         hint: "Figures it out — good first choice for most systems."
     },
     {
-        label: "P25", short: "P25", flag: "-f1",
+        // -ft, not -f1: the statewide/county systems this chip is pitched at are
+        // commonly Phase 2, and -f1 sets frame_p25p2=0 — every Phase 2 voice
+        // grant would tune and stay permanently mute. -ft keeps the P25p1
+        // control channel plus both voice phases.
+        label: "P25", short: "P25", flag: "-ft",
         hint: "Standard P25 — most statewide and county digital systems."
     },
     {
@@ -49,11 +53,20 @@ var DECODE_MODES = [
     }
 ]
 
+// Flags a saved system may still carry from an older catalog. They keep their
+// saved behavior (buildArgs splices the stored flag verbatim); this map only
+// keeps their card label honest.
+var LEGACY_DECODE_LABELS = {
+    "-f1": "P25"
+}
+
 function decodeLabel(flag) {
     for (var i = 0; i < DECODE_MODES.length; i++) {
         if (DECODE_MODES[i].flag === flag)
             return DECODE_MODES[i].short
     }
+    if (LEGACY_DECODE_LABELS[flag] !== undefined)
+        return LEGACY_DECODE_LABELS[flag]
     return "Auto"
 }
 
@@ -153,6 +166,11 @@ function buildArgs(sys, prefs) {
 
     var gain = (sys.gainDb !== undefined && sys.gainDb >= 0) ? sys.gainDb : prefs.gainDb
     var ppm = String((sys.ppm !== undefined && sys.ppm !== "") ? sys.ppm : String(prefs.ppm)).trim()
+    // The wizard's IntValidator accepts an explicit '+' sign that the check
+    // below would refuse; it means the same thing, so drop it rather than make
+    // "+5" a saved system that can never start.
+    if (ppm.charAt(0) === '+')
+        ppm = ppm.substring(1)
     // PPM is the one override persisted as a raw string, and it is spliced
     // verbatim into the ':'-delimited spec below — like the frequency, a
     // malformed value must fail here, not downstream as a silently unapplied
@@ -169,7 +187,12 @@ function buildArgs(sys, prefs) {
             spec += ":bias"
         args.push("-i", spec)
     } else if (sys.sourceType === "rtltcp") {
-        args.push("-i", "rtltcp:" + sys.host + ":" + sys.port + tail)
+        // The engine parses a trailing bias token on rtltcp specs exactly as it
+        // does on rtl ones; a remote dongle feeding an LNA needs it just as much.
+        var tcpSpec = "rtltcp:" + sys.host + ":" + sys.port + tail
+        if (bias)
+            tcpSpec += ":bias"
+        args.push("-i", tcpSpec)
     } else if (sys.sourceType === "udp") {
         args.push("-i", "udp:0.0.0.0:" + sys.port)
     } else if (sys.sourceType === "tcp") {
