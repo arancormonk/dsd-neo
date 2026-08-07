@@ -9,9 +9,9 @@ Required license/notice files in every shipped asset:
 - `licenses/pffft-FFTPACK.txt` (from `src/third_party/pffft/COPYING`)
 
 Assets that bundle the Qt Quick frontend (`DSD_ENABLE_QT_UI=ON`, today the APK)
-additionally require `licenses/dejavu-fonts-Bitstream-Vera.txt` (from
-`src/ui/qt/fonts/DejaVu-LICENSE.txt`): the font is compiled into the frontend's
-resource bundle, so it travels with the binary rather than as a separate file.
+additionally require `licenses/ibm-plex-OFL-1.1.txt` (from
+`src/ui/qt/fonts/IBMPlex-LICENSE.txt`): the fonts are compiled into the frontend's
+resource bundle, so they travel with the binary rather than as a separate file.
 
 ## TODOs per uploaded asset
 
@@ -42,7 +42,7 @@ resource bundle, so it travels with the binary rather than as a separate file.
   - [ ] `unzip -l` shows all required files under `assets/doc/dsd-neo/`, plus
         `licenses/libusb-LGPL-2.1-or-later.txt` and
         `licenses/librtlsdr-GPL-2.0-or-later.txt` for the vendored Android
-        libraries, and `licenses/dejavu-fonts-Bitstream-Vera.txt` for the font
+        libraries, and `licenses/ibm-plex-OFL-1.1.txt` for the fonts
         compiled into the Qt resource bundle
         (`cmake/stage_android_package.cmake` stages them; `android-ci` fails the
         build if any are missing).

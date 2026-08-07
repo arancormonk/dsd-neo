@@ -13,10 +13,16 @@
 #include <QQuickStyle>
 #include <QUrl>
 
+#include <dsd-neo/runtime/git_ver.h>
+
+#include "app_prefs.h"
+#include "call_history_filter.h"
+#include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
-#include "event_log_model.h"
 #include "metrics_model.h"
+#include "saved_systems_model.h"
+#include "session_args.h"
 #include "ui_controller.h"
 
 namespace dsd_qt {
@@ -24,14 +30,15 @@ namespace dsd_qt {
 namespace {
 
 /**
- * @brief Load the bundled monospace face and hand its family back.
+ * @brief Load one bundled face and hand its family name back.
  *
- * The event log lays out in columns; per-OS system-font fallback breaks both the
- * alignment and the metrics the layout assumes.
+ * The whole UI sets its faces explicitly (IBM Plex Sans for text, IBM Plex Mono
+ * for data); per-OS system-font fallback would break both the design's metrics
+ * and the tabular-numeral alignment the monitor relies on.
  */
 QString
-load_mono_font(void) {
-    const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/dsdneo/fonts/DejaVuSansMono.ttf"));
+load_font(const char* resource) {
+    const int id = QFontDatabase::addApplicationFont(QLatin1String(resource));
     if (id < 0) {
         return QString();
     }
@@ -43,28 +50,59 @@ load_mono_font(void) {
 
 void
 ui_apply_style(void) {
-    // One style on every platform: the shared UI must not inherit the per-platform
-    // Qt Quick Controls default (Material on Android, Fusion on Linux, ...).
-    QQuickStyle::setStyle(QStringLiteral("Material"));
+    // Basic, not Material: every control the design needs is custom-drawn from the
+    // token set, and the Material style would fight those with its own metrics,
+    // ripples and theming.
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
 }
 
 bool
 ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
-    const QString mono_family = load_mono_font();
+    // The weight variants register into the same family, so one name per family is
+    // enough; Qt resolves font.weight against whichever variants are loaded.
+    const QString sans_family = load_font(":/dsdneo/fonts/IBMPlexSans-Regular.ttf");
+    (void)load_font(":/dsdneo/fonts/IBMPlexSans-SemiBold.ttf");
+    (void)load_font(":/dsdneo/fonts/IBMPlexSans-Bold.ttf");
+    const QString mono_family = load_font(":/dsdneo/fonts/IBMPlexMono-Regular.ttf");
+    (void)load_font(":/dsdneo/fonts/IBMPlexMono-Medium.ttf");
 
     auto* metrics = new MetricsModel(&engine);
-    auto* events = new EventLogModel(&engine);
     auto* commands = new CommandBridge(&engine);
-    auto* controller = new UiController(host, metrics, events, &engine);
+    auto* prefs = new AppPrefs(&engine);
+    auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
+    auto* systems = new SavedSystemsModel(&engine);
+    auto* history = new CallHistoryModel(&engine);
+    // Each view that shows the call log owns its filter state: the history tab's
+    // search and pills must not silently filter the monitor's recent-calls pane.
+    auto* historyView = new CallHistoryFilterModel(&engine);
+    historyView->setSourceModel(history);
+    auto* monitorView = new CallHistoryFilterModel(&engine);
+    monitorView->setSourceModel(history);
+    auto* controller = new UiController(host, metrics, history, &engine);
+
+    // The keep-awake preference is storage; the effect is the host's (an Android
+    // window flag). Re-asserted here on every process start because the platform
+    // recreates the window without consulting anyone's QSettings.
+    host->setKeepScreenAwake(prefs->keepScreenAwake());
+    QObject::connect(prefs, &AppPrefs::keepScreenAwakeChanged, host,
+                     [host, prefs]() { host->setKeepScreenAwake(prefs->keepScreenAwake()); });
 
     QQmlContext* context = engine.rootContext();
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
-    context->setContextProperty(QStringLiteral("eventLog"), events);
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
+    context->setContextProperty(QStringLiteral("prefs"), prefs);
+    context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
+    context->setContextProperty(QStringLiteral("savedSystems"), systems);
+    context->setContextProperty(QStringLiteral("callHistory"), history);
+    context->setContextProperty(QStringLiteral("historyView"), historyView);
+    context->setContextProperty(QStringLiteral("monitorView"), monitorView);
+    context->setContextProperty(QStringLiteral("sansFontFamily"),
+                                sans_family.isEmpty() ? QStringLiteral("sans-serif") : sans_family);
     context->setContextProperty(QStringLiteral("monoFontFamily"),
                                 mono_family.isEmpty() ? QStringLiteral("monospace") : mono_family);
+    context->setContextProperty(QStringLiteral("appVersionText"), QString::fromUtf8(GIT_TAG));
 
     engine.load(QUrl(QStringLiteral("qrc:/dsdneo/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

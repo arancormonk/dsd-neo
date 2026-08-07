@@ -34,6 +34,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(bool localDeviceBrokered READ localDeviceBrokered CONSTANT)
     Q_PROPERTY(bool localDeviceReady READ localDeviceReady NOTIFY localDeviceChanged)
     Q_PROPERTY(QString localDeviceStatus READ localDeviceStatus NOTIFY localDeviceChanged)
+    Q_PROPERTY(bool keepScreenAwakeSupported READ keepScreenAwakeSupported CONSTANT)
 
   public:
     /**
@@ -123,6 +124,17 @@ class DecoderHost : public QObject {
         return QString();
     }
 
+    /**
+     * @brief Whether setKeepScreenAwake() does anything on this platform.
+     *
+     * The Settings screen hides the toggle when it does not: a switch that
+     * persists but changes nothing is worse than no switch.
+     */
+    virtual bool
+    keepScreenAwakeSupported() const {
+        return false;
+    }
+
   public Q_SLOTS:
     /**
      * @brief Configure the engine with a CLI-shaped argv and start decoding.
@@ -182,6 +194,19 @@ class DecoderHost : public QObject {
      */
     virtual void
     requestLocalDeviceAccess() {}
+
+    /**
+     * @brief Keep the display from sleeping while the app is foreground.
+     *
+     * A platform concern, not a UI one: on Android it is a window flag that has
+     * to be flipped on the Android main thread. The shared UI wires the persisted
+     * preference to this at startup and on every toggle; hosts with no such
+     * concept ignore it (see keepScreenAwakeSupported()).
+     */
+    virtual void
+    setKeepScreenAwake(bool on) {
+        (void)on;
+    }
 
   Q_SIGNALS:
     void runningChanged();

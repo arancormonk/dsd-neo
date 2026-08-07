@@ -19,10 +19,9 @@ for file-specific license/provenance details.
 
 ## Bundled Assets
 
-- **DejaVu Sans Mono** (`src/ui/qt/fonts/DejaVuSansMono.ttf`; DejaVu Fonts project, derived from Bitstream Vera and
-  Arev) - Bitstream Vera Fonts Copyright (permissive, notice must accompany every copy); DejaVu changes are public
-  domain and Arev-derived glyphs are (c) Tavmjong Bah under the same terms. License text
-  `src/ui/qt/fonts/DejaVu-LICENSE.txt` (installed as `share/doc/dsd-neo/licenses/dejavu-fonts-Bitstream-Vera.txt`).
+- **IBM Plex Sans / IBM Plex Mono** (`src/ui/qt/fonts/IBMPlexSans-*.ttf`, `src/ui/qt/fonts/IBMPlexMono-*.ttf`;
+  (c) IBM Corp., https://github.com/IBM/plex) - SIL Open Font License 1.1. License text
+  `src/ui/qt/fonts/IBMPlex-LICENSE.txt` (installed as `share/doc/dsd-neo/licenses/ibm-plex-OFL-1.1.txt`).
   Compiled into the Qt Quick frontend's resource bundle, so it is redistributed by any build with `DSD_ENABLE_QT_UI=ON`
   — today that is the Android app.
 
@@ -63,4 +62,4 @@ for file-specific license/provenance details.
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the
-DejaVu font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.
+IBM Plex font notice for builds that bundle the Qt frontend and the librtlsdr/libusb notices for the Android package.

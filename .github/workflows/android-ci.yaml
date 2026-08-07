@@ -430,7 +430,7 @@ jobs:
             licenses/pffft-FFTPACK.txt
             licenses/libusb-LGPL-2.1-or-later.txt
             licenses/librtlsdr-GPL-2.0-or-later.txt
-            licenses/dejavu-fonts-Bitstream-Vera.txt
+            licenses/ibm-plex-OFL-1.1.txt
           )
           for f in "${required[@]}"; do
             # unzip exits 11 when the pattern matches no entry.

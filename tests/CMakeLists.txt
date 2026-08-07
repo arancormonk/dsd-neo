@@ -2045,6 +2045,99 @@ target_include_directories(
 )
 add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 
+# And for the call-history merge/re-ingest policy (call_history_merge.h): the
+# window choices and the seen-row advance ratchet are what keep one conversation
+# one row without collapsing two distinct calls into it.
+add_executable(
+    dsd-neo_test_ui_qt_call_history_merge
+    ui/test_ui_qt_call_history_merge.cpp
+)
+target_include_directories(
+    dsd-neo_test_ui_qt_call_history_merge
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(
+    NAME UI_QT_CALL_HISTORY_MERGE
+    COMMAND dsd-neo_test_ui_qt_call_history_merge
+)
+
+# The persistence layer itself (json_store atomic writes, the saved-systems
+# field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
+# policy tests above it links Qt and is registered only when the Qt frontend
+# is enabled — any box with Qt6 can run it via -DDSD_ENABLE_QT_UI=ON.
+if(DSD_ENABLE_QT_UI)
+    find_package(Qt6 REQUIRED COMPONENTS Core)
+    add_executable(
+        dsd-neo_test_ui_qt_persistence
+        ui/test_ui_qt_persistence.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_persistence
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_persistence PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_persistence
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
+
+    # The call-history model's ring ingest, driven against synthetic event
+    # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
+    # commit_rev rescan gate, and the relaunch (Activity restart) path.
+    add_executable(
+        dsd-neo_test_ui_qt_call_history_model
+        ui/test_ui_qt_call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_call_history_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_call_history_model
+        PRIVATE Qt6::Core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_call_history_model
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_call_history_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_CALL_HISTORY_MODEL
+        COMMAND dsd-neo_test_ui_qt_call_history_model
+    )
+
+    # The session-args builder: the rtl/rtltcp input specs and flag set a saved
+    # system starts with, including the bias-tee tri-state (a per-system Off
+    # must survive the app-wide On — it protects hardware).
+    add_executable(
+        dsd-neo_test_ui_qt_session_args
+        ui/test_ui_qt_session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_session_args
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(dsd-neo_test_ui_qt_session_args PRIVATE Qt6::Core)
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_session_args
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(dsd-neo_test_ui_qt_session_args PROPERTIES AUTOMOC ON)
+    add_test(NAME UI_QT_SESSION_ARGS COMMAND dsd-neo_test_ui_qt_session_args)
+endif()
+
 add_executable(
     dsd-neo_test_app_control_history_state
     ui/test_ui_history_state.c

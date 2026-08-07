@@ -86,6 +86,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].s_mode[0] = '\0';
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
+        event_struct->Event_History_Items[i].event_start_time = 0;
 
         DSD_MEMSET(event_struct->Event_History_Items[i].pdu, 0, sizeof(event_struct->Event_History_Items[0].pdu));
         event_struct->Event_History_Items[i].sysid_string[0] = '\0';
@@ -94,6 +95,10 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].text_message[0] = '\0';
         event_struct->Event_History_Items[i].event_string[0] = '\0';
         event_struct->Event_History_Items[i].internal_str[0] = '\0';
+    }
+    if (stop > 1U) {
+        // The reset reached committed rows, not just the staged one.
+        event_struct->commit_rev++;
     }
     dsd_event_history_mark_dirty(event_struct);
 }
@@ -105,7 +110,7 @@ push_event_history(Event_History_I* event_struct) {
     }
 
     //Fixed, had it going in the wrong direction first time
-    for (uint8_t i = 254; i >= 1; i--) {
+    for (uint8_t i = DSD_EVENT_HISTORY_LEN - 1; i >= 1; i--) {
         event_struct->Event_History_Items[i].write = event_struct->Event_History_Items[i - 1].write;
         event_struct->Event_History_Items[i].color_pair = event_struct->Event_History_Items[i - 1].color_pair;
         event_struct->Event_History_Items[i].severity = event_struct->Event_History_Items[i - 1].severity;
@@ -139,6 +144,8 @@ push_event_history(Event_History_I* event_struct) {
                        sizeof event_struct->Event_History_Items[i].s_mode);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
+        event_struct->Event_History_Items[i].event_start_time =
+            event_struct->Event_History_Items[i - 1].event_start_time;
 
         DSD_MEMCPY(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
                    sizeof(event_struct->Event_History_Items[0].pdu));
@@ -160,6 +167,7 @@ push_event_history(Event_History_I* event_struct) {
                        sizeof event_struct->Event_History_Items[i].internal_str);
     }
     event_struct->push_seq++;
+    event_struct->commit_rev++;
     dsd_event_history_mark_dirty(event_struct);
 }
 
@@ -504,7 +512,7 @@ watchdog_event_committed_row_index(const Event_History_I* event_struct, const ds
         return 0U;
     }
     const uint64_t depth = 1U + (event_struct->push_seq - lifecycle->committed_seq);
-    return depth <= 254U ? (uint8_t)depth : 0U;
+    return depth <= (DSD_EVENT_HISTORY_LEN - 1U) ? (uint8_t)depth : 0U;
 }
 
 static int
@@ -592,6 +600,23 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     }
     if (retained->svc == 0U && staged->svc != 0U) {
         retained->svc = staged->svc;
+    }
+    // The committed row's start is its stamp of record: frontends key their own
+    // mirrors on it, so a reacquired segment may fill a missing start but never
+    // move one — not forward (its epoch began later than the transmission), and
+    // not backward either (two independent derivations of the same instant can
+    // disagree by a second, and a moving stamp reads as a brand-new row).
+    if (retained->event_start_time == 0 && staged->event_start_time != 0) {
+        retained->event_start_time = staged->event_start_time;
+    }
+    // And symmetrically, the latest known end: event_time is restamped as
+    // last-activity per render, so the reacquired segment's stamp is the merged
+    // transmission's true end. Without this the row's span (event_time -
+    // event_start_time) stays truncated at the first fragment's end. This is the
+    // segment's own observation, never the merge instant — the no-restamp rule for
+    // the re-render still holds.
+    if (staged->event_time > retained->event_time) {
+        retained->event_time = staged->event_time;
     }
     watchdog_event_merge_text(retained->src_str, staged->src_str, sizeof(retained->src_str));
     watchdog_event_merge_text(retained->tgt_str, staged->tgt_str, sizeof(retained->tgt_str));
@@ -725,6 +750,7 @@ watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History
         // first commit was annotated from, so both halves of one transmission agree in the log.
         watchdog_event_log_merge_continuation(opts, slot, watchdog_event_should_write_systype(retained->systype),
                                               retained, &added, rendered_changed);
+        event_struct->commit_rev++;
         dsd_event_history_mark_dirty(event_struct);
         // The merged row is now this epoch's row too, so late enrichment for the reacquired
         // epoch resolves to it and the next segment in the chain has a valid merge target.
@@ -917,6 +943,13 @@ typedef struct {
     char sysid_string[200];
     uint8_t t_name_loaded;
     uint8_t s_name_loaded;
+    /* Seconds the call has run on the canonical epoch's own timeline — through its
+     * last observation while active, through its end once ended. Anchors the row's
+     * stamps: the first render subtracts it from the wall clock to fix
+     * event_start_time, and every render derives event_time as start + elapsed so
+     * the pair's difference is exactly the epoch's elapsed. */
+    double call_elapsed_s;
+    uint8_t call_elapsed_valid;
 } watchdog_event_current_ctx;
 
 typedef struct {
@@ -1032,6 +1065,13 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     ctx->key_id = call->kid;
     ctx->mi = call->mi;
     ctx->channel = call->channel;
+    if (call->started_m > 0.0) {
+        const double ref_m = (call->phase == DSD_CALL_PHASE_ENDED) ? call->ended_m : call->updated_m;
+        if (ref_m >= call->started_m) {
+            ctx->call_elapsed_s = ref_m - call->started_m;
+            ctx->call_elapsed_valid = 1U;
+        }
+    }
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
@@ -1202,6 +1242,21 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel = ctx->channel;
     if (opts->playfiles == 0) {
         item->event_time = now;
+        if (ctx->call_elapsed_valid) {
+            // Stamped once, on the epoch's first render: re-deriving it every pass
+            // from two independently truncated clocks makes the stamp jitter by a
+            // second between renders, and the committed value is whatever the last
+            // render happened to say. The retire/commit paths clear the staged row
+            // between epochs, so a nonzero stamp is always this epoch's own.
+            if (item->event_start_time == 0) {
+                item->event_start_time = now - (time_t)ctx->call_elapsed_s;
+            }
+            // Anchored to the fixed start plus the canonical epoch's own elapsed, so
+            // event_time - event_start_time is exactly the epoch's elapsed on every
+            // render — including under Android doze and NTP steps, which move the
+            // wall clock without moving the call's monotonic timeline.
+            item->event_time = item->event_start_time + (time_t)ctx->call_elapsed_s;
+        }
     }
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
@@ -1952,6 +2007,21 @@ typedef enum {
     DSD_EVENT_ENRICH_TEXT,
 } dsd_event_enrichment_kind;
 
+// Write one enrichment payload into its row field. An alias also feeds the per-slot
+// generic alias the live display reads.
+static void
+dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, const char* value,
+                       dsd_event_enrichment_kind kind) {
+    if (kind == DSD_EVENT_ENRICH_ALIAS) {
+        DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
+        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+    } else if (kind == DSD_EVENT_ENRICH_GPS) {
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+    } else {
+        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
+    }
+}
+
 static int
 dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const char* value,
                        dsd_event_enrichment_kind kind) {
@@ -1987,13 +2057,10 @@ dsd_event_enrich_epoch(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
         return 0;
     }
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
-    if (kind == DSD_EVENT_ENRICH_ALIAS) {
-        DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
-        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
-    } else if (kind == DSD_EVENT_ENRICH_GPS) {
-        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
-    } else {
-        DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
+    dsd_event_enrich_apply(state, slot, item, value, kind);
+    if (history_index != 0U) {
+        // Late enrichment landed on a committed row, not the staged one.
+        state->event_history_s[slot].commit_rev++;
     }
     dsd_event_history_mark_dirty(&state->event_history_s[slot]);
     dsd_call_state_ext_unlock(ext);
@@ -2027,7 +2094,7 @@ dsd_event_history_reset(dsd_state* state) {
     // and the bookkeeping that points into them are cleared together.
     dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
-        init_event_history(&state->event_history_s[slot], 0, 255);
+        init_event_history(&state->event_history_s[slot], 0, DSD_EVENT_HISTORY_LEN);
         if (ext != NULL) {
             // epoch and ended_committed are deliberately left alone. They say which call the slot
             // has already finished rendering, not which row it landed in: clearing them would

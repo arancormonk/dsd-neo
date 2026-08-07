@@ -8,8 +8,8 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 
+#include "call_history_model.h"
 #include "decoder_host.h"
-#include "event_log_model.h"
 #include "metrics_model.h"
 
 namespace dsd_qt {
@@ -23,8 +23,8 @@ constexpr int kDefaultPollIntervalMs = 250;
 
 } // namespace
 
-UiController::UiController(DecoderHost* host, MetricsModel* metrics, EventLogModel* events, QObject* parent)
-    : QObject(parent), m_host(host), m_metrics(metrics), m_events(events) {
+UiController::UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, QObject* parent)
+    : QObject(parent), m_host(host), m_metrics(metrics), m_history(history) {
     m_timer.setInterval(kDefaultPollIntervalMs);
     m_timer.setTimerType(Qt::CoarseTimer);
     connect(&m_timer, &QTimer::timeout, this, &UiController::tick);
@@ -62,6 +62,14 @@ UiController::stop() {
 }
 
 void
+UiController::flushHistory() {
+    if (m_history == nullptr) {
+        return;
+    }
+    m_history->refresh(dsd_app_get_latest_snapshot());
+}
+
+void
 UiController::onSessionStateChanged() {
     const DecoderHost::SessionState previous = m_session;
     m_session = m_host->sessionState();
@@ -69,22 +77,10 @@ UiController::onSessionStateChanged() {
         return;
     }
 
-    /* Entering a session: the incoming run owns the screen, so clear both models
-     * before the monitoring view appears. Without this the pane opens showing the
-     * previous run's events, which stay until the new engine publishes a revision. */
-    if (m_session == DecoderHost::Starting) {
-        if (m_metrics != nullptr) {
-            m_metrics->clear();
-        }
-        if (m_events != nullptr) {
-            m_events->clear();
-        }
-        return;
-    }
-
-    /* Leaving one: the events are the session's record and stay reachable, but the
-     * metrics describe a decoder that no longer exists. See MetricsModel::clear(). */
-    if (m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
+    /* Entering a session: the incoming run owns the screen, so the readings clear
+     * before the monitoring view appears. Leaving one: the metrics describe a
+     * decoder that no longer exists. See MetricsModel::clear(). */
+    if (m_session == DecoderHost::Starting || m_session == DecoderHost::Idle || m_session == DecoderHost::Failed) {
         if (m_metrics != nullptr) {
             m_metrics->clear();
         }
@@ -113,8 +109,10 @@ UiController::tick() {
     if (m_metrics != nullptr) {
         m_metrics->refresh(opts_snapshot, snapshot);
     }
-    if (m_events != nullptr) {
-        m_events->refresh(snapshot);
+    /* The call history is persistent by design, so unlike the metrics it is never
+     * cleared on session boundaries — only fed. */
+    if (m_history != nullptr) {
+        m_history->refresh(snapshot);
     }
 }
 

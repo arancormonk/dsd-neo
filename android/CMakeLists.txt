@@ -4,7 +4,7 @@
 find_package(
     Qt6
     REQUIRED
-    COMPONENTS Core Gui Qml Quick QuickControls2
+    COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2
 )
 
 qt_policy(SET QTP0002 NEW)
@@ -78,6 +78,16 @@ set_property(
     PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR "${dsd_neo_android_package_dir}"
 )
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_MIN_SDK_VERSION 29)
+
+# The UI's QML ships as plain qt_add_resources from src/ui/qt (no qt_add_qml_module),
+# and this directory has no .qml files of its own — androiddeployqt's default scan
+# root. Point qmlimportscanner at the real QML sources, or it sees no imports and
+# packages no QML plugins (QtQuick.Dialogs' among them: the wizard would fail to
+# load and the app would die on launch).
+set_property(
+    TARGET dsd-neo-app
+    PROPERTY QT_QML_ROOT_PATH "${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
+)
 set_property(TARGET dsd-neo-app PROPERTY QT_ANDROID_TARGET_SDK_VERSION 36)
 
 # Without these two androiddeployqt substitutes the CMake target name into

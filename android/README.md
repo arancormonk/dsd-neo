@@ -12,22 +12,24 @@ TCP PCM, and local files.
 
 ## The two-mode UI
 
-One screen with two jobs, switched on `DecoderHost::sessionState` — a phone cannot
+The shell has two modes, switched on `DecoderHost::sessionState` — a phone cannot
 do both at once:
 
-- **Setup** (`Idle`, `Failed`) — input and decode options, the primary action, a
-  failure banner when a start was abandoned, and a row that reopens the last
-  session's event log.
-- **Monitor** (`Starting`, `Running`, `Stopping`) — the settings collapse to a
-  summary chip, and status and events take the screen.
+- **Idle** (`Idle`, `Failed`) — the tab shell: saved systems on Home (one tap to
+  listen, long-press to edit or remove), the persistent call log on History,
+  Settings, plus the add-system wizard and a failure banner when a start was
+  abandoned.
+- **Monitor** (`Starting`, `Running`, `Stopping`) — the live session takes the
+  screen: the hero call, mute/hold/skip, the signal strip, and the session's
+  recent calls.
 
-Both panes stay instantiated and cross-fade, so the setup form keeps whatever was
-typed into it. Status and events exist *only* in the monitoring view: nothing
-upstream invalidates the published snapshot on stop, so `MetricsModel::clear()`
-and `EventLogModel::clear()` are what stop the last live SNR and carrier lock from
+Both layers stay instantiated and cross-fade, so nothing typed or scrolled is
+lost when a session ends. The live readings exist *only* in the monitoring view:
+nothing upstream invalidates the published snapshot on stop, so
+`MetricsModel::clear()` is what stops the last live SNR and carrier lock from
 sitting on screen for a decoder that is no longer running. `UiController` drives
-both from the session-state edges — events are cleared when a new session starts,
-not when one ends, so the finished session's log stays reachable.
+it from the session-state edges. The call history is deliberately different — it
+is persistent and never cleared on session boundaries, only fed.
 
 The service state machine, the native `g_running` atomic and the failure path are
 folded into that one phase by `session_state_map.h`, which is deliberately free of

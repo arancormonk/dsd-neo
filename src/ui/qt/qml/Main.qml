@@ -2,290 +2,262 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick.Window
+import "Util.js" as Util
 
-ApplicationWindow {
-    id: root
+Window {
+    id: mainRoot
 
     visible: true
-    width: 480
+    width: 420
     height: 900
     title: qsTr("DSD-neo")
+    color: Theme.bg
 
-    // One screen with two purposes. Idle is for configuring a session; the moment one
-    // is asked for, the screen becomes about watching it, and it changes back when the
-    // session ends. Status and events exist only in the second — a phone cannot show
-    // both jobs at once, and panels reporting on a decoder that is not running are
-    // worse than absent, because they keep their last live values.
+    // The screen has two modes with one principle carried over from the old UI:
+    // idle is for choosing what to hear, and the moment a session is asked for the
+    // screen becomes about the session. The tab shell stays instantiated underneath
+    // so nothing typed or scrolled is lost when a session ends.
     readonly property bool monitorMode: decoderHost ? decoderHost.sessionActive : false
     readonly property bool running: decoderHost ? decoderHost.running : false
     readonly property bool transitioning: decoderHost ? decoderHost.transitioning : false
-    readonly property string failureText: decoderHost ? decoderHost.failureText : ""
+    readonly property string hostFailure: decoderHost ? decoderHost.failureText : ""
+    // A start the UI refused before the host was ever asked (bad saved config).
+    property string startError: ""
+    // Set while a USB start is blocked on device access, so the platform's live
+    // detail ("USB permission denied", "No RTL-SDR attached") reaches the screen
+    // as it changes — the permission dialog answers long after the tap that
+    // asked. Cleared when access is granted (which resumes the pending start
+    // below), when the banner is dismissed, or when another system starts.
+    property bool awaitingUsbAccess: false
+    // The saved-system row whose start is waiting on that grant.
+    property int pendingUsbRow: -1
+    readonly property string usbAccessText:
+        awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
+    readonly property string failureText: startError.length > 0 ? startError
+                                          : usbAccessText.length > 0 ? usbAccessText : hostFailure
 
-    // A directly attached dongle needs no permission gesture on desktop; on Android
-    // the host has to obtain the descriptor first.
-    readonly property bool localDeviceBlocked:
-        setup.inputKey === "usb" && decoderHost && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady
+    property int currentTab: 0
+    property bool wizardOpen: false
+    // The saved-system map the running session was started from.
+    property var sessionSystem: null
 
-    // The exact argv the running session was started with, for the summary chip.
-    property var sessionArgs: []
     // Suppresses a failure banner the user has read. Reset on the next start so a
     // repeat of the same failure is reported again rather than swallowed.
     property string dismissedFailure: ""
     readonly property bool showFailure:
         !monitorMode && failureText.length > 0 && failureText !== dismissedFailure
 
+    // Dismissing the banner abandons a start still waiting on USB access; the
+    // flag must not linger, or a dongle detached minutes later while idle would
+    // resurrect a permission banner the user never asked about.
+    onDismissedFailureChanged: {
+        if (dismissedFailure.length > 0) {
+            awaitingUsbAccess = false
+            pendingUsbRow = -1
+        }
+    }
+
+    // The USB permission dialog answers long after the tap that asked: when the
+    // grant lands, finish that start instead of leaving a screen that looks like
+    // nothing happened until a second tap.
+    Connections {
+        target: decoderHost
+        function onLocalDeviceChanged() {
+            if (!mainRoot.awaitingUsbAccess || !decoderHost.localDeviceReady)
+                return
+            mainRoot.awaitingUsbAccess = false
+            var row = mainRoot.pendingUsbRow
+            mainRoot.pendingUsbRow = -1
+            if (row >= 0)
+                mainRoot.startSystem(row)
+        }
+    }
+
     onMonitorModeChanged: {
-        if (!monitorMode)
-            return
-        // Bring the session into view rather than merely revealing it: the frequency
-        // field usually still holds focus, so the keyboard would cover the panes that
-        // just appeared, and the list has to start at the newest row.
-        Qt.inputMethod.hide()
-        monitor.scrollToNewest()
+        if (monitorMode) {
+            // The frequency field usually still holds focus; the keyboard would
+            // cover the session that just appeared.
+            Qt.inputMethod.hide()
+            // Reattaching to a session this UI process did not start (service
+            // survived an Activity restart): bound the recent-calls pane to the
+            // last hour rather than the whole persisted log.
+            if (monitorView.minWhen === 0)
+                monitorView.minWhen = Math.floor(Date.now() / 1000) - 3600
+        }
     }
 
     // Closing the window finishes the Android Activity, and Qt then terminates the
-    // process — taking the service that owns the engine with it. Background instead.
-    // Refused only when the host actually took the window somewhere: a host that
-    // cannot background itself would otherwise leave a window nothing can close.
+    // process — taking the service that owns the engine with it. Background instead
+    // when the host can; and when background listening is off, stop first so the
+    // radio does not keep playing from a window the user just dismissed.
     onClosing: function (close) {
+        if (!prefs.backgroundListening && mainRoot.running)
+            decoderHost.stop()
         close.accepted = !decoderHost.moveToBackground()
     }
 
-    function startSession() {
-        root.dismissedFailure = ""
-        var args = setup.buildArgs()
-        root.sessionArgs = args
-        decoderHost.start(args)
-    }
-
-    header: ToolBar {
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
-
-            Label {
-                text: qsTr("DSD-neo")
-                font.pixelSize: 20
-                Layout.fillWidth: true
-            }
-
-            Label {
-                text: decoderHost ? decoderHost.statusText : ""
-                opacity: 0.8
-            }
+    function startSystem(row) {
+        var sys = savedSystems.get(row)
+        if (!sys || !sys.sourceType)
+            return
+        if (sys.sourceType === "usb" && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady) {
+            // Not a silent return: the platform's status line is the only thing
+            // that can say why ("USB permission denied", "No RTL-SDR attached"),
+            // and it keeps updating as the permission dialog resolves. When the
+            // grant lands, the Connections above resumes this start.
+            mainRoot.dismissedFailure = ""
+            mainRoot.startError = ""
+            mainRoot.awaitingUsbAccess = true
+            mainRoot.pendingUsbRow = row
+            decoderHost.requestLocalDeviceAccess()
+            return
         }
+        mainRoot.dismissedFailure = ""
+        mainRoot.startError = ""
+        mainRoot.awaitingUsbAccess = false
+        mainRoot.pendingUsbRow = -1
+        var built = sessionArgs.build(sys)
+        if (!built.ok) {
+            // The builder refuses for exactly two reasons; blame the field that
+            // is actually wrong or the user re-checks a frequency that was fine.
+            mainRoot.startError = built.error === "frequency"
+                ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+                : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
+            return
+        }
+        // Side effects only after the host accepts: a refused start must not
+        // stamp lastHeard, re-attribute history rows, or hide the previous
+        // session's calls from the monitor pane.
+        if (!decoderHost.start(built.args)) {
+            if (decoderHost.failureText.length === 0)
+                mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name)
+            return
+        }
+        mainRoot.sessionSystem = sys
+        // The previous session may have committed calls since the last 250 ms
+        // tick; ingest them under its own label before the label changes hands,
+        // or its tail calls read as the new system's.
+        uiController.flushHistory()
+        callHistory.sessionLabel = sys.name
+        // The monitor's recent-calls pane shows this session, not the whole log.
+        monitorView.minWhen = Math.floor(Date.now() / 1000)
+        savedSystems.touch(row)
     }
 
-    ColumnLayout {
+    // ---- Tab shell ----
+    Item {
+        id: shell
+
         anchors.fill: parent
-        anchors.margins: 12
-        spacing: 10
+        opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || !prefs.onboardingDone) ? 0.0 : 1.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
 
-        // A start that dies inside the platform layer otherwise leaves nothing behind
-        // but a return to the setup screen, which reads as "nothing happened".
-        Frame {
-            Layout.fillWidth: true
-            visible: root.showFailure
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
 
-            RowLayout {
-                anchors.fill: parent
-                spacing: 8
+        HomeScreen {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: nav.top
+            visible: mainRoot.currentTab === 0
 
-                Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.Wrap
-                    text: root.failureText
-                }
-
-                ToolButton {
-                    text: "✕"
-                    onClicked: root.dismissedFailure = root.failureText
-                }
+            onAddSystem: {
+                wizard.openForAdd(false)
+                mainRoot.wizardOpen = true
+            }
+            onNetworkSource: {
+                wizard.openForAdd(true)
+                mainRoot.wizardOpen = true
+            }
+            onPlaySystem: function (row) { mainRoot.startSystem(row) }
+            onEditSystem: function (row) {
+                wizard.openForEdit(row)
+                mainRoot.wizardOpen = true
             }
         }
 
-        // Both panes stay instantiated: a Loader would discard whatever the user has
-        // typed into the setup form every time a session starts.
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-
-            SetupPane {
-                id: setup
-                anchors.fill: parent
-                opacity: root.monitorMode ? 0.0 : 1.0
-                visible: opacity > 0.0
-                enabled: opacity > 0.9
-
-                Behavior on opacity {
-                    NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-                }
-            }
-
-            MonitorPane {
-                id: monitor
-                anchors.fill: parent
-                opacity: root.monitorMode ? 1.0 : 0.0
-                visible: opacity > 0.0
-                enabled: opacity > 0.9
-                summaryText: setup.summaryText
-                onSummaryClicked: argsSheet.open()
-
-                Behavior on opacity {
-                    NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-                }
-            }
+        HistoryScreen {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: nav.top
+            visible: mainRoot.currentTab === 1
         }
 
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 8
-
-            BusyIndicator {
-                visible: root.transitioning
-                running: root.transitioning
-                implicitWidth: 28
-                implicitHeight: 28
-            }
-
-            Button {
-                // Starting without a descriptor would just fail in the engine, so the
-                // button asks for the dongle first when that is what is missing. While
-                // the service is mid-transition it says so and refuses input: the
-                // second tap it used to accept was rejected further down with no sign
-                // of it on screen.
-                text: root.transitioning
-                      ? decoderHost.statusText
-                      : (root.running
-                         ? qsTr("Stop")
-                         : (root.localDeviceBlocked ? qsTr("Connect dongle") : qsTr("Start")))
-                highlighted: true
-                enabled: !root.transitioning
-                Layout.fillWidth: true
-                onClicked: {
-                    if (root.running)
-                        decoderHost.stop()
-                    else if (root.localDeviceBlocked)
-                        decoderHost.requestLocalDeviceAccess()
-                    else
-                        root.startSession()
-                }
-            }
-
-            // Both act on the live engine, so they belong to the session rather than
-            // to the screen that configures one.
-            Button {
-                text: qsTr("Mute")
-                visible: root.monitorMode
-                enabled: root.running
-                onClicked: commands.toggleMute()
-            }
-
-            Button {
-                text: qsTr("Lockout")
-                visible: root.monitorMode
-                enabled: root.running
-                onClicked: commands.lockoutSlot(0)
-            }
+        SettingsScreen {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: nav.top
+            visible: mainRoot.currentTab === 2
         }
 
-        // The finished session's log stays one tap away instead of on screen: it is
-        // history the moment the engine stops, not status.
-        ItemDelegate {
-            Layout.fillWidth: true
-            visible: !root.monitorMode && eventLog.count > 0
-            text: qsTr("Last session — %1 events").arg(eventLog.count)
-            onClicked: logSheet.open()
+        BottomNav {
+            id: nav
+
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            currentIndex: mainRoot.currentTab
+            onSelected: function (index) { mainRoot.currentTab = index }
         }
     }
 
-    Popup {
-        id: logSheet
+    // ---- Add-system wizard (pushed) ----
+    WizardScreen {
+        id: wizard
 
-        anchors.centerIn: Overlay.overlay
-        width: Math.round(root.width * 0.92)
-        height: Math.round(root.height * 0.8)
-        modal: true
-        padding: 12
+        anchors.fill: parent
+        opacity: mainRoot.wizardOpen && !mainRoot.monitorMode ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
 
-        ColumnLayout {
-            anchors.fill: parent
-            spacing: 8
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
 
-            RowLayout {
-                Layout.fillWidth: true
-
-                Label {
-                    Layout.fillWidth: true
-                    font.pixelSize: 16
-                    text: qsTr("Last session")
-                }
-
-                Button {
-                    text: qsTr("Close")
-                    onClicked: logSheet.close()
-                }
-            }
-
-            EventLogView {
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-            }
+        onClosed: mainRoot.wizardOpen = false
+        onSaved: function (row) {
+            mainRoot.wizardOpen = false
+            mainRoot.currentTab = 0
         }
     }
 
-    // What the collapsed chip expands to. The argv is the whole truth about how the
-    // session was configured, and unlike the form it cannot drift from it.
-    Popup {
-        id: argsSheet
+    // ---- Live monitor (owns the screen while a session is active) ----
+    MonitorScreen {
+        id: monitor
 
-        anchors.centerIn: Overlay.overlay
-        width: Math.round(root.width * 0.92)
-        modal: true
-        padding: 12
+        anchors.fill: parent
+        system: mainRoot.sessionSystem
+        opacity: mainRoot.monitorMode ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
 
-        // No height and no anchors: the popup takes its height from this layout, so
-        // filling the parent instead would make the two depend on each other. The width
-        // is pinned to the popup's, though: left to itself the layout takes its width
-        // from the argv line's natural length, which is one unbroken run of monospace
-        // wider than any phone, so Layout.fillWidth had nothing to resolve against and
-        // the options this sheet exists to show ran off the right edge unwrapped.
-        ColumnLayout {
-            width: argsSheet.availableWidth
-            spacing: 8
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+    }
 
-            Label {
-                Layout.fillWidth: true
-                font.pixelSize: 16
-                text: qsTr("Session options")
-            }
+    // ---- First-run onboarding ----
+    OnboardingScreen {
+        anchors.fill: parent
+        opacity: !prefs.onboardingDone && !mainRoot.monitorMode ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
 
-            Label {
-                Layout.fillWidth: true
-                font.family: monoFontFamily
-                font.pixelSize: 12
-                // WrapAnywhere, not Wrap: an input spec is a single long token with no
-                // spaces to break at, so word wrapping alone would still overflow.
-                wrapMode: Text.WrapAnywhere
-                text: root.sessionArgs.join(" ")
-            }
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
 
-            Label {
-                Layout.fillWidth: true
-                opacity: 0.7
-                wrapMode: Text.Wrap
-                text: qsTr("Changing these takes effect the next time you start.")
-            }
-
-            Button {
-                Layout.alignment: Qt.AlignRight
-                text: qsTr("Close")
-                onClicked: argsSheet.close()
-            }
+        onGetStarted: prefs.onboardingDone = true
+        onNetworkSource: {
+            prefs.onboardingDone = true
+            wizard.openForAdd(true)
+            mainRoot.wizardOpen = true
         }
     }
 }

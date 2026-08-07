@@ -23,8 +23,8 @@
 
 namespace dsd_qt {
 
+class CallHistoryModel;
 class CommandBridge;
-class EventLogModel;
 class MetricsModel;
 
 class UiController : public QObject {
@@ -32,7 +32,7 @@ class UiController : public QObject {
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
 
   public:
-    UiController(DecoderHost* host, MetricsModel* metrics, EventLogModel* events, QObject* parent = nullptr);
+    UiController(DecoderHost* host, MetricsModel* metrics, CallHistoryModel* history, QObject* parent = nullptr);
     ~UiController() override;
 
     int pollIntervalMs() const;
@@ -40,6 +40,17 @@ class UiController : public QObject {
 
     void start();
     void stop();
+
+    /**
+     * @brief Ingest the latest snapshot into the call history right now.
+     *
+     * For the one moment ordering matters: startSystem() is about to change the
+     * session label, and any backlog the previous session committed since the
+     * last tick must be attributed to that session, not the incoming one. Runs
+     * on the Qt main thread like every other snapshot read, and leaves the
+     * redraw flag alone so the regular tick still fires.
+     */
+    Q_INVOKABLE void flushHistory();
 
   Q_SIGNALS:
     void pollIntervalChanged();
@@ -50,7 +61,7 @@ class UiController : public QObject {
 
     DecoderHost* m_host = nullptr;
     MetricsModel* m_metrics = nullptr;
-    EventLogModel* m_events = nullptr;
+    CallHistoryModel* m_history = nullptr;
     QTimer m_timer;
     DecoderHost::SessionState m_session = DecoderHost::Idle;
 };

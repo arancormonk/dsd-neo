@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
+#include <QVariant>
 
 #include "dsdneo_jni.h"
 
@@ -18,6 +19,12 @@ namespace {
 constexpr const char* kServiceClass = "io/github/arancormonk/dsdneo/DecoderService";
 constexpr const char* kSupportClass = "io/github/arancormonk/dsdneo/AppSupport";
 constexpr const char* kUsbClass = "io/github/arancormonk/dsdneo/UsbSourceManager";
+
+/* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON. Namespace scope,
+ * not function-local: QJniObject::callMethod takes its arguments by forwarding
+ * reference, which odr-uses the constant, and the keep-awake lambda below has
+ * no capture-default to pick a local up with. */
+constexpr int kFlagKeepScreenOn = 128;
 
 /* The Qt-free phase enum and the Q_ENUM QML binds to have to stay in lockstep; the
  * mapping below hands one straight to the other. */
@@ -130,6 +137,28 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
     /* The permission dialog answers asynchronously; the poll tick picks the result
      * up through refresh(). */
     QJniObject::callStaticMethod<void>(kUsbClass, "requestAccess", "(Landroid/content/Context;)V", context.object());
+}
+
+void
+DecoderHostAndroid::setKeepScreenAwake(bool on) {
+    /* The flag belongs to the Activity's window and must be flipped on the Android
+     * main thread, not the Qt one. */
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([on]() -> QVariant {
+        QJniObject activity = android_context();
+        if (!activity.isValid()) {
+            return {};
+        }
+        QJniObject window = activity.callObjectMethod("getWindow", "()Landroid/view/Window;");
+        if (!window.isValid()) {
+            return {};
+        }
+        if (on) {
+            window.callMethod<void>("addFlags", "(I)V", kFlagKeepScreenOn);
+        } else {
+            window.callMethod<void>("clearFlags", "(I)V", kFlagKeepScreenOn);
+        }
+        return {};
+    });
 }
 
 bool
