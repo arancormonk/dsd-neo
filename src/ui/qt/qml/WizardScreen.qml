@@ -38,12 +38,33 @@ Item {
 
     readonly property bool radioSource: sourceType === "usb" || sourceType === "rtltcp"
 
+    // Per-source conventions, not one shared guess: 1234 is rtl_tcp's port, but
+    // GQRX/SDR++ audio streams (docs/network-audio.md) use 7355 and a TCP audio
+    // source is usually a player on this device. Accepting the wrong prefill
+    // leaves the session silent with no error.
+    function defaultHostFor(type) {
+        return type === "tcp" ? "127.0.0.1" : "192.168.1.10"
+    }
+
+    function defaultPortFor(type) {
+        return (type === "udp" || type === "tcp") ? "7355" : "1234"
+    }
+
+    // Swap the prefill when the source type changes, but never text the user
+    // already edited away from the previous type's default.
+    function applySourceDefaults(prevType) {
+        if (hostField.text === defaultHostFor(prevType))
+            hostField.text = defaultHostFor(sourceType)
+        if (portField.text === defaultPortFor(prevType))
+            portField.text = defaultPortFor(sourceType)
+    }
+
     function openForAdd(preferNetwork) {
         editRow = -1
         step = 0
         sourceType = preferNetwork ? "rtltcp" : "usb"
-        hostField.text = "192.168.1.10"
-        portField.text = "1234"
+        hostField.text = defaultHostFor(sourceType)
+        portField.text = defaultPortFor(sourceType)
         fileField.text = ""
         freqField.text = "851.375"
         decodeFlag = ""
@@ -251,7 +272,12 @@ Item {
 
                             text: modelData.label
                             selected: wizard.sourceType === modelData.key
-                            onClicked: wizard.sourceType = modelData.key
+                            onClicked: {
+                                var prev = wizard.sourceType
+                                wizard.sourceType = modelData.key
+                                if (prev !== modelData.key)
+                                    wizard.applySourceDefaults(prev)
+                            }
                         }
                     }
                 }
@@ -606,6 +632,14 @@ Item {
                                     width: parent.width
                                     mono: true
                                     placeholderText: String(prefs.ppm)
+                                    // Signed integer only: this string is spliced
+                                    // verbatim into the rtl input spec, and a hint
+                                    // alone does not constrain hardware keyboards.
+                                    inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    input.validator: IntValidator {
+                                        bottom: -999
+                                        top: 999
+                                    }
                                 }
                             }
 

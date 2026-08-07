@@ -30,7 +30,6 @@ Window {
     property bool wizardOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
-    property int sessionRow: -1
 
     // Suppresses a failure banner the user has read. Reset on the next start so a
     // repeat of the same failure is reported again rather than swallowed.
@@ -78,7 +77,6 @@ Window {
             return
         }
         mainRoot.sessionSystem = sys
-        mainRoot.sessionRow = row
         callHistory.sessionLabel = sys.name
         // The monitor's recent-calls pane shows this session, not the whole log.
         monitorView.minWhen = Math.floor(Date.now() / 1000)

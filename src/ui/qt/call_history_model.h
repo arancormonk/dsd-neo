@@ -121,6 +121,12 @@ class CallHistoryModel : public QAbstractListModel {
      */
     int tryMerge(const Row& row);
 
+    /**
+     * @brief Merge @p row into the log or insert it at its sorted position.
+     * @return true when a new row was inserted (the count changed).
+     */
+    bool ingestRow(const Row& row);
+
     void load();
     void scheduleSave();
     void saveNow() const;
@@ -128,6 +134,9 @@ class CallHistoryModel : public QAbstractListModel {
     QList<Row> m_rows; // newest first
     QSet<QString> m_seen;
     QString m_sessionLabel;
+    /* Rows starting at or before this stamp were cleared by the user; persisted so
+     * the still-populated ring cannot resurrect them after an Activity restart. */
+    qint64 m_clearedThrough = 0;
     quint64 m_revision[2] = {0U, 0U};
     bool m_seeded = false;
     QTimer m_saveTimer;

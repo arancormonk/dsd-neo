@@ -45,12 +45,21 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     out.name = target;
     if (snapshot->event_history_s != nullptr) {
         const Event_History* staged = &snapshot->event_history_s[slot].Event_History_Items[0];
-        if (staged->t_name[0] != '\0' && staged->target_id == static_cast<uint32_t>(call.ota_target_id)) {
+        // The staged row's target_id is stamped OTA-then-policy by the event layer,
+        // so it must be compared against the same preference (out.tg_id), not the
+        // OTA id alone — a policy-resolved talkgroup would never match otherwise.
+        // Nonzero required: a text-only target's 0 would "match" a stale staged row.
+        if (staged->t_name[0] != '\0' && out.tg_id != 0 && staged->target_id == static_cast<uint32_t>(out.tg_id)) {
             out.name = QString::fromUtf8(staged->t_name);
         }
     }
 
-    out.enc = call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    // Same definition the event ring stamps on history rows (and the terminal UI
+    // renders): encrypted over the air, including DECRYPTABLE. The live view and
+    // the call log must agree on which transmissions were encrypted, or a
+    // decrypted call plays clear here and then hides under the log's ENC filter.
+    out.enc = call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING
+              || call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
     const double ref_m = (line == kCallLineEnded) ? call.ended_m : now_m;
     const double elapsed = ref_m - call.started_m;
     out.seconds = (elapsed > 0.0) ? static_cast<int>(elapsed) : 0;
@@ -123,6 +132,13 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     const double now_m = dsd_time_now_monotonic_s();
     next.slot_call[0] = slotCallView(snapshot, 0, now_m);
     next.slot_call[1] = slotCallView(snapshot, 1, now_m);
+
+    /* Engine truth for the monitor's toggle buttons. The engine owns both states
+     * — commands only enqueue a request — and on Android the service outlives the
+     * Activity, so a relaunched UI must read where they actually stand rather than
+     * assume a fresh session's defaults. */
+    next.audio_muted = opts_snapshot->audio_out == 0;
+    next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
 
     publish(next);
 }

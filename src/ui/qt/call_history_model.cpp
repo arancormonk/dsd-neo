@@ -22,6 +22,7 @@ namespace {
 
 constexpr const char kStoreFileName[] = "call_history.json";
 constexpr const char kSessionLabelKey[] = "callHistory/sessionLabel";
+constexpr const char kClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
 /* Sanity bound on the ring's own start/end stamps: a span longer than this is a
  * corrupt or clock-shifted row, not a measured call, so it renders as unknown. */
@@ -39,6 +40,9 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
      * session is still decoding, and its backlog lands before any start button is
      * pressed. Without the persisted label those rows would be attributed to "". */
     m_sessionLabel = m_settings.value(QLatin1String(kSessionLabelKey)).toString();
+    /* Restored for the same reason: Clear must survive an Activity restart while
+     * the service's ring still holds the cleared rows. */
+    m_clearedThrough = m_settings.value(QLatin1String(kClearedThroughKey)).toLongLong();
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(kSaveDelayMs);
     connect(&m_saveTimer, &QTimer::timeout, this, [this]() { saveNow(); });
@@ -168,13 +172,24 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot) {
             if (item->target_id == 0U && item->tgt_str[0] == '\0') {
                 continue;
             }
-            Row row = row_from_item(item, m_sessionLabel);
-            const QString key = keyFor(row);
+            // Key from the raw fields before building the Row: rescans are frequent
+            // (any staged-row render bumps the revision) and almost every committed
+            // row is already seen, so the common path must not allocate row strings.
+            const qint64 start = static_cast<qint64>(item->event_start_time);
+            const qint64 end = static_cast<qint64>(item->event_time);
+            const qint64 when = (start > 0) ? start : end;
+            if (when <= m_clearedThrough) {
+                // Cleared by the user; the ring still holds the row (and will until
+                // the session ends), so it must stay invisible even after m_seen is
+                // rebuilt by a relaunched UI.
+                continue;
+            }
+            const QString key = QStringLiteral("%1|%2").arg(when).arg(item->target_id);
             if (m_seen.contains(key)) {
                 continue;
             }
             m_seen.insert(key);
-            fresh.append(row);
+            fresh.append(row_from_item(item, m_sessionLabel));
         }
     }
     return fresh;
@@ -184,7 +199,11 @@ int
 CallHistoryModel::tryMerge(const Row& row) {
     for (int i = 0; i < m_rows.size() && i < 32; i++) {
         Row& existing = m_rows[i];
-        if (existing.tg != row.tg || existing.src != row.src || existing.systemName != row.systemName) {
+        // A zero source id is "not yet learned", not a distinct unit: late-entry
+        // fragments commit before the ring learns the src, and refusing to absorb
+        // them would leave one conversation split across two rows.
+        const bool srcCompatible = existing.src == row.src || existing.src == 0 || row.src == 0;
+        if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName) {
             continue;
         }
         // The window extends off each fragment's end, not its start: one keyed-up
@@ -202,6 +221,9 @@ CallHistoryModel::tryMerge(const Row& row) {
             existing.durationSecs = static_cast<int>(span);
         }
         existing.enc = existing.enc || row.enc;
+        if (existing.src == 0) {
+            existing.src = row.src;
+        }
         return i;
     }
     return -1;
@@ -211,7 +233,45 @@ QString
 CallHistoryModel::keyFor(const Row& row) {
     // Content-derived so it survives persistence: the Android service outlives the
     // Activity, and a relaunched UI must not re-ingest rows it already logged.
-    return QStringLiteral("%1|%2|%3").arg(row.when).arg(row.tg).arg(row.src);
+    // Deliberately excludes the source id: the ring fills a committed row's src in
+    // place when a reacquisition merge learns it (0 -> real id), and a src-bearing
+    // key would re-ingest that same row as a permanent duplicate.
+    return QStringLiteral("%1|%2").arg(row.when).arg(row.tg);
+}
+
+bool
+CallHistoryModel::ingestRow(const Row& row) {
+    // Coalesce fragments into the call they belong to, with granular model
+    // signals: a merge is a dataChanged on the absorbing row, a new call inserts
+    // at its sorted (newest-first) position. Never a reset — delegates and the
+    // reader's scroll position survive every ingest.
+    static const QVector<int> mergeRoles = {WhenRole, SrcRole, EncRole, DurationSecsRole, DayLabelRole, TimeTextRole};
+    const int merged = tryMerge(row);
+    if (merged >= 0) {
+        const QModelIndex idx = index(merged);
+        Q_EMIT dataChanged(idx, idx, mergeRoles);
+        // A merge can only pull the absorbing row's start earlier, which may
+        // now sort below newer rows beneath it; restore the newest-first
+        // invariant the insertion scan and day sections depend on.
+        int newPos = merged;
+        while (newPos + 1 < m_rows.size() && m_rows.at(newPos + 1).when > m_rows.at(merged).when) {
+            newPos++;
+        }
+        if (newPos != merged) {
+            beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos + 1);
+            m_rows.move(merged, newPos);
+            endMoveRows();
+        }
+        return false;
+    }
+    int pos = 0;
+    while (pos < m_rows.size() && m_rows.at(pos).when > row.when) {
+        pos++;
+    }
+    beginInsertRows(QModelIndex(), pos, pos);
+    m_rows.insert(pos, row);
+    endInsertRows();
+    return true;
 }
 
 void
@@ -235,24 +295,9 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
         return;
     }
 
-    // Coalesce fragments into the call they belong to, with granular model
-    // signals: a merge is a dataChanged on the absorbing row, a new call inserts
-    // at its sorted (newest-first) position. Never a reset — delegates and the
-    // reader's scroll position survive every ingest.
+    bool rowsChanged = false;
     for (const Row& row : fresh) {
-        const int merged = tryMerge(row);
-        if (merged >= 0) {
-            const QModelIndex idx = index(merged);
-            Q_EMIT dataChanged(idx, idx);
-            continue;
-        }
-        int pos = 0;
-        while (pos < m_rows.size() && m_rows.at(pos).when > row.when) {
-            pos++;
-        }
-        beginInsertRows(QModelIndex(), pos, pos);
-        m_rows.insert(pos, row);
-        endInsertRows();
+        rowsChanged = ingestRow(row) || rowsChanged;
     }
     while (m_rows.size() > kMaxRows) {
         const int last = static_cast<int>(m_rows.size()) - 1;
@@ -260,8 +305,11 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
         m_seen.remove(keyFor(m_rows.last()));
         m_rows.removeLast();
         endRemoveRows();
+        rowsChanged = true;
     }
-    Q_EMIT countChanged();
+    if (rowsChanged) {
+        Q_EMIT countChanged();
+    }
     scheduleSave();
 }
 
@@ -271,6 +319,12 @@ CallHistoryModel::clearAll() {
     m_rows.clear();
     // m_seen deliberately survives: the ring still holds the rows just cleared, and
     // forgetting the keys would let the next tick re-ingest every one of them.
+    // m_seen alone is not enough, though — it is in-memory only, and a relaunched
+    // UI rebuilds it from the (now empty) persisted log while the service's ring
+    // still holds every cleared row. The persisted watermark is what keeps a clear
+    // effective across an Activity restart.
+    m_clearedThrough = QDateTime::currentSecsSinceEpoch();
+    m_settings.setValue(QLatin1String(kClearedThroughKey), m_clearedThrough);
     endResetModel();
     Q_EMIT countChanged();
     saveNow();

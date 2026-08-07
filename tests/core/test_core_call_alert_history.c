@@ -2333,6 +2333,52 @@ test_reacquired_transmission_commits_one_row(void) {
     return rc;
 }
 
+// The merge keeps the earliest event_start_time, and it must symmetrically carry the newest
+// segment's event_time: the pair is a frontend's duration, and an end stamp frozen at the first
+// fragment's last render truncates a reacquired transmission to its opening seconds.
+static int
+test_merged_row_end_stamp_advances(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    // Age the committed fragment's stamps as a real gapped transmission would read
+    // by the time the reacquired segment commits: its render happened long before
+    // the merge, while the segment below stamps the render clock's "now".
+    Event_History* committed = &event_history[0].Event_History_Items[1];
+    assert(committed->event_string[0] != '\0');
+    const time_t aged_end = committed->event_time - 100;
+    const time_t aged_start = committed->event_start_time - 100;
+    committed->event_time = aged_end;
+    committed->event_start_time = aged_start;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    advance_test_clock(5.0);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("reacquired transmission stays one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("merged row keeps the earliest start", committed->event_start_time == aged_start ? 1 : 0, 1);
+    rc |= expect_int("merged row's end advances to the newest segment's stamp",
+                     committed->event_time > aged_end ? 1 : 0, 1);
+    // Earliest start to newest end: the whole transmission, never just fragment one.
+    rc |= expect_int("merged span covers the reacquisition gap",
+                     (committed->event_time - committed->event_start_time) >= 100 ? 1 : 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // A DMR fade at the tail of a transmission ends the epoch by sync loss; the terminator that
 // explains it decodes a moment later, after the epoch is already ENDED. That terminator is
 // positive evidence the transmission is over, so it has to retract the reacquisition permission
@@ -4267,6 +4313,7 @@ main(void) {
     rc |= test_standalone_provoice_zero_id_row_commits();
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
+    rc |= test_merged_row_end_stamp_advances();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();
     rc |= test_pending_end_alert_is_flushed_at_shutdown();

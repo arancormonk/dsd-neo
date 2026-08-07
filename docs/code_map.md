@@ -241,8 +241,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 
 Qt Quick frontend (`src/ui/qt`):
 
-- QML plus C++ view-models (metrics, event log, command bridge) that poll app-control on a timer; used by the Android
-  app today and intended as the shared basis for a desktop GUI.
+- QML plus C++ view-models (metrics, call history + per-view filters, saved systems, app preferences, command bridge)
+  that poll app-control on a timer; used by the Android app today and intended as the shared basis for a desktop GUI.
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).

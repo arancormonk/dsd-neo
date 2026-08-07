@@ -35,6 +35,8 @@ Item {
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
+    readonly property bool heroEnc: heroSlot === 1 ? metrics.slot1CallEnc
+                                                   : heroSlot === 2 ? metrics.slot2CallEnc : false
     readonly property int heroSeconds: heroSlot === 1 ? metrics.slot1CallSeconds
                                                       : heroSlot === 2 ? metrics.slot2CallSeconds : 0
 
@@ -51,18 +53,12 @@ Item {
     readonly property bool otherEnc: otherSlot === 1 ? metrics.slot1CallEnc
                                                      : otherSlot === 2 ? metrics.slot2CallEnc : false
 
-    property bool muted: false
-    property bool holding: false
-
-    // Each engine start rebuilds its options fresh — unmuted, no hold — so the
-    // local toggles must follow, or the buttons run inverted against the new run.
-    readonly property bool sessionOn: decoderHost ? decoderHost.sessionActive : false
-    onSessionOnChanged: {
-        if (sessionOn) {
-            muted = false
-            holding = false
-        }
-    }
+    // Engine truth, not local mirrors: commands only enqueue a request, and on
+    // Android the service (which owns both states) outlives the Activity — a
+    // relaunched UI must show where mute and hold actually stand, or its buttons
+    // run inverted against the live session.
+    readonly property bool muted: metrics ? metrics.audioMuted : false
+    readonly property bool holding: metrics ? metrics.heldTg > 0 : false
 
     onHeroNameChanged: heroText.requestPaint()
 
@@ -243,12 +239,25 @@ Item {
                     color: Theme.textSubdued
                 }
 
-                Text {
+                Row {
                     visible: screen.heroSlot !== 0
-                    text: "TG " + screen.heroTg + " · SRC " + screen.heroSrc
-                    font.family: Theme.mono
-                    font.pixelSize: 13
-                    color: Theme.textSecondary
+                    spacing: 8
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "TG " + screen.heroTg + " · SRC " + screen.heroSrc
+                        font.family: Theme.mono
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
+                    }
+
+                    // The hero must say when the call it is captioning is
+                    // encrypted — hearing silence over a normal-looking talkgroup
+                    // otherwise reads as the decoder failing.
+                    EncTag {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: screen.heroEnc
+                    }
                 }
             }
 
@@ -281,10 +290,9 @@ Item {
                 width: (parent.width - 20) / 3
                 text: screen.muted ? qsTr("Unmute") : qsTr("Mute")
                 enabled: decoderHost.running
-                onClicked: {
-                    if (commands.toggleMute())
-                        screen.muted = !screen.muted
-                }
+                // The label follows metrics.audioMuted once the engine applies the
+                // command — the button never guesses at the outcome.
+                onClicked: commands.toggleMute()
             }
 
             OutlineButton {
@@ -294,14 +302,7 @@ Item {
                 // talkgroup (M17/D-STAR callsigns, dPMR dial strings).
                 enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
                 border.color: screen.holding ? Theme.cyan : Theme.controlBorder
-                onClicked: {
-                    if (screen.holding) {
-                        commands.holdTalkgroup(0)
-                        screen.holding = false
-                    } else if (commands.holdTalkgroup(screen.heroTgId)) {
-                        screen.holding = true
-                    }
-                }
+                onClicked: commands.holdTalkgroup(screen.holding ? 0 : screen.heroTgId)
             }
 
             OutlineButton {
@@ -419,6 +420,8 @@ Item {
             }
 
             ListView {
+                id: recentList
+
                 anchors.top: recentLabel.bottom
                 anchors.topMargin: 10
                 anchors.left: parent.left
@@ -437,15 +440,18 @@ Item {
                     rightText: Util.shortAge(model.when)
                     enc: model.enc
                 }
+            }
 
-                Text {
-                    anchors.centerIn: parent
-                    visible: parent.count === 0
-                    text: qsTr("Calls will appear here as they land.")
-                    font.family: Theme.sans
-                    font.pixelSize: 13
-                    color: Theme.textSubdued
-                }
+            // A sibling of the view, not a child: ListView reparents declared
+            // children into its contentItem, where `parent.count` is undefined and
+            // the placeholder would never show.
+            Text {
+                anchors.centerIn: recentList
+                visible: recentList.count === 0
+                text: qsTr("Calls will appear here as they land.")
+                font.family: Theme.sans
+                font.pixelSize: 13
+                color: Theme.textSubdued
             }
         }
     }

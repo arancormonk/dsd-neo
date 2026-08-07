@@ -1,7 +1,11 @@
+# QuickDialogs2 backs WizardScreen.qml's `import QtQuick.Dialogs` (FileDialog).
+# It must be a declared, linked dependency: androiddeployqt packages the QML
+# plugin only for Qt modules it can see, and an undeclared one ships an APK
+# whose WizardScreen fails to load.
 find_package(
     Qt6
     REQUIRED
-    COMPONENTS Core Gui Qml Quick QuickControls2
+    COMPONENTS Core Gui Qml Quick QuickControls2 QuickDialogs2
 )
 
 add_library(dsd-neo_ui_qt STATIC)
@@ -82,7 +86,13 @@ target_compile_definitions(dsd-neo_ui_qt PUBLIC QT_NO_KEYWORDS)
 
 target_link_libraries(
     dsd-neo_ui_qt
-    PUBLIC Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2
+    PUBLIC
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Qml
+        Qt6::Quick
+        Qt6::QuickControls2
+        Qt6::QuickDialogs2
     PRIVATE dsd-neo_app_control dsd-neo_core dsd-neo_runtime
 )
 

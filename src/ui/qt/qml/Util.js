@@ -152,7 +152,13 @@ function buildArgs(sys, prefs) {
     var args = ["--frontend", "none"]
 
     var gain = (sys.gainDb !== undefined && sys.gainDb >= 0) ? sys.gainDb : prefs.gainDb
-    var ppm = (sys.ppm !== undefined && sys.ppm !== "") ? sys.ppm : String(prefs.ppm)
+    var ppm = String((sys.ppm !== undefined && sys.ppm !== "") ? sys.ppm : String(prefs.ppm)).trim()
+    // PPM is the one override persisted as a raw string, and it is spliced
+    // verbatim into the ':'-delimited spec below — like the frequency, a
+    // malformed value must fail here, not downstream as a silently unapplied
+    // correction. (gain/bw go through parseInt at commit and fall back on NaN.)
+    if ((sys.sourceType === "usb" || sys.sourceType === "rtltcp") && !/^-?\d+$/.test(ppm))
+        return null
     var bw = (sys.bandwidthKhz !== undefined && sys.bandwidthKhz > 0) ? sys.bandwidthKhz : prefs.bandwidthKhz
     var bias = sys.biasTee || prefs.biasTee
     var tail = ":" + sys.freqMhz + "M:" + gain + ":" + ppm + ":" + bw + ":0:2"

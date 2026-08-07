@@ -73,6 +73,8 @@ Item {
     }
 
     ListView {
+        id: logList
+
         anchors.top: chrome.bottom
         anchors.topMargin: 8
         anchors.left: parent.left
@@ -112,32 +114,35 @@ Item {
             rightText: model.timeText
             enc: model.enc
         }
+    }
 
-        Column {
-            anchors.centerIn: parent
-            width: parent.width - 2 * Theme.screenPadding
-            visible: parent.count === 0
-            spacing: 8
+    // A sibling of the view, not a child: ListView reparents declared children
+    // into its contentItem, where `parent.count` is undefined and the empty state
+    // would never show.
+    Column {
+        anchors.centerIn: logList
+        width: logList.width - 2 * Theme.screenPadding
+        visible: logList.count === 0
+        spacing: 8
 
-            Text {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: qsTr("No calls yet")
-                font.family: Theme.sans
-                font.pixelSize: 16
-                font.weight: Font.DemiBold
-                color: Theme.textSecondary
-            }
+        Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: qsTr("No calls yet")
+            font.family: Theme.sans
+            font.pixelSize: 16
+            font.weight: Font.DemiBold
+            color: Theme.textSecondary
+        }
 
-            Text {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: qsTr("Start listening on a system and every call lands here.")
-                font.family: Theme.sans
-                font.pixelSize: 13
-                color: Theme.textSubdued
-                wrapMode: Text.Wrap
-            }
+        Text {
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            text: qsTr("Start listening on a system and every call lands here.")
+            font.family: Theme.sans
+            font.pixelSize: 13
+            color: Theme.textSubdued
+            wrapMode: Text.Wrap
         }
     }
 }

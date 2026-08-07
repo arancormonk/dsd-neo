@@ -45,6 +45,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool slot2CallEnc READ slot2CallEnc NOTIFY changed)
     Q_PROPERTY(int slot1CallSeconds READ slot1CallSeconds NOTIFY changed)
     Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY changed)
+    Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY changed)
+    Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY changed)
 
   public:
     explicit MetricsModel(QObject* parent = nullptr);
@@ -174,6 +176,24 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Whether the engine's audio output is muted.
+     *
+     * Engine truth, not a UI-side toggle mirror: the mute command only enqueues a
+     * request, and the Android service (which owns the state) outlives the
+     * Activity. A relaunched UI binds its Mute button to this and stays correct.
+     */
+    bool
+    audioMuted() const {
+        return m_view.audio_muted;
+    }
+
+    /** @brief Talkgroup the engine is holding on, 0 when no hold is set. */
+    qulonglong
+    heldTg() const {
+        return m_view.held_tg;
+    }
+
+    /**
      * @brief Re-read the boundary. Call from the UI poll tick only.
      *
      * Takes the snapshots rather than fetching them so that one frame is built from
@@ -237,6 +257,8 @@ class MetricsModel : public QObject {
         double cfo_hz = 0.0;
         QString tuner_gain_text;
         bool radio_input = false;
+        bool audio_muted = false;
+        qulonglong held_tg = 0;
         SlotCall slot_call[2];
 
         bool
@@ -247,8 +269,8 @@ class MetricsModel : public QObject {
              * tolerance here would suppress small real movements instead. */
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
-                   && radio_input == other.radio_input && slot_call[0] == other.slot_call[0]
-                   && slot_call[1] == other.slot_call[1];
+                   && radio_input == other.radio_input && audio_muted == other.audio_muted && held_tg == other.held_tg
+                   && slot_call[0] == other.slot_call[0] && slot_call[1] == other.slot_call[1];
         }
     };
 

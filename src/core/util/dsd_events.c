@@ -602,6 +602,15 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
         && (retained->event_start_time == 0 || staged->event_start_time < retained->event_start_time)) {
         retained->event_start_time = staged->event_start_time;
     }
+    // And symmetrically, the latest known end: event_time is restamped as
+    // last-activity per render, so the reacquired segment's stamp is the merged
+    // transmission's true end. Without this the row's span (event_time -
+    // event_start_time) stays truncated at the first fragment's end. This is the
+    // segment's own observation, never the merge instant — the no-restamp rule for
+    // the re-render still holds.
+    if (staged->event_time > retained->event_time) {
+        retained->event_time = staged->event_time;
+    }
     watchdog_event_merge_text(retained->src_str, staged->src_str, sizeof(retained->src_str));
     watchdog_event_merge_text(retained->tgt_str, staged->tgt_str, sizeof(retained->tgt_str));
     watchdog_event_merge_text(retained->t_name, staged->t_name, sizeof(retained->t_name));
