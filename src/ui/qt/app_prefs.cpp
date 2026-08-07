@@ -154,11 +154,11 @@ AppPrefs::ppm() const {
 }
 
 void
-AppPrefs::setPpm(int ppm) {
-    if (ppm == this->ppm()) {
+AppPrefs::setPpm(int value) {
+    if (value == ppm()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kPpm), ppm);
+    m_settings.setValue(QLatin1String(kPpm), value);
     Q_EMIT ppmChanged();
 }
 

@@ -67,7 +67,7 @@ class AppPrefs : public QObject {
     void setGainDb(int db);
 
     int ppm() const;
-    void setPpm(int ppm);
+    void setPpm(int value);
 
     int bandwidthKhz() const;
     void setBandwidthKhz(int khz);

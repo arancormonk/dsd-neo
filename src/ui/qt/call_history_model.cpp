@@ -159,6 +159,62 @@ CallHistoryModel::systemLabels() const {
     return labels;
 }
 
+namespace {
+
+/** @brief One committed ring item as a display row, duration approximated. */
+CallHistoryModel::Row
+row_from_item(const Event_History* item, qint64 now, const QString& sessionLabel) {
+    CallHistoryModel::Row row;
+    row.when = static_cast<qint64>(item->event_time);
+    row.tg = static_cast<qulonglong>(item->target_id);
+    row.src = static_cast<qulonglong>(item->source_id);
+    row.enc = item->enc != 0U;
+    if (item->t_name[0] != '\0') {
+        row.name = QString::fromUtf8(item->t_name);
+    } else if (item->tgt_str[0] != '\0') {
+        row.name = QString::fromUtf8(item->tgt_str);
+    } else {
+        row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
+    }
+    row.systemName = sessionLabel;
+    // The ring pushes a row when the call finishes, and this tick is at most one
+    // poll behind that, so "now minus start" approximates the duration. Rows that
+    // were already in the ring when this process attached read as hours long and
+    // render as unknown instead.
+    const qint64 elapsed = now - row.when;
+    row.durationSecs = (elapsed >= 0 && elapsed <= kMaxPlausibleDurationSecs) ? static_cast<int>(elapsed) : -1;
+    return row;
+}
+
+} // namespace
+
+QList<CallHistoryModel::Row>
+CallHistoryModel::collectFresh(const dsd_state* snapshot) {
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    QList<Row> fresh;
+    for (int slot = 0; slot < 2; slot++) {
+        // Index 0 is the still-active staged row; only committed rows (1..254) are
+        // finished calls that belong in a log.
+        for (int idx = 1; idx < 255; idx++) {
+            const Event_History* item = &snapshot->event_history_s[slot].Event_History_Items[idx];
+            if (item->category != DSD_EVENT_CATEGORY_VOICE) {
+                continue;
+            }
+            if (item->target_id == 0U && item->tgt_str[0] == '\0') {
+                continue;
+            }
+            Row row = row_from_item(item, now, m_sessionLabel);
+            const QString key = keyFor(row);
+            if (m_seen.contains(key)) {
+                continue;
+            }
+            m_seen.insert(key);
+            fresh.append(row);
+        }
+    }
+    return fresh;
+}
+
 bool
 CallHistoryModel::tryMerge(const Row& row) {
     for (int i = 0; i < m_rows.size() && i < 32; i++) {
@@ -234,46 +290,7 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
     m_revision[1] = revision[1];
     m_seeded = true;
 
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
-    QList<Row> fresh;
-    for (int slot = 0; slot < 2; slot++) {
-        // Index 0 is the still-active staged row; only committed rows (1..254) are
-        // finished calls that belong in a log.
-        for (int idx = 1; idx < 255; idx++) {
-            const Event_History* item = &snapshot->event_history_s[slot].Event_History_Items[idx];
-            if (item->category != DSD_EVENT_CATEGORY_VOICE) {
-                continue;
-            }
-            if (item->target_id == 0U && item->tgt_str[0] == '\0') {
-                continue;
-            }
-            Row row;
-            row.when = static_cast<qint64>(item->event_time);
-            row.tg = static_cast<qulonglong>(item->target_id);
-            row.src = static_cast<qulonglong>(item->source_id);
-            row.enc = item->enc != 0U;
-            if (item->t_name[0] != '\0') {
-                row.name = QString::fromUtf8(item->t_name);
-            } else if (item->tgt_str[0] != '\0') {
-                row.name = QString::fromUtf8(item->tgt_str);
-            } else {
-                row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
-            }
-            row.systemName = m_sessionLabel;
-            const QString key = keyFor(row);
-            if (m_seen.contains(key)) {
-                continue;
-            }
-            // The ring pushes a row when the call finishes, and this tick is at most
-            // one poll behind that, so "now minus start" approximates the duration.
-            // Rows that were already in the ring when this process attached read as
-            // hours long and render as unknown instead.
-            const qint64 elapsed = now - row.when;
-            row.durationSecs = (elapsed >= 0 && elapsed <= kMaxPlausibleDurationSecs) ? static_cast<int>(elapsed) : -1;
-            m_seen.insert(key);
-            fresh.append(row);
-        }
-    }
+    const QList<Row> fresh = collectFresh(snapshot);
 
     if (fresh.isEmpty()) {
         return;

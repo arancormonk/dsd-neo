@@ -32,12 +32,9 @@ SavedSystemsModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
 }
 
+/** @brief The identity half of the role switch; see tuningRoleValue(). */
 QVariant
-SavedSystemsModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
-        return QVariant();
-    }
-    const Row& row = m_rows.at(index.row());
+SavedSystemsModel::identityRoleValue(const Row& row, int role) {
     switch (role) {
         case NameRole: return row.name;
         case SourceTypeRole: return row.sourceType;
@@ -45,16 +42,34 @@ SavedSystemsModel::data(const QModelIndex& index, int role) const {
         case PortRole: return row.port;
         case FreqMhzRole: return row.freqMhz;
         case DecodeFlagRole: return row.decodeFlag;
+        case FilePathRole: return row.filePath;
+        default: return QVariant();
+    }
+}
+
+/** @brief The tuning/recency half of the role switch, split to keep each simple. */
+QVariant
+SavedSystemsModel::tuningRoleValue(const Row& row, int role) {
+    switch (role) {
         case TrunkingRole: return row.trunking;
         case GainDbRole: return row.gainDb;
         case PpmRole: return row.ppm;
         case BandwidthKhzRole: return row.bandwidthKhz;
         case BiasTeeRole: return row.biasTee;
         case ExtraArgsRole: return row.extraArgs;
-        case FilePathRole: return row.filePath;
         case LastHeardRole: return row.lastHeard;
         default: return QVariant();
     }
+}
+
+QVariant
+SavedSystemsModel::data(const QModelIndex& index, int role) const {
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
+        return QVariant();
+    }
+    const Row& row = m_rows.at(index.row());
+    const QVariant identity = identityRoleValue(row, role);
+    return identity.isValid() ? identity : tuningRoleValue(row, role);
 }
 
 QHash<int, QByteArray>

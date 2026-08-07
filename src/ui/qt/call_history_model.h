@@ -110,7 +110,8 @@ class CallHistoryModel : public QAbstractListModel {
     void sessionLabelChanged();
     void filterChanged();
 
-  private:
+  public:
+    /** @brief One logged call. Public only so file-local helpers can build one. */
     struct Row {
         qint64 when = 0;
         QString name;
@@ -121,7 +122,11 @@ class CallHistoryModel : public QAbstractListModel {
         QString systemName;
     };
 
+  private:
     static QString keyFor(const Row& row);
+
+    /** @brief Scan the ring for committed voice rows not seen before. */
+    QList<Row> collectFresh(const dsd_state* snapshot);
 
     /**
      * @brief Absorb @p row into a recent same-target row when the two overlap
