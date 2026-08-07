@@ -9,7 +9,6 @@ Item {
     id: control
 
     property bool featured: false
-    property bool enabled: true
     signal clicked()
 
     implicitWidth: 52

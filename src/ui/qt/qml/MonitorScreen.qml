@@ -410,48 +410,64 @@ Item {
         }
 
         // Signal strip — tuner truths, only when a tuner exists.
-        Row {
+        //
+        // Flow, not Row: every reading's width moves with its value (a CFO can
+        // run to "-1234 Hz", an SNR to "-10.0 dB"), and an unconstrained Row ran
+        // the last reading off the side of a 411 dp phone with no way to reach
+        // it. Each reading is one child, so a wrap drops a whole reading to the
+        // next line and never splits a label from its value. Whitespace groups
+        // them, as in the design — separator glyphs would strand at a line head.
+        Flow {
+            width: parent.width
             visible: metrics.radioInput
-            spacing: 6
+            spacing: 10
+
+            Row {
+                spacing: 5
+
+                Text {
+                    text: qsTr("SNR")
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "—"
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: metrics.snrValid ? Theme.cyan : Theme.textSubdued
+                }
+            }
+
+            Row {
+                spacing: 5
+
+                Text {
+                    text: qsTr("LOCK")
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: Theme.textSubdued
+                }
+
+                Rectangle {
+                    width: 6
+                    height: 6
+                    radius: 3
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: metrics.carrierLock ? Theme.cyan : Theme.textSubdued
+                }
+            }
 
             Text {
-                text: qsTr("SNR")
+                text: "CFO " + metrics.cfoHz.toFixed(0) + " Hz"
                 font.family: Theme.mono
                 font.pixelSize: 11
                 color: Theme.textSubdued
             }
 
             Text {
-                text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "—"
-                font.family: Theme.mono
-                font.pixelSize: 11
-                color: metrics.snrValid ? Theme.cyan : Theme.textSubdued
-            }
-
-            Text {
-                text: "  " + qsTr("LOCK")
-                font.family: Theme.mono
-                font.pixelSize: 11
-                color: Theme.textSubdued
-            }
-
-            Rectangle {
-                width: 6
-                height: 6
-                radius: 3
-                anchors.verticalCenter: parent.verticalCenter
-                color: metrics.carrierLock ? Theme.cyan : Theme.textSubdued
-            }
-
-            Text {
-                text: "  CFO " + metrics.cfoHz.toFixed(0) + " Hz  ·  " + qsTr("GAIN") + " " + metrics.tunerGainText
-                font.family: Theme.mono
-                font.pixelSize: 11
-                color: Theme.textSubdued
-            }
-
-            Text {
-                text: "  ·  " + qsTr("STREAM")
+                text: qsTr("GAIN") + " " + metrics.tunerGainText
                 font.family: Theme.mono
                 font.pixelSize: 11
                 color: Theme.textSubdued
@@ -459,11 +475,22 @@ Item {
 
             // Sample delivery from the tuner — "no samples" and "no signal" are
             // different faults, and the terminal UI always told them apart.
-            Text {
-                text: metrics.streamActive ? qsTr("ACTIVE") : qsTr("IDLE")
-                font.family: Theme.mono
-                font.pixelSize: 11
-                color: metrics.streamActive ? Theme.cyan : Theme.textSubdued
+            Row {
+                spacing: 5
+
+                Text {
+                    text: qsTr("STREAM")
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    text: metrics.streamActive ? qsTr("ACTIVE") : qsTr("IDLE")
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: metrics.streamActive ? Theme.cyan : Theme.textSubdued
+                }
             }
         }
 
