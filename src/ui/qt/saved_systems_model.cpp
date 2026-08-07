@@ -8,6 +8,8 @@
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMetaType>
+#include <QVariant>
 
 #include "json_store.h"
 
@@ -16,6 +18,23 @@ namespace dsd_qt {
 namespace {
 
 constexpr const char kStoreFileName[] = "saved_systems.json";
+
+/**
+ * @brief The bias-tee tri-state from a stored value, migrating legacy bools.
+ *
+ * Legacy stores saved the wizard's on/off switch as a bool. true was an
+ * explicit choice; false was the untouched default, whose observed behavior
+ * was to follow the app-wide pref — it must read as follow (-1), never as a
+ * frozen off. Out-of-range ints collapse to follow as well.
+ */
+int
+bias_tee_from_stored(const QVariant& value) {
+    if (value.typeId() == QMetaType::Bool) {
+        return value.toBool() ? 1 : -1;
+    }
+    const int mode = value.toInt();
+    return (mode >= -1 && mode <= 1) ? mode : -1;
+}
 
 } // namespace
 
@@ -122,7 +141,7 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
         row.bandwidthKhz = map.value(QStringLiteral("bandwidthKhz")).toInt();
     }
     if (map.contains(QStringLiteral("biasTee"))) {
-        row.biasTee = map.value(QStringLiteral("biasTee")).toBool();
+        row.biasTee = bias_tee_from_stored(map.value(QStringLiteral("biasTee")));
     }
     if (map.contains(QStringLiteral("extraArgs"))) {
         row.extraArgs = map.value(QStringLiteral("extraArgs")).toString();

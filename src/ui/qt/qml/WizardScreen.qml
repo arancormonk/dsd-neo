@@ -31,7 +31,10 @@ Item {
     property alias gainText: gainField.text
     property alias ppmText: ppmField.text
     property alias bwText: bwField.text
-    property bool biasTee: false
+    // Tri-state: -1 follows the app-wide Settings pref, 0 forces off, 1 forces
+    // on. An explicit Off must survive a global On — it means this dongle or
+    // antenna must not be fed the tee's 4.5 V.
+    property int biasTee: -1
     property alias extraText: extraField.text
 
     // Step 3 state
@@ -74,7 +77,7 @@ Item {
         gainField.text = ""
         ppmField.text = ""
         bwField.text = ""
-        biasTee = false
+        biasTee = -1
         extraField.text = ""
         nameField.text = ""
     }
@@ -123,7 +126,7 @@ Item {
             return true
         }
         if (step === 1)
-            return !radioSource || Util.freqValid(freqText)
+            return !radioSource || sessionArgs.freqValid(freqText)
         return nameText.trim().length > 0
     }
 
@@ -704,39 +707,35 @@ Item {
                             }
                         }
 
-                        Item {
+                        Column {
                             width: parent.width
-                            height: 34
+                            spacing: 6
                             // rtl-tcp too: the engine applies the bias token on
                             // remote dongles, and an LNA on the far end needs it
                             // just as much as a local one.
                             visible: wizard.radioSource
 
-                            Column {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 2
-
-                                Text {
-                                    text: qsTr("Bias tee")
-                                    font.family: Theme.sans
-                                    font.pixelSize: 14
-                                    color: Theme.textPrimary
-                                }
-
-                                Text {
-                                    text: qsTr("Powers an external LNA")
-                                    font.family: Theme.sans
-                                    font.pixelSize: 12
-                                    color: Theme.textSubdued
-                                }
+                            Text {
+                                text: qsTr("Bias tee")
+                                font.family: Theme.sans
+                                font.pixelSize: 14
+                                color: Theme.textPrimary
                             }
 
-                            PlexSwitch {
-                                anchors.right: parent.right
-                                anchors.verticalCenter: parent.verticalCenter
-                                checked: wizard.biasTee
-                                onToggled: function (state) { wizard.biasTee = state }
+                            Text {
+                                text: qsTr("Powers an external LNA. Off wins over the app-wide setting.")
+                                font.family: Theme.sans
+                                font.pixelSize: 12
+                                color: Theme.textSubdued
+                            }
+
+                            SegmentedControl {
+                                width: parent.width
+                                model: [qsTr("App default"), qsTr("On"), qsTr("Off")]
+                                currentIndex: wizard.biasTee === 1 ? 1 : wizard.biasTee === 0 ? 2 : 0
+                                onSelected: function (index) {
+                                    wizard.biasTee = index === 1 ? 1 : index === 2 ? 0 : -1
+                                }
                             }
                         }
 

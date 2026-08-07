@@ -27,8 +27,11 @@ Window {
     // Set while a USB start is blocked on device access, so the platform's live
     // detail ("USB permission denied", "No RTL-SDR attached") reaches the screen
     // as it changes — the permission dialog answers long after the tap that
-    // asked. Cleared once the device is ready or another system starts.
+    // asked. Cleared when access is granted (which resumes the pending start
+    // below), when the banner is dismissed, or when another system starts.
     property bool awaitingUsbAccess: false
+    // The saved-system row whose start is waiting on that grant.
+    property int pendingUsbRow: -1
     readonly property string usbAccessText:
         awaitingUsbAccess && decoderHost && !decoderHost.localDeviceReady ? decoderHost.localDeviceStatus : ""
     readonly property string failureText: startError.length > 0 ? startError
@@ -44,6 +47,32 @@ Window {
     property string dismissedFailure: ""
     readonly property bool showFailure:
         !monitorMode && failureText.length > 0 && failureText !== dismissedFailure
+
+    // Dismissing the banner abandons a start still waiting on USB access; the
+    // flag must not linger, or a dongle detached minutes later while idle would
+    // resurrect a permission banner the user never asked about.
+    onDismissedFailureChanged: {
+        if (dismissedFailure.length > 0) {
+            awaitingUsbAccess = false
+            pendingUsbRow = -1
+        }
+    }
+
+    // The USB permission dialog answers long after the tap that asked: when the
+    // grant lands, finish that start instead of leaving a screen that looks like
+    // nothing happened until a second tap.
+    Connections {
+        target: decoderHost
+        function onLocalDeviceChanged() {
+            if (!mainRoot.awaitingUsbAccess || !decoderHost.localDeviceReady)
+                return
+            mainRoot.awaitingUsbAccess = false
+            var row = mainRoot.pendingUsbRow
+            mainRoot.pendingUsbRow = -1
+            if (row >= 0)
+                mainRoot.startSystem(row)
+        }
+    }
 
     onMonitorModeChanged: {
         if (monitorMode) {
@@ -75,21 +104,24 @@ Window {
         if (sys.sourceType === "usb" && decoderHost.localDeviceBrokered && !decoderHost.localDeviceReady) {
             // Not a silent return: the platform's status line is the only thing
             // that can say why ("USB permission denied", "No RTL-SDR attached"),
-            // and it keeps updating as the permission dialog resolves.
+            // and it keeps updating as the permission dialog resolves. When the
+            // grant lands, the Connections above resumes this start.
             mainRoot.dismissedFailure = ""
             mainRoot.startError = ""
             mainRoot.awaitingUsbAccess = true
+            mainRoot.pendingUsbRow = row
             decoderHost.requestLocalDeviceAccess()
             return
         }
         mainRoot.dismissedFailure = ""
         mainRoot.startError = ""
         mainRoot.awaitingUsbAccess = false
-        var args = Util.buildArgs(sys, prefs)
-        if (!args) {
-            // buildArgs refuses for exactly two reasons; blame the field that is
-            // actually wrong or the user re-checks a frequency that was fine.
-            mainRoot.startError = !Util.freqValid(sys.freqMhz)
+        mainRoot.pendingUsbRow = -1
+        var built = sessionArgs.build(sys)
+        if (!built.ok) {
+            // The builder refuses for exactly two reasons; blame the field that
+            // is actually wrong or the user re-checks a frequency that was fine.
+            mainRoot.startError = built.error === "frequency"
                 ? qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
                 : qsTr("“%1” has an invalid PPM correction — long-press its card to edit it.").arg(sys.name)
             return
@@ -97,12 +129,16 @@ Window {
         // Side effects only after the host accepts: a refused start must not
         // stamp lastHeard, re-attribute history rows, or hide the previous
         // session's calls from the monitor pane.
-        if (!decoderHost.start(args)) {
+        if (!decoderHost.start(built.args)) {
             if (decoderHost.failureText.length === 0)
                 mainRoot.startError = qsTr("“%1” could not be started.").arg(sys.name)
             return
         }
         mainRoot.sessionSystem = sys
+        // The previous session may have committed calls since the last 250 ms
+        // tick; ingest them under its own label before the label changes hands,
+        // or its tail calls read as the new system's.
+        uiController.flushHistory()
         callHistory.sessionLabel = sys.name
         // The monitor's recent-calls pane shows this session, not the whole log.
         monitorView.minWhen = Math.floor(Date.now() / 1000)

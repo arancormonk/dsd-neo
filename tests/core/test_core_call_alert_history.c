@@ -32,12 +32,15 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+_Static_assert(DSD_EVENT_HISTORY_LEN == 255, "event history ring length is pinned by consumers of the snapshot");
 _Static_assert(offsetof(Event_History_I, revision) == sizeof(Event_History) * 255U,
                "event history revision must follow the existing items");
 _Static_assert(offsetof(Event_History_I, push_seq) == sizeof(Event_History) * 255U + sizeof(uint64_t),
                "event history push sequence must follow the revision");
-_Static_assert(sizeof(Event_History_I) == sizeof(Event_History) * 255U + (2U * sizeof(uint64_t)),
-               "event history bookkeeping must add exactly two 64-bit counters");
+_Static_assert(offsetof(Event_History_I, commit_rev) == sizeof(Event_History) * 255U + (2U * sizeof(uint64_t)),
+               "event history commit revision must follow the push sequence");
+_Static_assert(sizeof(Event_History_I) == sizeof(Event_History) * 255U + (3U * sizeof(uint64_t)),
+               "event history bookkeeping must add exactly three 64-bit counters");
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -407,14 +410,21 @@ test_event_history_revision_primitives(void) {
     rc |= expect_int("init sets neutral systype", histories[0].Event_History_Items[0].systype, -1);
     rc |= expect_u64("slot revisions are independent after init", histories[1].revision, 0U);
 
+    // commit_rev only moves when committed rows do: a staged-row init leaves it
+    // alone, a push (which shifts every committed row) advances it.
+    rc |= expect_u64("staged-row init leaves commit_rev unchanged", histories[0].commit_rev, 0U);
     histories[0].Event_History_Items[0].source_id = 1234U;
     push_event_history(&histories[0]);
     rc |= expect_u64("push advances revision once", histories[0].revision, 2U);
+    rc |= expect_u64("push advances commit_rev once", histories[0].commit_rev, 1U);
     rc |= expect_int("push copies the head row", (int)histories[0].Event_History_Items[1].source_id, 1234);
 
     dsd_event_history_mark_dirty(&histories[1]);
     rc |= expect_u64("explicit mark advances selected slot", histories[1].revision, 1U);
     rc |= expect_u64("explicit mark leaves other slot unchanged", histories[0].revision, 2U);
+    rc |= expect_u64("mark-dirty leaves commit_rev unchanged", histories[1].commit_rev, 0U);
+    init_event_history(&histories[1], 0, DSD_EVENT_HISTORY_LEN);
+    rc |= expect_u64("full reset advances commit_rev", histories[1].commit_rev, 1U);
     dsd_event_history_mark_dirty(NULL);
 
     histories[1].revision = UINT64_MAX;
@@ -469,6 +479,9 @@ test_voice_row_carries_call_start_time(void) {
     assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
+    // Adopt the epoch the way the per-frame loop does; without this the end-of-call
+    // sync takes the startup-attach promote path, which re-inits the staged row.
+    dsd_event_sync_slot(&opts, &state, 0U);
     // The BEGIN was observed at 1.0 and this CONTINUE lands at 8.1, so the active
     // epoch has run for 7.1 s on the fixture timeline when the row is rendered.
     // Same identity, so observe() answers 0 — continuing the epoch, not beginning
@@ -484,14 +497,28 @@ test_voice_row_carries_call_start_time(void) {
     rc |= expect_int("active row start-to-stamp span is the epoch's elapsed",
                      (int)(staged->event_time - staged->event_start_time), 7);
 
-    // Ended at 10.2 → 9.2 s total. The commit's final render must extend the span
+    // The stamp is derived once, on the epoch's first render. A later render must
+    // not re-derive it — re-deriving from two independently truncated clocks makes
+    // the stamp jitter by a second per pass — while event_time keeps advancing
+    // with the epoch's elapsed.
+    const time_t first_start = staged->event_start_time;
+    advance_test_clock(1.0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 0);
+    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_int("re-render keeps the start stamp fixed", staged->event_start_time == first_start ? 1 : 0, 1);
+    rc |= expect_int("re-render extends the span with the epoch's elapsed",
+                     (int)(staged->event_time - staged->event_start_time), 8);
+
+    // Ended at 10.3 → 9.3 s total. The commit's final render must extend the span
     // through the end, and the committed row must carry the pair.
-    advance_test_clock(2.0);
+    advance_test_clock(1.0);
     assert(dsd_call_state_end_ex(&state, 0U, g_observed_m, DSD_CALL_END_TERMINATOR) == 1);
     dsd_event_sync_slot(&opts, &state, 0U);
 
     const Event_History* committed = &event_history[0].Event_History_Items[1];
-    rc |= expect_int("committed voice row keeps the start time", committed->event_start_time > 0 ? 1 : 0, 1);
+    rc |= expect_int("committed voice row keeps the start time", committed->event_start_time == first_start ? 1 : 0, 1);
     rc |= expect_int("committed row start-to-stamp span runs through the end",
                      (int)(committed->event_time - committed->event_start_time), 9);
     return rc;
@@ -2333,7 +2360,7 @@ test_reacquired_transmission_commits_one_row(void) {
     return rc;
 }
 
-// The merge keeps the earliest event_start_time, and it must symmetrically carry the newest
+// The merge keeps the committed row's event_start_time, and it must symmetrically carry the newest
 // segment's event_time: the pair is a frontend's duration, and an end stamp frozen at the first
 // fragment's last render truncates a reacquired transmission to its opening seconds.
 static int
@@ -2369,12 +2396,103 @@ test_merged_row_end_stamp_advances(void) {
     dsd_event_sync_slot(&opts, &state, 0U);
 
     int rc = expect_int("reacquired transmission stays one row", committed_history_rows(&event_history[0]), 1);
-    rc |= expect_int("merged row keeps the earliest start", committed->event_start_time == aged_start ? 1 : 0, 1);
+    rc |= expect_int("merged row keeps the committed start", committed->event_start_time == aged_start ? 1 : 0, 1);
     rc |= expect_int("merged row's end advances to the newest segment's stamp",
                      committed->event_time > aged_end ? 1 : 0, 1);
-    // Earliest start to newest end: the whole transmission, never just fragment one.
+    // Committed start to newest end: the whole transmission, never just fragment one.
     rc |= expect_int("merged span covers the reacquisition gap",
                      (committed->event_time - committed->event_start_time) >= 100 ? 1 : 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A reacquired segment derives its own start stamp independently, and that derivation can land a
+// second to either side of the committed row's stamp. The merge must never move a nonzero
+// committed start — frontends key their history mirrors on it, and a stamp that shifts under a
+// committed row reads back as a brand-new call (duplicate rows, leaked dedup state).
+static int
+test_merged_row_start_stamp_is_frozen(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    // Shift the committed stamp two seconds later than the reacquired segment's own derivation
+    // will land, so an earliest-wins merge would visibly rewrite it backwards.
+    Event_History* committed = &event_history[0].Event_History_Items[1];
+    assert(committed->event_start_time > 0);
+    const time_t shifted_start = committed->event_start_time + 2;
+    committed->event_start_time = shifted_start;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    advance_test_clock(5.0);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    int rc = expect_int("reacquired transmission stays one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("merge does not move a nonzero committed start",
+                     committed->event_start_time == shifted_start ? 1 : 0, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// commit_rev is the committed-rows-only change counter frontends gate their ring rescans on:
+// staged-row renders must leave it alone, while commits, merges and late enrichment advance it.
+static int
+test_commit_rev_tracks_committed_rows_only(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    const uint64_t base = event_history[0].commit_rev;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_u64("staged render leaves commit_rev unchanged", event_history[0].commit_rev, base);
+
+    advance_test_clock(1.0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 0);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_u64("repeated staged renders leave commit_rev unchanged", event_history[0].commit_rev, base);
+
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    const uint64_t committed_rev = event_history[0].commit_rev;
+    rc |= expect_int("commit advances commit_rev", committed_rev > base ? 1 : 0, 1);
+
+    // Late enrichment of the committed row is a committed-row mutation too.
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) == 1);
+    rc |= expect_int("late alias enriches the committed row",
+                     dsd_event_enrich_alias(&state, 0U, call.epoch, "LATE ALIAS"), 1);
+    const uint64_t enriched_rev = event_history[0].commit_rev;
+    rc |= expect_int("enrichment advances commit_rev", enriched_rev > committed_rev ? 1 : 0, 1);
+
+    // A reacquisition merge mutates the committed row in place and must advance it as well.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 200U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    advance_test_clock(5.0);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("reacquisition merge advances commit_rev", event_history[0].commit_rev > enriched_rev ? 1 : 0, 1);
+    rc |= expect_int("merge stays one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_u64("other slot's commit_rev is untouched", event_history[1].commit_rev, base);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -4314,6 +4432,8 @@ main(void) {
     rc |= test_new_canonical_epoch_commits_prior_canonical_call();
     rc |= test_reacquired_transmission_commits_one_row();
     rc |= test_merged_row_end_stamp_advances();
+    rc |= test_merged_row_start_stamp_is_frozen();
+    rc |= test_commit_rev_tracks_committed_rows_only();
     rc |= test_terminator_after_sync_loss_end_blocks_reacquisition();
     rc |= test_end_reason_upgrade_is_one_directional();
     rc |= test_pending_end_alert_is_flushed_at_shutdown();

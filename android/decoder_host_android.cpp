@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
+#include <QVariant>
 
 #include "dsdneo_jni.h"
 
@@ -130,6 +131,30 @@ DecoderHostAndroid::requestLocalDeviceAccess() {
     /* The permission dialog answers asynchronously; the poll tick picks the result
      * up through refresh(). */
     QJniObject::callStaticMethod<void>(kUsbClass, "requestAccess", "(Landroid/content/Context;)V", context.object());
+}
+
+void
+DecoderHostAndroid::setKeepScreenAwake(bool on) {
+    /* android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON */
+    constexpr int kFlagKeepScreenOn = 128;
+    /* The flag belongs to the Activity's window and must be flipped on the Android
+     * main thread, not the Qt one. */
+    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([on]() -> QVariant {
+        QJniObject activity = android_context();
+        if (!activity.isValid()) {
+            return {};
+        }
+        QJniObject window = activity.callObjectMethod("getWindow", "()Landroid/view/Window;");
+        if (!window.isValid()) {
+            return {};
+        }
+        if (on) {
+            window.callMethod<void>("addFlags", "(I)V", kFlagKeepScreenOn);
+        } else {
+            window.callMethod<void>("clearFlags", "(I)V", kFlagKeepScreenOn);
+        }
+        return {};
+    });
 }
 
 bool

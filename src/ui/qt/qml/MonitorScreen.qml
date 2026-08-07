@@ -42,6 +42,8 @@ Item {
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
     readonly property bool heroEnc: heroSlot === 1 ? metrics.slot1CallEnc
                                                    : heroSlot === 2 ? metrics.slot2CallEnc : false
+    readonly property string heroEncText: heroSlot === 1 ? metrics.slot1EncText
+                                                         : heroSlot === 2 ? metrics.slot2EncText : ""
     readonly property int heroSeconds: heroSlot === 1 ? metrics.slot1CallSeconds
                                                       : heroSlot === 2 ? metrics.slot2CallSeconds : 0
 
@@ -57,6 +59,19 @@ Item {
                                                       : otherSlot === 2 ? metrics.slot2TgText : ""
     readonly property bool otherEnc: otherSlot === 1 ? metrics.slot1CallEnc
                                                      : otherSlot === 2 ? metrics.slot2CallEnc : false
+
+    // Ticks the recent-calls age labels ("now", "1m", "2h") once a minute:
+    // Util.shortAge reads the clock, which is not a binding dependency, so
+    // without this a row's age freezes at whatever it said when its delegate
+    // was created. Same device as HomeScreen's heardTick.
+    property int ageTick: 0
+
+    Timer {
+        interval: 60000
+        running: screen.visible
+        repeat: true
+        onTriggered: screen.ageTick++
+    }
 
     // Engine truth, not local mirrors: commands only enqueue a request, and on
     // Android the service (which owns both states) outlives the Activity — a
@@ -263,6 +278,17 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         visible: screen.heroEnc
                     }
+
+                    // The decoded algorithm and key id, when the header said:
+                    // AES and RC4 traffic should read differently at a glance.
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: screen.heroEnc && screen.heroEncText.length > 0
+                        text: screen.heroEncText
+                        font.family: Theme.mono
+                        font.pixelSize: 11
+                        color: Theme.textSubdued
+                    }
                 }
             }
 
@@ -423,6 +449,22 @@ Item {
                 font.pixelSize: 11
                 color: Theme.textSubdued
             }
+
+            Text {
+                text: "  ·  " + qsTr("STREAM")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+
+            // Sample delivery from the tuner — "no samples" and "no signal" are
+            // different faults, and the terminal UI always told them apart.
+            Text {
+                text: metrics.streamActive ? qsTr("ACTIVE") : qsTr("IDLE")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: metrics.streamActive ? Theme.cyan : Theme.textSubdued
+            }
         }
 
         // Recent calls.
@@ -459,7 +501,9 @@ Item {
                                + (model.enc ? " · " + qsTr("encrypted") : "")
                                + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
                     }
-                    rightText: Util.shortAge(model.when)
+                    // ageTick forces the minute-by-minute refresh; shortAge reads
+                    // the clock, which is not a binding dependency by itself.
+                    rightText: (screen.ageTick, Util.shortAge(model.when))
                     enc: model.enc
                 }
             }

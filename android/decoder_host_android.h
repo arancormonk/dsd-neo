@@ -41,11 +41,18 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool localDeviceReady() const override;
     QString localDeviceStatus() const override;
 
+    /** @brief True: FLAG_KEEP_SCREEN_ON on the Activity window is available. */
+    bool
+    keepScreenAwakeSupported() const override {
+        return true;
+    }
+
     bool start(const QStringList& argv) override;
     void stop() override;
     bool moveToBackground() override;
     void refresh() override;
     void requestLocalDeviceAccess() override;
+    void setKeepScreenAwake(bool on) override;
 
     /** @brief Materialize a SAF content URI into cacheDir; returns "" on failure. */
     QString importContentUri(const QString& reference, const QString& fileName) override;

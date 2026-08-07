@@ -113,7 +113,7 @@ test_saved_systems(void) {
                got.value(QStringLiteral("gainDb")).toInt() == 36
                    && got.value(QStringLiteral("ppm")).toString() == QStringLiteral("-2")
                    && got.value(QStringLiteral("bandwidthKhz")).toInt() == 12
-                   && got.value(QStringLiteral("biasTee")).toBool()
+                   && got.value(QStringLiteral("biasTee")).toInt() == 1
                    && got.value(QStringLiteral("extraArgs")).toString() == QStringLiteral("-C chan.csv"));
 
         /* Absent keys keep the documented sentinels; junk types collapse to
@@ -127,6 +127,7 @@ test_saved_systems(void) {
         expect("absent overrides keep sentinels",
                sparseGot.value(QStringLiteral("gainDb")).toInt() == -1
                    && sparseGot.value(QStringLiteral("bandwidthKhz")).toInt() == -1
+                   && sparseGot.value(QStringLiteral("biasTee")).toInt() == -1
                    && sparseGot.value(QStringLiteral("trunking")).toBool()
                    && sparseGot.value(QStringLiteral("lastHeard")).toLongLong() == 0);
 
@@ -147,18 +148,34 @@ test_saved_systems(void) {
         legacy.insert(QStringLiteral("name"), QStringLiteral("Legacy LSM"));
         legacy.insert(QStringLiteral("decodeFlag"), QStringLiteral("-f1 -mq"));
         model.add(legacy);
+
+        /* Bias tee migrates from the legacy bool: true was an explicit choice,
+         * false the untouched default whose behavior was to follow the app-wide
+         * pref — it must read as follow (-1), never as a frozen off. */
+        QVariantMap legacyBias;
+        legacyBias.insert(QStringLiteral("name"), QStringLiteral("Legacy bias"));
+        legacyBias.insert(QStringLiteral("biasTee"), false);
+        model.add(legacyBias);
+        expect("legacy bias-tee false reads as follow-default",
+               model.get(3).value(QStringLiteral("biasTee")).toInt() == -1);
+        QVariantMap explicitOff;
+        explicitOff.insert(QStringLiteral("biasTee"), 0);
+        model.update(3, explicitOff);
+        expect("explicit bias-tee off persists as off", model.get(3).value(QStringLiteral("biasTee")).toInt() == 0);
     }
 
     /* A second instance is the Activity-restart path: everything above must
      * come back from disk, including the legacy decode-flag migration. */
     SavedSystemsModel reloaded;
-    expect("reload restores every row", reloaded.count() == 3);
+    expect("reload restores every row", reloaded.count() == 4);
     expect("reload restores fields",
            reloaded.get(0).value(QStringLiteral("name")).toString() == QStringLiteral("Renamed")
                && reloaded.get(0).value(QStringLiteral("extraArgs")).toString() == QStringLiteral("-C chan.csv"));
     expect("legacy '-f1 -mq' migrates to '-mq' on load",
            reloaded.get(2).value(QStringLiteral("decodeFlag")).toString() == QStringLiteral("-mq"));
+    expect("explicit bias-tee off survives the reload", reloaded.get(3).value(QStringLiteral("biasTee")).toInt() == 0);
 
+    reloaded.remove(0);
     reloaded.remove(0);
     reloaded.remove(0);
     reloaded.remove(0);

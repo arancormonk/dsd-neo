@@ -22,6 +22,7 @@ target_sources(
         metrics_model.cpp
         qt_ui.cpp
         saved_systems_model.cpp
+        session_args.cpp
         ui_controller.cpp
 )
 

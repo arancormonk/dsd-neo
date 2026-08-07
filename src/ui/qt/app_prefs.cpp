@@ -5,11 +5,6 @@
 
 #include "app_prefs.h"
 
-#ifdef Q_OS_ANDROID
-#include <QCoreApplication>
-#include <QJniObject>
-#endif
-
 namespace dsd_qt {
 
 namespace {
@@ -28,11 +23,6 @@ constexpr const char kBandwidthKhz[] = "tuner/bandwidthKhz";
 constexpr const char kBiasTee[] = "tuner/biasTee";
 constexpr const char kExtraArgs[] = "decode/extraArgs";
 
-#ifdef Q_OS_ANDROID
-// android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
-constexpr int kFlagKeepScreenOn = 128;
-#endif
-
 } // namespace
 
 AppPrefs::AppPrefs(QObject* parent)
@@ -41,9 +31,6 @@ AppPrefs::AppPrefs(QObject* parent)
     // launched rather than on the app.
     : QObject(parent),
       m_settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("dsd-neo"), QStringLiteral("dsd-neo-app")) {
-    // Re-assert on startup: the flag lives on the Activity window, which Android
-    // recreates without consulting anyone's QSettings.
-    applyKeepScreenAwake(keepScreenAwake());
 }
 
 AppPrefs::~AppPrefs() = default;
@@ -101,8 +88,10 @@ AppPrefs::setKeepScreenAwake(bool on) {
     if (on == keepScreenAwake()) {
         return;
     }
+    // Storage only. The platform effect (the Android window flag) is applied by
+    // the DecoderHost the shared UI wires this preference to — this layer stays
+    // free of platform APIs.
     m_settings.setValue(QLatin1String(kKeepScreenAwake), on);
-    applyKeepScreenAwake(on);
     Q_EMIT keepScreenAwakeChanged();
 }
 
@@ -202,32 +191,6 @@ AppPrefs::setExtraArgs(const QString& args) {
     }
     m_settings.setValue(QLatin1String(kExtraArgs), args);
     Q_EMIT extraArgsChanged();
-}
-
-void
-AppPrefs::applyKeepScreenAwake(bool on) {
-#ifdef Q_OS_ANDROID
-    // The flag belongs to the Activity's window and must be flipped on the Android
-    // main thread, not the Qt one.
-    QNativeInterface::QAndroidApplication::runOnAndroidMainThread([on]() -> QVariant {
-        QJniObject activity = QNativeInterface::QAndroidApplication::context();
-        if (!activity.isValid()) {
-            return {};
-        }
-        QJniObject window = activity.callObjectMethod("getWindow", "()Landroid/view/Window;");
-        if (!window.isValid()) {
-            return {};
-        }
-        if (on) {
-            window.callMethod<void>("addFlags", "(I)V", kFlagKeepScreenOn);
-        } else {
-            window.callMethod<void>("clearFlags", "(I)V", kFlagKeepScreenOn);
-        }
-        return {};
-    });
-#else
-    (void)on;
-#endif
 }
 
 } // namespace dsd_qt

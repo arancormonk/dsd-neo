@@ -37,6 +37,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(double cfoHz READ cfoHz NOTIFY tunerChanged)
     Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY tunerChanged)
     Q_PROPERTY(bool radioInput READ radioInput NOTIFY tunerChanged)
+    Q_PROPERTY(bool streamActive READ streamActive NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -49,6 +50,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY slot2Changed)
     Q_PROPERTY(bool slot1CallEnc READ slot1CallEnc NOTIFY slot1Changed)
     Q_PROPERTY(bool slot2CallEnc READ slot2CallEnc NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1EncText READ slot1EncText NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2EncText READ slot2EncText NOTIFY slot2Changed)
     Q_PROPERTY(int slot1CallSeconds READ slot1CallSeconds NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY slot2Changed)
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
@@ -96,6 +99,12 @@ class MetricsModel : public QObject {
     bool
     radioInput() const {
         return m_view.radio_input;
+    }
+
+    /** @brief Whether the RTL sample stream is delivering right now (RTL inputs only). */
+    bool
+    streamActive() const {
+        return m_view.stream_active;
     }
 
     /**
@@ -170,6 +179,23 @@ class MetricsModel : public QObject {
     bool
     slot2CallEnc() const {
         return m_view.slot_call[1].enc;
+    }
+
+    /**
+     * @brief "ALG 84 · KID 0001" for an encrypted call whose header decoded.
+     *
+     * Empty when the call is clear or the algorithm was never learned; the ENC
+     * tag alone covers that case. What the terminal UI's slot line showed, so
+     * an operator can tell AES from RC4 at a glance.
+     */
+    const QString&
+    slot1EncText() const {
+        return m_view.slot_call[0].enc_text;
+    }
+
+    const QString&
+    slot2EncText() const {
+        return m_view.slot_call[1].enc_text;
     }
 
     int
@@ -262,6 +288,7 @@ class MetricsModel : public QObject {
         QString name;
         QString tg_text;
         QString src_text;
+        QString enc_text;     // "ALG 84 · KID 0001", empty when clear or unlearned
         qulonglong tg_id = 0; // numeric talkgroup, 0 when the call has none
         bool enc = false;
         int seconds = 0;
@@ -269,7 +296,8 @@ class MetricsModel : public QObject {
         bool
         operator==(const SlotCall& other) const {
             return state == other.state && name == other.name && tg_text == other.tg_text && src_text == other.src_text
-                   && tg_id == other.tg_id && enc == other.enc && seconds == other.seconds;
+                   && enc_text == other.enc_text && tg_id == other.tg_id && enc == other.enc
+                   && seconds == other.seconds;
         }
     };
 
@@ -280,6 +308,7 @@ class MetricsModel : public QObject {
         double cfo_hz = 0.0;
         QString tuner_gain_text;
         bool radio_input = false;
+        bool stream_active = false;
         bool audio_muted = false;
         qulonglong held_tg = 0;
         QString ui_message;
@@ -293,7 +322,7 @@ class MetricsModel : public QObject {
         tunerEquals(const View& other) const {
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
-                   && radio_input == other.radio_input;
+                   && radio_input == other.radio_input && stream_active == other.stream_active;
         }
 
         bool

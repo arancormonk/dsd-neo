@@ -54,8 +54,8 @@ var DECODE_MODES = [
 ]
 
 // Flags a saved system may still carry from an older catalog. They keep their
-// saved behavior (buildArgs splices the stored flag verbatim); this map only
-// keeps their card label honest.
+// saved behavior (the session-args builder splices the stored flag verbatim);
+// this map only keeps their card label honest.
 var LEGACY_DECODE_LABELS = {
     "-f1": "P25"
 }
@@ -143,87 +143,10 @@ function fmtDuration(secs) {
     return m + ":" + (s < 10 ? "0" + s : s)
 }
 
-// Whether a saved system's frequency field parses as a positive MHz value.
-// Number() rejects trailing junk ("851.375M" → NaN) where parseFloat would not.
-function freqValid(freqMhz) {
-    if (freqMhz === undefined || freqMhz === null)
-        return false
-    var mhz = Number(String(freqMhz).trim())
-    return isFinite(mhz) && mhz > 0
-}
-
-// The CLI-shaped argv a saved system starts with, or null when the system cannot
-// produce a sane one. Reusing the CLI parser is what buys the whole option
-// surface; per-system overrides fall back to the app-wide defaults from prefs
-// (-1 / empty string mean "no override"). A malformed frequency must fail here,
-// not downstream: dsd_parse_freq_hz reads a garbage spec as 0 Hz and the session
-// would come up silently mistuned with no diagnostic.
-function buildArgs(sys, prefs) {
-    if ((sys.sourceType === "usb" || sys.sourceType === "rtltcp") && !freqValid(sys.freqMhz))
-        return null
-
-    var args = ["--frontend", "none"]
-
-    var gain = (sys.gainDb !== undefined && sys.gainDb >= 0) ? sys.gainDb : prefs.gainDb
-    var ppm = String((sys.ppm !== undefined && sys.ppm !== "") ? sys.ppm : String(prefs.ppm)).trim()
-    // The wizard's IntValidator accepts an explicit '+' sign that the check
-    // below would refuse; it means the same thing, so drop it rather than make
-    // "+5" a saved system that can never start.
-    if (ppm.charAt(0) === '+')
-        ppm = ppm.substring(1)
-    // PPM is the one override persisted as a raw string, and it is spliced
-    // verbatim into the ':'-delimited spec below — like the frequency, a
-    // malformed value must fail here, not downstream as a silently unapplied
-    // correction. (gain/bw go through parseInt at commit and fall back on NaN.)
-    if ((sys.sourceType === "usb" || sys.sourceType === "rtltcp") && !/^-?\d+$/.test(ppm))
-        return null
-    var bw = (sys.bandwidthKhz !== undefined && sys.bandwidthKhz > 0) ? sys.bandwidthKhz : prefs.bandwidthKhz
-    var bias = sys.biasTee || prefs.biasTee
-    var tail = ":" + sys.freqMhz + "M:" + gain + ":" + ppm + ":" + bw + ":0:2"
-
-    if (sys.sourceType === "usb") {
-        var spec = "rtl:0" + tail
-        if (bias)
-            spec += ":bias"
-        args.push("-i", spec)
-    } else if (sys.sourceType === "rtltcp") {
-        // The engine parses a trailing bias token on rtltcp specs exactly as it
-        // does on rtl ones; a remote dongle feeding an LNA needs it just as much.
-        var tcpSpec = "rtltcp:" + sys.host + ":" + sys.port + tail
-        if (bias)
-            tcpSpec += ":bias"
-        args.push("-i", tcpSpec)
-    } else if (sys.sourceType === "udp") {
-        args.push("-i", "udp:0.0.0.0:" + sys.port)
-    } else if (sys.sourceType === "tcp") {
-        args.push("-i", "tcp:" + sys.host + ":" + sys.port)
-    } else {
-        args.push("-i", sys.filePath)
-    }
-
-    args.push("-o", "pulse")
-
-    if (sys.decodeFlag && sys.decodeFlag.length > 0) {
-        // A chip may carry several flags, so split rather than push whole.
-        var flags = sys.decodeFlag.split(/\s+/)
-        for (var f = 0; f < flags.length; f++)
-            args.push(flags[f])
-    }
-    if (sys.trunking)
-        args.push("-T")
-    if (prefs.skipEncrypted)
-        args.push("--enc-lockout")
-    if (prefs.autoPpm)
-        args.push("--auto-ppm")
-
-    var extra = ((sys.extraArgs || "") + " " + (prefs.extraArgs || "")).trim()
-    if (extra.length > 0) {
-        var parts = extra.split(/\s+/)
-        for (var i = 0; i < parts.length; i++)
-            args.push(parts[i])
-    }
-    return args
-}
+// The argv a saved system starts with is built by the C++ SessionArgsBuilder
+// (the `sessionArgs` context property): the ':'-delimited rtl specs it
+// assembles silently mistune a session when malformed, so they are built and
+// validated in host-tested code, not here.
 
 // Uppercased mono meta for the monitor header: "851.375 MHZ · TRUNKED · USB".
 function monitorMeta(sys) {

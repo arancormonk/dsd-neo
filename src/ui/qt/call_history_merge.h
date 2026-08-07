@@ -54,7 +54,7 @@ call_history_merge_within_window(int64_t existing_start, int64_t existing_end, i
  *
  * The core merges a reacquired segment into its committed row in place: the end
  * stamp extends, a late-decoded source id fills 0 -> real, the crypto verdict
- * can flip on. The row's content key does not change when that happens, so this
+ * can flip on. The row's key does not change when that happens, so this
  * comparison — against what was last read, not against presence in a seen set —
  * is the only way those merges ever reach the display and the persisted log.
  */
@@ -62,6 +62,50 @@ inline bool
 call_history_seen_row_advanced(int64_t stored_end, uint64_t stored_src, bool stored_enc, int64_t end, uint64_t src,
                                bool enc) {
     return end > stored_end || (stored_src == 0U && src != 0U) || (!stored_enc && enc);
+}
+
+/**
+ * @brief Fold a fresh read of a seen ring row into what was last recorded.
+ *
+ * One-way ratchets, matching the core's own merge semantics: the end never
+ * retreats, a learned source id never un-learns, the crypto verdict never
+ * clears. This is the single definition both the live noteSeen() path and its
+ * tests share, so the ratchet cannot drift from the advance test above.
+ *
+ * @return true when the row had advanced and the stored values were updated.
+ */
+inline bool
+call_history_seen_absorb(int64_t* stored_end, uint64_t* stored_src, bool* stored_enc, int64_t end, uint64_t src,
+                         bool enc) {
+    if (!call_history_seen_row_advanced(*stored_end, *stored_src, *stored_enc, end, src, enc)) {
+        return false;
+    }
+    if (end > *stored_end) {
+        *stored_end = end;
+    }
+    if (*stored_src == 0U && src != 0U) {
+        *stored_src = src;
+    }
+    *stored_enc = *stored_enc || enc;
+    return true;
+}
+
+/* Sanity bound on a row's start/end stamps: a span longer than this is a corrupt
+ * or clock-shifted row, not a measured call, so it renders as unknown. */
+constexpr int64_t kCallHistoryMaxPlausibleDurationSecs = 3600;
+
+/**
+ * @brief Measured duration from a row's stamped ends, or -1 when unknown.
+ *
+ * The single definition of "plausible" shared by first ingest and every later
+ * merge, so a duration a fresh row would refuse cannot sneak in via a merge.
+ */
+inline int
+call_history_duration_secs(int64_t start, int64_t end) {
+    if (start <= 0 || end < start || end - start > kCallHistoryMaxPlausibleDurationSecs) {
+        return -1;
+    }
+    return static_cast<int>(end - start);
 }
 
 } // namespace dsd_qt

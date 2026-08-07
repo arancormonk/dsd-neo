@@ -169,13 +169,25 @@ typedef struct {
 } Event_History;
 
 //event history for number of each items above
+// Ring length, shared with every consumer that walks the items: index 0 is the
+// staged (still-active) row, indexes 1..DSD_EVENT_HISTORY_LEN-1 are committed rows.
+#define DSD_EVENT_HISTORY_LEN 255
+
 typedef struct Event_History_I {
-    Event_History Event_History_Items[255];
+    Event_History Event_History_Items[DSD_EVENT_HISTORY_LEN];
     uint64_t revision;
     // Count of push_event_history() calls on this slot. Every push -- call commits,
     // data and system notices, the startup banner -- shifts the ring by one, so a
-    // row's depth can be recovered as 1 + (push_seq - the push_seq it was pushed at).
+    // row's depth can be recovered as 1 + (push_seq - the push_seq it was pushed at),
+    // and a committed row's push stamp as push_seq - (its index - 1). That stamp is
+    // stable for the row's whole life in the ring, which makes it the identity
+    // frontends key their own mirrors on.
     uint64_t push_seq;
+    // Count of mutations to the committed rows (indexes >= 1): pushes, reacquisition
+    // merges, late enrichment, and full resets. Staged-row renders bump only
+    // `revision`, so a consumer that mirrors committed rows only (the Qt call
+    // history) can skip rescanning the ring while this is unchanged.
+    uint64_t commit_rev;
 } Event_History_I;
 
 //new audio filter stuff from: https://github.com/NedSimao/FilteringLibrary

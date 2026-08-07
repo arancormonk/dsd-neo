@@ -268,11 +268,14 @@ Item {
                         title: qsTr("Keep listening in background")
                         subtitle: qsTr("Shows a persistent notification")
                         checked: prefs.backgroundListening
-                        showDivider: true
+                        showDivider: decoderHost.keepScreenAwakeSupported
                         onToggled: function (state) { prefs.backgroundListening = state }
                     }
 
                     ToggleRow {
+                        // Hidden where the host cannot honor it: a switch that
+                        // persists but changes nothing reads as broken.
+                        visible: decoderHost.keepScreenAwakeSupported
                         title: qsTr("Keep screen awake")
                         checked: prefs.keepScreenAwake
                         onToggled: function (state) { prefs.keepScreenAwake = state }

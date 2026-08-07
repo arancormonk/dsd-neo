@@ -17,6 +17,41 @@
 
 namespace dsd_qt {
 
+namespace {
+
+/**
+ * @brief Whether the call reads as encrypted over the air, including DECRYPTABLE.
+ *
+ * Same definition the event ring stamps on history rows (and the terminal UI
+ * renders): the live view and the call log must agree on which transmissions
+ * were encrypted, or a decrypted call plays clear here and then hides under
+ * the log's ENC filter.
+ */
+bool
+call_reads_encrypted(const dsd_call_snapshot& call) {
+    return call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING
+           || call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
+}
+
+/**
+ * @brief "ALG 84 · KID 0001" when the crypto header decoded, else empty.
+ *
+ * What the terminal UI's slot line showed, so AES and RC4 traffic read
+ * differently at a glance; the ENC tag alone covers "encrypted, alg unknown".
+ */
+QString
+slot_enc_text(const dsd_call_snapshot& call) {
+    if (call.algid == 0U) {
+        return QString();
+    }
+    return QStringLiteral("ALG %1 · KID %2")
+        .arg(call.algid, 2, 16, QLatin1Char('0'))
+        .arg(call.kid, 4, 16, QLatin1Char('0'))
+        .toUpper();
+}
+
+} // namespace
+
 /**
  * @brief Structured identity for one slot, display-ready for the hero panel.
  *
@@ -56,12 +91,10 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
         }
     }
 
-    // Same definition the event ring stamps on history rows (and the terminal UI
-    // renders): encrypted over the air, including DECRYPTABLE. The live view and
-    // the call log must agree on which transmissions were encrypted, or a
-    // decrypted call plays clear here and then hides under the log's ENC filter.
-    out.enc = call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING
-              || call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
+    out.enc = call_reads_encrypted(call);
+    if (out.enc) {
+        out.enc_text = slot_enc_text(call);
+    }
     const double ref_m = (line == kCallLineEnded) ? call.ended_m : now_m;
     const double elapsed = ref_m - call.started_m;
     out.seconds = (elapsed > 0.0) ? static_cast<int>(elapsed) : 0;
@@ -140,6 +173,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
 
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;
+    next.stream_active = metrics.stream_active != 0;
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
      * a GFSK stream. Nothing reads at all on an input with no demodulator behind it

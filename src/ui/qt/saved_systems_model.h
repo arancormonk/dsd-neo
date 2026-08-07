@@ -40,7 +40,7 @@ class SavedSystemsModel : public QAbstractListModel {
         GainDbRole,       // -1 = use the app-wide default
         PpmRole,          // INT_MIN sentinel avoided; stored as string, empty = default
         BandwidthKhzRole, // -1 = default
-        BiasTeeRole,
+        BiasTeeRole,      // tri-state: -1 = follow the app-wide pref, 0 = off, 1 = on
         ExtraArgsRole,
         FilePathRole,
         LastHeardRole // seconds since epoch; 0 = never
@@ -96,7 +96,10 @@ class SavedSystemsModel : public QAbstractListModel {
         int gainDb = -1;
         QString ppm;
         int bandwidthKhz = -1;
-        bool biasTee = false;
+        /* -1 follows the app-wide pref, 0 is explicitly off, 1 explicitly on. An
+         * explicit off must survive a global on: it is the operator saying this
+         * dongle or antenna must not be fed the tee's 4.5 V. */
+        int biasTee = -1;
         QString extraArgs;
         QString filePath;
         qint64 lastHeard = 0;

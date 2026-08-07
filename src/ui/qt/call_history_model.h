@@ -23,9 +23,11 @@
 
 #include <QAbstractListModel>
 #include <QHash>
+#include <QJsonArray>
 #include <QList>
 #include <QSettings>
 #include <QString>
+#include <QThreadPool>
 #include <QTimer>
 
 #include <dsd-neo/core/state_fwd.h>
@@ -89,10 +91,11 @@ class CallHistoryModel : public QAbstractListModel {
     /**
      * @brief Ingest newly committed voice rows from the snapshot ring.
      *
-     * Call from the UI poll tick only. Duplicate protection is by content key, not
-     * ring position: the ring shifts on every push, so positions mean nothing.
-     * Updates are granular (insert/change/remove), never a model reset — a reset
-     * would destroy every delegate and the reader's scroll position per ingest.
+     * Call from the UI poll tick only. Duplicate protection keys on the row's
+     * stable ring identity — slot plus the push stamp the row was committed at —
+     * not its index, which shifts on every push. Updates are granular
+     * (insert/change/remove), never a model reset — a reset would destroy every
+     * delegate and the reader's scroll position per ingest.
      */
     void refresh(const dsd_state* snapshot);
 
@@ -114,6 +117,13 @@ class CallHistoryModel : public QAbstractListModel {
         QString systemName;
         int kind = KindVoice;
         QString detail;
+        /* Ring identity, persisted with the row so keyFor() can reproduce the key
+         * the ring scan used. slot is the TDMA slot; seq is the push-sequence stamp
+         * the row was committed at (push_seq - index + 1), which is stable for the
+         * row's whole life in the ring — unlike its index, which shifts per push,
+         * and unlike its stamps, which merges may still refine. */
+        int slot = 0;
+        qulonglong seq = 0;
     };
 
   private:
@@ -153,8 +163,8 @@ class CallHistoryModel : public QAbstractListModel {
      */
     int noteSeen(const QString& key, qint64 when, qint64 end, qulonglong src, bool enc, bool voice);
 
-    /** @brief Scan the ring for committed rows not seen before, or seen but advanced. */
-    QList<FreshRow> collectFresh(const dsd_state* snapshot);
+    /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
+    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2]);
 
     /**
      * @brief Absorb @p row into a recent same-target row when the two overlap
@@ -175,7 +185,20 @@ class CallHistoryModel : public QAbstractListModel {
 
     void load();
     void scheduleSave();
+    /** @brief Serialize and write both stores on the calling thread. */
     void saveNow() const;
+    /**
+     * @brief Hand the current stores to the save worker.
+     *
+     * The arrays are built here on the GUI thread (cheap); the serialization and
+     * the two file writes — the part that can stall a frame for tens of
+     * milliseconds on phone flash — run on m_savePool. One save in flight at a
+     * time; a request that lands mid-write re-arms the debounce timer instead.
+     */
+    void startAsyncSave();
+    void onSaveFinished();
+    QJsonArray rowsToJson() const;
+    QJsonArray seenToJson() const;
     /** @brief Bound m_seen once it is well past what the ring could resurrect. */
     void pruneSeen();
     /** @brief Arm m_dayTimer for the next local midnight. */
@@ -187,9 +210,16 @@ class CallHistoryModel : public QAbstractListModel {
     /* Rows starting at or before this stamp were cleared by the user; persisted so
      * the still-populated ring cannot resurrect them after an Activity restart. */
     qint64 m_clearedThrough = 0;
-    quint64 m_revision[2] = {0U, 0U};
+    /* Committed-rows change counter per slot (Event_History_I::commit_rev). The
+     * staged row re-renders at the poll rate while a call is up, bumping only
+     * `revision`; gating the 2x254-row rescan on this instead keeps the idle and
+     * live-call ticks free of ring walks that cannot find anything. */
+    quint64 m_commitRev[2] = {0U, 0U};
     bool m_seeded = false;
     QTimer m_saveTimer;
+    QThreadPool m_savePool;
+    bool m_saveInFlight = false;
+    bool m_saveDirty = false;
     /* Fires at local midnight: "TODAY"/"YESTERDAY" section labels are derived
      * from the current date, and nothing else re-reads them when it rolls over. */
     QTimer m_dayTimer;

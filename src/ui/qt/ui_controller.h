@@ -41,6 +41,17 @@ class UiController : public QObject {
     void start();
     void stop();
 
+    /**
+     * @brief Ingest the latest snapshot into the call history right now.
+     *
+     * For the one moment ordering matters: startSystem() is about to change the
+     * session label, and any backlog the previous session committed since the
+     * last tick must be attributed to that session, not the incoming one. Runs
+     * on the Qt main thread like every other snapshot read, and leaves the
+     * redraw flag alone so the regular tick still fires.
+     */
+    Q_INVOKABLE void flushHistory();
+
   Q_SIGNALS:
     void pollIntervalChanged();
 

@@ -92,9 +92,6 @@ class AppPrefs : public QObject {
     void extraArgsChanged();
 
   private:
-    /** @brief Push the keep-awake flag to the platform window. No-op off Android. */
-    void applyKeepScreenAwake(bool on);
-
     mutable QSettings m_settings;
 };
 

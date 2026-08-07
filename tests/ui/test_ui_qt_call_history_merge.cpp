@@ -7,13 +7,17 @@
  * Quick frontend only builds for Android, so the decisions live in a Qt-free
  * header (call_history_merge.h) exactly to be testable here. */
 
+#include <stdint.h>
 #include <stdio.h>
 
 #include "call_history_merge.h"
 #include "dsd-neo/core/safe_api.h"
 
+using dsd_qt::call_history_duration_secs;
 using dsd_qt::call_history_merge_within_window;
+using dsd_qt::call_history_seen_absorb;
 using dsd_qt::call_history_seen_row_advanced;
+using dsd_qt::kCallHistoryMaxPlausibleDurationSecs;
 using dsd_qt::kCallMergeWindowSrcMatchedSecs;
 using dsd_qt::kCallMergeWindowSrcUnknownSecs;
 
@@ -80,12 +84,56 @@ test_seen_row_advanced(void) {
     expect("enc clear does not re-read", call_history_seen_row_advanced(105, 1234, true, 105, 1234, false), false);
 }
 
+void
+expect_int(const char* what, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got %d want %d\n", what, got, want);
+        g_failures++;
+    }
+}
+
+void
+test_seen_absorb(void) {
+    /* The absorb ratchet is the write half of the advance test: same one-way
+     * rules, applied to the stored values. */
+    int64_t end = 105;
+    uint64_t src = 0;
+    bool enc = false;
+
+    expect("unchanged read absorbs nothing", call_history_seen_absorb(&end, &src, &enc, 105, 0, false), false);
+    expect("advanced read absorbs", call_history_seen_absorb(&end, &src, &enc, 145, 1234, true), true);
+    expect_int("end ratchets forward", (int)end, 145);
+    expect_int("src fills once", (int)src, 1234);
+    expect("enc latches on", enc, true);
+
+    /* A stale snapshot must not unwind any of it. */
+    expect("stale read absorbs nothing", call_history_seen_absorb(&end, &src, &enc, 105, 5678, false), false);
+    expect_int("end never retreats", (int)end, 145);
+    expect_int("src never re-learns", (int)src, 1234);
+    expect("enc never clears", enc, true);
+}
+
+void
+test_duration(void) {
+    expect_int("measured span is the duration", call_history_duration_secs(100, 145), 45);
+    expect_int("zero-length call is zero, not unknown", call_history_duration_secs(100, 100), 0);
+    expect_int("missing start reads unknown", call_history_duration_secs(0, 145), -1);
+    expect_int("end before start reads unknown", call_history_duration_secs(145, 100), -1);
+    expect_int("implausible span reads unknown",
+               call_history_duration_secs(100, 100 + kCallHistoryMaxPlausibleDurationSecs + 1), -1);
+    expect_int("longest plausible span is kept",
+               call_history_duration_secs(100, 100 + kCallHistoryMaxPlausibleDurationSecs),
+               (int)kCallHistoryMaxPlausibleDurationSecs);
+}
+
 } // namespace
 
 int
 main(void) {
     test_merge_window();
     test_seen_row_advanced();
+    test_seen_absorb();
+    test_duration();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

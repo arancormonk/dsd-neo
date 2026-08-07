@@ -22,6 +22,7 @@
 #include "decoder_host.h"
 #include "metrics_model.h"
 #include "saved_systems_model.h"
+#include "session_args.h"
 #include "ui_controller.h"
 
 namespace dsd_qt {
@@ -68,6 +69,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* metrics = new MetricsModel(&engine);
     auto* commands = new CommandBridge(&engine);
     auto* prefs = new AppPrefs(&engine);
+    auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
     auto* history = new CallHistoryModel(&engine);
     // Each view that shows the call log owns its filter state: the history tab's
@@ -78,12 +80,20 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     monitorView->setSourceModel(history);
     auto* controller = new UiController(host, metrics, history, &engine);
 
+    // The keep-awake preference is storage; the effect is the host's (an Android
+    // window flag). Re-asserted here on every process start because the platform
+    // recreates the window without consulting anyone's QSettings.
+    host->setKeepScreenAwake(prefs->keepScreenAwake());
+    QObject::connect(prefs, &AppPrefs::keepScreenAwakeChanged, host,
+                     [host, prefs]() { host->setKeepScreenAwake(prefs->keepScreenAwake()); });
+
     QQmlContext* context = engine.rootContext();
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);
+    context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);

@@ -26,6 +26,11 @@ Item {
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
         spacing: Theme.gap
+        // TapHandlers never take exclusive grabs, so with the confirm sheet up a
+        // tap on the dimmed search field would still pop the keyboard, a dimmed
+        // pill would cycle its filter, and the dimmed Clear label would re-open
+        // the sheet — same class of tap-through the list below guards against.
+        enabled: !confirmClear.visible
 
         Item {
             width: parent.width
@@ -63,7 +68,15 @@ Item {
             width: parent.width
             placeholderText: qsTr("Search talkgroup or unit")
             inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-            onTextChanged: historyView.filterText = text
+            // Debounced: every keystroke otherwise re-evaluates the filter over
+            // the full log, and on a phone that stutters the keyboard.
+            onTextChanged: searchDebounce.restart()
+
+            Timer {
+                id: searchDebounce
+                interval: 250
+                onTriggered: historyView.filterText = search.text
+            }
         }
 
         Row {
@@ -162,10 +175,15 @@ Item {
         visible: logList.count === 0
         spacing: 8
 
+        // An empty filtered view and an empty log are different situations: the
+        // first must say the calls are hidden, not gone, or the filter pill left
+        // active yesterday reads as a decoder that stopped logging.
+        readonly property bool filtered: callHistory.count > 0
+
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: qsTr("No calls yet")
+            text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
             font.family: Theme.sans
             font.pixelSize: 16
             font.weight: Font.DemiBold
@@ -175,11 +193,28 @@ Item {
         Text {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: qsTr("Start listening on a system and every call lands here.")
+            text: parent.filtered ? qsTr("%n logged call(s) are hidden by the search or filters.", "",
+                                         callHistory.count)
+                                  : qsTr("Start listening on a system and every call lands here.")
             font.family: Theme.sans
             font.pixelSize: 13
             color: Theme.textSubdued
             wrapMode: Text.Wrap
+        }
+
+        Item { width: 1; height: 6; visible: parent.filtered }
+
+        OutlineButton {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: parent.filtered
+            width: Math.min(parent.width, 220)
+            text: qsTr("Clear filters")
+            onClicked: {
+                search.text = ""
+                historyView.filterText = ""
+                historyView.filterSystem = ""
+                historyView.filterKind = 0
+            }
         }
     }
 

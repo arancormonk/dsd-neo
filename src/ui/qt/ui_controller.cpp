@@ -62,6 +62,14 @@ UiController::stop() {
 }
 
 void
+UiController::flushHistory() {
+    if (m_history == nullptr) {
+        return;
+    }
+    m_history->refresh(dsd_app_get_latest_snapshot());
+}
+
+void
 UiController::onSessionStateChanged() {
     const DecoderHost::SessionState previous = m_session;
     m_session = m_host->sessionState();
