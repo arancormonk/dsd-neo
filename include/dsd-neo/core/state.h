@@ -154,6 +154,10 @@ typedef struct {
     char s_mode[200];   //mode, or A,B,D,DE from csv group import file
     uint32_t channel;   // If this occurs on a trunking channel, which channel
     time_t event_time;  //time event occurred
+    // Wall-clock time the transmission this row describes began, or 0 when unknown.
+    // event_time is restamped as last-activity on every render pass, so by commit it
+    // reads as the call's end; the pair is what gives a frontend a real duration.
+    time_t event_start_time;
 
     uint8_t pdu[128 * 24];   //relevant link control, or full PDU if data call (in bytes)
     char sysid_string[200];  //string comprised of system unique identifiers

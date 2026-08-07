@@ -86,6 +86,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].s_mode[0] = '\0';
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
+        event_struct->Event_History_Items[i].event_start_time = 0;
 
         DSD_MEMSET(event_struct->Event_History_Items[i].pdu, 0, sizeof(event_struct->Event_History_Items[0].pdu));
         event_struct->Event_History_Items[i].sysid_string[0] = '\0';
@@ -139,6 +140,8 @@ push_event_history(Event_History_I* event_struct) {
                        sizeof event_struct->Event_History_Items[i].s_mode);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
+        event_struct->Event_History_Items[i].event_start_time =
+            event_struct->Event_History_Items[i - 1].event_start_time;
 
         DSD_MEMCPY(event_struct->Event_History_Items[i].pdu, event_struct->Event_History_Items[i - 1].pdu,
                    sizeof(event_struct->Event_History_Items[0].pdu));
@@ -593,6 +596,12 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     if (retained->svc == 0U && staged->svc != 0U) {
         retained->svc = staged->svc;
     }
+    // Earliest known start wins: a reacquired segment is the same transmission, and
+    // its later epoch must not shear the row's start forward.
+    if (staged->event_start_time != 0
+        && (retained->event_start_time == 0 || staged->event_start_time < retained->event_start_time)) {
+        retained->event_start_time = staged->event_start_time;
+    }
     watchdog_event_merge_text(retained->src_str, staged->src_str, sizeof(retained->src_str));
     watchdog_event_merge_text(retained->tgt_str, staged->tgt_str, sizeof(retained->tgt_str));
     watchdog_event_merge_text(retained->t_name, staged->t_name, sizeof(retained->t_name));
@@ -917,6 +926,12 @@ typedef struct {
     char sysid_string[200];
     uint8_t t_name_loaded;
     uint8_t s_name_loaded;
+    /* Seconds the call has run on the canonical epoch's own timeline — through its
+     * last observation while active, through its end once ended. Anchors the row's
+     * event_start_time: subtracting it from the wall clock at render time yields a
+     * start that stays fixed while both clocks advance together. */
+    double call_elapsed_s;
+    uint8_t call_elapsed_valid;
 } watchdog_event_current_ctx;
 
 typedef struct {
@@ -1032,6 +1047,13 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     ctx->key_id = call->kid;
     ctx->mi = call->mi;
     ctx->channel = call->channel;
+    if (call->started_m > 0.0) {
+        const double ref_m = (call->phase == DSD_CALL_PHASE_ENDED) ? call->ended_m : call->updated_m;
+        if (ref_m >= call->started_m) {
+            ctx->call_elapsed_s = ref_m - call->started_m;
+            ctx->call_elapsed_valid = 1U;
+        }
+    }
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
@@ -1202,6 +1224,11 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel = ctx->channel;
     if (opts->playfiles == 0) {
         item->event_time = now;
+        // Anchored to the same `now`, so event_time - event_start_time is exactly the
+        // epoch's elapsed even though both stamps move on every render pass.
+        if (ctx->call_elapsed_valid) {
+            item->event_start_time = now - (time_t)ctx->call_elapsed_s;
+        }
     }
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);

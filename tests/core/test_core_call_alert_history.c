@@ -453,6 +453,50 @@ test_watchdog_current_marks_only_semantic_changes(void) {
     return rc;
 }
 
+// A voice row's event_start_time and event_time are stamped from one wall-clock
+// read, offset by the canonical epoch's own elapsed, so their difference is the
+// call's measured duration — while the call runs and after it commits. A frontend
+// reading the ring must never have to guess a duration from its own ingest time.
+static int
+test_voice_row_carries_call_start_time(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 1U;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    // The BEGIN was observed at 1.0 and this CONTINUE lands at 8.1, so the active
+    // epoch has run for 7.1 s on the fixture timeline when the row is rendered.
+    // Same identity, so observe() answers 0 — continuing the epoch, not beginning
+    // one — while still advancing the snapshot's updated_m.
+    advance_test_clock(7.0);
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 5678U, 1234U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 0);
+    watchdog_event_current(&opts, &state, 0);
+
+    const Event_History* staged = &event_history[0].Event_History_Items[0];
+    int rc = expect_int("active voice row carries a start time", staged->event_start_time > 0 ? 1 : 0, 1);
+    rc |= expect_int("active row start-to-stamp span is the epoch's elapsed",
+                     (int)(staged->event_time - staged->event_start_time), 7);
+
+    // Ended at 10.2 → 9.2 s total. The commit's final render must extend the span
+    // through the end, and the committed row must carry the pair.
+    advance_test_clock(2.0);
+    assert(dsd_call_state_end_ex(&state, 0U, g_observed_m, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("committed voice row keeps the start time", committed->event_start_time > 0 ? 1 : 0, 1);
+    rc |= expect_int("committed row start-to-stamp span runs through the end",
+                     (int)(committed->event_time - committed->event_start_time), 9);
+    return rc;
+}
+
 static int
 test_nonfinalizing_call_notice_defers_call_end_side_effects(void) {
     static dsd_opts opts;
@@ -4177,6 +4221,7 @@ main(void) {
 
     rc |= test_event_history_revision_primitives();
     rc |= test_watchdog_current_marks_only_semantic_changes();
+    rc |= test_voice_row_carries_call_start_time();
     rc |= test_nonfinalizing_call_notice_defers_call_end_side_effects();
     rc |= test_event_state_snapshot_copy_accepts_aliased_state();
     rc |= test_end_only_data_call_does_not_emit_voice_end_alert();
