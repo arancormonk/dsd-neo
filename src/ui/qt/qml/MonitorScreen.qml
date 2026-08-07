@@ -34,11 +34,35 @@ Item {
                                                       : heroSlot === 2 ? metrics.slot2CallName : ""
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
+    readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
     readonly property int heroSeconds: heroSlot === 1 ? metrics.slot1CallSeconds
                                                       : heroSlot === 2 ? metrics.slot2CallSeconds : 0
 
+    // The hero shows one slot, but TDMA carries two: when the other slot is also
+    // live it gets a slim strip of its own, or that call is invisible and cannot
+    // be skipped.
+    readonly property int otherSlot: heroSlot === 1 ? 2 : heroSlot === 2 ? 1 : 0
+    readonly property bool otherActive: otherSlot === 1 ? metrics.slot1CallState === 2
+                                                        : otherSlot === 2 ? metrics.slot2CallState === 2 : false
+    readonly property string otherName: otherSlot === 1 ? metrics.slot1CallName
+                                                        : otherSlot === 2 ? metrics.slot2CallName : ""
+    readonly property string otherTg: otherSlot === 1 ? metrics.slot1TgText
+                                                      : otherSlot === 2 ? metrics.slot2TgText : ""
+    readonly property bool otherEnc: otherSlot === 1 ? metrics.slot1CallEnc
+                                                     : otherSlot === 2 ? metrics.slot2CallEnc : false
+
     property bool muted: false
     property bool holding: false
+
+    // Each engine start rebuilds its options fresh — unmuted, no hold — so the
+    // local toggles must follow, or the buttons run inverted against the new run.
+    readonly property bool sessionOn: decoderHost ? decoderHost.sessionActive : false
+    onSessionOnChanged: {
+        if (sessionOn) {
+            muted = false
+            holding = false
+        }
+    }
 
     onHeroNameChanged: heroText.requestPaint()
 
@@ -266,14 +290,15 @@ Item {
             OutlineButton {
                 width: (parent.width - 20) / 3
                 text: screen.holding ? qsTr("Release") : qsTr("Hold TG")
-                enabled: decoderHost.running
+                // Disabled, not a silent no-op, when the call has no numeric
+                // talkgroup (M17/D-STAR callsigns, dPMR dial strings).
+                enabled: decoderHost.running && (screen.holding || screen.heroTgId > 0)
                 border.color: screen.holding ? Theme.cyan : Theme.controlBorder
                 onClicked: {
-                    var tg = parseInt(screen.heroTg)
                     if (screen.holding) {
                         commands.holdTalkgroup(0)
                         screen.holding = false
-                    } else if (!isNaN(tg) && tg > 0 && commands.holdTalkgroup(tg)) {
+                    } else if (commands.holdTalkgroup(screen.heroTgId)) {
                         screen.holding = true
                     }
                 }
@@ -284,6 +309,58 @@ Item {
                 text: qsTr("Skip")
                 enabled: decoderHost.running && screen.heroSlot !== 0
                 onClicked: commands.lockoutSlot(screen.heroSlot === 2 ? 1 : 0)
+            }
+        }
+
+        // The concurrent TDMA call on the non-hero slot: identity plus its own
+        // skip, so a second conversation is never invisible or untouchable.
+        UiPanel {
+            width: parent.width
+            visible: screen.otherActive
+            height: 48
+
+            MicroLabel {
+                id: otherSlotLabel
+                anchors.left: parent.left
+                anchors.leftMargin: Theme.cardPadding
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("SLOT %1").arg(screen.otherSlot)
+            }
+
+            Text {
+                anchors.left: otherSlotLabel.right
+                anchors.leftMargin: 10
+                anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+                text: screen.otherName.length > 0 ? screen.otherName + " · TG " + screen.otherTg
+                                                  : "TG " + screen.otherTg
+                font.family: Theme.sans
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+                color: Theme.textPrimary
+                elide: Text.ElideRight
+            }
+
+            EncTag {
+                id: otherEncTag
+                visible: screen.otherEnc
+                anchors.right: otherSkip.left
+                anchors.rightMargin: 10
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            OutlineButton {
+                id: otherSkip
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                width: 70
+                implicitHeight: 32
+                height: 32
+                text: qsTr("Skip")
+                enabled: decoderHost.running
+                onClicked: commands.lockoutSlot(screen.otherSlot === 2 ? 1 : 0)
             }
         }
 
@@ -349,15 +426,14 @@ Item {
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 6
                 clip: true
-                model: callHistory
+                model: monitorView
 
                 delegate: CallRow {
                     width: ListView.view.width
                     name: model.name
-                    metaText: model.enc
-                              ? "TG " + model.tg + " · " + qsTr("encrypted")
-                              : "TG " + model.tg
-                                + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
+                    metaText: "TG " + model.tg
+                              + (model.enc ? " · " + qsTr("encrypted") : "")
+                              + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
                     rightText: Util.shortAge(model.when)
                     enc: model.enc
                 }

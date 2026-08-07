@@ -433,7 +433,9 @@ Item {
                             text: prefs.extraArgs
                             placeholderText: qsTr("e.g. -C chan.csv -G group.csv")
                             inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                            onTextChanged: prefs.extraArgs = text
+                            // Commit on Enter/focus loss, not per keystroke: every
+                            // write lands in QSettings (disk on Android).
+                            onEditingFinished: prefs.extraArgs = text
                         }
                     }
                 }

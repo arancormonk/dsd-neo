@@ -13,6 +13,9 @@
  * persisted as JSON so the log survives sessions and process death, which the
  * in-memory event ring deliberately does not. Refreshed from the single UI poll
  * tick only.
+ *
+ * This model is the store alone: every view that shows it binds through its own
+ * CallHistoryFilterModel, so one screen's search or pills never filter another.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -21,6 +24,7 @@
 #include <QAbstractListModel>
 #include <QList>
 #include <QSet>
+#include <QSettings>
 #include <QString>
 #include <QTimer>
 
@@ -32,9 +36,6 @@ class CallHistoryModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
-    Q_PROPERTY(QString filterText READ filterText WRITE setFilterText NOTIFY filterChanged)
-    Q_PROPERTY(QString filterSystem READ filterSystem WRITE setFilterSystem NOTIFY filterChanged)
-    Q_PROPERTY(int filterKind READ filterKind WRITE setFilterKind NOTIFY filterChanged)
     Q_PROPERTY(QStringList systemLabels READ systemLabels NOTIFY countChanged)
 
   public:
@@ -43,7 +44,7 @@ class CallHistoryModel : public QAbstractListModel {
         TgRole,
         SrcRole,
         EncRole,
-        WhenRole,         // seconds since epoch
+        WhenRole,         // call start, seconds since epoch
         DurationSecsRole, // -1 when unknown
         SystemNameRole,
         DayLabelRole, // "TODAY" / "YESTERDAY" / "MON 3 AUG" — drives list sections
@@ -59,38 +60,22 @@ class CallHistoryModel : public QAbstractListModel {
 
     int
     count() const {
-        return static_cast<int>(m_visible.size());
+        return static_cast<int>(m_rows.size());
     }
 
-    /** @brief Which saved system the current session is on; stamped onto new rows. */
+    /**
+     * @brief Which saved system the current session is on; stamped onto new rows.
+     *
+     * Persisted: the Android service outlives the Activity, and a relaunched UI
+     * ingests the running session's backlog before any start button is pressed —
+     * those rows must carry the system that produced them, not an empty string.
+     */
     QString
     sessionLabel() const {
         return m_sessionLabel;
     }
 
     void setSessionLabel(const QString& label);
-
-    QString
-    filterText() const {
-        return m_filterText;
-    }
-
-    void setFilterText(const QString& text);
-
-    QString
-    filterSystem() const {
-        return m_filterSystem;
-    }
-
-    void setFilterSystem(const QString& system);
-
-    /** @brief Call-type filter: 0 = all calls, 1 = clear only, 2 = encrypted only. */
-    int
-    filterKind() const {
-        return m_filterKind;
-    }
-
-    void setFilterKind(int kind);
 
     /** @brief Distinct system names present in the log, for the filter pill. */
     QStringList systemLabels() const;
@@ -100,6 +85,8 @@ class CallHistoryModel : public QAbstractListModel {
      *
      * Call from the UI poll tick only. Duplicate protection is by content key, not
      * ring position: the ring shifts on every push, so positions mean nothing.
+     * Updates are granular (insert/change/remove), never a model reset — a reset
+     * would destroy every delegate and the reader's scroll position per ingest.
      */
     void refresh(const dsd_state* snapshot);
 
@@ -108,7 +95,6 @@ class CallHistoryModel : public QAbstractListModel {
   Q_SIGNALS:
     void countChanged();
     void sessionLabelChanged();
-    void filterChanged();
 
   public:
     /** @brief One logged call. Public only so file-local helpers can build one. */
@@ -131,27 +117,21 @@ class CallHistoryModel : public QAbstractListModel {
     /**
      * @brief Absorb @p row into a recent same-target row when the two overlap
      *        within the merge window; the merged row spans both fragments.
-     * @return true when absorbed; false when it is a genuinely new call.
+     * @return Index of the row it merged into, or -1 when it is a new call.
      */
-    bool tryMerge(const Row& row);
+    int tryMerge(const Row& row);
 
     void load();
     void scheduleSave();
     void saveNow() const;
-    QString storePath() const;
-    void rebuildVisible();
-    bool rowVisible(const Row& row) const;
 
     QList<Row> m_rows; // newest first
-    QList<int> m_visible;
     QSet<QString> m_seen;
     QString m_sessionLabel;
-    QString m_filterText;
-    QString m_filterSystem;
-    int m_filterKind = 0;
     quint64 m_revision[2] = {0U, 0U};
     bool m_seeded = false;
     QTimer m_saveTimer;
+    QSettings m_settings;
 };
 
 } // namespace dsd_qt

@@ -15,56 +15,6 @@
 
 namespace dsd_qt {
 
-namespace {
-
-QString
-crypto_text(const dsd_call_snapshot& call) {
-    switch (call.crypto) {
-        case DSD_CALL_CRYPTO_CLEAR: return QStringLiteral("clear");
-        case DSD_CALL_CRYPTO_ENCRYPTED_PENDING: return QStringLiteral("enc?");
-        case DSD_CALL_CRYPTO_ENCRYPTED:
-            return QStringLiteral("ENC alg %1 key %2").arg(call.algid, 0, 16).arg(call.kid, 0, 16);
-        case DSD_CALL_CRYPTO_DECRYPTABLE: return QStringLiteral("decryptable");
-        default: return QString();
-    }
-}
-
-/** @brief One slot's call line. @p snapshot must not be null; refresh() guarantees it. */
-QString
-call_text(const dsd_state* snapshot, quint8 slot, double now_m) {
-    dsd_call_snapshot call = {};
-    const CallLineState line = call_line_state(dsd_call_state_get(snapshot, slot, &call), call, now_m);
-    if (line == kCallLineNone) {
-        return QStringLiteral("—");
-    }
-    // An ended epoch outlives the transmission by design; past the hold window the slot
-    // is quiet and has to say so, or the last call of the day stays on screen as though
-    // it were still up. See call_line.h.
-    if (line == kCallLineIdle) {
-        return QStringLiteral("idle");
-    }
-
-    QString target = (call.target_text[0] != '\0') ? QString::fromUtf8(call.target_text)
-                                                   : QString::number(static_cast<qulonglong>(call.ota_target_id));
-    QString source = (call.source_text[0] != '\0') ? QString::fromUtf8(call.source_text)
-                                                   : QString::number(static_cast<qulonglong>(call.ota_source_id));
-
-    QString text = QStringLiteral("TG %1 ← %2").arg(target, source);
-    const QString crypto = crypto_text(call);
-    if (!crypto.isEmpty()) {
-        text += QStringLiteral(" [%1]").arg(crypto);
-    }
-    // Leads rather than trails: the label elides on the right, and an alias-bearing line
-    // on a phone is long enough that a trailing marker is the first thing cut -- which
-    // would render a finished call identically to a live one.
-    if (line == kCallLineEnded) {
-        text.prepend(QStringLiteral("ended · "));
-    }
-    return text;
-}
-
-} // namespace
-
 /**
  * @brief Structured identity for one slot, display-ready for the hero panel.
  *
@@ -85,6 +35,10 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     const QString target = (call.target_text[0] != '\0') ? QString::fromUtf8(call.target_text)
                                                          : QString::number(static_cast<qulonglong>(call.ota_target_id));
     out.tg_text = target;
+    // Same preference order the event layer uses: the OTA id when one decoded,
+    // the policy-resolved id otherwise. Text-only targets stay 0.
+    out.tg_id = (call.ota_target_id != 0U) ? static_cast<qulonglong>(call.ota_target_id)
+                                           : static_cast<qulonglong>(call.policy_target_id);
     out.src_text = (call.source_text[0] != '\0') ? QString::fromUtf8(call.source_text)
                                                  : QString::number(static_cast<qulonglong>(call.ota_source_id));
 
@@ -146,9 +100,6 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * metrics fetch above uses to decide whether any of them mean anything. */
     next.radio_input = opts_snapshot->audio_in_type == AUDIO_IN_RTL;
 
-    next.stream_active = metrics.stream_active != 0;
-    next.symbol_rate_hz = metrics.symbol_rate_hz;
-    next.output_rate_hz = static_cast<int>(metrics.output_rate_hz);
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;
 
@@ -170,11 +121,8 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     }
 
     const double now_m = dsd_time_now_monotonic_s();
-    next.slot_text[0] = call_text(snapshot, 0, now_m);
-    next.slot_text[1] = call_text(snapshot, 1, now_m);
     next.slot_call[0] = slotCallView(snapshot, 0, now_m);
     next.slot_call[1] = slotCallView(snapshot, 1, now_m);
-    next.message_text = QString::fromUtf8(snapshot->ui_msg);
 
     publish(next);
 }

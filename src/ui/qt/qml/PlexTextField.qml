@@ -14,6 +14,10 @@ Rectangle {
     property alias input: input
     property bool mono: false
 
+    // Fires on Enter or focus loss — for fields whose consumer is too expensive
+    // to run per keystroke (persisted preferences, argv rebuilds).
+    signal editingFinished()
+
     implicitHeight: 44
     radius: 10
     color: Theme.dark ? Theme.bg : Theme.panel
@@ -33,6 +37,7 @@ Rectangle {
         selectionColor: Qt.alpha(Theme.cyan, 0.35)
         selectedTextColor: Theme.textPrimary
         clip: true
+        onEditingFinished: control.editingFinished()
     }
 
     Text {

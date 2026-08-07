@@ -25,24 +25,20 @@ namespace dsd_qt {
 
 class MetricsModel : public QObject {
     Q_OBJECT
-    Q_PROPERTY(bool streamActive READ streamActive NOTIFY changed)
     Q_PROPERTY(double snrDb READ snrDb NOTIFY changed)
     Q_PROPERTY(bool snrValid READ snrValid NOTIFY changed)
-    Q_PROPERTY(int symbolRateHz READ symbolRateHz NOTIFY changed)
-    Q_PROPERTY(int outputRateHz READ outputRateHz NOTIFY changed)
     Q_PROPERTY(bool carrierLock READ carrierLock NOTIFY changed)
     Q_PROPERTY(double cfoHz READ cfoHz NOTIFY changed)
     Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY changed)
     Q_PROPERTY(bool radioInput READ radioInput NOTIFY changed)
-    Q_PROPERTY(QString slot1Text READ slot1Text NOTIFY changed)
-    Q_PROPERTY(QString slot2Text READ slot2Text NOTIFY changed)
-    Q_PROPERTY(QString messageText READ messageText NOTIFY changed)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY changed)
     Q_PROPERTY(QString slot2CallName READ slot2CallName NOTIFY changed)
     Q_PROPERTY(QString slot1TgText READ slot1TgText NOTIFY changed)
     Q_PROPERTY(QString slot2TgText READ slot2TgText NOTIFY changed)
+    Q_PROPERTY(qulonglong slot1TgId READ slot1TgId NOTIFY changed)
+    Q_PROPERTY(qulonglong slot2TgId READ slot2TgId NOTIFY changed)
     Q_PROPERTY(QString slot1SrcText READ slot1SrcText NOTIFY changed)
     Q_PROPERTY(QString slot2SrcText READ slot2SrcText NOTIFY changed)
     Q_PROPERTY(bool slot1CallEnc READ slot1CallEnc NOTIFY changed)
@@ -54,11 +50,6 @@ class MetricsModel : public QObject {
     explicit MetricsModel(QObject* parent = nullptr);
     ~MetricsModel() override;
 
-    bool
-    streamActive() const {
-        return m_view.stream_active;
-    }
-
     double
     snrDb() const {
         return m_view.snr_db;
@@ -68,16 +59,6 @@ class MetricsModel : public QObject {
     bool
     snrValid() const {
         return m_view.snr_valid;
-    }
-
-    int
-    symbolRateHz() const {
-        return m_view.symbol_rate_hz;
-    }
-
-    int
-    outputRateHz() const {
-        return m_view.output_rate_hz;
     }
 
     bool
@@ -106,21 +87,6 @@ class MetricsModel : public QObject {
     bool
     radioInput() const {
         return m_view.radio_input;
-    }
-
-    const QString&
-    slot1Text() const {
-        return m_view.slot_text[0];
-    }
-
-    const QString&
-    slot2Text() const {
-        return m_view.slot_text[1];
-    }
-
-    const QString&
-    messageText() const {
-        return m_view.message_text;
     }
 
     /**
@@ -167,6 +133,24 @@ class MetricsModel : public QObject {
     const QString&
     slot2SrcText() const {
         return m_view.slot_call[1].src_text;
+    }
+
+    /**
+     * @brief Numeric talkgroup id per slot, 0 when the call has none.
+     *
+     * The tg_text properties are display strings — for M17/D-STAR/YSF/dPMR they
+     * carry callsigns or dial strings that no command can act on. Commands that
+     * need a talkgroup number (hold) read this instead and disable themselves
+     * when it is 0, rather than parse a string that was never a number.
+     */
+    qulonglong
+    slot1TgId() const {
+        return m_view.slot_call[0].tg_id;
+    }
+
+    qulonglong
+    slot2TgId() const {
+        return m_view.slot_call[1].tg_id;
     }
 
     bool
@@ -235,28 +219,24 @@ class MetricsModel : public QObject {
         QString name;
         QString tg_text;
         QString src_text;
+        qulonglong tg_id = 0; // numeric talkgroup, 0 when the call has none
         bool enc = false;
         int seconds = 0;
 
         bool
         operator==(const SlotCall& other) const {
             return state == other.state && name == other.name && tg_text == other.tg_text && src_text == other.src_text
-                   && enc == other.enc && seconds == other.seconds;
+                   && tg_id == other.tg_id && enc == other.enc && seconds == other.seconds;
         }
     };
 
     struct View {
-        bool stream_active = false;
         double snr_db = 0.0;
         bool snr_valid = false;
-        int symbol_rate_hz = 0;
-        int output_rate_hz = 0;
         bool carrier_lock = false;
         double cfo_hz = 0.0;
         QString tuner_gain_text;
         bool radio_input = false;
-        QString slot_text[2];
-        QString message_text;
         SlotCall slot_call[2];
 
         bool
@@ -265,12 +245,9 @@ class MetricsModel : public QObject {
              * unmodified from the metrics boundary, so "unchanged" means the identical
              * bits arrived again, not that two computations landed close together. A
              * tolerance here would suppress small real movements instead. */
-            return stream_active == other.stream_active && snr_db == other.snr_db && snr_valid == other.snr_valid
-                   && symbol_rate_hz == other.symbol_rate_hz && output_rate_hz == other.output_rate_hz
-                   && carrier_lock == other.carrier_lock && cfo_hz == other.cfo_hz
-                   && tuner_gain_text == other.tuner_gain_text && radio_input == other.radio_input
-                   && slot_text[0] == other.slot_text[0] && slot_text[1] == other.slot_text[1]
-                   && message_text == other.message_text && slot_call[0] == other.slot_call[0]
+            return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
+                   && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
+                   && radio_input == other.radio_input && slot_call[0] == other.slot_call[0]
                    && slot_call[1] == other.slot_call[1];
         }
     };

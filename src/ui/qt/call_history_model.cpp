@@ -8,26 +8,23 @@
 #include <algorithm>
 
 #include <QDateTime>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocale>
-#include <QSaveFile>
-#include <QStandardPaths>
 
 #include <dsd-neo/core/state.h>
+
+#include "json_store.h"
 
 namespace dsd_qt {
 
 namespace {
 
 constexpr const char kStoreFileName[] = "call_history.json";
+constexpr const char kSessionLabelKey[] = "callHistory/sessionLabel";
 constexpr int kMaxRows = 1000;
-/* A "duration" longer than this is really "the row predates this UI process", not a
- * measured call, so it renders as unknown instead. */
+/* Sanity bound on the ring's own start/end stamps: a span longer than this is a
+ * corrupt or clock-shifted row, not a measured call, so it renders as unknown. */
 constexpr qint64 kMaxPlausibleDurationSecs = 3600;
 constexpr int kSaveDelayMs = 3000;
 /* Trunk-following mints a committed row per tune attempt, so one keyed-up
@@ -38,6 +35,10 @@ constexpr qint64 kMergeWindowSecs = 20;
 } // namespace
 
 CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent) {
+    /* Restored before the first ingest: after an Activity restart the service's
+     * session is still decoding, and its backlog lands before any start button is
+     * pressed. Without the persisted label those rows would be attributed to "". */
+    m_sessionLabel = m_settings.value(QLatin1String(kSessionLabelKey)).toString();
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(kSaveDelayMs);
     connect(&m_saveTimer, &QTimer::timeout, this, [this]() { saveNow(); });
@@ -52,15 +53,15 @@ CallHistoryModel::~CallHistoryModel() {
 
 int
 CallHistoryModel::rowCount(const QModelIndex& parent) const {
-    return parent.isValid() ? 0 : static_cast<int>(m_visible.size());
+    return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
 }
 
 QVariant
 CallHistoryModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_visible.size()) {
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
         return QVariant();
     }
-    const Row& row = m_rows.at(m_visible.at(index.row()));
+    const Row& row = m_rows.at(index.row());
     switch (role) {
         case NameRole: return row.name;
         case TgRole: return row.tg;
@@ -106,46 +107,8 @@ CallHistoryModel::setSessionLabel(const QString& label) {
         return;
     }
     m_sessionLabel = label;
+    m_settings.setValue(QLatin1String(kSessionLabelKey), label);
     Q_EMIT sessionLabelChanged();
-}
-
-void
-CallHistoryModel::setFilterText(const QString& text) {
-    if (text == m_filterText) {
-        return;
-    }
-    m_filterText = text;
-    Q_EMIT filterChanged();
-    beginResetModel();
-    rebuildVisible();
-    endResetModel();
-    Q_EMIT countChanged();
-}
-
-void
-CallHistoryModel::setFilterSystem(const QString& system) {
-    if (system == m_filterSystem) {
-        return;
-    }
-    m_filterSystem = system;
-    Q_EMIT filterChanged();
-    beginResetModel();
-    rebuildVisible();
-    endResetModel();
-    Q_EMIT countChanged();
-}
-
-void
-CallHistoryModel::setFilterKind(int kind) {
-    if (kind == m_filterKind) {
-        return;
-    }
-    m_filterKind = kind;
-    Q_EMIT filterChanged();
-    beginResetModel();
-    rebuildVisible();
-    endResetModel();
-    Q_EMIT countChanged();
 }
 
 QStringList
@@ -161,11 +124,10 @@ CallHistoryModel::systemLabels() const {
 
 namespace {
 
-/** @brief One committed ring item as a display row, duration approximated. */
+/** @brief One committed ring item as a display row. */
 CallHistoryModel::Row
-row_from_item(const Event_History* item, qint64 now, const QString& sessionLabel) {
+row_from_item(const Event_History* item, const QString& sessionLabel) {
     CallHistoryModel::Row row;
-    row.when = static_cast<qint64>(item->event_time);
     row.tg = static_cast<qulonglong>(item->target_id);
     row.src = static_cast<qulonglong>(item->source_id);
     row.enc = item->enc != 0U;
@@ -177,12 +139,16 @@ row_from_item(const Event_History* item, qint64 now, const QString& sessionLabel
         row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
     }
     row.systemName = sessionLabel;
-    // The ring pushes a row when the call finishes, and this tick is at most one
-    // poll behind that, so "now minus start" approximates the duration. Rows that
-    // were already in the ring when this process attached read as hours long and
-    // render as unknown instead.
-    const qint64 elapsed = now - row.when;
-    row.durationSecs = (elapsed >= 0 && elapsed <= kMaxPlausibleDurationSecs) ? static_cast<int>(elapsed) : -1;
+    /* The ring stamps both ends of the transmission: event_start_time when the
+     * epoch began, event_time as its last render (its end, once committed). Their
+     * difference is the measured duration — never this process's ingest lag, which
+     * on Android can be most of an hour when the service outlives the Activity. */
+    const qint64 start = static_cast<qint64>(item->event_start_time);
+    const qint64 end = static_cast<qint64>(item->event_time);
+    row.when = (start > 0) ? start : end;
+    if (start > 0 && end >= start && end - start <= kMaxPlausibleDurationSecs) {
+        row.durationSecs = static_cast<int>(end - start);
+    }
     return row;
 }
 
@@ -190,7 +156,6 @@ row_from_item(const Event_History* item, qint64 now, const QString& sessionLabel
 
 QList<CallHistoryModel::Row>
 CallHistoryModel::collectFresh(const dsd_state* snapshot) {
-    const qint64 now = QDateTime::currentSecsSinceEpoch();
     QList<Row> fresh;
     for (int slot = 0; slot < 2; slot++) {
         // Index 0 is the still-active staged row; only committed rows (1..254) are
@@ -203,7 +168,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot) {
             if (item->target_id == 0U && item->tgt_str[0] == '\0') {
                 continue;
             }
-            Row row = row_from_item(item, now, m_sessionLabel);
+            Row row = row_from_item(item, m_sessionLabel);
             const QString key = keyFor(row);
             if (m_seen.contains(key)) {
                 continue;
@@ -215,7 +180,7 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot) {
     return fresh;
 }
 
-bool
+int
 CallHistoryModel::tryMerge(const Row& row) {
     for (int i = 0; i < m_rows.size() && i < 32; i++) {
         Row& existing = m_rows[i];
@@ -237,9 +202,9 @@ CallHistoryModel::tryMerge(const Row& row) {
             existing.durationSecs = static_cast<int>(span);
         }
         existing.enc = existing.enc || row.enc;
-        return true;
+        return i;
     }
-    return false;
+    return -1;
 }
 
 QString
@@ -247,32 +212,6 @@ CallHistoryModel::keyFor(const Row& row) {
     // Content-derived so it survives persistence: the Android service outlives the
     // Activity, and a relaunched UI must not re-ingest rows it already logged.
     return QStringLiteral("%1|%2|%3").arg(row.when).arg(row.tg).arg(row.src);
-}
-
-bool
-CallHistoryModel::rowVisible(const Row& row) const {
-    if (!m_filterSystem.isEmpty() && row.systemName != m_filterSystem) {
-        return false;
-    }
-    if ((m_filterKind == 1 && row.enc) || (m_filterKind == 2 && !row.enc)) {
-        return false;
-    }
-    if (m_filterText.isEmpty()) {
-        return true;
-    }
-    return row.name.contains(m_filterText, Qt::CaseInsensitive) || QString::number(row.tg).contains(m_filterText)
-           || QString::number(row.src).contains(m_filterText);
-}
-
-void
-CallHistoryModel::rebuildVisible() {
-    m_visible.clear();
-    m_visible.reserve(m_rows.size());
-    for (int i = 0; i < m_rows.size(); i++) {
-        if (rowVisible(m_rows.at(i))) {
-            m_visible.append(i);
-        }
-    }
 }
 
 void
@@ -296,22 +235,32 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
         return;
     }
 
-    // Coalesce fragments into the call they belong to. Prepending unmerged rows as
-    // they are processed lets the rest of a burst that arrived in this same tick
-    // merge into the first fragment of it.
-    beginResetModel();
+    // Coalesce fragments into the call they belong to, with granular model
+    // signals: a merge is a dataChanged on the absorbing row, a new call inserts
+    // at its sorted (newest-first) position. Never a reset — delegates and the
+    // reader's scroll position survive every ingest.
     for (const Row& row : fresh) {
-        if (!tryMerge(row)) {
-            m_rows.prepend(row);
+        const int merged = tryMerge(row);
+        if (merged >= 0) {
+            const QModelIndex idx = index(merged);
+            Q_EMIT dataChanged(idx, idx);
+            continue;
         }
+        int pos = 0;
+        while (pos < m_rows.size() && m_rows.at(pos).when > row.when) {
+            pos++;
+        }
+        beginInsertRows(QModelIndex(), pos, pos);
+        m_rows.insert(pos, row);
+        endInsertRows();
     }
-    std::stable_sort(m_rows.begin(), m_rows.end(), [](const Row& a, const Row& b) { return a.when > b.when; });
     while (m_rows.size() > kMaxRows) {
+        const int last = static_cast<int>(m_rows.size()) - 1;
+        beginRemoveRows(QModelIndex(), last, last);
         m_seen.remove(keyFor(m_rows.last()));
         m_rows.removeLast();
+        endRemoveRows();
     }
-    rebuildVisible();
-    endResetModel();
     Q_EMIT countChanged();
     scheduleSave();
 }
@@ -320,7 +269,6 @@ void
 CallHistoryModel::clearAll() {
     beginResetModel();
     m_rows.clear();
-    m_visible.clear();
     // m_seen deliberately survives: the ring still holds the rows just cleared, and
     // forgetting the keys would let the next tick re-ingest every one of them.
     endResetModel();
@@ -328,24 +276,10 @@ CallHistoryModel::clearAll() {
     saveNow();
 }
 
-QString
-CallHistoryModel::storePath() const {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    return dir + QLatin1Char('/') + QLatin1String(kStoreFileName);
-}
-
 void
 CallHistoryModel::load() {
-    QFile file(storePath());
-    if (!file.open(QIODevice::ReadOnly)) {
-        return;
-    }
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    if (!doc.isArray()) {
-        return;
-    }
     QList<Row> rows;
-    const QJsonArray array = doc.array();
+    const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
     for (const QJsonValue& value : array) {
         if (!value.isObject()) {
             continue;
@@ -367,12 +301,11 @@ CallHistoryModel::load() {
     // before fragment-coalescing existed collapses on its first load.
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
         m_seen.insert(keyFor(*it));
-        if (!tryMerge(*it)) {
+        if (tryMerge(*it) < 0) {
             m_rows.prepend(*it);
         }
     }
     std::stable_sort(m_rows.begin(), m_rows.end(), [](const Row& a, const Row& b) { return a.when > b.when; });
-    rebuildVisible();
     endResetModel();
     Q_EMIT countChanged();
 }
@@ -386,8 +319,6 @@ CallHistoryModel::scheduleSave() {
 
 void
 CallHistoryModel::saveNow() const {
-    const QString path = storePath();
-    QDir().mkpath(QFileInfo(path).absolutePath());
     QJsonArray array;
     for (const Row& row : m_rows) {
         QJsonObject obj;
@@ -400,12 +331,7 @@ CallHistoryModel::saveNow() const {
         obj.insert(QLatin1String("systemName"), row.systemName);
         array.append(obj);
     }
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        return;
-    }
-    file.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
-    (void)file.commit();
+    json_store_save_array(QLatin1String(kStoreFileName), array);
 }
 
 } // namespace dsd_qt

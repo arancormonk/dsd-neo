@@ -21,7 +21,10 @@ Window {
     readonly property bool monitorMode: decoderHost ? decoderHost.sessionActive : false
     readonly property bool running: decoderHost ? decoderHost.running : false
     readonly property bool transitioning: decoderHost ? decoderHost.transitioning : false
-    readonly property string failureText: decoderHost ? decoderHost.failureText : ""
+    readonly property string hostFailure: decoderHost ? decoderHost.failureText : ""
+    // A start the UI refused before the host was ever asked (bad saved config).
+    property string startError: ""
+    readonly property string failureText: startError.length > 0 ? startError : hostFailure
 
     property int currentTab: 0
     property bool wizardOpen: false
@@ -40,6 +43,11 @@ Window {
             // The frequency field usually still holds focus; the keyboard would
             // cover the session that just appeared.
             Qt.inputMethod.hide()
+            // Reattaching to a session this UI process did not start (service
+            // survived an Activity restart): bound the recent-calls pane to the
+            // last hour rather than the whole persisted log.
+            if (monitorView.minWhen === 0)
+                monitorView.minWhen = Math.floor(Date.now() / 1000) - 3600
         }
     }
 
@@ -62,11 +70,20 @@ Window {
             return
         }
         mainRoot.dismissedFailure = ""
+        mainRoot.startError = ""
+        var args = Util.buildArgs(sys, prefs)
+        if (!args) {
+            mainRoot.startError =
+                qsTr("“%1” has no valid frequency — long-press its card to edit it.").arg(sys.name)
+            return
+        }
         mainRoot.sessionSystem = sys
         mainRoot.sessionRow = row
         callHistory.sessionLabel = sys.name
+        // The monitor's recent-calls pane shows this session, not the whole log.
+        monitorView.minWhen = Math.floor(Date.now() / 1000)
         savedSystems.touch(row)
-        decoderHost.start(Util.buildArgs(sys, prefs))
+        decoderHost.start(args)
     }
 
     // ---- Tab shell ----
@@ -98,6 +115,10 @@ Window {
                 mainRoot.wizardOpen = true
             }
             onPlaySystem: function (row) { mainRoot.startSystem(row) }
+            onEditSystem: function (row) {
+                wizard.openForEdit(row)
+                mainRoot.wizardOpen = true
+            }
         }
 
         HistoryScreen {

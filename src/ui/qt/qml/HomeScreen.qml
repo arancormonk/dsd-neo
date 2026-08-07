@@ -11,6 +11,7 @@ Item {
 
     signal addSystem()
     signal playSystem(int row)
+    signal editSystem(int row)
     signal networkSource()
 
     // Re-derives "Heard n minutes ago" once a minute so rows do not go stale.
@@ -35,6 +36,10 @@ Item {
         anchors.fill: parent
         contentHeight: content.height + 2 * Theme.screenPadding
         clip: true
+        // TapHandlers never take exclusive grabs, so a tap on a manage-menu button
+        // would otherwise also reach whatever sits under the overlay — observed as
+        // "Edit this system" opening the add wizard through the card list.
+        enabled: !manageMenu.visible
 
         Column {
             id: content
@@ -198,7 +203,7 @@ Item {
                         anchors.right: parent.right
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
-                        featured: index === savedSystems.mostRecentRow()
+                        featured: index === savedSystems.mostRecentRow
                         enabled: !mainRoot.transitioning
                         onClicked: screen.playSystem(card.index)
                     }
@@ -280,6 +285,15 @@ Item {
                     font.weight: Font.Bold
                     color: Theme.textPrimary
                     elide: Text.ElideRight
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Edit this system")
+                    onClicked: {
+                        manageMenu.visible = false
+                        screen.editSystem(manageMenu.row)
+                    }
                 }
 
                 OutlineButton {

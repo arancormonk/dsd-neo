@@ -18,7 +18,9 @@ var DECODE_MODES = [
         hint: "Standard P25 — most statewide and county digital systems."
     },
     {
-        label: "P25 Simulcast", short: "P25 LSM", flag: "-f1 -mq",
+        // -mq alone, not -f1 -mq: QPSK is what LSM needs, and the engine's default
+        // decode set already covers both P25 Phase 1 and Phase 2.
+        label: "P25 Simulcast", short: "P25 LSM", flag: "-mq",
         hint: "Simulcast P25 (LSM) — pick this when standard P25 never locks or sounds garbled."
     },
     {
@@ -128,10 +130,25 @@ function fmtDuration(secs) {
     return m + ":" + (s < 10 ? "0" + s : s)
 }
 
-// The CLI-shaped argv a saved system starts with. Reusing the CLI parser is what
-// buys the whole option surface; per-system overrides fall back to the app-wide
-// defaults from prefs (-1 / empty string mean "no override").
+// Whether a saved system's frequency field parses as a positive MHz value.
+// Number() rejects trailing junk ("851.375M" → NaN) where parseFloat would not.
+function freqValid(freqMhz) {
+    if (freqMhz === undefined || freqMhz === null)
+        return false
+    var mhz = Number(String(freqMhz).trim())
+    return isFinite(mhz) && mhz > 0
+}
+
+// The CLI-shaped argv a saved system starts with, or null when the system cannot
+// produce a sane one. Reusing the CLI parser is what buys the whole option
+// surface; per-system overrides fall back to the app-wide defaults from prefs
+// (-1 / empty string mean "no override"). A malformed frequency must fail here,
+// not downstream: dsd_parse_freq_hz reads a garbage spec as 0 Hz and the session
+// would come up silently mistuned with no diagnostic.
 function buildArgs(sys, prefs) {
+    if ((sys.sourceType === "usb" || sys.sourceType === "rtltcp") && !freqValid(sys.freqMhz))
+        return null
+
     var args = ["--frontend", "none"]
 
     var gain = (sys.gainDb !== undefined && sys.gainDb >= 0) ? sys.gainDb : prefs.gainDb
@@ -158,7 +175,7 @@ function buildArgs(sys, prefs) {
     args.push("-o", "pulse")
 
     if (sys.decodeFlag && sys.decodeFlag.length > 0) {
-        // A chip may carry several flags ("-f1 -mq" for simulcast P25).
+        // A chip may carry several flags, so split rather than push whole.
         var flags = sys.decodeFlag.split(/\s+/)
         for (var f = 0; f < flags.length; f++)
             args.push(flags[f])

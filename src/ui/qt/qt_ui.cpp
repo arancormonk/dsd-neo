@@ -16,10 +16,10 @@
 #include <dsd-neo/runtime/git_ver.h>
 
 #include "app_prefs.h"
+#include "call_history_filter.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
-#include "event_log_model.h"
 #include "metrics_model.h"
 #include "saved_systems_model.h"
 #include "ui_controller.h"
@@ -66,22 +66,28 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     (void)load_font(":/dsdneo/fonts/IBMPlexMono-Medium.ttf");
 
     auto* metrics = new MetricsModel(&engine);
-    auto* events = new EventLogModel(&engine);
     auto* commands = new CommandBridge(&engine);
     auto* prefs = new AppPrefs(&engine);
     auto* systems = new SavedSystemsModel(&engine);
     auto* history = new CallHistoryModel(&engine);
-    auto* controller = new UiController(host, metrics, events, history, &engine);
+    // Each view that shows the call log owns its filter state: the history tab's
+    // search and pills must not silently filter the monitor's recent-calls pane.
+    auto* historyView = new CallHistoryFilterModel(&engine);
+    historyView->setSourceModel(history);
+    auto* monitorView = new CallHistoryFilterModel(&engine);
+    monitorView->setSourceModel(history);
+    auto* controller = new UiController(host, metrics, history, &engine);
 
     QQmlContext* context = engine.rootContext();
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
-    context->setContextProperty(QStringLiteral("eventLog"), events);
     context->setContextProperty(QStringLiteral("commands"), commands);
     context->setContextProperty(QStringLiteral("uiController"), controller);
     context->setContextProperty(QStringLiteral("prefs"), prefs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
     context->setContextProperty(QStringLiteral("callHistory"), history);
+    context->setContextProperty(QStringLiteral("historyView"), historyView);
+    context->setContextProperty(QStringLiteral("monitorView"), monitorView);
     context->setContextProperty(QStringLiteral("sansFontFamily"),
                                 sans_family.isEmpty() ? QStringLiteral("sans-serif") : sans_family);
     context->setContextProperty(QStringLiteral("monoFontFamily"),

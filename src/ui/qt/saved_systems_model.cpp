@@ -6,14 +6,10 @@
 #include "saved_systems_model.h"
 
 #include <QDateTime>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QJsonObject>
-#include <QSaveFile>
-#include <QStandardPaths>
+
+#include "json_store.h"
 
 namespace dsd_qt {
 
@@ -166,6 +162,7 @@ SavedSystemsModel::add(const QVariantMap& system) {
     m_rows.append(rowFromMap(system, Row()));
     endInsertRows();
     Q_EMIT countChanged();
+    Q_EMIT mostRecentRowChanged();
     save();
 }
 
@@ -189,6 +186,7 @@ SavedSystemsModel::remove(int row) {
     m_rows.removeAt(row);
     endRemoveRows();
     Q_EMIT countChanged();
+    Q_EMIT mostRecentRowChanged();
     save();
 }
 
@@ -208,6 +206,7 @@ SavedSystemsModel::touch(int row) {
     m_rows[row].lastHeard = QDateTime::currentSecsSinceEpoch();
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx, {LastHeardRole});
+    Q_EMIT mostRecentRowChanged();
     save();
 }
 
@@ -224,52 +223,36 @@ SavedSystemsModel::mostRecentRow() const {
     return best;
 }
 
-QString
-SavedSystemsModel::storePath() const {
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    return dir + QLatin1Char('/') + QLatin1String(kStoreFileName);
-}
-
 void
 SavedSystemsModel::load() {
-    QFile file(storePath());
-    if (!file.open(QIODevice::ReadOnly)) {
-        return;
-    }
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    if (!doc.isArray()) {
-        return;
-    }
     QList<Row> rows;
-    const QJsonArray array = doc.array();
+    const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
     for (const QJsonValue& value : array) {
         if (!value.isObject()) {
             continue;
         }
-        rows.append(rowFromMap(value.toObject().toVariantMap(), Row()));
+        Row row = rowFromMap(value.toObject().toVariantMap(), Row());
+        // The P25 Simulcast chip used to carry "-f1 -mq", which pinned Phase 1 only;
+        // -mq alone keeps the engine's default decode set (Phase 1 + Phase 2).
+        if (row.decodeFlag == QLatin1String("-f1 -mq")) {
+            row.decodeFlag = QStringLiteral("-mq");
+        }
+        rows.append(row);
     }
     beginResetModel();
     m_rows = rows;
     endResetModel();
     Q_EMIT countChanged();
+    Q_EMIT mostRecentRowChanged();
 }
 
 void
 SavedSystemsModel::save() const {
-    const QString path = storePath();
-    QDir().mkpath(QFileInfo(path).absolutePath());
     QJsonArray array;
     for (const Row& row : m_rows) {
         array.append(QJsonObject::fromVariantMap(mapFromRow(row)));
     }
-    // QSaveFile so a mid-write kill (Android is fond of those) cannot half-truncate
-    // the only copy of the user's saved systems.
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) {
-        return;
-    }
-    file.write(QJsonDocument(array).toJson(QJsonDocument::Compact));
-    (void)file.commit();
+    json_store_save_array(QLatin1String(kStoreFileName), array);
 }
 
 } // namespace dsd_qt

@@ -86,7 +86,7 @@ Item {
             return true
         }
         if (step === 1)
-            return !radioSource || freqText.length > 0
+            return !radioSource || Util.freqValid(freqText)
         return nameText.trim().length > 0
     }
 
@@ -381,6 +381,12 @@ Item {
                                 font.weight: Font.Medium
                                 color: Theme.textPrimary
                                 inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                // The hint only picks the soft keyboard; a hardware
+                                // keyboard types anything. The validator is what keeps
+                                // "851.375M" out of the saved system.
+                                validator: RegularExpressionValidator {
+                                    regularExpression: /^\d{1,5}(\.\d{0,6})?$/
+                                }
                                 selectionColor: Qt.alpha(Theme.cyan, 0.35)
                                 selectedTextColor: Theme.textPrimary
                             }

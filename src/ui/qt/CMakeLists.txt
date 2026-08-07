@@ -10,10 +10,11 @@ target_sources(
     dsd-neo_ui_qt
     PRIVATE
         app_prefs.cpp
+        call_history_filter.cpp
         call_history_model.cpp
         command_bridge.cpp
         decoder_host.cpp
-        event_log_model.cpp
+        json_store.cpp
         metrics_model.cpp
         qt_ui.cpp
         saved_systems_model.cpp

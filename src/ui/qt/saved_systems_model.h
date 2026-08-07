@@ -26,6 +26,7 @@ namespace dsd_qt {
 class SavedSystemsModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    Q_PROPERTY(int mostRecentRow READ mostRecentRow NOTIFY mostRecentRowChanged)
 
   public:
     enum Roles {
@@ -71,11 +72,17 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Stamp lastHeard = now; called when a session on this system starts. */
     Q_INVOKABLE void touch(int row);
 
-    /** @brief Row most recently heard, or 0 when the list is non-empty but unheard. */
-    Q_INVOKABLE int mostRecentRow() const;
+    /**
+     * @brief Row most recently heard, or 0 when the list is non-empty but unheard.
+     *
+     * A NOTIFY property, not an invokable: the home screen's featured play button
+     * binds to it, and an invokable in a binding would never re-evaluate.
+     */
+    int mostRecentRow() const;
 
   Q_SIGNALS:
     void countChanged();
+    void mostRecentRowChanged();
 
   private:
     struct Row {
@@ -102,7 +109,6 @@ class SavedSystemsModel : public QAbstractListModel {
 
     void load();
     void save() const;
-    QString storePath() const;
 
     QList<Row> m_rows;
 };

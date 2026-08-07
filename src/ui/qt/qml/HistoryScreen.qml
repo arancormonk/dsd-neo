@@ -11,8 +11,6 @@ Item {
 
     // Cycles: 0 all calls, 1 clear only, 2 encrypted only.
     readonly property var kindLabels: [qsTr("All calls"), qsTr("Clear calls"), qsTr("Encrypted")]
-    // -1 = all systems, otherwise index into callHistory.systemLabels.
-    property int systemIndex: -1
 
     Rectangle {
         anchors.fill: parent
@@ -43,30 +41,33 @@ Item {
             width: parent.width
             placeholderText: qsTr("Search talkgroup or unit")
             inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
-            onTextChanged: callHistory.filterText = text
+            onTextChanged: historyView.filterText = text
         }
 
         Row {
             spacing: 10
 
+            // Keyed on the filter string itself, never an index: the label array
+            // reorders as calls land, and a frozen index would let the pill show
+            // one system while the model filters another.
             FilterPill {
-                text: screen.systemIndex < 0
-                      ? qsTr("All systems")
-                      : callHistory.systemLabels[screen.systemIndex]
-                active: screen.systemIndex >= 0
+                text: historyView.filterSystem.length === 0 ? qsTr("All systems") : historyView.filterSystem
+                active: historyView.filterSystem.length > 0
                 onClicked: {
                     var labels = callHistory.systemLabels
-                    if (labels.length === 0)
+                    if (labels.length === 0) {
+                        historyView.filterSystem = ""
                         return
-                    screen.systemIndex = screen.systemIndex + 1 >= labels.length ? -1 : screen.systemIndex + 1
-                    callHistory.filterSystem = screen.systemIndex < 0 ? "" : labels[screen.systemIndex]
+                    }
+                    var idx = labels.indexOf(historyView.filterSystem)
+                    historyView.filterSystem = idx + 1 >= labels.length ? "" : labels[idx + 1]
                 }
             }
 
             FilterPill {
-                text: screen.kindLabels[callHistory.filterKind]
-                active: callHistory.filterKind !== 0
-                onClicked: callHistory.filterKind = (callHistory.filterKind + 1) % 3
+                text: screen.kindLabels[historyView.filterKind]
+                active: historyView.filterKind !== 0
+                onClicked: historyView.filterKind = (historyView.filterKind + 1) % 3
             }
         }
     }
@@ -78,7 +79,7 @@ Item {
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         clip: true
-        model: callHistory
+        model: historyView
 
         section.property: "dayLabel"
         section.delegate: MicroLabel {
@@ -96,12 +97,15 @@ Item {
             width: ListView.view.width
             name: model.name
             metaText: {
+                // "encrypted" states what the call was, nothing more: whether it was
+                // skipped depended on the lockout toggle and loaded keys at the time,
+                // which a logged row does not know. The duration is measured either way.
                 var meta = "TG " + model.tg
                 if (model.src > 0)
                     meta += " · SRC " + model.src
                 if (model.enc)
-                    meta += " · " + qsTr("encrypted") + " · " + qsTr("skipped")
-                else if (model.durationSecs >= 0)
+                    meta += " · " + qsTr("encrypted")
+                if (model.durationSecs >= 0)
                     meta += " · " + Util.fmtDuration(model.durationSecs)
                 return meta
             }
