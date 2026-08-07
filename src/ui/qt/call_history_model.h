@@ -123,6 +123,13 @@ class CallHistoryModel : public QAbstractListModel {
 
     static QString keyFor(const Row& row);
 
+    /**
+     * @brief Absorb @p row into a recent same-target row when the two overlap
+     *        within the merge window; the merged row spans both fragments.
+     * @return true when absorbed; false when it is a genuinely new call.
+     */
+    bool tryMerge(const Row& row);
+
     void load();
     void scheduleSave();
     void saveNow() const;

@@ -30,6 +30,10 @@ constexpr int kMaxRows = 1000;
  * measured call, so it renders as unknown instead. */
 constexpr qint64 kMaxPlausibleDurationSecs = 3600;
 constexpr int kSaveDelayMs = 3000;
+/* Trunk-following mints a committed row per tune attempt, so one keyed-up
+ * talkgroup can shed several near-simultaneous fragments. Within this window a
+ * same-target row is the same conversation, not a new call. */
+constexpr qint64 kMergeWindowSecs = 20;
 
 } // namespace
 
@@ -155,6 +159,33 @@ CallHistoryModel::systemLabels() const {
     return labels;
 }
 
+bool
+CallHistoryModel::tryMerge(const Row& row) {
+    for (int i = 0; i < m_rows.size() && i < 32; i++) {
+        Row& existing = m_rows[i];
+        if (existing.tg != row.tg || existing.src != row.src || existing.systemName != row.systemName) {
+            continue;
+        }
+        // The window extends off each fragment's end, not its start: one keyed-up
+        // talkgroup sheds a fragment per retune, and a fixed window off the first
+        // start would leak a duplicate row every window-length of activity.
+        const qint64 existingEnd = existing.when + qMax(existing.durationSecs, 0);
+        const qint64 rowEnd = row.when + qMax(row.durationSecs, 0);
+        if (row.when > existingEnd + kMergeWindowSecs || existing.when > rowEnd + kMergeWindowSecs) {
+            continue;
+        }
+        const qint64 start = qMin(existing.when, row.when);
+        const qint64 span = qMax(existingEnd, rowEnd) - start;
+        existing.when = start;
+        if ((existing.durationSecs >= 0 || row.durationSecs >= 0) && span <= kMaxPlausibleDurationSecs) {
+            existing.durationSecs = static_cast<int>(span);
+        }
+        existing.enc = existing.enc || row.enc;
+        return true;
+    }
+    return false;
+}
+
 QString
 CallHistoryModel::keyFor(const Row& row) {
     // Content-derived so it survives persistence: the Android service outlives the
@@ -248,8 +279,15 @@ CallHistoryModel::refresh(const dsd_state* snapshot) {
         return;
     }
 
+    // Coalesce fragments into the call they belong to. Prepending unmerged rows as
+    // they are processed lets the rest of a burst that arrived in this same tick
+    // merge into the first fragment of it.
     beginResetModel();
-    m_rows.append(fresh);
+    for (const Row& row : fresh) {
+        if (!tryMerge(row)) {
+            m_rows.prepend(row);
+        }
+    }
     std::stable_sort(m_rows.begin(), m_rows.end(), [](const Row& a, const Row& b) { return a.when > b.when; });
     while (m_rows.size() > kMaxRows) {
         m_seen.remove(keyFor(m_rows.last()));
@@ -307,10 +345,16 @@ CallHistoryModel::load() {
         rows.append(row);
     }
     beginResetModel();
-    m_rows = rows;
-    for (const Row& row : m_rows) {
-        m_seen.insert(keyFor(row));
+    m_rows.clear();
+    // Oldest first through the same merge the ingest path uses, so a log written
+    // before fragment-coalescing existed collapses on its first load.
+    for (auto it = rows.crbegin(); it != rows.crend(); ++it) {
+        m_seen.insert(keyFor(*it));
+        if (!tryMerge(*it)) {
+            m_rows.prepend(*it);
+        }
     }
+    std::stable_sort(m_rows.begin(), m_rows.end(), [](const Row& a, const Row& b) { return a.when > b.when; });
     rebuildVisible();
     endResetModel();
     Q_EMIT countChanged();
