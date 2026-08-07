@@ -78,16 +78,23 @@ function decodeHint(flag) {
     return ""
 }
 
-// The one-line mono meta under a saved system's name: "851.375 MHz · P25 trunked".
+// The one-line mono meta under a saved system's name: "851.375 MHz · P25 trunked"
+// on the dongle, "851.375 MHz · RTL-TCP · P25 trunked" on a networked tuner.
 function systemMeta(sys) {
     var parts = []
     if (sys.sourceType === "usb" || sys.sourceType === "rtltcp") {
         if (sys.freqMhz && sys.freqMhz.length > 0)
             parts.push(sys.freqMhz + " MHz")
+        // Ahead of the decode label rather than after it. The card's meta elides
+        // from the right, and a trailing marker was the first thing cut — which
+        // left a networked tuner and a dongle on the same frequency reading
+        // identically, the one case the marker exists to tell apart. Cutting the
+        // decode tail instead costs the least: it repeats the chip the user
+        // picked, while the source does not appear anywhere else on the card.
+        if (sys.sourceType === "rtltcp")
+            parts.push("RTL-TCP")
         var decode = decodeLabel(sys.decodeFlag)
         parts.push(sys.trunking ? decode + " trunked" : decode)
-        if (sys.sourceType === "rtltcp")
-            parts.push("rtl-tcp")
     } else if (sys.sourceType === "udp") {
         parts.push("UDP :" + sys.port)
         parts.push(decodeLabel(sys.decodeFlag))
