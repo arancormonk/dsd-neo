@@ -27,22 +27,38 @@
   { include: ["@[\"<](.*/)?qobject\\.h[\">]", private, "<QObject>", public] },
   { include: ["@[\"<](.*/)?qmetatype\\.h[\">]", private, "<QMetaType>", public] },
 
-  # Global helpers and scalar types.
-  { include: ["@[\"<](.*/)?qtypes\\.h[\">]", private, "<QtTypes>", public] },
-  { include: ["@[\"<](.*/)?qminmax\\.h[\">]", private, "<QtMinMax>", public] },
-  { include: ["@[\"<](.*/)?qnumeric\\.h[\">]", private, "<QtNumeric>", public] },
-  { include: ["@[\"<](.*/)?qcompare\\.h[\">]", private, "<QtCompare>", public] },
-  { include: ["@[\"<](.*/)?qtversionchecks\\.h[\">]", private, "<QtVersionChecks>", public] },
+  # Global helpers and scalar types, all of them to <QtGlobal>.
+  #
+  # Qt 6.5 broke qglobal.h apart and gave each piece its own capitalised
+  # forwarding header (<QtTypes>, <QtMinMax>, <QtVersionChecks>, ...). Mapping to
+  # those would be the fine-grained answer and it is what IWYU prefers, but it
+  # also silently raises this project's Qt floor to 6.5: on Qt 6.4 and earlier
+  # the split headers do not exist and the include fails to resolve, and nothing
+  # in CI builds against an older Qt to catch it (see the QT_VERSION branch in
+  # call_history_filter.h — older Qt is a case this tree still handles).
+  # <QtGlobal> declares the same symbols on every Qt 6, directly before 6.5 and
+  # by including the split headers after, so it is the portable spelling.
+  { include: ["@[\"<](.*/)?qtypes\\.h[\">]", private, "<QtGlobal>", public] },
+  { include: ["@[\"<](.*/)?qminmax\\.h[\">]", private, "<QtGlobal>", public] },
+  { include: ["@[\"<](.*/)?qnumeric\\.h[\">]", private, "<QtGlobal>", public] },
+  { include: ["@[\"<](.*/)?qtversionchecks\\.h[\">]", private, "<QtGlobal>", public] },
   # qt_ptr_swap and friends have no class header of their own.
   { include: ["@[\"<](.*/)?qswap\\.h[\">]", private, "<QtGlobal>", public] },
   { include: ["@[\"<](.*/)?qtypeinfo\\.h[\">]", private, "<QtGlobal>", public] },
+  # Not <QtGlobal>: qglobal.h does not include qcompare.h, and the three-way
+  # comparison helpers it declares are a Qt 6.7 facility either way, so a unit
+  # that needs them is already pinned above the floor the entries above protect.
+  { include: ["@[\"<](.*/)?qcompare\\.h[\">]", private, "<QtCompare>", public] },
   # The Qt namespace itself (Qt::ItemDataRole, Qt::CaseInsensitive, ...).
   { include: ["@[\"<](.*/)?qnamespace\\.h[\">]", private, "<Qt>", public] },
 
   # Strings and bytes.
   { include: ["@[\"<](.*/)?qstring\\.h[\">]", private, "<QString>", public] },
   { include: ["@[\"<](.*/)?qstringview\\.h[\">]", private, "<QStringView>", public] },
-  { include: ["@[\"<](.*/)?qlatin1stringview\\.h[\">]", private, "<QLatin1StringView>", public] },
+  # <QLatin1String>, not <QLatin1StringView>: the class was split out of
+  # qstring.h into its own header after Qt 6.0, so only the older spelling
+  # resolves on every Qt 6 — and it is the spelling this tree constructs.
+  { include: ["@[\"<](.*/)?qlatin1stringview\\.h[\">]", private, "<QLatin1String>", public] },
   { include: ["@[\"<](.*/)?qchar\\.h[\">]", private, "<QChar>", public] },
   { include: ["@[\"<](.*/)?qbytearray\\.h[\">]", private, "<QByteArray>", public] },
   { include: ["@[\"<](.*/)?qbytearrayview\\.h[\">]", private, "<QByteArrayView>", public] },

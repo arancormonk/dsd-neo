@@ -32,7 +32,7 @@
 #include <QThreadPool>
 #include <QTimer>
 #include <Qt>
-#include <QtTypes>
+#include <QtGlobal>
 #include <dsd-neo/core/state_fwd.h>
 
 namespace dsd_qt {

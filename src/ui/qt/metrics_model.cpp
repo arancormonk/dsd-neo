@@ -7,7 +7,7 @@
 
 #include <QChar>
 #include <QDateTime>
-#include <QtMinMax>
+#include <QtGlobal>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>

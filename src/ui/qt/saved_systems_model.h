@@ -23,7 +23,7 @@
 #include <QVariant>
 #include <QVariantMap>
 #include <Qt>
-#include <QtTypes>
+#include <QtGlobal>
 
 namespace dsd_qt {
 

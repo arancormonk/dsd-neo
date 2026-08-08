@@ -19,8 +19,7 @@
 #include <QObject>
 #include <QSortFilterProxyModel>
 #include <QString>
-#include <QtTypes>
-#include <QtVersionChecks>
+#include <QtGlobal>
 
 namespace dsd_qt {
 

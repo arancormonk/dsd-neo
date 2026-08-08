@@ -18,7 +18,7 @@
 #include <QObject>
 #include <QString>
 #include <QTimer>
-#include <QtTypes>
+#include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 

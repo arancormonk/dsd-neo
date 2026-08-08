@@ -5,7 +5,7 @@
 
 #include "app_prefs.h"
 
-#include <QLatin1StringView>
+#include <QLatin1String>
 #include <QVariant>
 
 namespace dsd_qt {

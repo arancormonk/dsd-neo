@@ -6,7 +6,7 @@
 #include "qt_ui.h"
 
 #include <QFontDatabase>
-#include <QLatin1StringView>
+#include <QLatin1String>
 #include <QList>
 #include <QObject>
 #include <QQmlApplicationEngine>

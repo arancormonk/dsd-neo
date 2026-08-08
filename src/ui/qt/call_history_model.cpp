@@ -10,12 +10,12 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QLatin1StringView>
+#include <QLatin1String>
 #include <QLocale>
 #include <QPair>
 #include <QRegularExpression>
 #include <QVariant>
-#include <QtMinMax>
+#include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/core/state.h>
 #include <iterator>

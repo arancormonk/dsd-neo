@@ -15,7 +15,7 @@
 #include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
-#include <QtTypes>
+#include <QtGlobal>
 #include <stdio.h>
 
 #include "dsd-neo/core/safe_api.h"
