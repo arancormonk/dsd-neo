@@ -132,6 +132,164 @@ jobs:
         shell: bash
         run: ccache --show-stats
 
+  # The app's UI is QML, which the arm64 APK job can build but cannot run. This
+  # job configures the same frontend for the host with the same pinned Qt the APK
+  # ships, and runs the Qt Quick Test suite over the real .qml files plus the Qt
+  # model tests that are otherwise registered only behind DSD_ENABLE_QT_UI and so
+  # have never run anywhere in CI. Only the frontend's test targets are built:
+  # they do not link the decoder, so this stays a short job.
+  qt-ui-tests:
+    name: Qt UI tests (host Qt)
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          source tools/ci-dependency-pins.env
+          echo "ANDROID_QT_VERSION=$ANDROID_QT_VERSION" >> "$GITHUB_ENV"
+
+      # The project's own dependencies, plus the handful of runtime libraries
+      # Qt Gui links even when the platform plugin is offscreen.
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build ccache pkg-config git \
+            libsndfile1-dev libpulse-dev libncurses-dev \
+            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev \
+            libgl1-mesa-dev libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+
+      - name: Build and install mbelib-neo
+        shell: bash
+        run: |
+          set -euxo pipefail
+          source tools/ci-dependency-pins.env
+          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
+          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+          cmake --build /tmp/mbelib-neo/build -j
+          cmake --install /tmp/mbelib-neo/build
+
+      # Qt is installed with aqtinstall rather than a Qt-installing action: every
+      # action used here must be hash-pinned, transitively, and the available
+      # actions are not.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: .github/requirements/aqtinstall.txt
+
+      - name: Record the Qt location
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/qt"
+          {
+            echo "QT_INSTALL_ROOT=$root"
+            echo "QT_HOST_ROOT=$root/$ANDROID_QT_VERSION/gcc_64"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore Qt
+        id: qt-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.QT_INSTALL_ROOT }}
+          key: qt-host-${{ env.ANDROID_QT_VERSION }}-linux-aqt3.3.0
+
+      - name: Install Qt (host kit)
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m pip install --require-hashes -r .github/requirements/aqtinstall.txt
+          aqt install-qt linux desktop "$ANDROID_QT_VERSION" linux_gcc_64 -O "$QT_INSTALL_ROOT"
+
+      - name: Verify the Qt kit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -x "$QT_HOST_ROOT/bin/qmake"
+          test -f "$QT_HOST_ROOT/lib/cmake/Qt6QuickTest/Qt6QuickTestConfig.cmake"
+
+      - name: Prepare the local dependency environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "CMAKE_PREFIX_PATH=$HOME/.local:$QT_HOST_ROOT:${CMAKE_PREFIX_PATH:-}"
+            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-qt-ui-tests-${{ env.ANDROID_QT_VERSION }}-${{ github.sha }}
+          restore-keys: |
+            ccache-qt-ui-tests-${{ env.ANDROID_QT_VERSION }}-
+
+      - name: Initialize ccache
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ccache --zero-stats
+          ccache --set-config=max_size=200M
+          ccache --set-config=compression=true
+
+      - name: Configure (dev-debug, Qt frontend on)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --preset dev-debug \
+            -DDSD_ENABLE_QT_UI=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # A Qt frontend that stops registering its tests would otherwise read as a
+      # green run with nothing in it.
+      - name: Verify the Qt UI tests are registered
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ctest --preset dev-debug -N -L qml | grep -F "UI_QT_QML_CALL_LISTS"
+          ctest --preset dev-debug -N -R '^UI_QT_' | grep -F "Total Tests: 7"
+
+      - name: Build the Qt UI test targets
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build --preset dev-debug -j \
+            --target dsd-neo_test_ui_qt_qml \
+            dsd-neo_test_ui_qt_persistence \
+            dsd-neo_test_ui_qt_call_history_model \
+            dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_call_history_merge \
+            dsd-neo_test_ui_qt_call_line \
+            dsd-neo_test_ui_qt_session_state
+
+      # The QML test carries its own headless environment (offscreen platform,
+      # software renderer) in the CTest registration, so there is nothing to set
+      # here — a developer running ctest locally gets the same run.
+      - name: Test
+        shell: bash
+        run: ctest --preset dev-debug -R '^UI_QT_' --output-on-failure
+
+      - name: Show ccache stats
+        shell: bash
+        run: ccache --show-stats
+
   build-apk:
     name: APK (Qt Quick app)
     runs-on: ubuntu-latest

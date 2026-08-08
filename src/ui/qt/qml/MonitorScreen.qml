@@ -509,6 +509,9 @@ Item {
             ListView {
                 id: recentList
 
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "recentCallsList"
+
                 anchors.top: recentLabel.bottom
                 anchors.topMargin: 10
                 anchors.left: parent.left

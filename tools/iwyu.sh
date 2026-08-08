@@ -149,17 +149,29 @@ def normalize_file(entry):
     return rel.as_posix(), str(file_path)
 
 
+# Compiler options GCC accepts and clang rejects outright. IWYU is a clang tool
+# driven by the recorded command line, so one of these anywhere in it aborts the
+# translation unit and the file goes unanalyzed. Qt6 puts
+# -mno-direct-extern-access on everything linking Qt when Qt was built with GCC,
+# which is every Qt frontend and Qt test target in this tree. Dropping it changes
+# nothing IWYU examines: it is a codegen option, and IWYU emits no code.
+# Keep in step with tools/clang_tidy.sh, which strips the same set.
+GCC_ONLY_ARGS = frozenset({"-mno-direct-extern-access"})
+
+
 def tokens_for_entry(entry):
     args = entry.get("arguments")
     if args:
-        return list(args)
-    cmd = entry.get("command") or ""
-    if not cmd:
-        return []
-    try:
-        return shlex.split(cmd)
-    except Exception:
-        return cmd.split()
+        tokens = list(args)
+    else:
+        cmd = entry.get("command") or ""
+        if not cmd:
+            return []
+        try:
+            tokens = shlex.split(cmd)
+        except Exception:
+            tokens = cmd.split()
+    return [t for t in tokens if t not in GCC_ONLY_ARGS]
 
 
 def score_entry(entry):
@@ -249,6 +261,32 @@ else:
     for rel in selected_rel:
         entry = max(entries_by_rel[rel], key=score_entry)
         selected_entries.append((rel, entry))
+
+
+def compiles_against_qt(entry):
+    """Whether this translation unit's command line pulls in Qt headers."""
+    return any("/QtCore" in t or "/qt6" in t or "/qt5" in t for t in tokens_for_entry(entry))
+
+
+# IWYU ships mapping files for Qt 4 and Qt 5 only, and a mapping is what tells it
+# that QByteArray's public spelling is <QByteArray> rather than the private
+# <qbytearray.h> it actually sees. Qt 6 moved much of the API behind new private
+# headers (qtmetamacros.h, qtypes.h, qcontainerfwd.h) that no shipped mapping
+# covers, so on Qt code IWYU asks for private headers that are not Qt's API and
+# following it would break the build on the next Qt release. Those units are
+# named and skipped rather than analyzed against advice nobody should take.
+# Writing a Qt 6 mapping file would lift this; until then the exclusion is
+# reported on every run so it cannot pass for coverage.
+qt_entries = [(rel, entry) for rel, entry in selected_entries if compiles_against_qt(entry)]
+if qt_entries:
+    selected_entries = [pair for pair in selected_entries if pair not in qt_entries]
+    print(f"Skipping {len(qt_entries)} Qt translation unit(s): IWYU has no Qt 6 mapping file.")
+    for rel, _entry in qt_entries:
+        print(f"  {rel}")
+
+if not selected_entries:
+    print("No translation units left for IWYU analysis.")
+    raise SystemExit(0)
 
 print(
     f"Running IWYU on {len(selected_entries)} compile command(s) "

@@ -154,6 +154,35 @@ print(
 )
 
 
+# Compiler options GCC accepts and clang rejects outright. clang-tidy parses the
+# recorded command line, so one of these anywhere in it aborts the whole
+# translation unit with clang-diagnostic-error and the file goes unanalyzed.
+# Qt6 puts -mno-direct-extern-access on everything linking Qt when Qt was built
+# with GCC, which is every Qt frontend and Qt test target in this tree.
+# Dropping the flag changes nothing clang-tidy examines: it is a codegen option,
+# and clang-tidy does not generate code.
+GCC_ONLY_ARGS = frozenset({"-mno-direct-extern-access"})
+
+
+def strip_gcc_only_args(entry):
+    """Return a copy of entry with options clang cannot parse removed."""
+    out = dict(entry)
+    args = out.get("arguments")
+    if args:
+        out["arguments"] = [a for a in args if a not in GCC_ONLY_ARGS]
+        return out
+    cmd = out.get("command")
+    if cmd:
+        try:
+            tokens = shlex.split(cmd)
+        except Exception:
+            return out
+        kept = [t for t in tokens if t not in GCC_ONLY_ARGS]
+        if len(kept) != len(tokens):
+            out["command"] = shlex.join(kept)
+    return out
+
+
 def score_entry(rel_path, entry):
     cmd = entry.get("command") or ""
     args = entry.get("arguments")
@@ -238,7 +267,7 @@ if out_dir and not all_commands:
         if not cmds:
             continue
         best = max(cmds, key=lambda e: score_entry(rel, e))
-        selected.append(best)
+        selected.append(strip_gcc_only_args(best))
 
     out_path = out_dir / "compile_commands.json"
     out_path.write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")

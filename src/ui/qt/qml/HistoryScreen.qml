@@ -110,6 +110,9 @@ Item {
     ListView {
         id: logList
 
+        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+        objectName: "callLogList"
+
         anchors.top: chrome.bottom
         anchors.topMargin: 8
         anchors.left: parent.left
@@ -233,6 +236,8 @@ Item {
     Rectangle {
         id: latestPill
 
+        objectName: "newCallsPill"
+
         readonly property bool shown: logList.unseen > 0 && !logList.atLatest && logList.count > 0
 
         anchors.horizontalCenter: logList.horizontalCenter
@@ -336,6 +341,8 @@ Item {
         }
 
         Text {
+            objectName: "logEmptyDetail"
+
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             text: parent.filtered ? parent.hiddenText
