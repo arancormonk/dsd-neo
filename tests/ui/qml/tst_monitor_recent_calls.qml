@@ -74,7 +74,27 @@ Item {
             tryVerify(function () { return tc.atTop() })
         }
 
-        function test_03_scrolling_back_holds_the_reader_place() {
+        // The reading exists so a log that stays empty on an almost entirely
+        // encrypted site does not read as a decoder that stopped. It must appear
+        // once something is locked out and stay out of the way when nothing is.
+        function test_03_the_lockout_count_shows_only_once_something_is_locked_out() {
+            var row = findChild(screenLoader.item, "encLockoutRow")
+            var value = findChild(screenLoader.item, "encLockoutValue")
+            verify(row !== null, "the lockout row is missing")
+            verify(value !== null, "the lockout value is missing")
+
+            testContext.setMetric("encLockoutCount", 0)
+            tryVerify(function () { return !row.visible })
+
+            testContext.setMetric("encLockoutCount", 6)
+            tryVerify(function () { return row.visible })
+            compare(value.text, "6")
+
+            testContext.setMetric("encLockoutCount", 0)
+            tryVerify(function () { return !row.visible })
+        }
+
+        function test_04_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen.
             tc.list.contentY = tc.list.originY + 150
             tc.waitForRendering(tc.list)

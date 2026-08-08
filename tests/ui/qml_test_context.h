@@ -203,6 +203,23 @@ class CallLogStore : public QAbstractListModel {
 class Setup : public QObject {
     Q_OBJECT
 
+  public:
+    /**
+     * @brief Change one engine reading and republish it.
+     *
+     * The engine-facing mocks are plain maps, which QML cannot mutate in place;
+     * re-setting the context property is what re-evaluates the bindings that read
+     * it. Exposed to the tests as `testContext` so a case can drive a reading to
+     * a value and back rather than asserting only whatever the fixture started at.
+     */
+    Q_INVOKABLE void
+    setMetric(const QString& key, const QVariant& value) {
+        m_metrics[key] = value;
+        if (m_engine != nullptr) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("metrics"), m_metrics);
+        }
+    }
+
   public Q_SLOTS:
 
     /**
@@ -270,7 +287,12 @@ class Setup : public QObject {
             metrics[p + QStringLiteral("EncText")] = QString();
             metrics[p + QStringLiteral("TgId")] = 0;
         }
+        // Targets the encrypted lockout is skipping; 0 is the at-rest value.
+        metrics[QStringLiteral("encLockoutCount")] = 0;
+        m_metrics = metrics;
+        m_engine = engine;
         ctx->setContextProperty(QStringLiteral("metrics"), metrics);
+        ctx->setContextProperty(QStringLiteral("testContext"), this);
 
         QVariantMap host;
         host[QStringLiteral("running")] = false;
@@ -279,6 +301,10 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
         ctx->setContextProperty(QStringLiteral("commands"), QVariantMap());
     }
+
+  private:
+    QVariantMap m_metrics;
+    QQmlEngine* m_engine = nullptr;
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */

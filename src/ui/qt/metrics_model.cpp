@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
@@ -206,6 +207,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
      * assume a fresh session's defaults. */
     next.audio_muted = opts_snapshot->audio_out == 0;
     next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
+    next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
 
     /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —

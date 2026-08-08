@@ -56,6 +56,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY slot2Changed)
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
+    Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -227,6 +228,22 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Targets the encrypted lockout is currently skipping.
+     *
+     * The ledger's size at the current key epoch, which is a count of targets
+     * confirmed undecryptable from voice — not a count of refusals. A control
+     * channel repeats a grant update every few hundred ms for a call in
+     * progress, so counting refused grants reported hundreds where a handful of
+     * transmissions had happened. This exists because a site that is almost
+     * entirely encrypted otherwise presents as a decoder that stopped: the
+     * control channel decodes, every grant is declined, and no call is logged.
+     */
+    int
+    encLockoutCount() const {
+        return m_view.enc_lockout_count;
+    }
+
+    /**
      * @brief The engine's transient command acknowledgement, empty when none.
      *
      * Commands only enqueue a request; this is the engine saying what actually
@@ -311,6 +328,7 @@ class MetricsModel : public QObject {
         bool stream_active = false;
         bool audio_muted = false;
         qulonglong held_tg = 0;
+        int enc_lockout_count = 0;
         QString ui_message;
         SlotCall slot_call[2];
 
@@ -327,7 +345,8 @@ class MetricsModel : public QObject {
 
         bool
         controlEquals(const View& other) const {
-            return audio_muted == other.audio_muted && held_tg == other.held_tg;
+            return audio_muted == other.audio_muted && held_tg == other.held_tg
+                   && enc_lockout_count == other.enc_lockout_count;
         }
     };
 
