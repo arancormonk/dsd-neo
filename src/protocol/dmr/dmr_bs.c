@@ -529,7 +529,7 @@ reset_dmr_bs_slot_keystream_counters(dsd_state* state, uint8_t internalslot) {
 }
 
 static void
-run_dmr_bs_slot_vc6_sbrc(const dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
+run_dmr_bs_slot_vc6_sbrc(dsd_opts* opts, dsd_state* state, const dmr_bs_ctx* ctx) {
     if (is_dmr_bs_slot_vc6(ctx)) {
         dmr_sbrc(opts, state, ctx->power);
     }
