@@ -315,7 +315,7 @@ dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power) {
+dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
     (void)opts;
     (void)state;
     (void)power;

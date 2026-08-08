@@ -18,6 +18,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,7 +80,7 @@ void dmr_refresh_algids_on_error(dsd_opts* opts, dsd_state* state);
 void dmr_late_entry_mi_fragment(dsd_opts* opts, dsd_state* state, uint8_t vc, uint8_t ambe_fr[4][24],
                                 uint8_t ambe_fr2[4][24], uint8_t ambe_fr3[4][24]);
 void dmr_late_entry_mi(dsd_opts* opts, dsd_state* state);
-void dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power);
+void dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power);
 
 /* Standalone Reverse Channel burst (ETSI TS 102 361-1 clause 6.4.1). */
 enum {
@@ -91,6 +92,15 @@ enum {
 void dmrRC(dsd_opts* opts, dsd_state* state);
 int dmr_rc_decode_pdu(const uint8_t interleaved_bits[32], uint8_t* out_command, uint32_t* out_hex);
 const char* dmr_rc_command_name(uint8_t rc_command);
+
+/* Surface a validated RC command as a CONTROL event-history row (yellow in the
+ * terminal UI). dedup_key: 0/1 = embedded SB/RC per slot index, 2 = standalone
+ * burst. have_cc/cc: EMB color code when trustworthy. `now` is injected so
+ * tests can cross the repeat-suppression window deterministically. */
+enum { DMR_RC_NOTIFY_KEY_STANDALONE = 2 };
+
+void dmr_rc_notify_command(dsd_opts* opts, dsd_state* state, uint8_t emit_slot, uint8_t dedup_key, uint8_t rc_command,
+                           int have_cc, uint8_t cc, time_t now);
 void dmr_rc_assemble_bits(const int dibits[48], uint8_t emb_bits[16], uint8_t rc_bits[32]);
 size_t dmr_debug_format_rc_burst(char* out, size_t out_size, const int dibits[48]);
 void LFSR64(dsd_state* state);

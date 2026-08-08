@@ -5646,6 +5646,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_dmr_rc_burst PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_RC_BURST COMMAND dsd-neo_test_dmr_rc_burst)
 
+# Embedded SB/RC path: validated RC commands emit CONTROL event-history rows
+add_executable(
+    dsd-neo_test_dmr_sbrc_rc_event
+    protocol/dmr/test_dmr_sbrc_rc_event.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_sbrc_rc_event
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_dmr_sbrc_rc_event PRIVATE dsd-neo_proto_dmr)
+add_test(NAME DMR_SBRC_RC_EVENT COMMAND dsd-neo_test_dmr_sbrc_rc_event)
+
 add_executable(
     dsd-neo_test_dmr_dburst_profile
     protocol/dmr/test_dmr_dburst_profile.c

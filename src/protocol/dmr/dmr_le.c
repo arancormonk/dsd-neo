@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -585,7 +586,7 @@ dmr_sbrc_handle_kirisun_mode(const dsd_opts* opts, dsd_state* state, const dmr_s
 }
 
 static void
-dmr_sbrc_handle_standard_payload(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
+dmr_sbrc_handle_standard_payload(dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
                                  uint8_t alg, uint8_t key, uint8_t txi_delay) {
     if (data->sbrc_hex == 0U && data->crc7_okay == 0U) {
         return;
@@ -593,6 +594,10 @@ dmr_sbrc_handle_standard_payload(const dsd_opts* opts, dsd_state* state, const d
 
     if (data->crc7_okay == 1U) {
         dmr_sbrc_print_rc_command(opts, data->sbrc_hex);
+        /* Attributed to the received slot; the EMB color code is not in scope
+         * here, so the notice carries no CC clause. */
+        dmr_rc_notify_command(opts, state, data->slot_idx, data->slot_idx, (uint8_t)(data->sbrc_hex >> 7),
+                              /*have_cc*/ 0, 0U, time(NULL));
         return;
     }
 
@@ -607,7 +612,7 @@ dmr_sbrc_handle_standard_payload(const dsd_opts* opts, dsd_state* state, const d
 }
 
 static void
-dmr_sbrc_handle_standard_mode(const dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
+dmr_sbrc_handle_standard_mode(dsd_opts* opts, dsd_state* state, const dmr_sbrc_data* data, uint8_t sbrc_opcode,
                               uint8_t alg, uint8_t key, uint8_t txi_delay, int kirisun_call) {
     // opts->dmr_le is global; fall back to standard SB/RC parsing for non-Kirisun calls.
     if (!(opts->dmr_le == 1 || (opts->dmr_le == 3 && !kirisun_call))) {
@@ -643,7 +648,7 @@ dmr_sbrc_write_dsp_output(const dsd_opts* opts, const dsd_state* state, uint8_t 
 
 //handle Single Burst (Voice Burst F) or Reverse Channel Signalling
 void
-dmr_sbrc(const dsd_opts* opts, dsd_state* state, uint8_t power) {
+dmr_sbrc(dsd_opts* opts, dsd_state* state, uint8_t power) {
     dmr_sbrc_data data;
     dmr_sbrc_init_data(&data, state, power);
 
