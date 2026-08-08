@@ -686,7 +686,11 @@ jobs:
 
   publish-apk:
     name: Publish APK
-    needs: build-apk
+    # Also gated on the UI tests: the APK job proves the QML compiles and packages,
+    # not that the app's screens behave, and a release is the wrong place to find
+    # that out. The cost is that a failure to install the host Qt kit blocks a
+    # publish until it is re-run.
+    needs: [build-apk, qt-ui-tests]
     runs-on: ubuntu-latest
     # An unsigned APK cannot be installed, so a build that could not sign
     # publishes nothing rather than shipping a broken download.
