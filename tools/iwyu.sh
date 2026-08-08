@@ -268,21 +268,15 @@ def compiles_against_qt(entry):
     return any("/QtCore" in t or "/qt6" in t or "/qt5" in t for t in tokens_for_entry(entry))
 
 
-# IWYU ships mapping files for Qt 4 and Qt 5 only, and a mapping is what tells it
-# that QByteArray's public spelling is <QByteArray> rather than the private
-# <qbytearray.h> it actually sees. Qt 6 moved much of the API behind new private
-# headers (qtmetamacros.h, qtypes.h, qcontainerfwd.h) that no shipped mapping
-# covers, so on Qt code IWYU asks for private headers that are not Qt's API and
-# following it would break the build on the next Qt release. Those units are
-# named and skipped rather than analyzed against advice nobody should take.
-# Writing a Qt 6 mapping file would lift this; until then the exclusion is
-# reported on every run so it cannot pass for coverage.
-qt_entries = [(rel, entry) for rel, entry in selected_entries if compiles_against_qt(entry)]
-if qt_entries:
-    selected_entries = [pair for pair in selected_entries if pair not in qt_entries]
-    print(f"Skipping {len(qt_entries)} Qt translation unit(s): IWYU has no Qt 6 mapping file.")
-    for rel, _entry in qt_entries:
-        print(f"  {rel}")
+# IWYU reports the header a symbol is physically declared in, and Qt declares
+# nearly everything in lowercase implementation headers. tools/iwyu-qt6.imp maps
+# those back to the class headers Qt documents; without it every Qt unit is asked
+# to include private headers instead of Qt's API.
+qt_mapping = root / "tools" / "iwyu-qt6.imp"
+qt_units = sum(1 for _rel, entry in selected_entries if compiles_against_qt(entry))
+if qt_units and not qt_mapping.is_file():
+    print(f"WARNING: {qt_units} Qt translation unit(s) will be analyzed without "
+          f"{qt_mapping.name}; expect private-header suggestions.")
 
 if not selected_entries:
     print("No translation units left for IWYU analysis.")
@@ -313,6 +307,8 @@ def run_iwyu(rel, entry):
         compiler_index = 1
     cmd[compiler_index] = "include-what-you-use"
     cmd.append("-fno-color-diagnostics")
+    if qt_mapping.is_file() and compiles_against_qt(entry):
+        cmd.extend(["-Xiwyu", f"--mapping_file={qt_mapping}"])
     if strict:
         cmd.extend(
             [

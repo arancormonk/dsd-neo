@@ -5,17 +5,25 @@
 
 #include "call_history_model.h"
 
-#include <algorithm>
-
+#include <QByteArray>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1StringView>
 #include <QLocale>
+#include <QPair>
 #include <QRegularExpression>
-
+#include <QVariant>
+#include <QtMinMax>
+#include <algorithm>
 #include <dsd-neo/core/state.h>
+#include <iterator>
+#include <stdint.h>
+#include <utility>
 
 #include "call_history_merge.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
 
 namespace dsd_qt {

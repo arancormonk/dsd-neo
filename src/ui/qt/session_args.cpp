@@ -5,9 +5,14 @@
 
 #include "session_args.h"
 
+#include <QChar>
+#include <QLatin1StringView>
+#include <QList>
+#include <QMap>
 #include <QMetaType>
 #include <QRegularExpression>
 #include <QVariant>
+#include <Qt>
 
 #include "app_prefs.h"
 

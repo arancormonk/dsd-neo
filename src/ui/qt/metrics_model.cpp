@@ -5,15 +5,19 @@
 
 #include "metrics_model.h"
 
+#include <QChar>
 #include <QDateTime>
-
+#include <QtMinMax>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <stdint.h>
 
 #include "call_line.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 
 namespace dsd_qt {
 

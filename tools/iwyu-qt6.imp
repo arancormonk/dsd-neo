@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+#
+# include-what-you-use mapping for Qt 6.
+#
+# IWYU reports the header a symbol is physically declared in. Qt declares almost
+# everything in lowercase implementation headers and exposes it through
+# capitalised class headers, so without a mapping IWYU asks for <qbytearray.h>
+# where Qt's own API is <QByteArray> — advice that would break on the next Qt
+# release, and which is why Qt units were excluded from tools/iwyu.sh before this
+# file existed. Upstream ships qt4.imp and qt5_11.imp only; Qt 6 moved much of
+# the surface into new private headers (qtmetamacros.h, qtypes.h, qminmax.h,
+# qcontainerfwd.h), which is what the Qt 5 mapping misses.
+#
+# Entries are regex ("@" prefix) on the private spelling because IWYU names the
+# same header both bare and module-qualified (qobjectdefs.h and
+# QtCore/qobjectdefs.h) depending on how it was reached.
+#
+# Adding to this file: run tools/iwyu.sh --strict on a Qt translation unit; any
+# lowercase q*.h in its suggestions needs an entry here, mapped to the class or
+# module header Qt documents for that symbol.
+[
+  # Macros and the meta-object system. Q_OBJECT, Q_PROPERTY, Q_SIGNALS, Q_ENUM
+  # and Q_INVOKABLE all live here; QObject is what a reader includes for them.
+  { include: ["@[\"<](.*/)?qtmetamacros\\.h[\">]", private, "<QObject>", public] },
+  { include: ["@[\"<](.*/)?qobjectdefs\\.h[\">]", private, "<QObject>", public] },
+  { include: ["@[\"<](.*/)?qobject\\.h[\">]", private, "<QObject>", public] },
+  { include: ["@[\"<](.*/)?qmetatype\\.h[\">]", private, "<QMetaType>", public] },
+
+  # Global helpers and scalar types.
+  { include: ["@[\"<](.*/)?qtypes\\.h[\">]", private, "<QtTypes>", public] },
+  { include: ["@[\"<](.*/)?qminmax\\.h[\">]", private, "<QtMinMax>", public] },
+  { include: ["@[\"<](.*/)?qnumeric\\.h[\">]", private, "<QtNumeric>", public] },
+  { include: ["@[\"<](.*/)?qcompare\\.h[\">]", private, "<QtCompare>", public] },
+  { include: ["@[\"<](.*/)?qtversionchecks\\.h[\">]", private, "<QtVersionChecks>", public] },
+  # qt_ptr_swap and friends have no class header of their own.
+  { include: ["@[\"<](.*/)?qswap\\.h[\">]", private, "<QtGlobal>", public] },
+  { include: ["@[\"<](.*/)?qtypeinfo\\.h[\">]", private, "<QtGlobal>", public] },
+  # The Qt namespace itself (Qt::ItemDataRole, Qt::CaseInsensitive, ...).
+  { include: ["@[\"<](.*/)?qnamespace\\.h[\">]", private, "<Qt>", public] },
+
+  # Strings and bytes.
+  { include: ["@[\"<](.*/)?qstring\\.h[\">]", private, "<QString>", public] },
+  { include: ["@[\"<](.*/)?qstringview\\.h[\">]", private, "<QStringView>", public] },
+  { include: ["@[\"<](.*/)?qlatin1stringview\\.h[\">]", private, "<QLatin1StringView>", public] },
+  { include: ["@[\"<](.*/)?qchar\\.h[\">]", private, "<QChar>", public] },
+  { include: ["@[\"<](.*/)?qbytearray\\.h[\">]", private, "<QByteArray>", public] },
+  { include: ["@[\"<](.*/)?qbytearrayview\\.h[\">]", private, "<QByteArrayView>", public] },
+  { include: ["@[\"<](.*/)?qstringlist\\.h[\">]", private, "<QStringList>", public] },
+
+  # Containers. qcontainerfwd.h is Qt's own forward-declaration header, so the
+  # aliases declared there need naming individually — mapping the header alone
+  # would send every one of them to <QList> and pull correct <QStringList> and
+  # <QVariantMap> includes out of files that legitimately have them.
+  { symbol: ["QStringList", private, "<QStringList>", public] },
+  { symbol: ["QVariantMap", private, "<QVariantMap>", public] },
+  { symbol: ["QVariantList", private, "<QVariantList>", public] },
+  { symbol: ["QVariantHash", private, "<QVariantHash>", public] },
+  { include: ["@[\"<](.*/)?qcontainerfwd\\.h[\">]", private, "<QList>", public] },
+  { include: ["@[\"<](.*/)?qlist\\.h[\">]", private, "<QList>", public] },
+  { include: ["@[\"<](.*/)?qmap\\.h[\">]", private, "<QMap>", public] },
+  { include: ["@[\"<](.*/)?qhash\\.h[\">]", private, "<QHash>", public] },
+  { include: ["@[\"<](.*/)?qset\\.h[\">]", private, "<QSet>", public] },
+  { include: ["@[\"<](.*/)?qvector\\.h[\">]", private, "<QList>", public] },
+  { include: ["@[\"<](.*/)?qpair\\.h[\">]", private, "<QPair>", public] },
+  { include: ["@[\"<](.*/)?qvariant\\.h[\">]", private, "<QVariant>", public] },
+
+  # Item models.
+  { include: ["@[\"<](.*/)?qabstractitemmodel\\.h[\">]", private, "<QAbstractItemModel>", public] },
+  { include: ["@[\"<](.*/)?qsortfilterproxymodel\\.h[\">]", private, "<QSortFilterProxyModel>", public] },
+
+  # JSON, I/O, time, settings, logging.
+  { include: ["@[\"<](.*/)?qjsonvalue\\.h[\">]", private, "<QJsonValue>", public] },
+  { include: ["@[\"<](.*/)?qjsonobject\\.h[\">]", private, "<QJsonObject>", public] },
+  { include: ["@[\"<](.*/)?qjsonarray\\.h[\">]", private, "<QJsonArray>", public] },
+  { include: ["@[\"<](.*/)?qjsondocument\\.h[\">]", private, "<QJsonDocument>", public] },
+  { include: ["@[\"<](.*/)?qiodevice\\.h[\">]", private, "<QIODevice>", public] },
+  { include: ["@[\"<](.*/)?qiodevicebase\\.h[\">]", private, "<QIODevice>", public] },
+  { include: ["@[\"<](.*/)?qfile\\.h[\">]", private, "<QFile>", public] },
+  { include: ["@[\"<](.*/)?qfiledevice\\.h[\">]", private, "<QFile>", public] },
+  { include: ["@[\"<](.*/)?qdatetime\\.h[\">]", private, "<QDateTime>", public] },
+  { include: ["@[\"<](.*/)?qsettings\\.h[\">]", private, "<QSettings>", public] },
+  { include: ["@[\"<](.*/)?qdebug\\.h[\">]", private, "<QDebug>", public] },
+  { include: ["@[\"<](.*/)?qtimer\\.h[\">]", private, "<QTimer>", public] },
+  { include: ["@[\"<](.*/)?qthreadpool\\.h[\">]", private, "<QThreadPool>", public] },
+  { include: ["@[\"<](.*/)?qrunnable\\.h[\">]", private, "<QRunnable>", public] },
+  { include: ["@[\"<](.*/)?qcoreapplication\\.h[\">]", private, "<QCoreApplication>", public] },
+
+  # Qml and Quick.
+  { include: ["@[\"<](.*/)?qqmlengine\\.h[\">]", private, "<QQmlEngine>", public] },
+  { include: ["@[\"<](.*/)?qqmlcontext\\.h[\">]", private, "<QQmlContext>", public] },
+  { include: ["@[\"<](.*/)?qqmlapplicationengine\\.h[\">]", private, "<QQmlApplicationEngine>", public] },
+  { include: ["@[\"<](.*/)?qquickwindow\\.h[\">]", private, "<QQuickWindow>", public] },
+  { include: ["@[\"<](.*/)?quicktest\\.h[\">]", private, "<QtQuickTest>", public] },
+
+  # Gui.
+  { include: ["@[\"<](.*/)?qguiapplication\\.h[\">]", private, "<QGuiApplication>", public] },
+  { include: ["@[\"<](.*/)?qfontdatabase\\.h[\">]", private, "<QFontDatabase>", public] },
+]

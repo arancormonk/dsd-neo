@@ -16,12 +16,18 @@
 #include <QDir>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QString>
 #include <QTemporaryDir>
-
+#include <QVariant>
 #include <dsd-neo/core/state.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 #include "call_history_model.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/core/state_fwd.h"
 
 using dsd_qt::CallHistoryModel;
 

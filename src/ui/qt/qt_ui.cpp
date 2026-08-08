@@ -5,14 +5,16 @@
 
 #include "qt_ui.h"
 
-#include <QFont>
 #include <QFontDatabase>
-#include <QGuiApplication>
+#include <QLatin1StringView>
+#include <QList>
+#include <QObject>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QString>
+#include <QStringList>
 #include <QUrl>
-
 #include <dsd-neo/runtime/git_ver.h>
 
 #include "app_prefs.h"

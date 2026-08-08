@@ -7,6 +7,7 @@
 
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
+#include <stdint.h>
 
 namespace dsd_qt {
 

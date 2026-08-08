@@ -11,12 +11,18 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QMap>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QString>
 #include <QTemporaryDir>
+#include <QVariant>
 #include <QVariantMap>
+#include <stdio.h>
 
 #include "app_prefs.h"
 #include "dsd-neo/core/safe_api.h"

@@ -25,11 +25,14 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QList>
+#include <QObject>
 #include <QSettings>
 #include <QString>
+#include <QStringList>
 #include <QThreadPool>
 #include <QTimer>
-
+#include <Qt>
+#include <QtTypes>
 #include <dsd-neo/core/state_fwd.h>
 
 namespace dsd_qt {

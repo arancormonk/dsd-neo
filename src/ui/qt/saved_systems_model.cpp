@@ -5,9 +5,14 @@
 
 #include "saved_systems_model.h"
 
+#include <QByteArray>
 #include <QDateTime>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1StringView>
+#include <QMap>
 #include <QMetaType>
 #include <QVariant>
 
