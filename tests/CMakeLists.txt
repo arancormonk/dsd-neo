@@ -2139,51 +2139,88 @@ if(DSD_ENABLE_QT_UI)
 
     # The QML screens themselves, driven by Qt Quick Test: the call lists keep
     # the latest call in view while the reader is parked at the top, hold their
-    # place when the reader is further back, and tally what landed meanwhile.
-    # None of that is visible to a C++ model test — it lives in the view's
-    # reaction to insert signals — and all of it regresses silently.
+    # place when the reader is further back, and leave the view where it is while
+    # a finger is down on it. The monitor's encrypted-lockout reading and the
+    # history screen's hidden-count sentence ride along. None of that is visible
+    # to a C++ model test — it lives in the view's reaction to insert signals and
+    # in binding expressions — and all of it regresses silently.
     #
     # The .qml files are read from src/ui/qt/qml by absolute path rather than
     # through the app's qrc, so the test needs no frontend library, and the
     # production CallHistoryFilterModel is compiled in so the filter under the
-    # views is the real one. QuickTest ships with the same Qt module as Quick,
-    # so requiring it adds no dependency beyond what the frontend already needs.
-    find_package(Qt6 REQUIRED COMPONENTS Gui Qml Quick QuickTest)
-    # The header is listed so AUTOMOC processes its Q_OBJECT classes into their
-    # own generated translation unit, keeping moc output out of the test's.
-    add_executable(
-        dsd-neo_test_ui_qt_qml
-        ui/test_ui_qt_qml_main.cpp
-        ui/qml_test_context.h
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
-    )
-    target_include_directories(
-        dsd-neo_test_ui_qt_qml
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
-    )
-    target_link_libraries(
-        dsd-neo_test_ui_qt_qml
-        PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickTest
-    )
-    target_compile_definitions(
-        dsd-neo_test_ui_qt_qml
-        PRIVATE
-            QT_NO_KEYWORDS
-            QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui/qml"
-            DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
-            DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"
-    )
-    set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
-    add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
-    # Headless by construction: no window server and no GPU on a CI runner, and
-    # the software renderer keeps the run off the host's GL stack entirely.
-    set_tests_properties(
-        UI_QT_QML_CALL_LISTS
-        PROPERTIES
-            LABELS qml
-            ENVIRONMENT
-                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
-    )
+    # views is the real one.
+    #
+    # Probed rather than REQUIRED, and in two parts. QuickTest is a test-only Qt
+    # module that distributions package separately from Quick (Debian and Ubuntu
+    # split the QML half out as qml6-module-qttest), and BUILD_TESTING is on in
+    # every dev preset — so a REQUIRED here would turn a missing test module into
+    # a failed configure for the whole project, the CLI included. The QML half is
+    # checked too: `import QtTest` resolves at run time from the plugin directory,
+    # so without it the test would fail with "module QtTest is not installed"
+    # rather than sit out.
+    find_package(Qt6 QUIET COMPONENTS QuickTest)
+    if(Qt6QuickTest_FOUND)
+        find_path(
+            DSD_NEO_QTTEST_QML_DIR
+            NAMES qmldir
+            PATHS "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_QML}/QtTest"
+            NO_DEFAULT_PATH
+            DOC
+                "Directory holding the QtTest QML module, for UI_QT_QML_CALL_LISTS"
+        )
+    endif()
+    if(NOT Qt6QuickTest_FOUND)
+        message(
+            STATUS
+            "UI_QT_QML_CALL_LISTS: skipped, Qt6 QuickTest module not found"
+        )
+    elseif(NOT DSD_NEO_QTTEST_QML_DIR)
+        message(
+            STATUS
+            "UI_QT_QML_CALL_LISTS: skipped, the QtTest QML module is missing from ${QT6_INSTALL_PREFIX}/${QT6_INSTALL_QML} (Debian/Ubuntu: qml6-module-qttest)"
+        )
+    else()
+        find_package(Qt6 REQUIRED COMPONENTS Gui Qml Quick)
+        # The header is listed so AUTOMOC processes its Q_OBJECT classes into
+        # their own generated translation unit, keeping moc output out of the
+        # test's.
+        add_executable(
+            dsd-neo_test_ui_qt_qml
+            ui/test_ui_qt_qml_main.cpp
+            ui/qml_test_context.h
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
+        )
+        target_include_directories(
+            dsd-neo_test_ui_qt_qml
+            PRIVATE
+                ${PROJECT_SOURCE_DIR}/include
+                ${PROJECT_SOURCE_DIR}/src/ui/qt
+        )
+        target_link_libraries(
+            dsd-neo_test_ui_qt_qml
+            PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickTest
+        )
+        target_compile_definitions(
+            dsd-neo_test_ui_qt_qml
+            PRIVATE
+                QT_NO_KEYWORDS
+                QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui/qml"
+                DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
+                DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"
+        )
+        set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
+        add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
+        # Headless by construction: no window server and no GPU on a CI runner,
+        # and the software renderer keeps the run off the host's GL stack
+        # entirely.
+        set_tests_properties(
+            UI_QT_QML_CALL_LISTS
+            PROPERTIES
+                LABELS qml
+                ENVIRONMENT
+                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
+        )
+    endif()
 endif()
 
 add_executable(
