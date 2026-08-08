@@ -25,6 +25,7 @@ Thumbs.db
 !/SECURITY.md
 !/CONTRIBUTING.md
 !/THIRD_PARTY.md
+!/PRIVACY_POLICY.md
 
 # GDB files
 *.gdb
