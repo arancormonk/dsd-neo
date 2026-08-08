@@ -61,7 +61,9 @@ verification remains mandatory even when repository rulesets are enabled.
 Release assets are distributed over GitHub HTTPS. Tag release workflows generate
 SBOMs and GitHub artifact attestations for packaged Linux AppImage, macOS DMG,
 Windows ZIP, and Android APK assets when the corresponding workflow completes
-successfully.
+successfully. The Android App Bundle handed to the Play Console is a workflow
+artifact rather than a release asset, but a tag attests it the same way — verify
+it with `gh attestation verify` (below) before uploading it to a Play track.
 Release publication jobs use `contents: write` only in trusted upstream
 release/nightly paths and publish with the workflow `GITHUB_TOKEN`.
 Packaging workflows also verify release hardening before upload: Linux ELF

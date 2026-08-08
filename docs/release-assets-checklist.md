@@ -53,6 +53,21 @@ resource bundle, so they travel with the binary rather than as a separate file.
         zero (`android-ci` asserts the shape, so this is a spot check that the
         published asset is the one CI built from the tag and not from `main`).
 
+### Android (AAB — workflow artifact, not a release asset)
+
+- [ ] Download the `dsd-neo-android-arm64-app-<tag>.aab` artifact from the tag's
+      `android-ci` run within its 90-day retention window (re-running the
+      workflow after expiry rebuilds against the current toolchain; it does not
+      restore the same bytes).
+  - [ ] `jarsigner -verify -verbose:summary` prints `jar verified.` with the
+        project release (upload) key.
+  - [ ] `gh attestation verify <file>.aab --repo arancormonk/dsd-neo` passes
+        before the bundle goes to the Play Console.
+  - [ ] The bundle came from a release tag, never from a nightly: a nightly
+        built between the version bump and the tag carries a `versionCode`
+        above the release's, and uploading it to any track would burn that code
+        permanently (see `android/README.md`, Google Play section).
+
 ## CI-side sanity
 
 - [ ] Release tags use `vX.Y.Z`, match `project(dsd-neo VERSION X.Y.Z ...)` in `CMakeLists.txt`, and verify with `git tag -v` against one of the trusted keys in `release-keys/` (`arancormonk-desktop-2026.pgp` or `arancormonk-laptop-2026.pgp`).
