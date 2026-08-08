@@ -19,8 +19,15 @@
  * prepends rows on demand — the real store only grows by ingesting a decoder
  * snapshot ring, which is covered by UI_QT_CALL_HISTORY_MODEL instead. The
  * engine-facing objects (metrics, decoderHost, commands, prefs) are plain maps
- * carrying every key the screens read, so a screen that grows a new binding
- * fails here loudly rather than silently rendering `undefined`.
+ * rather than the production QObject models, which is what keeps this test off
+ * the app-control boundary and clear of the engine libraries.
+ *
+ * That last choice gives up one guarantee, and missingContextKeys() buys it back:
+ * reading a key a QVariantMap does not carry yields `undefined` with no warning
+ * and no error, so an incomplete fixture would not fail on its own — a screen
+ * that grew a binding on a reading missing here would pass this suite and render
+ * `undefined` on the phone. tst_context_fixture.qml closes that by checking the
+ * maps against the reads the screens under test actually contain.
  */
 
 #ifndef DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_
@@ -28,11 +35,14 @@
 
 #include <QAbstractListModel>
 #include <QDateTime>
+#include <QFile>
 #include <QFontDatabase>
 #include <QHash>
+#include <QIODevice>
 #include <QList>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -169,7 +179,13 @@ class CallLogStore : public QAbstractListModel {
         }
     }
 
-    /** @brief Mark the next pushed row encrypted, for the kind filter. */
+    /**
+     * @brief Prepend one call and then stamp it encrypted, for the kind filter.
+     *
+     * Two steps rather than one, because that is the order the real thing happens
+     * in: a row is logged and the ENC header lands on it afterwards. It also puts
+     * the filter's dataChanged path under test, not only its insert path.
+     */
     Q_INVOKABLE void
     pushEncrypted(const QString& dayLabel) {
         push(dayLabel);
@@ -220,6 +236,57 @@ class Setup : public QObject {
         }
     }
 
+    /**
+     * @brief Reads in @p qmlFiles that name a context-property key the fixture lacks.
+     *
+     * Returns "metrics.someReading" style entries, empty when the maps below cover
+     * every read. Exists because a QVariantMap answers an unknown key with
+     * `undefined` rather than an error (see the file comment): without this the
+     * fixture could fall behind the screens silently.
+     *
+     * Literal `name.key` reads only. A key assembled at run time
+     * (`metrics["slot" + n + "TgText"]`) is invisible here and still has to be
+     * added to the maps by hand. Method calls are skipped — `decoderHost.stop()`
+     * is a command, not a reading — and `commands` is left out entirely for the
+     * same reason: every use of it is a call on a user action no case triggers.
+     *
+     * @param qmlFiles File names under src/ui/qt/qml, as the tests load them.
+     */
+    Q_INVOKABLE QStringList
+    missingContextKeys(const QStringList& qmlFiles) const {
+        const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
+                                                  {QStringLiteral("prefs"), m_prefs},
+                                                  {QStringLiteral("decoderHost"), m_host}};
+        /* Group 3 captures the "(" that marks a call rather than a read. */
+        static const QRegularExpression read(
+            QStringLiteral("\\b(metrics|prefs|decoderHost)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
+
+        QStringList missing;
+        for (const QString& name : qmlFiles) {
+            QFile file(QStringLiteral(DSD_QML_UI_DIR "/") + name);
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                missing.append(name + QStringLiteral(" (unreadable)"));
+                continue;
+            }
+            const QString text = QString::fromUtf8(file.readAll());
+            QRegularExpressionMatchIterator it = read.globalMatch(text);
+            while (it.hasNext()) {
+                const QRegularExpressionMatch match = it.next();
+                if (!match.captured(3).isEmpty()) {
+                    continue;
+                }
+                const QString object = match.captured(1);
+                const QString key = match.captured(2);
+                const QString entry = object + QLatin1Char('.') + key;
+                if (!maps.value(object).contains(key) && !missing.contains(entry)) {
+                    missing.append(entry);
+                }
+            }
+        }
+        missing.sort();
+        return missing;
+    }
+
   public Q_SLOTS:
 
     /**
@@ -261,10 +328,11 @@ class Setup : public QObject {
         prefs[QStringLiteral("appearance")] = 2;
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
+        m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
-        /* Every key the monitor reads, at rest with no call up: a missing one
-         * would surface as an undefined-property warning instead of a failure. */
+        /* Every key the monitor reads, at rest with no call up. Add to this when a
+         * screen grows a reading — missingContextKeys() is what says so. */
         QVariantMap metrics;
         metrics[QStringLiteral("uiMessage")] = QString();
         metrics[QStringLiteral("audioMuted")] = false;
@@ -298,12 +366,15 @@ class Setup : public QObject {
         host[QStringLiteral("running")] = false;
         host[QStringLiteral("transitioning")] = false;
         host[QStringLiteral("statusText")] = QStringLiteral("idle");
+        m_host = host;
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
         ctx->setContextProperty(QStringLiteral("commands"), QVariantMap());
     }
 
   private:
     QVariantMap m_metrics;
+    QVariantMap m_prefs;
+    QVariantMap m_host;
     QQmlEngine* m_engine = nullptr;
 };
 
