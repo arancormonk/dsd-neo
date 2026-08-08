@@ -30,14 +30,17 @@
   # Global helpers and scalar types, all of them to <QtGlobal>.
   #
   # Qt 6.5 broke qglobal.h apart and gave each piece its own capitalised
-  # forwarding header (<QtTypes>, <QtMinMax>, <QtVersionChecks>, ...). Mapping to
-  # those would be the fine-grained answer and it is what IWYU prefers, but it
-  # also silently raises this project's Qt floor to 6.5: on Qt 6.4 and earlier
-  # the split headers do not exist and the include fails to resolve, and nothing
-  # in CI builds against an older Qt to catch it (see the QT_VERSION branch in
-  # call_history_filter.h — older Qt is a case this tree still handles).
-  # <QtGlobal> declares the same symbols on every Qt 6, directly before 6.5 and
-  # by including the split headers after, so it is the portable spelling.
+  # forwarding header (<QtTypes>, <QtMinMax>, <QtVersionChecks>, ...). Those all
+  # exist at this tree's floor — Qt 6.9, the oldest release the Android app is
+  # built against (android/README.md, and the QT_VERSION branch in
+  # call_history_filter.h) — so mapping to them would resolve, and it is the
+  # fine-grained answer IWYU prefers. <QtGlobal> is the deliberate choice
+  # instead: qglobal.h has already been reshuffled once inside Qt 6, and a
+  # header-per-helper mapping re-splits with it, whereas <QtGlobal> is one
+  # spelling that has named this set across every Qt 6 and still does (it
+  # includes the split headers). Going fine-grained is a live option, not a
+  # compatibility break — it costs an include churn across the Qt units and buys
+  # precision on headers that carry a handful of scalars and qMin.
   { include: ["@[\"<](.*/)?qtypes\\.h[\">]", private, "<QtGlobal>", public] },
   { include: ["@[\"<](.*/)?qminmax\\.h[\">]", private, "<QtGlobal>", public] },
   { include: ["@[\"<](.*/)?qnumeric\\.h[\">]", private, "<QtGlobal>", public] },
@@ -45,9 +48,8 @@
   # qt_ptr_swap and friends have no class header of their own.
   { include: ["@[\"<](.*/)?qswap\\.h[\">]", private, "<QtGlobal>", public] },
   { include: ["@[\"<](.*/)?qtypeinfo\\.h[\">]", private, "<QtGlobal>", public] },
-  # Not <QtGlobal>: qglobal.h does not include qcompare.h, and the three-way
-  # comparison helpers it declares are a Qt 6.7 facility either way, so a unit
-  # that needs them is already pinned above the floor the entries above protect.
+  # Not <QtGlobal>: qglobal.h does not include qcompare.h, so <QtCompare> is the
+  # only public header that actually provides the three-way comparison helpers.
   { include: ["@[\"<](.*/)?qcompare\\.h[\">]", private, "<QtCompare>", public] },
   # The Qt namespace itself (Qt::ItemDataRole, Qt::CaseInsensitive, ...).
   { include: ["@[\"<](.*/)?qnamespace\\.h[\">]", private, "<Qt>", public] },
@@ -55,9 +57,9 @@
   # Strings and bytes.
   { include: ["@[\"<](.*/)?qstring\\.h[\">]", private, "<QString>", public] },
   { include: ["@[\"<](.*/)?qstringview\\.h[\">]", private, "<QStringView>", public] },
-  # <QLatin1String>, not <QLatin1StringView>: the class was split out of
-  # qstring.h into its own header after Qt 6.0, so only the older spelling
-  # resolves on every Qt 6 — and it is the spelling this tree constructs.
+  # <QLatin1String>, not <QLatin1StringView>: the two headers are the same class
+  # under its two names, and QLatin1String is the name this tree constructs, so
+  # that is the include a reader can match to the code in front of them.
   { include: ["@[\"<](.*/)?qlatin1stringview\\.h[\">]", private, "<QLatin1String>", public] },
   { include: ["@[\"<](.*/)?qchar\\.h[\">]", private, "<QChar>", public] },
   { include: ["@[\"<](.*/)?qbytearray\\.h[\">]", private, "<QByteArray>", public] },

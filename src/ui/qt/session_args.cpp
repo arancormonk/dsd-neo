@@ -6,7 +6,7 @@
 #include "session_args.h"
 
 #include <QChar>
-#include <QLatin1StringView>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaType>
