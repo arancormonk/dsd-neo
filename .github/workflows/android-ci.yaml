@@ -262,9 +262,19 @@ jobs:
       - name: Verify the Qt UI tests are registered
         shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           ctest --preset dev-debug -N -L qml | grep -F "UI_QT_QML_CALL_LISTS"
-          ctest --preset dev-debug -N -R '^UI_QT_' | grep -F "Total Tests: 7"
+          # A floor, not an exact count. publish-apk gates on this job, so pinning
+          # the count would fail the release for the act of adding a UI test —
+          # and fail it saying only that a grep matched nothing. Registration
+          # going backwards, which is what this guards, still fails here.
+          min=7
+          registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | sed -n 's/^Total Tests: *//p')
+          echo "UI_QT_* tests registered: ${registered:-none} (floor $min)"
+          if [ "${registered:-0}" -lt "$min" ]; then
+            echo "::error::expected at least $min UI_QT_* tests, found ${registered:-0}"
+            exit 1
+          fi
 
       - name: Build the Qt UI test targets
         shell: bash
