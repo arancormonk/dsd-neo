@@ -313,6 +313,8 @@ jobs:
       signed: ${{ steps.sign.outputs.SIGNED }}
       art_name: ${{ steps.names.outputs.ART_NAME }}
       apk_path: ${{ steps.names.outputs.APK_PATH }}
+      publishable: ${{ steps.names.outputs.PUBLISHABLE }}
+      aab_ok: ${{ steps.aab_outcome.outputs.AAB_OK }}
     env:
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-archives
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -453,7 +455,15 @@ jobs:
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-android-app.log"
+          # QT_ANDROID_SIGN_AAB only adds --sign to the aab target's
+          # androiddeployqt invocation; the apk target is driven by
+          # QT_ANDROID_SIGN_APK and keeps signing through apksigner below. The
+          # aab target is outside ALL, so this is inert until the "Build the
+          # AAB" step names that target — which it does on every publishable
+          # run (release tags, pushes to main/master, and workflow_dispatch),
+          # not only on tags.
           cmake --preset android-app -G Ninja \
+            -DQT_ANDROID_SIGN_AAB=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
           grep -F "Codec2 available: ON (M17 voice)" "$log"
@@ -487,7 +497,7 @@ jobs:
           fi
           echo "APK_PATH=${apks[0]}" >> "$GITHUB_OUTPUT"
 
-      - name: Prepare artifact naming
+      - name: Prepare artifact naming and the publish gate
         id: names
         shell: bash
         env:
@@ -500,18 +510,37 @@ jobs:
           else
             art="dsd-neo-android-arm64-app-nightly"
           fi
+          # The one definition of "a run that publishes": the upstream repo, on
+          # a release tag or a push/dispatch to main/master. The AAB steps, the
+          # publish-apk job gate, and the aab-status job all read this output
+          # instead of restating the predicate.
+          publishable=false
+          if [ "$GITHUB_REPOSITORY" = 'arancormonk/dsd-neo' ]; then
+            case "$GITHUB_REF" in
+              refs/tags/v*) publishable=true ;;
+              refs/heads/main | refs/heads/master)
+                if [ "$GITHUB_EVENT_NAME" = 'push' ] || [ "$GITHUB_EVENT_NAME" = 'workflow_dispatch' ]; then
+                  publishable=true
+                fi
+                ;;
+            esac
+          fi
           mkdir -p dist
           {
             echo "APK_PATH=dist/${art}.apk"
             echo "ART_NAME=${art}"
+            echo "PUBLISHABLE=${publishable}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Sign the APK
-        id: sign
+      # One decision, shared by APK signing and the AAB build below: is there
+      # usable signing material? A release tag without it is fatal — a release
+      # must not ship artifacts nobody can install or upload. The decoded
+      # keystore lives in RUNNER_TEMP until the always() cleanup step at the
+      # end of the job.
+      - name: Materialize the signing keystore
+        id: keystore
         shell: bash
         env:
-          BUILT_APK: ${{ steps.apk.outputs.APK_PATH }}
-          OUT_APK: ${{ steps.names.outputs.APK_PATH }}
           IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -522,32 +551,54 @@ jobs:
           set -euo pipefail
           if [ -z "${KEYSTORE_BASE64}" ]; then
             if [ "${IS_TAG}" = 'true' ]; then
-              echo "::error::ANDROID_KEYSTORE_BASE64 is not configured; a release tag cannot ship an unsigned APK" >&2
+              echo "::error::ANDROID_KEYSTORE_BASE64 is not configured; a release tag cannot ship unsigned artifacts" >&2
               exit 1
             fi
             # Pull requests never see the secrets, so only a push that was meant
             # to publish deserves a warning annotation.
             if [ "${IS_PR}" = 'true' ]; then
-              echo "Pull request build: leaving the APK unsigned."
+              echo "Pull request build: no signing material; the APK stays unsigned and no AAB is built."
             else
-              echo "::warning::Android signing secrets are not configured; the APK stays unsigned and is not published"
+              echo "::warning::Android signing secrets are not configured; the APK stays unsigned, no AAB is built, and nothing is published"
             fi
-            cp "${BUILT_APK}" "${OUT_APK}"
-            echo "SIGNED=false" >> "$GITHUB_OUTPUT"
+            echo "AVAILABLE=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           : "${KEYSTORE_PASSWORD:?ANDROID_KEYSTORE_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
           : "${KEY_ALIAS:?ANDROID_KEY_ALIAS is required alongside ANDROID_KEYSTORE_BASE64}"
           : "${KEY_PASSWORD:?ANDROID_KEY_PASSWORD is required alongside ANDROID_KEYSTORE_BASE64}"
           keystore="$RUNNER_TEMP/android-release.jks"
-          trap 'rm -f "$keystore"' EXIT
           printf '%s' "${KEYSTORE_BASE64}" | base64 -d > "$keystore"
+          chmod 600 "$keystore"
+          {
+            echo "AVAILABLE=true"
+            echo "KEYSTORE_PATH=$keystore"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign the APK
+        id: sign
+        shell: bash
+        env:
+          BUILT_APK: ${{ steps.apk.outputs.APK_PATH }}
+          OUT_APK: ${{ steps.names.outputs.APK_PATH }}
+          KEYSTORE_AVAILABLE: ${{ steps.keystore.outputs.AVAILABLE }}
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ "${KEYSTORE_AVAILABLE}" != 'true' ]; then
+            cp "${BUILT_APK}" "${OUT_APK}"
+            echo "SIGNED=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           tools="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION"
           # androiddeployqt's release output is already 16 KB aligned and
           # apksigner preserves that, so re-running zipalign would only risk
           # undoing it; the alignment checks below run on the signed APK.
           "$tools/apksigner" sign \
-            --ks "$keystore" \
+            --ks "${KEYSTORE_PATH}" \
             --ks-pass env:KEYSTORE_PASSWORD \
             --key-pass env:KEY_PASSWORD \
             --ks-key-alias "${KEY_ALIAS}" \
@@ -690,9 +741,231 @@ jobs:
           subject-path: ${{ steps.names.outputs.APK_PATH }}
           sbom-path: ${{ steps.names.outputs.APK_PATH }}.spdx.json
 
+      # Google Play will not take an APK for a new app, so releases also produce
+      # an Android App Bundle. It is deliberately a workflow artifact and never a
+      # release asset: an AAB cannot be installed, so next to the APK it is only
+      # a trap for anyone who downloads it, and under Play App Signing the
+      # uploaded bundle carries the upload key while Google re-signs what users
+      # actually install - it corresponds to no shipped binary. A maintainer
+      # downloads it and hands it to the Play Console.
+      #
+      # Built on main as well as on tags, so the bundle path is exercised every
+      # merge rather than for the first time on a release. Building consumes no
+      # versionCode - only an upload to a Play track does that. Every AAB step
+      # is continue-on-error so a bundle-only failure cannot fail this job and
+      # take the already-verified APK publish down with it; the aab-status job
+      # turns any such failure into its own red check instead.
+      #
+      # Gated on SIGNED rather than on the keystore directly: an unsigned
+      # bundle is useless - Play rejects it on upload - and the missing-secrets
+      # warning (or the tag-fatal error) was already issued by "Materialize the
+      # signing keystore".
+      - name: Build the AAB
+        id: aab_build
+        if: >-
+          steps.names.outputs.PUBLISHABLE == 'true' &&
+          steps.sign.outputs.SIGNED == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # androiddeployqt signs a bundle with jarsigner rather than apksigner,
+          # which cannot sign an AAB at all. The four QT_ANDROID_KEYSTORE_*
+          # variables keep the passwords out of this step's own command lines,
+          # but androiddeployqt still forwards them to jarsigner as
+          # -storepass/-keypass argv, so they are visible in the runner's
+          # process table while jarsigner runs. That is tolerated only because
+          # the runner is ephemeral and single-tenant; do not point verbose
+          # Gradle/androiddeployqt logging at this step, since a mode that
+          # echoes child command lines would put them in the build log.
+          export QT_ANDROID_KEYSTORE_PATH="${KEYSTORE_PATH}"
+          export QT_ANDROID_KEYSTORE_ALIAS="${KEY_ALIAS}"
+          export QT_ANDROID_KEYSTORE_STORE_PASS="${KEYSTORE_PASSWORD}"
+          export QT_ANDROID_KEYSTORE_KEY_PASS="${KEY_PASSWORD}"
+          # Qt's aab target is outside ALL and the android-app build preset pins
+          # its targets to apk, so name it against the build directory. The
+          # native libraries are already built at this point; this only re-runs
+          # androiddeployqt and Gradle.
+          cmake --build build/android-app --target aab -j
+          echo "BUILT=true" >> "$GITHUB_OUTPUT"
+
+      # A step skipped by its own `if` (or by its predecessor failing) reports
+      # empty outputs, so these conditions also cover pull requests, where the
+      # build step never ran.
+      - name: Locate the AAB
+        id: aab
+        if: steps.aab_build.outputs.BUILT == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          ART_NAME: ${{ steps.names.outputs.ART_NAME }}
+        run: |
+          set -euo pipefail
+          # Qt's aab target drives Gradle's variant-less `bundle` anchor task,
+          # which builds every variant: the debug bundle and AGP's intermediary
+          # bundles land in the build tree alongside the release bundle, and
+          # jarsigner signs only the release output. Scope the search to the
+          # release outputs directory; the digest check still guards against a
+          # build that leaves two distinct candidates even there.
+          mapfile -t aabs < <(find build/android-app -path '*/build/outputs/bundle/release/*.aab' | sort)
+          if [ "${#aabs[@]}" -eq 0 ]; then
+            echo "No release AAB produced under build/android-app" >&2
+            exit 1
+          fi
+          printf 'Found: %s\n' "${aabs[@]}"
+          mapfile -t digests < <(sha256sum "${aabs[@]}" | awk '{ print $1 }' | sort -u)
+          if [ "${#digests[@]}" -ne 1 ]; then
+            echo "build/android-app contains more than one distinct release AAB" >&2
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${aabs[0]}" "dist/${ART_NAME}.aab"
+          echo "AAB_PATH=dist/${ART_NAME}.aab" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the AAB
+        id: aab_verify
+        if: steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        shell: bash
+        env:
+          AAB_PATH: ${{ steps.aab.outputs.AAB_PATH }}
+        run: |
+          set -euo pipefail
+          # jarsigner -verify exits 0 on an unsigned jar, so assert on the
+          # message. -strict is deliberately not used: the release key is
+          # self-signed, and -strict turns signerSelfSigned into a nonzero exit.
+          verify_out=$(jarsigner -verify -verbose:summary "$AAB_PATH" 2>&1)
+          printf '%s\n' "$verify_out"
+          if ! printf '%s\n' "$verify_out" | grep -qF 'jar verified.'; then
+            echo "ERROR: the AAB is unsigned; Play rejects it on upload" >&2
+            exit 1
+          fi
+          entries=$(unzip -Z1 "$AAB_PATH")
+          if ! printf '%s\n' "$entries" | grep -qxF 'base/manifest/AndroidManifest.xml'; then
+            echo "ERROR: the AAB has no base module manifest" >&2
+            exit 1
+          fi
+          # Play generates the per-device APKs from these directories, so a
+          # stray ABI would be served to devices the app was never built for.
+          abis=$(printf '%s\n' "$entries" | sed -n 's:^base/lib/\([^/]*\)/.*:\1:p' | sort -u)
+          if [ "$abis" != 'arm64-v8a' ]; then
+            echo "ERROR: unexpected ABIs in the AAB: ${abis:-none}" >&2
+            exit 1
+          fi
+          echo "AAB OK: signed, arm64-v8a only."
+
+      - name: Upload AAB
+        id: aab_upload
+        if: steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.names.outputs.ART_NAME }}.aab
+          path: ${{ steps.aab.outputs.AAB_PATH }}
+          # Longer than the APK's 7 days: nothing consumes the bundle
+          # automatically, it is fetched by hand whenever the Play track is
+          # next updated, which is not necessarily release day. A tag bundle
+          # gets the 90-day maximum for that reason (a re-run after expiry
+          # rebuilds with the current toolchain, it does not restore the same
+          # bytes); a nightly is superseded on the next merge and keeps 30.
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/v') && 90 || 30 }}
+
+      - name: Generate AAB SBOM
+        id: aab_sbom
+        if: steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          file: ${{ steps.aab.outputs.AAB_PATH }}
+          format: spdx-json
+          output-file: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json
+          artifact-name: ${{ steps.names.outputs.ART_NAME }}.aab.spdx.json
+          upload-artifact: true
+          upload-release-assets: false
+
+      # The AAB is the artifact that actually reaches users through Play, so a
+      # tag attests it exactly like the sideload APK; a maintainer verifies
+      # with `gh attestation verify` before handing a bundle to the Play
+      # Console (docs/release-verification.md).
+      - name: Attest AAB provenance
+        id: aab_attest
+        if: startsWith(github.ref, 'refs/tags/') && steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.aab.outputs.AAB_PATH }}
+
+      - name: Attest AAB SBOM
+        id: aab_attest_sbom
+        if: startsWith(github.ref, 'refs/tags/') && steps.aab.outputs.AAB_PATH != ''
+        continue-on-error: true
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-path: ${{ steps.aab.outputs.AAB_PATH }}
+          sbom-path: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json
+
+      # continue-on-error keeps AAB failures from failing this job, so the
+      # signal has to leave through a job output instead; the aab-status job
+      # fails on it. Skipped steps count as ok: an AAB is only owed on
+      # publishable refs with signing material, and the missing-material cases
+      # already warned (nightly) or hard-failed (tag) at the keystore step.
+      - name: Record the AAB outcome
+        id: aab_outcome
+        if: always()
+        shell: bash
+        env:
+          OUTCOMES: >-
+            ${{ steps.aab_build.outcome }}
+            ${{ steps.aab.outcome }}
+            ${{ steps.aab_verify.outcome }}
+            ${{ steps.aab_upload.outcome }}
+            ${{ steps.aab_sbom.outcome }}
+            ${{ steps.aab_attest.outcome }}
+            ${{ steps.aab_attest_sbom.outcome }}
+        run: |
+          set -euo pipefail
+          if printf '%s\n' "${OUTCOMES}" | grep -qw 'failure'; then
+            echo "AAB_OK=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "AAB_OK=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove the signing keystore
+        if: always() && steps.keystore.outputs.KEYSTORE_PATH != ''
+        shell: bash
+        env:
+          KEYSTORE_PATH: ${{ steps.keystore.outputs.KEYSTORE_PATH }}
+        run: rm -f "${KEYSTORE_PATH}"
+
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats
+
+  aab-status:
+    name: AAB status
+    # The AAB steps in build-apk are continue-on-error so a bundle-only failure
+    # cannot block the APK publish; this job is where such a failure surfaces
+    # as its own red check instead of vanishing.
+    needs: [build-apk]
+    runs-on: ubuntu-latest
+    if: needs.build-apk.outputs.publishable == 'true'
+    steps:
+      - name: Fail when the AAB pipeline failed
+        shell: bash
+        env:
+          AAB_OK: ${{ needs.build-apk.outputs.aab_ok }}
+        run: |
+          set -euo pipefail
+          if [ "${AAB_OK}" != 'true' ]; then
+            echo "::error::An AAB build/verify/upload/attest step failed in build-apk; the APK publish is unaffected, but this run produced no uploadable bundle" >&2
+            exit 1
+          fi
+          echo "AAB pipeline OK."
 
   publish-apk:
     name: Publish APK
@@ -703,13 +976,13 @@ jobs:
     needs: [build-apk, qt-ui-tests]
     runs-on: ubuntu-latest
     # An unsigned APK cannot be installed, so a build that could not sign
-    # publishes nothing rather than shipping a broken download.
+    # publishes nothing rather than shipping a broken download. The publishable
+    # predicate (upstream repo + release tag or main/master push/dispatch) is
+    # computed once, in build-apk's "Prepare artifact naming and the publish
+    # gate" step.
     if: >-
-      github.repository == 'arancormonk/dsd-neo' &&
-      needs.build-apk.outputs.signed == 'true' &&
-      (startsWith(github.ref, 'refs/tags/v') ||
-      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')))
+      needs.build-apk.outputs.publishable == 'true' &&
+      needs.build-apk.outputs.signed == 'true'
     permissions:
       actions: read
       contents: write
@@ -773,10 +1046,10 @@ jobs:
             --repo "${RELEASE_REPOSITORY}" \
             --clobber
 
+      # The job-level gate already restricts this job to publishable refs, so
+      # "not a tag" is all that distinguishes a nightly here.
       - name: Upload APK nightly assets (overwrite)
-        if: >-
-          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
           tag_name: nightly

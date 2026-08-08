@@ -144,7 +144,10 @@ pull requests as well as pushes to `main`:
   intact (label `DSD-neo`, a declared icon, a non-placeholder version code and
   the icon/splash/theme resources). The APK is uploaded as a build
   artifact, and on `main` and release tags the `Publish APK` job attaches it to a
-  release (see [Release signing](#release-signing)).
+  release (see [Release signing](#release-signing)). On `main` and release tags
+  the same `build-apk` job also builds and signs the Play bundle — the `Publish
+  APK` job never touches it, and a separate `AAB status` check reports bundle
+  failures (see [Google Play](#google-play-the-app-bundle)).
 - **`linux-ci` / android shape (headless, forced radio pipeline)** — the same
   option set on the host without an NDK, and deliberately without PulseAudio or
   ncurses installed. This is the only place the Android configuration gets test
@@ -233,6 +236,83 @@ release must not ship an APK nobody can install. CI deliberately does not re-run
 `zipalign`: the Gradle output is already 16 KB page aligned and `apksigner`
 preserves that, so it only verifies the alignment (`zipalign -c -P 16 4`) after
 signing.
+
+## Google Play: the app bundle
+
+Play will not accept an APK for a new app, so releases also produce an Android
+App Bundle. Qt's Android macros already define a global `aab` target next to
+`apk`; it sits outside `ALL`, so it has to be named explicitly, and the
+`android-app` build preset pins its targets to `apk`. Point the build at the
+directory instead:
+
+```sh
+export QT_ANDROID_KEYSTORE_PATH=/path/to/dsd-neo-release.jks
+export QT_ANDROID_KEYSTORE_ALIAS="$ANDROID_KEY_ALIAS"
+export QT_ANDROID_KEYSTORE_STORE_PASS=...
+export QT_ANDROID_KEYSTORE_KEY_PASS="$QT_ANDROID_KEYSTORE_STORE_PASS"
+
+cmake --preset android-app -DQT_ANDROID_SIGN_AAB=ON
+cmake --build build/android-app --target aab -j
+find build/android-app -name '*.aab'
+```
+
+`QT_ANDROID_SIGN_AAB` only adds `--sign` to the `aab` target — the APK target
+stays governed by `QT_ANDROID_SIGN_APK` — but building `aab` re-runs
+androiddeployqt with `--sign`, which also apksigner-signs the APK and overwrites
+the build-tree `dsd-neo-app.apk` with the signed copy in passing. Signing
+happens in the build because androiddeployqt signs a bundle with `jarsigner`;
+`apksigner` cannot sign an AAB at all, so the post-hoc recipe above does not
+transfer. The four `QT_ANDROID_KEYSTORE_*` variables keep the passwords out of
+your shell history and off the command line *you* type, but androiddeployqt
+still forwards them to `jarsigner` as `-storepass`/`-keypass` arguments, so they
+are visible in the local process table while the bundle signs.
+
+CI builds the bundle in the same `build-apk` job, reusing the native libraries
+the APK build already produced, and uploads it as the workflow artifact
+`dsd-neo-android-arm64-app-<tag>.aab` (`-nightly` off `main`). Nothing consumes
+it automatically, so retention is sized for hand-fetching: 90 days for a tag
+bundle, 30 for a nightly. Fetch a release bundle within that window — re-running
+the tag workflow after expiry rebuilds against the current toolchain rather than
+restoring the same bytes. The bundle path runs on `main` as well as on tags so
+it is exercised every merge rather than for the first time on a release, and
+every AAB step is `continue-on-error`: a bundle-only failure surfaces through
+the separate `AAB status` check instead of failing `build-apk` and taking the
+APK publish down with it. Building consumes no `versionCode`, only an upload to
+a Play track does. Without the signing secrets a tag fails hard at the shared
+keystore step and a nightly just warns and skips, matching how the APK is
+treated. Every bundle gets an SPDX SBOM artifact, and a tag bundle additionally
+gets GitHub provenance/SBOM attestations — verify with `gh attestation verify`
+before handing it to the Play Console
+(see `docs/release-verification.md`). It is deliberately **not** a release asset:
+an AAB cannot be installed, so beside the APK it only misleads, and under Play
+App Signing the uploaded bundle carries the upload key while Google re-signs what
+users install — it corresponds to no shipped binary. Download it by hand when
+updating a Play track.
+
+Two consequences worth knowing before enrolling in Play App Signing:
+
+- The release keystore becomes the *upload* key. Play installs and GitHub release
+  APKs then have different signatures and cannot upgrade into each other, so a
+  tester on a sideloaded build has to uninstall first.
+- A `versionCode` is consumed permanently the moment a bundle reaches any track
+  and can never be re-uploaded. Whether a nightly bundle is safe to upload
+  depends on when it was built, because the version part of the code moves at
+  the version-bump commit while the distance part counts from the previous tag:
+  - **After a release, before the next version bump** (most nightlies): the code
+    is the last release's round thousand plus the commit distance —
+    `20600042` sits above `v2.6.0` but below `v2.6.1`'s `20601000`, so the next
+    release still outranks it. Uploading one to a closed testing track works
+    and burns nothing the release will need.
+  - **After the version bump, before its tag**: the code is the *upcoming*
+    release's round thousand plus a distance that has not reset — a nightly
+    after the 2.6.1 bump was `20601001`, above `v2.6.1`'s `20601000`. Uploading
+    that bundle to any track permanently burns a code above the release and
+    makes the release unuploadable.
+
+  The safe habit is to upload only release-tag bundles; before uploading a
+  nightly, check its `versionCode` is below the next release's round thousand.
+  A respin is: once `v2.6.0`'s `20600000` is on a track, correcting that
+  release means cutting `v2.6.1`, not rebuilding the tag.
 
 ## USB-OTG: how the descriptor gets to librtlsdr
 
