@@ -124,34 +124,6 @@ Item {
         enabled: !confirmClear.visible
         model: historyView
 
-        // The log is newest-first, so the latest call is the top row — and a
-        // reader parked at the top keeps it in view as calls land. That has to be
-        // asserted: a prepend below the top does not move the view, it moves the
-        // content, holding the rows being read still and putting the new call
-        // above the viewport. A list left off the top therefore never comes back
-        // on its own, and every call after that lands out of sight — the log
-        // quietly stops tracking the latest call, which is the bug this fixes.
-        //
-        // Whether the reader is on the latest call is not a mode they manage —
-        // it is read off the list where they left it, each time a call lands.
-        // Nothing to get stuck, and one flick back to the top resumes it.
-        //
-        // Within a row of the top still counts as the latest: a stray touch, an
-        // overscroll bounce or the keyboard resizing the view leaves the list a
-        // few pixels down, and none of those mean "I am reading further back".
-        readonly property bool atLatest: contentY - originY < Theme.rowHeight
-
-        // Re-assert the exact top. Never mid-movement: that is a flick still
-        // settling, and yanking it would fight the reader's hand.
-        function pinToLatest() {
-            if (atLatest && !moving && contentY !== originY)
-                positionViewAtBeginning()
-        }
-
-        // Deferred: inside the signal the view is still applying the model
-        // change, and a position asserted there does not survive it.
-        onCountChanged: Qt.callLater(pinToLatest)
-
         section.property: "dayLabel"
         section.delegate: MicroLabel {
             required property string section
@@ -195,6 +167,11 @@ Item {
             rightText: model.timeText
             enc: model.enc
         }
+    }
+
+    // Keeps the newest call in view for a reader parked at the top of the log.
+    FollowLatest {
+        list: logList
     }
 
     // A sibling of the view, not a child: ListView reparents declared children

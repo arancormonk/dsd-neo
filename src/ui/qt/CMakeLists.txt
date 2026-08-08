@@ -43,6 +43,7 @@ qt_add_resources(
         qml/DecodeChip.qml
         qml/EncTag.qml
         qml/FilterPill.qml
+        qml/FollowLatest.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
         qml/HomeScreen.qml

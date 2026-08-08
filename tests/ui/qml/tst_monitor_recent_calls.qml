@@ -109,5 +109,28 @@ Item {
             verify(!tc.atTop())
             compare(tc.list.itemAtIndex(tc.list.indexAt(tc.list.width / 2, tc.list.contentY + 20)).name, anchorName)
         }
+
+        // Same rule as the history log: a finger resting on the pane is not a
+        // drag, so Flickable.moving stays false for it, and repositioning under
+        // the press would leave the reader's next drag snapping back to where the
+        // finger went down.
+        function test_05_a_call_under_a_held_finger_waits_for_the_release() {
+            tc.list.contentY = tc.list.originY + 20
+            tc.waitForRendering(tc.list)
+            verify(!tc.atTop())
+
+            mousePress(tc.list, tc.list.width / 2, 20)
+            callHistory.push("TODAY")
+            // Asserting an absence, so the deferred pin has to be given the event
+            // loop passes it would have needed to run.
+            tc.waitForRendering(tc.list)
+            tc.wait(50)
+            verify(!tc.atTop(), "the pane was pinned under a held finger")
+
+            mouseRelease(tc.list, tc.list.width / 2, 20)
+
+            tryVerify(function () { return tc.atTop() }, 5000,
+                      "the deferred pin never ran after the release")
+        }
     }
 }

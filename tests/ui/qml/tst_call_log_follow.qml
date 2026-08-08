@@ -145,6 +145,43 @@ Item {
             tryVerify(function () { return detail.text.indexOf("4 logged calls are hidden") === 0 },
                       5000, "the plural form did not follow the count")
             compare(detail.text.indexOf("(s)"), -1, detail.text)
+
+            // The filter under the list is the production one, so the pill has to
+            // pass a call it accepts, not merely hide the ones it does not: an
+            // encrypted call shows while the four clear ones stay hidden. It is
+            // stamped encrypted after it was logged, which is how a late ENC
+            // header reaches an already-written row.
+            callHistory.pushEncrypted("TODAY")
+
+            tryCompare(tc.list, "count", 1)
+            // On the binding, not on the property: tryCompare polls count by
+            // reading it, while the view emits countChanged on its next layout
+            // pass, which is when the empty state can go away.
+            tryVerify(function () { return !detail.parent.visible }, 5000,
+                      "the empty state is still showing over the encrypted call")
+        }
+
+        // A finger resting on the list is not a drag, so Flickable.moving stays
+        // false throughout. Re-asserting the top under it would move the content
+        // away from the press position the Flickable recorded when the finger went
+        // down, and the reader's next drag would open by snapping back to it.
+        function test_05_a_call_under_a_held_finger_waits_for_the_release() {
+            tc.list.contentY = tc.list.originY + 20
+            tc.waitForRendering(tc.list)
+            verify(!tc.atTop())
+
+            mousePress(tc.list, tc.list.width / 2, 20)
+            callHistory.push("TODAY")
+            // Asserting an absence, so the deferred pin has to be given the event
+            // loop passes it would have needed to run.
+            tc.waitForRendering(tc.list)
+            tc.wait(50)
+            verify(!tc.atTop(), "the list was pinned under a held finger")
+
+            mouseRelease(tc.list, tc.list.width / 2, 20)
+
+            tryVerify(function () { return tc.atTop() }, 5000,
+                      "the deferred pin never ran after the release")
         }
     }
 }
