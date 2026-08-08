@@ -5,11 +5,10 @@ import QtQuick
 import QtTest
 
 // The history screen's call log has to keep the latest call in view while the
-// reader is parked at the top, hold their place when they are reading further
-// back, and say what landed while they were away. The bug this guards against is
-// silent: a ListView prepend below the top moves the content rather than the
-// view, so a list left off the top never returns on its own and every later call
-// arrives above the viewport with nothing on screen to say so.
+// reader is parked at the top, and hold their place when they are reading further
+// back. The bug this guards against is silent: a ListView prepend below the top
+// moves the content rather than the view, so a list left off the top never
+// returns on its own and every later call arrives above the viewport.
 //
 // Positions are set directly rather than flicked. A flick's momentum and its
 // boundary bounce are timing-dependent, and the behaviour under test is keyed on
@@ -34,7 +33,6 @@ Item {
         when: windowShown
 
         property var list: null
-        property var pill: null
 
         function atTop() {
             // Sub-pixel: positionViewAtBeginning can land on -0.0.
@@ -57,9 +55,7 @@ Item {
         function initTestCase() {
             verify(screenLoader.item !== null, "HistoryScreen.qml failed to load")
             tc.list = findChild(screenLoader.item, "callLogList")
-            tc.pill = findChild(screenLoader.item, "newCallsPill")
             verify(tc.list !== null, "the call log list is missing")
-            verify(tc.pill !== null, "the new-calls pill is missing")
         }
 
         function init() {
@@ -70,7 +66,7 @@ Item {
             callHistory.pushMany(24, "TODAY")
             tc.list.positionViewAtBeginning()
             tc.waitForRendering(tc.list)
-            tryVerify(function () { return tc.atTop() && tc.list.unseen === 0 })
+            tryVerify(function () { return tc.atTop() })
         }
 
         function test_01_calls_landing_at_the_top_stay_in_view() {
@@ -88,12 +84,9 @@ Item {
             var newestRow = tc.list.itemAtIndex(0)
             verify(newestRow.y >= tc.list.contentY - 1)
             verify(newestRow.y + newestRow.height <= tc.list.contentY + tc.list.height)
-
-            compare(tc.list.unseen, 0)
-            verify(!tc.pill.shown)
         }
 
-        function test_02_reading_further_back_holds_its_place_and_tallies() {
+        function test_02_reading_further_back_holds_its_place() {
             tc.scrollBack()
             var anchorRow = tc.rowAtViewportTop()
             var anchorName = anchorRow.name
@@ -106,43 +99,21 @@ Item {
 
             callHistory.pushMany(3, "TODAY")
 
-            // One deferred reconcile for three inserts: the tally is a delta, so
-            // coalescing must not lose calls.
-            tryCompare(tc.list, "unseen", 3)
-            verify(tc.pill.shown)
+            // The new calls land above the viewport, out of sight — the whole
+            // reason the list has to be pinned when the reader is at the top.
+            // Waiting on the gap rather than on count: the model count changes
+            // first, before the view has applied the insertions.
+            tryVerify(function () { return tc.list.contentY - tc.list.originY > wasGap })
 
-            // The reader has not been moved.
+            // And the reader has not been moved.
             var stillThere = tc.rowAtViewportTop()
             compare(stillThere.name, anchorName)
             verify(Math.abs((stillThere.y - tc.list.contentY) - anchorScreenY) < 2)
-
-            // And the new calls landed above the viewport, out of sight — the
-            // whole reason the list has to be pinned when the reader is at the top.
-            verify(tc.list.contentY - tc.list.originY > wasGap)
             var newestRow = tc.list.itemAtIndex(0)
             verify(newestRow === null || newestRow.y + newestRow.height <= tc.list.contentY)
         }
 
-        function test_03_the_pill_returns_to_the_latest_call() {
-            tc.scrollBack()
-            var newest = ""
-            for (var i = 0; i < 3; i++) {
-                newest = callHistory.push("TODAY")
-            }
-            tryVerify(function () { return tc.pill.shown })
-
-            mouseClick(tc.pill)
-
-            tryVerify(function () { return tc.atTop() })
-            tryCompare(tc.list, "unseen", 0)
-            verify(!tc.pill.shown)
-            tryVerify(function () {
-                var first = tc.list.itemAtIndex(0)
-                return first !== null && first.name === newest
-            }, 5000, "the pill did not land on the newest call")
-        }
-
-        function test_04_an_offset_inside_one_row_still_counts_as_the_latest() {
+        function test_03_an_offset_inside_one_row_still_counts_as_the_latest() {
             // What a stray touch, an overscroll bounce or the keyboard resizing
             // the view leaves behind. None of it means "I am reading back".
             tc.list.contentY = tc.list.originY + 20
@@ -152,35 +123,9 @@ Item {
             callHistory.push("TODAY")
 
             tryVerify(function () { return tc.atTop() })
-            compare(tc.list.unseen, 0)
-            verify(!tc.pill.shown)
         }
 
-        function test_05_a_filter_change_is_answered_from_the_top() {
-            tc.scrollBack()
-            callHistory.pushMany(3, "TODAY")
-            tryCompare(tc.list, "unseen", 3)
-
-            historyView.filterKind = 1 // clear calls, which is all of them
-
-            tryVerify(function () { return tc.atTop() })
-            tryCompare(tc.list, "unseen", 0)
-            verify(!tc.pill.shown)
-        }
-
-        function test_06_clearing_the_log_leaves_no_stale_tally() {
-            tc.scrollBack()
-            callHistory.pushMany(3, "TODAY")
-            tryCompare(tc.list, "unseen", 3)
-
-            callHistory.clearAll()
-
-            tryCompare(tc.list, "count", 0)
-            tryCompare(tc.list, "unseen", 0)
-            verify(!tc.pill.shown)
-        }
-
-        function test_07_the_hidden_count_reads_as_a_sentence() {
+        function test_04_the_hidden_count_reads_as_a_sentence() {
             // %n plural forms need a translation catalogue the app does not ship,
             // so a %n string renders its own "(s)" and never agrees with its verb.
             var detail = findChild(screenLoader.item, "logEmptyDetail")

@@ -60,7 +60,21 @@ Item {
             }, 5000, "the newest call is not the first row")
         }
 
-        function test_02_scrolling_back_holds_the_reader_place() {
+        // The case that actually needs the pin, and the one measured by hand on a
+        // device: a drag that leaves the pane a fraction of a row down. ListView
+        // holds an exact top by itself, so a test that only ever sits at the top
+        // passes with the pin deleted.
+        function test_02_an_offset_inside_one_row_still_counts_as_the_latest() {
+            tc.list.contentY = tc.list.originY + 20
+            tc.waitForRendering(tc.list)
+            verify(!tc.atTop())
+
+            callHistory.push("TODAY")
+
+            tryVerify(function () { return tc.atTop() })
+        }
+
+        function test_03_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen.
             tc.list.contentY = tc.list.originY + 150
             tc.waitForRendering(tc.list)
