@@ -183,5 +183,50 @@ Item {
             tryVerify(function () { return tc.atTop() }, 5000,
                       "the deferred pin never ran after the release")
         }
+
+        // A filter change is not a call landing: it is a new question, and where
+        // the reader had scrolled to is the answer to the old one. The view holds
+        // its scroll position across the change, so without a reposition the
+        // reader lands in the middle of the new result with the newest matching
+        // calls off-screen above and nothing on screen to say they exist.
+        function test_06_a_narrowing_filter_is_answered_from_the_top() {
+            // Enough matching rows that the filtered content still overflows the
+            // viewport. A result shorter than the viewport is dragged back to the
+            // top by the Flickable's own bounds, and would pass with the
+            // reposition deleted.
+            for (var i = 0; i < 20; i++) {
+                callHistory.pushEncrypted("TODAY")
+            }
+            tryCompare(tc.list, "count", 44)
+            tc.list.contentY = tc.list.originY + 1200
+            tc.waitForRendering(tc.list)
+            verify(!tc.atTop())
+
+            historyView.filterKind = 2 // encrypted only: the 20 just pushed
+
+            tryCompare(tc.list, "count", 20)
+            tryVerify(function () { return tc.atTop() }, 5000,
+                      "the filtered log did not open on its newest matching call")
+            // The precondition, asserted rather than assumed: had the result fit
+            // the viewport, the top would prove nothing.
+            verify(tc.list.contentHeight > tc.list.height)
+            var newestRow = tc.list.itemAtIndex(0)
+            verify(newestRow !== null, "the newest matching call has no row")
+            verify(newestRow.y + newestRow.height <= tc.list.contentY + tc.list.height)
+        }
+
+        // The same rule where no row moves at all: the pill cycles onto a filter
+        // every logged call already passes. Nothing is inserted or removed, so the
+        // view's own count never changes and the pin has no signal to fire on —
+        // only the filter change itself can bring the log back.
+        function test_07_a_filter_that_hides_nothing_is_still_answered_from_the_top() {
+            tc.scrollBack()
+
+            historyView.filterKind = 1 // clear calls, which is all of them
+
+            tryVerify(function () { return tc.atTop() }, 5000,
+                      "a filter change that hid no rows left the log where it was")
+            compare(tc.list.count, 24)
+        }
     }
 }

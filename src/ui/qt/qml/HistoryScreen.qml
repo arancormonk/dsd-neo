@@ -174,6 +174,32 @@ Item {
         list: logList
     }
 
+    // A new search or filter is a new question, answered from the top — which is
+    // a different rule from the pin above, not the same one: the pin asks where
+    // the reader left the list and holds their place when they are reading back,
+    // while a filter change makes that place the answer to a question they are no
+    // longer asking. The view keeps its scroll position across the change, so
+    // without this a reader who had scrolled back lands somewhere inside the new
+    // result, with the newest matching calls off-screen above and nothing to say
+    // they are there. It only rights itself when the result is shorter than the
+    // viewport, where the Flickable's own bounds drag it back.
+    //
+    // The pills are the reason this cannot ride on the pin: they are only usable
+    // while no session is running, which is exactly when no call is landing to
+    // fire it.
+    Connections {
+        target: historyView
+
+        // Deferred for the same reason the pin is: inside the signal the view is
+        // still applying the filter's row changes, and a position asserted there
+        // does not survive them. Setting several filters at once (the empty
+        // state's Clear filters button sets four) coalesces into one call, and
+        // repositioning an already-topped list is a no-op either way.
+        function onFilterChanged() {
+            Qt.callLater(logList.positionViewAtBeginning)
+        }
+    }
+
     // A sibling of the view, not a child: ListView reparents declared children
     // into its contentItem, where `parent.count` is undefined and the empty state
     // would never show.
