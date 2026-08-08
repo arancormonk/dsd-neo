@@ -7,20 +7,45 @@
 
 #include <assert.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+/* Strong stub: dmr_le.o references the RC notice emitter via dmr_rc_notify.o;
+ * satisfying it here keeps the real dsd_events.o (and its call-state
+ * dependencies, stubbed in this binary) out of the link. The recorded call
+ * count doubles as proof that the RC-command branch ran. */
+static unsigned g_rc_notice_calls;
+static char g_rc_notice_last_text[128];
+
+int
+dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                               const dsd_call_observation* observation, dsd_event_category category,
+                                               const char* notice, const char* gps) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)observation;
+    (void)category;
+    (void)gps;
+    g_rc_notice_calls++;
+    DSD_SNPRINTF(g_rc_notice_last_text, sizeof(g_rc_notice_last_text), "%s", notice ? notice : "");
+    return 0;
+}
+
 static void
-load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
+load_sbrc_codeword(dsd_state* state, uint8_t slot, uint16_t sb_value, int odd_parity) {
     static const struct {
         uint16_t value;
         uint8_t codeword[16];
@@ -57,7 +82,7 @@ load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
 
     for (int i = 0; i < 16; i++) {
         data_matrix[i] = encoded[i];
-        data_matrix[16 + i] = data_matrix[i];
+        data_matrix[16 + i] = (uint8_t)(data_matrix[i] ^ (odd_parity ? 1U : 0U));
     }
 
     for (int i = 0; i < 32; i++) {
@@ -67,6 +92,19 @@ load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
     for (int i = 0; i < 32; i++) {
         state->dmr_embedded_signalling[slot][5][i + 8] = interleaved[i];
     }
+}
+
+/* SB variant: duplicated (even-parity) second row. */
+static void
+load_single_burst_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
+    load_sbrc_codeword(state, slot, sb_value, 0);
+}
+
+/* RC variant: complemented (odd-parity) second row, as the RC single-burst
+ * BPTC expects when dmr_sbrc runs with power=1. */
+static void
+load_reverse_channel_value(dsd_state* state, uint8_t slot, uint16_t sb_value) {
+    load_sbrc_codeword(state, slot, sb_value, 1);
 }
 
 static uint16_t
@@ -639,21 +677,31 @@ test_sbrc_reverse_channel_commands(void) {
     static dsd_opts opts;
     static dsd_state state;
 
+    /* A valid RC command must reach the RC-command branch (observed via the
+     * notice stub) and must not be misread as an encryption identifier. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    g_rc_notice_calls = 0;
+    g_rc_notice_last_text[0] = '\0';
     opts.dmr_le = 1;
     state.currentslot = 0;
-    load_single_burst_value(&state, 0, build_rc_command_value(5U));
+    load_reverse_channel_value(&state, 0, build_rc_command_value(5U));
     dmr_sbrc(&opts, &state, 1);
     assert(state.payload_algid == 0);
+    assert(g_rc_notice_calls == 1U);
+    assert(strcmp(g_rc_notice_last_text, "DMR RC: Cease Transmission Request;") == 0);
+    dsd_state_ext_free_all(&state);
 
+    /* Reserved commands decode but never surface a notice. */
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    g_rc_notice_calls = 0;
     opts.dmr_le = 1;
     state.currentslot = 0;
-    load_single_burst_value(&state, 0, build_rc_command_value(6U));
+    load_reverse_channel_value(&state, 0, build_rc_command_value(6U));
     dmr_sbrc(&opts, &state, 1);
     assert(state.payload_algid == 0);
+    assert(g_rc_notice_calls == 0U);
 }
 
 static void

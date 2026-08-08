@@ -205,6 +205,17 @@ dmrRC(dsd_opts* opts, dsd_state* state) {
 
     dmr_rc_print(opts, emb_ok, emb_bits, rc_err, rc_command, rc_hex);
 
+    if (rc_err == DMR_RC_DECODE_OK) {
+        uint8_t cc = 0;
+        if (emb_ok == 1) {
+            cc = (uint8_t)((emb_bits[0] << 3) | (emb_bits[1] << 2) | (emb_bits[2] << 1) | (emb_bits[3] << 0));
+        }
+        /* Slot 0 + sentinel IDs: the event row is a slot-less notice, and the
+         * dedup ext slot is module-private bookkeeping, so the handler's no-op
+         * contract for slot/trunking/call state still holds. */
+        dmr_rc_notify_command(opts, state, 0U, DMR_RC_NOTIFY_KEY_STANDALONE, rc_command, emb_ok, cc, time(NULL));
+    }
+
     if (opts->dmr_debug_burst != 0) {
         char line[192];
         if (dmr_debug_format_rc_burst(line, sizeof(line), dibits) != 0U) {
