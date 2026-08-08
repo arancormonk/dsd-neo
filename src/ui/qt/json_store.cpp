@@ -5,9 +5,12 @@
 
 #include "json_store.h"
 
+#include <QByteArray>
+#include <QChar>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <QStandardPaths>

@@ -16,8 +16,10 @@
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_FILTER_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_FILTER_H_
 
+#include <QObject>
 #include <QSortFilterProxyModel>
 #include <QString>
+#include <QtGlobal>
 
 namespace dsd_qt {
 

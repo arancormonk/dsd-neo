@@ -14,7 +14,7 @@ Item {
     property bool enc: false
     property bool showDivider: true
 
-    implicitHeight: 58
+    implicitHeight: Theme.rowHeight
 
     Column {
         anchors.left: parent.left

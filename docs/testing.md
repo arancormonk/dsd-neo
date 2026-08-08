@@ -68,6 +68,26 @@ Known gaps and caveats:
   depend on wall-clock call-state timers, because `fast` replay compresses them;
   use `--iq-replay-rate realtime` for that.
 
+### Qt frontend and QML screen tests
+
+The `UI_QT_*` cases register only under `-DDSD_ENABLE_QT_UI=ON`. Most of them
+link `Qt6::Core` alone and run anywhere Qt 6 is installed. `UI_QT_QML_CALL_LISTS`
+(CTest label `qml`) is the exception: it drives the real `.qml` screens through Qt
+Quick Test, so it also needs the **QuickTest** module — both its CMake package
+and its QML plugin, which Debian and Ubuntu package separately as
+`qml6-module-qttest`. Both are probed, and the test is left unregistered with a
+configure-time `STATUS` message when either is missing, rather than failing the
+whole project's configure step.
+
+```sh
+cmake --preset dev-debug -DDSD_ENABLE_QT_UI=ON
+cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_qml
+ctest --preset dev-debug -L qml --output-on-failure
+```
+
+It carries its own headless environment (offscreen platform, software renderer)
+in the CTest registration, so it needs no window server and no GPU.
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch

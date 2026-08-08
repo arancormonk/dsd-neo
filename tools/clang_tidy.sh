@@ -14,10 +14,11 @@ usage() {
 Usage: tools/clang_tidy.sh [--all-commands] [--] [files...]
 
 Options:
-  --all-commands  Use the full compile_commands.json as-is. Note: if a source file
-                  appears multiple times in the compilation database (e.g., built
-                  for multiple targets), clang-tidy may process it multiple times
-                  and its progress counter can exceed the unique file count.
+  --all-commands  Keep every compile command for each file rather than the single
+                  best-scoring one. Note: if a source file appears multiple times
+                  in the compilation database (e.g., built for multiple targets),
+                  clang-tidy may process it multiple times and its progress
+                  counter can exceed the unique file count.
 
 Arguments:
   files...        Optional list of translation units to analyze (e.g., src/foo.c).
@@ -82,11 +83,14 @@ PDB_FILE="$PDB_DIR/compile_commands.json"
 TIDY_PDB_DIR="$PDB_DIR"
 TIDY_PDB_TEMP_DIR=""
 if command -v python3 > /dev/null 2>&1; then
-  if [[ $ALL_COMMANDS -eq 0 ]]; then
-    TIDY_PDB_TEMP_DIR=$(mktemp -d 2> /dev/null || mktemp -d -t dsd-neo-clang-tidy)
-    trap 'rm -rf "$TIDY_PDB_TEMP_DIR" 2>/dev/null || true' EXIT
-    TIDY_PDB_DIR="$TIDY_PDB_TEMP_DIR"
-  fi
+  # Always analyze against a rewritten database, --all-commands included: the
+  # options clang cannot parse have to come out either way (see GCC_ONLY_ARGS
+  # below), or every Qt translation unit aborts unanalyzed. --all-commands only
+  # changes how many commands per file survive the rewrite, not whether one
+  # happens.
+  TIDY_PDB_TEMP_DIR=$(mktemp -d 2> /dev/null || mktemp -d -t dsd-neo-clang-tidy)
+  trap 'rm -rf "$TIDY_PDB_TEMP_DIR" 2>/dev/null || true' EXIT
+  TIDY_PDB_DIR="$TIDY_PDB_TEMP_DIR"
 
   mapfile -t FILES < <(
     python3 - "$PDB_FILE" "$ROOT_DIR" "$TIDY_PDB_DIR" "$ALL_COMMANDS" "${REQUESTED_FILES[@]}" << 'PY'
@@ -152,6 +156,36 @@ print(
     f"files with multiple commands: {multi_cmd_files}, extra commands: {extra_cmds})",
     file=sys.stderr,
 )
+
+
+# Compiler options GCC accepts and clang rejects outright. clang-tidy parses the
+# recorded command line, so one of these anywhere in it aborts the whole
+# translation unit with clang-diagnostic-error and the file goes unanalyzed.
+# Qt6 puts -mno-direct-extern-access on everything linking Qt when Qt was built
+# with GCC, which is every Qt frontend and Qt test target in this tree.
+# Dropping the flag changes nothing clang-tidy examines: it is a codegen option,
+# and clang-tidy does not generate code.
+# Keep in step with tools/iwyu.sh, which strips the same set.
+GCC_ONLY_ARGS = frozenset({"-mno-direct-extern-access"})
+
+
+def strip_gcc_only_args(entry):
+    """Return a copy of entry with options clang cannot parse removed."""
+    out = dict(entry)
+    args = out.get("arguments")
+    if args:
+        out["arguments"] = [a for a in args if a not in GCC_ONLY_ARGS]
+        return out
+    cmd = out.get("command")
+    if cmd:
+        try:
+            tokens = shlex.split(cmd)
+        except Exception:
+            return out
+        kept = [t for t in tokens if t not in GCC_ONLY_ARGS]
+        if len(kept) != len(tokens):
+            out["command"] = shlex.join(kept)
+    return out
 
 
 def score_entry(rel_path, entry):
@@ -230,19 +264,23 @@ if requested_rel:
     selected_files = sorted(p for p in requested_tus if p in entries_by_rel)
 
 
-if out_dir and not all_commands:
+if out_dir:
     out_dir.mkdir(parents=True, exist_ok=True)
     selected = []
     for rel in selected_files:
         cmds = entries_by_rel.get(rel)
         if not cmds:
             continue
-        best = max(cmds, key=lambda e: score_entry(rel, e))
-        selected.append(best)
+        if all_commands:
+            selected.extend(strip_gcc_only_args(entry) for entry in cmds)
+        else:
+            best = max(cmds, key=lambda e: score_entry(rel, e))
+            selected.append(strip_gcc_only_args(best))
 
     out_path = out_dir / "compile_commands.json"
     out_path.write_text(json.dumps(selected, indent=2, sort_keys=True) + "\n")
-    print(f"Wrote deduped compile database: {out_path} ({len(selected)} entries)", file=sys.stderr)
+    kind = "stripped" if all_commands else "deduped"
+    print(f"Wrote {kind} compile database: {out_path} ({len(selected)} entries)", file=sys.stderr)
 
 for path in selected_files:
     print(path)

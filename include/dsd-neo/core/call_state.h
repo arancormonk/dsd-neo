@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
@@ -133,7 +134,14 @@ typedef struct {
 
 static inline dsd_call_observation
 dsd_call_observation_data(int protocol, uint8_t slot, uint64_t source_id, uint64_t target_id) {
-    dsd_call_observation observation = {0};
+    /* Zeroed rather than `= {0}`: this header is compiled as both C11 and C++14,
+     * and GCC's -Wmissing-field-initializers (via -Wextra, which the analyzer
+     * runs) names every field the brace form leaves out when the translation
+     * unit is C++. Spelling the fields out instead would be positional — C11 has
+     * no designated initializers that C++14 also accepts — and would silently
+     * mis-assign the day a field is reordered. Same device as dsd_opts. */
+    dsd_call_observation observation;
+    DSD_MEMSET(&observation, 0, sizeof observation);
     observation.protocol = protocol;
     observation.slot = slot;
     observation.kind = DSD_CALL_KIND_DATA;

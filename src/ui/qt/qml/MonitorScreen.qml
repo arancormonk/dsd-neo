@@ -494,6 +494,44 @@ Item {
             }
         }
 
+        // Why an empty log can still be a working decoder. On an almost entirely
+        // encrypted site the control channel decodes, every grant is declined and
+        // no call is ever logged, which is indistinguishable from a decoder that
+        // stopped. Outside the strip above and its tuner gate on purpose: this is
+        // decode truth, not tuner truth, and a network source meets it just as
+        // often.
+        //
+        // The ledger's size, not a tally of refusals: a control channel repeats a
+        // grant update every few hundred ms while a call is up, so counting
+        // refused grants read 150 where about a dozen transmissions had happened.
+        // The ledger counts targets, and only from voice confirmed undecryptable.
+        // Magenta, not cyan: cyan is signal health here, magenta is encryption,
+        // same as the ENC tags on the rows below. Hidden at zero, so a site with
+        // no encrypted traffic never carries a permanent 0.
+        Row {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "encLockoutRow"
+
+            spacing: 5
+            visible: metrics.encLockoutCount > 0
+
+            Text {
+                text: qsTr("ENC LOCKOUT")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+
+            Text {
+                objectName: "encLockoutValue"
+
+                text: metrics.encLockoutCount.toString()
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.magenta
+            }
+        }
+
         // Recent calls.
         UiPanel {
             width: parent.width
@@ -508,6 +546,9 @@ Item {
 
             ListView {
                 id: recentList
+
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "recentCallsList"
 
                 anchors.top: recentLabel.bottom
                 anchors.topMargin: 10
@@ -533,6 +574,13 @@ Item {
                     rightText: (screen.ageTick, Util.shortAge(model.when))
                     enc: model.enc
                 }
+            }
+
+            // Same rule as the history log: the pane keeps showing the call that
+            // just ended, minus the new-calls pill, which four rows have no room
+            // for and which the hero above already covers.
+            FollowLatest {
+                list: recentList
             }
 
             // A sibling of the view, not a child: ListView reparents declared

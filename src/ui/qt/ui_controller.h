@@ -24,7 +24,6 @@
 namespace dsd_qt {
 
 class CallHistoryModel;
-class CommandBridge;
 class MetricsModel;
 
 class UiController : public QObject {

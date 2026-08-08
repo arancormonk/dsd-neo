@@ -9,8 +9,14 @@
  * in QML-side JavaScript. The bias-tee tri-state matrix is the load-bearing
  * case: a per-system explicit Off must survive an app-wide On. */
 
+#include <QList>
+#include <QMap>
+#include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <stdio.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "session_args.h"

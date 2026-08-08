@@ -5,11 +5,14 @@
 
 #include "ui_controller.h"
 
+#include <Qt>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 
 #include "call_history_model.h"
 #include "decoder_host.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
 #include "metrics_model.h"
 
 namespace dsd_qt {

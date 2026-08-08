@@ -5,9 +5,14 @@
 
 #include "saved_systems_model.h"
 
+#include <QByteArray>
 #include <QDateTime>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
+#include <QLatin1String>
+#include <QMap>
 #include <QMetaType>
 #include <QVariant>
 
@@ -246,7 +251,10 @@ void
 SavedSystemsModel::load() {
     QList<Row> rows;
     const QJsonArray array = json_store_load_array(QLatin1String(kStoreFileName));
-    for (const QJsonValue& value : array) {
+    // auto, not QJsonValue: iterating a QJsonArray yields a QJsonValueConstRef
+    // proxy, and binding that to a QJsonValue reference converts — copying every
+    // element into a temporary the loop then reads through.
+    for (const auto& value : array) {
         if (!value.isObject()) {
             continue;
         }

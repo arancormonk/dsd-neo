@@ -5,6 +5,12 @@
 
 #include "call_history_filter.h"
 
+#include <QAbstractListModel>
+#include <QDebug>
+#include <QList>
+#include <QVariant>
+#include <Qt>
+
 #include "call_history_model.h"
 
 namespace dsd_qt {

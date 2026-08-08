@@ -18,8 +18,12 @@
 
 #include <QAbstractListModel>
 #include <QList>
+#include <QObject>
 #include <QString>
+#include <QVariant>
 #include <QVariantMap>
+#include <Qt>
+#include <QtGlobal>
 
 namespace dsd_qt {
 

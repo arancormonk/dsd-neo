@@ -390,6 +390,8 @@ main(void) {
                                            .is_group = 1});
 
             rc |= expect_true("blocked grant does not arm the ledger", enc_tg_cache_is_absent(&comp_st, 2001U));
+            rc |= expect_true("a grant blocked for another reason leaves the count at zero",
+                              dsd_enc_lockout_active_count(&comp_st) == 0);
             rc |= expect_true("blocked grant leaves companion event row intact",
                               strcmp(before_row, comp_st.event_history_s[0].Event_History_Items[0].event_string) == 0);
             dsd_call_snapshot after_call;
@@ -443,6 +445,12 @@ main(void) {
         rc |= expect_true("blocked probe records crypto evidence",
                           dsd_enc_lockout_lookup(&cache_st, 1300U, 1, &lockout_entry) && lockout_entry.algid == 0x84
                               && lockout_entry.keyid == 0x2714);
+        // What the monitor's ENC LOCKOUT reading shows. It counts targets in the
+        // ledger, so it moves once when a target is confirmed undecryptable and
+        // then holds, however many grants for it the control channel repeats --
+        // counting the refusals instead read 150 on a site that had carried about
+        // a dozen transmissions.
+        rc |= expect_true("confirmed lockout is one active entry", dsd_enc_lockout_active_count(&cache_st) == 1);
         before = cache_st.p25_sm_tune_count;
         cache_opts.trunk_is_tuned = 0;
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
@@ -454,6 +462,7 @@ main(void) {
                                        .svc_bits = P25_SM_SVC_UNKNOWN,
                                        .is_group = 1});
         rc |= expect_true("unknown-svc grant suppressed by lockout", cache_st.p25_sm_tune_count == before);
+
         p25_sm_event(p25_sm_get_ctx(), &cache_opts, &cache_st,
                      &(p25_sm_event_t){.type = P25_SM_EV_GRANT,
                                        .slot = -1,
@@ -463,6 +472,8 @@ main(void) {
                                        .svc_bits = 0x40,
                                        .is_group = 1});
         rc |= expect_true("explicit encrypted grant suppressed by lockout", cache_st.p25_sm_tune_count == before);
+        rc |= expect_true("repeated grants for one target do not inflate the count",
+                          dsd_enc_lockout_active_count(&cache_st) == 1);
         rc |= expect_true("lockout stays armed with no retry backoff", !enc_call_cache_is_absent(&cache_st, 1300U, 1));
         rc |= expect_true("enc lockout does not add TG policy", tg_policy_is_absent(&cache_st, 1300U));
 

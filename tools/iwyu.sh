@@ -149,17 +149,29 @@ def normalize_file(entry):
     return rel.as_posix(), str(file_path)
 
 
+# Compiler options GCC accepts and clang rejects outright. IWYU is a clang tool
+# driven by the recorded command line, so one of these anywhere in it aborts the
+# translation unit and the file goes unanalyzed. Qt6 puts
+# -mno-direct-extern-access on everything linking Qt when Qt was built with GCC,
+# which is every Qt frontend and Qt test target in this tree. Dropping it changes
+# nothing IWYU examines: it is a codegen option, and IWYU emits no code.
+# Keep in step with tools/clang_tidy.sh, which strips the same set.
+GCC_ONLY_ARGS = frozenset({"-mno-direct-extern-access"})
+
+
 def tokens_for_entry(entry):
     args = entry.get("arguments")
     if args:
-        return list(args)
-    cmd = entry.get("command") or ""
-    if not cmd:
-        return []
-    try:
-        return shlex.split(cmd)
-    except Exception:
-        return cmd.split()
+        tokens = list(args)
+    else:
+        cmd = entry.get("command") or ""
+        if not cmd:
+            return []
+        try:
+            tokens = shlex.split(cmd)
+        except Exception:
+            tokens = cmd.split()
+    return [t for t in tokens if t not in GCC_ONLY_ARGS]
 
 
 def score_entry(entry):
@@ -250,6 +262,26 @@ else:
         entry = max(entries_by_rel[rel], key=score_entry)
         selected_entries.append((rel, entry))
 
+
+def compiles_against_qt(entry):
+    """Whether this translation unit's command line pulls in Qt headers."""
+    return any("/QtCore" in t or "/qt6" in t or "/qt5" in t for t in tokens_for_entry(entry))
+
+
+# IWYU reports the header a symbol is physically declared in, and Qt declares
+# nearly everything in lowercase implementation headers. tools/iwyu-qt6.imp maps
+# those back to the class headers Qt documents; without it every Qt unit is asked
+# to include private headers instead of Qt's API.
+qt_mapping = root / "tools" / "iwyu-qt6.imp"
+qt_units = sum(1 for _rel, entry in selected_entries if compiles_against_qt(entry))
+if qt_units and not qt_mapping.is_file():
+    print(f"WARNING: {qt_units} Qt translation unit(s) will be analyzed without "
+          f"{qt_mapping.name}; expect private-header suggestions.")
+
+if not selected_entries:
+    print("No translation units left for IWYU analysis.")
+    raise SystemExit(0)
+
 print(
     f"Running IWYU on {len(selected_entries)} compile command(s) "
     f"(strict={'yes' if strict else 'no'}, jobs={jobs})..."
@@ -275,6 +307,8 @@ def run_iwyu(rel, entry):
         compiler_index = 1
     cmd[compiler_index] = "include-what-you-use"
     cmd.append("-fno-color-diagnostics")
+    if qt_mapping.is_file() and compiles_against_qt(entry):
+        cmd.extend(["-Xiwyu", f"--mapping_file={qt_mapping}"])
     if strict:
         cmd.extend(
             [
