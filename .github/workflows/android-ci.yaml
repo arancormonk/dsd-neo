@@ -276,6 +276,9 @@ jobs:
             exit 1
           fi
 
+      # Every target behind a UI_QT_* test, because the Test step runs them by
+      # name pattern: registering one and forgetting it here fails the job with
+      # "Could not find executable", not with anything about the test.
       - name: Build the Qt UI test targets
         shell: bash
         run: |
@@ -287,7 +290,8 @@ jobs:
             dsd-neo_test_ui_qt_session_args \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
-            dsd-neo_test_ui_qt_session_state
+            dsd-neo_test_ui_qt_session_state \
+            dsd-neo_test_ui_qt_spectrum_math
 
       # The QML test carries its own headless environment (offscreen platform,
       # software renderer) in the CTest registration, so there is nothing to set
