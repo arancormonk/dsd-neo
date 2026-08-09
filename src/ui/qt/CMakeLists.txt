@@ -44,6 +44,7 @@ qt_add_resources(
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
         qml/EncTag.qml
+        qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
         qml/GradientButton.qml
@@ -58,6 +59,7 @@ qt_add_resources(
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
         qml/PlexTextField.qml
+        qml/RadioSheet.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml

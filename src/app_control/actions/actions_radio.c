@@ -86,26 +86,27 @@ ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     return 1;
 }
 
-static int
-ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    (void)c;
+/**
+ * @brief Put the demodulator on C4FM or QPSK, with the timing and RTL profile
+ *        that go with it.
+ *
+ * Shared by the cycle-to-the-other-one hotkey and the pick-this-one command: the
+ * SPS recompute, the sps-hunt reset, the P25p2 helper release and the backend
+ * profile request all have to happen together, and having two copies of that is
+ * how one of them ends up half right.
+ */
+static void
+ui_apply_modulation(dsd_opts* opts, dsd_state* state, int want_qpsk) {
     const int leaving_p25p2_helper = opts->mod_p25p2_c4fm == 1 || opts->mod_p25p2_profile_lock == 1;
     const int sps = dsd_opts_compute_sps_rate(opts, 4800, ui_modulation_demod_rate(opts, state));
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->sps_hunt_counter = 0;
-    if (state->rf_mod == 0) {
-        opts->mod_c4fm = 0;
-        opts->mod_qpsk = 1;
-        opts->mod_gfsk = 0;
-        state->rf_mod = 1;
-    } else {
-        opts->mod_c4fm = 1;
-        opts->mod_qpsk = 0;
-        opts->mod_gfsk = 0;
-        state->rf_mod = 0;
-    }
+    opts->mod_c4fm = want_qpsk ? 0 : 1;
+    opts->mod_qpsk = want_qpsk ? 1 : 0;
+    opts->mod_gfsk = 0;
+    state->rf_mod = want_qpsk ? 1 : 0;
     state->samplesPerSymbol = sps;
     state->symbolCenter = dsd_opts_symbol_center(sps);
 #ifdef USE_RADIO
@@ -115,6 +116,32 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
         /* Release the helper lock only after decoder timing and any RTL backend agree on profile 0. */
         opts->mod_cli_lock = 0;
     }
+}
+
+static int
+ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    ui_apply_modulation(opts, state, state->rf_mod == 0 ? 1 : 0);
+    return 1;
+}
+
+static int
+ui_handle_mod_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int32_t want = 0;
+    if (c->n >= (int)sizeof(int32_t)) {
+        DSD_MEMCPY(&want, c->data, sizeof(int32_t));
+    }
+    const int want_qpsk = (want != 0);
+    /* Idempotent on purpose: a segmented control re-asserts its own state after a
+     * frame it did not cause, and re-applying the same modulation must not disturb
+     * timing the decoder has already settled on. Tested against the modulation we
+     * are actually on rather than as a boolean, because rf_mod has a third value:
+     * GFSK (2), which the DMR/NXDN/YSF/M17/dPMR/EDACS presets select. Asking for
+     * C4FM from GFSK is a real change and has to apply. */
+    if (want_qpsk ? state->rf_mod == 1 : state->rf_mod == 0) {
+        return 1;
+    }
+    ui_apply_modulation(opts, state, want_qpsk);
     return 1;
 }
 
@@ -152,9 +179,7 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 }
 
 const struct dsd_app_command_reg dsd_app_actions_radio[] = {
-    {DSD_APP_CMD_PPM_DELTA, ui_handle_ppm_delta},
-    {DSD_APP_CMD_INVERT_TOGGLE, ui_handle_invert_toggle},
-    {DSD_APP_CMD_MOD_TOGGLE, ui_handle_mod_toggle},
-    {DSD_APP_CMD_MOD_P2_TOGGLE, ui_handle_mod_p2_toggle},
-    {0, NULL},
+    {DSD_APP_CMD_PPM_DELTA, ui_handle_ppm_delta},         {DSD_APP_CMD_INVERT_TOGGLE, ui_handle_invert_toggle},
+    {DSD_APP_CMD_MOD_TOGGLE, ui_handle_mod_toggle},       {DSD_APP_CMD_MOD_SET, ui_handle_mod_set},
+    {DSD_APP_CMD_MOD_P2_TOGGLE, ui_handle_mod_p2_toggle}, {0, NULL},
 };

@@ -16,7 +16,8 @@ TestCase {
         // The screens the other cases load, plus Theme.qml: the screens pull it
         // in as a singleton and it reads prefs itself.
         var missing = testContext.missingContextKeys(
-            ["HistoryScreen.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "Theme.qml"])
+            ["HistoryScreen.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "ExploreSetupScreen.qml", "RadioSheet.qml",
+             "Theme.qml"])
 
         compare(missing.length, 0,
                 "read by the screens, missing from the fixture: " + missing.join(", "))

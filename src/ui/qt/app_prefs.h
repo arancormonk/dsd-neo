@@ -36,6 +36,13 @@ class AppPrefs : public QObject {
     Q_PROPERTY(int bandwidthKhz READ bandwidthKhz WRITE setBandwidthKhz NOTIFY bandwidthKhzChanged)
     Q_PROPERTY(bool biasTee READ biasTee WRITE setBiasTee NOTIFY biasTeeChanged)
     Q_PROPERTY(QString extraArgs READ extraArgs WRITE setExtraArgs NOTIFY extraArgsChanged)
+    /* Where exploring was left off. One signal for all four: they are written
+     * together as a single "how to start exploring" answer, and nothing binds to
+     * one of them without the rest. */
+    Q_PROPERTY(QString exploreSourceType READ exploreSourceType WRITE setExploreSourceType NOTIFY exploreChanged)
+    Q_PROPERTY(QString exploreHost READ exploreHost WRITE setExploreHost NOTIFY exploreChanged)
+    Q_PROPERTY(int explorePort READ explorePort WRITE setExplorePort NOTIFY exploreChanged)
+    Q_PROPERTY(QString exploreFreqMhz READ exploreFreqMhz WRITE setExploreFreqMhz NOTIFY exploreChanged)
 
   public:
     /** @brief Appearance follows the OS by default; see the settings screen. */
@@ -78,6 +85,21 @@ class AppPrefs : public QObject {
     QString extraArgs() const;
     void setExtraArgs(const QString& args);
 
+    /** @brief "usb" or "rtltcp"; empty until the user has chosen, which is what makes
+     *         the first Explore tap open the setup sheet instead of starting blind. */
+    QString exploreSourceType() const;
+    void setExploreSourceType(const QString& type);
+
+    QString exploreHost() const;
+    void setExploreHost(const QString& host);
+
+    int explorePort() const;
+    void setExplorePort(int port);
+
+    /** @brief Start frequency in MHz, as text; empty until an explore session has run. */
+    QString exploreFreqMhz() const;
+    void setExploreFreqMhz(const QString& mhz);
+
   Q_SIGNALS:
     void appearanceChanged();
     void onboardingDoneChanged();
@@ -90,6 +112,7 @@ class AppPrefs : public QObject {
     void bandwidthKhzChanged();
     void biasTeeChanged();
     void extraArgsChanged();
+    void exploreChanged();
 
   private:
     mutable QSettings m_settings;

@@ -15,6 +15,7 @@
 #define DSD_NEO_SRC_UI_QT_COMMAND_BRIDGE_H_
 
 #include <QObject>
+#include <QString>
 
 namespace dsd_qt {
 
@@ -50,8 +51,50 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE bool manualTuneHz(unsigned int hz) const;
 
+    /**
+     * @brief Stop trunking and scanner mode from moving the tuner.
+     *
+     * Idempotent, and deliberately not a toggle: a view only learns that
+     * something owns the tuner, never which of the two, so it cannot safely
+     * flip either flag on its own. Also tears down the follow state the trunker
+     * left behind, so the decoder can acquire whatever it is pointed at next.
+     */
+    Q_INVOKABLE bool releaseTuner() const;
+
     /** @brief Set tuner gain in dB (0 selects automatic gain). */
     Q_INVOKABLE bool setTunerGain(int gain_db) const;
+
+    /** @brief Set the RTL power squelch threshold, in dB. */
+    Q_INVOKABLE bool setSquelchDb(double db) const;
+
+    /** @brief Set the dongle's crystal correction, in parts per million. */
+    Q_INVOKABLE bool setPpm(int ppm) const;
+
+    /**
+     * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK.
+     *
+     * A setter, not the hotkey's cycle: a control showing both as choices has to
+     * be able to ask for the one it is not on without guessing at a state the
+     * engine may have moved since.
+     */
+    Q_INVOKABLE bool setModulation(int modulation) const;
+
+    /**
+     * @brief Switch which protocols are decoded, live.
+     *
+     * @param mode A dsdneoUserDecodeMode. Use decodeModeForFlag() to get one from
+     *        the same decode-chip flag a saved system stores, so the mapping from
+     *        flag to preset exists once and is the CLI's own.
+     */
+    Q_INVOKABLE bool setDecodeMode(int mode) const;
+
+    /**
+     * @brief The decode mode a `-f<x>` chip flag selects, or -1 when it selects none.
+     *
+     * "-mq" is a modulation chip, not a decode one, and answers -1: it says how to
+     * demodulate, not what to look for.
+     */
+    Q_INVOKABLE int decodeModeForFlag(const QString& flag) const;
 
     /** @brief Cycle the event-history display mode. */
     Q_INVOKABLE int cycleHistoryMode() const;

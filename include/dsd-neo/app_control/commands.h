@@ -155,6 +155,18 @@ enum dsd_app_command_id {
     // with taps, the trunking gate is enforced at drain time, and an accepted tune resets
     // the decoder's auto-modulation votes and call state for re-acquisition.
     DSD_APP_CMD_MANUAL_TUNE = 492, // payload: uint32_t hz
+    // Hand the tuner back to the operator: trunking and conventional scanner mode both off,
+    // idempotent. Distinct from TRUNK_TOGGLE/SCANNER_TOGGLE, which cannot express "off" from a
+    // frontend that only sees whether *something* owns the tuner.
+    DSD_APP_CMD_TUNER_RELEASE = 493, // no payload
+    // Set the modulation outright rather than cycling it. A view showing C4FM and
+    // QPSK as two choices has to be able to ask for the one it is not on; a toggle
+    // makes that a guess about state that may already have moved.
+    DSD_APP_CMD_MOD_SET = 494, // payload: int32_t (0 = C4FM, 1 = QPSK)
+    // Switch which protocols are decoded, mid-session. Payload is a
+    // dsdneoUserDecodeMode (<dsd-neo/runtime/config.h>), applied through the same
+    // preset helper the CLI and config paths use.
+    DSD_APP_CMD_DECODE_MODE_SET = 495, // payload: int32_t dsdneoUserDecodeMode
 
     // Rigctl / tuning params
     DSD_APP_CMD_RIGCTL_SET_MOD_BW = 500, // payload: int32_t hz

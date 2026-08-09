@@ -110,8 +110,56 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
-    setTunerGain(int) {
+    releaseTuner() {
+        m_release_tuner_calls++;
         return true;
+    }
+
+    Q_INVOKABLE bool
+    setTunerGain(int gain_db) {
+        m_last_gain_db = gain_db;
+        m_gain_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setSquelchDb(double db) {
+        m_last_squelch_db = db;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setPpm(int ppm) {
+        m_last_ppm = ppm;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setModulation(int modulation) {
+        m_last_modulation = modulation;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setDecodeMode(int mode) {
+        m_last_decode_mode = mode;
+        return true;
+    }
+
+    /* The production mapping is CLI-flag to preset enum; the double only has to
+     * be consistent with itself and with the fixture's decodeMode of 1 (auto). */
+    Q_INVOKABLE int
+    decodeModeForFlag(const QString& flag) {
+        if (flag.trimmed().isEmpty()) {
+            return 1; /* DSDCFG_MODE_AUTO */
+        }
+        if (flag == QLatin1String("-mq")) {
+            return -1; /* a modulation chip, not a decode one */
+        }
+        if (flag == QLatin1String("-fs")) {
+            return 5; /* DSDCFG_MODE_DMR */
+        }
+        return 13; /* DSDCFG_MODE_TDMA, standing in for the rest */
     }
 
     Q_INVOKABLE int
@@ -125,11 +173,53 @@ class CommandRecorder : public QObject {
         m_last_manual_tune_hz = 0U;
         m_tune_calls = 0;
         m_last_tune_hz = 0U;
+        m_release_tuner_calls = 0;
+        m_gain_calls = 0;
+        m_last_gain_db = -1;
+        m_last_squelch_db = 0.0;
+        m_last_modulation = -1;
+        m_last_decode_mode = -1;
+        m_last_ppm = 9999;
+    }
+
+    int
+    gainCalls() const {
+        return m_gain_calls;
+    }
+
+    int
+    lastGainDb() const {
+        return m_last_gain_db;
+    }
+
+    double
+    lastSquelchDb() const {
+        return m_last_squelch_db;
+    }
+
+    int
+    lastModulation() const {
+        return m_last_modulation;
+    }
+
+    int
+    lastDecodeMode() const {
+        return m_last_decode_mode;
+    }
+
+    int
+    lastPpm() const {
+        return m_last_ppm;
     }
 
     int
     manualTuneCalls() const {
         return m_manual_tune_calls;
+    }
+
+    int
+    releaseTunerCalls() const {
+        return m_release_tuner_calls;
     }
 
     /** @brief The recorded frequency, widened for QML's arithmetic. */
@@ -143,6 +233,13 @@ class CommandRecorder : public QObject {
     unsigned int m_last_manual_tune_hz = 0U;
     int m_tune_calls = 0;
     unsigned int m_last_tune_hz = 0U;
+    int m_release_tuner_calls = 0;
+    int m_gain_calls = 0;
+    int m_last_gain_db = -1;
+    double m_last_squelch_db = 0.0;
+    int m_last_modulation = -1;
+    int m_last_decode_mode = -1;
+    int m_last_ppm = 9999;
 };
 
 /**
@@ -369,6 +466,43 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastManualTuneHz() : 0.0;
     }
 
+    /** @brief How many times the screens have asked to be given the tuner. */
+    Q_INVOKABLE int
+    releaseTunerCalls() const {
+        return (m_commands != nullptr) ? m_commands->releaseTunerCalls() : -1;
+    }
+
+    /** @brief What the radio panel last asked the engine for. */
+    Q_INVOKABLE int
+    gainCalls() const {
+        return (m_commands != nullptr) ? m_commands->gainCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    lastGainDb() const {
+        return (m_commands != nullptr) ? m_commands->lastGainDb() : -1;
+    }
+
+    Q_INVOKABLE double
+    lastSquelchDb() const {
+        return (m_commands != nullptr) ? m_commands->lastSquelchDb() : 0.0;
+    }
+
+    Q_INVOKABLE int
+    lastModulation() const {
+        return (m_commands != nullptr) ? m_commands->lastModulation() : -1;
+    }
+
+    Q_INVOKABLE int
+    lastDecodeMode() const {
+        return (m_commands != nullptr) ? m_commands->lastDecodeMode() : -1;
+    }
+
+    Q_INVOKABLE int
+    lastPpm() const {
+        return (m_commands != nullptr) ? m_commands->lastPpm() : 9999;
+    }
+
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
         const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
@@ -480,9 +614,22 @@ class Setup : public QObject {
         }
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
-        // Whether an automatic controller owns the tuner, and where it points.
+        // Whether an automatic controller owns the tuner, which one, and where it
+        // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;
+        metrics[QStringLiteral("trunkingEnabled")] = false;
+        metrics[QStringLiteral("scannerMode")] = false;
         metrics[QStringLiteral("centerFreqHz")] = static_cast<double>(dsd_neo_qml_stub::kSpectrumCenterHz);
+        // Whether the decoder has found anything since the tuner last moved. False
+        // at rest, which is what lets a sweep keep stepping until a case says so.
+        metrics[QStringLiteral("syncedHere")] = false;
+        metrics[QStringLiteral("syncLabel")] = QString();
+        // What the radio panel shows and changes. DSDCFG_MODE_AUTO is 1.
+        metrics[QStringLiteral("decodeMode")] = 1;
+        metrics[QStringLiteral("modulation")] = 0;
+        metrics[QStringLiteral("tunerGainDb")] = 30;
+        metrics[QStringLiteral("squelchDb")] = -120.0;
+        metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;
         ctx->setContextProperty(QStringLiteral("metrics"), metrics);

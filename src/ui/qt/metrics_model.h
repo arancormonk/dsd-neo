@@ -59,6 +59,15 @@ class MetricsModel : public QObject {
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
+    Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
+    Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
+    Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
+    Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
+    Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
+    Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
+    Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
+    Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
+    Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -136,6 +145,96 @@ class MetricsModel : public QObject {
     bool
     tunerControlled() const {
         return m_view.tuner_controlled;
+    }
+
+    /**
+     * @brief Which owner is holding the tuner. For wording a message, never for gating.
+     *
+     * A control that is unavailable is unavailable for either reason, and anything
+     * that gates on one of these alone offers something the other owner then undoes --
+     * that is what tunerControlled() exists to prevent, and it stays the only reading
+     * an affordance may bind to. These two are here so a message can name the reason
+     * rather than say "something".
+     */
+    bool
+    trunkingEnabled() const {
+        return m_view.trunking_enabled;
+    }
+
+    bool
+    scannerMode() const {
+        return m_view.scanner_mode;
+    }
+
+    /**
+     * @brief Whether the decoder currently has frame sync, held briefly.
+     *
+     * Held rather than sampled, because sync drops and returns between the 250 ms
+     * polls and an instantaneous reading flickers; and held rather than latched,
+     * because a lock that outlives the thing that produced it is worse than one
+     * that flickers -- see kSyncHoldSeconds.
+     *
+     * Deliberately not call activity: a control channel carries no calls, and an
+     * accepted retune ends both call slots anyway, so anything watching those
+     * would read its own retune as a find.
+     */
+    bool
+    syncedHere() const {
+        return m_view.synced_here;
+    }
+
+    /**
+     * @brief What the decoder locked onto here — "P25p1", "DMR", … — or empty.
+     *
+     * The protocol, not merely that there is one: on a band being walked, "DMR"
+     * where P25 was expected is the answer to why nothing is being heard, and a
+     * plain lock light would leave that invisible.
+     */
+    const QString&
+    syncLabel() const {
+        return m_view.sync_label;
+    }
+
+    /**
+     * @brief Live front-end and decoder settings, for a panel that can change them.
+     *
+     * Read from the same options snapshot the commands mutate, so a control shows
+     * where the engine actually is rather than what the UI last asked for — the
+     * engine can refuse, and on Android the service outlives this process.
+     *
+     * decodeMode is a dsdneoUserDecodeMode; modulation is 0 for C4FM and 1 for
+     * QPSK, matching DSD_APP_CMD_MOD_SET's payload.
+     */
+    int
+    decodeMode() const {
+        return m_view.decode_mode;
+    }
+
+    int
+    modulation() const {
+        return m_view.modulation;
+    }
+
+    int
+    tunerGainDb() const {
+        return m_view.tuner_gain_db;
+    }
+
+    double
+    squelchDb() const {
+        return m_view.squelch_db;
+    }
+
+    /**
+     * @brief The dongle's crystal correction, in parts per million.
+     *
+     * Adjustable live because a wrong one is not obvious at the point it is
+     * entered: the symptom is a frequency offset the decoder cannot close, which
+     * only shows up once there is a signal to look at.
+     */
+    int
+    ppm() const {
+        return m_view.ppm;
     }
 
     /**
@@ -357,10 +456,19 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         bool stream_active = false;
         double center_freq_hz = 0.0;
+        bool synced_here = false;
+        QString sync_label;
+        int decode_mode = 0;
+        int modulation = 0;
+        int tuner_gain_db = 0;
+        double squelch_db = 0.0;
+        int ppm = 0;
         bool audio_muted = false;
         qulonglong held_tg = 0;
         int enc_lockout_count = 0;
         bool tuner_controlled = false;
+        bool trunking_enabled = false;
+        bool scanner_mode = false;
         QString ui_message;
         SlotCall slot_call[2];
 
@@ -373,13 +481,17 @@ class MetricsModel : public QObject {
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
                    && radio_input == other.radio_input && stream_active == other.stream_active
-                   && center_freq_hz == other.center_freq_hz;
+                   && center_freq_hz == other.center_freq_hz && synced_here == other.synced_here
+                   && sync_label == other.sync_label;
         }
 
         bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
-                   && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled;
+                   && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
+                   && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
+                   && decode_mode == other.decode_mode && modulation == other.modulation
+                   && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db && ppm == other.ppm;
         }
     };
 
@@ -389,7 +501,30 @@ class MetricsModel : public QObject {
     /** @brief Build one slot's structured call identity from the snapshot. */
     static SlotCall slotCallView(const dsd_state* snapshot, quint8 slot, double now_m);
 
+    /** @brief Fill in sync state and the live decoder/front-end settings. */
+    void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
+
+  public:
+#ifdef DSD_NEO_TEST_HOOKS
+    /**
+     * @brief Age the sync hold out, as if kSyncHoldSeconds had passed.
+     *
+     * The expiry is the part worth testing and the only part a test cannot reach,
+     * short of sleeping for it in a suite that runs in milliseconds.
+     */
+    void
+    expireSyncForTest() {
+        m_sync_seen_m = 0.0;
+    }
+#endif
+
+  private:
     View m_view;
+    /* Latched across frames rather than derived from one: frame sync comes and goes
+     * between 250 ms polls, so a single sample answers "is it synced right now",
+     * which is not the question. Cleared when the tuner moves; see syncedHere(). */
+    int m_sync_type_here = -1; /* DSD_SYNC_NONE */
+    double m_sync_seen_m = 0.0;
     /* Armed for a live ui_message's expiry stamp, so the message leaves the screen
      * on time even when the idle engine never publishes another frame. */
     QTimer m_messageTimer;

@@ -2103,6 +2103,39 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
 
+    # What MetricsModel makes of a decoder snapshot: the readings screens gate
+    # on. The sync hold in particular -- a lock that outlives the decoder finding
+    # anything reads as "it is working" while nothing is being decoded, which is
+    # exactly what shipped once. The frontend boundary is stubbed in the test so
+    # this stays arithmetic over a snapshot rather than a link against the engine.
+    add_executable(
+        dsd-neo_test_ui_qt_metrics_model
+        ui/test_ui_qt_metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE
+            Qt6::Core
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_feature_codec2
+            ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_metrics_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(NAME UI_QT_METRICS_MODEL COMMAND dsd-neo_test_ui_qt_metrics_model)
+
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
     # commit_rev rescan gate, and the relaunch (Activity restart) path.

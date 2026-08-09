@@ -182,6 +182,60 @@ test_peak_search_stays_inside_the_window(void) {
     assert(sm::peak_search_bin(db.data(), 64, 20, 40, 40, 8) == 30);
 }
 
+/*
+ * "Next signal" is a different question from the tap's snap: it must skip what is
+ * already tuned, must refuse to answer at all on an empty band, and must not treat
+ * noise as a find. Each of those failing looks like a dead button or a radio that
+ * wanders off on its own.
+ */
+void
+test_directional_peak(void) {
+    std::vector<float> db(64, -90.0F);
+    db[32] = -10.0F; /* the signal already tuned, at center */
+    db[44] = -30.0F; /* a weaker one above */
+    db[16] = -20.0F; /* a stronger one below */
+
+    /* Upward finds the one above, not the one under the cursor. */
+    assert(sm::directional_peak_bin(db.data(), 64, 32, 1, 4, 8.0, 0, 63) == 44);
+    /* Downward finds the one below, even though it is not the strongest overall. */
+    assert(sm::directional_peak_bin(db.data(), 64, 32, -1, 4, 8.0, 0, 63) == 16);
+
+    /* The gap is what keeps the answer from being the signal already tuned. A
+     * gap of zero lets bin 32 itself win, which is the bug the gap exists for. */
+    assert(sm::directional_peak_bin(db.data(), 64, 32, 1, 0, 8.0, 0, 63) == 32);
+
+    /* Strongest wins among several above, not merely the first one reached. */
+    db[50] = -15.0F;
+    assert(sm::directional_peak_bin(db.data(), 64, 32, 1, 4, 8.0, 0, 63) == 50);
+
+    /* Bounded by the visible window like the tap is: a carrier off screen was
+     * never offered to the user and must not be answered with. */
+    assert(sm::directional_peak_bin(db.data(), 64, 32, 1, 4, 8.0, 0, 47) == 44);
+
+    /* An empty band answers with nothing rather than with where we already are —
+     * otherwise the control retunes the radio to its own frequency. */
+    const std::vector<float> flat(64, -90.0F);
+    assert(sm::directional_peak_bin(flat.data(), 64, 32, 1, 4, 8.0, 0, 63) < 0);
+    assert(sm::directional_peak_bin(flat.data(), 64, 32, -1, 4, 8.0, 0, 63) < 0);
+
+    /* Noise that is merely a little above the mean is not a signal. */
+    std::vector<float> noisy(64, -90.0F);
+    noisy[40] = -87.0F;
+    assert(sm::directional_peak_bin(noisy.data(), 64, 32, 1, 4, 8.0, 0, 63) < 0);
+    noisy[40] = -60.0F;
+    assert(sm::directional_peak_bin(noisy.data(), 64, 32, 1, 4, 8.0, 0, 63) == 40);
+
+    /* Nothing left in the search direction. */
+    assert(sm::directional_peak_bin(db.data(), 64, 63, 1, 4, 8.0, 0, 63) < 0);
+    assert(sm::directional_peak_bin(db.data(), 64, 0, -1, 4, 8.0, 0, 63) < 0);
+
+    /* Defensive: no data, no crash, and an inverted window answers with nothing
+     * rather than falling back to the whole array. */
+    assert(sm::directional_peak_bin(nullptr, 64, 32, 1, 4, 8.0, 0, 63) < 0);
+    assert(sm::directional_peak_bin(db.data(), 0, 32, 1, 4, 8.0, 0, 63) < 0);
+    assert(sm::directional_peak_bin(db.data(), 64, 32, 1, 4, 8.0, 40, 8) < 0);
+}
+
 /* The frequency shown at x_fraction, after clamping. */
 double
 freq_at(double zoom, double offset, double x_fraction) {
@@ -261,6 +315,7 @@ main(void) {
     test_snap_window();
     test_peak_search();
     test_peak_search_stays_inside_the_window();
+    test_directional_peak();
     test_zoom_anchor();
     test_nice_tick_step();
     (void)DSD_FPRINTF(stdout, "UI_QT_SPECTRUM_MATH: ok\n");

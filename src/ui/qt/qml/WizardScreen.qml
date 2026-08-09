@@ -82,6 +82,34 @@ Item {
         nameField.text = ""
     }
 
+    /**
+     * Open on something found while exploring, with the source and frequency
+     * already answered.
+     *
+     * Opens at step 2 rather than step 3: the source is settled, but what to
+     * decode and whether to follow calls are real questions about the system just
+     * found, and answering them for the user would produce a card that does not
+     * work. @a sys supplies the source; it is the explore session's own map.
+     */
+    function openForFound(sys, freqMhz) {
+        editRow = -1
+        step = 1
+        sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb"
+        hostField.text = sys && sys.host ? sys.host : defaultHostFor(sourceType)
+        portField.text = sys && sys.port > 0 ? String(sys.port) : defaultPortFor(sourceType)
+        fileField.text = ""
+        freqField.text = freqMhz
+        decodeFlag = ""
+        trunking = true
+        advancedOpen = false
+        gainField.text = ""
+        ppmField.text = ""
+        bwField.text = ""
+        biasTee = -1
+        extraField.text = ""
+        nameField.text = ""
+    }
+
     function openForEdit(row) {
         var sys = savedSystems.get(row)
         editRow = row

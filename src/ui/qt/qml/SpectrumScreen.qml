@@ -3,29 +3,66 @@
 
 import QtQuick
 import DsdNeo
+import "Util.js" as Util
 
-// The band around the tuned frequency, and a way to move to a signal by
-// touching it. Changing frequency otherwise means stopping the session, editing
-// the system and starting again, which is hopeless when what you are doing is
-// hunting for activity.
+// The band around the tuned frequency. What you can do with it depends on why
+// the session exists.
 //
-// The waterfall is the screen: everything else stays quiet so the eye goes to
-// the one thing that shows where the traffic is.
+// Listening to a saved system, this watches: the card names a frequency, and a
+// touch that quietly moved off it would make the card a lie and would file the
+// calls heard afterwards under a system that was not on the air. Exploring, this
+// *is* the session — tap a signal, step along the band, or let it sweep — and
+// there is nothing to be untrue to.
+//
+// The waterfall is the screen either way: everything else stays quiet so the eye
+// goes to the one thing that shows where the traffic is.
 Item {
     id: screen
 
     objectName: "spectrumScreen"
 
     signal closed()
+    // Asks the session to stop following a system and let the tuner be driven by
+    // hand. Main.qml owns what that costs; this screen only asks.
+    signal exploreFromHere()
+    signal saveAsSystem(double freqHz)
 
-    // While an automatic controller owns the tuner — trunking, or conventional
-    // scanner mode stepping the channel map — the engine refuses manual
-    // retunes, so this is view-only rather than a control that does nothing.
-    readonly property bool viewOnly: metrics ? metrics.tunerControlled : false
+    // Whether this session may be retuned at all. Set from the session's intent,
+    // defaulted to the safe answer so the screen is inert wherever it is loaded
+    // without one.
+    property bool exploring: false
+
+    // Two different refusals, and the difference matters to the user. An
+    // automatic controller holding the tuner is temporary and has a name; a saved
+    // system is a choice they made, and it has a way out.
+    readonly property bool tunerHeld: metrics ? metrics.tunerControlled : false
+    readonly property bool viewOnly: !screen.exploring || screen.tunerHeld
+
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.
     readonly property real tunedHz: spectrum.hasData ? spectrum.centerFreqHz
                                                      : (metrics ? metrics.centerFreqHz : 0)
+
+    // Where the tuner can be walked without leaving the part of the spectrum the
+    // user is working in. Null off-band, in which case stepping is unbounded and
+    // the rail shows a local window instead.
+    readonly property var band: Util.bandFor(screen.tunedHz)
+
+    // A step overlaps the last one, so a signal sitting on a seam is not missed
+    // by both screens it straddles.
+    readonly property real stepHz: spectrum.hasData ? spectrum.spanHz * 0.9 : 0
+
+    // Answers this screen has to give itself, which the engine never sends: an
+    // empty band, a sweep that wrapped. Preferred over the engine's own message
+    // so the newer answer wins.
+    property string hint: ""
+
+    // Whether a sheet is over the picture. TapHandlers never take exclusive
+    // grabs, so a tap meant for a control on a sheet also reaches the spectrum
+    // underneath and retunes the radio — the panel closes and the receiver has
+    // moved. Disabling the picture while a sheet is up is what stops that; the
+    // sheets are siblings of it, so they stay live.
+    readonly property bool sheetOpen: radioSheet.visible || goToSheet.visible || confirmExplore.visible
 
     // Producing frames is what costs battery, so it follows the screen being up
     // and a session running — not merely the object existing.
@@ -33,6 +70,16 @@ Item {
         target: spectrum
         property: "active"
         value: screen.visible && decoderHost.sessionActive
+    }
+
+    onVisibleChanged: {
+        if (!visible)
+            screen.stopSweep()
+    }
+
+    onViewOnlyChanged: {
+        if (viewOnly)
+            screen.stopSweep()
     }
 
     // Gesture state and the steps that act on it live here rather than inside
@@ -75,6 +122,124 @@ Item {
         if (!cancelled && !screen.viewOnly && spectrum.edgeOvershootHz !== 0 && spectrum.hasData && wantHz > 0)
             commands.manualTuneHz(Math.round(wantHz))
         spectrum.clearOvershoot()
+    }
+
+    /** Ask for @a hz, if this session is allowed to ask at all. */
+    function tuneTo(hz) {
+        if (screen.viewOnly || !(hz > 0))
+            return false
+        screen.hint = ""
+        commands.manualTuneHz(Math.round(hz))
+        return true
+    }
+
+    /**
+     * Where a step of @a direction (+1 up the band, -1 down) from @a fromHz lands.
+     *
+     * Wraps inside the band it started in rather than running off the end: past
+     * the top of 800 MHz there is nothing this app decodes, and a control that
+     * keeps going teaches the user nothing about where they are. Off-band there
+     * is nothing to wrap against and the walk is unbounded.
+     *
+     * Separate from stepBy() because this is the part worth pinning: the wrap
+     * only happens at a band edge, which is not somewhere a test can drive the
+     * receiver to.
+     */
+    function nextStepHz(fromHz, direction) {
+        if (!(screen.stepHz > 0))
+            return 0
+        var next = fromHz + (direction >= 0 ? screen.stepHz : -screen.stepHz)
+        var band = Util.bandFor(fromHz)
+        if (!band)
+            return next
+        // Half a step in from the far edge, so the first screenful after a wrap
+        // is spectrum rather than half a screen of nothing.
+        if (next >= band.high)
+            return band.low + (screen.stepHz / 2)
+        if (next <= band.low)
+            return band.high - (screen.stepHz / 2)
+        return next
+    }
+
+    /** Walk one screen of spectrum in @a direction (+1 up the band, -1 down). */
+    function stepBy(direction) {
+        if (!spectrum.hasData)
+            return
+        var from = screen.tunedHz
+        var next = screen.nextStepHz(from, direction)
+        if (!(next > 0))
+            return
+        // Moving against the direction asked for can only mean the walk came back
+        // round; say so, or the readout appears to jump for no reason.
+        var wrapped = (direction >= 0) ? (next < from) : (next > from)
+        if (!screen.tuneTo(next))
+            return
+        if (wrapped)
+            screen.hint = qsTr("Wrapped to %1").arg(Util.fmtMhz(next))
+    }
+
+    /** Jump to the next signal above (+1) or below (-1) the current center. */
+    function hopToSignal(direction) {
+        var hz = spectrum.nextPeakHz(direction)
+        if (!(hz > 0)) {
+            screen.hint = qsTr("Nothing else on this screen")
+            return
+        }
+        screen.tuneTo(hz)
+    }
+
+    // ---- Sweep ----
+    // Stepping, repeated, until something is found. It is the same action as the
+    // chevrons either side of it, which is why it lives between them rather than
+    // as a control of its own.
+    property bool sweeping: false
+
+    function startSweep() {
+        if (screen.viewOnly || !spectrum.hasData)
+            return
+        screen.hint = ""
+        // The band is decided once, at the start: wrapping against a boundary the
+        // sweep itself crossed would make it stop somewhere it never chose.
+        screen.sweeping = true
+        sweepTimer.restart()
+    }
+
+    function stopSweep() {
+        if (!screen.sweeping)
+            return
+        screen.sweeping = false
+        sweepTimer.stop()
+    }
+
+    function toggleSweep() {
+        if (screen.sweeping)
+            screen.stopSweep()
+        else
+            screen.startSweep()
+    }
+
+    /** One dwell has elapsed: keep what was found, or move on. */
+    function sweepTick() {
+        if (!screen.sweeping)
+            return
+        if (metrics.syncedHere) {
+            screen.stopSweep()
+            screen.hint = qsTr("Found something at %1").arg(Util.fmtMhz(screen.tunedHz))
+            return
+        }
+        screen.stepBy(1)
+    }
+
+    Timer {
+        id: sweepTimer
+
+        // Long enough for the tuner to settle and the decoder to find sync, and
+        // no shorter: each retune blocks the engine thread for up to half a
+        // second, so a fast sweep spends its time stopping and starting.
+        interval: 2500
+        repeat: true
+        running: screen.sweeping
+        onTriggered: screen.sweepTick()
     }
 
     // This layer sits above the monitor, which stays visible underneath it.
@@ -126,15 +291,33 @@ Item {
                 text: qsTr("Spectrum")
             }
 
-            Text {
-                objectName: "spectrumCenterReadout"
-                width: parent.width
-                text: screen.tunedHz > 0 ? (screen.tunedHz / 1.0e6).toFixed(4) + " MHz" : "—"
-                font.family: Theme.mono
-                font.pixelSize: 21
-                font.weight: Font.Medium
-                color: Theme.textPrimary
-                elide: Text.ElideRight
+            Row {
+                spacing: 6
+
+                Text {
+                    objectName: "spectrumCenterReadout"
+                    // Never elided: this is the frequency the radio is on, and a
+                    // readout that drops a digit is worse than one that is tight.
+                    text: screen.tunedHz > 0 ? Util.fmtMhz(screen.tunedHz) : "—"
+                    font.family: Theme.mono
+                    font.pixelSize: 21
+                    font.weight: Font.Medium
+                    color: Theme.textPrimary
+                }
+
+                // The readout doubles as the way to leave the neighbourhood
+                // entirely. Only marked as a control when it is one.
+                Caret {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: !screen.viewOnly
+                    color: Theme.cyan
+                }
+            }
+
+            TapHandler {
+                objectName: "spectrumGoToOpen"
+                enabled: !screen.viewOnly
+                onTapped: goToSheet.open(screen.tunedHz)
             }
         }
 
@@ -149,17 +332,20 @@ Item {
             radius: Theme.radiusButton
             color: Theme.panel
             border.width: 1
-            border.color: screen.viewOnly ? Theme.encBorder : Theme.panelBorder
+            border.color: screen.viewOnly ? Theme.encBorder
+                                          : screen.sweeping ? Theme.cyan : Theme.panelBorder
 
             Text {
                 id: statusLabel
 
                 anchors.centerIn: parent
-                text: screen.viewOnly ? qsTr("VIEW ONLY") : qsTr("TAP TO TUNE")
+                text: screen.viewOnly ? qsTr("VIEW ONLY")
+                                      : screen.sweeping ? qsTr("SWEEPING") : qsTr("TAP TO TUNE")
                 font.family: Theme.mono
                 font.pixelSize: 11
                 font.letterSpacing: 1.4
-                color: screen.viewOnly ? Theme.magenta : Theme.textSecondary
+                color: screen.viewOnly ? Theme.magenta
+                                       : screen.sweeping ? Theme.cyan : Theme.textSecondary
             }
         }
     }
@@ -167,8 +353,6 @@ Item {
     // ---- Trace, axis, waterfall ----
     Item {
         id: body
-
-        objectName: "spectrumTapArea"
 
         anchors.top: header.bottom
         anchors.topMargin: Theme.gap
@@ -178,6 +362,7 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         anchors.bottomMargin: Theme.screenPadding
+        enabled: !screen.sheetOpen
 
         // Most labels the axis will carry. Shared with the Repeater below so the
         // delegate count and the request can never drift apart.
@@ -194,103 +379,641 @@ Item {
             return spectrum.axisTicks(body.maxTicks)
         }
 
-        SpectrumTrace {
-            id: trace
+        // What the decoder is making of all this. The waterfall says where the
+        // energy is and says nothing at all about whether any of it is being
+        // decoded — which, on a band being swept, is the only question. Sync
+        // first because it is the answer; SNR second because it explains a
+        // missing sync; the call last because it is the payoff.
+        Item {
+            id: statusStrip
 
-            objectName: "spectrumTrace"
+            objectName: "spectrumStatusStrip"
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
-            height: Math.round(parent.height * 0.32)
+            height: 22
 
-            model: spectrum
-            lineColor: Theme.cyan
-            areaColor: Qt.alpha(Theme.cyan, 0.14)
-            gridColor: Theme.divider
-        }
-
-        Item {
-            id: axis
-
-            anchors.top: trace.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 18
-
-            // Hairline where the live trace hands over to its own history.
-            Rectangle {
-                anchors.bottom: parent.bottom
+            Row {
                 anchors.left: parent.left
-                anchors.right: parent.right
-                height: 1
-                color: Theme.panelBorder
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 14
+
+                Row {
+                    spacing: 6
+
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 7
+                        height: 7
+                        radius: 3.5
+                        color: metrics.syncedHere ? Theme.cyan : Theme.textSubdued
+                    }
+
+                    Text {
+                        objectName: "spectrumSyncLabel"
+                        anchors.verticalCenter: parent.verticalCenter
+                        // Named when there is one, because "DMR" where P25 was
+                        // expected is the whole explanation for silence.
+                        text: metrics.syncedHere ? metrics.syncLabel.toUpperCase() : qsTr("NO SYNC")
+                        font.family: Theme.mono
+                        font.pixelSize: 11
+                        font.letterSpacing: 1.0
+                        color: metrics.syncedHere ? Theme.textPrimary : Theme.textSubdued
+                    }
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: metrics.snrValid ? metrics.snrDb.toFixed(1) + " dB" : "— dB"
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: metrics.snrValid ? Theme.textSecondary : Theme.textSubdued
+                }
+
+                // How far off frequency the decoder is finding the signal. Only
+                // meaningful once something is locked, and only interesting when
+                // it is not ~0 — a standing offset of a few hundred Hz is the
+                // symptom of a PPM correction that does not match this dongle,
+                // which is a thing the panel one tap away can fix.
+                Text {
+                    objectName: "spectrumCfoLabel"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: metrics.syncedHere && Math.abs(metrics.cfoHz) >= 50
+                    text: Math.round(metrics.cfoHz) + " Hz"
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    // Loud once it is large enough to be why nothing decodes.
+                    color: Math.abs(metrics.cfoHz) >= 500 ? Theme.magenta : Theme.textSecondary
+                }
+
+                Text {
+                    objectName: "spectrumCallLabel"
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: text.length > 0
+                    // "0" is a call epoch whose target has not decoded yet — which
+                    // a control channel opens routinely. Naming it would put a
+                    // talkgroup on screen that nobody is transmitting on.
+                    text: {
+                        var tg = metrics.slot1CallState === 2 ? metrics.slot1TgText
+                                                              : metrics.slot2CallState === 2 ? metrics.slot2TgText : ""
+                        return tg === "0" ? "" : tg
+                    }
+                    font.family: Theme.mono
+                    font.pixelSize: 11
+                    color: Theme.cyan
+                }
             }
 
-            // A fixed count, not the tick list itself: binding a Repeater to a
-            // freshly built list destroys and recreates every label each time
-            // the viewport moves, which during a drag is fifteen times a
-            // second. The delegates stay put and only their bindings re-evaluate.
-            Repeater {
-                model: body.maxTicks
+            // The settings that decide whether any of the above happens. Here
+            // rather than in the header because the header has no room left, and
+            // here rather than with the tuning controls because a saved system
+            // that is view-only still needs its gain fixed.
+            Rectangle {
+                id: radioButton
 
-                MicroLabel {
-                    required property int index
+                objectName: "spectrumRadioButton"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: metrics.radioInput
+                width: radioLabel.implicitWidth + 20
+                height: 22
+                radius: Theme.radiusButton
+                color: radioTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : "transparent"
+                border.width: 1
+                border.color: Theme.panelBorder
 
-                    readonly property var tick: index < body.ticks.length ? body.ticks[index] : null
+                Behavior on color {
+                    ColorAnimation { duration: 120 }
+                }
 
-                    visible: tick !== null
-                    // Anchored by its center on the tick, then nudged so the end
-                    // labels stay inside the panel instead of hanging off it.
-                    x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth,
-                                                              (tick.xFraction * axis.width) - (implicitWidth / 2))))
-                            : 0
-                    y: Math.round((axis.height - implicitHeight) / 2)
-                    text: tick ? tick.label : ""
-                    font.capitalization: Font.MixedCase
+                Text {
+                    id: radioLabel
+
+                    anchors.centerIn: parent
+                    text: qsTr("RADIO")
+                    font.family: Theme.mono
+                    font.pixelSize: 10
+                    font.letterSpacing: 1.2
+                    color: Theme.textSecondary
+                }
+
+                TapHandler {
+                    id: radioTap
+
+                    onTapped: radioSheet.open()
                 }
             }
         }
 
-        Waterfall {
-            id: waterfall
+        // The gesture surface is exactly the picture — trace, axis and waterfall —
+        // and nothing else. The controls below sit outside it, so a tap that
+        // misses a button cannot fall through and retune the radio.
+        Item {
+            id: gestureArea
 
-            objectName: "spectrumWaterfall"
-            anchors.top: axis.bottom
+            objectName: "spectrumTapArea"
+            anchors.top: statusStrip.bottom
+            anchors.topMargin: 4
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: tuning.visible ? tuning.top
+                                           : (exploreButton.visible ? exploreButton.top : parent.bottom)
+            anchors.bottomMargin: (tuning.visible || exploreButton.visible) ? Theme.gap : 0
+
+            SpectrumTrace {
+                id: trace
+
+                objectName: "spectrumTrace"
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: Math.round(parent.height * 0.32)
+
+                model: spectrum
+                lineColor: Theme.cyan
+                areaColor: Qt.alpha(Theme.cyan, 0.14)
+                gridColor: Theme.divider
+            }
+
+            Item {
+                id: axis
+
+                anchors.top: trace.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 18
+
+                // Hairline where the live trace hands over to its own history.
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    height: 1
+                    color: Theme.panelBorder
+                }
+
+                // A fixed count, not the tick list itself: binding a Repeater to a
+                // freshly built list destroys and recreates every label each time
+                // the viewport moves, which during a drag is fifteen times a
+                // second. The delegates stay put and only their bindings re-evaluate.
+                Repeater {
+                    model: body.maxTicks
+
+                    MicroLabel {
+                        required property int index
+
+                        readonly property var tick: index < body.ticks.length ? body.ticks[index] : null
+
+                        visible: tick !== null
+                        // Anchored by its center on the tick, then nudged so the end
+                        // labels stay inside the panel instead of hanging off it.
+                        x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth,
+                                                                  (tick.xFraction * axis.width) - (implicitWidth / 2))))
+                                : 0
+                        y: Math.round((axis.height - implicitHeight) / 2)
+                        text: tick ? tick.label : ""
+                        font.capitalization: Font.MixedCase
+                    }
+                }
+            }
+
+            Waterfall {
+                id: waterfall
+
+                objectName: "spectrumWaterfall"
+                anchors.top: axis.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+
+                model: spectrum
+                // The page color, not the panel: history takes ~16 s to fill, and
+                // a panel-colored fresh waterfall is a bright empty slab in light
+                // mode. Sharing the background makes "nothing heard yet" read as
+                // nothing rather than as a hole.
+                coldColor: Theme.bg
+                midColor: Theme.cyan
+                hotColor: Theme.magenta
+            }
+
+            Text {
+                anchors.centerIn: waterfall
+                visible: !spectrum.hasData
+                text: qsTr("Waiting for signal data…")
+                font.family: Theme.mono
+                font.pixelSize: 12
+                font.letterSpacing: 0.8
+                color: Theme.textSubdued
+            }
+
+            // A fingertip covers several channels, so the tap snaps to the strongest
+            // peak near it. The gate is an affordance only — the engine refuses the
+            // tune on its own if trunking took the tuner in the meantime.
+            TapHandler {
+                enabled: !screen.viewOnly && spectrum.hasData
+                onTapped: function (eventPoint) {
+                    // Touching the spectrum is taking over; a sweep that carried on
+                    // underneath would move the radio off what was just chosen.
+                    screen.stopSweep()
+                    screen.tuneTo(spectrum.tapFrequencyHz(eventPoint.position.x / gestureArea.width))
+                }
+            }
+
+            PinchHandler {
+                id: pinch
+
+                target: null
+                // Wider than the model's 1x-8x so the clamp lives in one place.
+                minimumScale: 0.1
+                maximumScale: 20.0
+
+                onActiveChanged: {
+                    if (!active)
+                        return
+                    screen.stopSweep()
+                    screen.pinchStartZoom = spectrum.zoom
+                    screen.pinchAnchorX = gestureArea.width > 0 ? (pinch.centroid.position.x / gestureArea.width) : 0.5
+                }
+                onActiveScaleChanged: {
+                    if (pinch.active)
+                        screen.applyPinch(pinch.activeScale)
+                }
+            }
+
+            DragHandler {
+                id: pan
+
+                target: null
+                xAxis.enabled: true
+                yAxis.enabled: false
+
+                onActiveChanged: {
+                    if (active) {
+                        screen.stopSweep()
+                        screen.panStartOffsetHz = spectrum.viewOffsetHz
+                        return
+                    }
+                    // Exactly one retune per gesture, on release. Retuning per drag
+                    // frame would block the engine thread for up to 500 ms a time.
+                    // A pinch stealing the grab deactivates this handler too, and
+                    // that is not a release.
+                    screen.endPan(pinch.active)
+                }
+                onActiveTranslationChanged: {
+                    if (pan.active)
+                        screen.applyPan(pan.activeTranslation.x, gestureArea.width)
+                }
+            }
+        }
+
+        // ---- Tuning controls (exploring only) ----
+        Column {
+            id: tuning
+
+            objectName: "spectrumTuning"
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
+            spacing: 8
+            visible: !screen.viewOnly
 
-            model: spectrum
-            // The page color, not the panel: history takes ~16 s to fill, and
-            // a panel-colored fresh waterfall is a bright empty slab in light
-            // mode. Sharing the background makes "nothing heard yet" read as
-            // nothing rather than as a hole.
-            coldColor: Theme.bg
-            midColor: Theme.cyan
-            hotColor: Theme.magenta
+            // Where in the band this screenful sits. A readout, not a control:
+            // band-walking loses your place within a few steps, and during a
+            // sweep this is the part that shows it working.
+            Item {
+                id: rail
+
+                width: parent.width
+                height: 16
+                visible: screen.tunedHz > 0
+
+                // Off-band, a local window rather than the whole tuner range: a
+                // marker that moves by a hair across 24-1766 MHz says nothing.
+                readonly property real lowHz: screen.band ? screen.band.low : screen.tunedHz - 10.0e6
+                readonly property real highHz: screen.band ? screen.band.high : screen.tunedHz + 10.0e6
+
+                Text {
+                    id: railLow
+
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Math.round(rail.lowHz / 1.0e6)
+                    font.family: Theme.mono
+                    font.pixelSize: 10
+                    color: Theme.textSubdued
+                }
+
+                Text {
+                    id: railHigh
+
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Math.round(rail.highHz / 1.0e6)
+                    font.family: Theme.mono
+                    font.pixelSize: 10
+                    color: Theme.textSubdued
+                }
+
+                Item {
+                    id: railTrack
+
+                    anchors.left: railLow.right
+                    anchors.right: railHigh.left
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: parent.height
+
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 1
+                        color: Theme.divider
+                    }
+
+                    Rectangle {
+                        objectName: "spectrumBandMarker"
+                        width: 3
+                        height: 11
+                        radius: 1.5
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: {
+                            var span = rail.highHz - rail.lowHz
+                            if (!(span > 0))
+                                return 0
+                            var t = (screen.tunedHz - rail.lowHz) / span
+                            return Math.round(Math.max(0, Math.min(1, t)) * (railTrack.width - width))
+                        }
+                        color: Theme.cyan
+
+                        Behavior on x {
+                            NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                        }
+                    }
+                }
+            }
+
+            Flow {
+                width: parent.width
+                spacing: 10
+
+                // Step, and the same step repeated. Putting the sweep between the
+                // chevrons says what it does without a word of explanation.
+                Rectangle {
+                    id: stepPill
+
+                    width: Math.max(186, stepRow.implicitWidth + 24)
+                    height: 40
+                    radius: Theme.radiusButton
+                    color: Theme.panel
+                    border.width: 1
+                    border.color: screen.sweeping ? Theme.cyan : Theme.controlBorder
+                    opacity: spectrum.hasData ? 1.0 : 0.5
+
+                    Behavior on border.color {
+                        ColorAnimation { duration: 120 }
+                    }
+
+                    Row {
+                        id: stepRow
+
+                        anchors.centerIn: parent
+                        spacing: 0
+
+                        Item {
+                            objectName: "spectrumStepDown"
+                            width: 46
+                            height: 38
+
+                            Caret {
+                                anchors.centerIn: parent
+                                rotation: 90
+                                color: Theme.buttonSecondaryText
+                            }
+
+                            TapHandler {
+                                enabled: spectrum.hasData
+                                onTapped: {
+                                    screen.stopSweep()
+                                    screen.stepBy(-1)
+                                }
+                            }
+                        }
+
+                        Item {
+                            objectName: "spectrumSweepToggle"
+                            width: Math.max(94, sweepLabel.implicitWidth + 26)
+                            height: 38
+
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 7
+
+                                // A triangle and a square, drawn: the font's own
+                                // play and stop glyphs are missing on the device.
+                                Canvas {
+                                    id: sweepGlyph
+
+                                    width: 10
+                                    height: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+
+                                    onPaint: {
+                                        var ctx = getContext("2d")
+                                        ctx.reset()
+                                        ctx.fillStyle = screen.sweeping ? Theme.cyan : Theme.buttonSecondaryText
+                                        if (screen.sweeping) {
+                                            ctx.fillRect(1, 1, 8, 8)
+                                        } else {
+                                            ctx.beginPath()
+                                            ctx.moveTo(1, 0)
+                                            ctx.lineTo(10, 5)
+                                            ctx.lineTo(1, 10)
+                                            ctx.closePath()
+                                            ctx.fill()
+                                        }
+                                    }
+
+                                    Connections {
+                                        target: screen
+                                        function onSweepingChanged() { sweepGlyph.requestPaint() }
+                                    }
+
+                                    Connections {
+                                        target: Theme
+                                        function onDarkChanged() { sweepGlyph.requestPaint() }
+                                    }
+                                }
+
+                                Text {
+                                    id: sweepLabel
+
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: spectrum.hasData ? (screen.stepHz / 1.0e6).toFixed(2) + " MHz" : "—"
+                                    font.family: Theme.mono
+                                    font.pixelSize: 12
+                                    color: screen.sweeping ? Theme.cyan : Theme.buttonSecondaryText
+                                }
+                            }
+
+                            TapHandler {
+                                enabled: spectrum.hasData
+                                onTapped: screen.toggleSweep()
+                            }
+                        }
+
+                        Item {
+                            objectName: "spectrumStepUp"
+                            width: 46
+                            height: 38
+
+                            Caret {
+                                anchors.centerIn: parent
+                                rotation: -90
+                                color: Theme.buttonSecondaryText
+                            }
+
+                            TapHandler {
+                                enabled: spectrum.hasData
+                                onTapped: {
+                                    screen.stopSweep()
+                                    screen.stepBy(1)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The finer move: to the next carrier actually on screen.
+                Rectangle {
+                    width: 92
+                    height: 40
+                    radius: Theme.radiusButton
+                    color: Theme.panel
+                    border.width: 1
+                    border.color: Theme.controlBorder
+                    opacity: spectrum.hasData ? 1.0 : 0.5
+
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 0
+
+                        Item {
+                            objectName: "spectrumSignalDown"
+                            width: 46
+                            height: 38
+
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 3
+
+                                Caret {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    rotation: 90
+                                    color: Theme.buttonSecondaryText
+                                }
+
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 2
+                                    height: 12
+                                    color: Theme.cyan
+                                }
+                            }
+
+                            TapHandler {
+                                enabled: spectrum.hasData
+                                onTapped: {
+                                    screen.stopSweep()
+                                    screen.hopToSignal(-1)
+                                }
+                            }
+                        }
+
+                        Item {
+                            objectName: "spectrumSignalUp"
+                            width: 46
+                            height: 38
+
+                            Row {
+                                anchors.centerIn: parent
+                                spacing: 3
+
+                                Rectangle {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: 2
+                                    height: 12
+                                    color: Theme.cyan
+                                }
+
+                                Caret {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    rotation: -90
+                                    color: Theme.buttonSecondaryText
+                                }
+                            }
+
+                            TapHandler {
+                                enabled: spectrum.hasData
+                                onTapped: {
+                                    screen.stopSweep()
+                                    screen.hopToSignal(1)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                OutlineButton {
+                    objectName: "spectrumSaveSystem"
+                    width: 96
+                    height: 40
+                    text: qsTr("Save")
+                    enabled: screen.tunedHz > 0
+                    onClicked: {
+                        screen.stopSweep()
+                        screen.saveAsSystem(screen.tunedHz)
+                    }
+                }
+            }
         }
 
-        Text {
-            anchors.centerIn: waterfall
-            visible: !spectrum.hasData
-            text: qsTr("Waiting for signal data…")
-            font.family: Theme.mono
-            font.pixelSize: 12
-            font.letterSpacing: 0.8
-            color: Theme.textSubdued
+        // The way out of view-only, when there is one. A saved system is a choice
+        // the user made, so this offers to undo it rather than silently allowing
+        // a touch to do the same thing.
+        OutlineButton {
+            id: exploreButton
+
+            objectName: "spectrumExploreFromHere"
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            visible: screen.viewOnly && decoderHost.sessionActive
+            text: qsTr("Explore from here")
+            onClicked: {
+                // Nothing is holding the tuner, so there is nothing to warn about
+                // and nothing to confirm.
+                if (!screen.tunerHeld)
+                    screen.exploreFromHere()
+                else
+                    confirmExplore.visible = true
+            }
         }
 
-        // The engine's answer to the last tap. The monitor shows this too, but it
-        // is underneath this layer — without it here a refused tune (trunking
-        // took the tuner, backend cannot retune) reads as a screen that ignored
-        // the touch.
+        // The engine's answer to the last tap, or this screen's own. Anchored
+        // above the controls rather than to the bottom of the body, which the
+        // tuning row now occupies.
         Rectangle {
             objectName: "spectrumToast"
 
             anchors.horizontalCenter: parent.horizontalCenter
-            anchors.bottom: parent.bottom
+            anchors.bottom: tuning.visible ? tuning.top : (exploreButton.visible ? exploreButton.top : parent.bottom)
             anchors.bottomMargin: Theme.gap
-            visible: metrics.uiMessage.length > 0
+            // Suppressed while sweeping: every step draws an "Applied" message
+            // with a three-second life, so at this cadence it would never leave
+            // the screen and would read as a fault rather than as progress.
+            visible: !screen.sweeping && toastLabel.text.length > 0
             width: Math.min(parent.width, toastLabel.implicitWidth + 24)
             height: 30
             radius: Theme.radiusButton
@@ -303,67 +1026,214 @@ Item {
 
                 anchors.centerIn: parent
                 width: Math.min(parent.width - 24, implicitWidth)
-                text: metrics.uiMessage
+                // This screen's own answer wins: it is always the newer one, and
+                // the engine has nothing to say about an empty band.
+                text: screen.hint.length > 0 ? screen.hint : metrics.uiMessage
                 font.family: Theme.mono
                 font.pixelSize: 12
                 color: Theme.cyan
                 elide: Text.ElideRight
             }
         }
+    }
 
-        // A fingertip covers several channels, so the tap snaps to the strongest
-        // peak near it. The gate is an affordance only — the engine refuses the
-        // tune on its own if trunking took the tuner in the meantime.
+    // A hint is this screen talking, and it should not outlive the answer it was
+    // about. The engine's own messages carry their own expiry.
+    Timer {
+        interval: 4000
+        running: screen.hint.length > 0
+        onTriggered: screen.hint = ""
+    }
+
+    // ---- Go to ----
+    Rectangle {
+        id: goToSheet
+
+        objectName: "spectrumGoToSheet"
+
+        function open(hz) {
+            goToField.text = Util.mhzText(hz)
+            visible = true
+            goToField.forceActiveFocus()
+        }
+
+        function submit() {
+            var mhz = parseFloat(goToField.text)
+            if (isNaN(mhz) || !(mhz > 0))
+                return
+            goToSheet.visible = false
+            Qt.inputMethod.hide()
+            screen.stopSweep()
+            screen.tuneTo(mhz * 1.0e6)
+        }
+
+        anchors.fill: parent
+        visible: false
+        color: Qt.alpha("#000000", 0.5)
+
         TapHandler {
-            enabled: !screen.viewOnly && spectrum.hasData
-            onTapped: function (eventPoint) {
-                var hz = spectrum.tapFrequencyHz(eventPoint.position.x / body.width)
-                if (hz > 0)
-                    commands.manualTuneHz(Math.round(hz))
+            onTapped: {
+                goToSheet.visible = false
+                Qt.inputMethod.hide()
             }
         }
 
-        PinchHandler {
-            id: pinch
+        UiPanel {
+            anchors.centerIn: parent
+            width: parent.width - 2 * Theme.screenPadding
+            height: goToColumn.height + 2 * Theme.cardPadding
 
-            target: null
-            // Wider than the model's 1x-8x so the clamp lives in one place.
-            minimumScale: 0.1
-            maximumScale: 20.0
+            Column {
+                id: goToColumn
 
-            onActiveChanged: {
-                if (!active)
-                    return
-                screen.pinchStartZoom = spectrum.zoom
-                screen.pinchAnchorX = body.width > 0 ? (pinch.centroid.position.x / body.width) : 0.5
-            }
-            onActiveScaleChanged: {
-                if (pinch.active)
-                    screen.applyPinch(pinch.activeScale)
-            }
-        }
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Theme.cardPadding
+                spacing: 12
 
-        DragHandler {
-            id: pan
-
-            target: null
-            xAxis.enabled: true
-            yAxis.enabled: false
-
-            onActiveChanged: {
-                if (active) {
-                    screen.panStartOffsetHz = spectrum.viewOffsetHz
-                    return
+                MicroLabel {
+                    text: qsTr("Go to")
                 }
-                // Exactly one retune per gesture, on release. Retuning per drag
-                // frame would block the engine thread for up to 500 ms a time.
-                // A pinch stealing the grab deactivates this handler too, and
-                // that is not a release.
-                screen.endPan(pinch.active)
+
+                Row {
+                    spacing: 8
+
+                    TextInput {
+                        id: goToField
+
+                        objectName: "spectrumGoToField"
+                        width: Math.max(implicitWidth, 60)
+                        font.family: Theme.mono
+                        font.pixelSize: 30
+                        font.weight: Font.Medium
+                        color: Theme.textPrimary
+                        inputMethodHints: Qt.ImhFormattedNumbersOnly
+                        validator: RegularExpressionValidator {
+                            regularExpression: /^\d{1,5}(\.\d{0,6})?$/
+                        }
+                        selectionColor: Qt.alpha(Theme.cyan, 0.35)
+                        selectedTextColor: Theme.textPrimary
+                        onAccepted: goToSheet.submit()
+                    }
+
+                    Text {
+                        text: "MHz"
+                        anchors.baseline: goToField.baseline
+                        font.family: Theme.mono
+                        font.pixelSize: 15
+                        color: Theme.textSubdued
+                    }
+                }
+
+                Rectangle {
+                    width: parent.width
+                    height: 2
+                    color: Theme.cyan
+                }
+
+                // Typing a frequency and jumping to a band are the same intent at
+                // different precisions, so they share one panel.
+                Flow {
+                    width: parent.width
+                    spacing: 8
+
+                    Repeater {
+                        model: Util.BANDS
+
+                        FilterPill {
+                            required property var modelData
+
+                            objectName: "spectrumBand_" + modelData.label
+                            text: modelData.label
+                            caret: false
+                            active: screen.band ? screen.band.label === modelData.label : false
+                            onClicked: goToField.text = Util.mhzText(modelData.start)
+                        }
+                    }
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    objectName: "spectrumGoToConfirm"
+                    text: qsTr("Tune")
+                    onClicked: goToSheet.submit()
+                }
             }
-            onActiveTranslationChanged: {
-                if (pan.active)
-                    screen.applyPan(pan.activeTranslation.x, body.width)
+        }
+    }
+
+    // ---- Radio settings ----
+    RadioSheet {
+        id: radioSheet
+    }
+
+    // ---- Explore from here, confirmed ----
+    Rectangle {
+        id: confirmExplore
+
+        objectName: "spectrumExploreConfirm"
+
+        anchors.fill: parent
+        visible: false
+        color: Qt.alpha("#000000", 0.5)
+
+        TapHandler {
+            onTapped: confirmExplore.visible = false
+        }
+
+        UiPanel {
+            anchors.centerIn: parent
+            width: parent.width - 2 * Theme.screenPadding
+            height: confirmColumn.height + 2 * Theme.cardPadding
+
+            Column {
+                id: confirmColumn
+
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.margins: Theme.cardPadding
+                spacing: 12
+
+                Text {
+                    width: parent.width
+                    text: qsTr("Explore from here?")
+                    font.family: Theme.sans
+                    font.pixelSize: 17
+                    font.weight: Font.Bold
+                    color: Theme.textPrimary
+                    wrapMode: Text.Wrap
+                }
+
+                // Names what stops, and — the part people actually worry about —
+                // what does not.
+                Text {
+                    width: parent.width
+                    text: metrics.scannerMode
+                          ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.")
+                          : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
+                    font.family: Theme.sans
+                    font.pixelSize: 14
+                    color: Theme.textSecondary
+                    wrapMode: Text.Wrap
+                }
+
+                OutlineButton {
+                    objectName: "spectrumExploreConfirmAccept"
+                    width: parent.width
+                    text: qsTr("Explore from here")
+                    onClicked: {
+                        confirmExplore.visible = false
+                        screen.exploreFromHere()
+                    }
+                }
+
+                OutlineButton {
+                    width: parent.width
+                    text: qsTr("Cancel")
+                    onClicked: confirmExplore.visible = false
+                }
             }
         }
     }

@@ -29,6 +29,11 @@ namespace {
 constexpr int kPollIntervalMs = DSD_WIDEBAND_SPECTRUM_PERIOD_MS;
 constexpr int kMaxBins = DSD_WIDEBAND_SPECTRUM_BINS;
 
+/* How far above the frame's mean level a bin has to sit before "next signal" will
+ * move the radio to it. Low enough that a weak but real carrier still counts, high
+ * enough that the control does not walk across noise one bin at a time. */
+constexpr double kNextPeakExcessDb = 8.0;
+
 bool
 state_is_showing(Qt::ApplicationState state) {
     return state != Qt::ApplicationSuspended && state != Qt::ApplicationHidden;
@@ -254,6 +259,35 @@ SpectrumModel::tapFrequencyHz(double x_fraction) const {
     const int view_hi_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.high_hz);
     const int peak = spectrum_math::peak_search_bin(m_bins.constData(), m_bin_count, tapped_bin, half_width_bins,
                                                     view_lo_bin, view_hi_bin);
+    return spectrum_math::bin_to_freq_hz(m_center_hz, m_span_hz, m_bin_count, peak);
+}
+
+double
+SpectrumModel::nextPeakHz(int direction) const {
+    if (!m_has_data || m_bin_count <= 0 || !(m_span_hz > 0.0)) {
+        return 0.0;
+    }
+    const spectrum_math::ViewWindow win = window();
+    /* Same rule as the tap: only answer with something on screen. Hopping to a
+     * carrier outside the window would move the radio to a signal the user was
+     * never shown and could not have been asking for. */
+    const int view_lo_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.low_hz);
+    const int view_hi_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.high_hz);
+    const int center_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, m_center_hz);
+
+    /* The gap is the snap window: inside it a tap would have reached the same
+     * signal, so anything nearer than that is not a different channel. */
+    const double bin_width_hz = m_span_hz / static_cast<double>(m_bin_count);
+    int gap_bins = static_cast<int>(spectrum_math::snap_window_hz(win.span_hz) / bin_width_hz);
+    if (gap_bins < 1) {
+        gap_bins = 1;
+    }
+    const int peak =
+        spectrum_math::directional_peak_bin(m_bins.constData(), m_bin_count, center_bin, (direction >= 0) ? 1 : -1,
+                                            gap_bins, kNextPeakExcessDb, view_lo_bin, view_hi_bin);
+    if (peak < 0) {
+        return 0.0;
+    }
     return spectrum_math::bin_to_freq_hz(m_center_hz, m_span_hz, m_bin_count, peak);
 }
 

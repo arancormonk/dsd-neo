@@ -203,6 +203,93 @@ peak_search_bin(const float* db, int n, int center_bin, int half_width_bins, int
 }
 
 /**
+ * @brief Mean level of a frame — the same floor estimate AutoRange builds on.
+ *
+ * The mean, not the minimum: a spectrum's minimum bin is a noise trough tens of
+ * dB below where the noise actually sits, so a threshold measured from it would
+ * call everything a signal.
+ */
+inline double
+frame_mean_db(const float* db, int n) {
+    double sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        sum += static_cast<double>(db[i]);
+    }
+    return sum / static_cast<double>(n);
+}
+
+/** @brief An inclusive bin range; empty when @c hi is below @c lo. */
+struct BinRange {
+    int lo;
+    int hi;
+};
+
+/**
+ * @brief Where to look for the next signal in @p direction, within the bounds.
+ *
+ * Searching upward starts @p gap_bins above @p from_bin and runs to the top of
+ * the window; downward is the mirror. The gap is what keeps the answer from
+ * being the carrier already tuned, which is invariably the strongest bin around.
+ */
+inline BinRange
+directional_range(int from_bin, int direction, int gap_bins, int bound_lo, int bound_hi) {
+    BinRange range = {bound_lo, bound_hi};
+    if (direction >= 0) {
+        const int start = from_bin + gap_bins;
+        range.lo = (start > bound_lo) ? start : bound_lo;
+    } else {
+        const int end = from_bin - gap_bins;
+        range.hi = (end < bound_hi) ? end : bound_hi;
+    }
+    return range;
+}
+
+/**
+ * @brief Strongest bin beyond @p from_bin in @p direction that stands above the noise.
+ *
+ * The control this backs is "take me to the next signal", so it answers with a bin
+ * or with nothing — never with a fallback. Returning @p from_bin when the band is
+ * empty would make the button retune the radio to where it already is, which reads
+ * as a broken control rather than as an empty band.
+ *
+ * @param direction     +1 searches upward in frequency, -1 downward.
+ * @param min_gap_bins  How far past @p from_bin the search starts. Immediately after
+ *                      tuning to a carrier, that carrier is the strongest bin there
+ *                      is; without a gap, "next" answers with the signal already
+ *                      being listened to.
+ * @param min_excess_db How far above the frame's mean level a bin must sit to count
+ *                      as a signal. The mean is the same floor estimate AutoRange
+ *                      uses, and without a threshold this walks one bin at a time
+ *                      across flat noise.
+ * @param bound_lo,bound_hi Inclusive bin range the answer must lie in, as with
+ *        peak_search_bin(): the answer has to be something the user can see.
+ * @return The bin, or -1 when nothing in range qualifies.
+ */
+inline int
+directional_peak_bin(const float* db, int n, int from_bin, int direction, int min_gap_bins, double min_excess_db,
+                     int bound_lo, int bound_hi) {
+    if (!db || n <= 0) {
+        return -1;
+    }
+    const int lo_bound = (bound_lo < 0) ? 0 : bound_lo;
+    const int hi_bound = (bound_hi > n - 1) ? n - 1 : bound_hi;
+    if (hi_bound < lo_bound) {
+        return -1;
+    }
+    const int gap = (min_gap_bins < 0) ? 0 : min_gap_bins;
+    const BinRange range = directional_range(from_bin, direction, gap, lo_bound, hi_bound);
+    const double threshold = frame_mean_db(db, n) + min_excess_db;
+
+    int best = -1;
+    for (int i = range.lo; i <= range.hi; i++) {
+        if (static_cast<double>(db[i]) >= threshold && (best < 0 || db[i] > db[best])) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+/**
  * @brief Offset that holds the frequency under @p x_fraction still across a zoom.
  *
  * A pinch that moves the signal out from under the fingers reads as broken, so

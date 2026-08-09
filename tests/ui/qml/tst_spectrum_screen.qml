@@ -38,6 +38,13 @@ Item {
         function init() {
             testContext.resetCommands()
             testContext.setMetric("tunerControlled",false)
+            testContext.setMetric("trunkingEnabled",false)
+            testContext.setMetric("scannerMode",false)
+            testContext.setMetric("syncedHere",false)
+            // Most cases are about what exploring can do; the screen defaults to
+            // the other intent, where none of it is available.
+            screenLoader.item.exploring = true
+            screenLoader.item.hint = ""
             // The screen switches production on for itself; wait for the first frame.
             tryVerify(function () { return spectrum.hasData }, 5000,
                       "no spectrum frame arrived")
@@ -103,6 +110,77 @@ Item {
 
             testContext.setMetric("tunerControlled",false)
             tryVerify(function () { return !screenLoader.item.viewOnly })
+        }
+
+        // The other reason, and the one this screen decides for itself: a session
+        // started from a saved system is a session about that system. Nothing owns
+        // the tuner and the engine would accept the tune — the refusal is the
+        // product's, so nothing but this binding enforces it.
+        function test_03c_a_saved_system_session_is_view_only_with_nothing_holding_the_tuner() {
+            var screen = screenLoader.item
+            screen.exploring = false
+            verify(screen.viewOnly, "a saved-system session offered tap-to-tune")
+            verify(!screen.tunerHeld, "the fixture was not left with a free tuner")
+
+            mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
+            tc.wait(50)
+            compare(testContext.manualTuneCalls(), 0)
+
+            // And the controls that only make sense while exploring are not there.
+            var tuning = findChild(screen, "spectrumTuning")
+            verify(tuning !== null, "the tuning row is missing entirely")
+            verify(!tuning.visible, "a saved-system session showed the tuning controls")
+
+            screen.exploring = true
+            verify(!screen.viewOnly)
+            tryVerify(function () { return tuning.visible })
+        }
+
+        // The way out of view-only. Nothing is holding the tuner here, so there is
+        // nothing to warn about and the ask goes straight through.
+        function test_03d_explore_from_here_asks_for_the_tuner() {
+            var screen = screenLoader.item
+            screen.exploring = false
+            var button = findChild(screen, "spectrumExploreFromHere")
+            verify(button !== null, "the explore-from-here button is missing")
+            tryVerify(function () { return button.visible })
+
+            var asked = 0
+            screen.exploreFromHere.connect(function () { asked++ })
+            button.clicked()
+
+            compare(testContext.releaseTunerCalls(), 0, "nothing held the tuner; nothing to release")
+            compare(asked, 1)
+            screen.exploring = true
+        }
+
+        // With a controller holding the tuner, taking it costs something the user
+        // did not ask for — following calls across channels stops — so it is named
+        // and confirmed rather than done on the tap.
+        function test_03e_taking_the_tuner_from_a_controller_is_confirmed_first() {
+            var screen = screenLoader.item
+            screen.exploring = false
+            testContext.setMetric("tunerControlled",true)
+            testContext.setMetric("trunkingEnabled",true)
+            tryVerify(function () { return screen.tunerHeld })
+
+            var asked = 0
+            screen.exploreFromHere.connect(function () { asked++ })
+
+            var button = findChild(screen, "spectrumExploreFromHere")
+            button.clicked()
+            var sheet = findChild(screen, "spectrumExploreConfirm")
+            verify(sheet !== null, "the confirm sheet is missing")
+            tryVerify(function () { return sheet.visible }, 2000, "the tap did not ask first")
+            compare(asked, 0, "the tuner was taken before the user confirmed")
+
+            findChild(screen, "spectrumExploreConfirmAccept").clicked()
+            tryVerify(function () { return !sheet.visible })
+            compare(asked, 1)
+
+            testContext.setMetric("tunerControlled",false)
+            testContext.setMetric("trunkingEnabled",false)
+            screen.exploring = true
         }
 
         // The monitor's copy of this line is underneath this layer, so a refused
@@ -232,6 +310,356 @@ Item {
             compare(testContext.manualTuneCalls(), 0)
             compare(spectrum.edgeOvershootHz, 0)
             spectrum.resetView()
+        }
+
+        // Tapping only reaches what is already on screen. Getting anywhere else
+        // means walking the band, and a step that did not overlap would hide a
+        // signal sitting on the seam from both screens it straddles.
+        function test_09_a_step_moves_one_overlapping_screenful() {
+            var screen = screenLoader.item
+            var from = spectrum.centerFreqHz
+
+            screen.stepBy(1)
+            compare(testContext.manualTuneCalls(), 1)
+            var up = testContext.lastManualTuneHz()
+            verify(up > from, "stepping up went down")
+            verify(Math.abs((up - from) - (spectrum.spanHz * 0.9)) <= 1,
+                   "stepped " + (up - from) + " Hz, not one overlapping span")
+
+            testContext.resetCommands()
+            screen.stepBy(-1)
+            compare(testContext.manualTuneCalls(), 1)
+            verify(Math.abs((from - testContext.lastManualTuneHz()) - (spectrum.spanHz * 0.9)) <= 1)
+        }
+
+        // Walking off the top of a band leads into spectrum this app decodes
+        // nothing in, so the walk comes back round instead. The receiver cannot be
+        // driven to a band edge from here, which is exactly why the arithmetic is
+        // its own function.
+        function test_10_stepping_wraps_inside_the_band() {
+            var screen = screenLoader.item
+            var band = screen.band
+            verify(band !== null, "the fixture centre is outside every known band")
+            var step = spectrum.spanHz * 0.9
+
+            // Mid-band, a step is just a step.
+            var mid = (band.low + band.high) / 2
+            verify(Math.abs(screen.nextStepHz(mid, 1) - (mid + step)) <= 1)
+            verify(Math.abs(screen.nextStepHz(mid, -1) - (mid - step)) <= 1)
+
+            // At the top, it comes back to the bottom — and lands inside the band
+            // rather than exactly on its edge, so the first screenful is spectrum.
+            var top = screen.nextStepHz(band.high - (step / 2), 1)
+            verify(top < band.high, "stepped past the top of the band to " + top)
+            verify(top > band.low, "wrapped onto the very edge of the band")
+            verify(top < mid, "the wrap did not come back round")
+
+            var bottom = screen.nextStepHz(band.low + (step / 2), -1)
+            verify(bottom > band.low, "stepped below the bottom of the band to " + bottom)
+            verify(bottom < band.high)
+            verify(bottom > mid, "the downward wrap did not come back round")
+
+            // Off-band — 250 MHz is in none of them — there is nothing to wrap
+            // against, and a walk that snapped into some other band would move the
+            // radio somewhere it was never pointed.
+            var away = 250.0e6
+            verify(Math.abs(screen.nextStepHz(away, 1) - (away + step)) <= 1)
+            verify(Math.abs(screen.nextStepHz(away, -1) - (away - step)) <= 1)
+        }
+
+        // The sweep is stepping repeated until something is found; the finding is
+        // the whole point, so it has to stop on it rather than walk past.
+        function test_11_a_sweep_steps_until_the_decoder_finds_something() {
+            var screen = screenLoader.item
+            screen.startSweep()
+            verify(screen.sweeping, "the sweep did not start")
+
+            screen.sweepTick()
+            compare(testContext.manualTuneCalls(), 1, "a dwell with nothing found did not move on")
+            verify(screen.sweeping)
+
+            testContext.setMetric("syncedHere",true)
+            tryVerify(function () { return metrics.syncedHere })
+            screen.sweepTick()
+            verify(!screen.sweeping, "the sweep walked past a signal")
+            compare(testContext.manualTuneCalls(), 1, "the sweep moved off what it found")
+            verify(screen.hint.length > 0, "the sweep stopped without saying why")
+
+            testContext.setMetric("syncedHere",false)
+        }
+
+        // Touching the spectrum is taking over. A sweep still running underneath
+        // would move the radio off whatever was just chosen, seconds later.
+        function test_12_touching_the_spectrum_stops_a_sweep() {
+            var screen = screenLoader.item
+            screen.startSweep()
+            verify(screen.sweeping)
+
+            mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.75)
+            tryVerify(function () { return !screen.sweeping }, 2000, "the sweep survived a tap")
+
+            // As does losing the right to tune at all.
+            screen.startSweep()
+            verify(screen.sweeping)
+            testContext.setMetric("tunerControlled",true)
+            tryVerify(function () { return !screen.sweeping }, 2000,
+                      "the sweep survived the tuner being taken")
+            testContext.setMetric("tunerControlled",false)
+        }
+
+        // Hopping to the next carrier, and — the part that is easy to get wrong —
+        // doing nothing at all when there is not one.
+        function test_13_the_signal_hop_lands_on_a_carrier_or_says_it_cannot() {
+            var screen = screenLoader.item
+            var peak = testContext.spectrumPeakHz()
+            var direction = peak > spectrum.centerFreqHz ? 1 : -1
+
+            screen.hopToSignal(direction)
+            compare(testContext.manualTuneCalls(), 1, "the hop asked for nothing")
+            verify(Math.abs(testContext.lastManualTuneHz() - peak) <= 4000,
+                   "hopped to " + testContext.lastManualTuneHz() + " but the peak is at " + peak)
+
+            // The other way there is only noise, and a hop that fell back to the
+            // current centre would retune the radio to where it already is.
+            testContext.resetCommands()
+            screen.hopToSignal(-direction)
+            compare(testContext.manualTuneCalls(), 0, "an empty band still moved the radio")
+            verify(screen.hint.length > 0, "an empty band said nothing")
+        }
+
+        // Typing a frequency is how someone leaves the neighbourhood entirely.
+        function test_14_go_to_tunes_to_a_typed_frequency() {
+            var screen = screenLoader.item
+            var sheet = findChild(screen, "spectrumGoToSheet")
+            verify(sheet !== null, "the go-to sheet is missing")
+
+            sheet.open(spectrum.centerFreqHz)
+            verify(sheet.visible)
+
+            findChild(screen, "spectrumGoToField").text = "154.0000"
+            findChild(screen, "spectrumGoToConfirm").clicked()
+
+            verify(!sheet.visible, "the sheet stayed open after tuning")
+            compare(testContext.manualTuneCalls(), 1)
+            compare(testContext.lastManualTuneHz(), 154000000)
+        }
+
+        // The engine reports every step of a sweep with a three-second message; at
+        // this cadence the line would never clear and would read as a fault.
+        function test_15_the_engine_message_is_hidden_while_sweeping() {
+            var screen = screenLoader.item
+            var toast = findChild(screen, "spectrumToast")
+            testContext.setMetric("uiMessage", "Applied: tuned -> 851000000 Hz")
+            tryVerify(function () { return toast.visible })
+
+            screen.startSweep()
+            tryVerify(function () { return !toast.visible }, 2000,
+                      "the per-step message stayed up through the sweep")
+
+            screen.stopSweep()
+            testContext.setMetric("uiMessage", "")
+        }
+
+        // A waterfall shows where energy is and says nothing about whether any of
+        // it is being decoded. On a band being swept that is the only question,
+        // and "which protocol" is the answer to why a real signal is silent.
+        function test_16_the_strip_says_whether_the_decoder_is_locked() {
+            var screen = screenLoader.item
+            var label = findChild(screen, "spectrumSyncLabel")
+            verify(label !== null, "the sync label is missing")
+
+            testContext.setMetric("syncedHere",false)
+            tryVerify(function () { return label.text === "NO SYNC" },
+                      2000, "an unlocked decoder did not say so")
+
+            testContext.setMetric("syncLabel","DMR")
+            testContext.setMetric("syncedHere",true)
+            tryVerify(function () { return label.text === "DMR" },
+                      2000, "a locked decoder did not name what it locked to")
+
+            testContext.setMetric("syncedHere",false)
+            testContext.setMetric("syncLabel","")
+        }
+
+        // A call in progress is the payoff, and it belongs next to the lock that
+        // produced it rather than on a screen the user has to leave this one for.
+        function test_17_the_strip_shows_a_call_in_progress() {
+            var screen = screenLoader.item
+            var call = findChild(screen, "spectrumCallLabel")
+            verify(call !== null, "the call label is missing")
+            verify(!call.visible, "an idle screen showed a call")
+
+            testContext.setMetric("slot1TgText","1201")
+            testContext.setMetric("slot1CallState",2)
+            tryVerify(function () { return call.visible && call.text === "1201" },
+                      2000, "an active call did not reach the strip")
+
+            // A control channel opens call epochs whose target has not decoded
+            // yet. Rendering that as talkgroup 0 would name a transmission
+            // nobody is making.
+            testContext.setMetric("slot1TgText","0")
+            tryVerify(function () { return !call.visible }, 2000,
+                      "an unidentified call was shown as talkgroup 0")
+
+            testContext.setMetric("slot1CallState",0)
+            testContext.setMetric("slot1TgText","")
+            tryVerify(function () { return !call.visible })
+        }
+
+        // A standing frequency offset is the symptom of a PPM correction that does
+        // not match this dongle — the one setting nobody can verify when they type
+        // it. Shown only once something is locked, because before that it is noise.
+        function test_17b_the_strip_shows_a_frequency_offset_worth_acting_on() {
+            var screen = screenLoader.item
+            var cfo = findChild(screen, "spectrumCfoLabel")
+            verify(cfo !== null, "the offset label is missing")
+
+            testContext.setMetric("syncedHere",false)
+            testContext.setMetric("cfoHz",900.0)
+            tryVerify(function () { return !cfo.visible }, 2000,
+                      "an offset was shown with nothing locked")
+
+            testContext.setMetric("syncedHere",true)
+            tryVerify(function () { return cfo.visible && cfo.text === "900 Hz" }, 2000,
+                      "a large offset was not shown")
+
+            // A few Hz is normal and is not worth a reading.
+            testContext.setMetric("cfoHz",4.0)
+            tryVerify(function () { return !cfo.visible }, 2000,
+                      "a negligible offset was still reported")
+
+            testContext.setMetric("cfoHz",0.0)
+            testContext.setMetric("syncedHere",false)
+        }
+
+        // Gain, squelch, modulation and decode are what decide whether a signal
+        // on the waterfall becomes audio. Reaching them used to mean stopping the
+        // session, so the panel is available even where tuning is not.
+        function test_18_the_radio_panel_opens_in_both_intents() {
+            var screen = screenLoader.item
+            var button = findChild(screen, "spectrumRadioButton")
+            var panel = findChild(screen, "radioSheet")
+            verify(button !== null, "the radio button is missing")
+            verify(panel !== null, "the radio panel is missing")
+
+            screen.exploring = false
+            tryVerify(function () { return screen.viewOnly })
+            verify(button.visible, "a view-only session hid the radio settings")
+
+            screen.exploring = true
+            verify(button.visible)
+            verify(!panel.visible)
+            panel.open()
+            verify(panel.visible)
+            findChild(screen, "radioSheetDone").clicked()
+            verify(!panel.visible)
+        }
+
+        // Each control asks the engine for an absolute value derived from what the
+        // engine currently reports — never from what this panel last asked for.
+        function test_19_the_radio_panel_changes_the_radio() {
+            var screen = screenLoader.item
+            var panel = findChild(screen, "radioSheet")
+            panel.open()
+
+            testContext.setMetric("tunerGainDb",30)
+            tryVerify(function () { return metrics.tunerGainDb === 30 })
+            findChild(screen, "radioGainUp").clicked()
+            compare(testContext.lastGainDb(), 31)
+            findChild(screen, "radioGainDown").clicked()
+            compare(testContext.lastGainDb(), 29)
+
+            // Clamped to what the tuner actually offers, so the panel cannot ask
+            // for a gain the backend will only refuse.
+            testContext.setMetric("tunerGainDb",49)
+            tryVerify(function () { return metrics.tunerGainDb === 49 })
+            findChild(screen, "radioGainUp").clicked()
+            compare(testContext.lastGainDb(), 49)
+            testContext.setMetric("tunerGainDb",0)
+            tryVerify(function () { return metrics.tunerGainDb === 0 })
+            findChild(screen, "radioGainDown").clicked()
+            compare(testContext.lastGainDb(), 0)
+
+            findChild(screen, "radioSquelchUp").clicked()
+            verify(Math.abs(testContext.lastSquelchDb() - (-115)) < 0.001)
+
+            // PPM is chosen once, by someone with no way to tell if it was right.
+            findChild(screen, "radioPpmUp").clicked()
+            compare(testContext.lastPpm(), 1)
+            findChild(screen, "radioPpmDown").clicked()
+            compare(testContext.lastPpm(), -1)
+
+            // QPSK is the simulcast answer, and picking it must ask for that state
+            // rather than for "the other one".
+            findChild(screen, "radioModulation").selected(1)
+            compare(testContext.lastModulation(), 1)
+            findChild(screen, "radioModulation").selected(0)
+            compare(testContext.lastModulation(), 0)
+
+            // Every one of those presses has to leave the panel open. The scrim
+            // dismisses on a tap, and a handler on the panel cannot stop that —
+            // handlers never take exclusive grabs — so the scrim has to decide by
+            // where the tap landed, or the panel closes on its own first button.
+            verify(panel.visible, "the panel closed while its controls were used")
+            verify(panel.hitsPanel(root.width / 2, root.height / 2),
+                   "the panel does not claim its own centre")
+            verify(!panel.hitsPanel(root.width / 2, 4),
+                   "the panel claimed the scrim above it")
+
+            panel.visible = false
+            testContext.setMetric("tunerGainDb",30)
+        }
+
+        // The chips must send the preset the flag means, and the modulation chip
+        // must not appear among them at all — it changes nothing here.
+        function test_20_the_decode_chips_send_a_preset() {
+            var screen = screenLoader.item
+            var panel = findChild(screen, "radioSheet")
+            panel.open()
+
+            verify(findChild(screen, "radioDecode_P25 LSM") === null,
+                   "the simulcast modulation chip appeared as a decode choice")
+
+            var dmr = findChild(screen, "radioDecode_DMR")
+            verify(dmr !== null, "the DMR chip is missing")
+            dmr.clicked()
+            compare(testContext.lastDecodeMode(), 5)
+
+            // Selection reads the engine, not the tap: the fixture reports auto,
+            // so Auto is the chip that shows as chosen.
+            var auto = findChild(screen, "radioDecode_Auto")
+            verify(auto !== null, "the auto chip is missing")
+            verify(auto.selected, "the panel did not show the engine's own mode")
+            verify(!dmr.selected, "a tapped chip showed as chosen before the engine agreed")
+
+            panel.visible = false
+        }
+
+        // TapHandlers never take exclusive grabs, so a tap on a sheet also lands
+        // on the spectrum behind it. Left alone, every press of a button on the
+        // radio panel also retunes the receiver — the panel closes and the radio
+        // has moved somewhere nobody asked for.
+        function test_21_a_tap_on_a_sheet_never_reaches_the_spectrum() {
+            var screen = screenLoader.item
+            var sheets = [findChild(screen, "radioSheet"),
+                          findChild(screen, "spectrumGoToSheet"),
+                          findChild(screen, "spectrumExploreConfirm")]
+
+            for (var i = 0; i < sheets.length; i++) {
+                verify(sheets[i] !== null, "a sheet is missing")
+                testContext.resetCommands()
+                sheets[i].visible = true
+                verify(screen.sheetOpen, "an open sheet did not shield the spectrum")
+
+                // Straight through the middle of the panel, where its own controls are.
+                mouseClick(tc.area, tc.xOf(testContext.spectrumPeakHz()), tc.area.height * 0.5)
+                tc.wait(50)
+                compare(testContext.manualTuneCalls(), 0,
+                        "a tap on a sheet retuned the receiver behind it")
+
+                sheets[i].visible = false
+            }
+            verify(!screen.sheetOpen)
         }
 
         // The axis has to follow the viewport, not freeze on the first frame.

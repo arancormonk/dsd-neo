@@ -153,6 +153,11 @@ ui_cmd_is_coalescible_setter(int cmd_id) {
         case DSD_APP_CMD_RTL_SET_SQL_DB:
         case DSD_APP_CMD_RTL_SET_VOL_MULT:
         case DSD_APP_CMD_HANGTIME_SET:
+        /* Discrete choices, but a segmented control taken twice in a second should
+           land on the second answer without the decoder rebuilding timing for the
+           first one on the way. */
+        case DSD_APP_CMD_MOD_SET:
+        case DSD_APP_CMD_DECODE_MODE_SET:
         case DSD_APP_CMD_SLOT_PREF_SET: return 1;
         default: return 0;
     }
@@ -1617,6 +1622,28 @@ current_cc_freq(const dsd_state* state) {
     return (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
 }
 
+/** @brief What to call a decode preset in a message the operator reads. */
+static const char*
+decode_mode_label(dsdneoUserDecodeMode mode) {
+    static const struct {
+        dsdneoUserDecodeMode mode;
+        const char* label;
+    } k_labels[] = {
+        {DSDCFG_MODE_AUTO, "everything"}, {DSDCFG_MODE_P25P1, "P25 Phase 1"}, {DSDCFG_MODE_P25P2, "P25 Phase 2"},
+        {DSDCFG_MODE_TDMA, "P25"},        {DSDCFG_MODE_DMR, "DMR"},           {DSDCFG_MODE_DMR_MONO, "DMR"},
+        {DSDCFG_MODE_NXDN48, "NXDN48"},   {DSDCFG_MODE_NXDN96, "NXDN96"},     {DSDCFG_MODE_X2TDMA, "X2-TDMA"},
+        {DSDCFG_MODE_YSF, "YSF"},         {DSDCFG_MODE_DSTAR, "D-STAR"},      {DSDCFG_MODE_EDACS_PV, "EDACS/ProVoice"},
+        {DSDCFG_MODE_DPMR, "dPMR"},       {DSDCFG_MODE_M17, "M17"},           {DSDCFG_MODE_ANALOG, "analog"},
+    };
+
+    for (size_t i = 0; i < sizeof k_labels / sizeof k_labels[0]; i++) {
+        if (k_labels[i].mode == mode) {
+            return k_labels[i].label;
+        }
+    }
+    return "that mode";
+}
+
 static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
     const double ended_m = dsd_time_now_monotonic_s();
@@ -2247,6 +2274,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_SLOT_PREF_CYCLE,
     DSD_APP_CMD_TRUNK_TOGGLE,
     DSD_APP_CMD_SCANNER_TOGGLE,
+    DSD_APP_CMD_TUNER_RELEASE,
     DSD_APP_CMD_PAYLOAD_TOGGLE,
     DSD_APP_CMD_P25_GA_TOGGLE,
     DSD_APP_CMD_LPF_TOGGLE,
@@ -2325,12 +2353,26 @@ static const int k_ui_cmd_action_ids[] = {
 };
 
 static const int k_ui_cmd_i32_ids[] = {
-    DSD_APP_CMD_GAIN_DELTA,          DSD_APP_CMD_AGAIN_DELTA,      DSD_APP_CMD_SPEC_SIZE_DELTA,
-    DSD_APP_CMD_PPM_DELTA,           DSD_APP_CMD_GAIN_SET,         DSD_APP_CMD_AGAIN_SET,
-    DSD_APP_CMD_RTL_SET_DEV,         DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,
-    DSD_APP_CMD_RTL_SET_BW,          DSD_APP_CMD_RTL_SET_VOL_MULT, DSD_APP_CMD_RTL_SET_BIAS_TEE,
-    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, DSD_APP_CMD_RTL_SET_AUTO_PPM, DSD_APP_CMD_RIGCTL_SET_MOD_BW,
-    DSD_APP_CMD_SLOT_PREF_SET,       DSD_APP_CMD_SLOTS_ONOFF_SET,  DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_GAIN_DELTA,
+    DSD_APP_CMD_AGAIN_DELTA,
+    DSD_APP_CMD_SPEC_SIZE_DELTA,
+    DSD_APP_CMD_PPM_DELTA,
+    DSD_APP_CMD_GAIN_SET,
+    DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_RTL_SET_DEV,
+    DSD_APP_CMD_RTL_SET_GAIN,
+    DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_RTL_SET_BW,
+    DSD_APP_CMD_RTL_SET_VOL_MULT,
+    DSD_APP_CMD_RTL_SET_BIAS_TEE,
+    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
+    DSD_APP_CMD_RTL_SET_AUTO_PPM,
+    DSD_APP_CMD_RIGCTL_SET_MOD_BW,
+    DSD_APP_CMD_SLOT_PREF_SET,
+    DSD_APP_CMD_SLOTS_ONOFF_SET,
+    DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_MOD_SET,
+    DSD_APP_CMD_DECODE_MODE_SET,
 };
 
 static int
@@ -2493,6 +2535,8 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
     {DSD_APP_CMD_LOCKOUT_SLOT, sizeof(uint8_t)},
     {DSD_APP_CMD_RTL_SET_FREQ, sizeof(uint32_t)},
+    {DSD_APP_CMD_MOD_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_DECODE_MODE_SET, sizeof(int32_t)},
     {DSD_APP_CMD_MANUAL_TUNE, sizeof(uint32_t)},
     {DSD_APP_CMD_TG_HOLD_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},
@@ -2868,6 +2912,76 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/**
+ * @brief Hand the tuner back to the operator: trunking and scanner mode both off.
+ *
+ * Idempotent. A frontend only learns that *something* owns the tuner, not which,
+ * so TRUNK_TOGGLE/SCANNER_TOGGLE cannot express "off" from there without guessing.
+ *
+ * The call-state teardown is not optional and is not left to a following
+ * MANUAL_TUNE: a release is frequently the whole request -- look around from
+ * where we already are -- and then no tune ever runs it. Left set,
+ * opts->trunk_is_tuned keeps update_dmr_bs_sync_times_if_tuned() stamping sync
+ * times, which in turn suppresses the engine's stale-follow-state cleanup, and it
+ * is also the flag whose zero state lets the decoder learn a control channel.
+ *
+ * No dsd_frame_sync_reset_mod_state() here: nothing retuned, so the modulation
+ * votes still describe the signal actually being received.
+ *
+ * opts->trunk_scan_enabled is a third tuner owner (see
+ * engine_trunk_tuning_owner_active()) and is deliberately untouched: it owns live
+ * scan hooks that clearing a flag would not tear down, and it is only reachable
+ * from a frontend that passes --trunk-scan.
+ */
+static int
+apply_tuner_release(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    opts->trunk_enable = 0;
+    opts->scanner_mode = 0;
+    reset_call_tracking(opts, state, 1);
+    ui_set_toast(state, 3, "Automatic tuning stopped");
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/**
+ * @brief Switch which protocols are decoded, mid-session.
+ *
+ * Goes through the same preset helper the CLI uses, so a mode chosen here means
+ * exactly what the same mode means at startup rather than a second opinion about
+ * which frame_* flags it implies.
+ *
+ * The CLI profile specifically, not the interactive one: only its AUTO re-enables
+ * the whole frame set. The other profiles leave AUTO as a label because they run
+ * against freshly defaulted options where everything is already on -- but this
+ * command runs against options a previous single-protocol choice has already
+ * narrowed, so "listen for everything" has to actually widen them again.
+ *
+ * Every preset also settles the modulation, which is why a panel offering both
+ * reads modulation back from the engine rather than remembering what it asked for.
+ */
+static int
+apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || c->n < (int)sizeof(int32_t)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    int32_t requested = 0;
+    DSD_MEMCPY(&requested, c->data, sizeof requested);
+    const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)requested;
+    if (dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        ui_set_toast(state, 4, "Decode mode not available");
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    /* The decoder was hunting for a different protocol a moment ago: its
+       modulation votes describe frames of the old kind, and any call open on the
+       old protocol will never be closed by the new one. */
+    dsd_frame_sync_reset_mod_state();
+    reset_call_tracking(opts, state, 1);
+    ui_set_toast(state, 3, "Decoding %s", decode_mode_label(mode));
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 static int
 apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
@@ -2914,6 +3028,8 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             }
             return 1;
         case DSD_APP_CMD_RETURN_CC: return apply_manual_return_to_cc(opts, state);
+        case DSD_APP_CMD_TUNER_RELEASE: return apply_tuner_release(opts, state);
+        case DSD_APP_CMD_DECODE_MODE_SET: return apply_decode_mode_set(opts, state, c);
         case DSD_APP_CMD_SIM_NOCAR:
             if (!state) {
                 return 1;

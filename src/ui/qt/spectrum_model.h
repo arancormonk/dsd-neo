@@ -142,6 +142,16 @@ class SpectrumModel : public QObject {
      */
     Q_INVOKABLE double tapFrequencyHz(double x_fraction) const;
 
+    /**
+     * @brief Frequency of the next signal above (@p direction >= 0) or below center.
+     *
+     * Only signals that are visible and stand clear of the noise count, and the
+     * one already tuned is skipped. Returns 0 when there is no such signal, which
+     * the caller must check — this control has to do nothing on an empty band
+     * rather than retune to where the radio already is.
+     */
+    Q_INVOKABLE double nextPeakHz(int direction) const;
+
     /** @brief Set the zoom to @p zoom_level, holding @p x_fraction's frequency still. */
     Q_INVOKABLE void zoomToAnchored(double zoom_level, double x_fraction);
 
