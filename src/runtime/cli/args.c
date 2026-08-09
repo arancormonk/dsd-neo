@@ -2048,8 +2048,20 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'f': {                                                                                                    \
-            /* Leaving analog-monitor mode is dsd_apply_decode_mode_preset()'s job now,                                \
-               so an unrecognized -f selector no longer half-changes the mode. */                                      \
+            /* Leaving analog-monitor mode is dsd_apply_decode_mode_preset()'s job for every                           \
+               selector that reaches it, so an unrecognized -f selector no longer half-changes                         \
+               the mode. The selectors below are handled by the hand-rolled chain further down                         \
+               and never reach the preset helper, so they have to say it themselves: left set                          \
+               from an earlier -fA, analog_only pins the RTL front end to                                              \
+               DSD_DEMOD_OUTPUT_AUDIO_MONITOR and suppresses the digital output stream, so                             \
+               `-fA -fp` selects ProVoice and then never decodes it. */                                                \
+            const char f_selector = optarg[0];                                                                         \
+            if (f_selector == 'p' || f_selector == 'h' || f_selector == 'H' || f_selector == 'e'                       \
+                || f_selector == 'E' || f_selector == 'Z' || f_selector == 'B' || f_selector == 'P'                    \
+                || f_selector == 'U') {                                                                                \
+                opts->analog_only = 0;                                                                                 \
+                opts->monitor_input_audio = 0;                                                                         \
+            }                                                                                                          \
             const char decode_preset = optarg[0] == 'r' ? 's' : optarg[0];                                             \
             dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \
             if (dsd_decode_mode_from_cli_preset(decode_preset, &core_mode) == 0                                        \
