@@ -336,6 +336,7 @@ rules:
         - /src/third_party/**
         - /src/fec/ez.cpp
         - /src/io/radio/rtl_metrics.cpp
+        - /src/io/radio/rtl_wideband_spectrum.cpp
         - /tests/protocol/p25/test_p25_p2_rs28_limits.cpp
     pattern-either:
       - pattern: '#include "src/third_party/..."'

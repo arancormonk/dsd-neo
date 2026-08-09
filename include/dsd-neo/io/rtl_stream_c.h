@@ -696,6 +696,43 @@ int rtl_stream_spectrum_set_size(int n);
 /** @brief Get current spectrum FFT size. */
 int rtl_stream_spectrum_get_size(void);
 
+/**
+ * @brief Get a snapshot of the wideband power spectrum across the capture span.
+ *
+ * Unlike rtl_stream_spectrum_get(), which reports the narrow post-decimation
+ * span used for tuner diagnostics, this covers the full SDR capture bandwidth
+ * (typically ~1.536 MHz) so a UI can draw a panorama around the tuned
+ * frequency. Bins are DC-centered: out_db[0] ~ center - span/2, the middle bin
+ * ~ center, and the last ~ center + span/2. Values are smoothed and
+ * approximately in dBFS.
+ *
+ * Production is off by default and costs nothing until
+ * rtl_stream_wideband_spectrum_set_enabled(1) is called. The center and span
+ * are published atomically with the bins, so the axis always matches the data.
+ *
+ * @param out_db Destination buffer for spectrum bins (float dB). Must not be NULL.
+ * @param max_bins Maximum number of bins to write.
+ * @param out_center_freq_hz Optional pointer to receive the tuned center in Hz.
+ * @param out_span_hz Optional pointer to receive the covered span in Hz.
+ * @return Number of bins written; 0 when disabled, not yet published, or
+ *         invalidated by a retune.
+ */
+int rtl_stream_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz, uint32_t* out_span_hz);
+
+/**
+ * @brief Set desired wideband spectrum FFT size (power-of-two, clamped to [256, 2048]).
+ *
+ * @param n Requested FFT size; rounded up to the next supported power of two.
+ * @return The FFT size actually selected.
+ */
+int rtl_stream_wideband_spectrum_set_size(int n);
+/** @brief Get current wideband spectrum FFT size. */
+int rtl_stream_wideband_spectrum_get_size(void);
+/** @brief Enable or disable wideband spectrum production (off = zero DSP cost). */
+void rtl_stream_wideband_spectrum_set_enabled(int on);
+/** @brief Return 1 when wideband spectrum production is enabled. */
+int rtl_stream_wideband_spectrum_enabled(void);
+
 /* Carrier/Costas diagnostics and control */
 /** Return current NCO frequency used for carrier rotation (Costas/FLL), in Hz. */
 double rtl_stream_get_cfo_hz(void);

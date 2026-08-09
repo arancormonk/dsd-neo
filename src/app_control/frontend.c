@@ -237,3 +237,30 @@ dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate) {
     return 0;
 #endif
 }
+
+int
+dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz,
+                                       uint32_t* out_span_hz) {
+#ifdef USE_RADIO
+    return rtl_stream_wideband_spectrum_get(out_db, max_bins, out_center_freq_hz, out_span_hz);
+#else
+    (void)out_db;
+    (void)max_bins;
+    if (out_center_freq_hz) {
+        *out_center_freq_hz = 0;
+    }
+    if (out_span_hz) {
+        *out_span_hz = 0;
+    }
+    return 0;
+#endif
+}
+
+void
+dsd_app_frontend_wideband_spectrum_set_enabled(int on) {
+#ifdef USE_RADIO
+    rtl_stream_wideband_spectrum_set_enabled(on);
+#else
+    (void)on;
+#endif
+}

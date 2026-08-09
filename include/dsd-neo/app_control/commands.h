@@ -151,6 +151,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_RTL_SET_BIAS_TEE = 489,    // payload: int32_t on(0/1)
     DSD_APP_CMD_RTLTCP_SET_AUTOTUNE = 490, // payload: int32_t on(0/1)
     DSD_APP_CMD_RTL_SET_AUTO_PPM = 491,    // payload: int32_t on(0/1)
+    // Live retune from a spectrum tap. Separate from RTL_SET_FREQ so taps coalesce only
+    // with taps, the trunking gate is enforced at drain time, and an accepted tune resets
+    // the decoder's auto-modulation votes and call state for re-acquisition.
+    DSD_APP_CMD_MANUAL_TUNE = 492, // payload: uint32_t hz
 
     // Rigctl / tuning params
     DSD_APP_CMD_RIGCTL_SET_MOD_BW = 500, // payload: int32_t hz

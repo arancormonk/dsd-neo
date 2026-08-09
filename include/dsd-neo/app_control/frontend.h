@@ -157,6 +157,31 @@ int dsd_app_frontend_constellation_get(float* out_xy, int max_points);
 int dsd_app_frontend_eye_get(float* out, int max_samples, int* out_sps);
 int dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate);
 
+/**
+ * @brief Copy the wideband spectrum covering the whole SDR capture span.
+ *
+ * Unlike dsd_app_frontend_spectrum_get(), which reports the narrow
+ * post-decimation span used for tuner diagnostics, this covers the full
+ * capture bandwidth so a frontend can draw a panorama around the tuned
+ * frequency. Bins are DC-centered and the center/span are published together
+ * with them, so the axis always matches the data.
+ *
+ * Production is off by default: a frontend must call
+ * dsd_app_frontend_wideband_spectrum_set_enabled(1) while its view is open and
+ * 0 when it closes, so the FFT costs nothing the rest of the time.
+ *
+ * @param out_db Destination buffer for spectrum bins (float dB).
+ * @param max_bins Maximum number of bins to write.
+ * @param out_center_freq_hz Optional; receives the tuned center in Hz.
+ * @param out_span_hz Optional; receives the covered span in Hz.
+ * @return Number of bins written; 0 when disabled, unavailable, or on a build
+ *         with no radio backend.
+ */
+int dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz,
+                                           uint32_t* out_span_hz);
+/** @brief Enable or disable wideband spectrum production (off = zero DSP cost). */
+void dsd_app_frontend_wideband_spectrum_set_enabled(int on);
+
 #ifdef __cplusplus
 }
 #endif

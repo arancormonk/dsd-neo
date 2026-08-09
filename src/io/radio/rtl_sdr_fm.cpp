@@ -74,6 +74,7 @@
 #include "rtl_replay_device.h"
 #include "rtl_stream_mirrors.hpp"
 #include "rtl_stream_shared.hpp"
+#include "rtl_wideband_spectrum.h"
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 #include "rtl_stream_test_support.h"
 #endif
@@ -1462,6 +1463,7 @@ drain_output_on_retune(void) {
      * degraded SNR even when the DSP is performing correctly. */
     constellation_ring_clear();
     eye_ring_clear();
+    rtl_wideband_spectrum_clear();
     snr_ema_reset();
 
     if (force_clear || drain_ms == 0) {
@@ -3433,6 +3435,22 @@ demod_prepare_iteration_processing(const struct demod_state* d, const DemodInput
     return 1;
 }
 
+/**
+ * @brief Offer the pre-decimation block to the wideband spectrum tap.
+ *
+ * Must run before full_demod(): its very first step is the half-band cascade
+ * that rebinds d->lowpassed to the narrow demod rate. Here the block is still
+ * interleaved float I/Q at the capture rate, and ingest has already rotated the
+ * fs/4 hardware offset back out, so the FFT is centered on the frequency the
+ * controller last applied. This is a no-op (and costs nothing) unless a UI has
+ * enabled wideband spectrum production.
+ */
+static inline void
+demod_feed_wideband_spectrum(const struct demod_state* d) {
+    rtl_wideband_spectrum_maybe_update(d->lowpassed, d->lp_len, load_dongle_rate(),
+                                       controller.last_applied_freq_hz.load(std::memory_order_acquire));
+}
+
 static DSD_THREAD_RETURN_TYPE
 #if DSD_PLATFORM_WIN_NATIVE
     __stdcall
@@ -3464,6 +3482,7 @@ static DSD_THREAD_RETURN_TYPE
         if (!consumed_fsk_reacquire) {
             (void)rtl_stream_consume_fsk_modem_reset_pending(d);
         }
+        demod_feed_wideband_spectrum(d);
         full_demod(d);
         g_channel_pwr.store(d->channel_pwr, std::memory_order_relaxed);
         rtl_stream_publish_demod_profile_snapshot();

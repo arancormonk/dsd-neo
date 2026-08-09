@@ -146,6 +146,7 @@ ui_cmd_is_coalescible_setter(int cmd_id) {
         case DSD_APP_CMD_AGAIN_SET:
         case DSD_APP_CMD_INPUT_VOL_SET:
         case DSD_APP_CMD_RTL_SET_FREQ:
+        case DSD_APP_CMD_MANUAL_TUNE:
         case DSD_APP_CMD_RTL_SET_GAIN:
         case DSD_APP_CMD_RTL_SET_PPM:
         case DSD_APP_CMD_RTL_SET_BW:
@@ -1006,6 +1007,52 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return result;
 }
 
+/* Defined further down with the manual-tuning helpers; tap-to-tune needs the
+ * same call-state teardown the manual return-to-CC path uses. */
+static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc);
+
+/*
+ * Live retune from a spectrum tap.
+ *
+ * Kept separate from ui_cmd_handle_rtl_set_freq() on purpose. That one is the
+ * settings-menu tune and documents a no-bookkeeping contract; here the tune is
+ * a navigation gesture, so it (a) evaluates the trunking gate at drain time on
+ * the authoritative live opts->trunk_enable rather than trusting the
+ * frontend's affordance, and (b) drops the stale auto-modulation votes and
+ * per-slot call state that would otherwise slow or corrupt re-acquisition in
+ * decode mode "auto".
+ */
+static int
+ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    uint32_t v = 0;
+    int result = UI_CMD_APPLY_COMPLETED;
+    if (!state || !ui_cmd_parse_u32_payload(c, &v)) {
+        return result;
+    }
+    if (opts->trunk_enable) {
+        ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
+        return result;
+    }
+    int rc = svc_rtl_set_freq(opts, state, v);
+    result = ui_cmd_apply_status_from_tune_rc(rc);
+    if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* Only after the tune is accepted, matching how trunk_tuning.c and the
+         * manual return-to-CC path order this — never on the failure path. */
+        dsd_frame_sync_reset_mod_state();
+        reset_call_tracking(opts, state, 1);
+        if (rc == 0) {
+            ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
+        } else {
+            ui_set_toast(state, 3, "Accepted: tuned -> %u Hz (pending)", v);
+        }
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: tune -> %u Hz", v);
+    }
+    return result;
+}
+
 static int
 ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
@@ -1046,6 +1093,7 @@ static int
 apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
+        {DSD_APP_CMD_MANUAL_TUNE, ui_cmd_handle_manual_tune},
         {DSD_APP_CMD_RTL_SET_GAIN, ui_cmd_handle_rtl_set_gain},
         {DSD_APP_CMD_RTL_SET_PPM, ui_cmd_handle_rtl_set_ppm},
     };
@@ -2317,6 +2365,7 @@ int
 dsd_app_command_set_u32(int cmd_id, uint32_t value) {
     switch (cmd_id) {
         case DSD_APP_CMD_RTL_SET_FREQ:
+        case DSD_APP_CMD_MANUAL_TUNE:
         case DSD_APP_CMD_TG_HOLD_SET:
         case DSD_APP_CMD_KEY_BASIC_SET:
         case DSD_APP_CMD_KEY_SCRAMBLER_SET: return dsd_app_command_submit(cmd_id, &value, sizeof value);
@@ -2435,6 +2484,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
     {DSD_APP_CMD_LOCKOUT_SLOT, sizeof(uint8_t)},
     {DSD_APP_CMD_RTL_SET_FREQ, sizeof(uint32_t)},
+    {DSD_APP_CMD_MANUAL_TUNE, sizeof(uint32_t)},
     {DSD_APP_CMD_TG_HOLD_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_SCRAMBLER_SET, sizeof(uint32_t)},

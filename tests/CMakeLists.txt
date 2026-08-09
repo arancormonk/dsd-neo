@@ -7341,6 +7341,28 @@ if(DSD_HAS_RADIO)
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
 
     add_executable(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        io/test_io_rtl_wideband_spectrum.cpp
+        ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_wideband_spectrum.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        PRIVATE dsd-neo_pffft dsd-neo_platform
+    )
+    add_test(
+        NAME IO_RTL_WIDEBAND_SPECTRUM
+        COMMAND dsd-neo_test_io_rtl_wideband_spectrum
+    )
+
+    add_executable(
         dsd-neo_test_io_rtl_ppm_request
         io/test_io_rtl_ppm_request.cpp
     )

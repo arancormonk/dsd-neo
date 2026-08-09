@@ -362,6 +362,45 @@ test_command_api(void) {
     return rc;
 }
 
+/*
+ * Spectrum tap-to-tune shares the queue with the settings tune but must never
+ * share a coalescing slot with it: a tap storm has to collapse onto its own
+ * newest target while a pending settings tune still lands.
+ *
+ * Trunking is left on here so draining cannot reach the tuner; the gate itself
+ * is asserted against the wrapped tune stub further down.
+ */
+static int
+test_manual_tune_queue_semantics(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 1;
+
+    rc |= expect_int("manual tune rejects i32", dsd_app_command_set_i32(DSD_APP_CMD_MANUAL_TUNE, 1), -1);
+    rc |= expect_int("manual tune u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 3000000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tap storm coalesces onto the newest target",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 851000000U), DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_int("a settings tune never absorbs a tap",
+                     dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("a tap never absorbs a settings tune",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("distinct tune entries drain", dsd_app_drain_cmds(&opts, &state), 3);
+
+    /* An undersized payload is consumed but must reach no handler at all — with
+     * trunking on, even the refusal toast would prove it got that far. */
+    state.ui_msg[0] = '\0';
+    uint8_t short_payload = 0xFFU;
+    dsd_app_command_submit(DSD_APP_CMD_MANUAL_TUNE, &short_payload, sizeof(short_payload));
+    rc |= expect_int("short manual tune payload drains", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("short manual tune payload is ignored", state.ui_msg, "");
+
+    freeState(&state);
+    return rc;
+}
+
 static int
 test_setter_coalescing_preserves_fifo_boundaries(void) {
     int rc = 0;
@@ -1049,12 +1088,83 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
+
+/*
+ * Tap-to-tune is gated on the live trunk_enable at drain time, not on the
+ * frontend hiding the affordance, and an accepted tap tears down call state so
+ * the decoder re-acquires on the new frequency instead of aging out.
+ */
+static int
+test_manual_tune_trunking_gate_and_reacquisition(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune under trunking queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune under trunking drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under trunking never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_contains("manual tune under trunking explains itself", state.ui_msg, "Trunking active");
+    rc |= expect_int("manual tune under trunking leaves the trunker tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_true("manual tune under trunking leaves the VC", state.p25_vc_freq[0] == 852000000L);
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1201);
+    opts.trunk_enable = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune reaches the tuner once", g_io_control_tune_calls, 1);
+    rc |= expect_true("manual tune targets the tapped frequency", g_io_control_tune_freq == 853125000L);
+    rc |= expect_contains("manual tune reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    rc |= expect_call_phase("manual tune ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_call_phase("manual tune ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_int("manual tune clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_true("manual tune clears the VC", state.p25_vc_freq[0] == 0L);
+    freeState(&state);
+
+    /* A tune the backend only accepted (no hardware confirmation yet) still has
+     * to reset for re-acquisition — the same rule ui_cmd_apply_status_from_tune_rc
+     * encodes for RTL_SET_FREQ. */
+    init_test_context(&opts, &state);
+    seed_active_canonical_calls(&opts, &state, 852000000L, 1301);
+    opts.trunk_enable = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    rc |= expect_int("pending manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 854000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pending manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("pending manual tune reports pending", state.ui_msg, "(pending)");
+    rc |= expect_call_phase("pending manual tune still ends slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    freeState(&state);
+
+    /* A refused tune must leave call state alone. */
+    init_test_context(&opts, &state);
+    seed_active_canonical_calls(&opts, &state, 852000000L, 1401);
+    opts.trunk_enable = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int("failed manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 855000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("failed manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("failed manual tune reports failure", state.ui_msg, "Failed: tune -> 855000000 Hz");
+    rc |= expect_call_phase("failed manual tune keeps slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    freeState(&state);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
 #endif
 
 int
 main(void) {
     int rc = 0;
     rc |= test_command_api();
+    rc |= test_manual_tune_queue_semantics();
     rc |= test_setter_coalescing_preserves_fifo_boundaries();
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();
@@ -1063,6 +1173,7 @@ main(void) {
     rc |= test_compact_visualizer_toast();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
+    rc |= test_manual_tune_trunking_gate_and_reacquisition();
 #endif
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");

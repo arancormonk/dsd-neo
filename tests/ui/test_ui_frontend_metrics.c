@@ -333,11 +333,44 @@ test_metrics_ignore_stream_hooks_off_radio(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/*
+ * Visualizer accessors on a build with no radio backend.
+ *
+ * This target compiles frontend.c without USE_RADIO, so every accessor takes
+ * its stub branch. A frontend that renders whatever comes back needs a zero
+ * count and defined out-params from that branch, not an uninitialised axis.
+ */
+static void
+test_visualizer_getters_without_radio(void) {
+    float bins[8];
+    int rate = 1234;
+    int sps = 7;
+    uint32_t center = 99U;
+    uint32_t span = 99U;
+
+    assert(dsd_app_frontend_constellation_get(bins, 4) == 0);
+    assert(dsd_app_frontend_eye_get(bins, 4, &sps) == 0);
+    assert(sps == 0);
+    assert(dsd_app_frontend_spectrum_get(bins, 4, &rate) == 0);
+    assert(rate == 0);
+
+    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, &center, &span) == 0);
+    assert(center == 0U);
+    assert(span == 0U);
+    assert(dsd_app_frontend_wideband_spectrum_get(NULL, 0, NULL, NULL) == 0);
+
+    /* Toggling production must stay harmless with no stream behind it. */
+    dsd_app_frontend_wideband_spectrum_set_enabled(1);
+    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, NULL, NULL) == 0);
+    dsd_app_frontend_wideband_spectrum_set_enabled(0);
+}
+
 int
 main(void) {
     test_metrics_for_snapshot_does_not_consume();
     test_metrics_fallback_and_runtime_hooks();
     test_metrics_ignore_stream_hooks_off_radio();
+    test_visualizer_getters_without_radio();
     printf("UI_FRONTEND_METRICS: OK\n");
     return 0;
 }
