@@ -335,9 +335,9 @@ rules:
         - /android/third_party/**
         - /src/third_party/**
         - /src/fec/ez.cpp
+        # The project-owned pffft wrapper. The two spectrum producers go through it
+        # and are deliberately not listed here.
         - /src/io/radio/rtl_fft_cache.h
-        - /src/io/radio/rtl_metrics.cpp
-        - /src/io/radio/rtl_wideband_spectrum.cpp
         - /tests/protocol/p25/test_p25_p2_rs28_limits.cpp
     pattern-either:
       - pattern: '#include "src/third_party/..."'

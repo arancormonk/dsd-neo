@@ -159,15 +159,10 @@ CPPCHECK_ARGS+=(
   --suppress='*:*/src/third_party/*'
   --suppress='*:android/third_party/*'
   --suppress='*:*/android/third_party/*'
-  # dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed
-  # by initState()/initOpts() before anything reads it, and C code — which is
-  # most of its users — has no constructors to write. Analysing a C++ TU that
-  # includes it reports every one of its ~600 members as "no initializer", which
-  # is one finding per field of a struct nobody default-constructs. Scoped to
-  # this header and this check only; the same check still applies to every real
-  # C++ class in the tree.
-  --suppress='uninitMemberVarNoCtor:include/dsd-neo/core/state.h'
-  --suppress='uninitMemberVarNoCtor:*/dsd-neo/core/state.h'
+  # uninitMemberVarNoCtor on dsd_state is suppressed at the struct itself, with a
+  # cppcheck-suppress-begin/end pair in include/dsd-neo/core/state.h: a suppression
+  # here would have to name the file, and that covers the seventeen other types
+  # declared in it as well.
   -i src/third_party
   -i android/third_party
 )

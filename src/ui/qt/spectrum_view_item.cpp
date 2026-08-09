@@ -6,7 +6,6 @@
 #include "spectrum_view_item.h"
 
 #include <QPainter>
-#include <QPolygonF>
 #include <QRectF>
 #include <Qt>
 #include <cmath>
@@ -107,6 +106,8 @@ SpectrumTraceItem::setModel(SpectrumModel* next) {
         connect(m_model, &SpectrumModel::retuned, this, &SpectrumTraceItem::onRetuned);
     }
     m_range.reset();
+    m_have_frame = false;
+    m_last_frame_index = 0;
     Q_EMIT modelChanged();
     update();
 }
@@ -143,13 +144,34 @@ SpectrumTraceItem::setGridColor(const QColor& color) {
 
 void
 SpectrumTraceItem::onFrame() {
+    /* Folded here rather than in paint(): the range is an EMA that relaxes a few
+     * percent per call, and this slot also runs on viewChanged, so folding at
+     * paint time would advance it at touch rate during a pan and settle the trace
+     * on a different scale than the waterfall shows for the same bins. */
+    if (m_model != nullptr && m_model->hasData()) {
+        const quint64 index = m_model->frameIndex();
+        if (!m_have_frame || index != m_last_frame_index) {
+            m_last_frame_index = index;
+            const int n = m_model->binCount();
+            const QVector<float>& bins = m_model->bins();
+            if (n > 0 && bins.size() >= n) {
+                m_have_frame = true;
+                m_range.update(bins.constData(), n);
+            }
+        }
+    }
     update();
 }
 
 void
 SpectrumTraceItem::onRetuned() {
-    /* The new frequency's noise floor has nothing to do with the old one's. */
+    /* The new frequency's noise floor has nothing to do with the old one's.
+     * The frame stamp goes with it: a retune bumps the model's index before the
+     * frame captured at the new center is announced, so keeping the stamp would
+     * skip the fold for exactly the frame the new range has to be built from. */
     m_range.reset();
+    m_have_frame = false;
+    m_last_frame_index = 0;
     update();
 }
 
@@ -187,7 +209,11 @@ SpectrumTraceItem::paint(QPainter* painter) {
         return;
     }
 
-    m_range.update(bins.constData(), n);
+    /* A model handed over after its first frame has landed announces nothing until
+     * the next one, so seed here rather than draw a flat trace for a frame. */
+    if (!m_range.seeded) {
+        m_range.update(bins.constData(), n);
+    }
 
     const double center = m_model->centerFreqHz();
     const double span = m_model->spanHz();
@@ -195,32 +221,29 @@ SpectrumTraceItem::paint(QPainter* painter) {
     const int hi = spectrum_math::freq_to_bin(center, span, n, m_model->viewHighHz());
     const int count = (hi >= lo) ? (hi - lo + 1) : 1;
 
-    m_points.resize(w);
+    /* Index 0 and w+1 are the polygon's baseline corners; the trace occupies
+     * 1..w, which is where the polyline is drawn from. */
+    m_points.resize(w + 2);
     m_columns.resize(w);
     resample_columns(bins.constData(), lo, count, m_columns.data(), w);
     for (int x = 0; x < w; x++) {
         const double t = m_range.normalize(static_cast<double>(m_columns[x]));
-        m_points[x] = QPointF(static_cast<double>(x), static_cast<double>(h) * (1.0 - t));
+        m_points[x + 1] = QPointF(static_cast<double>(x), static_cast<double>(h) * (1.0 - t));
     }
+    m_points[0] = QPointF(0.0, static_cast<double>(h));
+    m_points[w + 1] = QPointF(static_cast<double>(w - 1), static_cast<double>(h));
 
     if (m_area_color.alpha() > 0) {
-        QPolygonF filled;
-        filled.reserve(w + 2);
-        filled.append(QPointF(0.0, static_cast<double>(h)));
-        for (int x = 0; x < w; x++) {
-            filled.append(m_points[x]);
-        }
-        filled.append(QPointF(static_cast<double>(w - 1), static_cast<double>(h)));
         painter->setPen(Qt::NoPen);
         painter->setBrush(m_area_color);
-        painter->drawPolygon(filled);
+        painter->drawPolygon(m_points.constData(), w + 2);
     }
 
     QPen line(m_line_color);
     line.setWidthF(1.5);
     painter->setBrush(Qt::NoBrush);
     painter->setPen(line);
-    painter->drawPolyline(m_points.constData(), w);
+    painter->drawPolyline(m_points.constData() + 1, w);
 }
 
 // ------------------------------------------------------------ waterfall ----

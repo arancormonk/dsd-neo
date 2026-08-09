@@ -33,7 +33,6 @@
 #include <dsd-neo/core/wideband_spectrum.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
-#include <pffft.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -201,16 +200,17 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
         g_wb_ema_valid = 0;
     }
 
-    PFFFT_Setup* setup = g_wb_fft_setup.get(n);
     const float* hann = g_wb_hann.get(n);
-    if (!setup || !hann) {
+    if (!hann) {
         return;
     }
 
     /* Analyse the most recent n pairs of the block. */
     alignas(16) static float z[2 * kWbSpecN];
     wb_window_block(iq_interleaved, pairs - n, n, hann, z);
-    pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
+    if (!g_wb_fft_setup.forward(n, z)) {
+        return;
+    }
     wb_fold_into_ema(z, n);
 
     wb_publish(g_wb_ema, center_freq_hz, capture_rate_hz, gen, g_wb_next_serial);
@@ -311,16 +311,25 @@ rtl_stream_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_cent
         return 0;
     }
 
+    /* Staged, not read straight into the caller's buffer. Every rejection below
+     * returns 0, and a consumer reading that as "no new frame, keep the picture I
+     * have" would then be drawing a picture this function had already scribbled a
+     * torn or stale-generation copy over — against the axis of the frame before
+     * it. The buffer is only touched once the frame is known to be whole. */
+    float staged[kWbSpecN];
     WbFrameHeader header;
     /* A copy the writer ran through is not a frame: its bins may straddle two
      * publishes, and the axis it came with may belong to either. */
-    if (!wb_read_frame(out_db, &header) || header.bins <= 0) {
+    if (!wb_read_frame(staged, &header) || header.bins <= 0) {
         return 0;
     }
     /* Retune / disable since this frame was published: report no data rather
      * than mislabelled bins. */
     if (header.gen != g_wb_clear_gen.load(std::memory_order_acquire)) {
         return 0;
+    }
+    for (int i = 0; i < header.bins; i++) {
+        out_db[i] = staged[i];
     }
     if (out_center_freq_hz) {
         *out_center_freq_hz = header.center_hz;

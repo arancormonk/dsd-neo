@@ -341,7 +341,11 @@ Window {
         system: mainRoot.sessionSystem
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
-        enabled: opacity > 0.9
+        // The wizard now opens over a running session ("Save as a system") and
+        // TapHandlers never take exclusive grabs, so without this a tap on the
+        // wizard's bottom button also lands on "Stop listening", which sits at
+        // exactly the same rect underneath it and ends the session.
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }

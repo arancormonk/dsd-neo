@@ -555,8 +555,9 @@ Item {
             verify(!panel.visible)
         }
 
-        // Each control asks the engine for an absolute value derived from what the
-        // engine currently reports — never from what this panel last asked for.
+        // Each control asks the engine for an absolute value. It derives that value
+        // from what the engine reports, except while one of its own requests is
+        // still outstanding — which it must, or taps inside one poll are lost.
         function test_19_the_radio_panel_changes_the_radio() {
             var screen = screenLoader.item
             var panel = findChild(screen, "radioSheet")
@@ -566,19 +567,44 @@ Item {
             tryVerify(function () { return metrics.tunerGainDb === 30 })
             findChild(screen, "radioGainUp").clicked()
             compare(testContext.lastGainDb(), 31)
+
+            // Taps land faster than the 250 ms mirror is republished, and the
+            // command is a coalescible setter: stepping from the reading would have
+            // every tap inside one poll ask for the same value, and the queue would
+            // merge them into one. Five taps have to be five steps.
+            for (var i = 0; i < 4; i++)
+                findChild(screen, "radioGainUp").clicked()
+            compare(testContext.lastGainDb(), 35)
+            compare(findChild(screen, "radioGainValue").text, "35 dB")
+
+            // And down from what was asked for, not from the stale reading.
             findChild(screen, "radioGainDown").clicked()
-            compare(testContext.lastGainDb(), 29)
+            compare(testContext.lastGainDb(), 34)
+
+            // The request only stands in for the reading while it is outstanding: a
+            // command can be refused, and the panel must not go on showing a gain
+            // the radio never took.
+            panel.forgetRequests()
+            compare(findChild(screen, "radioGainValue").text, "30 dB")
 
             // Clamped to what the tuner actually offers, so the panel cannot ask
-            // for a gain the backend will only refuse.
+            // for a gain the backend will only refuse — and a step that changes no
+            // setting is not sent at all, because every accepted gain command
+            // restarts the dongle and drops the audio and the spectrum with it.
             testContext.setMetric("tunerGainDb",49)
             tryVerify(function () { return metrics.tunerGainDb === 49 })
+            panel.forgetRequests()
+            var atCeiling = testContext.gainCalls()
             findChild(screen, "radioGainUp").clicked()
-            compare(testContext.lastGainDb(), 49)
+            compare(testContext.gainCalls(), atCeiling,
+                    "a step at the ceiling restarted the dongle to change nothing")
             testContext.setMetric("tunerGainDb",0)
             tryVerify(function () { return metrics.tunerGainDb === 0 })
+            panel.forgetRequests()
+            var atFloor = testContext.gainCalls()
             findChild(screen, "radioGainDown").clicked()
-            compare(testContext.lastGainDb(), 0)
+            compare(testContext.gainCalls(), atFloor,
+                    "a step at the floor restarted the dongle to change nothing")
 
             findChild(screen, "radioSquelchUp").clicked()
             verify(Math.abs(testContext.lastSquelchDb() - (-115)) < 0.001)
@@ -586,6 +612,9 @@ Item {
             // PPM is chosen once, by someone with no way to tell if it was right.
             findChild(screen, "radioPpmUp").clicked()
             compare(testContext.lastPpm(), 1)
+            findChild(screen, "radioPpmDown").clicked()
+            compare(testContext.lastPpm(), 0)
+            panel.forgetRequests()
             findChild(screen, "radioPpmDown").clicked()
             compare(testContext.lastPpm(), -1)
 
@@ -636,7 +665,10 @@ Item {
             var dmr = findChild(screen, "radioDecode_DMR")
             verify(dmr !== null, "the DMR chip is missing")
             dmr.clicked()
-            compare(testContext.lastDecodeMode(), 5)
+            // DSDCFG_MODE_DMR. The mapping behind this is the production one, so
+            // the number is the enum's own — if it ever renumbers, this fails and
+            // someone has to look at what else reads it.
+            compare(testContext.lastDecodeMode(), 4)
 
             // Selection reads the engine, not the tap: the fixture reports auto,
             // so Auto is the chip that shows as chosen.

@@ -2289,6 +2289,11 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+            # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
+            # production one, so the preset a chip sends is really under test. It
+            # needs the CLI mapping behind it, and that translation unit is
+            # header-only apart from vsnprintf -- it links nothing else in.
+            ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
         )
         target_include_directories(
             dsd-neo_test_ui_qt_qml

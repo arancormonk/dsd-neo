@@ -124,9 +124,17 @@ Item {
         spectrum.clearOvershoot()
     }
 
-    /** Ask for @a hz, if this session is allowed to ask at all. */
+    /**
+     * Ask for @a hz, if this session is allowed to ask at all.
+     *
+     * The upper bound is not a tuner limit — the engine owns those and refuses
+     * with its own message. It is the point past which the number stops meaning
+     * itself: manualTuneHz takes a uint, and QML converts a JS number to one by
+     * ECMAScript ToUint32, so 5 GHz typed into "Go to" arrives as 705 MHz and
+     * retunes the receiver somewhere plausible that nobody asked for.
+     */
     function tuneTo(hz) {
-        if (screen.viewOnly || !(hz > 0))
+        if (screen.viewOnly || !(hz > 0) || !(hz < 4294967296))
             return false
         screen.hint = ""
         commands.manualTuneHz(Math.round(hz))
@@ -236,7 +244,13 @@ Item {
         // Long enough for the tuner to settle and the decoder to find sync, and
         // no shorter: each retune blocks the engine thread for up to half a
         // second, so a fast sweep spends its time stopping and starting.
-        interval: 2500
+        //
+        // It must also outlast metrics' sync hold (kSyncHoldSeconds, 3 s in
+        // metrics_model.cpp), which decays rather than clearing on a retune: a
+        // lock the decoder found just before the previous step still reads as
+        // locked for that long, and a shorter dwell stops the sweep on the
+        // frequency it has already moved to and reports that one as the find.
+        interval: 3500
         repeat: true
         running: screen.sweeping
         onTriggered: screen.sweepTick()
@@ -1040,9 +1054,20 @@ Item {
     // A hint is this screen talking, and it should not outlive the answer it was
     // about. The engine's own messages carry their own expiry.
     Timer {
+        id: hintTimer
+
         interval: 4000
         running: screen.hint.length > 0
         onTriggered: screen.hint = ""
+    }
+
+    // Restarted explicitly, because `running` does not change when one hint
+    // replaces another: without this the second hint inherits whatever is left
+    // of the first one's four seconds, and a "Wrapped to ..." followed by
+    // "Nothing else on this screen" flashes the second one for a moment.
+    onHintChanged: {
+        if (screen.hint.length > 0)
+            hintTimer.restart()
     }
 
     // ---- Go to ----
@@ -1067,18 +1092,32 @@ Item {
             screen.tuneTo(mhz * 1.0e6)
         }
 
+        /** Whether a point in this sheet's coordinates lies on the panel. */
+        function hitsPanel(x, y) {
+            var p = goToSheet.mapToItem(goToPanel, x, y)
+            return p.x >= 0 && p.y >= 0 && p.x <= goToPanel.width && p.y <= goToPanel.height
+        }
+
         anchors.fill: parent
         visible: false
         color: Qt.alpha("#000000", 0.5)
 
+        // Same rule as RadioSheet: handlers never take exclusive grabs, so an
+        // unconditional dismiss here also fires for every control on the panel —
+        // tapping a band pill set the field and closed the sheet in the same
+        // gesture, and tapping the field to place the cursor closed it outright.
         TapHandler {
-            onTapped: {
+            onTapped: function (eventPoint) {
+                if (goToSheet.hitsPanel(eventPoint.position.x, eventPoint.position.y))
+                    return
                 goToSheet.visible = false
                 Qt.inputMethod.hide()
             }
         }
 
         UiPanel {
+            id: goToPanel
+
             anchors.centerIn: parent
             width: parent.width - 2 * Theme.screenPadding
             height: goToColumn.height + 2 * Theme.cardPadding

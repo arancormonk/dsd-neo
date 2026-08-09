@@ -179,9 +179,13 @@ ui_handle_mod_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
      * actually in effect rather than as a boolean, because rf_mod has three values
      * and GFSK (2) is one the DMR and EDACS/ProVoice presets select — a C4FM
      * request from there is a real change and has to apply. */
-    if (state->rf_mod == (int)want) {
+    if (state->rf_mod == (int)want && opts->mod_p25p2_c4fm == 0 && opts->mod_p25p2_profile_lock == 0) {
         return 1;
     }
+    /* The P25p2 helper is the exception to the skip: it holds mod_cli_lock and the
+     * 6000 sym/s profile, and it is entered from a session whose modulation reads
+     * the same as the one being asked for -- so a request that looks idempotent is
+     * the only way out of it from a control that only offers three modulations. */
     ui_apply_modulation(opts, state, (int)want);
     return 1;
 }

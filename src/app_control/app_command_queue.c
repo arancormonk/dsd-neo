@@ -1047,6 +1047,14 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         ui_set_toast(state, 3, "Scanner active: tap-to-tune disabled");
         return result;
     }
+    /* The third owner, and the one a release cannot clear (see apply_tuner_release):
+     * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
+     * its own, so a tap accepted under it is undone within a dwell -- and it is the
+     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. */
+    if (opts->trunk_scan_enabled) {
+        ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
+        return result;
+    }
     int rc = svc_rtl_set_freq(opts, state, v);
     result = ui_cmd_apply_status_from_tune_rc(rc);
     if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
@@ -2969,10 +2977,26 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     int32_t requested = 0;
     DSD_MEMCPY(&requested, c->data, sizeof requested);
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)requested;
+    /* The presets also carry an audio layout, but the output stream was opened
+       once at session start with the layout in force then (openAudioOutput()
+       reads pulse_digi_out_channels/pulse_digi_rate_out and the backend fixes
+       them for the life of the stream). Letting a preset change them here would
+       have dsd_play_synthesized_voice() dispatch mono writes into a stereo
+       stream for the rest of the session, so the session's own layout is kept. */
+    const int audio_channels = opts->pulse_digi_out_channels;
+    const int audio_rate = opts->pulse_digi_rate_out;
     if (dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
         ui_set_toast(state, 4, "Decode mode not available");
         return UI_CMD_APPLY_UNSUPPORTED;
     }
+    opts->pulse_digi_out_channels = audio_channels;
+    opts->pulse_digi_rate_out = audio_rate;
+    /* The presets write symbol timing for a 48 kHz input. On an RTL front end the
+       demod output rate is whatever the capture rate decimates to, so the same
+       rescale every other preset caller performs (the CLI at startup, the config
+       reload above) has to happen here too, or the decoder is put on the wrong
+       symbol clock for the protocol it was just told to look for. */
+    dsd_apply_decode_mode_symbol_timing(mode, current_demod_rate(opts, state), state);
     /* The decoder was hunting for a different protocol a moment ago: its
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */

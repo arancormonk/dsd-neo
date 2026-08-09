@@ -94,9 +94,18 @@ class SpectrumTraceItem : public QQuickPaintedItem {
     QColor m_grid_color = QColor(0x23, 0x2B, 0x3A);
     spectrum_math::AutoRange m_range;
     /* Both reused across frames: a polyline and a column set this wide would
-     * otherwise allocate twice on every repaint, fifteen times a second. */
+     * otherwise allocate twice on every repaint, fifteen times a second. The
+     * point buffer carries the filled polygon too — its first and last entries
+     * are the two baseline corners, and the polyline is drawn from the middle —
+     * so the area pass does not build a second one of its own. */
     QVector<QPointF> m_points;
     QVector<float> m_columns;
+    /* Which frame the auto-range last folded in. The fold is stateful (a 5%
+     * relaxation per call), so it has to happen once per frame and not once per
+     * repaint: viewChanged repaints at touch rate during a pan, which would
+     * advance the range four times faster than the waterfall's copy of it. */
+    quint64 m_last_frame_index = 0;
+    bool m_have_frame = false;
 };
 
 /** @brief Scrolling history of the spectrum, newest row at the top. */

@@ -18,7 +18,6 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <pffft.h>
 #include <string.h>
 
 #include "rtl_fft_cache.h"
@@ -368,9 +367,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     double phase_cfo_hz = rtl_metrics_phase_cfo_hz(iq_interleaved, frame, out_rate_hz);
     g_resid_cfo_phase_hz.store(phase_cfo_hz, std::memory_order_relaxed);
 
-    PFFFT_Setup* setup = g_spec_fft_setup.get(N);
-    if (setup) {
-        pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
+    if (g_spec_fft_setup.forward(N, z)) {
         rtl_metrics_smooth_spectrum_bins(N, out_rate_hz, z);
     }
     rtl_metrics_peak_metrics peak = rtl_metrics_compute_peak_metrics(N);

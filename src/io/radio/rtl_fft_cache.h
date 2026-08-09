@@ -33,9 +33,33 @@ namespace dsd_io {
  * every caller, and destroying one at static-destruction time could race a
  * demod thread that has not been joined yet — the same reason the
  * function-local statics this replaces were also never torn down.
+ *
+ * The transform is a method rather than a setup handed back to the caller, so
+ * this header is the one place in the project that names pffft — which is what
+ * the no-direct-third-party-include rule asks for, and it kept the exception
+ * list from growing a line per spectrum producer.
  */
 class FftSetupCache {
   public:
+    /**
+     * @brief Forward complex transform of @p n points, in place.
+     *
+     * @param n Transform size in complex points.
+     * @param inout 2*n interleaved floats, 16-byte aligned; overwritten with the
+     *              ordered spectrum. Untouched when the size is rejected.
+     * @return false when pffft has no setup for @p n.
+     */
+    bool
+    forward(int n, float* inout) {
+        PFFFT_Setup* setup = get(n);
+        if (setup == nullptr || inout == nullptr) {
+            return false;
+        }
+        pffft_transform_ordered(setup, inout, inout, nullptr, PFFFT_FORWARD);
+        return true;
+    }
+
+  private:
     /** @brief Setup for @p n points, or nullptr when pffft rejects the size. */
     PFFFT_Setup*
     get(int n) {
@@ -54,7 +78,6 @@ class FftSetupCache {
         return m_setup;
     }
 
-  private:
     PFFFT_Setup* m_setup = nullptr;
     int m_n = 0;
 };

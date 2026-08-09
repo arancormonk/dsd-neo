@@ -228,6 +228,10 @@ class SpectrumModel : public QObject {
     double m_span_hz = 0.0;
     int m_bin_count = 0;
     bool m_has_data = false;
+    /* Whether m_center_hz/m_span_hz describe a frame that was actually received.
+     * Outlives m_has_data on purpose: invalidateFrame() drops the frame but keeps
+     * the geometry, so the next frame can still be recognised as a retune. */
+    bool m_have_geometry = false;
     double m_zoom = spectrum_math::kMinZoom;
     double m_offset_hz = 0.0;
     double m_overshoot_hz = 0.0;

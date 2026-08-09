@@ -725,7 +725,9 @@ int rtl_stream_spectrum_get_size(void);
  *                         frame, so a consumer polling on its own clock can tell
  *                         a fresh frame from a re-read of the last one.
  * @return Number of bins written; 0 when disabled, not yet published,
- *         invalidated by a retune, or when @p out_db is too small.
+ *         invalidated by a retune, or when @p out_db is too small. On 0 the
+ *         buffer is left exactly as the caller passed it, so a consumer that
+ *         holds its last frame across a gap is holding the frame it drew.
  */
 int rtl_stream_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz, uint32_t* out_span_hz,
                                      uint32_t* out_frame_serial);

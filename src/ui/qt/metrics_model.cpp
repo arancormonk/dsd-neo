@@ -282,12 +282,14 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
     next.trunking_enabled = opts_snapshot->trunk_enable != 0;
     next.scanner_mode = opts_snapshot->scanner_mode != 0;
-    next.tuner_controlled = next.trunking_enabled || next.scanner_mode;
+    /* Trunk scan counts as a third owner even though it has no reading of its own:
+     * it steps targets from the engine loop and a release cannot clear it, so an
+     * affordance gated only on the other two offers a tune the scan then undoes. */
+    next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
 
-    /* Sync is latched per tuned frequency rather than sampled. synctype carries the
-     * frame currently being decoded and lastsynctype the one before it; either being
-     * set means the decoder has locked onto something here, and neither survives the
-     * tuner moving on, because the move clears the latch. */
+    /* Sync is held for a moment after the last synced frame rather than sampled;
+     * the hold decays on its own rather than being cleared on a retune. See
+     * fillDecoderView(), which documents why a one-shot reset was a race. */
     fillDecoderView(next, opts_snapshot, snapshot, dsd_time_now_monotonic_s());
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on

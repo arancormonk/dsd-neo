@@ -50,6 +50,7 @@
 
 #include "call_history_filter.h"
 #include "call_history_model.h"
+#include "decode_mode_flag.h"
 #include "qml_spectrum_stub.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
@@ -146,20 +147,13 @@ class CommandRecorder : public QObject {
         return true;
     }
 
-    /* The production mapping is CLI-flag to preset enum; the double only has to
-     * be consistent with itself and with the fixture's decodeMode of 1 (auto). */
+    /* The production mapping itself, not a stand-in for it. It used to be a
+     * stand-in answering numbers no dsdneoUserDecodeMode has -- 5 for DMR (which
+     * is 4) and 13 for "the rest" (which is ANALOG) -- so the case asserting that
+     * the DMR chip sends DMR was really asserting the double's own arithmetic. */
     Q_INVOKABLE int
     decodeModeForFlag(const QString& flag) {
-        if (flag.trimmed().isEmpty()) {
-            return 1; /* DSDCFG_MODE_AUTO */
-        }
-        if (flag == QLatin1String("-mq")) {
-            return -1; /* a modulation chip, not a decode one */
-        }
-        if (flag == QLatin1String("-fs")) {
-            return 5; /* DSDCFG_MODE_DMR */
-        }
-        return 13; /* DSDCFG_MODE_TDMA, standing in for the rest */
+        return dsd_qt::decode_mode_for_flag(flag);
     }
 
     Q_INVOKABLE int

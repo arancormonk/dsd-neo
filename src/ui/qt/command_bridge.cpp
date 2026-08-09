@@ -5,16 +5,11 @@
 
 #include "command_bridge.h"
 
-#include <QChar>
-#include <QLatin1String>
-#include <QList>
-#include <QStringList>
-#include <Qt>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
-#include <dsd-neo/runtime/config.h>
-#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
+
+#include "decode_mode_flag.h"
 
 namespace dsd_qt {
 
@@ -106,21 +101,7 @@ CommandBridge::setDecodeMode(int mode) const {
 int
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::decodeModeForFlag(const QString& flag) const {
-    /* The chip's flag is the CLI's own text, so the mapping is the CLI's own
-     * function rather than a second table here that could drift from it. A chip
-     * may carry several flags ("-f1 -mq"); the decode one is whichever is -f. */
-    const QStringList tokens = flag.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    for (const QString& token : tokens) {
-        if (!token.startsWith(QLatin1String("-f")) || token.size() != 3) {
-            continue;
-        }
-        dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
-        if (dsd_decode_mode_from_cli_preset(token.at(2).toLatin1(), &mode) == 0) {
-            return static_cast<int>(mode);
-        }
-    }
-    /* An empty flag is the engine's own default, which is the auto preset. */
-    return flag.trimmed().isEmpty() ? static_cast<int>(DSDCFG_MODE_AUTO) : -1;
+    return decode_mode_for_flag(flag);
 }
 
 int

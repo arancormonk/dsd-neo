@@ -92,6 +92,11 @@ decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
         o->frame_m17 = 1;
         o->mod_c4fm = 1;
         o->mod_qpsk = 0;
+        /* Cleared like every sibling preset does. Applied mid-session (the Qt
+         * radio panel's decode chips), a preset that leaves the previous one's
+         * GFSK flag set publishes mod_c4fm=1 && mod_gfsk=1 -- an opts pair the
+         * demodulator and the UI's modulation readout then disagree about. */
+        o->mod_gfsk = 0;
         s->rf_mod = 0;
         o->dmr_stereo = 1;
         o->dmr_mono = 0;
@@ -322,6 +327,12 @@ decode_mode_apply_dstar(dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     o->dmr_mono = 0;
     s->dmr_stereo = 0;
+    /* Set alongside rf_mod, not left to whatever the last preset chose: applied
+     * mid-session, a stale mod_gfsk here contradicts rf_mod and strands the UI's
+     * modulation control on a value the demodulator is not on. */
+    o->mod_c4fm = 1;
+    o->mod_qpsk = 0;
+    o->mod_gfsk = 0;
     s->rf_mod = 0;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DSTAR");
 }
@@ -451,6 +462,11 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     s->dmr_stereo = 0;
     o->dmr_mono = 0;
+    /* As in the other presets: rf_mod and the mod_* flags are one answer, and
+     * leaving half of it behind makes them disagree on a live session. */
+    o->mod_c4fm = 1;
+    o->mod_qpsk = 0;
+    o->mod_gfsk = 0;
     s->rf_mod = 0;
     o->monitor_input_audio = 1;
     o->analog_only = 1;
@@ -470,13 +486,8 @@ decode_mode_apply_profiled(dsdneoUserDecodeMode mode, dsdDecodePresetProfile pro
     }
 }
 
-int
-dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
-                             dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-
+static int
+decode_mode_dispatch(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
     if (decode_mode_apply_profiled(mode, profile, opts, state) == 0) {
         return 0;
     }
@@ -494,6 +505,32 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         case DSDCFG_MODE_ANALOG: decode_mode_apply_analog(opts, state); return 0;
         default: return -1;
     }
+}
+
+int
+dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+                             dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+
+    if (decode_mode_dispatch(mode, profile, opts, state) != 0) {
+        return -1;
+    }
+
+    /* Analog monitor is a mode like any other, so leaving it is part of choosing a
+       different one. Only the analog preset sets these, and with nothing clearing
+       them dsd_infer_decode_mode_preset() answers ANALOG forever: the CLI becomes
+       order-dependent, and every decode chip in the Qt radio panel renders
+       unselected because the engine reports a mode none of them carry. The CLI used
+       to clear it at its own `-f` case; it belongs to the presets, which is where
+       every caller gets it. Applied after the dispatch so an unsupported mode
+       changes nothing at all. */
+    if (mode != DSDCFG_MODE_ANALOG) {
+        opts->analog_only = 0;
+        opts->monitor_input_audio = 0;
+    }
+    return 0;
 }
 
 dsdneoUserDecodeMode

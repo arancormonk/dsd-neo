@@ -33,6 +33,39 @@ constexpr const char kExploreHost[] = "explore/host";
 constexpr const char kExplorePort[] = "explore/port";
 constexpr const char kExploreFreqMhz[] = "explore/freqMhz";
 
+/*
+ * Three preferences are range-checked on the way out. They are checked on the way
+ * in as well, and the setters below compare against what is *stored* rather than
+ * against the checked reading — otherwise an out-of-range write persists (the
+ * getter hides it) and the corrective write that follows looks like a no-op and is
+ * dropped, leaving the file permanently disagreeing with the app.
+ */
+
+/** @brief @p mode if it names an appearance, else the default. */
+int
+sane_appearance(int mode) {
+    return (mode >= AppPrefs::FollowSystem && mode <= AppPrefs::Dark) ? mode : AppPrefs::FollowSystem;
+}
+
+/**
+ * @brief @p type if it is a source that can explore, else empty.
+ *
+ * Only the two tuner sources can explore -- a PCM feed or a file has nothing to
+ * point anywhere -- so anything else reads as "not chosen yet" and sends the user
+ * to the setup sheet rather than starting something that cannot tune. Empty is the
+ * honest default: it is what makes the first tap ask.
+ */
+QString
+sane_explore_source_type(const QString& type) {
+    return (type == QLatin1String("usb") || type == QLatin1String("rtltcp")) ? type : QString();
+}
+
+/** @brief @p port if it is a usable TCP port, else the rtl_tcp default. */
+int
+sane_explore_port(int port) {
+    return (port >= 1 && port <= 65535) ? port : 1234;
+}
+
 } // namespace
 
 AppPrefs::AppPrefs(QObject* parent)
@@ -47,16 +80,16 @@ AppPrefs::~AppPrefs() = default;
 
 int
 AppPrefs::appearance() const {
-    const int mode = m_settings.value(QLatin1String(kAppearance), FollowSystem).toInt();
-    return (mode >= FollowSystem && mode <= Dark) ? mode : FollowSystem;
+    return sane_appearance(m_settings.value(QLatin1String(kAppearance), FollowSystem).toInt());
 }
 
 void
 AppPrefs::setAppearance(int mode) {
-    if (mode == appearance()) {
+    const int next = sane_appearance(mode);
+    if (next == m_settings.value(QLatin1String(kAppearance), FollowSystem).toInt()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kAppearance), mode);
+    m_settings.setValue(QLatin1String(kAppearance), next);
     Q_EMIT appearanceChanged();
 }
 
@@ -205,20 +238,16 @@ AppPrefs::setExtraArgs(const QString& args) {
 
 QString
 AppPrefs::exploreSourceType() const {
-    const QString type = m_settings.value(QLatin1String(kExploreSourceType), QString()).toString();
-    /* Only the two tuner sources can explore -- a PCM feed or a file has nothing to
-     * point anywhere -- so anything else stored here reads as "not chosen yet" and
-     * sends the user to the setup sheet rather than starting something that cannot
-     * tune. Empty is the honest default: it is what makes the first tap ask. */
-    return (type == QLatin1String("usb") || type == QLatin1String("rtltcp")) ? type : QString();
+    return sane_explore_source_type(m_settings.value(QLatin1String(kExploreSourceType), QString()).toString());
 }
 
 void
 AppPrefs::setExploreSourceType(const QString& type) {
-    if (type == exploreSourceType()) {
+    const QString next = sane_explore_source_type(type);
+    if (next == m_settings.value(QLatin1String(kExploreSourceType), QString()).toString()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExploreSourceType), type);
+    m_settings.setValue(QLatin1String(kExploreSourceType), next);
     Q_EMIT exploreChanged();
 }
 
@@ -238,16 +267,16 @@ AppPrefs::setExploreHost(const QString& host) {
 
 int
 AppPrefs::explorePort() const {
-    const int port = m_settings.value(QLatin1String(kExplorePort), 1234).toInt();
-    return (port >= 1 && port <= 65535) ? port : 1234;
+    return sane_explore_port(m_settings.value(QLatin1String(kExplorePort), 1234).toInt());
 }
 
 void
 AppPrefs::setExplorePort(int port) {
-    if (port == explorePort()) {
+    const int next = sane_explore_port(port);
+    if (next == m_settings.value(QLatin1String(kExplorePort), 1234).toInt()) {
         return;
     }
-    m_settings.setValue(QLatin1String(kExplorePort), port);
+    m_settings.setValue(QLatin1String(kExplorePort), next);
     Q_EMIT exploreChanged();
 }
 

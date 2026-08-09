@@ -2048,10 +2048,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'f': {                                                                                                    \
-            /* Any -f* preset should stop pure analog-monitor mode unless explicitly selecting it. */                  \
-            opts->analog_only = 0;                                                                                     \
-            opts->monitor_input_audio = 0;                                                                             \
-                                                                                                                       \
+            /* Leaving analog-monitor mode is dsd_apply_decode_mode_preset()'s job now,                                \
+               so an unrecognized -f selector no longer half-changes the mode. */                                      \
             const char decode_preset = optarg[0] == 'r' ? 's' : optarg[0];                                             \
             dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \
             if (dsd_decode_mode_from_cli_preset(decode_preset, &core_mode) == 0                                        \

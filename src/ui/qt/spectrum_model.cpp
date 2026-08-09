@@ -104,12 +104,16 @@ SpectrumModel::invalidateFrame() {
     }
     m_has_data = false;
     m_bin_count = 0;
-    m_center_hz = 0.0;
-    m_span_hz = 0.0;
     m_frame_serial = 0;
     m_frame_index++;
+    /* Deliberately no retuned(): pausing production is not the front end moving,
+     * and a consumer holding history (the waterfall) would throw away minutes of
+     * it every time the app backgrounds or a sheet opens over the view — which is
+     * the very thing keeping the view's Loader alive is meant to prevent. The
+     * center and span are kept for the same reason: tick() compares the next
+     * frame against them, so a retune that happened while paused is still
+     * recognised as one and still clears the history, on the frame that proves it. */
     (void)applyOffset(0.0);
-    Q_EMIT retuned();
     Q_EMIT frameChanged();
     Q_EMIT viewChanged();
 }
@@ -139,13 +143,17 @@ SpectrumModel::tick() {
      * values, so "different" means the front end actually moved. */
     const double center = static_cast<double>(center_hz);
     const double span = static_cast<double>(span_hz);
-    const bool moved = m_has_data && (center != m_center_hz || span != m_span_hz);
+    /* Against the last geometry seen, not against "is there a frame right now":
+     * production stops and starts with the view, and the front end can move while
+     * it is stopped, so the comparison has to survive an invalidation. */
+    const bool moved = m_have_geometry && (center != m_center_hz || span != m_span_hz);
     const bool geometry_changed = (center != m_center_hz) || (span != m_span_hz) || (n != m_bin_count);
 
     m_center_hz = center;
     m_span_hz = span;
     m_bin_count = n;
     m_has_data = true;
+    m_have_geometry = true;
     m_frame_index++;
 
     bool view_moved = false;

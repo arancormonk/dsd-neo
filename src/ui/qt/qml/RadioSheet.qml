@@ -13,6 +13,14 @@ import "Util.js" as Util
 // Every control reads the engine, not its own last request: a command can be
 // refused, and on Android the service holding these outlives this process, so a
 // panel remembering what it asked for would drift from the radio.
+//
+// With one bounded exception, below: a request that has been sent and not yet
+// answered stands in for the reading while it is outstanding. metrics is a
+// mirror republished every 250 ms, and these commands are coalescible setters —
+// so five taps inside one poll would each read the same stale value, compute the
+// same next one, and merge in the queue into a single step. The pending value
+// expires after requestTtlMs whatever happens, which is how a refused command
+// comes back to what the radio is actually on.
 Rectangle {
     id: sheet
 
@@ -22,42 +30,118 @@ Rectangle {
     visible: false
     color: Qt.alpha("#000000", 0.5)
 
+    // Long enough for several 250 ms polls plus the queue drain — an accepted
+    // request is normally reflected well inside it, and a refused one is not
+    // left standing for long enough to read as accepted.
+    readonly property int requestTtlMs: 1500
+
+    // NaN means "no outstanding request; the engine's reading is the truth".
+    property real pendingGain: NaN
+    property real pendingPpm: NaN
+    property real pendingSquelch: NaN
+
+    // What each control steps from and displays.
+    readonly property int gainDb: isNaN(pendingGain) ? metrics.tunerGainDb : pendingGain
+    readonly property int ppm: isNaN(pendingPpm) ? metrics.ppm : pendingPpm
+    readonly property real squelchDb: isNaN(pendingSquelch) ? metrics.squelchDb : pendingSquelch
+
     // 0 dB is the tuner's automatic gain, not silence — worth saying, because
     // "0" next to a signal that vanished reads as a mistake otherwise.
-    readonly property bool autoGain: metrics.tunerGainDb <= 0
+    readonly property bool autoGain: gainDb <= 0
 
     function open() {
+        // Whatever was outstanding belongs to the last time this was open, and on
+        // Android the service may have been driven from elsewhere since.
+        forgetRequests()
         visible = true
     }
 
-    /** Nudge the tuner gain, staying inside what an R820T actually offers. */
+    /** Drop every outstanding request and go back to reading the engine. */
+    function forgetRequests() {
+        pendingGain = NaN
+        pendingPpm = NaN
+        pendingSquelch = NaN
+        gainTtl.stop()
+        ppmTtl.stop()
+        squelchTtl.stop()
+    }
+
+    /**
+     * Nudge the tuner gain, staying inside what an R820T actually offers.
+     *
+     * A step that lands where the setting already is sends nothing: every
+     * accepted gain command restarts the dongle (svc_rtl_set_gain sets
+     * rtl_needs_restart), which drops audio and the spectrum — too much to spend
+     * on a button press at the end of the range that changes no setting.
+     */
     function stepGain(delta) {
-        var next = metrics.tunerGainDb + delta
+        var next = gainDb + delta
         if (next < 0)
             next = 0
         if (next > 49)
             next = 49
+        if (next === gainDb)
+            return
+        pendingGain = next
+        gainTtl.restart()
         commands.setTunerGain(next)
     }
 
     /** Nudge the crystal correction. Real dongles land within about ±100 ppm. */
     function stepPpm(delta) {
-        var next = metrics.ppm + delta
+        var next = ppm + delta
         if (next < -200)
             next = -200
         if (next > 200)
             next = 200
+        if (next === ppm)
+            return
+        pendingPpm = next
+        ppmTtl.restart()
         commands.setPpm(next)
     }
 
-    /** Nudge the squelch. Coarse steps: this is a threshold, not a measurement. */
+    /**
+     * Nudge the squelch. Coarse steps: this is a threshold, not a measurement.
+     *
+     * The floor is the readback's own: pwr_to_dB() clamps what comes back at
+     * -120 dB, so a step below that submits a value the display can never show
+     * and the button reads as broken while still restating the threshold.
+     */
     function stepSquelch(delta) {
-        var next = metrics.squelchDb + delta
-        if (next < -140)
-            next = -140
+        var next = squelchDb + delta
+        if (next < -120)
+            next = -120
         if (next > 0)
             next = 0
+        // The reading is a float that has been through dB_to_pwr and back, so
+        // "already there" is a tolerance, not an equality.
+        if (Math.abs(next - squelchDb) < 0.001)
+            return
+        pendingSquelch = next
+        squelchTtl.restart()
         commands.setSquelchDb(next)
+    }
+
+    Timer {
+        id: gainTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingGain = NaN
+    }
+
+    Timer {
+        id: ppmTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingPpm = NaN
+    }
+
+    Timer {
+        id: squelchTtl
+
+        interval: sheet.requestTtlMs
+        onTriggered: sheet.pendingSquelch = NaN
     }
 
     // Tapping the scrim dismisses; tapping the panel must not. A TapHandler on
@@ -122,7 +206,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 74
                         horizontalAlignment: Text.AlignRight
-                        text: sheet.autoGain ? qsTr("auto") : metrics.tunerGainDb + " dB"
+                        text: sheet.autoGain ? qsTr("auto") : sheet.gainDb + " dB"
                         font.family: Theme.mono
                         font.pixelSize: 14
                         color: Theme.textPrimary
@@ -170,7 +254,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 74
                         horizontalAlignment: Text.AlignRight
-                        text: Math.round(metrics.squelchDb) + " dB"
+                        text: Math.round(sheet.squelchDb) + " dB"
                         font.family: Theme.mono
                         font.pixelSize: 14
                         color: Theme.textPrimary
@@ -222,7 +306,7 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         width: 74
                         horizontalAlignment: Text.AlignRight
-                        text: String(metrics.ppm)
+                        text: String(sheet.ppm)
                         font.family: Theme.mono
                         font.pixelSize: 14
                         color: Theme.textPrimary

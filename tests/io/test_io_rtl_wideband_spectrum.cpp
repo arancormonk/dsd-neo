@@ -243,9 +243,14 @@ test_a_torn_read_is_not_a_frame(void) {
     assert(rtl_stream_wideband_spectrum_get(bins.data(), static_cast<int>(bins.size()), &center, &span, nullptr) > 0);
 
     /* Every attempt tears, so the read never gets a clean copy of anything. */
+    const std::vector<float> held = bins;
     rtl_wideband_spectrum_test_set_tear(1);
     assert(rtl_stream_wideband_spectrum_get(bins.data(), static_cast<int>(bins.size()), &center, &span, nullptr) == 0);
     rtl_wideband_spectrum_test_set_tear(0);
+    /* "No frame" has to mean the caller's buffer is untouched. The consumer holds
+     * its last picture across a gap, so a rejected read that had already written
+     * over it would leave torn bins on screen under the previous frame's axis. */
+    assert(bins == held);
 
     /* ...and an untorn read still works afterwards. */
     publish_block(iq, kCenterHz);
