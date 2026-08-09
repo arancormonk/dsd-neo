@@ -21,6 +21,9 @@ You need three pieces:
 - `SoapySDRUtil` (device discovery/probe tool)
 - A SoapySDR module/plugin for your radio (Airspy/SDRplay/HackRF/LimeSDR/etc.)
 
+Using the prebuilt Windows release zip? The runtime library is already bundled — skip to section 0a for how to add
+driver modules.
+
 Sanity-check that the tool is installed and Soapy can see your plugins/devices:
 
 ```bash
@@ -30,6 +33,35 @@ SoapySDRUtil --find
 
 If `--find` shows no devices, you likely do not have the right module installed, or Soapy cannot find it.
 If you installed modules into a non-standard location, set `SOAPY_SDR_PLUGIN_PATH` and re-run `SoapySDRUtil --info`.
+
+## 0a) Windows release zip: installing driver modules
+
+The Windows release zip ships `SoapySDR.dll` (version 0.8.1, the core library only) in `bin\`. It does **not**
+include any radio driver modules or the `SoapySDRUtil.exe` tool, so out of the box `-i soapy` always reports
+`SoapySDR: enumerate found no devices`. To use a Soapy radio you must install a module for it yourself.
+
+**Where modules are loaded from.** `SoapySDR.dll` resolves its install root from its own location (one level above
+`bin\`), so with the zip extracted to `C:\dsd-neo` it searches:
+
+- `C:\dsd-neo\lib\SoapySDR\modules0.8\` — create this folder and drop module DLLs into it, or
+- every directory listed in the `SOAPY_SDR_PLUGIN_PATH` environment variable (semicolon-separated), or
+- `%SOAPY_SDR_ROOT%\lib\SoapySDR\modules0.8\` if you set `SOAPY_SDR_ROOT` (it overrides the DLL-relative root).
+
+**The `modules0.8` name is the module ABI version, and it must match.** DSD-neo bundles the SoapySDR 0.8.1
+*release*, whose ABI string is plain `0.8`. Module DLLs built against a different ABI are skipped at startup with
+an ABI-mismatch warning. In particular, bundles built from SoapySDR git master (for example PothosSDR installers)
+use suffixed ABIs such as `0.8-3` — modules taken from those bundles will not load against the shipped
+`SoapySDR.dll`. Use modules built against a SoapySDR 0.8.x release, or build the module yourself against the
+0.8.1 headers/library from the zip's ecosystem.
+
+**Module dependencies still apply.** A module DLL loads its own backend libraries, which must be findable next to
+the module or on `PATH` — for example SDRplay's `sdrplay_api.dll` (install the official SDRplay API/service first)
+or `airspy.dll` for Airspy.
+
+**Verifying without `SoapySDRUtil.exe`.** Watch dsd-neo's startup log: a wrong or missing module shows
+`SoapySDR: enumerate found no devices`, and ABI mismatches are logged when modules are scanned. If you want the
+full `--find`/`--probe` workflow from section 2, install a matching-ABI SoapySDR build separately and point its
+`SOAPY_SDR_PLUGIN_PATH` at the same module directory.
 
 ## 1) Build with Soapy enabled
 
@@ -248,7 +280,8 @@ dsd-neo -fs -i soapy:driver=airspy:851.375M:22:-2:24:0:2 -T -C connect_plus_chan
   Host or USB bus is falling behind. Try reducing throughput by lowering `rtl_bw_khz` (config key; for example 48 -> 16)
   and/or overriding tuner bandwidth (env `DSD_NEO_TUNER_BW_HZ=<Hz|auto>`), then reduce system load or adjust driver settings.
 - Discovery/plugin issues:
-  Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers.
+  Confirm `SOAPY_SDR_PLUGIN_PATH` includes the module directory for your Soapy drivers. On Windows release-zip
+  installs no modules ship at all — see section 0a for where to put them and the ABI-match requirement.
 
 Manual driver-setting check:
 
