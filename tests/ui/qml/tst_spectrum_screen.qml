@@ -37,7 +37,7 @@ Item {
 
         function init() {
             testContext.resetCommands()
-            testContext.setMetric("trunkingEnabled", false)
+            testContext.setMetric("tunerControlled",false)
             // The screen switches production on for itself; wait for the first frame.
             tryVerify(function () { return spectrum.hasData }, 5000,
                       "no spectrum frame arrived")
@@ -87,9 +87,11 @@ Item {
         }
 
         // The engine refuses the tune anyway, but a control that silently does
-        // nothing is worse than one that is visibly unavailable.
+        // nothing is worse than one that is visibly unavailable. True under
+        // trunking and under conventional scanner mode alike — both own the
+        // tuner, and the screen is told only that something does.
         function test_03_trunking_makes_the_screen_view_only() {
-            testContext.setMetric("trunkingEnabled", true)
+            testContext.setMetric("tunerControlled",true)
             var pill = findChild(screenLoader.item, "spectrumStatusPill")
             verify(pill !== null, "the status pill is missing")
             tryVerify(function () { return screenLoader.item.viewOnly })
@@ -99,7 +101,7 @@ Item {
             tc.wait(50)
             compare(testContext.manualTuneCalls(), 0)
 
-            testContext.setMetric("trunkingEnabled", false)
+            testContext.setMetric("tunerControlled",false)
             tryVerify(function () { return !screenLoader.item.viewOnly })
         }
 
@@ -173,7 +175,7 @@ Item {
             for (var i = 1; i <= 5; i++)
                 screen.applyPan(-i * 4, 400)
             verify(spectrum.edgeOvershootHz === 0, "an interior drag reported overshoot")
-            screen.endPan()
+            screen.endPan(false)
             compare(testContext.manualTuneCalls(), 0)
 
             // Off the edge: still no retune until the finger lifts.
@@ -183,8 +185,51 @@ Item {
             verify(spectrum.edgeOvershootHz > 0, "a drag off the edge reported no overshoot")
             compare(testContext.manualTuneCalls(), 0)
 
-            screen.endPan()
+            screen.endPan(false)
             compare(testContext.manualTuneCalls(), 1)
+            compare(spectrum.edgeOvershootHz, 0)
+            spectrum.resetView()
+        }
+
+        // The retune has to land where the finger was heading. Zoomed in, the
+        // viewport is already carried toward one end of the span before it runs
+        // out of capture, so tuning to the overshoot alone would land short and
+        // snap the view backwards, away from the band being dragged toward.
+        function test_08b_an_edge_drag_tunes_to_where_the_view_was_asking_to_be() {
+            var screen = screenLoader.item
+            spectrum.resetView()
+            spectrum.zoom = 4.0
+            screen.panStartOffsetHz = spectrum.viewOffsetHz
+
+            screen.applyPan(-2000, 400)
+            var granted = spectrum.viewOffsetHz
+            var overshoot = spectrum.edgeOvershootHz
+            verify(granted > 0, "the drag was fully absorbed by the overshoot")
+            verify(overshoot > 0, "the drag never reached the edge")
+
+            screen.endPan(false)
+            compare(testContext.manualTuneCalls(), 1)
+            var want = spectrum.centerFreqHz + granted + overshoot
+            verify(Math.abs(testContext.lastManualTuneHz() - want) <= 1,
+                   "tuned to " + testContext.lastManualTuneHz() + " but the view was asking for " + want)
+            spectrum.resetView()
+        }
+
+        // A pinch takes the drag handler's grab, which deactivates it exactly as
+        // a release does. The drift before the second finger landed is not a
+        // request to move the receiver — and at 1x every drift is overshoot, so
+        // acting on it would retune on the way into every zoom.
+        function test_08c_a_pinch_stealing_the_drag_never_retunes() {
+            var screen = screenLoader.item
+            spectrum.resetView()
+            screen.panStartOffsetHz = spectrum.viewOffsetHz
+
+            // A few pixels of drift at 1x, where there is nowhere to pan.
+            screen.applyPan(-20, 400)
+            verify(spectrum.edgeOvershootHz !== 0, "a 1x drag reported no overshoot")
+
+            screen.endPan(true)
+            compare(testContext.manualTuneCalls(), 0)
             compare(spectrum.edgeOvershootHz, 0)
             spectrum.resetView()
         }

@@ -248,12 +248,22 @@ Window {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
         }
 
-        onOpenSpectrum: mainRoot.spectrumOpen = true
+        onOpenSpectrum: {
+            spectrumLoader.active = true
+            mainRoot.spectrumOpen = true
+        }
     }
 
     // ---- Spectrum (pushed over the monitor) ----
-    SpectrumScreen {
+    // Built on first open, then kept. Its waterfall holds a full-resolution
+    // history image, which is real memory to hand every user who never opens
+    // the view — and rebuilding it on each visit would throw that history away.
+    Loader {
+        id: spectrumLoader
+
         anchors.fill: parent
+        active: false
+        sourceComponent: spectrumScreen
         opacity: mainRoot.monitorMode && mainRoot.spectrumOpen ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -261,8 +271,14 @@ Window {
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
         }
+    }
 
-        onClosed: mainRoot.spectrumOpen = false
+    Component {
+        id: spectrumScreen
+
+        SpectrumScreen {
+            onClosed: mainRoot.spectrumOpen = false
+        }
     }
 
     // ---- First-run onboarding ----

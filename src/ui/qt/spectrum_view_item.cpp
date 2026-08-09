@@ -10,6 +10,7 @@
 #include <QRectF>
 #include <Qt>
 #include <cmath>
+#include <dsd-neo/core/wideband_spectrum.h>
 #include <qpen.h>
 
 #include "spectrum_model.h"
@@ -18,10 +19,10 @@ namespace dsd_qt {
 
 namespace {
 
-/* Waterfall history buffer. The width is the largest frame the io layer
- * publishes, so a row never loses resolution the display could have shown; the
- * height is a couple of minutes of history at ~15 FPS. */
-constexpr int kWaterfallWidth = 2048;
+/* Waterfall history buffer. The width is one published frame, so a row keeps
+ * every bin the producer measured and zoom can reach back into history without
+ * resampling; the height is a couple of minutes at the publish rate. */
+constexpr int kWaterfallWidth = DSD_WIDEBAND_SPECTRUM_BINS;
 constexpr int kWaterfallRows = 240;
 
 /**
@@ -195,10 +196,10 @@ SpectrumTraceItem::paint(QPainter* painter) {
     const int count = (hi >= lo) ? (hi - lo + 1) : 1;
 
     m_points.resize(w);
-    QVector<float> columns(w);
-    resample_columns(bins.constData(), lo, count, columns.data(), w);
+    m_columns.resize(w);
+    resample_columns(bins.constData(), lo, count, m_columns.data(), w);
     for (int x = 0; x < w; x++) {
-        const double t = m_range.normalize(static_cast<double>(columns[x]));
+        const double t = m_range.normalize(static_cast<double>(m_columns[x]));
         m_points[x] = QPointF(static_cast<double>(x), static_cast<double>(h) * (1.0 - t));
     }
 
@@ -291,7 +292,12 @@ WaterfallItem::clearHistory() {
      * slice above it is always newest-first. */
     m_cursor = kWaterfallRows - 1;
     m_range.reset();
-    m_last_frame_index = m_model ? m_model->frameIndex() : 0;
+    /* Deliberately not stamped with the model's current frame index. A retune
+     * bumps that index and only then announces the frame captured at the new
+     * center, so claiming it here would drop the first row after every tune. */
+    m_have_row = false;
+    m_last_frame_index = 0;
+    m_rows_written = 0;
     update();
 }
 
@@ -315,10 +321,11 @@ WaterfallItem::onFrame() {
         return;
     }
     const quint64 index = m_model->frameIndex();
-    if (index == m_last_frame_index) {
+    if (m_have_row && index == m_last_frame_index) {
         return; /* a repaint request, not a new row */
     }
     m_last_frame_index = index;
+    m_have_row = true;
 
     const int n = m_model->binCount();
     const QVector<float>& bins = m_model->bins();
@@ -329,14 +336,15 @@ WaterfallItem::onFrame() {
 
     /* Always full span: that is what lets zoom and pan reach back through
      * history without invalidating it. */
-    QVector<float> columns(kWaterfallWidth);
-    resample_columns(bins.constData(), 0, n, columns.data(), kWaterfallWidth);
+    m_columns.resize(kWaterfallWidth);
+    resample_columns(bins.constData(), 0, n, m_columns.data(), kWaterfallWidth);
 
     QRgb* row = reinterpret_cast<QRgb*>(m_image.scanLine(m_cursor));
     for (int x = 0; x < kWaterfallWidth; x++) {
-        row[x] = rampColor(m_range.normalize(static_cast<double>(columns[x])));
+        row[x] = rampColor(m_range.normalize(static_cast<double>(m_columns[x])));
     }
     m_cursor = (m_cursor - 1 + kWaterfallRows) % kWaterfallRows;
+    m_rows_written++;
     update();
 }
 

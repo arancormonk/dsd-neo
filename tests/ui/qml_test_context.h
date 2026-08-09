@@ -64,20 +64,26 @@ using dsd_qt::CallHistoryModel;
  * command surface has to be observable. It carries every method the screens
  * call — an unimplemented one would only fail when some future case triggered
  * it, which is exactly the kind of gap this suite exists to close.
+ *
+ * The tune parameters are `unsigned int` because CommandBridge's are: QML hands
+ * these methods a JavaScript number, and taking a double here would quietly
+ * accept a fractional, negative or out-of-range frequency that production
+ * truncates or wraps on its way to the tuner. Recording what production would
+ * actually submit is the point.
  */
 class CommandRecorder : public QObject {
     Q_OBJECT
 
   public:
     Q_INVOKABLE bool
-    manualTuneHz(double hz) {
+    manualTuneHz(unsigned int hz) {
         m_manual_tune_calls++;
         m_last_manual_tune_hz = hz;
         return true;
     }
 
     Q_INVOKABLE bool
-    tuneHz(double hz) {
+    tuneHz(unsigned int hz) {
         m_tune_calls++;
         m_last_tune_hz = hz;
         return true;
@@ -116,9 +122,9 @@ class CommandRecorder : public QObject {
     void
     reset() {
         m_manual_tune_calls = 0;
-        m_last_manual_tune_hz = 0.0;
+        m_last_manual_tune_hz = 0U;
         m_tune_calls = 0;
-        m_last_tune_hz = 0.0;
+        m_last_tune_hz = 0U;
     }
 
     int
@@ -126,16 +132,17 @@ class CommandRecorder : public QObject {
         return m_manual_tune_calls;
     }
 
+    /** @brief The recorded frequency, widened for QML's arithmetic. */
     double
     lastManualTuneHz() const {
-        return m_last_manual_tune_hz;
+        return static_cast<double>(m_last_manual_tune_hz);
     }
 
   private:
     int m_manual_tune_calls = 0;
-    double m_last_manual_tune_hz = 0.0;
+    unsigned int m_last_manual_tune_hz = 0U;
     int m_tune_calls = 0;
-    double m_last_tune_hz = 0.0;
+    unsigned int m_last_tune_hz = 0U;
 };
 
 /**
@@ -473,8 +480,8 @@ class Setup : public QObject {
         }
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
-        // Whether the trunking controller owns the tuner, and where it points.
-        metrics[QStringLiteral("trunkingEnabled")] = false;
+        // Whether an automatic controller owns the tuner, and where it points.
+        metrics[QStringLiteral("tunerControlled")] = false;
         metrics[QStringLiteral("centerFreqHz")] = static_cast<double>(dsd_neo_qml_stub::kSpectrumCenterHz);
         m_metrics = metrics;
         m_engine = engine;

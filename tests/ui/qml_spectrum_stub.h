@@ -16,9 +16,14 @@
 #ifndef DSD_NEO_TESTS_UI_QML_SPECTRUM_STUB_H_
 #define DSD_NEO_TESTS_UI_QML_SPECTRUM_STUB_H_
 
+#include <dsd-neo/core/wideband_spectrum.h>
+
 namespace dsd_neo_qml_stub {
 
-constexpr int kSpectrumBins = 1024;
+/* The published width, not a number of its own: the consumer refuses a frame
+ * that is not exactly this wide, so a fixture that drifted from it would fail
+ * as "no frames arrived" rather than as a mismatch. */
+constexpr int kSpectrumBins = DSD_WIDEBAND_SPECTRUM_BINS;
 constexpr unsigned int kSpectrumCenterHz = 851000000U;
 constexpr unsigned int kSpectrumSpanHz = 1536000U;
 /* Well away from DC, so a tap landing on it cannot be confused with a tap that

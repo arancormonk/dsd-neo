@@ -17,16 +17,17 @@
 #include <stdint.h>
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/core/wideband_spectrum.h>
 
 namespace dsd_qt {
 
 namespace {
 
-/* Matches the io layer's publish throttle. Polling faster only re-copies a
- * frame the demod thread has not replaced yet. */
-constexpr int kPollIntervalMs = 66;
-/* The largest frame the io layer will ever publish. */
-constexpr int kMaxBins = 2048;
+/* Both come from the producer's own contract rather than being chosen here: a
+ * poll slower than the publish period drops frames, and a buffer shorter than a
+ * frame is refused outright. See <dsd-neo/core/wideband_spectrum.h>. */
+constexpr int kPollIntervalMs = DSD_WIDEBAND_SPECTRUM_PERIOD_MS;
+constexpr int kMaxBins = DSD_WIDEBAND_SPECTRUM_BINS;
 
 bool
 state_is_showing(Qt::ApplicationState state) {
@@ -100,6 +101,7 @@ SpectrumModel::invalidateFrame() {
     m_bin_count = 0;
     m_center_hz = 0.0;
     m_span_hz = 0.0;
+    m_frame_serial = 0;
     m_frame_index++;
     (void)applyOffset(0.0);
     Q_EMIT retuned();
@@ -111,12 +113,22 @@ void
 SpectrumModel::tick() {
     uint32_t center_hz = 0;
     uint32_t span_hz = 0;
-    const int n = dsd_app_frontend_wideband_spectrum_get(m_bins.data(), kMaxBins, &center_hz, &span_hz);
+    uint32_t serial = 0;
+    const int n = dsd_app_frontend_wideband_spectrum_get(m_bins.data(), kMaxBins, &center_hz, &span_hz, &serial);
     if (n <= 0) {
         /* No frame yet, or one was just invalidated by a retune in flight.
          * Holding the last picture beats flickering to empty and back. */
         return;
     }
+    /* This timer and the producer's publish period free-run against each other,
+     * so a poll landing on the frame already drawn is routine rather than
+     * exceptional. Announcing it as new would repaint identical pixels and, on
+     * the waterfall, add a duplicate row — history that says a signal lasted
+     * longer than it did. */
+    if (m_has_data && serial == m_frame_serial) {
+        return;
+    }
+    m_frame_serial = serial;
 
     /* Exact comparison is right: both sides came from the same uint32 Hz
      * values, so "different" means the front end actually moved. */
@@ -174,14 +186,6 @@ SpectrumModel::setViewOffsetHz(double hz) {
 void
 SpectrumModel::setZoom(double zoom_level) {
     zoomToAnchored(zoom_level, 0.5);
-}
-
-void
-SpectrumModel::zoomAt(double factor, double x_fraction) {
-    if (!std::isfinite(factor) || !(factor > 0.0)) {
-        return;
-    }
-    zoomToAnchored(m_zoom * factor, x_fraction);
 }
 
 void
@@ -243,7 +247,13 @@ SpectrumModel::tapFrequencyHz(double x_fraction) const {
     if (half_width_bins < 1) {
         half_width_bins = 1;
     }
-    const int peak = spectrum_math::peak_search_bin(m_bins.constData(), m_bin_count, tapped_bin, half_width_bins);
+    /* The snap may only answer with something the user can see. Its width comes
+     * from the view span, so near an edge it otherwise reaches off screen and a
+     * tap lands on a carrier that was never displayed. */
+    const int view_lo_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.low_hz);
+    const int view_hi_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.high_hz);
+    const int peak = spectrum_math::peak_search_bin(m_bins.constData(), m_bin_count, tapped_bin, half_width_bins,
+                                                    view_lo_bin, view_hi_bin);
     return spectrum_math::bin_to_freq_hz(m_center_hz, m_span_hz, m_bin_count, peak);
 }
 

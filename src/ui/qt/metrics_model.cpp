@@ -179,12 +179,13 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;
     next.stream_active = metrics.stream_active != 0;
-    /* Where the front end is pointed, and whether the trunking controller is the
-     * one pointing it. Both come from the same options snapshot as radio_input,
+    /* Where the front end is pointed, and whether something other than the user
+     * is pointing it. Both come from the same options snapshot as radio_input,
      * so a frame never mixes a center from one generation with a gate from
-     * another. */
+     * another. Scanner mode counts alongside trunking: it owns the tuner too,
+     * stepping the channel map once the hangtime expires. */
     next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
-    next.trunking_enabled = opts_snapshot->trunk_enable != 0;
+    next.tuner_controlled = (opts_snapshot->trunk_enable != 0) || (opts_snapshot->scanner_mode != 0);
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
      * a GFSK stream. Nothing reads at all on an input with no demodulator behind it

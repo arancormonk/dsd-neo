@@ -268,7 +268,7 @@ jobs:
           # the count would fail the release for the act of adding a UI test —
           # and fail it saying only that a grep matched nothing. Registration
           # going backwards, which is what this guards, still fails here.
-          min=7
+          min=9
           registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | sed -n 's/^Total Tests: *//p')
           echo "UI_QT_* tests registered: ${registered:-none} (floor $min)"
           if [ "${registered:-0}" -lt "$min" ]; then
@@ -291,7 +291,8 @@ jobs:
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
             dsd-neo_test_ui_qt_session_state \
-            dsd-neo_test_ui_qt_spectrum_math
+            dsd-neo_test_ui_qt_spectrum_math \
+            dsd-neo_test_ui_qt_spectrum_model
 
       # The QML test carries its own headless environment (offscreen platform,
       # software renderer) in the CTest registration, so there is nothing to set

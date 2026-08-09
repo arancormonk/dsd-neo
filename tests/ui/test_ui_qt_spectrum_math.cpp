@@ -126,33 +126,60 @@ test_peak_search(void) {
     db[10] = -20.0F; /* near peak */
     db[40] = -5.0F;  /* stronger, but far away */
 
-    assert(sm::peak_search_bin(db.data(), 64, 12, 5) == 10);
+    assert(sm::peak_search_bin(db.data(), 64, 12, 5, 0, 63) == 10);
     /* A stronger peak outside the window must not win. */
-    assert(sm::peak_search_bin(db.data(), 64, 12, 5) != 40);
+    assert(sm::peak_search_bin(db.data(), 64, 12, 5, 0, 63) != 40);
     /* Widen far enough and it does. */
-    assert(sm::peak_search_bin(db.data(), 64, 12, 40) == 40);
+    assert(sm::peak_search_bin(db.data(), 64, 12, 40, 0, 63) == 40);
 
     /* Over flat noise nothing is stronger than anything else, and the answer
      * must be where the tap landed. Seeding the search at the window edge would
      * silently drag every tap on a quiet channel to that edge. */
     const std::vector<float> flat(64, -90.0F);
-    assert(sm::peak_search_bin(flat.data(), 64, 30, 16) == 30);
-    assert(sm::peak_search_bin(flat.data(), 64, 0, 16) == 0);
-    assert(sm::peak_search_bin(flat.data(), 64, 63, 16) == 63);
+    assert(sm::peak_search_bin(flat.data(), 64, 30, 16, 0, 63) == 30);
+    assert(sm::peak_search_bin(flat.data(), 64, 0, 16, 0, 63) == 0);
+    assert(sm::peak_search_bin(flat.data(), 64, 63, 16, 0, 63) == 63);
 
     /* Windows clip at the array edges rather than reading past them. */
     db[0] = -1.0F;
-    assert(sm::peak_search_bin(db.data(), 64, 1, 10) == 0);
+    assert(sm::peak_search_bin(db.data(), 64, 1, 10, 0, 63) == 0);
     db[63] = -1.0F;
-    assert(sm::peak_search_bin(db.data(), 64, 62, 10) == 63);
+    assert(sm::peak_search_bin(db.data(), 64, 62, 10, 0, 63) == 63);
 
     /* A center outside the array is clamped in. */
-    assert(sm::peak_search_bin(db.data(), 64, -5, 0) == 0);
-    assert(sm::peak_search_bin(db.data(), 64, 900, 0) == 63);
+    assert(sm::peak_search_bin(db.data(), 64, -5, 0, 0, 63) == 0);
+    assert(sm::peak_search_bin(db.data(), 64, 900, 0, 0, 63) == 63);
 
     /* Defensive: no data, no crash. */
-    assert(sm::peak_search_bin(nullptr, 64, 3, 2) == 0);
-    assert(sm::peak_search_bin(db.data(), 0, 3, 2) == 0);
+    assert(sm::peak_search_bin(nullptr, 64, 3, 2, 0, 63) == 0);
+    assert(sm::peak_search_bin(db.data(), 0, 3, 2, 0, 63) == 0);
+}
+
+/*
+ * The snap width comes from the view span, so near an edge it reaches past what
+ * is on screen. Answering with a carrier the user cannot see reads as a tap
+ * that landed somewhere random, so the search is bounded by the window too.
+ */
+void
+test_peak_search_stays_inside_the_window(void) {
+    std::vector<float> db(64, -90.0F);
+    db[30] = -5.0F; /* strong, but outside the window below */
+
+    /* A tap at bin 20 with the window ending at 24: the search may reach 25-30
+     * by half-width alone, and must not. */
+    assert(sm::peak_search_bin(db.data(), 64, 20, 10, 8, 24) == 20);
+    /* The same tap with the window opened up does find it. */
+    assert(sm::peak_search_bin(db.data(), 64, 20, 10, 8, 40) == 30);
+
+    /* A tap outside the window is pulled to the nearest edge of it, not to the
+     * nearest edge of the array. */
+    assert(sm::peak_search_bin(db.data(), 64, 2, 0, 8, 24) == 8);
+    assert(sm::peak_search_bin(db.data(), 64, 60, 0, 8, 24) == 24);
+
+    /* Bounds wider than the array clip to it; an empty or inverted window falls
+     * back to the whole array rather than answering with a bin outside it. */
+    assert(sm::peak_search_bin(db.data(), 64, 30, 0, -5, 900) == 30);
+    assert(sm::peak_search_bin(db.data(), 64, 20, 40, 40, 8) == 30);
 }
 
 /* The frequency shown at x_fraction, after clamping. */
@@ -233,6 +260,7 @@ main(void) {
     test_view_window_clamping();
     test_snap_window();
     test_peak_search();
+    test_peak_search_stays_inside_the_window();
     test_zoom_anchor();
     test_nice_tick_step();
     (void)DSD_FPRINTF(stdout, "UI_QT_SPECTRUM_MATH: ok\n");

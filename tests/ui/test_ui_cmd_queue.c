@@ -1090,9 +1090,9 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
 }
 
 /*
- * Tap-to-tune is gated on the live trunk_enable at drain time, not on the
- * frontend hiding the affordance, and an accepted tap tears down call state so
- * the decoder re-acquires on the new frequency instead of aging out.
+ * Tap-to-tune is gated on the live options at drain time, not on the frontend
+ * hiding the affordance, and an accepted tap tears down call state so the
+ * decoder re-acquires on the new frequency instead of aging out.
  */
 static int
 test_manual_tune_trunking_gate_and_reacquisition(void) {
@@ -1110,6 +1110,22 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     rc |= expect_contains("manual tune under trunking explains itself", state.ui_msg, "Trunking active");
     rc |= expect_int("manual tune under trunking leaves the trunker tuned", opts.trunk_is_tuned, 1);
     rc |= expect_true("manual tune under trunking leaves the VC", state.p25_vc_freq[0] == 852000000L);
+    freeState(&state);
+
+    /* Conventional scanner mode owns the tuner too: it steps the channel map on
+     * its own once the hangtime expires, so a tap accepted here would be undone
+     * a few seconds later, after a toast claiming it had worked. */
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune under the scanner queued",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune under the scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under the scanner never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_contains("manual tune under the scanner explains itself", state.ui_msg, "Scanner active");
+    opts.scanner_mode = 0;
     freeState(&state);
 
     init_test_context(&opts, &state);

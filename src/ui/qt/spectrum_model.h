@@ -142,9 +142,6 @@ class SpectrumModel : public QObject {
      */
     Q_INVOKABLE double tapFrequencyHz(double x_fraction) const;
 
-    /** @brief Multiply the zoom by @p factor, holding @p x_fraction's frequency still. */
-    Q_INVOKABLE void zoomAt(double factor, double x_fraction);
-
     /** @brief Set the zoom to @p zoom_level, holding @p x_fraction's frequency still. */
     Q_INVOKABLE void zoomToAnchored(double zoom_level, double x_fraction);
 
@@ -157,13 +154,32 @@ class SpectrumModel : public QObject {
     /** @brief Return the viewport to the whole span at 1x. */
     Q_INVOKABLE void resetView();
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /**
+     * @brief Poll the producer once, exactly as the timer does.
+     *
+     * Lets a test drive frames in without waiting out the publish period, and
+     * without the arrival order depending on how a run was scheduled.
+     */
+    void
+    testPoll() {
+        tick();
+    }
+#endif
+
     /** @brief The live bin buffer, for the painted items. Only binCount() entries are valid. */
     const QVector<float>&
     bins() const {
         return m_bins;
     }
 
-    /** @brief Increments on every published frame, so a painter can skip repeats. */
+    /**
+     * @brief Increments once per frame actually taken from the producer.
+     *
+     * Not once per poll: the timer here and the producer's publish period
+     * free-run, so a painter needs to know when the picture changed rather than
+     * when it was looked at.
+     */
     quint64
     frameIndex() const {
         return m_frame_index;
@@ -206,6 +222,8 @@ class SpectrumModel : public QObject {
     double m_offset_hz = 0.0;
     double m_overshoot_hz = 0.0;
     quint64 m_frame_index = 0;
+    /* The producer's identity for the frame in m_bins; 0 while there is none. */
+    quint32 m_frame_serial = 0;
     bool m_active = false;
     bool m_app_foreground = true;
     bool m_running = false;

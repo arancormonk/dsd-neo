@@ -24,16 +24,19 @@ using namespace dsd_neo_qml_stub;
 namespace {
 
 int g_enabled = 0;
+/* A fresh frame on every poll, which is what a producer running faster than the
+ * view does. Serial 0 means "nothing published", so it is skipped. */
+uint32_t g_serial = 0;
 
 } // namespace
 
 extern "C" int
-dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz,
-                                       uint32_t* out_span_hz) {
-    if (!out_db || max_bins <= 0 || g_enabled == 0) {
+dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz, uint32_t* out_span_hz,
+                                       uint32_t* out_frame_serial) {
+    if (!out_db || max_bins < kSpectrumBins || g_enabled == 0) {
         return 0;
     }
-    const int n = (max_bins < kSpectrumBins) ? max_bins : kSpectrumBins;
+    const int n = kSpectrumBins;
     for (int i = 0; i < n; i++) {
         out_db[i] = -80.0F;
     }
@@ -49,6 +52,10 @@ dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* ou
     }
     if (out_span_hz) {
         *out_span_hz = kSpectrumSpanHz;
+    }
+    if (out_frame_serial) {
+        g_serial++;
+        *out_frame_serial = g_serial;
     }
     return n;
 }

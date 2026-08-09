@@ -152,28 +152,46 @@ snap_window_hz(double view_span_hz) {
  * every candidate ties, and a search seeded at the window edge would answer
  * with that edge — pulling a deliberate tap on a quiet channel tens of kHz away
  * every time.
+ *
+ * @param bound_lo,bound_hi Inclusive bin range the answer must lie in, on top of
+ *        the array bounds. Callers pass the visible window: the snap width is
+ *        derived from the view span, so near an edge it otherwise reaches past
+ *        what is on screen and a tap can land on a stronger carrier the user
+ *        cannot see. Pass 0 and n-1 to search the whole array.
  */
 inline int
-peak_search_bin(const float* db, int n, int center_bin, int half_width_bins) {
+peak_search_bin(const float* db, int n, int center_bin, int half_width_bins, int bound_lo, int bound_hi) {
     if (!db || n <= 0) {
         return 0;
     }
-    if (center_bin < 0) {
-        center_bin = 0;
+    if (bound_lo < 0) {
+        bound_lo = 0;
     }
-    if (center_bin > n - 1) {
-        center_bin = n - 1;
+    if (bound_hi > n - 1) {
+        bound_hi = n - 1;
+    }
+    if (bound_hi < bound_lo) {
+        /* An empty or inverted window would leave nothing to answer with; fall
+         * back to the array rather than inventing a bin. */
+        bound_lo = 0;
+        bound_hi = n - 1;
+    }
+    if (center_bin < bound_lo) {
+        center_bin = bound_lo;
+    }
+    if (center_bin > bound_hi) {
+        center_bin = bound_hi;
     }
     if (half_width_bins < 0) {
         half_width_bins = 0;
     }
     int lo = center_bin - half_width_bins;
     int hi = center_bin + half_width_bins;
-    if (lo < 0) {
-        lo = 0;
+    if (lo < bound_lo) {
+        lo = bound_lo;
     }
-    if (hi > n - 1) {
-        hi = n - 1;
+    if (hi > bound_hi) {
+        hi = bound_hi;
     }
     int best = center_bin;
     for (int i = lo; i <= hi; i++) {

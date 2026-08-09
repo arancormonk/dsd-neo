@@ -58,7 +58,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
-    Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
+    Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -125,14 +125,17 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether the trunking controller owns the tuner.
+     * @brief Whether an automatic controller owns the tuner.
      *
-     * While it does, the engine refuses manual retunes, so a view offering one
-     * should say so rather than present a control that silently does nothing.
+     * True under trunking and under conventional scanner mode alike: both move
+     * the front end on their own, and the engine refuses manual retunes under
+     * either. Deliberately not named for trunking — a view that gated only on
+     * that would offer a control which appears to work and is then undone by
+     * the scanner's next step.
      */
     bool
-    trunkingEnabled() const {
-        return m_view.trunking_enabled;
+    tunerControlled() const {
+        return m_view.tuner_controlled;
     }
 
     /**
@@ -357,7 +360,7 @@ class MetricsModel : public QObject {
         bool audio_muted = false;
         qulonglong held_tg = 0;
         int enc_lockout_count = 0;
-        bool trunking_enabled = false;
+        bool tuner_controlled = false;
         QString ui_message;
         SlotCall slot_call[2];
 
@@ -376,7 +379,7 @@ class MetricsModel : public QObject {
         bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
-                   && enc_lockout_count == other.enc_lockout_count && trunking_enabled == other.trunking_enabled;
+                   && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled;
         }
     };
 

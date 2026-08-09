@@ -355,14 +355,16 @@ test_visualizer_getters_without_radio(void) {
     assert(dsd_app_frontend_spectrum_get(bins, 4, &rate) == 0);
     assert(rate == 0);
 
-    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, &center, &span) == 0);
+    uint32_t serial = 99U;
+    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, &center, &span, &serial) == 0);
     assert(center == 0U);
     assert(span == 0U);
-    assert(dsd_app_frontend_wideband_spectrum_get(NULL, 0, NULL, NULL) == 0);
+    assert(serial == 0U);
+    assert(dsd_app_frontend_wideband_spectrum_get(NULL, 0, NULL, NULL, NULL) == 0);
 
     /* Toggling production must stay harmless with no stream behind it. */
     dsd_app_frontend_wideband_spectrum_set_enabled(1);
-    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, NULL, NULL) == 0);
+    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, NULL, NULL, NULL) == 0);
     dsd_app_frontend_wideband_spectrum_set_enabled(0);
 }
 

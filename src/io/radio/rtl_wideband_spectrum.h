@@ -38,6 +38,16 @@ void rtl_wideband_spectrum_clear(void);
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Clear the publish throttle so the next update publishes immediately. */
 void rtl_wideband_spectrum_test_reset_throttle(void);
+
+/**
+ * @brief Make every seqlock read attempt observe a writer landing inside it.
+ *
+ * A torn read is a race between two threads, which no single-threaded test can
+ * stage — and what the reader does when it never gets a clean copy is exactly
+ * what must not regress: reporting no frame is safe, handing back a copy the
+ * writer ran through is not.
+ */
+void rtl_wideband_spectrum_test_set_tear(int on);
 #endif
 
 #ifdef __cplusplus

@@ -21,6 +21,7 @@
 #include <pffft.h>
 #include <string.h>
 
+#include "rtl_fft_cache.h"
 #include "rtl_stream_shared.hpp"
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
@@ -108,39 +109,11 @@ cqpsk_loop_lock_heuristic(float total_freq_rad, int out_rate_hz) {
     return (freq_stable_blocks >= 2 && ted_lock > 0.25f && costas_err < 0.65f && fll_abs < fll_lock_limit) ? 1 : 0;
 }
 
-static inline PFFFT_Setup*
-pffft_get_cached_setup(int N) {
-    static PFFFT_Setup* setup = nullptr;
-    static int setup_N = 0;
-    if (!setup || setup_N != N) {
-        if (setup) {
-            pffft_destroy_setup(setup);
-            setup = nullptr;
-            setup_N = 0;
-        }
-        setup = pffft_new_setup(N, PFFFT_COMPLEX);
-        setup_N = N;
-    }
-    return setup;
-}
-
-static inline const float*
-rtl_metrics_hann_window(int N) {
-    alignas(16) static float window[kSpecMaxN];
-    static int window_N = 0;
-    if (window_N != N) {
-        if (N <= 1) {
-            window[0] = 1.0f;
-        } else {
-            const float scale = 2.0f * static_cast<float>(M_PI) / static_cast<float>(N - 1);
-            for (int n = 0; n < N; n++) {
-                window[n] = 0.5f * (1.0f - cosf(scale * static_cast<float>(n)));
-            }
-        }
-        window_N = N;
-    }
-    return window;
-}
+/* This tap's own caches. Kept separate from the wideband tap's by construction:
+ * the two analyse different sizes on this same thread, so one shared cache
+ * would rebuild the pffft setup on every alternating call. */
+static dsd_io::FftSetupCache g_spec_fft_setup;
+static dsd_io::HannWindowCache<kSpecMaxN> g_spec_hann;
 
 namespace {
 
@@ -202,7 +175,17 @@ rtl_metrics_prepare_fft_input(const float* iq_interleaved, int pairs, int N, flo
         }
     }
 
-    const float* hann = rtl_metrics_hann_window(N);
+    const float* hann = g_spec_hann.get(N);
+    if (hann == nullptr) {
+        /* N is clamped to [64, kSpecMaxN] upstream, so this is unreachable in
+         * practice. Hand back a silent frame rather than transforming whatever
+         * the buffer happened to hold. */
+        for (int n = 0; n < (N << 1); n++) {
+            z[n] = 0.0f;
+        }
+        frame.take = 0;
+        return frame;
+    }
     for (int n = 0; n < frame.take; n++) {
         int idx = frame.start + n;
         float I = iq_interleaved[(size_t)(idx << 1)];
@@ -385,7 +368,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     double phase_cfo_hz = rtl_metrics_phase_cfo_hz(iq_interleaved, frame, out_rate_hz);
     g_resid_cfo_phase_hz.store(phase_cfo_hz, std::memory_order_relaxed);
 
-    PFFFT_Setup* setup = pffft_get_cached_setup(N);
+    PFFFT_Setup* setup = g_spec_fft_setup.get(N);
     if (setup) {
         pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
         rtl_metrics_smooth_spectrum_bins(N, out_rate_hz, z);

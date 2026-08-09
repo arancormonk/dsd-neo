@@ -170,15 +170,21 @@ int dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate);
  * dsd_app_frontend_wideband_spectrum_set_enabled(1) while its view is open and
  * 0 when it closes, so the FFT costs nothing the rest of the time.
  *
- * @param out_db Destination buffer for spectrum bins (float dB).
- * @param max_bins Maximum number of bins to write.
+ * @param out_db Destination buffer, at least DSD_WIDEBAND_SPECTRUM_BINS floats
+ *               (from <dsd-neo/core/wideband_spectrum.h>).
+ * @param max_bins Capacity of @p out_db in floats. A shorter buffer is refused
+ *                 rather than filled with a prefix of the span.
  * @param out_center_freq_hz Optional; receives the tuned center in Hz.
  * @param out_span_hz Optional; receives the covered span in Hz.
- * @return Number of bins written; 0 when disabled, unavailable, or on a build
- *         with no radio backend.
+ * @param out_frame_serial Optional; receives the frame's serial number, which
+ *                         changes only when a new frame is published. A
+ *                         frontend polling on its own timer needs it to tell a
+ *                         fresh frame from a re-read of the one it already drew.
+ * @return Number of bins written; 0 when disabled, unavailable, too large for
+ *         @p out_db, or on a build with no radio backend.
  */
 int dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz,
-                                           uint32_t* out_span_hz);
+                                           uint32_t* out_span_hz, uint32_t* out_frame_serial);
 /** @brief Enable or disable wideband spectrum production (off = zero DSP cost). */
 void dsd_app_frontend_wideband_spectrum_set_enabled(int on);
 

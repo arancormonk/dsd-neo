@@ -18,9 +18,10 @@ Item {
 
     signal closed()
 
-    // While the trunking controller owns the tuner the engine refuses manual
+    // While an automatic controller owns the tuner — trunking, or conventional
+    // scanner mode stepping the channel map — the engine refuses manual
     // retunes, so this is view-only rather than a control that does nothing.
-    readonly property bool viewOnly: metrics ? metrics.trunkingEnabled : false
+    readonly property bool viewOnly: metrics ? metrics.tunerControlled : false
     // The frame's own center is what the bins were measured at; the options
     // reading is only a fallback for the moment before the first frame lands.
     readonly property real tunedHz: spectrum.hasData ? spectrum.centerFreqHz
@@ -55,10 +56,24 @@ Item {
         spectrum.viewOffsetHz = screen.panStartOffsetHz - ((dx / width) * spectrum.viewSpanHz)
     }
 
-    /** Settle a finished pan: at most one retune, and only if it ran off the edge. */
-    function endPan() {
-        if (!screen.viewOnly && spectrum.edgeOvershootHz !== 0 && spectrum.hasData)
-            commands.manualTuneHz(Math.round(spectrum.centerFreqHz + spectrum.edgeOvershootHz))
+    /**
+     * Settle a finished pan: at most one retune, and only if it ran off the edge.
+     *
+     * @a cancelled marks a drag that ended for a reason other than the finger
+     * lifting — a pinch taking the grab. The few pixels of drift before the
+     * second finger landed are not a request to move the receiver, and at 1x
+     * every drift is overshoot, so acting on it would retune on the way into a
+     * zoom and drop the decode session.
+     *
+     * The retune target is where the viewport was asking to be, not merely how
+     * far past the edge it reached: the granted offset is already carrying the
+     * user toward one end of the span, and tuning to the overshoot alone would
+     * land short and snap the view backwards away from what they dragged to.
+     */
+    function endPan(cancelled) {
+        var wantHz = spectrum.centerFreqHz + spectrum.viewOffsetHz + spectrum.edgeOvershootHz
+        if (!cancelled && !screen.viewOnly && spectrum.edgeOvershootHz !== 0 && spectrum.hasData && wantHz > 0)
+            commands.manualTuneHz(Math.round(wantHz))
         spectrum.clearOvershoot()
     }
 
@@ -164,6 +179,10 @@ Item {
         anchors.rightMargin: Theme.screenPadding
         anchors.bottomMargin: Theme.screenPadding
 
+        // Most labels the axis will carry. Shared with the Repeater below so the
+        // delegate count and the request can never drift apart.
+        readonly property int maxTicks: 5
+
         // Recomputed whenever the window moves. axisTicks() is a call, not a
         // property, so the window edges are read here to make the dependency
         // explicit — without them the labels would freeze on the first frame.
@@ -172,7 +191,7 @@ Item {
             var high = spectrum.viewHighHz
             if (!spectrum.hasData || high <= low)
                 return []
-            return spectrum.axisTicks(5)
+            return spectrum.axisTicks(body.maxTicks)
         }
 
         SpectrumTrace {
@@ -207,16 +226,26 @@ Item {
                 color: Theme.panelBorder
             }
 
+            // A fixed count, not the tick list itself: binding a Repeater to a
+            // freshly built list destroys and recreates every label each time
+            // the viewport moves, which during a drag is fifteen times a
+            // second. The delegates stay put and only their bindings re-evaluate.
             Repeater {
-                model: body.ticks
+                model: body.maxTicks
 
                 MicroLabel {
+                    required property int index
+
+                    readonly property var tick: index < body.ticks.length ? body.ticks[index] : null
+
+                    visible: tick !== null
                     // Anchored by its center on the tick, then nudged so the end
                     // labels stay inside the panel instead of hanging off it.
-                    x: Math.round(Math.max(0, Math.min(axis.width - implicitWidth,
-                                                       (modelData.xFraction * axis.width) - (implicitWidth / 2))))
+                    x: tick ? Math.round(Math.max(0, Math.min(axis.width - implicitWidth,
+                                                              (tick.xFraction * axis.width) - (implicitWidth / 2))))
+                            : 0
                     y: Math.round((axis.height - implicitHeight) / 2)
-                    text: modelData.label
+                    text: tick ? tick.label : ""
                     font.capitalization: Font.MixedCase
                 }
             }
@@ -328,7 +357,9 @@ Item {
                 }
                 // Exactly one retune per gesture, on release. Retuning per drag
                 // frame would block the engine thread for up to 500 ms a time.
-                screen.endPan()
+                // A pinch stealing the grab deactivates this handler too, and
+                // that is not a release.
+                screen.endPan(pinch.active)
             }
             onActiveTranslationChanged: {
                 if (pan.active)

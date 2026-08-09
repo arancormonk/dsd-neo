@@ -1016,11 +1016,11 @@ static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trun
  *
  * Kept separate from ui_cmd_handle_rtl_set_freq() on purpose. That one is the
  * settings-menu tune and documents a no-bookkeeping contract; here the tune is
- * a navigation gesture, so it (a) evaluates the trunking gate at drain time on
- * the authoritative live opts->trunk_enable rather than trusting the
- * frontend's affordance, and (b) drops the stale auto-modulation votes and
- * per-slot call state that would otherwise slow or corrupt re-acquisition in
- * decode mode "auto".
+ * a navigation gesture, so it (a) evaluates the tuner-ownership gate at drain
+ * time on the authoritative live opts rather than trusting the frontend's
+ * affordance, and (b) drops the stale auto-modulation votes and per-slot call
+ * state that would otherwise slow or corrupt re-acquisition in decode mode
+ * "auto".
  */
 static int
 ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
@@ -1029,8 +1029,17 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (!state || !ui_cmd_parse_u32_payload(c, &v)) {
         return result;
     }
+    /* Either automatic controller owns the tuner. Trunking parks on a control
+     * channel; conventional scanner mode steps the channel map on its own once
+     * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
+     * tap accepted under it would be silently undone seconds later — worse than
+     * a refusal, because the toast would have claimed it worked. */
     if (opts->trunk_enable) {
         ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
+        return result;
+    }
+    if (opts->scanner_mode) {
+        ui_set_toast(state, 3, "Scanner active: tap-to-tune disabled");
         return result;
     }
     int rc = svc_rtl_set_freq(opts, state, v);

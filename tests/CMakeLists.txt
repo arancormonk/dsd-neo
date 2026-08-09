@@ -494,6 +494,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/talkgroup_policy.h
   C
 )
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_wideband_spectrum
+  HEADERS_PUBLIC_CORE_WIDEBAND_SPECTRUM
+  dsd-neo/core/wideband_spectrum.h
+  C
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_sync_hamming
@@ -2147,6 +2153,49 @@ if(DSD_ENABLE_QT_UI)
     )
     set_target_properties(dsd-neo_test_ui_qt_session_args PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_SESSION_ARGS COMMAND dsd-neo_test_ui_qt_session_args)
+
+    # What the spectrum model does with the frames a producer hands it, and what
+    # the waterfall does with the model: the frame-identity check that keeps a
+    # re-read of an unreplaced frame from scrolling a duplicate row, the history
+    # clear that must not swallow the first frame at a new center, and the tap
+    # snap staying inside the visible window. Only the app-control getter is
+    # stubbed, so the polling and viewport under test are the production ones.
+    # DSD_NEO_TEST_HOOKS exposes the single-poll entry point and the row count;
+    # without them this would have to sleep through publish periods and guess.
+    add_executable(
+        dsd-neo_test_ui_qt_spectrum_model
+        ui/test_ui_qt_spectrum_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_spectrum_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    find_package(Qt6 REQUIRED COMPONENTS Gui Quick)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_spectrum_model
+        PRIVATE Qt6::Gui Qt6::Quick
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_spectrum_model
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_spectrum_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SPECTRUM_MODEL
+        COMMAND dsd-neo_test_ui_qt_spectrum_model
+    )
+    # A QQuickItem needs an application object, and a CI runner has no display.
+    set_tests_properties(
+        UI_QT_SPECTRUM_MODEL
+        PROPERTIES
+            ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
+    )
 
     # The QML screens themselves, driven by Qt Quick Test: the call lists keep
     # the latest call in view while the reader is parked at the top, hold their

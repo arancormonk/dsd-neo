@@ -93,9 +93,10 @@ class SpectrumTraceItem : public QQuickPaintedItem {
     QColor m_area_color = QColor(0x22, 0xDC, 0xF5, 0x33);
     QColor m_grid_color = QColor(0x23, 0x2B, 0x3A);
     spectrum_math::AutoRange m_range;
-    /* Reused across frames: a polyline this wide would otherwise allocate on
-     * every repaint. */
+    /* Both reused across frames: a polyline and a column set this wide would
+     * otherwise allocate twice on every repaint, fifteen times a second. */
     QVector<QPointF> m_points;
+    QVector<float> m_columns;
 };
 
 /** @brief Scrolling history of the spectrum, newest row at the top. */
@@ -140,6 +141,20 @@ class WaterfallItem : public QQuickPaintedItem {
 
     void paint(QPainter* painter) override;
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /**
+     * @brief Rows written since the last history clear.
+     *
+     * The history is a private image, so this is the only way a test can say
+     * whether a frame became a row or was dropped — which is the difference
+     * between a waterfall and a waterfall missing the moment it retuned.
+     */
+    quint64
+    testRowsWritten() const {
+        return m_rows_written;
+    }
+#endif
+
   Q_SIGNALS:
     void modelChanged();
     void colorsChanged();
@@ -158,8 +173,17 @@ class WaterfallItem : public QQuickPaintedItem {
      * a source rectangle at paint time and old rows stay correct under both;
      * only a retune can invalidate them. */
     QImage m_image;
+    /* One row's worth of columns, reused rather than allocated per frame. */
+    QVector<float> m_columns;
     int m_cursor = 0;
+    /* Which frame the newest row was drawn from, and whether there is one at
+     * all. The flag is what keeps clearHistory() from claiming the frame that
+     * is about to arrive: a retune bumps the model's index before the new frame
+     * is announced, so recording that index here would swallow the first row at
+     * the new center — the one row that is certain to be worth seeing. */
     quint64 m_last_frame_index = 0;
+    bool m_have_row = false;
+    quint64 m_rows_written = 0;
 };
 
 } // namespace dsd_qt
