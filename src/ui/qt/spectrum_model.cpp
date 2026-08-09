@@ -39,6 +39,33 @@ state_is_showing(Qt::ApplicationState state) {
     return state != Qt::ApplicationSuspended && state != Qt::ApplicationHidden;
 }
 
+/**
+ * @brief The visible bin range and the snap width, in bins.
+ *
+ * Shared by the tap and the hop because it is the same rule for both: the answer
+ * has to be on screen, and anything nearer than the snap window is the same
+ * channel a tap would already have reached. Two copies of it would let a tap and
+ * a hop resolve to different carriers on one screen.
+ */
+struct ViewBins {
+    int lo;
+    int hi;
+    int snap;
+};
+
+ViewBins
+view_bins(double center_hz, double span_hz, int bin_count, const spectrum_math::ViewWindow& win) {
+    ViewBins out;
+    out.lo = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.low_hz);
+    out.hi = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.high_hz);
+    const double bin_width_hz = span_hz / static_cast<double>(bin_count);
+    out.snap = static_cast<int>(spectrum_math::snap_window_hz(win.span_hz) / bin_width_hz);
+    if (out.snap < 1) {
+        out.snap = 1;
+    }
+    return out;
+}
+
 } // namespace
 
 SpectrumModel::SpectrumModel(QObject* parent) : QObject(parent), m_bins(kMaxBins, 0.0F) {
@@ -255,18 +282,12 @@ SpectrumModel::tapFrequencyHz(double x_fraction) const {
     const double tapped_hz = win.low_hz + (x_fraction * win.span_hz);
     const int tapped_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, tapped_hz);
 
-    const double bin_width_hz = m_span_hz / static_cast<double>(m_bin_count);
-    int half_width_bins = static_cast<int>(spectrum_math::snap_window_hz(win.span_hz) / bin_width_hz);
-    if (half_width_bins < 1) {
-        half_width_bins = 1;
-    }
     /* The snap may only answer with something the user can see. Its width comes
      * from the view span, so near an edge it otherwise reaches off screen and a
      * tap lands on a carrier that was never displayed. */
-    const int view_lo_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.low_hz);
-    const int view_hi_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.high_hz);
-    const int peak = spectrum_math::peak_search_bin(m_bins.constData(), m_bin_count, tapped_bin, half_width_bins,
-                                                    view_lo_bin, view_hi_bin);
+    const ViewBins view = view_bins(m_center_hz, m_span_hz, m_bin_count, win);
+    const int peak =
+        spectrum_math::peak_search_bin(m_bins.constData(), m_bin_count, tapped_bin, view.snap, view.lo, view.hi);
     return spectrum_math::bin_to_freq_hz(m_center_hz, m_span_hz, m_bin_count, peak);
 }
 
@@ -278,21 +299,20 @@ SpectrumModel::nextPeakHz(int direction) const {
     const spectrum_math::ViewWindow win = window();
     /* Same rule as the tap: only answer with something on screen. Hopping to a
      * carrier outside the window would move the radio to a signal the user was
-     * never shown and could not have been asking for. */
-    const int view_lo_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.low_hz);
-    const int view_hi_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, win.high_hz);
+     * never shown and could not have been asking for. The gap is the same snap
+     * window: inside it a tap would have reached the same signal, so anything
+     * nearer than that is not a different channel.
+     *
+     * "Above" and "below" are measured from the tuned carrier while it is on
+     * screen, and from the middle of the view once the pan has taken it off —
+     * see directional_seed_bin(). Both bounds and seed have to come from the same
+     * window or one of the two directions searches nothing. */
+    const ViewBins view = view_bins(m_center_hz, m_span_hz, m_bin_count, win);
     const int center_bin = spectrum_math::freq_to_bin(m_center_hz, m_span_hz, m_bin_count, m_center_hz);
-
-    /* The gap is the snap window: inside it a tap would have reached the same
-     * signal, so anything nearer than that is not a different channel. */
-    const double bin_width_hz = m_span_hz / static_cast<double>(m_bin_count);
-    int gap_bins = static_cast<int>(spectrum_math::snap_window_hz(win.span_hz) / bin_width_hz);
-    if (gap_bins < 1) {
-        gap_bins = 1;
-    }
+    const int seed = spectrum_math::directional_seed_bin(center_bin, view.lo, view.hi);
     const int peak =
-        spectrum_math::directional_peak_bin(m_bins.constData(), m_bin_count, center_bin, (direction >= 0) ? 1 : -1,
-                                            gap_bins, kNextPeakExcessDb, view_lo_bin, view_hi_bin);
+        spectrum_math::directional_peak_bin(m_bins.constData(), m_bin_count, seed, (direction >= 0) ? 1 : -1, view.snap,
+                                            kNextPeakExcessDb, view.lo, view.hi);
     if (peak < 0) {
         return 0.0;
     }

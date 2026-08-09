@@ -41,6 +41,13 @@ namespace dsd_io {
  */
 class FftSetupCache {
   public:
+    FftSetupCache() = default;
+    /* Owns a raw PFFFT_Setup* that get() destroys on a size change, so a copy would
+     * leave two owners of one setup and the second would destroy freed memory. The
+     * instances are file-scope and never copied; this is what keeps it that way. */
+    FftSetupCache(const FftSetupCache&) = delete;
+    FftSetupCache& operator=(const FftSetupCache&) = delete;
+
     /**
      * @brief Forward complex transform of @p n points, in place.
      *

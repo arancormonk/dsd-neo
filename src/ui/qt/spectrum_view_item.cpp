@@ -25,11 +25,51 @@ constexpr int kWaterfallWidth = DSD_WIDEBAND_SPECTRUM_BINS;
 constexpr int kWaterfallRows = 240;
 
 /**
- * @brief Reduce @p count bins starting at @p first into @p out_width columns.
+ * @brief Peak-pick @p count bins down into a narrower @p out_width, for count > out_width.
  *
  * Peak-picking, not averaging: a narrow carrier that lands between two columns
- * must stay visible rather than being averaged into the noise. Mirrors
- * spectrum_resample_columns() in the terminal visualizer.
+ * must stay visible rather than being averaged into the noise.
+ */
+void
+resample_peak_decimate(const float* bins, int first, int count, float* out, int out_width) {
+    for (int x = 0; x < out_width; x++) {
+        int i0 = static_cast<int>((static_cast<long long>(x) * count) / out_width);
+        int i1 = static_cast<int>((static_cast<long long>(x + 1) * count) / out_width);
+        if (i1 <= i0) {
+            i1 = i0 + 1;
+        }
+        if (i1 > count) {
+            i1 = count;
+        }
+        float peak = bins[first + i0];
+        for (int i = i0 + 1; i < i1; i++) {
+            if (bins[first + i] > peak) {
+                peak = bins[first + i];
+            }
+        }
+        out[x] = peak;
+    }
+}
+
+/** @brief Spread @p count bins across a wider @p out_width by repetition, for count < out_width. */
+void
+resample_repeat(const float* bins, int first, int count, float* out, int out_width) {
+    for (int x = 0; x < out_width; x++) {
+        int src = static_cast<int>((static_cast<long long>(x) * count) / out_width);
+        if (src < 0) {
+            src = 0;
+        }
+        if (src > count - 1) {
+            src = count - 1;
+        }
+        out[x] = bins[first + src];
+    }
+}
+
+/**
+ * @brief Reduce @p count bins starting at @p first into @p out_width columns.
+ *
+ * Mirrors spectrum_resample_columns() in the terminal visualizer.
  */
 void
 resample_columns(const float* bins, int first, int count, float* out, int out_width) {
@@ -42,36 +82,20 @@ resample_columns(const float* bins, int first, int count, float* out, int out_wi
         }
         return;
     }
-    if (count >= out_width) {
+    if (count == out_width) {
+        /* The waterfall's own case: every published frame is exactly
+         * DSD_WIDEBAND_SPECTRUM_BINS wide and so is the history image, so the general
+         * paths would spend two 64-bit divisions per column deriving the identity map. */
         for (int x = 0; x < out_width; x++) {
-            int i0 = static_cast<int>((static_cast<long long>(x) * count) / out_width);
-            int i1 = static_cast<int>((static_cast<long long>(x + 1) * count) / out_width);
-            if (i1 <= i0) {
-                i1 = i0 + 1;
-            }
-            if (i1 > count) {
-                i1 = count;
-            }
-            float peak = bins[first + i0];
-            for (int i = i0 + 1; i < i1; i++) {
-                if (bins[first + i] > peak) {
-                    peak = bins[first + i];
-                }
-            }
-            out[x] = peak;
+            out[x] = bins[first + x];
         }
         return;
     }
-    for (int x = 0; x < out_width; x++) {
-        int src = static_cast<int>((static_cast<long long>(x) * count) / out_width);
-        if (src < 0) {
-            src = 0;
-        }
-        if (src > count - 1) {
-            src = count - 1;
-        }
-        out[x] = bins[first + src];
+    if (count > out_width) {
+        resample_peak_decimate(bins, first, count, out, out_width);
+        return;
     }
+    resample_repeat(bins, first, count, out, out_width);
 }
 
 int
@@ -347,14 +371,16 @@ WaterfallItem::onFrame() {
     if (m_have_row && index == m_last_frame_index) {
         return; /* a repaint request, not a new row */
     }
-    m_last_frame_index = index;
-    m_have_row = true;
-
     const int n = m_model->binCount();
     const QVector<float>& bins = m_model->bins();
     if (n <= 0 || bins.size() < n) {
         return;
     }
+    /* Stamped only once the frame is known to be usable, as SpectrumTraceItem does:
+     * claiming it before the check would make a frame this declined to draw look
+     * like one already drawn, and the row would be lost from history for good. */
+    m_last_frame_index = index;
+    m_have_row = true;
     m_range.update(bins.constData(), n);
 
     /* Always full span: that is what lets zoom and pan reach back through
@@ -382,10 +408,16 @@ WaterfallItem::paint(QPainter* painter) {
         return;
     }
 
-    /* Which slice of the full-span rows the viewport is looking at. */
+    /* Which slice of the full-span rows the viewport is looking at.
+     *
+     * Deliberately not gated on hasData(): invalidateFrame() drops the frame but
+     * keeps the center, the span and the viewport, precisely so the history stays
+     * meaningful across a pause. Requiring a live frame here would snap the picture
+     * from the zoomed slice back to 1x every time the app backgrounds or production
+     * stops, and snap it back a frame later. */
     double src_x = 0.0;
     double src_w = kWaterfallWidth;
-    if (m_model && m_model->hasData() && m_model->spanHz() > 0.0) {
+    if (m_model && m_model->spanHz() > 0.0) {
         const double span = m_model->spanHz();
         const double low = m_model->centerFreqHz() - (span / 2.0);
         const double frac_lo = (m_model->viewLowHz() - low) / span;

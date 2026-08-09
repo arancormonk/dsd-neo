@@ -83,10 +83,12 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* Accepted and discarded: nothing under test asserts on the settings-menu
+     * tune, only on the spectrum's manualTuneHz(). Counting it would be state no
+     * assertion can ever fail on. */
     Q_INVOKABLE bool
     tuneHz(unsigned int hz) {
-        m_tune_calls++;
-        m_last_tune_hz = hz;
+        Q_UNUSED(hz)
         return true;
     }
 
@@ -165,8 +167,6 @@ class CommandRecorder : public QObject {
     reset() {
         m_manual_tune_calls = 0;
         m_last_manual_tune_hz = 0U;
-        m_tune_calls = 0;
-        m_last_tune_hz = 0U;
         m_release_tuner_calls = 0;
         m_gain_calls = 0;
         m_last_gain_db = -1;
@@ -225,8 +225,6 @@ class CommandRecorder : public QObject {
   private:
     int m_manual_tune_calls = 0;
     unsigned int m_last_manual_tune_hz = 0U;
-    int m_tune_calls = 0;
-    unsigned int m_last_tune_hz = 0U;
     int m_release_tuner_calls = 0;
     int m_gain_calls = 0;
     int m_last_gain_db = -1;

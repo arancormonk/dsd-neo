@@ -149,6 +149,11 @@ class SpectrumModel : public QObject {
      * one already tuned is skipped. Returns 0 when there is no such signal, which
      * the caller must check — this control has to do nothing on an empty band
      * rather than retune to where the radio already is.
+     *
+     * "Center" is the tuned carrier while it is on screen, and the middle of the
+     * view once the pan has taken it off: only what is visible can be answered
+     * with, so an off-screen reference would leave one direction with nothing to
+     * search. A retune resets the pan, so the two coincide again immediately after.
      */
     Q_INVOKABLE double nextPeakHz(int direction) const;
 

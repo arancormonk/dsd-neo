@@ -17,7 +17,9 @@
  *  - the first frame captured at a new center must survive the history clear
  *    that the retune triggers, because it is the one row that is certain to be
  *    worth seeing;
- *  - a tap must never resolve to a frequency outside the visible window.
+ *  - a tap must never resolve to a frequency outside the visible window, and a
+ *    hop must still find the carriers inside it once the view has been panned
+ *    clear of the tuned center.
  *
  * The producer is stubbed here rather than mocked through the engine: the model
  * only ever sees the app-control getter, so supplying that is the whole of it.
@@ -30,6 +32,7 @@
 #include <QObject>
 #include <QtGlobal>
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <stdio.h>
 
@@ -222,6 +225,51 @@ test_a_tap_never_snaps_outside_the_visible_window(void) {
 }
 
 /*
+ * The hop is bounded by the visible window but takes its reference from the
+ * tuned center, and past 2x the window can be panned until that center is not
+ * inside it at all. Seeded outside its own bounds, one of the two directions
+ * searches an empty range: the control reports an empty band with carriers
+ * plainly on screen, and stays that way until the view is reset.
+ */
+void
+test_a_hop_still_works_when_the_view_is_panned_off_center(void) {
+    /* Two carriers in the top of the capture, either side of where the panned
+     * window's middle lands. The lower one is the stronger of the two, so an
+     * upward hop that searched the whole window would answer with it. */
+    const int lower_bin = 940;
+    const int upper_bin = 980;
+    seed_bins(lower_bin);
+    g_bins[lower_bin] = -15.0F;
+    g_bins[upper_bin] = -20.0F;
+    g_serial = 0;
+    dsd_qt::SpectrumModel model;
+
+    model.setActive(true);
+    publish(kCenterHz);
+    model.testPoll();
+    assert(model.hasData());
+
+    /* Past 2x the maximum pan clears the center bin entirely; the offset is
+     * deliberately over-large and left to the model's own clamp. */
+    model.setZoom(8.0);
+    model.setViewOffsetHz(static_cast<double>(kSpanHz));
+    assert(model.viewLowHz() > static_cast<double>(kCenterHz));
+
+    const double bin_width = static_cast<double>(kSpanHz) / static_cast<double>(kBins);
+    const double lower_hz =
+        static_cast<double>(kCenterHz) + ((static_cast<double>(lower_bin) - (kBins / 2.0)) * bin_width);
+    const double upper_hz =
+        static_cast<double>(kCenterHz) + ((static_cast<double>(upper_bin) - (kBins / 2.0)) * bin_width);
+    assert(lower_hz > model.viewLowHz() && upper_hz < model.viewHighHz());
+
+    /* Both carriers are on screen, so both directions have an answer to give. */
+    assert(std::fabs(model.nextPeakHz(1) - upper_hz) < (bin_width / 2.0));
+    assert(std::fabs(model.nextPeakHz(-1) - lower_hz) < (bin_width / 2.0));
+
+    model.setActive(false);
+}
+
+/*
  * Production follows the view, so a closed view costs no FFT at all, and a
  * reopened one never shows the frame the last session left behind.
  */
@@ -255,6 +303,7 @@ main(int argc, char** argv) {
     test_a_repeated_frame_is_not_a_new_frame();
     test_the_first_frame_after_a_retune_becomes_a_row();
     test_a_tap_never_snaps_outside_the_visible_window();
+    test_a_hop_still_works_when_the_view_is_panned_off_center();
     test_production_follows_the_view();
 
     assert(g_get_calls > 0);

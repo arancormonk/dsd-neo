@@ -271,6 +271,13 @@ Item {
         anchors.right: parent.right
         anchors.margins: Theme.screenPadding
         height: 48
+        // Same shield the picture carries, for the same reason: the sheets are
+        // siblings anchored over the whole screen, so their scrim covers this
+        // strip too, and a TapHandler never takes an exclusive grab. Without
+        // this, dismissing a sheet by tapping the scrim over the header also
+        // fires the back caret underneath and closes the whole view — or
+        // re-opens the Go-to sheet and overwrites what was typed into it.
+        enabled: !screen.sheetOpen
 
         Item {
             id: backButton
@@ -1217,11 +1224,24 @@ Item {
         visible: false
         color: Qt.alpha("#000000", 0.5)
 
+        /** Whether a point in this sheet's coordinates lies on the panel. */
+        function hitsPanel(x, y) {
+            var p = confirmExplore.mapToItem(confirmPanel, x, y)
+            return p.x >= 0 && p.y >= 0 && p.x <= confirmPanel.width && p.y <= confirmPanel.height
+        }
+
+        // Same rule as the other two sheets: handlers never take exclusive grabs, so
+        // an unconditional dismiss here fires for every control on the panel as well.
         TapHandler {
-            onTapped: confirmExplore.visible = false
+            onTapped: function (eventPoint) {
+                if (!confirmExplore.hitsPanel(eventPoint.position.x, eventPoint.position.y))
+                    confirmExplore.visible = false
+            }
         }
 
         UiPanel {
+            id: confirmPanel
+
             anchors.centerIn: parent
             width: parent.width - 2 * Theme.screenPadding
             height: confirmColumn.height + 2 * Theme.cardPadding

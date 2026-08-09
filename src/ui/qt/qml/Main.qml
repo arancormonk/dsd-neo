@@ -193,6 +193,10 @@ Window {
         // saved is a thing to listen to, and the spectrum watches it. Only a
         // session with no saved system behind it is free to wander.
         mainRoot.exploring = (row < 0)
+        // Belongs to the session that just ended. Carried into this one it would be
+        // written back to prefs on stop as if it were where this exploring got to —
+        // a frequency from two sessions ago, on a session that may never have moved.
+        mainRoot.lastExploreFreqMhz = ""
         // The previous session may have committed calls since the last 250 ms
         // tick; ingest them under its own label before the label changes hands,
         // or its tail calls read as the new system's.
@@ -392,6 +396,11 @@ Window {
                 // later whether or not the request was honoured.
                 commands.releaseTuner()
                 mainRoot.exploring = true
+                // Seeded here rather than waiting for the next tuner reading: the
+                // session may never move again, and an empty value would leave the
+                // stop handler with nothing to remember this band by.
+                if (metrics.centerFreqHz > 0)
+                    mainRoot.lastExploreFreqMhz = Util.mhzText(metrics.centerFreqHz)
                 // The session is no longer the saved system it started as: its
                 // frequency is now whatever the user makes it, and the calls it
                 // logs from here on did not come from that system.

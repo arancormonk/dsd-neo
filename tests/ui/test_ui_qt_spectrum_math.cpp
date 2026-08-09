@@ -236,6 +236,28 @@ test_directional_peak(void) {
     assert(sm::directional_peak_bin(db.data(), 64, 32, 1, 4, 8.0, 40, 8) < 0);
 }
 
+void
+test_directional_seed(void) {
+    /* On screen the tuned carrier is the reference, edges included — that is what
+     * makes the gap step past the signal already being listened to. */
+    assert(sm::directional_seed_bin(32, 0, 63) == 32);
+    assert(sm::directional_seed_bin(0, 0, 63) == 0);
+    assert(sm::directional_seed_bin(63, 0, 63) == 63);
+
+    /* Panned clear of it, the middle of what is on screen takes over. Seeding at
+     * the bound instead would leave the opposite direction with an empty range,
+     * which is the dead control this exists to prevent. */
+    assert(sm::directional_seed_bin(32, 40, 63) == 51);
+    assert(sm::directional_seed_bin(32, 0, 20) == 10);
+
+    /* One bin either side of the window is already off it. */
+    assert(sm::directional_seed_bin(39, 40, 63) == 51);
+    assert(sm::directional_seed_bin(64, 40, 63) == 51);
+
+    /* A one-bin window is its own middle. */
+    assert(sm::directional_seed_bin(0, 7, 7) == 7);
+}
+
 /* The frequency shown at x_fraction, after clamping. */
 double
 freq_at(double zoom, double offset, double x_fraction) {
@@ -316,6 +338,7 @@ main(void) {
     test_peak_search();
     test_peak_search_stays_inside_the_window();
     test_directional_peak();
+    test_directional_seed();
     test_zoom_anchor();
     test_nice_tick_step();
     (void)DSD_FPRINTF(stdout, "UI_QT_SPECTRUM_MATH: ok\n");

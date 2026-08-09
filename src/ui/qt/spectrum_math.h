@@ -245,6 +245,25 @@ directional_range(int from_bin, int direction, int gap_bins, int bound_lo, int b
 }
 
 /**
+ * @brief Where a directional search should start, given what is on screen.
+ *
+ * The tuned carrier is the natural reference, and @c directional_peak_bin()'s gap
+ * exists to step past it. But the viewport pans independently of the tuner, and
+ * past 2x it can be moved until the tuned bin is not within @p bound_lo ..
+ * @p bound_hi at all. A seed outside its own bounds leaves one of the two
+ * directions with an empty range — a control that reports an empty band while
+ * carriers sit on screen. There is nothing to step past once the tuned carrier is
+ * off screen, so the middle of what is on screen becomes the reference instead.
+ */
+inline int
+directional_seed_bin(int from_bin, int bound_lo, int bound_hi) {
+    if (from_bin >= bound_lo && from_bin <= bound_hi) {
+        return from_bin;
+    }
+    return bound_lo + ((bound_hi - bound_lo) / 2);
+}
+
+/**
  * @brief Strongest bin beyond @p from_bin in @p direction that stands above the noise.
  *
  * The control this backs is "take me to the next signal", so it answers with a bin
