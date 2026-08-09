@@ -127,6 +127,20 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("qpsk reads as modulation 1", model.modulation() == 1);
 
+    /* GFSK is a third state, not an absence of QPSK. Reported as C4FM, it made a
+     * control bound to this reading show C4FM as already-selected on a DMR or
+     * EDACS/ProVoice session that had never been on it. */
+    opts.mod_qpsk = 0;
+    opts.mod_c4fm = 0;
+    opts.mod_gfsk = 1;
+    model.refresh(&opts, &state);
+    expect("gfsk reads as modulation 2", model.modulation() == 2);
+
+    opts.mod_gfsk = 0;
+    opts.mod_c4fm = 1;
+    model.refresh(&opts, &state);
+    expect("c4fm reads as modulation 0 again", model.modulation() == 0);
+
     /* Tuner ownership: the gate is the OR, and the two named owners exist only to
      * word a message. All three have to agree. */
     opts.trunk_enable = 1;

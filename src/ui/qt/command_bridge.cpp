@@ -92,7 +92,10 @@ CommandBridge::setPpm(int ppm) const {
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setModulation(int modulation) const {
-    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, (modulation != 0) ? 1 : 0));
+    if (modulation < 0 || modulation > 2) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, static_cast<int32_t>(modulation)));
 }
 
 bool

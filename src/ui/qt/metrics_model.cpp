@@ -234,7 +234,10 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     if (next.synced_here) {
         next.sync_label = QString::fromUtf8(dsd_synctype_to_string(m_sync_type_here));
     }
-    next.modulation = (opts_snapshot->mod_qpsk != 0) ? 1 : 0;
+    /* Three states, not two: GFSK is what the DMR and EDACS/ProVoice presets
+     * select, and folding it into C4FM made a control bound to this reading show
+     * C4FM as already-selected on a session that was never on it. */
+    next.modulation = (opts_snapshot->mod_qpsk != 0) ? 1 : ((opts_snapshot->mod_gfsk != 0) ? 2 : 0);
     next.tuner_gain_db = opts_snapshot->rtl_gain_value;
     /* rtl_squelch_level is a mean-power threshold, not decibels — the same
      * conversion the engine's own status line uses. Publishing the raw value

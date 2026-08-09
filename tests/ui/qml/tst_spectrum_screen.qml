@@ -596,6 +596,19 @@ Item {
             findChild(screen, "radioModulation").selected(0)
             compare(testContext.lastModulation(), 0)
 
+            // GFSK is a state the session arrives in on its own — the DMR and
+            // EDACS/ProVoice presets select it — so it has to be offered as a
+            // choice too, or the first press above is a one-way door out of it.
+            compare(findChild(screen, "radioModulation").model.length, 3)
+            findChild(screen, "radioModulation").selected(2)
+            compare(testContext.lastModulation(), 2)
+
+            // And it has to read back as itself rather than as C4FM, or the
+            // control claims a modulation the decoder is not on.
+            testContext.setMetric("modulation", 2)
+            compare(findChild(screen, "radioModulation").currentIndex, 2)
+            testContext.setMetric("modulation", 0)
+
             // Every one of those presses has to leave the panel open. The scrim
             // dismisses on a tap, and a handler on the panel cannot stop that —
             // handlers never take exclusive grabs — so the scrim has to decide by

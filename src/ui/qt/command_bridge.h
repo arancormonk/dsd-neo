@@ -71,11 +71,12 @@ class CommandBridge : public QObject {
     Q_INVOKABLE bool setPpm(int ppm) const;
 
     /**
-     * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK.
+     * @brief Choose the demodulator: 0 for C4FM, 1 for QPSK, 2 for GFSK.
      *
-     * A setter, not the hotkey's cycle: a control showing both as choices has to
+     * A setter, not the hotkey's cycle: a control showing them as choices has to
      * be able to ask for the one it is not on without guessing at a state the
-     * engine may have moved since.
+     * engine may have moved since. Anything outside 0..2 is refused here rather
+     * than clamped, so a caller's mistake does not silently land on C4FM.
      */
     Q_INVOKABLE bool setModulation(int modulation) const;
 

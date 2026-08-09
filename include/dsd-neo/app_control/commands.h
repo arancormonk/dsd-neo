@@ -162,7 +162,7 @@ enum dsd_app_command_id {
     // Set the modulation outright rather than cycling it. A view showing C4FM and
     // QPSK as two choices has to be able to ask for the one it is not on; a toggle
     // makes that a guess about state that may already have moved.
-    DSD_APP_CMD_MOD_SET = 494, // payload: int32_t (0 = C4FM, 1 = QPSK)
+    DSD_APP_CMD_MOD_SET = 494, // payload: int32_t (0 = C4FM, 1 = QPSK, 2 = GFSK), matching dsd_state::rf_mod
     // Switch which protocols are decoded, mid-session. Payload is a
     // dsdneoUserDecodeMode (<dsd-neo/runtime/config.h>), applied through the same
     // preset helper the CLI and config paths use.

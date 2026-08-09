@@ -265,10 +265,14 @@ Rectangle {
                 color: Theme.textSecondary
             }
 
+            // GFSK is the third choice because it is a state the session can
+            // already be in — the DMR and EDACS/ProVoice presets select it — and
+            // a two-entry control could only show it as C4FM, then offer no way
+            // back to it once the user tried something else.
             SegmentedControl {
                 objectName: "radioModulation"
                 width: parent.width
-                model: [qsTr("C4FM"), qsTr("QPSK / simulcast")]
+                model: [qsTr("C4FM"), qsTr("QPSK / simulcast"), qsTr("GFSK")]
                 currentIndex: metrics.modulation
                 onSelected: function (index) { commands.setModulation(index) }
             }

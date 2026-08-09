@@ -202,8 +202,8 @@ class MetricsModel : public QObject {
      * where the engine actually is rather than what the UI last asked for — the
      * engine can refuse, and on Android the service outlives this process.
      *
-     * decodeMode is a dsdneoUserDecodeMode; modulation is 0 for C4FM and 1 for
-     * QPSK, matching DSD_APP_CMD_MOD_SET's payload.
+     * decodeMode is a dsdneoUserDecodeMode; modulation is 0 for C4FM, 1 for QPSK
+     * and 2 for GFSK, matching DSD_APP_CMD_MOD_SET's payload and dsd_state::rf_mod.
      */
     int
     decodeMode() const {

@@ -1288,9 +1288,9 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_true("c4fm rebuilds timing", state.samplesPerSymbol != 12345);
     freeState(&state);
 
-    /* GFSK is the third rf_mod value, and the one the DMR/NXDN/YSF/M17/dPMR and
-     * EDACS presets leave behind. Asking for C4FM from there is a real change, so
-     * the idempotency guard must not swallow it. */
+    /* GFSK is the third rf_mod value, and the one the DMR and EDACS/ProVoice
+     * presets leave behind. Asking for C4FM from there is a real change, so the
+     * idempotency guard must not swallow it. */
     init_test_context(&opts, &state);
     opts.mod_c4fm = 0;
     opts.mod_qpsk = 0;
@@ -1317,6 +1317,80 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("qpsk from gfsk selected", opts.mod_qpsk, 1);
     rc |= expect_int("qpsk from gfsk clears gfsk", opts.mod_gfsk, 0);
     rc |= expect_int("qpsk from gfsk moves rf_mod", state.rf_mod, 1);
+
+    /* And back to GFSK, which is why it is a choice and not just a reading: the
+     * preset that selected it is not re-run by the modulation control, so without
+     * this the first tap on any other segment is a one-way door. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 2), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("gfsk selected", opts.mod_gfsk, 1);
+    rc |= expect_int("gfsk clears c4fm", opts.mod_c4fm, 0);
+    rc |= expect_int("gfsk clears qpsk", opts.mod_qpsk, 0);
+    rc |= expect_int("gfsk moves rf_mod", state.rf_mod, 2);
+    rc |= expect_true("gfsk rebuilds timing", state.samplesPerSymbol != 12345);
+
+    /* Idempotent on its own value too, same as the other two. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("repeat gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 2),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat gfsk changes nothing", state.samplesPerSymbol, 12345);
+
+    /* A modulation that does not exist is refused rather than clamped: clamping
+     * would land the demodulator on C4FM, which nobody asked for. */
+    rc |= expect_int("out of range queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 3),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("out of range drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("out of range leaves modulation alone", state.rf_mod, 2);
+    rc |= expect_int("out of range leaves timing alone", state.samplesPerSymbol, 12345);
+    rc |=
+        expect_int("negative queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, -1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("negative drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("negative leaves modulation alone", state.rf_mod, 2);
+    freeState(&state);
+
+    /* Timing comes from the decode set, not from a constant. ProVoice is the one
+     * mode this control reaches that is not 4800 symbols/s, and applying a
+     * modulation at 4800 on a 9600-baud signal is a decoder that stops decoding. */
+    init_test_context(&opts, &state);
+    opts.frame_provoice = 1;
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 0;
+    opts.frame_ysf = 0;
+    opts.frame_m17 = 0;
+    opts.frame_dstar = 0;
+    opts.frame_x2tdma = 0;
+    opts.frame_dpmr = 0;
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 1;
+    state.rf_mod = 2;
+    rc |= expect_int("provoice c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("provoice c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    /* 48 kHz / 9600 = 5, the value the EDACS/ProVoice preset itself installs. */
+    rc |= expect_int("provoice keeps its 9600 timing", state.samplesPerSymbol, 5);
+    rc |= expect_int("provoice hunts on the 9600 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+    freeState(&state);
+
+    /* AUTO enables ProVoice next to the 4800 modes, so its flag alone must not
+     * drag everything else to 9600. */
+    init_test_context(&opts, &state);
+    opts.frame_provoice = 1;
+    opts.frame_p25p1 = 1;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+    rc |=
+        expect_int("auto qpsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("auto qpsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("auto stays on 4800 timing", state.samplesPerSymbol, 10);
+    rc |= expect_int("auto hunts on the 4800 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
     freeState(&state);
 
     /* Decode mode goes through the same preset helper the CLI uses, so a mode
