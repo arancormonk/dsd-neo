@@ -7,11 +7,13 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 #include <string.h>
 #include "../command_dispatch.h"
+#include "../services.h"
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -34,61 +36,19 @@ ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /**
- * @brief The symbol rate the modulation control's choices run at, in Hz.
+ * @brief The symbol profile the modulation control's choices run at.
  *
  * The control switches the demodulator inside whatever decode set is enabled, so
- * the timing has to come from that set rather than from a constant. Everything it
- * applies to is 4800 symbols/s except ProVoice, which is 9600 — and only when
- * ProVoice is the mode being decoded. AUTO enables ProVoice alongside the 4800
- * modes, so the flag on its own says nothing.
+ * the timing has to come from that set rather than from a constant — and from the
+ * same authority the SPS hunt and the front-end filter read, or a modulation
+ * picked here lands the decoder on one protocol's symbol clock and the hunt on
+ * another's. A mode set that spans several symbol rates (AUTO, or a hand-rolled
+ * combination) answers 4800/4, which is where the hunt starts anyway.
  */
-static int
-ui_modulation_symbol_rate(const dsd_opts* opts) {
-    if (opts->frame_provoice != 1) {
-        return 4800;
-    }
-    const int other_modes = opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1 || opts->frame_dmr == 1
-                            || opts->frame_nxdn48 == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1
-                            || opts->frame_m17 == 1 || opts->frame_dstar == 1 || opts->frame_x2tdma == 1
-                            || opts->frame_dpmr == 1;
-    return other_modes ? 4800 : 9600;
+static dsd_decode_mode_profile
+ui_modulation_profile(const dsd_opts* opts) {
+    return dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
 }
-
-#ifdef USE_RADIO
-/**
- * @brief The channel filter that goes with a symbol rate and modulation.
- *
- * Deliberately the same mapping the DSP's SPS hunt applies in
- * rtl_profile_for_sps_profile(): a modulation picked here and one the hunt lands
- * on must ask the backend for the same filter, or the two disagree about what the
- * front end is doing every time the hunt re-runs.
- */
-static int
-ui_rtl_channel_profile(const dsd_opts* opts, int symbol_rate_hz, int mod) {
-    if (symbol_rate_hz == 9600) {
-        return RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    if (mod == 1) {
-        return RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
-    }
-    if (symbol_rate_hz == 6000 || mod == 2 || dsd_opts_uses_wide_4800_profile(opts)) {
-        return RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    return RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
-}
-
-static void
-ui_apply_rtl_demod_profile(const dsd_opts* opts, const dsd_state* state, int symbol_rate_hz, int levels, int sps) {
-    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
-        return;
-    }
-    const int mod = state->rf_mod;
-    /* Queue the whole profile for the demod thread instead of mutating demod
-     * state from the UI thread (sps clamp mirrors the old no-override setter). */
-    (void)rtl_stream_request_demod_profile(mod == 1, symbol_rate_hz, levels,
-                                           ui_rtl_channel_profile(opts, symbol_rate_hz, mod), sps < 2 ? 2 : sps, 0);
-}
-#endif
 
 static int
 ui_handle_ppm_delta(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
@@ -133,22 +93,18 @@ ui_handle_invert_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
 static void
 ui_apply_modulation(dsd_opts* opts, dsd_state* state, int mod) {
     const int leaving_p25p2_helper = opts->mod_p25p2_c4fm == 1 || opts->mod_p25p2_profile_lock == 1;
-    const int symbol_rate = ui_modulation_symbol_rate(opts);
-    const int sps = dsd_opts_compute_sps_rate(opts, symbol_rate, ui_modulation_demod_rate(opts, state));
+    const dsd_decode_mode_profile profile = ui_modulation_profile(opts);
+    const int sps = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, ui_modulation_demod_rate(opts, state));
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
-    state->sps_hunt_idx = (symbol_rate == 9600) ? DSD_FRAME_SYNC_SPS_PROFILE_9600_2 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state->sps_hunt_counter = 0;
     opts->mod_c4fm = (mod == 0) ? 1 : 0;
     opts->mod_qpsk = (mod == 1) ? 1 : 0;
     opts->mod_gfsk = (mod == 2) ? 1 : 0;
     state->rf_mod = mod;
     state->samplesPerSymbol = sps;
     state->symbolCenter = dsd_opts_symbol_center(sps);
-#ifdef USE_RADIO
-    /* ProVoice is the two-level one; everything else this control reaches is four. */
-    ui_apply_rtl_demod_profile(opts, state, symbol_rate, (symbol_rate == 9600) ? 2 : 4, sps);
-#endif
+    /* After rf_mod and the timing, both of which the published profile reads. */
+    svc_publish_symbol_profile(opts, state, profile);
     if (leaving_p25p2_helper) {
         /* Release the helper lock only after decoder timing and any RTL backend agree on profile 0. */
         opts->mod_cli_lock = 0;
@@ -165,9 +121,13 @@ ui_handle_mod_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_comm
 static int
 ui_handle_mod_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t want = 0;
-    if (c->n >= (int)sizeof(int32_t)) {
-        DSD_MEMCPY(&want, c->data, sizeof(int32_t));
+    if (c->n < (int)sizeof(int32_t)) {
+        /* A truncated payload is not a request for C4FM. Falling through with want
+         * still 0 would force the demodulator, reset the sps hunt and release the
+         * P25p2 helper lock on a command nobody sent. */
+        return 1;
     }
+    DSD_MEMCPY(&want, c->data, sizeof(int32_t));
     if (want < 0 || want > 2) {
         /* A modulation that does not exist. Nothing sane to apply, and guessing at
          * one would move the demodulator somewhere the caller never asked for. */
@@ -178,8 +138,19 @@ ui_handle_mod_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
      * timing the decoder has already settled on. Compared against the modulation
      * actually in effect rather than as a boolean, because rf_mod has three values
      * and GFSK (2) is one the DMR and EDACS/ProVoice presets select — a C4FM
-     * request from there is a real change and has to apply. */
-    if (state->rf_mod == (int)want && opts->mod_p25p2_c4fm == 0 && opts->mod_p25p2_profile_lock == 0) {
+     * request from there is a real change and has to apply.
+     *
+     * Both readings have to agree before the request is a no-op. The sps hunt moves
+     * state->rf_mod on its own without touching the mod_* flags
+     * (frame_sync_maybe_force_dmr_gfsk(), frame_sync_accept_p25p2()), while the
+     * reading a segmented control binds to is published from the flags
+     * (MetricsModel::fillDecoderView). Skipping on rf_mod alone therefore drops
+     * exactly the tap that would resynchronise them: the control shows C4FM, asking
+     * for QPSK on a session the hunt already moved to QPSK does nothing, and the
+     * control snaps back on the next poll and reads as broken. */
+    const int mod_in_effect = (opts->mod_qpsk != 0) ? 1 : ((opts->mod_gfsk != 0) ? 2 : 0);
+    if (state->rf_mod == (int)want && mod_in_effect == (int)want && opts->mod_p25p2_c4fm == 0
+        && opts->mod_p25p2_profile_lock == 0) {
         return 1;
     }
     /* The P25p2 helper is the exception to the skip: it holds mod_cli_lock and the
@@ -194,12 +165,11 @@ static int
 ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
     // P25P2 TDMA: 6000 sym/s - compute SPS from actual demod rate
-    int sps = dsd_opts_compute_sps_rate(opts, 6000, ui_modulation_demod_rate(opts, state));
+    const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
+    int sps = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, ui_modulation_demod_rate(opts, state));
     int center = dsd_opts_symbol_center(sps);
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 1;
-    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
-    state->sps_hunt_counter = 0;
     if (state->rf_mod == 0) {
         opts->mod_c4fm = 0;
         opts->mod_qpsk = 1;
@@ -215,9 +185,7 @@ ui_handle_mod_p2_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
         state->samplesPerSymbol = sps;
         state->symbolCenter = center;
     }
-#ifdef USE_RADIO
-    ui_apply_rtl_demod_profile(opts, state, 6000, 4, sps);
-#endif
+    svc_publish_symbol_profile(opts, state, profile);
     /* Lock only after the decoder and any RTL backend share the P25p2 profile. */
     opts->mod_cli_lock = 1;
     return 1;

@@ -1399,6 +1399,10 @@ test_modulation_and_decode_mode_setters(void) {
     opts.frame_p25p1 = 1;
     opts.frame_p25p2 = 1;
     opts.frame_dmr = 0;
+    /* Mid-session the hunt is wherever the previous mode left it — here the P25p2
+     * 6000 profile, part-way through its dwell. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.sps_hunt_counter = 11;
     rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1501);
     rc |= expect_int("dmr mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -1407,10 +1411,33 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("p25p1 disabled", opts.frame_p25p1, 0);
     rc |= expect_int("p25p2 disabled", opts.frame_p25p2, 0);
     rc |= expect_contains("decode mode explains itself", state.ui_msg, "DMR");
+    /* Left on the old mode's profile the hunt overwrites the timing installed
+     * here on its very next pass, and the new mode never gets a chance. */
+    rc |= expect_int("dmr mode selects the 4800 hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("dmr mode restarts the hunt dwell", state.sps_hunt_counter, 0);
+    rc |= expect_int("dmr mode installs 4800 timing", state.samplesPerSymbol, 10);
     /* A call open on the protocol we just stopped decoding would never be closed
      * by the one we started, so it has to end here. */
     rc |= expect_call_phase("decode change ends slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
     rc |= expect_call_phase("decode change ends slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
+    freeState(&state);
+
+    /* A mode on a different symbol rate has to carry the hunt with it: NXDN48 is
+     * 2400 sym/s, and a decoder left on the 4800 profile is looking for it at
+     * twice the symbol clock through a 12.5 kHz filter. */
+    init_test_context(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.frame_p25p1 = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 5;
+    rc |= expect_int("nxdn48 mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("nxdn48 mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("nxdn48 enabled", opts.frame_nxdn48, 1);
+    rc |= expect_int("nxdn48 selects the 2400 hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    rc |= expect_int("nxdn48 restarts the hunt dwell", state.sps_hunt_counter, 0);
+    rc |= expect_int("nxdn48 installs 2400 timing", state.samplesPerSymbol, 20);
     freeState(&state);
 
     /* Back to auto re-enables the set the engine starts with. */

@@ -2991,12 +2991,23 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     }
     opts->pulse_digi_out_channels = audio_channels;
     opts->pulse_digi_rate_out = audio_rate;
-    /* The presets write symbol timing for a 48 kHz input. On an RTL front end the
-       demod output rate is whatever the capture rate decimates to, so the same
-       rescale every other preset caller performs (the CLI at startup, the config
-       reload above) has to happen here too, or the decoder is put on the wrong
-       symbol clock for the protocol it was just told to look for. */
-    dsd_apply_decode_mode_symbol_timing(mode, current_demod_rate(opts, state), state);
+    /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
+       the demod output rate is whatever the capture rate decimates to, so the
+       timing has to be recomputed at the live rate or the decoder is put on the
+       wrong symbol clock for the protocol it was just told to look for.
+
+       Taken from the mode's steady-state profile rather than from the preset's
+       starting timing, because the same profile decides the SPS hunt index and
+       the channel filter published just below, and a mode running on one symbol
+       clock with a hunt profile and a filter built for another is exactly what
+       that costs. */
+    const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(mode);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    /* The SPS hunt resumes from wherever the previous mode left it, and its next
+       pass overwrites the timing just computed; the RTL front end likewise keeps
+       the old mode's demodulator family and channel filter until told otherwise. */
+    svc_publish_symbol_profile(opts, state, profile);
     /* The decoder was hunting for a different protocol a moment ago: its
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */

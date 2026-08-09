@@ -170,6 +170,101 @@ test_generic_toggle_restores_rtl_after_p25p2_helper(void) {
     return rc;
 }
 
+/* One decode mode enabled, as a single-protocol session has it. */
+static void
+enable_nxdn48(dsd_opts* o) {
+    o->frame_nxdn48 = 1;
+}
+
+static void
+enable_nxdn96(dsd_opts* o) {
+    o->frame_nxdn96 = 1;
+}
+
+static void
+enable_dpmr(dsd_opts* o) {
+    o->frame_dpmr = 1;
+}
+
+static void
+enable_p25p2(dsd_opts* o) {
+    o->frame_p25p2 = 1;
+}
+
+static void
+enable_provoice(dsd_opts* o) {
+    o->frame_provoice = 1;
+}
+
+/*
+ * The symbol rate the modulation control applies comes from the mode being
+ * decoded. NXDN48 and dPMR run at 2400 sym/s in a 6.25 kHz channel and NXDN96 at
+ * 4800 in 12.5 kHz despite both NXDN variants sharing a preset sps; deriving the
+ * rate from the frame flags by hand got the 2400 modes wrong and asked the front
+ * end for a filter the DSP's own hunt disagreed with, which is what makes the
+ * filter flip every time the hunt re-runs.
+ */
+static int
+test_mod_set_takes_symbol_profile_from_the_decoded_mode(void) {
+    static const struct {
+        const char* tag;
+        void (*enable)(dsd_opts*);
+        int rate;
+        int levels;
+        int channel_profile;
+        int ted_sps;
+        int hunt_idx;
+    } cases[] = {
+        {"nxdn48", enable_nxdn48, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, DSD_FRAME_SYNC_SPS_PROFILE_2400_4},
+        {"dpmr", enable_dpmr, 2400, 4, RTL_STREAM_CHANNEL_PROFILE_6K25, 20, DSD_FRAME_SYNC_SPS_PROFILE_2400_4},
+        /* 4800 like P25p1, but a 12.5 kHz channel — dsd_opts_uses_wide_4800_profile(). */
+        {"nxdn96", enable_nxdn96, 4800, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 10, DSD_FRAME_SYNC_SPS_PROFILE_4800_4},
+        {"p25p2", enable_p25p2, 6000, 4, RTL_STREAM_CHANNEL_PROFILE_12K5, 8, DSD_FRAME_SYNC_SPS_PROFILE_6000_4},
+        {"provoice", enable_provoice, 9600, 2, RTL_STREAM_CHANNEL_PROFILE_PROVOICE, 5,
+         DSD_FRAME_SYNC_SPS_PROFILE_9600_2},
+    };
+
+    int rc = 0;
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        struct dsd_app_command cmd;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(&cmd, 0, sizeof(cmd));
+
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.rtl_ctx = (RtlSdrContext*)&state;
+        cases[i].enable(&opts);
+        /* Start on QPSK so the C4FM request below is a real change rather than
+         * the no-op a control re-asserting its own state produces. */
+        opts.mod_qpsk = 1;
+        state.rf_mod = 1;
+        /* Deliberately the wrong profile to begin with: leaving it alone is the
+         * bug, so the assertion has to be able to tell "set" from "untouched". */
+        state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+        state.sps_hunt_counter = 7;
+
+        const int32_t want_c4fm = 0;
+        cmd.id = DSD_APP_CMD_MOD_SET;
+        cmd.n = (int)sizeof want_c4fm;
+        DSD_MEMCPY(cmd.data, &want_c4fm, sizeof want_c4fm);
+        reset_profile_capture(&opts);
+
+        rc |= expect_int(cases[i].tag, dispatch_one(&opts, &state, &cmd), 1);
+        rc |= expect_int(cases[i].tag, g_request_calls, 1);
+        rc |= expect_int(cases[i].tag, g_request_rate, cases[i].rate);
+        rc |= expect_int(cases[i].tag, g_request_levels, cases[i].levels);
+        rc |= expect_int(cases[i].tag, g_request_channel_profile, cases[i].channel_profile);
+        rc |= expect_int(cases[i].tag, g_request_ted_sps, cases[i].ted_sps);
+        rc |= expect_int(cases[i].tag, g_request_cqpsk, 0);
+        rc |= expect_int(cases[i].tag, state.samplesPerSymbol, cases[i].ted_sps);
+        rc |= expect_int(cases[i].tag, state.sps_hunt_idx, cases[i].hunt_idx);
+        rc |= expect_int(cases[i].tag, state.sps_hunt_counter, 0);
+    }
+    return rc;
+}
+
 static int
 test_p25p2_toggle_ignores_non_rtl_input(void) {
     int rc = 0;
@@ -196,6 +291,7 @@ main(void) {
     int rc = 0;
     rc |= test_p25p2_toggle_applies_rtl_profile_before_lock();
     rc |= test_generic_toggle_restores_rtl_after_p25p2_helper();
+    rc |= test_mod_set_takes_symbol_profile_from_the_decoded_mode();
     rc |= test_p25p2_toggle_ignores_non_rtl_input();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "APP CONTROL RTL ACTION TESTS PASSED\n");

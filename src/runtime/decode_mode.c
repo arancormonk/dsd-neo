@@ -5,7 +5,9 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -35,6 +37,60 @@ dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode) {
     }
 }
 
+dsd_decode_mode_profile
+dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
+    dsd_decode_mode_profile profile = {4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4};
+
+    switch (mode) {
+        case DSDCFG_MODE_P25P2:
+            profile.symbol_rate_hz = 6000;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+            break;
+        case DSDCFG_MODE_NXDN48:
+        case DSDCFG_MODE_DPMR:
+            profile.symbol_rate_hz = 2400;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+            break;
+        case DSDCFG_MODE_EDACS_PV:
+            profile.symbol_rate_hz = 9600;
+            profile.levels = 2;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+            break;
+        /* NXDN96 belongs here and not with NXDN48: 9600 bps over four levels is
+           4800 sym/s. The hunt agrees -- frame_sync_sps_profile_has_candidate()
+           offers NXDN96 only at 4800_4, so a mode put on 2400_4 would search a
+           profile that can never match it. */
+        default: break;
+    }
+
+    return profile;
+}
+
+int
+dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels, int rf_mod) {
+    if (symbol_rate_hz == 2400 || (symbol_rate_hz == 4800 && levels == 2)) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
+    }
+    if (symbol_rate_hz == 9600) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+    }
+    if (rf_mod == 1) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    }
+    if (symbol_rate_hz == 6000 || rf_mod == 2 || dsd_opts_uses_wide_4800_profile(opts)) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+    }
+    return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+}
+
+/**
+ * @brief The symbol timing a preset starts a mode off on, at 48 kHz.
+ *
+ * Not the same question as dsd_decode_mode_profile_for(): this is where the
+ * preset puts the slicer before any sync, and NXDN96 has historically started at
+ * 20 (2400 sym/s) even though it decodes at 4800. The hunt corrects it, so the
+ * value is left alone here rather than changed underneath the CLI.
+ */
 static void
 decode_mode_base_symbol_timing(dsdneoUserDecodeMode mode, int* out_sps, int* out_center) {
     int sps = 10;

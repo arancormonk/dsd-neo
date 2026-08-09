@@ -38,6 +38,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -142,19 +143,10 @@ rtl_profile_for_sps_profile(const dsd_opts* opts, const dsd_state* state, const 
     if (!profile) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
     }
-    if (profile->symbol_rate_hz == 2400 || (profile->symbol_rate_hz == 4800 && profile->levels == 2)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (profile->symbol_rate_hz == 9600) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    if (state && state->rf_mod == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
-    }
-    if (profile->symbol_rate_hz == 6000 || (state && state->rf_mod == 2) || dsd_opts_uses_wide_4800_profile(opts)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    /* Shared with the operator-facing modulation control, which reaches the same
+     * front end by a different route: two copies of this drift, and then the
+     * filter changes under the user every time the hunt re-runs. */
+    return dsd_rtl_channel_profile_for(opts, profile->symbol_rate_hz, profile->levels, state ? state->rf_mod : 0);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
