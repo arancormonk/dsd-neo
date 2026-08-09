@@ -39,6 +39,9 @@ Window {
 
     property int currentTab: 0
     property bool wizardOpen: false
+    // The spectrum view is pushed over the monitor, so it can only be open
+    // while a session is; ending one has to take it down with it.
+    property bool spectrumOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
 
@@ -75,6 +78,10 @@ Window {
     }
 
     onMonitorModeChanged: {
+        // The spectrum layer lives above the monitor; when the session goes so
+        // does it, or the next one would open onto a stale panorama.
+        if (!monitorMode)
+            mainRoot.spectrumOpen = false
         if (monitorMode) {
             // The frequency field usually still holds focus; the keyboard would
             // cover the session that just appeared.
@@ -240,6 +247,22 @@ Window {
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
         }
+
+        onOpenSpectrum: mainRoot.spectrumOpen = true
+    }
+
+    // ---- Spectrum (pushed over the monitor) ----
+    SpectrumScreen {
+        anchors.fill: parent
+        opacity: mainRoot.monitorMode && mainRoot.spectrumOpen ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+
+        onClosed: mainRoot.spectrumOpen = false
     }
 
     // ---- First-run onboarding ----

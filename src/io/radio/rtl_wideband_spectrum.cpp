@@ -29,6 +29,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
 #include <pffft.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "rtl_wideband_spectrum.h"

@@ -22,6 +22,8 @@ target_sources(
         metrics_model.cpp
         qt_ui.cpp
         saved_systems_model.cpp
+        spectrum_model.cpp
+        spectrum_view_item.cpp
         session_args.cpp
         ui_controller.cpp
 )
@@ -58,6 +60,7 @@ qt_add_resources(
         qml/PlexTextField.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
+        qml/SpectrumScreen.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml
         fonts/IBMPlexSans-Regular.ttf

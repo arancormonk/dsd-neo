@@ -40,6 +40,16 @@ class CommandBridge : public QObject {
     /** @brief Retune the radio front end. */
     Q_INVOKABLE bool tuneHz(unsigned int hz) const;
 
+    /**
+     * @brief Retune from a spectrum tap.
+     *
+     * Distinct from tuneHz(): taps coalesce only with taps, the decoder resets
+     * its auto-modulation votes and call state so it re-acquires on the new
+     * frequency, and the engine refuses the tune outright while trunking owns
+     * the tuner.
+     */
+    Q_INVOKABLE bool manualTuneHz(unsigned int hz) const;
+
     /** @brief Set tuner gain in dB (0 selects automatic gain). */
     Q_INVOKABLE bool setTunerGain(int gain_db) const;
 

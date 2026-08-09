@@ -50,9 +50,93 @@
 
 #include "call_history_filter.h"
 #include "call_history_model.h"
+#include "qml_spectrum_stub.h"
+#include "spectrum_model.h"
+#include "spectrum_view_item.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
+
+/**
+ * @brief Stand-in for CommandBridge that records instead of submitting.
+ *
+ * The whole point of a tap-to-tune test is what the screen asks for, so the
+ * command surface has to be observable. It carries every method the screens
+ * call — an unimplemented one would only fail when some future case triggered
+ * it, which is exactly the kind of gap this suite exists to close.
+ */
+class CommandRecorder : public QObject {
+    Q_OBJECT
+
+  public:
+    Q_INVOKABLE bool
+    manualTuneHz(double hz) {
+        m_manual_tune_calls++;
+        m_last_manual_tune_hz = hz;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    tuneHz(double hz) {
+        m_tune_calls++;
+        m_last_tune_hz = hz;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    toggleMute() {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    holdTalkgroup(double) {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    lockoutSlot(int) {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    clearEncLockouts() {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setTunerGain(int) {
+        return true;
+    }
+
+    Q_INVOKABLE int
+    cycleHistoryMode() {
+        return 0;
+    }
+
+    void
+    reset() {
+        m_manual_tune_calls = 0;
+        m_last_manual_tune_hz = 0.0;
+        m_tune_calls = 0;
+        m_last_tune_hz = 0.0;
+    }
+
+    int
+    manualTuneCalls() const {
+        return m_manual_tune_calls;
+    }
+
+    double
+    lastManualTuneHz() const {
+        return m_last_manual_tune_hz;
+    }
+
+  private:
+    int m_manual_tune_calls = 0;
+    double m_last_manual_tune_hz = 0.0;
+    int m_tune_calls = 0;
+    double m_last_tune_hz = 0.0;
+};
 
 /**
  * @brief Newest-first call log the tests drive directly.
@@ -252,6 +336,32 @@ class Setup : public QObject {
      *
      * @param qmlFiles File names under src/ui/qt/qml, as the tests load them.
      */
+    /** @brief Frequency of the canned spectrum's peak, so a case need not hard-code it. */
+    Q_INVOKABLE double
+    spectrumPeakHz() const {
+        return dsd_neo_qml_stub::spectrum_peak_hz();
+    }
+
+    /** @brief Forget every recorded command. */
+    Q_INVOKABLE void
+    resetCommands() {
+        if (m_commands != nullptr) {
+            m_commands->reset();
+        }
+    }
+
+    /** @brief How many manual tunes the screens have asked for. */
+    Q_INVOKABLE int
+    manualTuneCalls() const {
+        return (m_commands != nullptr) ? m_commands->manualTuneCalls() : -1;
+    }
+
+    /** @brief The frequency of the most recent manual tune request. */
+    Q_INVOKABLE double
+    lastManualTuneHz() const {
+        return (m_commands != nullptr) ? m_commands->lastManualTuneHz() : 0.0;
+    }
+
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
         const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
@@ -307,6 +417,12 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
+        /* The spectrum's trace and waterfall are the only C++ types the QML
+         * instantiates itself, so they need the same registration ui_load()
+         * does before anything importing them is parsed. */
+        qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
+        qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+
         auto* store = new CallLogStore();
         auto* historyView = new CallHistoryFilterModel(engine);
         historyView->setSourceModel(store);
@@ -357,6 +473,9 @@ class Setup : public QObject {
         }
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        // Whether the trunking controller owns the tuner, and where it points.
+        metrics[QStringLiteral("trunkingEnabled")] = false;
+        metrics[QStringLiteral("centerFreqHz")] = static_cast<double>(dsd_neo_qml_stub::kSpectrumCenterHz);
         m_metrics = metrics;
         m_engine = engine;
         ctx->setContextProperty(QStringLiteral("metrics"), metrics);
@@ -366,9 +485,21 @@ class Setup : public QObject {
         host[QStringLiteral("running")] = false;
         host[QStringLiteral("transitioning")] = false;
         host[QStringLiteral("statusText")] = QStringLiteral("idle");
+        /* The spectrum view gates production on a live session, so the fixture
+         * has to claim one or its frames would never start. */
+        host[QStringLiteral("sessionActive")] = true;
         m_host = host;
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
-        ctx->setContextProperty(QStringLiteral("commands"), QVariantMap());
+
+        /* The real SpectrumModel over the canned getter in qml_spectrum_stub.cpp:
+         * the polling, viewport and tap-snapping under test are the production
+         * ones, only the frames are synthetic. */
+        m_spectrum = new dsd_qt::SpectrumModel(engine);
+        ctx->setContextProperty(QStringLiteral("spectrum"), m_spectrum);
+
+        m_commands = new CommandRecorder();
+        m_commands->setParent(engine);
+        ctx->setContextProperty(QStringLiteral("commands"), m_commands);
     }
 
   private:
@@ -376,6 +507,8 @@ class Setup : public QObject {
     QVariantMap m_prefs;
     QVariantMap m_host;
     QQmlEngine* m_engine = nullptr;
+    dsd_qt::SpectrumModel* m_spectrum = nullptr;
+    CommandRecorder* m_commands = nullptr;
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */

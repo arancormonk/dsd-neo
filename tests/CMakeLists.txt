@@ -2061,6 +2061,17 @@ add_test(
     COMMAND dsd-neo_test_ui_qt_call_history_merge
 )
 
+# And for the spectrum viewport arithmetic (spectrum_math.h), also header-only
+# and Qt-free: bin<->frequency mapping, pan clamping and the overshoot that
+# turns into a retune, tap snapping, and the pinch anchor. A sign error in any
+# of these lands the receiver on the wrong channel, which no build catches.
+add_executable(dsd-neo_test_ui_qt_spectrum_math ui/test_ui_qt_spectrum_math.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_spectrum_math
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(NAME UI_QT_SPECTRUM_MATH COMMAND dsd-neo_test_ui_qt_spectrum_math)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
@@ -2184,11 +2195,18 @@ if(DSD_ENABLE_QT_UI)
         # The header is listed so AUTOMOC processes its Q_OBJECT classes into
         # their own generated translation unit, keeping moc output out of the
         # test's.
+        # The spectrum model and its two painted items are compiled in so the
+        # QML drives the production polling, viewport and tap-snapping; only
+        # the frames behind them are canned (ui/qml_spectrum_stub.cpp supplies
+        # the app-control getter, which keeps this target off the engine).
         add_executable(
             dsd-neo_test_ui_qt_qml
             ui/test_ui_qt_qml_main.cpp
             ui/qml_test_context.h
+            ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
         )
         target_include_directories(
             dsd-neo_test_ui_qt_qml

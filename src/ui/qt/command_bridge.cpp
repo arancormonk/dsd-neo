@@ -55,6 +55,11 @@ CommandBridge::tuneHz(unsigned int hz) const {
 }
 
 bool
+CommandBridge::manualTuneHz(unsigned int hz) const {
+    return accepted(dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, static_cast<uint32_t>(hz)));
+}
+
+bool
 CommandBridge::setTunerGain(int gain_db) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_GAIN, static_cast<int32_t>(gain_db)));
 }

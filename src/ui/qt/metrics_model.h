@@ -38,6 +38,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY tunerChanged)
     Q_PROPERTY(bool radioInput READ radioInput NOTIFY tunerChanged)
     Q_PROPERTY(bool streamActive READ streamActive NOTIFY tunerChanged)
+    Q_PROPERTY(double centerFreqHz READ centerFreqHz NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -57,6 +58,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
+    Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -106,6 +108,31 @@ class MetricsModel : public QObject {
     bool
     streamActive() const {
         return m_view.stream_active;
+    }
+
+    /**
+     * @brief The frequency the front end is tuned to, in Hz; 0 when there is none.
+     *
+     * A double rather than an integer because QML has no 64-bit integer type, and
+     * every frequency a tuner reaches is exact in a double. Good for a readout and
+     * for deciding what to ask for next — but a spectrum axis must use the center
+     * carried inside the spectrum frame itself, which is the one that provably
+     * matches those bins.
+     */
+    double
+    centerFreqHz() const {
+        return m_view.center_freq_hz;
+    }
+
+    /**
+     * @brief Whether the trunking controller owns the tuner.
+     *
+     * While it does, the engine refuses manual retunes, so a view offering one
+     * should say so rather than present a control that silently does nothing.
+     */
+    bool
+    trunkingEnabled() const {
+        return m_view.trunking_enabled;
     }
 
     /**
@@ -326,9 +353,11 @@ class MetricsModel : public QObject {
         QString tuner_gain_text;
         bool radio_input = false;
         bool stream_active = false;
+        double center_freq_hz = 0.0;
         bool audio_muted = false;
         qulonglong held_tg = 0;
         int enc_lockout_count = 0;
+        bool trunking_enabled = false;
         QString ui_message;
         SlotCall slot_call[2];
 
@@ -340,13 +369,14 @@ class MetricsModel : public QObject {
         tunerEquals(const View& other) const {
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
-                   && radio_input == other.radio_input && stream_active == other.stream_active;
+                   && radio_input == other.radio_input && stream_active == other.stream_active
+                   && center_freq_hz == other.center_freq_hz;
         }
 
         bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
-                   && enc_lockout_count == other.enc_lockout_count;
+                   && enc_lockout_count == other.enc_lockout_count && trunking_enabled == other.trunking_enabled;
         }
     };
 

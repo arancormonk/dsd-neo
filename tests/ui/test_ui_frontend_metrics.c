@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>

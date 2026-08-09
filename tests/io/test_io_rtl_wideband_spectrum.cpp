@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <vector>
 
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 
 #include "rtl_wideband_spectrum.h"
@@ -202,7 +203,7 @@ main(void) {
     test_short_block_is_skipped();
     test_disable_drops_frame();
     test_max_bins_truncation();
-    (void)fprintf(stdout, "IO_RTL_WIDEBAND_SPECTRUM: ok\n");
+    (void)DSD_FPRINTF(stdout, "IO_RTL_WIDEBAND_SPECTRUM: ok\n");
     return 0;
 }
 
