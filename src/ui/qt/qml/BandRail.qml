@@ -51,10 +51,18 @@ Item {
 
     implicitHeight: 32
 
-    /** Take hold at the current frequency. */
+    /**
+     * Take hold at the frequency the rail is showing.
+     *
+     * displayHz, not tunedHz: while a previous drag's retune is still in flight
+     * the knob and the readout are already on the frequency being waited for, and
+     * seeding from tunedHz would snap both back to where the receiver still is and
+     * compute this drag from a frequency the user has already left — so a nudge to
+     * fine-tune a move undoes it instead.
+     */
     function beginDrag() {
-        rail.dragStartHz = rail.tunedHz
-        rail.pendingHz = rail.tunedHz
+        rail.dragStartHz = rail.displayHz
+        rail.pendingHz = rail.displayHz
         rail.dragging = true
     }
 
@@ -86,8 +94,25 @@ Item {
         if (!cancelled && moved) {
             rail.settleHz = want
             rail.settling = true
+            // Restarted rather than left to the `running` binding: a second drag
+            // released while the first is still settling assigns `settling` the
+            // value it already has, so the binding does not re-evaluate and the
+            // timer would fire on the first drag's deadline — snapping the readout
+            // back to the old frequency with the second retune still in flight.
+            settleTimer.restart()
             rail.tuneRequested(want)
         }
+    }
+
+    /**
+     * The requested tune was refused, so there is nothing to wait for.
+     *
+     * A QML signal handler cannot answer its emitter, so the screen that decides
+     * whether a tune is allowed calls this when it turned one down. Without it the
+     * readout shows a frequency nobody is on for the full settle timeout.
+     */
+    function cancelSettle() {
+        rail.settling = false
     }
 
     // The tune landed: the truth takes over and the knob eases to its real
@@ -98,6 +123,8 @@ Item {
     // hold the preview forever — after this the display falls back to the
     // truth same as it would with no preview at all.
     Timer {
+        id: settleTimer
+
         interval: 1500
         running: rail.settling
         onTriggered: rail.settling = false

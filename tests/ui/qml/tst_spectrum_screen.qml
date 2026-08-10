@@ -898,6 +898,47 @@ Item {
             verify(!rail.dragging, "the rail is still dragging after release")
         }
 
+        // A second drag started while the first one's retune is still in flight has
+        // to carry on from the frequency the rail is showing. Seeded from tunedHz
+        // instead, the knob snaps back to where the receiver still is and the nudge
+        // is measured from a frequency the user has already left — so fine-tuning a
+        // move undoes it.
+        function test_28b_a_drag_during_a_settle_continues_from_the_preview() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            var before = rail.tunedHz
+
+            rail.beginDrag()
+            rail.dragBy(120, 400)
+            var firstWant = rail.pendingHz
+            rail.endDrag(false)
+            verify(rail.settling, "the rail did not hold the preview through the retune")
+            compare(rail.settleHz, firstWant)
+
+            // The engine has not landed yet: tunedHz is still the old frequency.
+            compare(rail.tunedHz, before)
+            rail.beginDrag()
+            compare(rail.dragStartHz, firstWant)
+            compare(rail.pendingHz, firstWant)
+            rail.dragBy(40, 400)
+            verify(rail.pendingHz > firstWant,
+                   "the second drag went to " + rail.pendingHz + ", behind the first at " + firstWant)
+            rail.endDrag(true)
+        }
+
+        // A tune the screen turned down leaves nothing to wait for, so the preview
+        // must not sit on a frequency nobody is on until the timeout gives up.
+        function test_28c_a_refused_tune_drops_the_preview() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            rail.beginDrag()
+            rail.dragBy(120, 400)
+            rail.endDrag(false)
+            verify(rail.settling, "the accepted tune did not hold the preview")
+
+            rail.cancelSettle()
+            verify(!rail.settling, "the refused tune kept the preview")
+            compare(rail.displayHz, rail.tunedHz)
+        }
+
         // A drag that ended for any reason other than the finger lifting is not a
         // request to move the receiver.
         function test_29_a_cancelled_rail_drag_never_retunes() {

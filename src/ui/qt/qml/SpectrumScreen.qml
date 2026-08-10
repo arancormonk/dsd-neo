@@ -126,8 +126,12 @@ Item {
      */
     function endPan(cancelled) {
         var wantHz = spectrum.centerFreqHz + spectrum.viewOffsetHz + spectrum.edgeOvershootHz
-        if (!cancelled && !screen.viewOnly && spectrum.edgeOvershootHz !== 0 && spectrum.hasData && wantHz > 0)
-            commands.manualTuneHz(Math.round(wantHz))
+        // Through tuneTo() like every other retune on this screen, rather than
+        // straight to the command: it owns the view-only gate, the uint32 bound
+        // its own comment explains, and the stale-hint clear — and a pan is the
+        // one path that had its own half of those written out again.
+        if (!cancelled && spectrum.edgeOvershootHz !== 0 && spectrum.hasData)
+            screen.tuneTo(wantHz)
         spectrum.clearOvershoot()
     }
 
@@ -738,7 +742,15 @@ Item {
                     if (dragging)
                         screen.stopSweep()
                 }
-                onTuneRequested: function (hz) { screen.tuneTo(hz) }
+                // A refused tune has nothing to settle on: the rail holds its
+                // preview until the receiver lands on what it asked for, and
+                // tuneTo() turns the request down outright when something else
+                // owns the tuner — so the header would read a frequency nobody is
+                // on until the rail's own timeout gave up on it.
+                onTuneRequested: function (hz) {
+                    if (!screen.tuneTo(hz))
+                        bandRail.cancelSettle()
+                }
             }
 
             Flow {
