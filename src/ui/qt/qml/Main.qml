@@ -345,15 +345,18 @@ Window {
     MonitorScreen {
         id: monitor
 
+        objectName: "monitorScreen"
         anchors.fill: parent
         system: mainRoot.sessionSystem
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
-        // The wizard now opens over a running session ("Save as a system") and
-        // TapHandlers never take exclusive grabs, so without this a tap on the
-        // wizard's bottom button also lands on "Stop listening", which sits at
-        // exactly the same rect underneath it and ends the session.
-        enabled: opacity > 0.9 && !mainRoot.wizardOpen
+        // The wizard ("Save as a system") and the spectrum both open over a
+        // running session, and TapHandlers never take exclusive grabs, so without
+        // this a tap on the layer above also lands on "Stop listening", which sits
+        // at exactly the same rect underneath both of them and ends the session.
+        // That is what "Explore from here" — the one way out of view-only — did
+        // instead of offering to hand the tuner over.
+        enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
