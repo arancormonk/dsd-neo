@@ -39,8 +39,11 @@ dsd_app_get_latest_snapshot(void) {
     return g_latest_state;
 }
 
-/* Forward declaration for the stub defined below. */
-double dsd_channel_lpf_protected_edge_hz(int profile);
+/* Forward declaration for the stub defined below. External (non-static) linkage
+ * is required here: frontend.c is compiled and linked into this same test
+ * binary and calls this symbol expecting another translation unit to define
+ * it, which is exactly what this file does. */
+double dsd_channel_lpf_protected_edge_hz(int profile); // NOLINT(misc-use-internal-linkage)
 
 /* The real one lives in dsd-neo_dsp, which this target deliberately does not
  * link: dsp carries dsd-neo_feature_radio PUBLIC, and that would define
