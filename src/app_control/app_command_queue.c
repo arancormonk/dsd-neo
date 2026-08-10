@@ -139,28 +139,30 @@ static const int k_ui_cmd_string_ids[] = {
     DSD_APP_CMD_M17_USER_DATA_SET,
 };
 
+/* Setters where only the newest value matters, so a queued one may be overwritten
+   in place rather than walked through. A list rather than a switch for the same
+   reason k_ui_cmd_string_ids above is one: each entry costs a branch in a switch,
+   and this set only grows.
+
+   The last four are discrete choices rather than swept values, and are here on a
+   narrower argument: a segmented control taken twice in a second should land on
+   the second answer without the decoder rebuilding timing for the first one on
+   the way. */
+static const int k_ui_cmd_coalescible_setter_ids[] = {
+    DSD_APP_CMD_GAIN_SET,        DSD_APP_CMD_AGAIN_SET,        DSD_APP_CMD_INPUT_VOL_SET, DSD_APP_CMD_RTL_SET_FREQ,
+    DSD_APP_CMD_MANUAL_TUNE,     DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,   DSD_APP_CMD_RTL_SET_BW,
+    DSD_APP_CMD_RTL_SET_SQL_DB,  DSD_APP_CMD_RTL_SET_VOL_MULT, DSD_APP_CMD_HANGTIME_SET,  DSD_APP_CMD_MOD_SET,
+    DSD_APP_CMD_DECODE_MODE_SET, DSD_APP_CMD_TRUNK_SET,        DSD_APP_CMD_SLOT_PREF_SET,
+};
+
 static int
 ui_cmd_is_coalescible_setter(int cmd_id) {
-    switch (cmd_id) {
-        case DSD_APP_CMD_GAIN_SET:
-        case DSD_APP_CMD_AGAIN_SET:
-        case DSD_APP_CMD_INPUT_VOL_SET:
-        case DSD_APP_CMD_RTL_SET_FREQ:
-        case DSD_APP_CMD_MANUAL_TUNE:
-        case DSD_APP_CMD_RTL_SET_GAIN:
-        case DSD_APP_CMD_RTL_SET_PPM:
-        case DSD_APP_CMD_RTL_SET_BW:
-        case DSD_APP_CMD_RTL_SET_SQL_DB:
-        case DSD_APP_CMD_RTL_SET_VOL_MULT:
-        case DSD_APP_CMD_HANGTIME_SET:
-        /* Discrete choices, but a segmented control taken twice in a second should
-           land on the second answer without the decoder rebuilding timing for the
-           first one on the way. */
-        case DSD_APP_CMD_MOD_SET:
-        case DSD_APP_CMD_DECODE_MODE_SET:
-        case DSD_APP_CMD_SLOT_PREF_SET: return 1;
-        default: return 0;
+    for (size_t i = 0; i < sizeof k_ui_cmd_coalescible_setter_ids / sizeof k_ui_cmd_coalescible_setter_ids[0]; i++) {
+        if (k_ui_cmd_coalescible_setter_ids[i] == cmd_id) {
+            return 1;
+        }
     }
+    return 0;
 }
 
 static int
@@ -2381,6 +2383,7 @@ static const int k_ui_cmd_i32_ids[] = {
     DSD_APP_CMD_INPUT_VOL_SET,
     DSD_APP_CMD_MOD_SET,
     DSD_APP_CMD_DECODE_MODE_SET,
+    DSD_APP_CMD_TRUNK_SET,
 };
 
 static int
@@ -2545,6 +2548,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_RTL_SET_FREQ, sizeof(uint32_t)},
     {DSD_APP_CMD_MOD_SET, sizeof(int32_t)},
     {DSD_APP_CMD_DECODE_MODE_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_TRUNK_SET, sizeof(int32_t)},
     {DSD_APP_CMD_MANUAL_TUNE, sizeof(uint32_t)},
     {DSD_APP_CMD_TG_HOLD_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},

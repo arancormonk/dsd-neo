@@ -252,6 +252,10 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     if (next.synced_here) {
         next.sync_label = QString::fromUtf8(dsd_synctype_to_string(m_sync_type_here));
     }
+    /* Rides the same decayed reading as synced_here rather than the raw snapshot:
+     * a control offered on one frame of sync and withdrawn on the next would
+     * flicker under the finger. */
+    next.trunkable_sync = next.synced_here && DSD_SYNC_IS_TRUNKABLE(m_sync_type_here);
     /* Three states, not two: GFSK is what the DMR and EDACS/ProVoice presets
      * select, and folding it into C4FM made a control bound to this reading show
      * C4FM as already-selected on a session that was never on it. Through the

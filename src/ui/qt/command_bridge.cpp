@@ -68,6 +68,12 @@ CommandBridge::releaseTuner() const {
 }
 
 bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setTrunking(bool on) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, on ? 1 : 0));
+}
+
+bool
 CommandBridge::setTunerGain(int gain_db) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_GAIN, static_cast<int32_t>(gain_db)));
 }

@@ -119,6 +119,13 @@ class CommandRecorder : public QObject {
     }
 
     Q_INVOKABLE bool
+    setTrunking(bool on) {
+        m_set_trunking_calls++;
+        m_last_set_trunking = on;
+        return true;
+    }
+
+    Q_INVOKABLE bool
     setTunerGain(int gain_db) {
         m_last_gain_db = gain_db;
         m_gain_calls++;
@@ -168,6 +175,8 @@ class CommandRecorder : public QObject {
         m_manual_tune_calls = 0;
         m_last_manual_tune_hz = 0U;
         m_release_tuner_calls = 0;
+        m_set_trunking_calls = 0;
+        m_last_set_trunking = false;
         m_gain_calls = 0;
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
@@ -216,6 +225,16 @@ class CommandRecorder : public QObject {
         return m_release_tuner_calls;
     }
 
+    int
+    setTrunkingCalls() const {
+        return m_set_trunking_calls;
+    }
+
+    bool
+    lastSetTrunking() const {
+        return m_last_set_trunking;
+    }
+
     /** @brief The recorded frequency, widened for QML's arithmetic. */
     double
     lastManualTuneHz() const {
@@ -226,6 +245,8 @@ class CommandRecorder : public QObject {
     int m_manual_tune_calls = 0;
     unsigned int m_last_manual_tune_hz = 0U;
     int m_release_tuner_calls = 0;
+    int m_set_trunking_calls = 0;
+    bool m_last_set_trunking = false;
     int m_gain_calls = 0;
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
@@ -464,6 +485,18 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->releaseTunerCalls() : -1;
     }
 
+    /** @brief How many times the screens have asked to hand the tuner to trunking. */
+    Q_INVOKABLE int
+    setTrunkingCalls() const {
+        return (m_commands != nullptr) ? m_commands->setTrunkingCalls() : -1;
+    }
+
+    /** @brief Which way the most recent trunking request went. */
+    Q_INVOKABLE bool
+    lastSetTrunking() const {
+        return (m_commands != nullptr) ? m_commands->lastSetTrunking() : false;
+    }
+
     /** @brief What the radio panel last asked the engine for. */
     Q_INVOKABLE int
     gainCalls() const {
@@ -616,6 +649,7 @@ class Setup : public QObject {
         // at rest, which is what lets a sweep keep stepping until a case says so.
         metrics[QStringLiteral("syncedHere")] = false;
         metrics[QStringLiteral("syncLabel")] = QString();
+        metrics[QStringLiteral("trunkableSync")] = false;
         // What the radio panel shows and changes. DSDCFG_MODE_AUTO is 1.
         metrics[QStringLiteral("decodeMode")] = 1;
         metrics[QStringLiteral("modulation")] = 0;

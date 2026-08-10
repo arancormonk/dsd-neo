@@ -61,6 +61,16 @@ class CommandBridge : public QObject {
      */
     Q_INVOKABLE bool releaseTuner() const;
 
+    /**
+     * @brief Hand the tuner to trunking (@a on true), or stop it following.
+     *
+     * The inverse of releaseTuner() for the one flag a view can name. Turning it
+     * on also clears scanner mode engine-side, since both cannot drive the tuner.
+     * Off is the narrow half — it leaves scanner mode alone, so releaseTuner()
+     * stays the way to ask for the tuner back without knowing what holds it.
+     */
+    Q_INVOKABLE bool setTrunking(bool on) const;
+
     /** @brief Set tuner gain in dB (0 selects automatic gain). */
     Q_INVOKABLE bool setTunerGain(int gain_db) const;
 

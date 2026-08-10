@@ -1524,6 +1524,65 @@ test_modulation_and_decode_mode_setters(void) {
     return rc;
 }
 
+/*
+ * TRUNK_SET is the half of tuner ownership a view can name. TUNER_RELEASE clears
+ * both owners without knowing which held it; this one says "trunking, on" or
+ * "trunking, off" from a frontend that does know, which is what a control
+ * offering trunking as a choice needs and what TRUNK_TOGGLE cannot express.
+ */
+static int
+test_trunk_set(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 0;
+
+    rc |=
+        expect_int("trunk on queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk on drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk on enables trunking", opts.trunk_enable, 1);
+
+    /* Asking for it again is not a flip. This is the whole reason the command
+     * exists: TRUNK_TOGGLE here would hand the tuner straight back. */
+    rc |= expect_int("repeat trunk on queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat trunk on drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat trunk on stays on", opts.trunk_enable, 1);
+
+    rc |= expect_int("trunk off queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk off disables trunking", opts.trunk_enable, 0);
+
+    /* Scanner mode is the other automatic owner, and SCANNER_TOGGLE already
+     * clears trunking on the way in. Without the same exclusion here, asking for
+     * trunking from a scanning session would leave two owners driving the tuner. */
+    opts.scanner_mode = 1;
+    rc |= expect_int("trunk on over scanner queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk on over scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk on enables trunking over scanner", opts.trunk_enable, 1);
+    rc |= expect_int("trunk on clears scanner mode", opts.scanner_mode, 0);
+
+    /* Turning it off is the narrow half: TUNER_RELEASE stays the way to clear
+     * both, so this must not reach into scanner mode on the way out. */
+    opts.scanner_mode = 1;
+    rc |= expect_int("trunk off over scanner queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk off over scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk off leaves scanner mode alone", opts.scanner_mode, 1);
+
+    /* Carries a payload, so the payload-less action API must refuse it — a bare
+     * action submit would arrive with no bytes and read as "stop trunking". */
+    rc |= expect_int("trunk set rejects an action submit", dsd_app_command_action(DSD_APP_CMD_TRUNK_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1536,6 +1595,7 @@ main(void) {
     rc |= test_io_and_state_commands();
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
+    rc |= test_trunk_set();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
     rc |= test_manual_tune_trunking_gate_and_reacquisition();

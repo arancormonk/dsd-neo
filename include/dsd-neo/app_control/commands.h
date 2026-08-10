@@ -167,6 +167,14 @@ enum dsd_app_command_id {
     // dsdneoUserDecodeMode (<dsd-neo/runtime/config.h>), applied through the same
     // preset helper the CLI and config paths use.
     DSD_APP_CMD_DECODE_MODE_SET = 495, // payload: int32_t dsdneoUserDecodeMode
+    // Hand the tuner to trunking, or take it back, from a frontend that knows which
+    // of the two it is asking for. TRUNK_TOGGLE cannot say that: a view offering
+    // "follow this system" as a choice has to be able to ask for the state it is not
+    // in, and a flip makes that a guess about state that may already have moved.
+    // Turning it on clears scanner mode, which is the same exclusion SCANNER_TOGGLE
+    // already applies in the other direction — both cannot own the tuner. Turning it
+    // off is deliberately narrow; TUNER_RELEASE remains the way to clear both at once.
+    DSD_APP_CMD_TRUNK_SET = 496, // payload: int32_t on(0/1)
 
     // Rigctl / tuning params
     DSD_APP_CMD_RIGCTL_SET_MOD_BW = 500, // payload: int32_t hz

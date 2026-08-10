@@ -997,6 +997,25 @@ Item {
                         screen.saveAsSystem(screen.tunedHz)
                     }
                 }
+
+                // The inverse of "Explore from here": hand the tuner to trunking
+                // and let it follow the system off this control channel. Inside
+                // `tuning`, so !viewOnly is already answered — what is left is
+                // whether there is anything here worth following. No confirm
+                // sheet, unlike the way out: this loses nothing that was not
+                // already the user's next tap, and the moment trunking takes the
+                // tuner the escape appears in its place.
+                OutlineButton {
+                    objectName: "spectrumFollowSystem"
+                    width: 200
+                    height: 40
+                    text: qsTr("Follow this system")
+                    visible: decoderHost.sessionActive && metrics && metrics.trunkableSync
+                    onClicked: {
+                        screen.stopSweep()
+                        commands.setTrunking(true)
+                    }
+                }
             }
         }
 

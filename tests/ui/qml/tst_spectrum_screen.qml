@@ -183,6 +183,47 @@ Item {
             screen.exploring = true
         }
 
+        // The way *into* view-only, and the inverse of the two cases above: having
+        // found a control channel by hand, hand the tuner to trunking and let it
+        // follow the system from there. Offered only where trunking has something
+        // to follow — a lock on M17 is still a lock, and a button that does
+        // nothing teaches the user that the app is broken.
+        function test_03f_follow_this_system_hands_the_tuner_to_trunking() {
+            var screen = screenLoader.item
+            var button = findChild(screen, "spectrumFollowSystem")
+            verify(button !== null, "the follow-this-system button is missing")
+
+            // Exploring, but parked on noise: nothing to follow yet.
+            screen.exploring = true
+            testContext.setMetric("trunkableSync",false)
+            tryVerify(function () { return !button.visible },
+                      2000, "trunking was offered with nothing to follow")
+
+            // A lock on a trunked protocol is what makes the offer real.
+            testContext.setMetric("trunkableSync",true)
+            tryVerify(function () { return button.visible },
+                      2000, "a control channel did not bring up the offer")
+
+            button.clicked()
+            compare(testContext.setTrunkingCalls(), 1)
+            compare(testContext.lastSetTrunking(), true, "the button asked to stop trunking")
+
+            // And it is gone the moment there is nothing left to ask for: on a
+            // saved system the tuner was never the user's to give, and once
+            // trunking holds it the escape hatch is the only thing left to offer.
+            screen.exploring = false
+            tryVerify(function () { return !button.visible },
+                      2000, "a saved-system session offered to start trunking")
+
+            screen.exploring = true
+            testContext.setMetric("tunerControlled",true)
+            tryVerify(function () { return !button.visible },
+                      2000, "trunking was offered while something already held the tuner")
+
+            testContext.setMetric("tunerControlled",false)
+            testContext.setMetric("trunkableSync",false)
+        }
+
         // The monitor's copy of this line is underneath this layer, so a refused
         // tune would otherwise be silent here.
         function test_03b_the_engine_answer_is_visible_on_this_screen() {

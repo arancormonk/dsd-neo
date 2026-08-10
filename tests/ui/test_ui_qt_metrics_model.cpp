@@ -115,6 +115,45 @@ main(int argc, char** argv) {
     expect("a decoder that stopped finding anything stops reading as locked", !model.syncedHere());
     expect("an expired lock names nothing", model.syncLabel().isEmpty());
 
+    /* Whether trunking has anything to follow here. A control offering to hand
+     * the tuner over needs the protocol, not merely a lock: on M17 there is no
+     * trunking to hand it to, and on nothing at all there is nothing to follow. */
+    expect("no lock is not something to follow", !model.trunkableSync());
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    model.refresh(&opts, &state);
+    expect("P25p1 is something trunking can follow", model.trunkableSync());
+
+    model.expireSyncForTest();
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    model.refresh(&opts, &state);
+    expect("DMR is something trunking can follow", model.trunkableSync());
+
+    model.expireSyncForTest();
+    state.synctype = DSD_SYNC_M17_STR_POS;
+    model.refresh(&opts, &state);
+    expect("M17 locks without giving trunking anything to follow", !model.trunkableSync());
+    expect("M17 still reads as locked", model.syncedHere());
+
+    model.expireSyncForTest();
+    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    model.refresh(&opts, &state);
+    expect("D-STAR locks without giving trunking anything to follow", !model.trunkableSync());
+
+    /* Rides the decayed lock, not the raw frame: a control that vanished on the
+     * one unsynced poll between two synced ones would flicker under the finger. */
+    model.expireSyncForTest();
+    state.synctype = DSD_SYNC_P25P2_POS;
+    model.refresh(&opts, &state);
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state);
+    expect("one unsynced poll does not withdraw the offer", model.trunkableSync());
+
+    model.expireSyncForTest();
+    state.synctype = DSD_SYNC_NONE;
+    model.refresh(&opts, &state);
+    expect("an expired lock withdraws the offer", !model.trunkableSync());
+
     /* The panel's own readings come from the options, not from what anything
      * asked for. Squelch is stored as mean power and must reach QML as decibels,
      * or a -120 dB threshold renders as 0. */

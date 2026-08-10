@@ -63,6 +63,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
+    Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
     Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
@@ -193,6 +194,20 @@ class MetricsModel : public QObject {
     const QString&
     syncLabel() const {
         return m_view.sync_label;
+    }
+
+    /**
+     * @brief Whether the lock here is on a protocol trunking can follow.
+     *
+     * What a control offering to hand the tuner to trunking needs: on M17 or
+     * D-STAR there is no trunking to hand it to, and on noise there is nothing to
+     * follow yet, so the offer would be a button that does nothing. Sync on a
+     * trunked protocol is the weakest honest claim available here — the signalling
+     * decides whether this carrier is really a control channel.
+     */
+    bool
+    trunkableSync() const {
+        return m_view.trunkable_sync;
     }
 
     /**
@@ -458,6 +473,7 @@ class MetricsModel : public QObject {
         double center_freq_hz = 0.0;
         bool synced_here = false;
         QString sync_label;
+        bool trunkable_sync = false;
         int decode_mode = 0;
         int modulation = 0;
         int tuner_gain_db = 0;
@@ -482,7 +498,7 @@ class MetricsModel : public QObject {
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
                    && radio_input == other.radio_input && stream_active == other.stream_active
                    && center_freq_hz == other.center_freq_hz && synced_here == other.synced_here
-                   && sync_label == other.sync_label;
+                   && sync_label == other.sync_label && trunkable_sync == other.trunkable_sync;
         }
 
         bool
