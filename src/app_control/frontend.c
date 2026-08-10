@@ -60,9 +60,7 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
     out->output_kind = dsd_rtl_stream_metrics_hook_output_kind();
     (void)dsd_rtl_stream_metrics_hook_symbol_profile(&out->symbol_rate_hz, &out->symbol_levels, &out->channel_profile);
-#ifdef USE_RADIO
     out->channel_bandwidth_hz = (int)(2.0 * dsd_channel_lpf_protected_edge_hz(out->channel_profile));
-#endif
     out->stream_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     out->stream_active = dsd_rtl_stream_metrics_hook_stream_active();
     (void)dsd_rtl_stream_metrics_hook_input_level(&out->input_level);

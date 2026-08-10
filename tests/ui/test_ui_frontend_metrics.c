@@ -39,6 +39,20 @@ dsd_app_get_latest_snapshot(void) {
     return g_latest_state;
 }
 
+/* Forward declaration for the stub defined below. */
+double dsd_channel_lpf_protected_edge_hz(int profile);
+
+/* The real one lives in dsd-neo_dsp, which this target deliberately does not
+ * link: dsp carries dsd-neo_feature_radio PUBLIC, and that would define
+ * USE_RADIO and turn this no-radio stub test into a radio build. Task 1's
+ * DSP_DEMOD_MISC pins the real per-profile values; what needs pinning HERE is
+ * that frontend.c publishes the full width rather than the half-width. */
+double
+dsd_channel_lpf_protected_edge_hz(int profile) {
+    (void)profile;
+    return 6250.0; /* the 12.5 kHz channel half-width */
+}
+
 static void
 fill_metric_inputs(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -167,6 +181,7 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(metrics.symbol_rate_hz == 4800);
     assert(metrics.symbol_levels == 4);
     assert(metrics.channel_profile == 5);
+    assert(metrics.channel_bandwidth_hz == 12500);
     assert(metrics.cqpsk_enable == 1);
     assert(metrics.cqpsk_timing_active == 1);
     assert(metrics.snr_c4fm_db == 23.5);
