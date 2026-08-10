@@ -696,6 +696,47 @@ int rtl_stream_spectrum_set_size(int n);
 /** @brief Get current spectrum FFT size. */
 int rtl_stream_spectrum_get_size(void);
 
+/**
+ * @brief Get a snapshot of the wideband power spectrum across the capture span.
+ *
+ * Unlike rtl_stream_spectrum_get(), which reports the narrow post-decimation
+ * span used for tuner diagnostics, this covers the full SDR capture bandwidth
+ * (typically ~1.536 MHz) so a UI can draw a panorama around the tuned
+ * frequency. Bins are DC-centered: out_db[0] ~ center - span/2, the middle bin
+ * ~ center, and the last ~ center + span/2. Values are smoothed and
+ * approximately in dBFS.
+ *
+ * Production is off by default and costs nothing until
+ * rtl_stream_wideband_spectrum_set_enabled(1) is called. The center, span and
+ * serial number are published atomically with the bins, so the axis always
+ * matches the data.
+ *
+ * Every frame is exactly DSD_WIDEBAND_SPECTRUM_BINS wide. A buffer shorter than
+ * that is refused rather than filled with a prefix, which would be the low end
+ * of the span carrying a label for the whole of it.
+ *
+ * @param out_db Destination buffer, at least DSD_WIDEBAND_SPECTRUM_BINS floats
+ *               (from <dsd-neo/core/wideband_spectrum.h>). Must not be NULL.
+ * @param max_bins Capacity of @p out_db in floats.
+ * @param out_center_freq_hz Optional pointer to receive the tuned center in Hz.
+ * @param out_span_hz Optional pointer to receive the covered span in Hz.
+ * @param out_frame_serial Optional pointer to receive the frame's serial number.
+ *                         It changes only when the producer publishes a new
+ *                         frame, so a consumer polling on its own clock can tell
+ *                         a fresh frame from a re-read of the last one.
+ * @return Number of bins written; 0 when disabled, not yet published,
+ *         invalidated by a retune, or when @p out_db is too small. On 0 the
+ *         buffer is left exactly as the caller passed it, so a consumer that
+ *         holds its last frame across a gap is holding the frame it drew.
+ */
+int rtl_stream_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz, uint32_t* out_span_hz,
+                                     uint32_t* out_frame_serial);
+
+/** @brief Enable or disable wideband spectrum production (off = zero DSP cost). */
+void rtl_stream_wideband_spectrum_set_enabled(int on);
+/** @brief Return 1 when wideband spectrum production is enabled. */
+int rtl_stream_wideband_spectrum_enabled(void);
+
 /* Carrier/Costas diagnostics and control */
 /** Return current NCO frequency used for carrier rotation (Costas/FLL), in Hz. */
 double rtl_stream_get_cfo_hz(void);

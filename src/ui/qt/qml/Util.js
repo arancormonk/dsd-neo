@@ -60,6 +60,61 @@ var LEGACY_DECODE_LABELS = {
     "-f1": "P25"
 }
 
+// Where digital voice actually lives, for someone exploring who does not yet know
+// a single local frequency. The same US-centric assumption the decode chips make
+// ("most statewide and county digital systems"); anyone elsewhere types a
+// frequency instead, which is why the catalog is a convenience and not the only
+// way to move.
+//
+// `start` is where a chip drops you: a busy part of the band rather than its
+// bottom edge, so the first screen of waterfall usually has something on it.
+// `low`/`high` also bound the sweep — it wraps inside the band it began in rather
+// than walking off into spectrum nobody asked about.
+var BANDS = [
+    { label: "VHF", low: 136.0e6, high: 174.0e6, start: 154.0e6 },
+    { label: "UHF", low: 380.0e6, high: 470.0e6, start: 453.0e6 },
+    { label: "700", low: 763.0e6, high: 806.0e6, start: 770.0e6 },
+    { label: "800", low: 806.0e6, high: 869.0e6, start: 855.0e6 }
+]
+
+// The tuner's usable range. R820T/R828D — the tuner in essentially every RTL
+// dongle — covers 24-1766 MHz, and RTL over USB or TCP is the only radio this
+// app builds with: both Android presets set DSD_ENABLE_SOAPYSDR=OFF
+// (CMakePresets.json:215,242). Not a hard contract even so — the engine is the
+// authority and refuses an out-of-range tune with its own message. This only
+// stops the rail offering frequencies nothing can reach.
+var TUNER_LOW_HZ = 24.0e6
+var TUNER_HIGH_HZ = 1766.0e6
+
+// The band containing hz, or null when tuned outside all of them. nextStepHz()
+// is the only caller that treats a null result as a fallback, and what it falls
+// back to is unbounded stepping — off-band there is no window to wrap a step
+// against, so it simply keeps going.
+function bandFor(hz) {
+    for (var i = 0; i < BANDS.length; i++) {
+        if (hz >= BANDS[i].low && hz < BANDS[i].high)
+            return BANDS[i]
+    }
+    return null
+}
+
+// The MHz text for a frequency, without a unit: "769.76875", "851.0125".
+//
+// Five decimals, not four. 12.5 kHz and 6.25 kHz channel plans put real
+// frequencies on the fifth decimal — 769.76875 is a control channel someone is
+// listening to — and four would render it as 769.7687, a frequency the radio is
+// not on. The trailing zero is dropped so the commoner 4-decimal channels do not
+// carry a digit that means nothing.
+function mhzText(hz) {
+    var s = (hz / 1.0e6).toFixed(5)
+    return s.charAt(s.length - 1) === "0" ? s.substring(0, s.length - 1) : s
+}
+
+// The same number with its unit: "769.76875 MHz".
+function fmtMhz(hz) {
+    return mhzText(hz) + " MHz"
+}
+
 function decodeLabel(flag) {
     for (var i = 0; i < DECODE_MODES.length; i++) {
         if (DECODE_MODES[i].flag === flag)

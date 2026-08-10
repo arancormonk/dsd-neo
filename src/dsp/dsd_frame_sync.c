@@ -38,6 +38,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
@@ -142,19 +143,10 @@ rtl_profile_for_sps_profile(const dsd_opts* opts, const dsd_state* state, const 
     if (!profile) {
         return DSD_RTL_STREAM_CHANNEL_PROFILE_WIDE;
     }
-    if (profile->symbol_rate_hz == 2400 || (profile->symbol_rate_hz == 4800 && profile->levels == 2)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
-    }
-    if (profile->symbol_rate_hz == 9600) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
-    }
-    if (state && state->rf_mod == 1) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
-    }
-    if (profile->symbol_rate_hz == 6000 || (state && state->rf_mod == 2) || dsd_opts_uses_wide_4800_profile(opts)) {
-        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
-    }
-    return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    /* Shared with the operator-facing modulation control, which reaches the same
+     * front end by a different route: two copies of this drift, and then the
+     * filter changes under the user every time the hunt re-runs. */
+    return dsd_rtl_channel_profile_for(opts, profile->symbol_rate_hz, profile->levels, state ? state->rf_mod : 0);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -2345,7 +2337,7 @@ frame_sync_window_levels(const dsd_opts* opts, dsd_state* state, frame_sync_runt
 
 static int
 frame_sync_profile_uses_gfsk_exclusively(const dsd_opts* opts, int profile_index) {
-    if (frame_sync_sps_profile_for_index(profile_index)->levels == 2) {
+    if (dsd_frame_sync_profile_levels_force_gfsk(frame_sync_sps_profile_for_index(profile_index)->levels)) {
         return 1;
     }
     if (!opts) {
@@ -2844,6 +2836,11 @@ dsd_frame_sync_test_sps_hunt_profile_levels(int profile_index) {
     return frame_sync_sps_profile_for_index(profile_index)->levels;
 }
 
+int
+dsd_frame_sync_test_sps_hunt_profile_has_candidate(const dsd_opts* opts, int profile_index) {
+    return frame_sync_sps_profile_has_candidate(opts, profile_index);
+}
+
 #endif
 
 static void
@@ -2872,7 +2869,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 
     const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
     const int profile_changed = next_idx != state->sps_hunt_idx;
-    const int profile_default_modulation = profile->levels == 2 ? 2 : 0;
+    const int profile_default_modulation = dsd_frame_sync_profile_modulation(profile->levels, 0);
     const int normalize_profile_modulation = !preserve_modulation && !opts->mod_cli_lock
                                              && state->rf_mod != profile_default_modulation
                                              && (profile_changed || profile->levels == 2);

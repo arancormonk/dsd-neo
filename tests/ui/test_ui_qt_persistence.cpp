@@ -204,21 +204,44 @@ test_app_prefs(void) {
         expect("ppm defaults to 0", prefs.ppm() == 0);
         expect("bandwidth defaults to 48 kHz", prefs.bandwidthKhz() == 48);
         expect("extra args default empty", prefs.extraArgs().isEmpty());
+        /* Empty is what makes the first Explore tap ask where to point the radio
+         * instead of starting on a guess. */
+        expect("explore source starts unchosen", prefs.exploreSourceType().isEmpty());
+        expect("explore frequency starts unchosen", prefs.exploreFreqMhz().isEmpty());
+        expect("explore port defaults to rtl_tcp's", prefs.explorePort() == 1234);
 
         /* The getter validates: an out-of-range stored mode must read as the
          * default, not drive a switch statement off the end. */
         prefs.setAppearance(9);
         expect("out-of-range appearance reads as default", prefs.appearance() == AppPrefs::FollowSystem);
 
+        /* Same discipline for the explore source. Only a tuner can be explored, so
+         * a stored "udp" is not a source to start on — it reads as unchosen and
+         * sends the user back to the setup sheet. */
+        prefs.setExploreSourceType(QStringLiteral("udp"));
+        expect("a non-tuner explore source reads as unchosen", prefs.exploreSourceType().isEmpty());
+        prefs.setExplorePort(70000);
+        expect("an out-of-range explore port reads as the default", prefs.explorePort() == 1234);
+
         prefs.setGainDb(42);
         prefs.setExtraArgs(QStringLiteral("--enc-lockout"));
         prefs.setOnboardingDone(true);
+        prefs.setExploreSourceType(QStringLiteral("rtltcp"));
+        prefs.setExploreHost(QStringLiteral("10.0.2.2"));
+        prefs.setExplorePort(1234);
+        /* Text, not a number: the trailing zeros say which channel this was. */
+        prefs.setExploreFreqMhz(QStringLiteral("769.76875"));
     }
 
     AppPrefs reloaded;
     expect("gain persists across instances", reloaded.gainDb() == 42);
     expect("extra args persist across instances", reloaded.extraArgs() == QStringLiteral("--enc-lockout"));
     expect("onboarding flag persists", reloaded.onboardingDone());
+    expect("explore source persists", reloaded.exploreSourceType() == QStringLiteral("rtltcp"));
+    expect("explore host persists", reloaded.exploreHost() == QStringLiteral("10.0.2.2"));
+    expect("explore port persists", reloaded.explorePort() == 1234);
+    expect("explore frequency persists with its digits intact",
+           reloaded.exploreFreqMhz() == QStringLiteral("769.76875"));
 }
 
 } // namespace

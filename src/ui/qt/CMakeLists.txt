@@ -22,6 +22,8 @@ target_sources(
         metrics_model.cpp
         qt_ui.cpp
         saved_systems_model.cpp
+        spectrum_model.cpp
+        spectrum_view_item.cpp
         session_args.cpp
         ui_controller.cpp
 )
@@ -36,28 +38,35 @@ qt_add_resources(
         qml/Theme.qml
         qml/Util.js
         qml/Main.qml
+        qml/BandRail.qml
         qml/BottomNav.qml
         qml/CallRow.qml
         qml/Caret.qml
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
         qml/EncTag.qml
+        qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
+        qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
         qml/HomeScreen.qml
         qml/LevelMeter.qml
         qml/LogoMark.qml
         qml/MicroLabel.qml
+        qml/ModalSheet.qml
         qml/MonitorScreen.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
         qml/PlexTextField.qml
+        qml/RadioSheet.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
+        qml/SpectrumScreen.qml
+        qml/TunerMarker.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml
         fonts/IBMPlexSans-Regular.ttf

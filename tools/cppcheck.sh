@@ -159,6 +159,10 @@ CPPCHECK_ARGS+=(
   --suppress='*:*/src/third_party/*'
   --suppress='*:android/third_party/*'
   --suppress='*:*/android/third_party/*'
+  # uninitMemberVarNoCtor on dsd_state is suppressed at the struct itself, with a
+  # cppcheck-suppress-begin/end pair in include/dsd-neo/core/state.h: a suppression
+  # here would have to name the file, and that covers the seventeen other types
+  # declared in it as well.
   -i src/third_party
   -i android/third_party
 )

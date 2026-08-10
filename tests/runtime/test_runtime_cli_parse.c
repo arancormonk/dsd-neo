@@ -5168,6 +5168,89 @@ test_f_edacs_presets_match_reference_modes(void) {
     return test_rc;
 }
 
+/*
+ * -fA followed by a selector the preset helper never sees.
+ *
+ * The EDACS/ProVoice and M17 selectors are handled by the `-f` case's own chain and
+ * never reach dsd_apply_decode_mode_preset(), so leaving analog-monitor mode is
+ * theirs to do. Left set, opts->analog_only pins the RTL front end to
+ * DSD_DEMOD_OUTPUT_AUDIO_MONITOR (rtl_demod_config.cpp) and suppresses the digital
+ * output stream (dsd_audio.c), so the selector names a protocol that then never
+ * decodes.
+ */
+static int
+test_f_manual_selectors_leave_analog_monitor(void) {
+    static const char* const selectors[] = {"-fp", "-fh", "-fH", "-fe", "-fE", "-fZ", "-fB", "-fP", "-fU"};
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "-fA";
+        char arg2[16] = {0};
+        DSD_SNPRINTF(arg2, sizeof arg2, "%s", selectors[i]);
+        char* argv[] = {arg0, arg1, arg2, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "expected -fA %s rc=%d, got %d (exit_rc=%d)\n", selectors[i], DSD_PARSE_CONTINUE, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+        if (opts->analog_only != 0 || opts->monitor_input_audio != 0) {
+            DSD_FPRINTF(stderr, "-fA %s left analog monitor on (analog_only=%d monitor_input_audio=%d)\n", selectors[i],
+                        opts->analog_only, opts->monitor_input_audio);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    /* An -f selector no branch handles still changes nothing at all. */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "-fA";
+    char arg2[] = "-fQ";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    (void)dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (opts->analog_only != 1 || opts->monitor_input_audio != 1) {
+        DSD_FPRINTF(stderr, "an unrecognized -f selector half-left analog monitor (analog_only=%d monitor=%d)\n",
+                    opts->analog_only, opts->monitor_input_audio);
+        test_rc = 1;
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+
+    return test_rc;
+}
+
 static int
 test_f_fr_restores_single_slot_mono_preset(void) {
     static const struct {
@@ -6515,6 +6598,7 @@ main(void) {
     rc |= test_f_ysf_preset_applies_cli_profile();
     rc |= test_f_dpmr_and_m17_presets_match_documented_letters();
     rc |= test_f_edacs_presets_match_reference_modes();
+    rc |= test_f_manual_selectors_leave_analog_monitor();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();
     rc |= test_mg_before_f_dmr_keeps_gfsk_lock();

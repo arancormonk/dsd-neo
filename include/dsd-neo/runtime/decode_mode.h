@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/config.h>
 
 #ifdef __cplusplus
@@ -68,6 +69,53 @@ int dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfi
  * @param state Decoder state receiving `samplesPerSymbol` and `symbolCenter`.
  */
 void dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_input_rate_hz, dsd_state* state);
+
+/**
+ * @brief The symbol profile a decode mode runs on.
+ *
+ * One answer for the three things that have to agree once a mode is live: the
+ * symbol clock the slicer runs at, the number of levels the demodulator slices
+ * to, and the frame-sync SPS profile the hunt searches from. Derived separately
+ * they drift, and a mode ends up on one protocol's symbol clock with another
+ * protocol's hunt profile and a third protocol's channel filter.
+ *
+ * This is the steady-state profile — what the SPS hunt will converge on — which
+ * is not always where @c dsd_apply_decode_mode_symbol_timing() starts a mode off.
+ */
+typedef struct {
+    int symbol_rate_hz;                                 /**< 2400, 4800, 6000 or 9600. */
+    int levels;                                         /**< 2 or 4. */
+    dsd_frame_sync_sps_profile_index sps_profile_index; /**< Hunt profile carrying this mode. */
+} dsd_decode_mode_profile;
+
+/**
+ * @brief Return the symbol profile @p mode decodes on.
+ *
+ * Modes with no profile of their own — AUTO, analog monitor, and any mode set
+ * that spans several symbol rates — answer with 4800/4, which is both the
+ * commonest case and the hunt's own starting profile.
+ *
+ * @param mode Decode mode preset.
+ * @return Symbol rate, level count and frame-sync profile index for @p mode.
+ */
+dsd_decode_mode_profile dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode);
+
+/**
+ * @brief Return the RTL channel filter a symbol profile and modulation need.
+ *
+ * The one copy of this mapping. A modulation the operator picks and one the SPS
+ * hunt lands on have to ask the front end for the same filter, or the two
+ * disagree about what the front end is doing every time the hunt re-runs.
+ *
+ * @param opts Decoder options, consulted for the wide-4800 profile override.
+ * @param symbol_rate_hz Symbol rate in Hz.
+ * @param levels Number of slicer levels (2 or 4).
+ * @param rf_mod Modulation, as @c dsd_state::rf_mod (0 C4FM, 1 QPSK, 2 GFSK).
+ * @return A channel-profile selector. The `RTL_STREAM_CHANNEL_PROFILE_*` and
+ *         `DSD_RTL_STREAM_CHANNEL_PROFILE_*` enumerations share these values, so
+ *         either spelling may be compared against the result.
+ */
+int dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels, int rf_mod);
 
 /**
  * @brief Infer a user decode mode from active opts flags.

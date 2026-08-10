@@ -69,6 +69,49 @@ test_freq_validation(void) {
            session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::Frequency);
 }
 
+/*
+ * An explore session is an ordinary session over a map that was never saved, so
+ * the only thing keeping it honest is the shape of that map. Two properties are
+ * load-bearing and neither is visible anywhere else: no -T, because a trunker
+ * would take the tuner straight back from the user who came here to drive it,
+ * and no decode flag, because the point is to hear whatever it lands on.
+ */
+void
+test_explore_system(void) {
+    QVariantMap sys;
+    sys.insert(QStringLiteral("name"), QStringLiteral("Exploring"));
+    sys.insert(QStringLiteral("sourceType"), QStringLiteral("usb"));
+    sys.insert(QStringLiteral("host"), QString());
+    sys.insert(QStringLiteral("port"), 0);
+    sys.insert(QStringLiteral("freqMhz"), QStringLiteral("855.0000"));
+    sys.insert(QStringLiteral("decodeFlag"), QString());
+    sys.insert(QStringLiteral("trunking"), false);
+
+    SessionArgsError error = SessionArgsError::None;
+    const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("an explore map builds", error == SessionArgsError::None);
+    expect("explore tunes where it was told", input_spec(args) == QStringLiteral("rtl:0:855.0000M:30:0:48:0:2"));
+    expect("explore never follows calls across channels", !args.contains(QStringLiteral("-T")));
+    expect("explore leaves the decoder to work it out", !args.contains(QStringLiteral("-f1"))
+                                                            && !args.contains(QStringLiteral("-fs"))
+                                                            && !args.contains(QStringLiteral("-ft")));
+
+    // Over rtl_tcp it is the same session with a different front end.
+    sys.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+    sys.insert(QStringLiteral("port"), 1234);
+    const QStringList remote = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("explore builds over rtl_tcp", error == SessionArgsError::None);
+    expect("explore reaches the remote tuner",
+           input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:855.0000M:30:0:48:0:2"));
+
+    // A frequency that never made it into the prefs must be refused here, the
+    // same as a saved system's would be, rather than starting a mistuned session.
+    sys.insert(QStringLiteral("freqMhz"), QString());
+    expect("an explore map with no frequency is refused",
+           session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::Frequency);
+}
+
 void
 test_defaults_and_overrides(void) {
     SessionArgsError error = SessionArgsError::None;
@@ -195,6 +238,7 @@ main(void) {
     test_ppm_shapes();
     test_bias_tee_tristate();
     test_network_and_file_sources();
+    test_explore_system();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;
