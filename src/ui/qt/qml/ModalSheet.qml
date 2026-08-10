@@ -31,10 +31,6 @@ Rectangle {
         return p.x >= 0 && p.y >= 0 && p.x <= panelItem.width && p.y <= panelItem.height;
     }
 
-    function open() {
-        visible = true;
-    }
-
     anchors.fill: parent
     visible: false
     color: Qt.alpha("#000000", 0.5)

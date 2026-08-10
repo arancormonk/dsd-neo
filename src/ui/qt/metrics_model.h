@@ -21,6 +21,7 @@
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 namespace dsd_qt {
 
@@ -553,10 +554,12 @@ class MetricsModel : public QObject {
 
   private:
     View m_view;
-    /* Latched across frames rather than derived from one: frame sync comes and goes
+    /* Held across frames rather than derived from one: frame sync comes and goes
      * between 250 ms polls, so a single sample answers "is it synced right now",
-     * which is not the question. Cleared when the tuner moves; see syncedHere(). */
-    int m_sync_type_here = -1; /* DSD_SYNC_NONE */
+     * which is not the question. The hold decays on its own rather than being
+     * cleared on a retune or a mode change — fillDecoderView() documents why a
+     * one-shot reset was a race. See syncedHere(). */
+    int m_sync_type_here = DSD_SYNC_NONE;
     double m_sync_seen_m = 0.0;
     /* Armed for a live ui_message's expiry stamp, so the message leaves the screen
      * on time even when the idle engine never publishes another frame. */
