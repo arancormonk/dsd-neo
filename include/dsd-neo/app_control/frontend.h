@@ -57,6 +57,10 @@ typedef struct dsd_frontend_metrics {
     int symbol_rate_hz;
     int symbol_levels;
     int channel_profile;
+    /* Full width in Hz of the channel the demodulator is filtering — twice the
+     * protected edge of channel_profile. 0 when the input is not a radio. The
+     * channel, not the filter: see dsd_channel_lpf_protected_edge_hz(). */
+    int channel_bandwidth_hz;
     uint32_t stream_generation;
     int stream_active;
     dsd_input_level_snapshot input_level;

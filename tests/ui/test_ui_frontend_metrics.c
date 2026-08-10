@@ -335,6 +335,25 @@ test_metrics_ignore_stream_hooks_off_radio(void) {
 }
 
 /*
+ * A new metrics field has to be zero on an input with no demodulator behind it.
+ * frontend_metrics_defaults() memsets the struct, so this is really a guard
+ * against someone later filling the field ahead of the radio check.
+ */
+static void
+test_channel_bandwidth_is_zero_off_radio(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frontend_metrics metrics;
+    fill_metric_inputs(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+
+    /* Poison, so a field left unwritten is visible rather than accidentally right. */
+    metrics.channel_bandwidth_hz = 12500;
+    assert(dsd_app_frontend_get_metrics_for_snapshot(&opts, &state, &metrics, 0) == 0);
+    assert(metrics.channel_bandwidth_hz == 0);
+}
+
+/*
  * Visualizer accessors on a build with no radio backend.
  *
  * This target compiles frontend.c without USE_RADIO, so every accessor takes
@@ -373,6 +392,7 @@ main(void) {
     test_metrics_for_snapshot_does_not_consume();
     test_metrics_fallback_and_runtime_hooks();
     test_metrics_ignore_stream_hooks_off_radio();
+    test_channel_bandwidth_is_zero_off_radio();
     test_visualizer_getters_without_radio();
     printf("UI_FRONTEND_METRICS: OK\n");
     return 0;
