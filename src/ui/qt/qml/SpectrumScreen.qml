@@ -43,10 +43,11 @@ Item {
     readonly property real tunedHz: spectrum.hasData ? spectrum.centerFreqHz
                                                      : (metrics ? metrics.centerFreqHz : 0)
 
-    // What the big readout shows. While the rail is being dragged that is where
-    // it is heading, not where the receiver still is — it is the number being
-    // steered.
-    readonly property real readoutHz: bandRail.dragging ? bandRail.pendingHz : screen.tunedHz
+    // What the big readout shows. While the rail is being dragged, or waiting for
+    // a drag's retune to land, that is where it is heading, not where the
+    // receiver still is — it is the number being steered. The rail owns that
+    // preview; this just reads it, rather than restating the same expression.
+    readonly property real readoutHz: bandRail.displayHz
 
     // Where the tuner can be walked without leaving the part of the spectrum the
     // user is working in. Null off-band, in which case stepping is unbounded and
@@ -329,8 +330,9 @@ Item {
                     font.pixelSize: 21
                     font.weight: Font.Medium
                     // Cyan while it is a request rather than a fact, the same way
-                    // every other in-flight thing on this screen reads.
-                    color: bandRail.dragging ? Theme.cyan : Theme.textPrimary
+                    // every other in-flight thing on this screen reads — through
+                    // the retune settling, not just through the drag itself.
+                    color: (bandRail.dragging || bandRail.settling) ? Theme.cyan : Theme.textPrimary
                 }
 
                 // The readout doubles as the way to leave the neighbourhood

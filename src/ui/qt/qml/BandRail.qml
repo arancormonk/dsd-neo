@@ -29,6 +29,14 @@ Item {
     property real pendingHz: 0
     property real dragStartHz: 0
 
+    // Held from release until the tuner actually lands on the requested
+    // frequency, so the readout and the knob do not revert to the old
+    // frequency and then jump forward again once the retune completes — which
+    // reads as the drag having been refused. settleHz is the frequency being
+    // waited for; the Timer below gives up on it if it never arrives.
+    property bool settling: false
+    property real settleHz: 0
+
     // Clamped in this order so that near a tuner limit the window stops sliding
     // and the knob moves off centre instead — the alternative is a window that
     // runs off the end of what the hardware can reach.
@@ -38,7 +46,8 @@ Item {
         return Math.max(Util.TUNER_LOW_HZ, hi - rail.windowHz)
     }
     readonly property real highHz: Math.min(Util.TUNER_HIGH_HZ, rail.lowHz + rail.windowHz)
-    readonly property real displayHz: rail.dragging ? rail.pendingHz : rail.tunedHz
+    readonly property real displayHz: rail.dragging ? rail.pendingHz
+                                                    : (rail.settling ? rail.settleHz : rail.tunedHz)
 
     implicitHeight: 32
 
@@ -74,8 +83,24 @@ Item {
         var want = rail.pendingHz
         var moved = rail.dragging && Math.round(want) !== Math.round(rail.tunedHz)
         rail.dragging = false
-        if (!cancelled && moved)
+        if (!cancelled && moved) {
+            rail.settleHz = want
+            rail.settling = true
             rail.tuneRequested(want)
+        }
+    }
+
+    // The tune landed: the truth takes over and the knob eases to its real
+    // position from wherever the preview left it.
+    onTunedHzChanged: rail.settling = false
+
+    // A retune the engine refused, or one that otherwise never lands, must not
+    // hold the preview forever — after this the display falls back to the
+    // truth same as it would with no preview at all.
+    Timer {
+        interval: 1500
+        running: rail.settling
+        onTriggered: rail.settling = false
     }
 
     Text {

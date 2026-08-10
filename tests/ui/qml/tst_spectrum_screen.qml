@@ -942,5 +942,53 @@ Item {
             verify(!screen.sweeping, "the sweep survived a rail grab")
             rail.endDrag(true)
         }
+
+        // The handler itself, not just the arithmetic behind it. Every other rail case
+        // calls the drag functions directly, so deleting the DragHandler would leave
+        // them all green — and a rail that looks draggable and is not is precisely the
+        // defect this control was built to remove.
+        function test_33_the_rail_handler_is_actually_wired() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            mouseDrag(rail, rail.width * 0.5, rail.height / 2, rail.width * 0.25, 0)
+            tryVerify(function () { return testContext.manualTuneCalls() === 1 }, 5000,
+                      "dragging the rail itself never asked for a tune")
+        }
+
+        // The number being steered must not snap back to the old frequency the instant
+        // the finger lifts. A retune blocks the engine up to 500 ms, and a readout that
+        // reverts and then re-applies reads as the drag having been refused.
+        //
+        // The final assignment below sets rail.tunedHz directly, which detaches its
+        // binding to screen.tunedHz for the rest of the run (a known trap already in
+        // play by test_30b above) — and unlike test_30b, this does not restore the
+        // original value afterward, so it leaves the rail off by the drag amount for
+        // anything that runs later. Kept last in the file so nothing added below it
+        // casually assumes the binding still lives.
+        //
+        // That said, "last in the file" is not "last to run": TestCase sorts its
+        // test_* functions in ascending alphabetical order of their name rather than
+        // file order (TestCase.qml documents this), and "test_32" sorts and runs
+        // before "test_33" regardless of which is written first. test_33 tolerates
+        // running afterward on purpose — it only asserts that dragging the handle asks
+        // for one tune and never reads rail.tunedHz, so the value this test leaves
+        // behind does not reach it.
+        function test_32_the_preview_holds_through_the_release() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            var readout = findChild(screenLoader.item, "spectrumCenterReadout")
+            rail.beginDrag()
+            rail.dragBy(120, 400)
+            var want = rail.pendingHz
+            rail.endDrag(false)
+
+            verify(rail.settling, "the rail stopped previewing the moment the drag ended")
+            verify(Math.abs(rail.displayHz - want) <= 1,
+                   "after release the rail shows " + rail.displayHz + ", not the requested " + want)
+            verify(readout.text.indexOf((want / 1.0e6).toFixed(2)) === 0,
+                   "the readout reverted to " + readout.text + " before the tune landed")
+
+            // The tuner arriving is what ends the preview.
+            rail.tunedHz = want
+            verify(!rail.settling, "the preview outlived the tune landing")
+        }
     }
 }
