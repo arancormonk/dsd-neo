@@ -449,42 +449,11 @@ Item {
                             color: Theme.textSecondary
                         }
 
-                        Row {
-                            spacing: 8
+                        FrequencyField {
+                            id: freqField
 
-                            TextInput {
-                                id: freqField
-
-                                width: Math.max(implicitWidth, 60)
-                                text: "851.375"
-                                font.family: Theme.mono
-                                font.pixelSize: 32
-                                font.weight: Font.Medium
-                                color: Theme.textPrimary
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                // The hint only picks the soft keyboard; a hardware
-                                // keyboard types anything. The validator is what keeps
-                                // "851.375M" out of the saved system.
-                                validator: RegularExpressionValidator {
-                                    regularExpression: /^\d{1,5}(\.\d{0,6})?$/
-                                }
-                                selectionColor: Qt.alpha(Theme.cyan, 0.35)
-                                selectedTextColor: Theme.textPrimary
-                            }
-
-                            Text {
-                                text: "MHz"
-                                anchors.baseline: freqField.baseline
-                                font.family: Theme.mono
-                                font.pixelSize: 15
-                                color: Theme.textSubdued
-                            }
-                        }
-
-                        Rectangle {
                             width: parent.width
-                            height: 2
-                            color: Theme.cyan
+                            text: "851.375"
                         }
 
                         Text {

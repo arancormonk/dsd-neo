@@ -21,14 +21,12 @@ import "Util.js" as Util
 // same next one, and merge in the queue into a single step. The pending value
 // expires after requestTtlMs whatever happens, which is how a refused command
 // comes back to what the radio is actually on.
-Rectangle {
+ModalSheet {
     id: sheet
 
     objectName: "radioSheet"
-
-    anchors.fill: parent
-    visible: false
-    color: Qt.alpha("#000000", 0.5)
+    panelObjectName: "radioSheetPanel"
+    spacing: 14
 
     // Long enough for several 250 ms polls plus the queue drain — an accepted
     // request is normally reflected well inside it, and a refused one is not
@@ -144,263 +142,227 @@ Rectangle {
         onTriggered: sheet.pendingSquelch = NaN
     }
 
-    // Tapping the scrim dismisses; tapping the panel must not. A TapHandler on
-    // the panel cannot express that, because handlers never take exclusive grabs
-    // and both would fire — which closed this panel on every press of every
-    // control inside it. So the scrim decides by where the tap landed.
-    TapHandler {
-        onTapped: function (eventPoint) {
-            if (!sheet.hitsPanel(eventPoint.position.x, eventPoint.position.y))
-                sheet.visible = false
-        }
+    MicroLabel {
+        text: qsTr("Radio")
     }
 
-    /** Whether a point in this sheet's coordinates lies on the panel. */
-    function hitsPanel(x, y) {
-        var p = sheet.mapToItem(panel, x, y)
-        return p.x >= 0 && p.y >= 0 && p.x <= panel.width && p.y <= panel.height
-    }
+    // ---- Gain ----
+    Item {
+        width: parent.width
+        height: 34
 
-    UiPanel {
-        id: panel
-
-        objectName: "radioSheetPanel"
-        anchors.centerIn: parent
-        width: parent.width - 2 * Theme.screenPadding
-        height: column.height + 2 * Theme.cardPadding
-
-        Column {
-            id: column
-
+        Text {
             anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Gain")
+            font.family: Theme.sans
+            font.pixelSize: 14
+            color: Theme.textSecondary
+        }
+
+        Row {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            anchors.margins: Theme.cardPadding
-            spacing: 14
+            spacing: 10
 
-            MicroLabel {
-                text: qsTr("Radio")
-            }
-
-            // ---- Gain ----
-            Item {
-                width: parent.width
-                height: 34
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("Gain")
-                    font.family: Theme.sans
-                    font.pixelSize: 14
-                    color: Theme.textSecondary
-                }
-
-                Row {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-
-                    Text {
-                        objectName: "radioGainValue"
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 74
-                        horizontalAlignment: Text.AlignRight
-                        text: sheet.autoGain ? qsTr("auto") : sheet.gainDb + " dB"
-                        font.family: Theme.mono
-                        font.pixelSize: 14
-                        color: Theme.textPrimary
-                    }
-
-                    OutlineButton {
-                        objectName: "radioGainDown"
-                        width: 44
-                        height: 34
-                        text: "−"
-                        onClicked: sheet.stepGain(-1)
-                    }
-
-                    OutlineButton {
-                        objectName: "radioGainUp"
-                        width: 44
-                        height: 34
-                        text: "+"
-                        onClicked: sheet.stepGain(1)
-                    }
-                }
-            }
-
-            // ---- Squelch ----
-            Item {
-                width: parent.width
-                height: 34
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("Squelch")
-                    font.family: Theme.sans
-                    font.pixelSize: 14
-                    color: Theme.textSecondary
-                }
-
-                Row {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-
-                    Text {
-                        objectName: "radioSquelchValue"
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 74
-                        horizontalAlignment: Text.AlignRight
-                        text: Math.round(sheet.squelchDb) + " dB"
-                        font.family: Theme.mono
-                        font.pixelSize: 14
-                        color: Theme.textPrimary
-                    }
-
-                    OutlineButton {
-                        objectName: "radioSquelchDown"
-                        width: 44
-                        height: 34
-                        text: "−"
-                        onClicked: sheet.stepSquelch(-5)
-                    }
-
-                    OutlineButton {
-                        objectName: "radioSquelchUp"
-                        width: 44
-                        height: 34
-                        text: "+"
-                        onClicked: sheet.stepSquelch(5)
-                    }
-                }
-            }
-
-            // ---- PPM ----
-            // The dongle's crystal error. Chosen once when the system was added,
-            // by someone who had no way to tell whether it was right: the symptom
-            // is a frequency offset the decoder cannot close, and that only shows
-            // up with a signal on screen. Which is here.
-            Item {
-                width: parent.width
-                height: 34
-
-                Text {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: qsTr("PPM")
-                    font.family: Theme.sans
-                    font.pixelSize: 14
-                    color: Theme.textSecondary
-                }
-
-                Row {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
-
-                    Text {
-                        objectName: "radioPpmValue"
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 74
-                        horizontalAlignment: Text.AlignRight
-                        text: String(sheet.ppm)
-                        font.family: Theme.mono
-                        font.pixelSize: 14
-                        color: Theme.textPrimary
-                    }
-
-                    OutlineButton {
-                        objectName: "radioPpmDown"
-                        width: 44
-                        height: 34
-                        text: "−"
-                        onClicked: sheet.stepPpm(-1)
-                    }
-
-                    OutlineButton {
-                        objectName: "radioPpmUp"
-                        width: 44
-                        height: 34
-                        text: "+"
-                        onClicked: sheet.stepPpm(1)
-                    }
-                }
-            }
-
-            Rectangle {
-                width: parent.width
-                height: 1
-                color: Theme.divider
-            }
-
-            // ---- Modulation ----
-            // Its own control rather than a decode chip, because it answers a
-            // different question: not what to look for, but how the site sends
-            // it. A simulcast P25 system reads as noise on C4FM and never locks,
-            // and that is the single most common reason a real signal decodes
-            // nothing.
             Text {
-                text: qsTr("Modulation")
-                font.family: Theme.sans
+                objectName: "radioGainValue"
+                anchors.verticalCenter: parent.verticalCenter
+                width: 74
+                horizontalAlignment: Text.AlignRight
+                text: sheet.autoGain ? qsTr("auto") : sheet.gainDb + " dB"
+                font.family: Theme.mono
                 font.pixelSize: 14
-                color: Theme.textSecondary
-            }
-
-            // GFSK is the third choice because it is a state the session can
-            // already be in — the DMR and EDACS/ProVoice presets select it — and
-            // a two-entry control could only show it as C4FM, then offer no way
-            // back to it once the user tried something else.
-            SegmentedControl {
-                objectName: "radioModulation"
-                width: parent.width
-                model: [qsTr("C4FM"), qsTr("QPSK / simulcast"), qsTr("GFSK")]
-                currentIndex: metrics.modulation
-                onSelected: function (index) { commands.setModulation(index) }
-            }
-
-            // ---- Decode ----
-            Text {
-                text: qsTr("Listening for")
-                font.family: Theme.sans
-                font.pixelSize: 14
-                color: Theme.textSecondary
-            }
-
-            Flow {
-                width: parent.width
-                spacing: 8
-
-                Repeater {
-                    // The simulcast entry is a modulation choice wearing a decode
-                    // chip's clothes; it has its own control above, so it would
-                    // appear here as a duplicate that changes nothing.
-                    model: Util.DECODE_MODES.filter(function (m) { return m.flag !== "-mq" })
-
-                    DecodeChip {
-                        required property var modelData
-
-                        readonly property int mode: commands.decodeModeForFlag(modelData.flag)
-
-                        objectName: "radioDecode_" + modelData.short
-                        text: modelData.short
-                        selected: mode >= 0 && mode === metrics.decodeMode
-                        onClicked: {
-                            if (mode >= 0)
-                                commands.setDecodeMode(mode)
-                        }
-                    }
-                }
+                color: Theme.textPrimary
             }
 
             OutlineButton {
-                objectName: "radioSheetDone"
-                width: parent.width
-                text: qsTr("Done")
-                onClicked: sheet.visible = false
+                objectName: "radioGainDown"
+                width: 44
+                height: 34
+                text: "−"
+                onClicked: sheet.stepGain(-1)
+            }
+
+            OutlineButton {
+                objectName: "radioGainUp"
+                width: 44
+                height: 34
+                text: "+"
+                onClicked: sheet.stepGain(1)
             }
         }
+    }
+
+    // ---- Squelch ----
+    Item {
+        width: parent.width
+        height: 34
+
+        Text {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("Squelch")
+            font.family: Theme.sans
+            font.pixelSize: 14
+            color: Theme.textSecondary
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+
+            Text {
+                objectName: "radioSquelchValue"
+                anchors.verticalCenter: parent.verticalCenter
+                width: 74
+                horizontalAlignment: Text.AlignRight
+                text: Math.round(sheet.squelchDb) + " dB"
+                font.family: Theme.mono
+                font.pixelSize: 14
+                color: Theme.textPrimary
+            }
+
+            OutlineButton {
+                objectName: "radioSquelchDown"
+                width: 44
+                height: 34
+                text: "−"
+                onClicked: sheet.stepSquelch(-5)
+            }
+
+            OutlineButton {
+                objectName: "radioSquelchUp"
+                width: 44
+                height: 34
+                text: "+"
+                onClicked: sheet.stepSquelch(5)
+            }
+        }
+    }
+
+    // ---- PPM ----
+    // The dongle's crystal error. Chosen once when the system was added,
+    // by someone who had no way to tell whether it was right: the symptom
+    // is a frequency offset the decoder cannot close, and that only shows
+    // up with a signal on screen. Which is here.
+    Item {
+        width: parent.width
+        height: 34
+
+        Text {
+            anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: qsTr("PPM")
+            font.family: Theme.sans
+            font.pixelSize: 14
+            color: Theme.textSecondary
+        }
+
+        Row {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 10
+
+            Text {
+                objectName: "radioPpmValue"
+                anchors.verticalCenter: parent.verticalCenter
+                width: 74
+                horizontalAlignment: Text.AlignRight
+                text: String(sheet.ppm)
+                font.family: Theme.mono
+                font.pixelSize: 14
+                color: Theme.textPrimary
+            }
+
+            OutlineButton {
+                objectName: "radioPpmDown"
+                width: 44
+                height: 34
+                text: "−"
+                onClicked: sheet.stepPpm(-1)
+            }
+
+            OutlineButton {
+                objectName: "radioPpmUp"
+                width: 44
+                height: 34
+                text: "+"
+                onClicked: sheet.stepPpm(1)
+            }
+        }
+    }
+
+    Rectangle {
+        width: parent.width
+        height: 1
+        color: Theme.divider
+    }
+
+    // ---- Modulation ----
+    // Its own control rather than a decode chip, because it answers a
+    // different question: not what to look for, but how the site sends
+    // it. A simulcast P25 system reads as noise on C4FM and never locks,
+    // and that is the single most common reason a real signal decodes
+    // nothing.
+    Text {
+        text: qsTr("Modulation")
+        font.family: Theme.sans
+        font.pixelSize: 14
+        color: Theme.textSecondary
+    }
+
+    // GFSK is the third choice because it is a state the session can
+    // already be in — the DMR and EDACS/ProVoice presets select it — and
+    // a two-entry control could only show it as C4FM, then offer no way
+    // back to it once the user tried something else.
+    SegmentedControl {
+        objectName: "radioModulation"
+        width: parent.width
+        model: [qsTr("C4FM"), qsTr("QPSK / simulcast"), qsTr("GFSK")]
+        currentIndex: metrics.modulation
+        onSelected: function (index) { commands.setModulation(index) }
+    }
+
+    // ---- Decode ----
+    Text {
+        text: qsTr("Listening for")
+        font.family: Theme.sans
+        font.pixelSize: 14
+        color: Theme.textSecondary
+    }
+
+    Flow {
+        width: parent.width
+        spacing: 8
+
+        Repeater {
+            // The simulcast entry is a modulation choice wearing a decode
+            // chip's clothes; it has its own control above, so it would
+            // appear here as a duplicate that changes nothing.
+            model: Util.DECODE_MODES.filter(function (m) { return m.flag !== "-mq" })
+
+            DecodeChip {
+                required property var modelData
+
+                readonly property int mode: commands.decodeModeForFlag(modelData.flag)
+
+                objectName: "radioDecode_" + modelData.short
+                text: modelData.short
+                selected: mode >= 0 && mode === metrics.decodeMode
+                onClicked: {
+                    if (mode >= 0)
+                        commands.setDecodeMode(mode)
+                }
+            }
+        }
+    }
+
+    OutlineButton {
+        objectName: "radioSheetDone"
+        width: parent.width
+        text: qsTr("Done")
+        onClicked: sheet.visible = false
     }
 }

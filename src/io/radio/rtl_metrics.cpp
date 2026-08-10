@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "rtl_fft_cache.h"
+#include "rtl_spectrum_kernels.h"
 #include "rtl_stream_shared.hpp"
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
@@ -156,17 +157,9 @@ rtl_metrics_prepare_fft_input(const float* iq_interleaved, int pairs, int N, flo
     frame.take = (pairs >= N) ? N : pairs;
     frame.start = pairs - frame.take;
 
-    double sumI = 0.0;
-    double sumQ = 0.0;
-    for (int n = 0; n < frame.take; n++) {
-        int idx = frame.start + n;
-        sumI += static_cast<double>(iq_interleaved[(size_t)(idx << 1)]);
-        sumQ += static_cast<double>(iq_interleaved[(size_t)(idx << 1) + 1]);
-    }
-    if (frame.take > 0) {
-        frame.meanI = static_cast<float>(sumI / static_cast<double>(frame.take));
-        frame.meanQ = static_cast<float>(sumQ / static_cast<double>(frame.take));
-    }
+    const dsd_io::IqBlockMean mean = dsd_io::iq_block_mean(iq_interleaved, frame.start, frame.take);
+    frame.meanI = mean.i;
+    frame.meanQ = mean.q;
 
     if (frame.take < N) {
         for (int n = 0; n < (N << 1); n++) {
@@ -185,14 +178,10 @@ rtl_metrics_prepare_fft_input(const float* iq_interleaved, int pairs, int N, flo
         frame.take = 0;
         return frame;
     }
-    for (int n = 0; n < frame.take; n++) {
-        int idx = frame.start + n;
-        float I = iq_interleaved[(size_t)(idx << 1)];
-        float Q = iq_interleaved[(size_t)(idx << 1) + 1];
-        float w = hann[n];
-        z[(n << 1)] = w * (I - frame.meanI);
-        z[(n << 1) + 1] = w * (Q - frame.meanQ);
-    }
+    /* The leading frame.take points of an N-point window when the block is
+     * short — a partial window, but the tail of z was zeroed above, so the
+     * transform sees a shorter record rather than a discontinuity. */
+    dsd_io::iq_window_dc_removed(iq_interleaved, frame.start, frame.take, hann, mean, z);
     return frame;
 }
 
@@ -224,21 +213,15 @@ rtl_metrics_phase_cfo_hz(const float* iq_interleaved, const rtl_metrics_fft_fram
     return atan2(acc_im, acc_re) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
 }
 
+/* Share of each new frame in the smoothed bins. Light, because these feed the
+ * auto-gain spectral gate and a peak search: a decision taken off one noisy
+ * frame is a gain step taken for no reason. */
+static const float kSpecEmaNewWeight = 0.2f;
+
 static void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
-    const float eps = 1e-12f;
     const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
-    for (int k = 0; k < N; k++) {
-        int kk = k + (N >> 1);
-        if (kk >= N) {
-            kk -= N;
-        }
-        float re = z[(kk << 1)];
-        float im = z[(kk << 1) + 1];
-        float mag2 = re * re + im * im;
-        float db = 10.0f * log10f(mag2 + eps);
-        g_spec_db[k] = first ? db : (0.8f * g_spec_db[k] + 0.2f * db);
-    }
+    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_db);
     g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_spec_ready.store(1, std::memory_order_release);
 }

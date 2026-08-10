@@ -29,14 +29,13 @@
  */
 
 #include <atomic>
-#include <cmath>
 #include <dsd-neo/core/wideband_spectrum.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/timing.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #include "rtl_fft_cache.h"
+#include "rtl_spectrum_kernels.h"
 #include "rtl_wideband_spectrum.h"
 
 namespace {
@@ -96,55 +95,21 @@ wb_bump_clear_gen(void) {
     g_wb_clear_gen.fetch_add(1, std::memory_order_acq_rel);
 }
 
-/**
- * @brief Window @p n complex pairs starting at @p start into @p z, DC removed.
- *
- * The mean is subtracted before windowing because the residual DC of an RTL
- * front end is large enough to bury the middle of the display in a spike that
- * is not a signal.
- */
-void
-wb_window_block(const float* iq_interleaved, int start, int n, const float* hann, float* z) {
-    double sum_i = 0.0;
-    double sum_q = 0.0;
-    for (int k = 0; k < n; k++) {
-        const size_t idx = static_cast<size_t>(start + k) << 1;
-        sum_i += static_cast<double>(iq_interleaved[idx]);
-        sum_q += static_cast<double>(iq_interleaved[idx + 1]);
-    }
-    const float mean_i = static_cast<float>(sum_i / static_cast<double>(n));
-    const float mean_q = static_cast<float>(sum_q / static_cast<double>(n));
-
-    for (int k = 0; k < n; k++) {
-        const size_t idx = static_cast<size_t>(start + k) << 1;
-        const float w = hann[k];
-        z[static_cast<size_t>(k) << 1] = w * (iq_interleaved[idx] - mean_i);
-        z[(static_cast<size_t>(k) << 1) + 1] = w * (iq_interleaved[idx + 1] - mean_q);
-    }
-}
+/* Share of each new frame in the published EMA. Heavier than the narrow tap's,
+ * because a waterfall row is a moment rather than a running estimate: this one
+ * is scrolled away a frame later, and over-smoothing smears a short burst across
+ * rows it was not present in. */
+constexpr float kWbSpecEmaNewWeight = 0.6f;
 
 /**
  * @brief Convert @p z to dB in display order and smooth it into the EMA.
  *
- * fftshift as it goes: bin 0 is center - span/2 and bin n/2 is DC, which is the
- * order the published frame promises. The EMA is what keeps a waterfall from
- * flickering between frames; it is seeded rather than blended on the first
- * frame after a clear, so a retune shows the new band immediately.
+ * Seeded rather than blended on the first frame after a clear, so a retune shows
+ * the new band immediately instead of fading the old one out over several rows.
  */
 void
 wb_fold_into_ema(const float* z, int n) {
-    const float eps = 1e-12f;
-    const bool seed = (g_wb_ema_valid == 0);
-    for (int k = 0; k < n; k++) {
-        int kk = k + (n >> 1);
-        if (kk >= n) {
-            kk -= n;
-        }
-        const float re = z[static_cast<size_t>(kk) << 1];
-        const float im = z[(static_cast<size_t>(kk) << 1) + 1];
-        const float db = 10.0f * log10f(re * re + im * im + eps);
-        g_wb_ema[k] = seed ? db : (0.6f * db + 0.4f * g_wb_ema[k]);
-    }
+    dsd_io::spectrum_fold_db(z, n, kWbSpecEmaNewWeight, g_wb_ema_valid == 0, g_wb_ema);
     g_wb_ema_valid = 1;
 }
 
@@ -207,7 +172,8 @@ rtl_wideband_spectrum_maybe_update(const float* iq_interleaved, int len_interlea
 
     /* Analyse the most recent n pairs of the block. */
     alignas(16) static float z[2 * kWbSpecN];
-    wb_window_block(iq_interleaved, pairs - n, n, hann, z);
+    const int start = pairs - n;
+    dsd_io::iq_window_dc_removed(iq_interleaved, start, n, hann, dsd_io::iq_block_mean(iq_interleaved, start, n), z);
     if (!g_wb_fft_setup.forward(n, z)) {
         return;
     }

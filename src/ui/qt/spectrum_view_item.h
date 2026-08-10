@@ -171,12 +171,20 @@ class WaterfallItem : public QQuickPaintedItem {
   private:
     void onFrame();
     void clearHistory();
+    void rebuildRamp();
     QRgb rampColor(double t) const;
 
     SpectrumModel* m_model = nullptr;
     QColor m_cold_color = QColor(0x12, 0x16, 0x1E);
     QColor m_mid_color = QColor(0x22, 0xDC, 0xF5);
     QColor m_hot_color = QColor(0xEC, 0x1F, 0xDC);
+    /* The cold-mid-hot ramp evaluated once per palette change rather than once
+     * per bin. Every row is kWaterfallWidth bins and rows arrive at the frame
+     * rate, so the six-channel interpolation was running tens of thousands of
+     * times a second — on a phone — to produce colors drawn from a set this
+     * small. 256 steps is finer than the 8-bit channels can show. */
+    static constexpr int kRampSteps = 256;
+    QRgb m_ramp[kRampSteps] = {};
     spectrum_math::AutoRange m_range;
     /* Preallocated once. Rows are always written full-span, so zoom and pan are
      * a source rectangle at paint time and old rows stay correct under both;

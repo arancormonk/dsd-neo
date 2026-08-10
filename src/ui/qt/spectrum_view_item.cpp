@@ -234,9 +234,15 @@ SpectrumTraceItem::paint(QPainter* painter) {
     }
 
     /* A model handed over after its first frame has landed announces nothing until
-     * the next one, so seed here rather than draw a flat trace for a frame. */
+     * the next one, so seed here rather than draw a flat trace for a frame. Stamped
+     * with the frame it seeded from, exactly as onFrame() does: left unstamped, the
+     * next viewChanged — the first touch-move of a pan — folds this same frame in a
+     * second time, and the trace's range then runs one relaxation step ahead of the
+     * waterfall's copy of it for the rest of the session. */
     if (!m_range.seeded) {
         m_range.update(bins.constData(), n);
+        m_last_frame_index = m_model->frameIndex();
+        m_have_frame = true;
     }
 
     const double center = m_model->centerFreqHz();
@@ -274,6 +280,7 @@ SpectrumTraceItem::paint(QPainter* painter) {
 
 WaterfallItem::WaterfallItem(QQuickItem* parent)
     : QQuickPaintedItem(parent), m_image(kWaterfallWidth, kWaterfallRows, QImage::Format_RGB32) {
+    rebuildRamp();
     clearHistory();
 }
 
@@ -307,6 +314,7 @@ WaterfallItem::setColdColor(const QColor& color) {
     }
     m_cold_color = color;
     Q_EMIT colorsChanged();
+    rebuildRamp();
     /* Rows already written hold their old palette, and a half-recolored
      * waterfall reads as corruption. */
     clearHistory();
@@ -319,6 +327,7 @@ WaterfallItem::setMidColor(const QColor& color) {
     }
     m_mid_color = color;
     Q_EMIT colorsChanged();
+    rebuildRamp();
     clearHistory();
 }
 
@@ -329,6 +338,7 @@ WaterfallItem::setHotColor(const QColor& color) {
     }
     m_hot_color = color;
     Q_EMIT colorsChanged();
+    rebuildRamp();
     clearHistory();
 }
 
@@ -348,18 +358,36 @@ WaterfallItem::clearHistory() {
     update();
 }
 
+void
+WaterfallItem::rebuildRamp() {
+    for (int i = 0; i < kRampSteps; i++) {
+        const double t = static_cast<double>(i) / static_cast<double>(kRampSteps - 1);
+        if (t <= 0.5) {
+            const double u = t * 2.0;
+            m_ramp[i] = qRgb(lerp_channel(m_cold_color.red(), m_mid_color.red(), u),
+                             lerp_channel(m_cold_color.green(), m_mid_color.green(), u),
+                             lerp_channel(m_cold_color.blue(), m_mid_color.blue(), u));
+            continue;
+        }
+        const double u = (t - 0.5) * 2.0;
+        m_ramp[i] = qRgb(lerp_channel(m_mid_color.red(), m_hot_color.red(), u),
+                         lerp_channel(m_mid_color.green(), m_hot_color.green(), u),
+                         lerp_channel(m_mid_color.blue(), m_hot_color.blue(), u));
+    }
+}
+
 QRgb
 WaterfallItem::rampColor(double t) const {
-    if (t <= 0.5) {
-        const double u = t * 2.0;
-        return qRgb(lerp_channel(m_cold_color.red(), m_mid_color.red(), u),
-                    lerp_channel(m_cold_color.green(), m_mid_color.green(), u),
-                    lerp_channel(m_cold_color.blue(), m_mid_color.blue(), u));
+    /* Clamped rather than trusted: AutoRange::normalize() is the only caller
+     * today and already returns [0, 1], but an out-of-range index here reads
+     * off the end of the table instead of producing a wrong color. */
+    int i = static_cast<int>(std::lround(t * static_cast<double>(kRampSteps - 1)));
+    if (i < 0) {
+        i = 0;
+    } else if (i >= kRampSteps) {
+        i = kRampSteps - 1;
     }
-    const double u = (t - 0.5) * 2.0;
-    return qRgb(lerp_channel(m_mid_color.red(), m_hot_color.red(), u),
-                lerp_channel(m_mid_color.green(), m_hot_color.green(), u),
-                lerp_channel(m_mid_color.blue(), m_hot_color.blue(), u));
+    return m_ramp[i];
 }
 
 void

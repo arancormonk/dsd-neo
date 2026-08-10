@@ -1078,7 +1078,7 @@ Item {
     }
 
     // ---- Go to ----
-    Rectangle {
+    ModalSheet {
         id: goToSheet
 
         objectName: "spectrumGoToSheet"
@@ -1096,116 +1096,58 @@ Item {
             goToSheet.visible = false
             Qt.inputMethod.hide()
             screen.stopSweep()
-            screen.tuneTo(mhz * 1.0e6)
+            // The field's validator accepts up to 99999 MHz and tuneTo() refuses
+            // anything past its own uint bound, so a number this sheet took can
+            // still be turned down. Reported rather than dropped: the sheet
+            // vanishing with the receiver where it was reads as the app ignoring
+            // the entry. Said after the dismissal because the toast sits under
+            // the sheet.
+            if (!screen.tuneTo(mhz * 1.0e6))
+                screen.hint = qsTr("Cannot tune to %1 MHz").arg(Util.mhzText(mhz * 1.0e6))
         }
 
-        /** Whether a point in this sheet's coordinates lies on the panel. */
-        function hitsPanel(x, y) {
-            var p = goToSheet.mapToItem(goToPanel, x, y)
-            return p.x >= 0 && p.y >= 0 && p.x <= goToPanel.width && p.y <= goToPanel.height
+        MicroLabel {
+            text: qsTr("Go to")
         }
 
-        anchors.fill: parent
-        visible: false
-        color: Qt.alpha("#000000", 0.5)
+        FrequencyField {
+            id: goToField
 
-        // Same rule as RadioSheet: handlers never take exclusive grabs, so an
-        // unconditional dismiss here also fires for every control on the panel —
-        // tapping a band pill set the field and closed the sheet in the same
-        // gesture, and tapping the field to place the cursor closed it outright.
-        TapHandler {
-            onTapped: function (eventPoint) {
-                if (goToSheet.hitsPanel(eventPoint.position.x, eventPoint.position.y))
-                    return
-                goToSheet.visible = false
-                Qt.inputMethod.hide()
+            width: parent.width
+            fieldObjectName: "spectrumGoToField"
+            // A shade smaller than the setup screens': this panel also carries
+            // the band pills and the button, over a live waterfall.
+            pixelSize: 30
+            spacing: 12
+            onAccepted: goToSheet.submit()
+        }
+
+        // Typing a frequency and jumping to a band are the same intent at
+        // different precisions, so they share one panel.
+        Flow {
+            width: parent.width
+            spacing: 8
+
+            Repeater {
+                model: Util.BANDS
+
+                FilterPill {
+                    required property var modelData
+
+                    objectName: "spectrumBand_" + modelData.label
+                    text: modelData.label
+                    caret: false
+                    active: screen.band ? screen.band.label === modelData.label : false
+                    onClicked: goToField.text = Util.mhzText(modelData.start)
+                }
             }
         }
 
-        UiPanel {
-            id: goToPanel
-
-            anchors.centerIn: parent
-            width: parent.width - 2 * Theme.screenPadding
-            height: goToColumn.height + 2 * Theme.cardPadding
-
-            Column {
-                id: goToColumn
-
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.margins: Theme.cardPadding
-                spacing: 12
-
-                MicroLabel {
-                    text: qsTr("Go to")
-                }
-
-                Row {
-                    spacing: 8
-
-                    TextInput {
-                        id: goToField
-
-                        objectName: "spectrumGoToField"
-                        width: Math.max(implicitWidth, 60)
-                        font.family: Theme.mono
-                        font.pixelSize: 30
-                        font.weight: Font.Medium
-                        color: Theme.textPrimary
-                        inputMethodHints: Qt.ImhFormattedNumbersOnly
-                        validator: RegularExpressionValidator {
-                            regularExpression: /^\d{1,5}(\.\d{0,6})?$/
-                        }
-                        selectionColor: Qt.alpha(Theme.cyan, 0.35)
-                        selectedTextColor: Theme.textPrimary
-                        onAccepted: goToSheet.submit()
-                    }
-
-                    Text {
-                        text: "MHz"
-                        anchors.baseline: goToField.baseline
-                        font.family: Theme.mono
-                        font.pixelSize: 15
-                        color: Theme.textSubdued
-                    }
-                }
-
-                Rectangle {
-                    width: parent.width
-                    height: 2
-                    color: Theme.cyan
-                }
-
-                // Typing a frequency and jumping to a band are the same intent at
-                // different precisions, so they share one panel.
-                Flow {
-                    width: parent.width
-                    spacing: 8
-
-                    Repeater {
-                        model: Util.BANDS
-
-                        FilterPill {
-                            required property var modelData
-
-                            objectName: "spectrumBand_" + modelData.label
-                            text: modelData.label
-                            caret: false
-                            active: screen.band ? screen.band.label === modelData.label : false
-                            onClicked: goToField.text = Util.mhzText(modelData.start)
-                        }
-                    }
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    objectName: "spectrumGoToConfirm"
-                    text: qsTr("Tune")
-                    onClicked: goToSheet.submit()
-                }
-            }
+        OutlineButton {
+            width: parent.width
+            objectName: "spectrumGoToConfirm"
+            text: qsTr("Tune")
+            onClicked: goToSheet.submit()
         }
     }
 
@@ -1215,85 +1157,48 @@ Item {
     }
 
     // ---- Explore from here, confirmed ----
-    Rectangle {
+    ModalSheet {
         id: confirmExplore
 
         objectName: "spectrumExploreConfirm"
 
-        anchors.fill: parent
-        visible: false
-        color: Qt.alpha("#000000", 0.5)
-
-        /** Whether a point in this sheet's coordinates lies on the panel. */
-        function hitsPanel(x, y) {
-            var p = confirmExplore.mapToItem(confirmPanel, x, y)
-            return p.x >= 0 && p.y >= 0 && p.x <= confirmPanel.width && p.y <= confirmPanel.height
+        Text {
+            width: parent.width
+            text: qsTr("Explore from here?")
+            font.family: Theme.sans
+            font.pixelSize: 17
+            font.weight: Font.Bold
+            color: Theme.textPrimary
+            wrapMode: Text.Wrap
         }
 
-        // Same rule as the other two sheets: handlers never take exclusive grabs, so
-        // an unconditional dismiss here fires for every control on the panel as well.
-        TapHandler {
-            onTapped: function (eventPoint) {
-                if (!confirmExplore.hitsPanel(eventPoint.position.x, eventPoint.position.y))
-                    confirmExplore.visible = false
+        // Names what stops, and — the part people actually worry about —
+        // what does not.
+        Text {
+            width: parent.width
+            text: metrics.scannerMode
+                  ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.")
+                  : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
+            font.family: Theme.sans
+            font.pixelSize: 14
+            color: Theme.textSecondary
+            wrapMode: Text.Wrap
+        }
+
+        OutlineButton {
+            objectName: "spectrumExploreConfirmAccept"
+            width: parent.width
+            text: qsTr("Explore from here")
+            onClicked: {
+                confirmExplore.visible = false
+                screen.exploreFromHere()
             }
         }
 
-        UiPanel {
-            id: confirmPanel
-
-            anchors.centerIn: parent
-            width: parent.width - 2 * Theme.screenPadding
-            height: confirmColumn.height + 2 * Theme.cardPadding
-
-            Column {
-                id: confirmColumn
-
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.margins: Theme.cardPadding
-                spacing: 12
-
-                Text {
-                    width: parent.width
-                    text: qsTr("Explore from here?")
-                    font.family: Theme.sans
-                    font.pixelSize: 17
-                    font.weight: Font.Bold
-                    color: Theme.textPrimary
-                    wrapMode: Text.Wrap
-                }
-
-                // Names what stops, and — the part people actually worry about —
-                // what does not.
-                Text {
-                    width: parent.width
-                    text: metrics.scannerMode
-                          ? qsTr("This stops stepping through the channel list for now. The saved system itself is unchanged.")
-                          : qsTr("This stops following calls across channels for now. The saved system itself is unchanged.")
-                    font.family: Theme.sans
-                    font.pixelSize: 14
-                    color: Theme.textSecondary
-                    wrapMode: Text.Wrap
-                }
-
-                OutlineButton {
-                    objectName: "spectrumExploreConfirmAccept"
-                    width: parent.width
-                    text: qsTr("Explore from here")
-                    onClicked: {
-                        confirmExplore.visible = false
-                        screen.exploreFromHere()
-                    }
-                }
-
-                OutlineButton {
-                    width: parent.width
-                    text: qsTr("Cancel")
-                    onClicked: confirmExplore.visible = false
-                }
-            }
+        OutlineButton {
+            width: parent.width
+            text: qsTr("Cancel")
+            onClicked: confirmExplore.visible = false
         }
     }
 }

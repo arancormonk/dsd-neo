@@ -47,12 +47,14 @@ qt_add_resources(
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
         qml/FollowLatest.qml
+        qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
         qml/HomeScreen.qml
         qml/LevelMeter.qml
         qml/LogoMark.qml
         qml/MicroLabel.qml
+        qml/ModalSheet.qml
         qml/MonitorScreen.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml

@@ -212,43 +212,12 @@ Item {
                     anchors.margins: Theme.cardPadding
                     spacing: 8
 
-                    Row {
-                        spacing: 8
+                    FrequencyField {
+                        id: freqField
 
-                        TextInput {
-                            id: freqField
-
-                            objectName: "exploreStartFrequency"
-                            width: Math.max(implicitWidth, 60)
-                            text: "855.0000"
-                            font.family: Theme.mono
-                            font.pixelSize: 32
-                            font.weight: Font.Medium
-                            color: Theme.textPrimary
-                            inputMethodHints: Qt.ImhFormattedNumbersOnly
-                            // The hint only chooses the soft keyboard; a hardware
-                            // keyboard types anything, and the builder splices this
-                            // straight into the input spec.
-                            validator: RegularExpressionValidator {
-                                regularExpression: /^\d{1,5}(\.\d{0,6})?$/
-                            }
-                            selectionColor: Qt.alpha(Theme.cyan, 0.35)
-                            selectedTextColor: Theme.textPrimary
-                        }
-
-                        Text {
-                            text: "MHz"
-                            anchors.baseline: freqField.baseline
-                            font.family: Theme.mono
-                            font.pixelSize: 15
-                            color: Theme.textSubdued
-                        }
-                    }
-
-                    Rectangle {
                         width: parent.width
-                        height: 2
-                        color: Theme.cyan
+                        fieldObjectName: "exploreStartFrequency"
+                        text: "855.0000"
                     }
 
                     // For anyone who does not know a local frequency, this is the
