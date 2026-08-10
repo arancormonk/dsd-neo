@@ -105,6 +105,18 @@ float mean_power(const float* samples, int len, int step);
  */
 void full_demod(struct demod_state* d);
 
+/**
+ * Channel edge (Hz) that the channel low-pass protects for a profile.
+ *
+ * The half-width of the nominal channel — 12.5 kHz modes return 6250. This is
+ * the channel, not the filter: DSD_CH_LPF_PROFILE_P25_CQPSK runs a roomier
+ * 7250 Hz cutoff and still protects a 12.5 kHz channel.
+ *
+ * @param profile DSD_CH_LPF_PROFILE_* value.
+ * @return Channel half-width in Hz; the wide/analog edge for unknown profiles.
+ */
+double dsd_channel_lpf_protected_edge_hz(int profile);
+
 #ifdef __cplusplus
 }
 #endif
