@@ -21,7 +21,7 @@
 #ifndef DSD_NEO_SRC_IO_RADIO_RTL_FFT_CACHE_H_
 #define DSD_NEO_SRC_IO_RADIO_RTL_FFT_CACHE_H_
 
-#include <cmath>
+#include <dsd-neo/dsp/firdes.h>
 #include <pffft.h>
 
 namespace dsd_io {
@@ -108,12 +108,16 @@ class HannWindowCache {
             return m_window;
         }
         if (n == 1) {
+            /* dsd_window_build() divides by (ntaps - 1), so the degenerate length
+             * is answered here rather than handed to it. */
             m_window[0] = 1.0f;
         } else {
-            const float scale = 2.0f * static_cast<float>(M_PI) / static_cast<float>(n - 1);
-            for (int i = 0; i < n; i++) {
-                m_window[i] = 0.5f * (1.0f - cosf(scale * static_cast<float>(i)));
-            }
+            /* The project's own window builder, not a third copy of the formula:
+             * every other windowed operation in the tree goes through it, and a
+             * correction made there (periodic vs symmetric, an edge case) has to
+             * reach the spectrum taps too or the two views pick up a different
+             * sidelobe floor than everything else that measures the same signal. */
+            dsd_window_build(DSD_WIN_HANN, n, m_window);
         }
         m_n = n;
         return m_window;

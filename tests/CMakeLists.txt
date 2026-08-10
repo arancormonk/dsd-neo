@@ -7453,6 +7453,10 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_rtl_wideband_spectrum
         io/test_io_rtl_wideband_spectrum.cpp
         ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_wideband_spectrum.cpp
+        # The Hann window the tap uses comes from the project's own window
+        # builder; firdes.cpp is pure math over <math.h>, so compiling it here
+        # keeps this test standalone rather than linking the whole DSP library.
+        ${PROJECT_SOURCE_DIR}/src/dsp/firdes.cpp
     )
     target_compile_definitions(
         dsd-neo_test_io_rtl_wideband_spectrum
