@@ -2982,10 +2982,38 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
        reads pulse_digi_out_channels/pulse_digi_rate_out and the backend fixes
        them for the life of the stream). Letting a preset change them here would
        have dsd_play_synthesized_voice() dispatch mono writes into a stereo
-       stream for the rest of the session, so the session's own layout is kept. */
+       stream for the rest of the session, so the session's own layout is kept.
+
+       dmr_stereo is deliberately not in this pair, though the presets set it
+       next to them. It selects two-slot decoding, not a stream shape: the DMR
+       playback paths take the channel count separately and mix both slots down
+       when it is 1 (playSynthesizedVoiceSS3/FS3), so a mono session that switches
+       to DMR still hears both slots. Putting it back with the channel count would
+       instead leave a DMR session on dmr_stereo == 0 with dmr_mono == 0, which no
+       preset produces and which dmr_handle_voice() answers by running the MS
+       bootstrap against BS voice and nothing at all against MS voice. */
     const int audio_channels = opts->pulse_digi_out_channels;
     const int audio_rate = opts->pulse_digi_rate_out;
+    /* Released before the preset runs, not after. The presets skip their whole
+       modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
+       so on a session started with `-mq`/`-mg` the new protocol would keep the old
+       modulation -- and svc_publish_symbol_profile() below reads state->rf_mod, so
+       it would then ask the front end for that modulation's demodulator and channel
+       filter at the new protocol's symbol rate, with the lock still on to stop the
+       SPS hunt correcting it. Choosing a protocol here is a fresh answer to what is
+       on this channel and outranks a `-m` flag from session start; this is the same
+       release ui_apply_modulation() performs for the modulation control.
+
+       Restored if the mode turns out to be unsupported, so a refused command
+       changes nothing -- which is the contract the preset helper itself keeps. */
+    const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    opts->mod_cli_lock = 0;
     if (dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        opts->mod_cli_lock = mod_locks[0];
+        opts->mod_p25p2_c4fm = mod_locks[1];
+        opts->mod_p25p2_profile_lock = mod_locks[2];
         ui_set_toast(state, 4, "Decode mode not available");
         return UI_CMD_APPLY_UNSUPPORTED;
     }

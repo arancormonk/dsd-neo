@@ -4132,6 +4132,15 @@ rtl_replay_on_retune_event(const dsd_iq_event* event, void* user) {
         (event->capture_center_frequency_hz > UINT32_MAX) ? UINT32_MAX : (uint32_t)event->capture_center_frequency_hz;
     store_dongle_frequency(capture_hz);
     store_dongle_rate(event->sample_rate_hz);
+    /* The two inputs the wideband spectrum tap has, kept together with the move.
+     * demod_feed_wideband_spectrum() reads load_dongle_rate() for the span and
+     * last_applied_freq_hz for the centre, so leaving the centre behind publishes
+     * the new band's bins under the old band's label -- and without the clear the
+     * EMA blends the two bands together first, because the generation the producer
+     * compares against never moved. The RESET sibling below gets both through
+     * drain_output_on_retune() and controller_finalize_reconfigure(). */
+    controller.last_applied_freq_hz.store(center_hz, std::memory_order_release);
+    rtl_wideband_spectrum_clear();
     g_replay_event_last_frequency_hz.store(center_hz, std::memory_order_release);
     g_replay_event_retune_count.fetch_add(1U, std::memory_order_acq_rel);
 }

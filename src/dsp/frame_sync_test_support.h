@@ -13,6 +13,7 @@ extern "C" {
 int dsd_frame_sync_test_sps_hunt_profile_count(void);
 int dsd_frame_sync_test_sps_hunt_profile_rate(int profile_index);
 int dsd_frame_sync_test_sps_hunt_profile_levels(int profile_index);
+int dsd_frame_sync_test_sps_hunt_profile_has_candidate(const dsd_opts* opts, int profile_index);
 int dsd_frame_sync_test_history_window(const char* symbols, int symbol_count, int window_length, char* out,
                                        int out_size);
 int dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const char* symbols, int symbol_count);

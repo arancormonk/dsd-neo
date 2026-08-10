@@ -7,6 +7,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -48,6 +49,23 @@ ui_modulation_demod_rate(const dsd_opts* opts, const dsd_state* state) {
 static dsd_decode_mode_profile
 ui_modulation_profile(const dsd_opts* opts) {
     return dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
+}
+
+/**
+ * @brief The modulation a request for @p mod actually lands on.
+ *
+ * The control offers three modulations, but the decode set decides how many of
+ * them exist: a two-level profile — EDACS/ProVoice at 9600/2, D-STAR at 4800/2 —
+ * runs GFSK and nothing else. Honouring a C4FM request there would write
+ * @c mod_c4fm and @c rf_mod together only for frame_sync_apply_sps_hunt_profile()
+ * to normalise @c rf_mod straight back to GFSK on the next pass, leaving the two
+ * permanently disagreeing: the control reads C4FM off the flags, the decoder runs
+ * GFSK, and because the two disagree the idempotence check in ui_handle_mod_set()
+ * can never fire, so every tap rebuilds the timing for nothing.
+ */
+static int
+ui_effective_modulation(const dsd_opts* opts, int mod) {
+    return dsd_frame_sync_profile_modulation(ui_modulation_profile(opts).levels, mod);
 }
 
 static int
@@ -95,12 +113,15 @@ ui_apply_modulation(dsd_opts* opts, dsd_state* state, int mod) {
     const int leaving_p25p2_helper = opts->mod_p25p2_c4fm == 1 || opts->mod_p25p2_profile_lock == 1;
     const dsd_decode_mode_profile profile = ui_modulation_profile(opts);
     const int sps = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, ui_modulation_demod_rate(opts, state));
+    /* Through the profile, so the flags and rf_mod written below are a modulation
+       the decode set can actually run and the SPS hunt will not move off. */
+    const int applied = dsd_frame_sync_profile_modulation(profile.levels, mod);
     opts->mod_p25p2_c4fm = 0;
     opts->mod_p25p2_profile_lock = 0;
-    opts->mod_c4fm = (mod == 0) ? 1 : 0;
-    opts->mod_qpsk = (mod == 1) ? 1 : 0;
-    opts->mod_gfsk = (mod == 2) ? 1 : 0;
-    state->rf_mod = mod;
+    opts->mod_c4fm = (applied == 0) ? 1 : 0;
+    opts->mod_qpsk = (applied == 1) ? 1 : 0;
+    opts->mod_gfsk = (applied == 2) ? 1 : 0;
+    state->rf_mod = applied;
     state->samplesPerSymbol = sps;
     state->symbolCenter = dsd_opts_symbol_center(sps);
     /* After rf_mod and the timing, both of which the published profile reads. */
@@ -147,9 +168,16 @@ ui_handle_mod_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command
      * (MetricsModel::fillDecoderView). Skipping on rf_mod alone therefore drops
      * exactly the tap that would resynchronise them: the control shows C4FM, asking
      * for QPSK on a session the hunt already moved to QPSK does nothing, and the
-     * control snaps back on the next poll and reads as broken. */
-    const int mod_in_effect = (opts->mod_qpsk != 0) ? 1 : ((opts->mod_gfsk != 0) ? 2 : 0);
-    if (state->rf_mod == (int)want && mod_in_effect == (int)want && opts->mod_p25p2_c4fm == 0
+     * control snaps back on the next poll and reads as broken. Through the same
+     * helper that publishes the reading, so the two cannot answer differently.
+     *
+     * Compared against what the request lands on rather than what it asked for:
+     * on a two-level decode set every modulation lands on GFSK, so asking for
+     * C4FM there is already satisfied and rebuilding the timing for it would be
+     * the same pointless churn on every tap. */
+    const int mod_in_effect = dsd_opts_modulation(opts);
+    const int mod_effective = ui_effective_modulation(opts, (int)want);
+    if (state->rf_mod == mod_effective && mod_in_effect == mod_effective && opts->mod_p25p2_c4fm == 0
         && opts->mod_p25p2_profile_lock == 0) {
         return 1;
     }

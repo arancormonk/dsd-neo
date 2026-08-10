@@ -1123,6 +1123,32 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
         assert(index >= 0 && index < dsd_frame_sync_test_sps_hunt_profile_count());
         assert(profile.symbol_rate_hz == dsd_frame_sync_test_sps_hunt_profile_rate(index));
         assert(profile.levels == dsd_frame_sync_test_sps_hunt_profile_levels(index));
+
+        /* Checked against what the preset actually writes, because that is what
+         * the hunt and the UI both read back. */
+        static dsd_opts opts;
+        static dsd_state state;
+        reset(&opts, &state);
+        assert(dsd_apply_decode_mode_preset(modes[i], DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) == 0);
+
+        /* The half the rate/levels comparison cannot see: an index whose row
+         * happens to carry the right numbers is still useless if the hunt never
+         * offers it to this mode's frame set. Analog is the one mode with no
+         * frame set at all and so no candidate anywhere. */
+        if (modes[i] != DSDCFG_MODE_ANALOG) {
+            assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, index) == 1);
+        }
+
+        /* The modulation half of the same agreement. A two-level profile runs
+         * GFSK and nothing else, so a preset naming C4FM or QPSK on one is
+         * already a pass behind the demodulator: frame_sync_apply_sps_hunt_profile()
+         * normalises rf_mod to GFSK the moment the hunt lands there and never
+         * touches opts->mod_*, which is what the UI's modulation control binds
+         * to -- and nothing afterwards reconciles the pair. Both readings are
+         * asserted because they are separately reachable and it is exactly their
+         * disagreement that is the defect. */
+        assert(state.rf_mod == dsd_frame_sync_profile_modulation(profile.levels, state.rf_mod));
+        assert(dsd_opts_modulation(&opts) == state.rf_mod);
     }
 
     /* The two NXDN variants are the pair this is most likely to be got wrong on:

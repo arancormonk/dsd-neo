@@ -1352,7 +1352,11 @@ test_modulation_and_decode_mode_setters(void) {
 
     /* Timing comes from the decode set, not from a constant. ProVoice is the one
      * mode this control reaches that is not 4800 symbols/s, and applying a
-     * modulation at 4800 on a 9600-baud signal is a decoder that stops decoding. */
+     * modulation at 4800 on a 9600-baud signal is a decoder that stops decoding.
+     *
+     * Started from C4FM so the request below is a real change: ProVoice runs on a
+     * two-level profile, where every request lands on GFSK, so one made from GFSK
+     * is already satisfied. */
     init_test_context(&opts, &state);
     opts.frame_provoice = 1;
     opts.frame_p25p1 = 0;
@@ -1365,16 +1369,53 @@ test_modulation_and_decode_mode_setters(void) {
     opts.frame_dstar = 0;
     opts.frame_x2tdma = 0;
     opts.frame_dpmr = 0;
-    opts.mod_c4fm = 0;
+    opts.mod_c4fm = 1;
     opts.mod_qpsk = 0;
-    opts.mod_gfsk = 1;
-    state.rf_mod = 2;
-    rc |= expect_int("provoice c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+    rc |= expect_int("provoice gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 2),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("provoice c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("provoice gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
     /* 48 kHz / 9600 = 5, the value the EDACS/ProVoice preset itself installs. */
     rc |= expect_int("provoice keeps its 9600 timing", state.samplesPerSymbol, 5);
     rc |= expect_int("provoice hunts on the 9600 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+    freeState(&state);
+
+    /* Two-level decode sets have one modulation. Asking for C4FM on ProVoice used
+     * to be honoured in opts->mod_* and then undone in state->rf_mod alone, by
+     * frame_sync_apply_sps_hunt_profile() normalising the 9600/2 profile back to
+     * GFSK — leaving the control reading C4FM off flags the demodulator had
+     * already contradicted, with no tap able to resynchronise them because the two
+     * disagreeing is exactly what the idempotency guard tests. */
+    init_test_context(&opts, &state);
+    opts.frame_provoice = 1;
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 0;
+    opts.frame_ysf = 0;
+    opts.frame_m17 = 0;
+    opts.frame_dstar = 0;
+    opts.frame_x2tdma = 0;
+    opts.frame_dpmr = 0;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+    rc |= expect_int("provoice c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("provoice c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("provoice c4fm lands on gfsk", state.rf_mod, 2);
+    rc |= expect_int("provoice c4fm sets the gfsk flag", opts.mod_gfsk, 1);
+    rc |= expect_int("provoice c4fm clears the c4fm flag", opts.mod_c4fm, 0);
+    /* And having landed there, it stays: the two readings now agree, so the guard
+     * fires and the timing is not rebuilt on every repeat of the same tap. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("provoice repeat c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("provoice repeat c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("provoice repeat c4fm changes nothing", state.samplesPerSymbol, 12345);
     freeState(&state);
 
     /* AUTO enables ProVoice next to the 4800 modes, so its flag alone must not
@@ -1438,6 +1479,29 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("nxdn48 selects the 2400 hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     rc |= expect_int("nxdn48 restarts the hunt dwell", state.sps_hunt_counter, 0);
     rc |= expect_int("nxdn48 installs 2400 timing", state.samplesPerSymbol, 20);
+    freeState(&state);
+
+    /* The session's stream shape survives a mode change, because the backend fixed
+     * it when the stream was opened. dmr_stereo is not part of that shape and must
+     * not be dragged along with it: it selects two-slot decoding, and the DMR
+     * playback paths mix the two slots down themselves when the stream is mono
+     * (playSynthesizedVoiceSS3/FS3). Held to dmr_stereo == 1 here because the
+     * alternative pairs it with dmr_mono == 0, which no preset produces and which
+     * dmr_handle_voice() has no branch for on MS voice. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 0;
+    opts.pulse_digi_out_channels = 1;
+    opts.pulse_digi_rate_out = 8000;
+    opts.dmr_stereo = 0;
+    rc |= expect_int("mono dmr mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mono dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("mono session keeps its one channel", opts.pulse_digi_out_channels, 1);
+    rc |= expect_int("mono session keeps its rate", opts.pulse_digi_rate_out, 8000);
+    rc |= expect_int("dmr still decodes both slots", opts.dmr_stereo, 1);
+    rc |= expect_int("and not as dmr mono", opts.dmr_mono, 0);
     freeState(&state);
 
     /* Back to auto re-enables the set the engine starts with. */

@@ -139,8 +139,16 @@ SpectrumModel::invalidateFrame() {
      * the very thing keeping the view's Loader alive is meant to prevent. The
      * center and span are kept for the same reason: tick() compares the next
      * frame against them, so a retune that happened while paused is still
-     * recognised as one and still clears the history, on the frame that proves it. */
-    (void)applyOffset(0.0);
+     * recognised as one and still clears the history, on the frame that proves it.
+     *
+     * The pan offset is kept with them, and for the same reason: WaterfallItem is
+     * deliberately not gated on hasData() so its retained history stays on screen
+     * across a pause, but it derives its source rect from viewLowHz/viewHighHz --
+     * so zeroing the offset here would slide those minutes of history sideways to
+     * the middle of the span the moment a sheet opened, and leave it there. Only
+     * the overshoot goes: that is an unfinished pan gesture, and there is no
+     * gesture left to finish. */
+    m_overshoot_hz = 0.0;
     Q_EMIT frameChanged();
     Q_EMIT viewChanged();
 }

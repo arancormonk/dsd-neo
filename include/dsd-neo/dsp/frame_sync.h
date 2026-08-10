@@ -29,6 +29,37 @@ typedef enum {
     DSD_FRAME_SYNC_SPS_PROFILE_COUNT = 5,
 } dsd_frame_sync_sps_profile_index;
 
+/**
+ * @brief Non-zero when a symbol profile's level count admits only GFSK.
+ *
+ * Two-level slicing is frequency-shift keying; there is no two-level C4FM or
+ * QPSK to choose. Stated once because three callers act on it and they have to
+ * act the same way: the SPS hunt normalises @c dsd_state::rf_mod to GFSK on such
+ * a profile, the SNR gate reads the GFSK estimator for it, and the UI's
+ * modulation control has to stop offering the other two -- a control that lets a
+ * two-level session be set to C4FM leaves @c dsd_opts::mod_c4fm saying one thing
+ * while the demodulator the hunt rebuilt does another, and nothing ever
+ * reconciles the pair.
+ */
+static inline int
+dsd_frame_sync_profile_levels_force_gfsk(int levels) {
+    return levels == 2;
+}
+
+/**
+ * @brief The modulation @p requested_rf_mod becomes on a profile with @p levels levels.
+ *
+ * @param levels Slicer level count, 2 or 4.
+ * @param requested_rf_mod Modulation asked for, as @c dsd_state::rf_mod
+ *                         (0 C4FM, 1 QPSK, 2 GFSK). Pass 0 for "no opinion" to
+ *                         get the profile's own default.
+ * @return @p requested_rf_mod on a four-level profile, GFSK on a two-level one.
+ */
+static inline int
+dsd_frame_sync_profile_modulation(int levels, int requested_rf_mod) {
+    return dsd_frame_sync_profile_levels_force_gfsk(levels) ? 2 : requested_rf_mod;
+}
+
 /** @brief NXDN air-interface variant selected by frame-sync profile matching. */
 typedef enum {
     DSD_NXDN_VARIANT_NONE = 0,

@@ -299,7 +299,11 @@ test_remaining_preset_modes(void) {
         {DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, "P25p1", 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
         {DSDCFG_MODE_NXDN96, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, "NXDN96", 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 20, 9, 0,
          1},
-        {DSDCFG_MODE_DSTAR, DSD_DECODE_PRESET_PROFILE_CLI, "DSTAR", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+        /* GFSK, like the other two-level mode below it: D-STAR is GMSK, its symbol
+           profile is 4800/2, and frame_sync_apply_sps_hunt_profile() normalises
+           rf_mod to GFSK the moment the hunt reaches that profile. C4FM here only
+           left the preset a pass behind the demodulator. */
+        {DSDCFG_MODE_DSTAR, DSD_DECODE_PRESET_PROFILE_CLI, "DSTAR", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1},
         {DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, "EDACS/PV", 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 5, 2, 2, 1},
         {DSDCFG_MODE_DPMR, DSD_DECODE_PRESET_PROFILE_CLI, "dPMR", 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 20, 9, 0, 1},
         {DSDCFG_MODE_M17, DSD_DECODE_PRESET_PROFILE_CLI, "M17", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1},

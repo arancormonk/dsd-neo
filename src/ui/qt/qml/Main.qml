@@ -326,11 +326,15 @@ Window {
             // Remembered before the start, not after: a start that fails is still
             // the answer the user gave, and asking again would be the app
             // forgetting what it was just told.
+            // All four unconditionally: they are one answer to "how to start
+            // exploring", and startExploring() reads all four back together.
+            // Skipping the empty ones leaves the previous answer's endpoint
+            // behind, so switching rtltcp -> usb keeps the old host and the
+            // setup sheet shows it again as the current setting. An out-of-range
+            // port is corrected by AppPrefs' own sanitiser, not by not writing it.
             prefs.exploreSourceType = sourceType
-            if (host.length > 0)
-                prefs.exploreHost = host
-            if (port > 0)
-                prefs.explorePort = port
+            prefs.exploreHost = host
+            prefs.explorePort = port
             prefs.exploreFreqMhz = freqMhz
             mainRoot.exploreSetupOpen = false
             mainRoot.startWithMap(mainRoot.exploreSystem(sourceType, host, port, freqMhz), -1)
@@ -399,8 +403,16 @@ Window {
                 // Seeded here rather than waiting for the next tuner reading: the
                 // session may never move again, and an empty value would leave the
                 // stop handler with nothing to remember this band by.
-                if (metrics.centerFreqHz > 0)
-                    mainRoot.lastExploreFreqMhz = Util.mhzText(metrics.centerFreqHz)
+                //
+                // Read once and guarded once. A zero reading — no tuner, or the
+                // options snapshot briefly unavailable — is not a frequency, and
+                // Util.mhzText(0) is the string "0.0000", which the session map,
+                // the monitor header and the save-as-system wizard would all then
+                // carry as if it were one. Empty is what monitorMeta() already
+                // knows to leave out.
+                var exploreFreqMhz = metrics.centerFreqHz > 0 ? Util.mhzText(metrics.centerFreqHz) : ""
+                if (exploreFreqMhz.length > 0)
+                    mainRoot.lastExploreFreqMhz = exploreFreqMhz
                 // The session is no longer the saved system it started as: its
                 // frequency is now whatever the user makes it, and the calls it
                 // logs from here on did not come from that system.
@@ -408,7 +420,7 @@ Window {
                     mainRoot.sessionSystem ? mainRoot.sessionSystem.sourceType : "usb",
                     mainRoot.sessionSystem ? mainRoot.sessionSystem.host : "",
                     mainRoot.sessionSystem ? mainRoot.sessionSystem.port : 0,
-                    Util.mhzText(metrics.centerFreqHz))
+                    exploreFreqMhz)
                 uiController.flushHistory()
                 callHistory.sessionLabel = qsTr("Exploring")
             }

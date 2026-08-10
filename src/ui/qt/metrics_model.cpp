@@ -75,11 +75,29 @@ slot_enc_text(const dsd_call_snapshot& call) {
  * hunting. Rendered, it becomes a call from talkgroup 0 by nobody — and if a
  * stale crypto header is still on the slot, an encrypted one. On a session that
  * has not locked onto anything, that is the screen inventing traffic.
+ *
+ * The field list mirrors dsd_call_state_snapshot_has_identity() (call_state.c),
+ * route_text included: D-STAR, NXDN and YSF enrich the repeater pair, and a call
+ * whose route decoded before its callsigns is a named transmission the canonical
+ * layer already counts as one. That helper lives behind call_state_internal.h and
+ * a frontend cannot call it, which is why this mirror exists — but a mirror that
+ * drops a field reports idle for calls the rest of the app is showing.
+ *
+ * X2-TDMA and standalone ProVoice are the deliberate exception, matching
+ * dsd_call_state_protocol_voice_is_anonymous(): those modes never parse voice into
+ * a talkgroup or a source at all, so an identity-less voice epoch is the whole
+ * story the protocol has — not a frame that synced and went nowhere. Suppressed,
+ * their transmissions would play audio and log history rows while the panel said
+ * nothing was happening.
  */
 bool
 call_has_no_identity(const dsd_call_snapshot& call) {
+    if (DSD_SYNC_IS_X2TDMA(call.protocol) || DSD_SYNC_IS_PROVOICE(call.protocol)) {
+        return false;
+    }
     return call.ota_target_id == 0U && call.policy_target_id == 0U && call.target_text[0] == '\0'
-           && call.ota_source_id == 0U && call.source_text[0] == '\0';
+           && call.ota_source_id == 0U && call.source_text[0] == '\0' && call.route_text[0][0] == '\0'
+           && call.route_text[1][0] == '\0';
 }
 
 /**
@@ -236,14 +254,19 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     }
     /* Three states, not two: GFSK is what the DMR and EDACS/ProVoice presets
      * select, and folding it into C4FM made a control bound to this reading show
-     * C4FM as already-selected on a session that was never on it. */
-    next.modulation = (opts_snapshot->mod_qpsk != 0) ? 1 : ((opts_snapshot->mod_gfsk != 0) ? 2 : 0);
-    next.tuner_gain_db = opts_snapshot->rtl_gain_value;
+     * C4FM as already-selected on a session that was never on it. Through the
+     * shared helper so this and ui_handle_mod_set()'s skip test cannot drift. */
+    next.modulation = dsd_opts_modulation(opts_snapshot);
+    /* Gated on radio_input like center_freq_hz above, and for the same reason:
+     * on a WAV, UDP, TCP or symbol-file session these are options the front end
+     * never applied, and publishing them would put three plausible tuner
+     * readings on screen for a session that has no tuner. */
+    next.tuner_gain_db = next.radio_input ? opts_snapshot->rtl_gain_value : 0;
     /* rtl_squelch_level is a mean-power threshold, not decibels — the same
      * conversion the engine's own status line uses. Publishing the raw value
      * would put "0" on screen for a squelch of -120 dB. */
-    next.squelch_db = pwr_to_dB(opts_snapshot->rtl_squelch_level);
-    next.ppm = opts_snapshot->rtlsdr_ppm_error;
+    next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
+    next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
 }
 
 void
