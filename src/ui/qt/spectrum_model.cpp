@@ -26,7 +26,14 @@ namespace {
 /* Both come from the producer's own contract rather than being chosen here: a
  * poll slower than the publish period drops frames, and a buffer shorter than a
  * frame is refused outright. See <dsd-neo/core/wideband_spectrum.h>. */
-constexpr int kPollIntervalMs = DSD_WIDEBAND_SPECTRUM_PERIOD_MS;
+/* Half the publish period, not the whole of it. Polling at exactly the producer's
+ * rate is the boundary case that drops rows: the two clocks free-run, and a
+ * CoarseTimer is allowed to fire late, so a poll that slips past one period
+ * repeatedly finds a frame the producer has already replaced. Polling faster is
+ * cheap — tick() rejects a re-read by serial before doing any work — and it is
+ * what the header's own note ("a consumer polling faster only re-copies a frame
+ * the producer has not replaced yet") describes as the safe direction. */
+constexpr int kPollIntervalMs = DSD_WIDEBAND_SPECTRUM_PERIOD_MS / 2;
 constexpr int kMaxBins = DSD_WIDEBAND_SPECTRUM_BINS;
 
 /* How far above the frame's mean level a bin has to sit before "next signal" will
@@ -58,10 +65,17 @@ view_bins(double center_hz, double span_hz, int bin_count, const spectrum_math::
     ViewBins out;
     out.lo = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.low_hz);
     out.hi = spectrum_math::freq_to_bin(center_hz, span_hz, bin_count, win.high_hz);
-    const double bin_width_hz = span_hz / static_cast<double>(bin_count);
-    out.snap = static_cast<int>(spectrum_math::snap_window_hz(win.span_hz) / bin_width_hz);
-    if (out.snap < 1) {
-        out.snap = 1;
+    out.snap = 1;
+    /* Guarded here rather than only at the call sites, as every helper in
+     * spectrum_math.h is: a zero bin count or span makes the division infinite,
+     * and narrowing an infinity to int is undefined behaviour rather than a large
+     * number the clamp below would catch. */
+    if (bin_count > 0 && span_hz > 0.0) {
+        const double bin_width_hz = span_hz / static_cast<double>(bin_count);
+        const double snap = spectrum_math::snap_window_hz(win.span_hz) / bin_width_hz;
+        if (snap > 1.0) {
+            out.snap = (snap > static_cast<double>(bin_count)) ? bin_count : static_cast<int>(snap);
+        }
     }
     return out;
 }
