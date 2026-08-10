@@ -901,13 +901,35 @@ Item {
             var rail = findChild(screenLoader.item, "spectrumBandRail")
             rail.beginDrag()
             rail.dragBy(-100000, 400)
-            verify(rail.pendingHz >= 24.0e6 - 1, "the rail went below the tuner's low end")
+            verify(Math.abs(rail.pendingHz - 24.0e6) <= 1,
+                   "a huge drag down landed at " + rail.pendingHz + ", not the tuner's low limit")
             rail.endDrag(true)
 
             rail.beginDrag()
             rail.dragBy(100000, 400)
-            verify(rail.pendingHz <= 1766.0e6 + 1, "the rail went above the tuner's high end")
+            verify(Math.abs(rail.pendingHz - 1766.0e6) <= 1,
+                   "a huge drag up landed at " + rail.pendingHz + ", not the tuner's high limit")
             rail.endDrag(true)
+        }
+
+        // Near a tuner limit the window stops sliding and the knob moves off centre
+        // instead — the alternative is a window running off the end of what the
+        // hardware can reach, with the receiver still nominally in the middle of it.
+        function test_30b_the_window_stops_at_the_tuner_ends_and_the_knob_moves() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            var was = rail.tunedHz
+
+            rail.tunedHz = 30.0e6
+            verify(Math.abs(rail.lowHz - 24.0e6) <= 1, "the window ran below the tuner's low end")
+            verify(Math.abs((rail.highHz - rail.lowHz) - rail.windowHz) <= 1,
+                   "the window narrowed instead of sliding")
+
+            rail.tunedHz = 1760.0e6
+            verify(Math.abs(rail.highHz - 1766.0e6) <= 1, "the window ran above the tuner's high end")
+            verify(Math.abs((rail.highHz - rail.lowHz) - rail.windowHz) <= 1,
+                   "the window narrowed instead of sliding")
+
+            rail.tunedHz = was
         }
 
         // Touching the rail is taking over, exactly like touching the spectrum.
