@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #include <dsd-neo/app_control/frontend.h>
@@ -38,6 +39,23 @@ dsd_app_get_latest_snapshot(void) {
     return g_latest_state;
 }
 
+/* Forward declaration for the stub defined below. External (non-static) linkage
+ * is required here: frontend.c is compiled and linked into this same test
+ * binary and calls this symbol expecting another translation unit to define
+ * it, which is exactly what this file does. */
+double dsd_channel_lpf_protected_edge_hz(int profile); // NOLINT(misc-use-internal-linkage)
+
+/* The real one lives in dsd-neo_dsp, which this target deliberately does not
+ * link: dsp carries dsd-neo_feature_radio PUBLIC, and that would define
+ * USE_RADIO and turn this no-radio stub test into a radio build. Task 1's
+ * DSP_DEMOD_MISC pins the real per-profile values; what needs pinning HERE is
+ * that frontend.c publishes the full width rather than the half-width. */
+double
+dsd_channel_lpf_protected_edge_hz(int profile) {
+    (void)profile;
+    return 6250.0; /* the 12.5 kHz channel half-width */
+}
+
 static void
 fill_metric_inputs(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -68,6 +86,26 @@ hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_p
     }
     if (out_channel_profile) {
         *out_channel_profile = 5;
+    }
+    return 0;
+}
+
+/*
+ * The shape a radio session has before the front end has published a profile:
+ * the mirror behind channel_profile is process-global and reads WIDE until then,
+ * so a width derived from it unconditionally would report 16 kHz for a channel
+ * nothing has chosen yet -- and carry the previous session's width into the next.
+ */
+static int
+hook_symbol_profile_unpublished(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = 0;
+    }
+    if (out_levels) {
+        *out_levels = 0;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = 0; /* DSD_CH_LPF_PROFILE_WIDE */
     }
     return 0;
 }
@@ -166,6 +204,7 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(metrics.symbol_rate_hz == 4800);
     assert(metrics.symbol_levels == 4);
     assert(metrics.channel_profile == 5);
+    assert(metrics.channel_bandwidth_hz == 12500);
     assert(metrics.cqpsk_enable == 1);
     assert(metrics.cqpsk_timing_active == 1);
     assert(metrics.snr_c4fm_db == 23.5);
@@ -177,6 +216,19 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(g_snr_c4fm_eye_calls == 0);
     assert(g_snr_gfsk_eye_calls == 0);
     assert(g_snr_qpsk_const_calls == 0);
+
+    /* No profile published yet: the width has to say "nothing to draw" rather than
+     * the WIDE fallback's 16 kHz, or a consumer shades a channel band over a
+     * session that has not chosen a channel. */
+    hooks.symbol_profile = hook_symbol_profile_unpublished;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.symbol_rate_hz == 0);
+    assert(metrics.channel_bandwidth_hz == 0);
+    hooks.symbol_profile = hook_symbol_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 12500);
 
     assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_ALL) == 0);
     assert(metrics.snr_c4fm_db == 23.5);
@@ -333,11 +385,66 @@ test_metrics_ignore_stream_hooks_off_radio(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/*
+ * A new metrics field has to be zero on an input with no demodulator behind it.
+ * frontend_metrics_defaults() memsets the struct, so this is really a guard
+ * against someone later filling the field ahead of the radio check.
+ */
+static void
+test_channel_bandwidth_is_zero_off_radio(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_frontend_metrics metrics;
+    fill_metric_inputs(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+
+    /* Poison, so a field left unwritten is visible rather than accidentally right. */
+    metrics.channel_bandwidth_hz = 12500;
+    assert(dsd_app_frontend_get_metrics_for_snapshot(&opts, &state, &metrics, 0) == 0);
+    assert(metrics.channel_bandwidth_hz == 0);
+}
+
+/*
+ * Visualizer accessors on a build with no radio backend.
+ *
+ * This target compiles frontend.c without USE_RADIO, so every accessor takes
+ * its stub branch. A frontend that renders whatever comes back needs a zero
+ * count and defined out-params from that branch, not an uninitialised axis.
+ */
+static void
+test_visualizer_getters_without_radio(void) {
+    float bins[8];
+    int rate = 1234;
+    int sps = 7;
+    uint32_t center = 99U;
+    uint32_t span = 99U;
+
+    assert(dsd_app_frontend_constellation_get(bins, 4) == 0);
+    assert(dsd_app_frontend_eye_get(bins, 4, &sps) == 0);
+    assert(sps == 0);
+    assert(dsd_app_frontend_spectrum_get(bins, 4, &rate) == 0);
+    assert(rate == 0);
+
+    uint32_t serial = 99U;
+    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, &center, &span, &serial) == 0);
+    assert(center == 0U);
+    assert(span == 0U);
+    assert(serial == 0U);
+    assert(dsd_app_frontend_wideband_spectrum_get(NULL, 0, NULL, NULL, NULL) == 0);
+
+    /* Toggling production must stay harmless with no stream behind it. */
+    dsd_app_frontend_wideband_spectrum_set_enabled(1);
+    assert(dsd_app_frontend_wideband_spectrum_get(bins, 4, NULL, NULL, NULL) == 0);
+    dsd_app_frontend_wideband_spectrum_set_enabled(0);
+}
+
 int
 main(void) {
     test_metrics_for_snapshot_does_not_consume();
     test_metrics_fallback_and_runtime_hooks();
     test_metrics_ignore_stream_hooks_off_radio();
+    test_channel_bandwidth_is_zero_off_radio();
+    test_visualizer_getters_without_radio();
     printf("UI_FRONTEND_METRICS: OK\n");
     return 0;
 }

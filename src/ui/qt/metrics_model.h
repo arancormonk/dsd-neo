@@ -21,6 +21,7 @@
 #include <QtGlobal>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 
 namespace dsd_qt {
 
@@ -38,6 +39,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString tunerGainText READ tunerGainText NOTIFY tunerChanged)
     Q_PROPERTY(bool radioInput READ radioInput NOTIFY tunerChanged)
     Q_PROPERTY(bool streamActive READ streamActive NOTIFY tunerChanged)
+    Q_PROPERTY(double centerFreqHz READ centerFreqHz NOTIFY tunerChanged)
+    Q_PROPERTY(int channelBandwidthHz READ channelBandwidthHz NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -57,6 +60,17 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
+    Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
+    Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
+    Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
+    Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
+    Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
+    Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
+    Q_PROPERTY(int decodeMode READ decodeMode NOTIFY controlChanged)
+    Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
+    Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
+    Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
+    Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
   public:
@@ -106,6 +120,152 @@ class MetricsModel : public QObject {
     bool
     streamActive() const {
         return m_view.stream_active;
+    }
+
+    /**
+     * @brief The frequency the front end is tuned to, in Hz; 0 when there is none.
+     *
+     * A double rather than an integer because QML has no 64-bit integer type, and
+     * every frequency a tuner reaches is exact in a double. Good for a readout and
+     * for deciding what to ask for next — but a spectrum axis must use the center
+     * carried inside the spectrum frame itself, which is the one that provably
+     * matches those bins.
+     */
+    double
+    centerFreqHz() const {
+        return m_view.center_freq_hz;
+    }
+
+    /**
+     * @brief Full width in Hz of the channel the demodulator is filtering.
+     *
+     * 12500 for the 12.5 kHz modes, 6250 for the narrow ones, 16000 wide — a
+     * profile the demodulator has not yet narrowed reads as wide, not as zero.
+     * 0 means there is nothing to draw at all: the input is not a radio, or no
+     * metrics frame has been read yet. The channel, not the filter: see
+     * dsd_channel_lpf_protected_edge_hz().
+     */
+    int
+    channelBandwidthHz() const {
+        return m_view.channel_bandwidth_hz;
+    }
+
+    /**
+     * @brief Whether an automatic controller owns the tuner.
+     *
+     * True under trunking and under conventional scanner mode alike: both move
+     * the front end on their own, and the engine refuses manual retunes under
+     * either. Deliberately not named for trunking — a view that gated only on
+     * that would offer a control which appears to work and is then undone by
+     * the scanner's next step.
+     */
+    bool
+    tunerControlled() const {
+        return m_view.tuner_controlled;
+    }
+
+    /**
+     * @brief Which owner is holding the tuner. For wording a message, never for gating.
+     *
+     * A control that is unavailable is unavailable for either reason, and anything
+     * that gates on one of these alone offers something the other owner then undoes --
+     * that is what tunerControlled() exists to prevent, and it stays the only reading
+     * an affordance may bind to. These two are here so a message can name the reason
+     * rather than say "something".
+     */
+    bool
+    trunkingEnabled() const {
+        return m_view.trunking_enabled;
+    }
+
+    bool
+    scannerMode() const {
+        return m_view.scanner_mode;
+    }
+
+    /**
+     * @brief Whether the decoder currently has frame sync, held briefly.
+     *
+     * Held rather than sampled, because sync drops and returns between the 250 ms
+     * polls and an instantaneous reading flickers; and held rather than latched,
+     * because a lock that outlives the thing that produced it is worse than one
+     * that flickers -- see kSyncHoldSeconds.
+     *
+     * Deliberately not call activity: a control channel carries no calls, and an
+     * accepted retune ends both call slots anyway, so anything watching those
+     * would read its own retune as a find.
+     */
+    bool
+    syncedHere() const {
+        return m_view.synced_here;
+    }
+
+    /**
+     * @brief What the decoder locked onto here — "P25p1", "DMR", … — or empty.
+     *
+     * The protocol, not merely that there is one: on a band being walked, "DMR"
+     * where P25 was expected is the answer to why nothing is being heard, and a
+     * plain lock light would leave that invisible.
+     */
+    const QString&
+    syncLabel() const {
+        return m_view.sync_label;
+    }
+
+    /**
+     * @brief Whether the lock here is on a protocol trunking can follow.
+     *
+     * What a control offering to hand the tuner to trunking needs: on M17 or
+     * D-STAR there is no trunking to hand it to, and on noise there is nothing to
+     * follow yet, so the offer would be a button that does nothing. Sync on a
+     * trunked protocol is the weakest honest claim available here — the signalling
+     * decides whether this carrier is really a control channel.
+     */
+    bool
+    trunkableSync() const {
+        return m_view.trunkable_sync;
+    }
+
+    /**
+     * @brief Live front-end and decoder settings, for a panel that can change them.
+     *
+     * Read from the same options snapshot the commands mutate, so a control shows
+     * where the engine actually is rather than what the UI last asked for — the
+     * engine can refuse, and on Android the service outlives this process.
+     *
+     * decodeMode is a dsdneoUserDecodeMode; modulation is 0 for C4FM, 1 for QPSK
+     * and 2 for GFSK, matching DSD_APP_CMD_MOD_SET's payload and dsd_state::rf_mod.
+     */
+    int
+    decodeMode() const {
+        return m_view.decode_mode;
+    }
+
+    int
+    modulation() const {
+        return m_view.modulation;
+    }
+
+    int
+    tunerGainDb() const {
+        return m_view.tuner_gain_db;
+    }
+
+    double
+    squelchDb() const {
+        return m_view.squelch_db;
+    }
+
+    /**
+     * @brief The dongle's crystal correction, in parts per million.
+     *
+     * Adjustable live because a wrong one is not obvious at the point it is
+     * entered: the symptom is a frequency offset the decoder cannot close, which
+     * only shows up once there is a signal to look at.
+     */
+    int
+    ppm() const {
+        return m_view.ppm;
     }
 
     /**
@@ -326,9 +486,22 @@ class MetricsModel : public QObject {
         QString tuner_gain_text;
         bool radio_input = false;
         bool stream_active = false;
+        double center_freq_hz = 0.0;
+        int channel_bandwidth_hz = 0;
+        bool synced_here = false;
+        QString sync_label;
+        bool trunkable_sync = false;
+        int decode_mode = 0;
+        int modulation = 0;
+        int tuner_gain_db = 0;
+        double squelch_db = 0.0;
+        int ppm = 0;
         bool audio_muted = false;
         qulonglong held_tg = 0;
         int enc_lockout_count = 0;
+        bool tuner_controlled = false;
+        bool trunking_enabled = false;
+        bool scanner_mode = false;
         QString ui_message;
         SlotCall slot_call[2];
 
@@ -340,13 +513,19 @@ class MetricsModel : public QObject {
         tunerEquals(const View& other) const {
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
-                   && radio_input == other.radio_input && stream_active == other.stream_active;
+                   && radio_input == other.radio_input && stream_active == other.stream_active
+                   && center_freq_hz == other.center_freq_hz && channel_bandwidth_hz == other.channel_bandwidth_hz
+                   && synced_here == other.synced_here && sync_label == other.sync_label
+                   && trunkable_sync == other.trunkable_sync;
         }
 
         bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
-                   && enc_lockout_count == other.enc_lockout_count;
+                   && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
+                   && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
+                   && decode_mode == other.decode_mode && modulation == other.modulation
+                   && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db && ppm == other.ppm;
         }
     };
 
@@ -356,7 +535,32 @@ class MetricsModel : public QObject {
     /** @brief Build one slot's structured call identity from the snapshot. */
     static SlotCall slotCallView(const dsd_state* snapshot, quint8 slot, double now_m);
 
+    /** @brief Fill in sync state and the live decoder/front-end settings. */
+    void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
+
+  public:
+#ifdef DSD_NEO_TEST_HOOKS
+    /**
+     * @brief Age the sync hold out, as if kSyncHoldSeconds had passed.
+     *
+     * The expiry is the part worth testing and the only part a test cannot reach,
+     * short of sleeping for it in a suite that runs in milliseconds.
+     */
+    void
+    expireSyncForTest() {
+        m_sync_seen_m = 0.0;
+    }
+#endif
+
+  private:
     View m_view;
+    /* Held across frames rather than derived from one: frame sync comes and goes
+     * between 250 ms polls, so a single sample answers "is it synced right now",
+     * which is not the question. The hold decays on its own rather than being
+     * cleared on a retune or a mode change — fillDecoderView() documents why a
+     * one-shot reset was a race. See syncedHere(). */
+    int m_sync_type_here = DSD_SYNC_NONE;
+    double m_sync_seen_m = 0.0;
     /* Armed for a live ui_message's expiry stamp, so the message leaves the screen
      * on time even when the idle engine never publishes another frame. */
     QTimer m_messageTimer;

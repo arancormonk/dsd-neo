@@ -9,6 +9,8 @@
 #include <dsd-neo/app_control/history.h>
 #include <stdint.h>
 
+#include "decode_mode_flag.h"
+
 namespace dsd_qt {
 
 namespace {
@@ -55,8 +57,57 @@ CommandBridge::tuneHz(unsigned int hz) const {
 }
 
 bool
+CommandBridge::manualTuneHz(unsigned int hz) const {
+    return accepted(dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, static_cast<uint32_t>(hz)));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::releaseTuner() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setTrunking(bool on) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, on ? 1 : 0));
+}
+
+bool
 CommandBridge::setTunerGain(int gain_db) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_GAIN, static_cast<int32_t>(gain_db)));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setSquelchDb(double db) const {
+    return accepted(dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setPpm(int ppm) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_PPM, static_cast<int32_t>(ppm)));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setModulation(int modulation) const {
+    if (modulation < 0 || modulation > 2) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, static_cast<int32_t>(modulation)));
+}
+
+bool
+CommandBridge::setDecodeMode(int mode) const {
+    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, static_cast<int32_t>(mode)));
+}
+
+int
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::decodeModeForFlag(const QString& flag) const {
+    return decode_mode_for_flag(flag);
 }
 
 int

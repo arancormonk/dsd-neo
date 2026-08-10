@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -59,6 +60,14 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
     out->output_kind = dsd_rtl_stream_metrics_hook_output_kind();
     (void)dsd_rtl_stream_metrics_hook_symbol_profile(&out->symbol_rate_hz, &out->symbol_levels, &out->channel_profile);
+    /* Only once the front end has actually published a profile. The mirror behind
+     * channel_profile is process-global and reads WIDE until the first publish, so
+     * deriving a width from it unconditionally reports 16 kHz for a session that
+     * has not chosen a channel yet -- and a consumer drawing that shades a channel
+     * band over the waterfall that belongs to nothing. 0 is the documented "there
+     * is nothing to draw". */
+    out->channel_bandwidth_hz =
+        (out->symbol_rate_hz > 0) ? (int)(2.0 * dsd_channel_lpf_protected_edge_hz(out->channel_profile)) : 0;
     out->stream_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     out->stream_active = dsd_rtl_stream_metrics_hook_stream_active();
     (void)dsd_rtl_stream_metrics_hook_input_level(&out->input_level);
@@ -235,5 +244,35 @@ dsd_app_frontend_spectrum_get(float* out_db, int max_bins, int* out_rate) {
         *out_rate = 0;
     }
     return 0;
+#endif
+}
+
+int
+dsd_app_frontend_wideband_spectrum_get(float* out_db, int max_bins, uint32_t* out_center_freq_hz, uint32_t* out_span_hz,
+                                       uint32_t* out_frame_serial) {
+#ifdef USE_RADIO
+    return rtl_stream_wideband_spectrum_get(out_db, max_bins, out_center_freq_hz, out_span_hz, out_frame_serial);
+#else
+    (void)out_db;
+    (void)max_bins;
+    if (out_center_freq_hz) {
+        *out_center_freq_hz = 0;
+    }
+    if (out_span_hz) {
+        *out_span_hz = 0;
+    }
+    if (out_frame_serial) {
+        *out_frame_serial = 0;
+    }
+    return 0;
+#endif
+}
+
+void
+dsd_app_frontend_wideband_spectrum_set_enabled(int on) {
+#ifdef USE_RADIO
+    rtl_stream_wideband_spectrum_set_enabled(on);
+#else
+    (void)on;
 #endif
 }

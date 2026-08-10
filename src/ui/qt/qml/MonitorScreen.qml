@@ -9,6 +9,9 @@ import "Util.js" as Util
 Item {
     id: screen
 
+    // Raised by the header's spectrum button; Main.qml owns the layer.
+    signal openSpectrum()
+
     // The saved-system map the session was started from (may be null for a
     // network/file quick start).
     property var system: null
@@ -99,7 +102,7 @@ Item {
 
         Column {
             anchors.left: parent.left
-            anchors.right: livePill.left
+            anchors.right: spectrumPill.visible ? spectrumPill.left : livePill.left
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 3
@@ -122,6 +125,44 @@ Item {
                 font.letterSpacing: 0.8
                 color: Theme.textSubdued
                 elide: Text.ElideRight
+            }
+        }
+
+        // Only an RTL front end has a band around the tuned frequency to show;
+        // a PCM feed or a file has nothing to draw.
+        Rectangle {
+            id: spectrumPill
+
+            objectName: "openSpectrumButton"
+            anchors.right: livePill.left
+            anchors.rightMargin: 8
+            anchors.verticalCenter: parent.verticalCenter
+            visible: metrics.radioInput
+            width: spectrumLabel.implicitWidth + 22
+            height: 30
+            radius: Theme.radiusButton
+            color: spectrumTap.pressed ? Qt.alpha(Theme.cyan, 0.08) : Theme.panel
+            border.width: 1
+            border.color: Theme.panelBorder
+
+            Behavior on color {
+                ColorAnimation { duration: 120 }
+            }
+
+            Text {
+                id: spectrumLabel
+
+                anchors.centerIn: parent
+                text: qsTr("SPECTRUM")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                font.letterSpacing: 1.4
+                color: Theme.textSecondary
+            }
+
+            TapHandler {
+                id: spectrumTap
+                onTapped: screen.openSpectrum()
             }
         }
 

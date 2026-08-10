@@ -268,7 +268,7 @@ jobs:
           # the count would fail the release for the act of adding a UI test —
           # and fail it saying only that a grep matched nothing. Registration
           # going backwards, which is what this guards, still fails here.
-          min=7
+          min=10
           registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | sed -n 's/^Total Tests: *//p')
           echo "UI_QT_* tests registered: ${registered:-none} (floor $min)"
           if [ "${registered:-0}" -lt "$min" ]; then
@@ -276,6 +276,9 @@ jobs:
             exit 1
           fi
 
+      # Every target behind a UI_QT_* test, because the Test step runs them by
+      # name pattern: registering one and forgetting it here fails the job with
+      # "Could not find executable", not with anything about the test.
       - name: Build the Qt UI test targets
         shell: bash
         run: |
@@ -287,7 +290,10 @@ jobs:
             dsd-neo_test_ui_qt_session_args \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
-            dsd-neo_test_ui_qt_session_state
+            dsd-neo_test_ui_qt_session_state \
+            dsd-neo_test_ui_qt_spectrum_math \
+            dsd-neo_test_ui_qt_spectrum_model \
+            dsd-neo_test_ui_qt_metrics_model
 
       # The QML test carries its own headless environment (offscreen platform,
       # software renderer) in the CTest registration, so there is nothing to set
@@ -730,13 +736,13 @@ jobs:
 
       - name: Attest APK provenance
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ steps.names.outputs.APK_PATH }}
 
       - name: Attest APK SBOM
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ steps.names.outputs.APK_PATH }}
           sbom-path: ${{ steps.names.outputs.APK_PATH }}.spdx.json
@@ -896,7 +902,7 @@ jobs:
         id: aab_attest
         if: startsWith(github.ref, 'refs/tags/') && steps.aab.outputs.AAB_PATH != ''
         continue-on-error: true
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ steps.aab.outputs.AAB_PATH }}
 
@@ -904,7 +910,7 @@ jobs:
         id: aab_attest_sbom
         if: startsWith(github.ref, 'refs/tags/') && steps.aab.outputs.AAB_PATH != ''
         continue-on-error: true
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ steps.aab.outputs.AAB_PATH }}
           sbom-path: ${{ steps.aab.outputs.AAB_PATH }}.spdx.json

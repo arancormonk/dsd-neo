@@ -13,6 +13,10 @@ Item {
     signal playSystem(int row)
     signal editSystem(int row)
     signal networkSource()
+    // Tap starts exploring with what was used last; long-press changes it. Same
+    // split as a system card, where the face plays and the press manages.
+    signal explore()
+    signal exploreSetup()
 
     // Re-derives "Heard n minutes ago" once a minute so rows do not go stale.
     property int heardTick: 0
@@ -221,6 +225,81 @@ Item {
                 width: parent.width
                 text: qsTr("+ Add a system")
                 onClicked: screen.addSystem()
+            }
+
+            MicroLabel {
+                text: qsTr("Or go looking")
+            }
+
+            // Deliberately not a system card: there is nothing saved here, nothing
+            // named, and nothing to come back to. It is a door, so it carries a
+            // chevron rather than a play button, and its meta line states what the
+            // tap will actually do so that starting is never a surprise.
+            UiPanel {
+                id: exploreCard
+
+                objectName: "exploreCard"
+                width: content.width
+                height: 78
+
+                readonly property string sourceLabel: prefs.exploreSourceType === "rtltcp" ? qsTr("RTL-TCP")
+                                                                                           : qsTr("USB dongle")
+                readonly property bool configured: prefs.exploreSourceType.length > 0
+
+                Column {
+                    anchors.left: parent.left
+                    anchors.right: exploreCaret.left
+                    anchors.leftMargin: Theme.cardPadding
+                    anchors.rightMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+
+                    Text {
+                        width: parent.width
+                        text: qsTr("Explore the band")
+                        font.family: Theme.sans
+                        font.pixelSize: 17
+                        font.weight: Font.Bold
+                        color: Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: exploreCard.configured
+                              ? qsTr("%1 · from %2 MHz").arg(exploreCard.sourceLabel).arg(prefs.exploreFreqMhz)
+                              : qsTr("Tune around and find what is on the air")
+                        font.family: exploreCard.configured ? Theme.mono : Theme.sans
+                        font.pixelSize: exploreCard.configured ? 12 : 13
+                        color: Theme.textSubdued
+                        elide: Text.ElideRight
+                    }
+                }
+
+                Caret {
+                    id: exploreCaret
+
+                    anchors.right: parent.right
+                    anchors.rightMargin: Theme.cardPadding + 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    // Larger than the default: at the size a filter pill uses it
+                    // reads as a speck against a full-width card, and this is the
+                    // only thing saying the card goes somewhere.
+                    width: 13
+                    height: 9
+                    // Points down at rotation 0; a quarter turn anticlockwise reads
+                    // as forward, matching the "Network or file source ›" affordance.
+                    rotation: -90
+                    color: Theme.cyan
+                }
+
+                TapHandler {
+                    enabled: !mainRoot.transitioning
+                    // Nothing remembered means nothing to start from, so the first
+                    // tap asks rather than guessing at a radio and a frequency.
+                    onTapped: exploreCard.configured ? screen.explore() : screen.exploreSetup()
+                    onLongPressed: screen.exploreSetup()
+                }
             }
 
             Item {

@@ -45,7 +45,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
 
       - name: Initialize sccache
         shell: pwsh
@@ -151,7 +151,7 @@ jobs:
         run: tools/ci_validate_release_tag.sh
 
       - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
 
       - name: Initialize sccache
         shell: pwsh
@@ -336,13 +336,13 @@ jobs:
 
       - name: Attest native MSVC provenance
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
 
       - name: Attest native MSVC SBOM
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
           subject-path: ${{ steps.zip.outputs.ZIP_PATH }}
           sbom-path: ${{ steps.zip.outputs.ZIP_PATH }}.spdx.json

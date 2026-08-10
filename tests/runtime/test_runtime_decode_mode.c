@@ -299,7 +299,11 @@ test_remaining_preset_modes(void) {
         {DSDCFG_MODE_P25P1, DSD_DECODE_PRESET_PROFILE_CLI, "P25p1", 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
         {DSDCFG_MODE_NXDN96, DSD_DECODE_PRESET_PROFILE_INTERACTIVE, "NXDN96", 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 20, 9, 0,
          1},
-        {DSDCFG_MODE_DSTAR, DSD_DECODE_PRESET_PROFILE_CLI, "DSTAR", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+        /* GFSK, like the other two-level mode below it: D-STAR is GMSK, its symbol
+           profile is 4800/2, and frame_sync_apply_sps_hunt_profile() normalises
+           rf_mod to GFSK the moment the hunt reaches that profile. C4FM here only
+           left the preset a pass behind the demodulator. */
+        {DSDCFG_MODE_DSTAR, DSD_DECODE_PRESET_PROFILE_CLI, "DSTAR", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1},
         {DSDCFG_MODE_EDACS_PV, DSD_DECODE_PRESET_PROFILE_CLI, "EDACS/PV", 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 5, 2, 2, 1},
         {DSDCFG_MODE_DPMR, DSD_DECODE_PRESET_PROFILE_CLI, "dPMR", 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 20, 9, 0, 1},
         {DSDCFG_MODE_M17, DSD_DECODE_PRESET_PROFILE_CLI, "M17", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1},
@@ -484,6 +488,61 @@ test_symbol_timing_and_inference(void) {
     return 0;
 }
 
+/*
+ * Analog monitor has to be a mode you can leave. Nothing but the analog preset
+ * sets analog_only/monitor_input_audio, so if the other presets do not clear them
+ * dsd_infer_decode_mode_preset() keeps answering ANALOG -- which is what makes
+ * every decode chip in the Qt radio panel render unselected after one visit.
+ */
+static int
+test_analog_monitor_is_not_a_one_way_door(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_only != 1 || opts.monitor_input_audio != 1) {
+        DSD_FPRINTF(stderr, "analog preset should select analog monitor\n");
+        return 1;
+    }
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_ANALOG) {
+        DSD_FPRINTF(stderr, "analog preset should read back as analog\n");
+        return 1;
+    }
+
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_only != 0 || opts.monitor_input_audio != 0) {
+        DSD_FPRINTF(stderr, "a later preset should leave analog monitor\n");
+        return 1;
+    }
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_DMR) {
+        DSD_FPRINTF(stderr, "a later preset should read back as itself\n");
+        return 1;
+    }
+
+    /* The profiled presets go through a different arm of the dispatch. */
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0
+        || opts.analog_only != 0 || opts.monitor_input_audio != 0) {
+        DSD_FPRINTF(stderr, "the auto preset should leave analog monitor\n");
+        return 1;
+    }
+
+    /* A mode the presets do not implement must change nothing, analog included. */
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_ANALOG, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != 0) {
+        DSD_FPRINTF(stderr, "analog preset reapply failed\n");
+        return 1;
+    }
+    if (dsd_apply_decode_mode_preset(DSDCFG_MODE_UNSET, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) != -1
+        || opts.analog_only != 1 || opts.monitor_input_audio != 1) {
+        DSD_FPRINTF(stderr, "a rejected mode should not half-leave analog monitor\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -496,6 +555,7 @@ main(void) {
     rc |= test_cli_preset_mapping_and_guards();
     rc |= test_remaining_preset_modes();
     rc |= test_symbol_timing_and_inference();
+    rc |= test_analog_monitor_is_not_a_one_way_door();
     return rc;
 }
 

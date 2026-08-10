@@ -369,6 +369,34 @@ dsd_opts_has_digital_decode_mode(const dsd_opts* opts) {
            || opts->frame_dstar == 1 || opts->frame_dpmr == 1 || opts->frame_m17 == 1;
 }
 
+/**
+ * @brief The modulation the `mod_*` flags select: 0 C4FM, 1 QPSK, 2 GFSK.
+ *
+ * Same encoding as @c dsd_state::rf_mod and @c DSD_APP_CMD_MOD_SET's payload, so
+ * a control's request and its readback are the same number.
+ *
+ * One copy of the mapping because two readers already need it -- the reading a
+ * segmented control binds to, and the skip test that decides whether a request
+ * is a no-op -- and if those two disagree the control shows one modulation while
+ * the engine drops the tap that would resynchronise them.
+ *
+ * More than one flag set is not a modulation: `-ma` and `demod = auto` turn all
+ * three on to mean "let the hunt choose", and the demodulator starts that on
+ * C4FM. Reporting the first flag found would answer QPSK for a session running
+ * as C4FM.
+ */
+static inline int
+dsd_opts_modulation(const dsd_opts* opts) {
+    if (!opts) {
+        return 0;
+    }
+    const int selected = (opts->mod_c4fm != 0) + (opts->mod_qpsk != 0) + (opts->mod_gfsk != 0);
+    if (selected != 1) {
+        return 0;
+    }
+    return (opts->mod_qpsk != 0) ? 1 : ((opts->mod_gfsk != 0) ? 2 : 0);
+}
+
 /** @brief Return 1 when an enabled 4800-symbol four-level mode uses the 12.5 kHz channel profile. */
 static inline int
 dsd_opts_uses_wide_4800_profile(const dsd_opts* opts) {

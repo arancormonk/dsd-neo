@@ -184,6 +184,19 @@ extern "C" {
 /** Check if synctype is EDACS/ProVoice */
 #define DSD_SYNC_IS_EDACS(s)      (DSD_SYNC_IS_PROVOICE(s) || DSD_SYNC_IS_EDACS_ONLY(s))
 
+/**
+ * Check if synctype belongs to a protocol the trunking layer can follow.
+ *
+ * Sync on one of these means a control channel is at least possible here, which
+ * is what a control offering to hand the tuner to trunking needs to know. It is
+ * not a promise that this particular carrier is a control channel — only the
+ * decoded signalling says that — but the protocols left out (D-STAR, M17, YSF,
+ * dPMR) have no trunking to follow at all, so offering it there would be a
+ * control that does nothing.
+ */
+#define DSD_SYNC_IS_TRUNKABLE(s)                                                                                       \
+    (DSD_SYNC_IS_P25(s) || DSD_SYNC_IS_DMR(s) || DSD_SYNC_IS_NXDN(s) || DSD_SYNC_IS_EDACS(s) || DSD_SYNC_IS_X2TDMA(s))
+
 /** Check if synctype is inverted (negative polarity) */
 #define DSD_SYNC_IS_INVERTED(s)                                                                                        \
     ((s) == DSD_SYNC_P25P1_NEG || (s) == DSD_SYNC_X2TDMA_VOICE_NEG || (s) == DSD_SYNC_X2TDMA_DATA_NEG                  \

@@ -50,9 +50,210 @@
 
 #include "call_history_filter.h"
 #include "call_history_model.h"
+#include "decode_mode_flag.h"
+#include "qml_spectrum_stub.h"
+#include "spectrum_model.h"
+#include "spectrum_view_item.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
+
+/**
+ * @brief Stand-in for CommandBridge that records instead of submitting.
+ *
+ * The whole point of a tap-to-tune test is what the screen asks for, so the
+ * command surface has to be observable. It carries every method the screens
+ * call — an unimplemented one would only fail when some future case triggered
+ * it, which is exactly the kind of gap this suite exists to close.
+ *
+ * The tune parameters are `unsigned int` because CommandBridge's are: QML hands
+ * these methods a JavaScript number, and taking a double here would quietly
+ * accept a fractional, negative or out-of-range frequency that production
+ * truncates or wraps on its way to the tuner. Recording what production would
+ * actually submit is the point.
+ */
+class CommandRecorder : public QObject {
+    Q_OBJECT
+
+  public:
+    Q_INVOKABLE bool
+    manualTuneHz(unsigned int hz) {
+        m_manual_tune_calls++;
+        m_last_manual_tune_hz = hz;
+        return true;
+    }
+
+    /* Accepted and discarded: nothing under test asserts on the settings-menu
+     * tune, only on the spectrum's manualTuneHz(). Counting it would be state no
+     * assertion can ever fail on. */
+    Q_INVOKABLE bool
+    tuneHz(unsigned int hz) {
+        Q_UNUSED(hz)
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    toggleMute() {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    holdTalkgroup(double) {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    lockoutSlot(int) {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    clearEncLockouts() {
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    releaseTuner() {
+        m_release_tuner_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setTrunking(bool on) {
+        m_set_trunking_calls++;
+        m_last_set_trunking = on;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setTunerGain(int gain_db) {
+        m_last_gain_db = gain_db;
+        m_gain_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setSquelchDb(double db) {
+        m_last_squelch_db = db;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setPpm(int ppm) {
+        m_last_ppm = ppm;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setModulation(int modulation) {
+        m_last_modulation = modulation;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    setDecodeMode(int mode) {
+        m_last_decode_mode = mode;
+        return true;
+    }
+
+    /* The production mapping itself, not a stand-in for it. It used to be a
+     * stand-in answering numbers no dsdneoUserDecodeMode has -- 5 for DMR (which
+     * is 4) and 13 for "the rest" (which is ANALOG) -- so the case asserting that
+     * the DMR chip sends DMR was really asserting the double's own arithmetic. */
+    Q_INVOKABLE int
+    decodeModeForFlag(const QString& flag) {
+        return dsd_qt::decode_mode_for_flag(flag);
+    }
+
+    Q_INVOKABLE int
+    cycleHistoryMode() {
+        return 0;
+    }
+
+    void
+    reset() {
+        m_manual_tune_calls = 0;
+        m_last_manual_tune_hz = 0U;
+        m_release_tuner_calls = 0;
+        m_set_trunking_calls = 0;
+        m_last_set_trunking = false;
+        m_gain_calls = 0;
+        m_last_gain_db = -1;
+        m_last_squelch_db = 0.0;
+        m_last_modulation = -1;
+        m_last_decode_mode = -1;
+        m_last_ppm = 9999;
+    }
+
+    int
+    gainCalls() const {
+        return m_gain_calls;
+    }
+
+    int
+    lastGainDb() const {
+        return m_last_gain_db;
+    }
+
+    double
+    lastSquelchDb() const {
+        return m_last_squelch_db;
+    }
+
+    int
+    lastModulation() const {
+        return m_last_modulation;
+    }
+
+    int
+    lastDecodeMode() const {
+        return m_last_decode_mode;
+    }
+
+    int
+    lastPpm() const {
+        return m_last_ppm;
+    }
+
+    int
+    manualTuneCalls() const {
+        return m_manual_tune_calls;
+    }
+
+    int
+    releaseTunerCalls() const {
+        return m_release_tuner_calls;
+    }
+
+    int
+    setTrunkingCalls() const {
+        return m_set_trunking_calls;
+    }
+
+    bool
+    lastSetTrunking() const {
+        return m_last_set_trunking;
+    }
+
+    /** @brief The recorded frequency, widened for QML's arithmetic. */
+    double
+    lastManualTuneHz() const {
+        return static_cast<double>(m_last_manual_tune_hz);
+    }
+
+  private:
+    int m_manual_tune_calls = 0;
+    unsigned int m_last_manual_tune_hz = 0U;
+    int m_release_tuner_calls = 0;
+    int m_set_trunking_calls = 0;
+    bool m_last_set_trunking = false;
+    int m_gain_calls = 0;
+    int m_last_gain_db = -1;
+    double m_last_squelch_db = 0.0;
+    int m_last_modulation = -1;
+    int m_last_decode_mode = -1;
+    int m_last_ppm = 9999;
+};
 
 /**
  * @brief Newest-first call log the tests drive directly.
@@ -252,6 +453,81 @@ class Setup : public QObject {
      *
      * @param qmlFiles File names under src/ui/qt/qml, as the tests load them.
      */
+    /** @brief Frequency of the canned spectrum's peak, so a case need not hard-code it. */
+    Q_INVOKABLE double
+    spectrumPeakHz() const {
+        return dsd_neo_qml_stub::spectrum_peak_hz();
+    }
+
+    /** @brief Forget every recorded command. */
+    Q_INVOKABLE void
+    resetCommands() {
+        if (m_commands != nullptr) {
+            m_commands->reset();
+        }
+    }
+
+    /** @brief How many manual tunes the screens have asked for. */
+    Q_INVOKABLE int
+    manualTuneCalls() const {
+        return (m_commands != nullptr) ? m_commands->manualTuneCalls() : -1;
+    }
+
+    /** @brief The frequency of the most recent manual tune request. */
+    Q_INVOKABLE double
+    lastManualTuneHz() const {
+        return (m_commands != nullptr) ? m_commands->lastManualTuneHz() : 0.0;
+    }
+
+    /** @brief How many times the screens have asked to be given the tuner. */
+    Q_INVOKABLE int
+    releaseTunerCalls() const {
+        return (m_commands != nullptr) ? m_commands->releaseTunerCalls() : -1;
+    }
+
+    /** @brief How many times the screens have asked to hand the tuner to trunking. */
+    Q_INVOKABLE int
+    setTrunkingCalls() const {
+        return (m_commands != nullptr) ? m_commands->setTrunkingCalls() : -1;
+    }
+
+    /** @brief Which way the most recent trunking request went. */
+    Q_INVOKABLE bool
+    lastSetTrunking() const {
+        return (m_commands != nullptr) ? m_commands->lastSetTrunking() : false;
+    }
+
+    /** @brief What the radio panel last asked the engine for. */
+    Q_INVOKABLE int
+    gainCalls() const {
+        return (m_commands != nullptr) ? m_commands->gainCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    lastGainDb() const {
+        return (m_commands != nullptr) ? m_commands->lastGainDb() : -1;
+    }
+
+    Q_INVOKABLE double
+    lastSquelchDb() const {
+        return (m_commands != nullptr) ? m_commands->lastSquelchDb() : 0.0;
+    }
+
+    Q_INVOKABLE int
+    lastModulation() const {
+        return (m_commands != nullptr) ? m_commands->lastModulation() : -1;
+    }
+
+    Q_INVOKABLE int
+    lastDecodeMode() const {
+        return (m_commands != nullptr) ? m_commands->lastDecodeMode() : -1;
+    }
+
+    Q_INVOKABLE int
+    lastPpm() const {
+        return (m_commands != nullptr) ? m_commands->lastPpm() : 9999;
+    }
+
     Q_INVOKABLE QStringList
     missingContextKeys(const QStringList& qmlFiles) const {
         const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
@@ -307,6 +583,12 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
+        /* The spectrum's trace and waterfall are the only C++ types the QML
+         * instantiates itself, so they need the same registration ui_load()
+         * does before anything importing them is parsed. */
+        qmlRegisterType<dsd_qt::SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
+        qmlRegisterType<dsd_qt::WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+
         auto* store = new CallLogStore();
         auto* historyView = new CallHistoryFilterModel(engine);
         historyView->setSourceModel(store);
@@ -357,6 +639,25 @@ class Setup : public QObject {
         }
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        // Whether an automatic controller owns the tuner, which one, and where it
+        // points. The two named owners word a message; tunerControlled is the gate.
+        metrics[QStringLiteral("tunerControlled")] = false;
+        metrics[QStringLiteral("trunkingEnabled")] = false;
+        metrics[QStringLiteral("scannerMode")] = false;
+        metrics[QStringLiteral("centerFreqHz")] = static_cast<double>(dsd_neo_qml_stub::kSpectrumCenterHz);
+        // Width of the channel being demodulated; 12.5 kHz is the P25/DMR case.
+        metrics[QStringLiteral("channelBandwidthHz")] = 12500;
+        // Whether the decoder has found anything since the tuner last moved. False
+        // at rest, which is what lets a sweep keep stepping until a case says so.
+        metrics[QStringLiteral("syncedHere")] = false;
+        metrics[QStringLiteral("syncLabel")] = QString();
+        metrics[QStringLiteral("trunkableSync")] = false;
+        // What the radio panel shows and changes. DSDCFG_MODE_AUTO is 1.
+        metrics[QStringLiteral("decodeMode")] = 1;
+        metrics[QStringLiteral("modulation")] = 0;
+        metrics[QStringLiteral("tunerGainDb")] = 30;
+        metrics[QStringLiteral("squelchDb")] = -120.0;
+        metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;
         ctx->setContextProperty(QStringLiteral("metrics"), metrics);
@@ -366,9 +667,21 @@ class Setup : public QObject {
         host[QStringLiteral("running")] = false;
         host[QStringLiteral("transitioning")] = false;
         host[QStringLiteral("statusText")] = QStringLiteral("idle");
+        /* The spectrum view gates production on a live session, so the fixture
+         * has to claim one or its frames would never start. */
+        host[QStringLiteral("sessionActive")] = true;
         m_host = host;
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
-        ctx->setContextProperty(QStringLiteral("commands"), QVariantMap());
+
+        /* The real SpectrumModel over the canned getter in qml_spectrum_stub.cpp:
+         * the polling, viewport and tap-snapping under test are the production
+         * ones, only the frames are synthetic. */
+        m_spectrum = new dsd_qt::SpectrumModel(engine);
+        ctx->setContextProperty(QStringLiteral("spectrum"), m_spectrum);
+
+        m_commands = new CommandRecorder();
+        m_commands->setParent(engine);
+        ctx->setContextProperty(QStringLiteral("commands"), m_commands);
     }
 
   private:
@@ -376,6 +689,8 @@ class Setup : public QObject {
     QVariantMap m_prefs;
     QVariantMap m_host;
     QQmlEngine* m_engine = nullptr;
+    dsd_qt::SpectrumModel* m_spectrum = nullptr;
+    CommandRecorder* m_commands = nullptr;
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */
