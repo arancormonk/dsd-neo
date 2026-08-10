@@ -39,6 +39,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool radioInput READ radioInput NOTIFY tunerChanged)
     Q_PROPERTY(bool streamActive READ streamActive NOTIFY tunerChanged)
     Q_PROPERTY(double centerFreqHz READ centerFreqHz NOTIFY tunerChanged)
+    Q_PROPERTY(int channelBandwidthHz READ channelBandwidthHz NOTIFY tunerChanged)
     Q_PROPERTY(int slot1CallState READ slot1CallState NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
@@ -132,6 +133,19 @@ class MetricsModel : public QObject {
     double
     centerFreqHz() const {
         return m_view.center_freq_hz;
+    }
+
+    /**
+     * @brief Full width in Hz of the channel the demodulator is filtering.
+     *
+     * 12500 for the 12.5 kHz modes, 6250 for the narrow ones, 16000 wide. 0 when
+     * the input is not a radio, or before the demodulator has reported a profile —
+     * which the spectrum screen renders as "width unknown" rather than as zero
+     * width. The channel, not the filter: see dsd_channel_lpf_protected_edge_hz().
+     */
+    int
+    channelBandwidthHz() const {
+        return m_view.channel_bandwidth_hz;
     }
 
     /**
@@ -471,6 +485,7 @@ class MetricsModel : public QObject {
         bool radio_input = false;
         bool stream_active = false;
         double center_freq_hz = 0.0;
+        int channel_bandwidth_hz = 0;
         bool synced_here = false;
         QString sync_label;
         bool trunkable_sync = false;
@@ -497,8 +512,9 @@ class MetricsModel : public QObject {
             return snr_db == other.snr_db && snr_valid == other.snr_valid && carrier_lock == other.carrier_lock
                    && cfo_hz == other.cfo_hz && tuner_gain_text == other.tuner_gain_text
                    && radio_input == other.radio_input && stream_active == other.stream_active
-                   && center_freq_hz == other.center_freq_hz && synced_here == other.synced_here
-                   && sync_label == other.sync_label && trunkable_sync == other.trunkable_sync;
+                   && center_freq_hz == other.center_freq_hz && channel_bandwidth_hz == other.channel_bandwidth_hz
+                   && synced_here == other.synced_here && sync_label == other.sync_label
+                   && trunkable_sync == other.trunkable_sync;
         }
 
         bool

@@ -33,6 +33,10 @@ namespace {
 
 int g_failures = 0;
 
+/* What the stubbed frontend reports for the channel width. Per-case, because
+ * every other case wants the at-rest 0. */
+static int g_stub_channel_bandwidth_hz = 0;
+
 void
 expect(const char* what, bool ok) {
     if (!ok) {
@@ -57,6 +61,7 @@ dsd_app_frontend_get_metrics_for_snapshot(const dsd_opts* opts, const dsd_state*
         return -1;
     }
     *out = dsd_frontend_metrics{};
+    out->channel_bandwidth_hz = g_stub_channel_bandwidth_hz;
     return 0;
 }
 
@@ -229,6 +234,23 @@ main(int argc, char** argv) {
     model.clear();
     expect("a cleared model reports no lock", !model.syncedHere());
     expect("a cleared model reports no tuner", !model.radioInput());
+
+    /* The channel width rides the tuner group: it moves when the decoder changes
+     * profile, not when the user changes a setting. It is also gated on a radio
+     * input, like every other tuner reading. */
+    {
+        g_stub_channel_bandwidth_hz = 12500;
+        opts.audio_in_type = AUDIO_IN_RTL;
+        model.refresh(&opts, &state);
+        expect("channel bandwidth reaches the model", model.channelBandwidthHz() == 12500);
+
+        opts.audio_in_type = AUDIO_IN_PULSE;
+        model.refresh(&opts, &state);
+        expect("channel bandwidth is zero off a radio", model.channelBandwidthHz() == 0);
+
+        g_stub_channel_bandwidth_hz = 0;
+        opts.audio_in_type = AUDIO_IN_RTL;
+    }
 
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
