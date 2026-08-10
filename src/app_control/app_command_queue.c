@@ -2958,6 +2958,52 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
 }
 
 /**
+ * @brief Answer a decode-mode request that needs no preset run, or decline to.
+ *
+ * Range-checked before the cast, not after. dsdneoUserDecodeMode is a packed enum
+ * -- one byte -- so a value outside it does not stay outside it: 260 casts to 4,
+ * which is DSDCFG_MODE_DMR, and the whole DMR preset would then run for a command
+ * nobody could have meant. The payload is a plain int32 on the wire and
+ * CommandBridge::setDecodeMode() passes it through unvalidated, so this is the only
+ * place the two widths are reconciled.
+ *
+ * Idempotent for the reason ui_handle_mod_set() is: a chip re-asserts its own state
+ * after a frame it did not cause, and DecodeChip taps whether or not it is already
+ * selected. Applying a preset ends both call epochs, drops the auto-modulation
+ * votes and releases the modulation locks -- so re-applying the mode already in
+ * effect would cut a live call and revert an operator's QPSK pick on a tap that
+ * asked for nothing to change. Compared through dsd_infer_decode_mode_preset(),
+ * which is the same reading the control binds to, so the skip and the selection
+ * cannot answer differently.
+ *
+ * AUTO is excluded because there the reading is not an identification: AUTO is that
+ * helper's catch-all for any frame set matching no single preset, so a session with
+ * one protocol switched off answers AUTO without being it, and "listen for
+ * everything" has to stay able to widen such a set back out.
+ *
+ * @param c        Command whose payload is already known to be wide enough.
+ * @param out_mode Receives the requested mode whenever one could be read.
+ * @return The verdict to answer with, its toast already posted, or
+ *         UI_CMD_APPLY_UNHANDLED when @p out_mode is a mode still to apply.
+ */
+static int
+decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c,
+                              dsdneoUserDecodeMode* out_mode) {
+    int32_t requested = 0;
+    DSD_MEMCPY(&requested, c->data, sizeof requested);
+    if (requested < 0 || requested > (int32_t)DSDCFG_MODE_DMR_MONO) {
+        ui_set_toast(state, 4, "Decode mode not available");
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    *out_mode = (dsdneoUserDecodeMode)requested;
+    if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
+        ui_set_toast(state, 3, "Decoding %s", decode_mode_label(*out_mode));
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    return UI_CMD_APPLY_UNHANDLED;
+}
+
+/**
  * @brief Switch which protocols are decoded, mid-session.
  *
  * Goes through the same preset helper the CLI uses, so a mode chosen here means
@@ -2978,9 +3024,11 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
     if (!state || c->n < (int)sizeof(int32_t)) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
     }
-    int32_t requested = 0;
-    DSD_MEMCPY(&requested, c->data, sizeof requested);
-    const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)requested;
+    dsdneoUserDecodeMode mode = DSDCFG_MODE_AUTO;
+    const int early = decode_mode_set_early_verdict(opts, state, c, &mode);
+    if (early != UI_CMD_APPLY_UNHANDLED) {
+        return early;
+    }
     /* The presets also carry an audio layout, but the output stream was opened
        once at session start with the layout in force then (openAudioOutput()
        reads pulse_digi_out_channels/pulse_digi_rate_out and the backend fixes

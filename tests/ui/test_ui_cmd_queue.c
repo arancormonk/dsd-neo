@@ -1504,6 +1504,52 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("and not as dmr mono", opts.dmr_mono, 0);
     freeState(&state);
 
+    /* Asking for the mode already in effect must change nothing at all. DecodeChip
+     * taps whether or not it is already selected, so a stray tap on the lit chip
+     * would otherwise run the whole teardown above: it would end a live call and
+     * put the modulation back to the preset's, discarding the operator's own pick.
+     * ui_handle_mod_set() has held this contract since it was written; this is the
+     * same one for the decode chips beside it. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 0;
+    rc |= expect_int("first dmr mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("first dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    /* The session is on DMR now. The operator picks QPSK and a call opens. */
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 1;
+    state.sps_hunt_counter = 7;
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1502);
+    rc |= expect_int("repeat dmr mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat keeps the operator's modulation", opts.mod_qpsk, 1);
+    rc |= expect_int("repeat leaves the hunt dwell alone", state.sps_hunt_counter, 7);
+    rc |= expect_call_phase("repeat leaves slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("repeat leaves slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_contains("repeat still names the mode", state.ui_msg, "DMR");
+    freeState(&state);
+
+    /* The payload travels as a plain int32 but dsdneoUserDecodeMode is packed to a
+     * byte, so an out-of-range value does not stay out of range: 260 casts to 4,
+     * which is DSDCFG_MODE_DMR, and the DMR preset would run for a command nobody
+     * could have meant. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 0;
+    rc |= expect_int("out-of-range mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, 260),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("out-of-range mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("out-of-range mode does not alias onto dmr", opts.frame_dmr, 0);
+    rc |= expect_int("out-of-range mode leaves p25 alone", opts.frame_p25p1, 1);
+    freeState(&state);
+
     /* Back to auto re-enables the set the engine starts with. */
     init_test_context(&opts, &state);
     opts.frame_dmr = 1;
