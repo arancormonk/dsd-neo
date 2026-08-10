@@ -252,6 +252,23 @@ main(int argc, char** argv) {
         opts.audio_in_type = AUDIO_IN_RTL;
     }
 
+    /* The width must move on its own. Every other tuner reading is holding still
+     * here, so if channel_bandwidth_hz were missing from tunerEquals() the frame
+     * would compare equal, publish() would skip the whole View, and this second
+     * reading would still be the first one. */
+    {
+        opts.audio_in_type = AUDIO_IN_RTL;
+        g_stub_channel_bandwidth_hz = 12500;
+        model.refresh(&opts, &state);
+        expect("width reads the first frame", model.channelBandwidthHz() == 12500);
+
+        g_stub_channel_bandwidth_hz = 6250;
+        model.refresh(&opts, &state);
+        expect("width alone moves the tuner group", model.channelBandwidthHz() == 6250);
+
+        g_stub_channel_bandwidth_hz = 0;
+    }
+
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

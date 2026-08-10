@@ -138,10 +138,11 @@ class MetricsModel : public QObject {
     /**
      * @brief Full width in Hz of the channel the demodulator is filtering.
      *
-     * 12500 for the 12.5 kHz modes, 6250 for the narrow ones, 16000 wide. 0 when
-     * the input is not a radio, or before the demodulator has reported a profile —
-     * which the spectrum screen renders as "width unknown" rather than as zero
-     * width. The channel, not the filter: see dsd_channel_lpf_protected_edge_hz().
+     * 12500 for the 12.5 kHz modes, 6250 for the narrow ones, 16000 wide — a
+     * profile the demodulator has not yet narrowed reads as wide, not as zero.
+     * 0 means there is nothing to draw at all: the input is not a radio, or no
+     * metrics frame has been read yet. The channel, not the filter: see
+     * dsd_channel_lpf_protected_edge_hz().
      */
     int
     channelBandwidthHz() const {
