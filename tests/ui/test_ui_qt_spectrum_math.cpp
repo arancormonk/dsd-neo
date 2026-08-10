@@ -14,6 +14,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 #include <dsd-neo/core/safe_api.h>
@@ -328,6 +329,66 @@ test_nice_tick_step(void) {
     assert(sm::nice_tick_step_hz(kSpan, 0) > 0.0);
 }
 
+/*
+ * A single non-finite bin must not take the display out for the rest of the
+ * session. The range is an EMA, so folding in an infinity once makes the very
+ * next relaxation `-inf + inf` -- a NaN that every later frame then relaxes
+ * towards itself. Nothing resets it short of a retune, and because every
+ * comparison against NaN is false the 20 dB floor in span_db() would not catch
+ * it either: normalize() would answer 0 for every bin, which is a flat trace over
+ * a cold waterfall with a live signal on the air.
+ */
+void
+test_auto_range_survives_a_bad_frame(void) {
+    std::vector<float> healthy(64, -60.0F);
+    healthy[32] = -20.0F;
+
+    sm::AutoRange range;
+    range.update(healthy.data(), 64);
+    assert(range.seeded);
+    const double seeded_span = range.span_db();
+    assert(std::isfinite(seeded_span));
+
+    std::vector<float> poisoned(64, -60.0F);
+    poisoned[7] = std::numeric_limits<float>::infinity();
+    range.update(poisoned.data(), 64);
+    assert(std::isfinite(range.min_db) && std::isfinite(range.max_db));
+    assert(near(range.span_db(), seeded_span, 1e-9));
+
+    /* And it keeps tracking healthy frames afterwards. */
+    for (int i = 0; i < 8; i++) {
+        range.update(healthy.data(), 64);
+    }
+    assert(std::isfinite(range.span_db()));
+    assert(range.normalize(-20.0) > range.normalize(-60.0));
+
+    /* A NaN reaching min/max some other way still cannot make span_db() NaN:
+     * `span < 20.0` is false for NaN, so the floor has to be written negated. */
+    sm::AutoRange poisoned_range;
+    poisoned_range.min_db = std::numeric_limits<double>::quiet_NaN();
+    poisoned_range.max_db = std::numeric_limits<double>::quiet_NaN();
+    poisoned_range.seeded = true;
+    assert(near(poisoned_range.span_db(), 20.0, 1e-9));
+    /* And it re-seeds from the next good frame rather than relaxing towards NaN. */
+    poisoned_range.update(healthy.data(), 64);
+    assert(std::isfinite(poisoned_range.min_db) && std::isfinite(poisoned_range.max_db));
+}
+
+/*
+ * frame_mean_db() is the noise-floor estimate directional_peak_bin() thresholds
+ * on. An empty frame divided by zero would make that threshold NaN, and since
+ * every `>=` against NaN is false the "next signal" control would answer "nothing
+ * on this screen" for a band full of carriers -- silently, and nowhere near the
+ * line that caused it.
+ */
+void
+test_frame_mean_guards_an_empty_frame(void) {
+    const std::vector<float> db(8, -70.0F);
+    assert(near(sm::frame_mean_db(db.data(), 8), -70.0, 1e-9));
+    assert(std::isfinite(sm::frame_mean_db(db.data(), 0)));
+    assert(std::isfinite(sm::frame_mean_db(nullptr, 8)));
+}
+
 } // namespace
 
 int
@@ -341,6 +402,8 @@ main(void) {
     test_directional_seed();
     test_zoom_anchor();
     test_nice_tick_step();
+    test_auto_range_survives_a_bad_frame();
+    test_frame_mean_guards_an_empty_frame();
     (void)DSD_FPRINTF(stdout, "UI_QT_SPECTRUM_MATH: ok\n");
     return 0;
 }

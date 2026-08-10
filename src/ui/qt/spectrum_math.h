@@ -211,6 +211,13 @@ peak_search_bin(const float* db, int n, int center_bin, int half_width_bins, int
  */
 inline double
 frame_mean_db(const float* db, int n) {
+    /* Guarded like every other entry point here: an empty frame would otherwise
+     * divide by zero, and the NaN that produces makes every `>=` against it false
+     * — so directional_peak_bin() would answer "nothing on this screen" for a
+     * band full of carriers rather than failing where it could be seen. */
+    if (!db || n <= 0) {
+        return 0.0;
+    }
     double sum = 0.0;
     for (int i = 0; i < n; i++) {
         sum += static_cast<double>(db[i]);
@@ -403,7 +410,16 @@ struct AutoRange {
         }
         const double want_min = (sum / static_cast<double>(n)) - 6.0;
         const double want_max = peak + 3.0;
-        if (!seeded) {
+        /* A frame carrying an infinity or a NaN says nothing about where the band
+         * sits, and folding one in is not recoverable: the relaxation below turns
+         * `-inf + inf` into a NaN that every later frame then relaxes towards
+         * itself, so the range stays NaN for the rest of the session and
+         * normalize() answers 0 for every bin — a flat trace over a cold
+         * waterfall, with a live signal on the air. */
+        if (!std::isfinite(want_min) || !std::isfinite(want_max)) {
+            return;
+        }
+        if (!seeded || !std::isfinite(min_db) || !std::isfinite(max_db)) {
             min_db = want_min;
             max_db = want_max;
             seeded = true;
@@ -418,7 +434,9 @@ struct AutoRange {
     double
     span_db() const {
         const double span = max_db - min_db;
-        return (span < 20.0) ? 20.0 : span;
+        /* Negated so a NaN span takes the floor as well: `span < 20.0` is false
+         * for NaN, which would hand a NaN divisor to normalize(). */
+        return !(span >= 20.0) ? 20.0 : span;
     }
 
     /** @brief Where @p db sits in the range, clamped to [0, 1]. */
