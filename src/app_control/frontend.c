@@ -60,7 +60,14 @@ frontend_metrics_from_runtime_hooks(dsd_frontend_metrics* out) {
     out->output_rate_hz = dsd_rtl_stream_metrics_hook_output_rate_hz();
     out->output_kind = dsd_rtl_stream_metrics_hook_output_kind();
     (void)dsd_rtl_stream_metrics_hook_symbol_profile(&out->symbol_rate_hz, &out->symbol_levels, &out->channel_profile);
-    out->channel_bandwidth_hz = (int)(2.0 * dsd_channel_lpf_protected_edge_hz(out->channel_profile));
+    /* Only once the front end has actually published a profile. The mirror behind
+     * channel_profile is process-global and reads WIDE until the first publish, so
+     * deriving a width from it unconditionally reports 16 kHz for a session that
+     * has not chosen a channel yet -- and a consumer drawing that shades a channel
+     * band over the waterfall that belongs to nothing. 0 is the documented "there
+     * is nothing to draw". */
+    out->channel_bandwidth_hz =
+        (out->symbol_rate_hz > 0) ? (int)(2.0 * dsd_channel_lpf_protected_edge_hz(out->channel_profile)) : 0;
     out->stream_generation = dsd_rtl_stream_metrics_hook_stream_generation();
     out->stream_active = dsd_rtl_stream_metrics_hook_stream_active();
     (void)dsd_rtl_stream_metrics_hook_input_level(&out->input_level);

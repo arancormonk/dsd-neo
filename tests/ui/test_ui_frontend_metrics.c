@@ -90,6 +90,26 @@ hook_symbol_profile(int* out_symbol_rate_hz, int* out_levels, int* out_channel_p
     return 0;
 }
 
+/*
+ * The shape a radio session has before the front end has published a profile:
+ * the mirror behind channel_profile is process-global and reads WIDE until then,
+ * so a width derived from it unconditionally would report 16 kHz for a channel
+ * nothing has chosen yet -- and carry the previous session's width into the next.
+ */
+static int
+hook_symbol_profile_unpublished(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
+    if (out_symbol_rate_hz) {
+        *out_symbol_rate_hz = 0;
+    }
+    if (out_levels) {
+        *out_levels = 0;
+    }
+    if (out_channel_profile) {
+        *out_channel_profile = 0; /* DSD_CH_LPF_PROFILE_WIDE */
+    }
+    return 0;
+}
+
 static int
 hook_cqpsk_status(int* out_cqpsk_enable, int* out_cqpsk_timing_active) {
     if (out_cqpsk_enable) {
@@ -196,6 +216,19 @@ test_metrics_fallback_and_runtime_hooks(void) {
     assert(g_snr_c4fm_eye_calls == 0);
     assert(g_snr_gfsk_eye_calls == 0);
     assert(g_snr_qpsk_const_calls == 0);
+
+    /* No profile published yet: the width has to say "nothing to draw" rather than
+     * the WIDE fallback's 16 kHz, or a consumer shades a channel band over a
+     * session that has not chosen a channel. */
+    hooks.symbol_profile = hook_symbol_profile_unpublished;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.symbol_rate_hz == 0);
+    assert(metrics.channel_bandwidth_hz == 0);
+    hooks.symbol_profile = hook_symbol_profile;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    assert(dsd_app_frontend_get_metrics(&metrics) == 0);
+    assert(metrics.channel_bandwidth_hz == 12500);
 
     assert(dsd_app_frontend_get_metrics_with_snr_fallbacks(&metrics, DSD_FRONTEND_SNR_FALLBACK_ALL) == 0);
     assert(metrics.snr_c4fm_db == 23.5);
