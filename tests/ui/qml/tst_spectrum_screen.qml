@@ -835,6 +835,19 @@ Item {
             testContext.setMetric("tunerControlled", false)
         }
 
+        // The fractions are covered; the pixels are not. Dropping the centring term
+        // would leave every other marker case green while the column sat half its own
+        // width off the carrier it is naming.
+        function test_25c_the_column_is_centred_on_the_hairline() {
+            var marker = findChild(screenLoader.item, "spectrumTunerMarker")
+            var column = findChild(screenLoader.item, "spectrumTunerColumn")
+            var hairline = findChild(screenLoader.item, "spectrumTunerHairline")
+            verify(column !== null && hairline !== null, "the marker's parts are missing")
+            verify(Math.abs((column.x + column.width / 2) - (hairline.x + hairline.width / 2)) <= 1,
+                   "the column centre is at " + (column.x + column.width / 2)
+                   + " but the hairline is at " + (hairline.x + hairline.width / 2))
+        }
+
         // The rail looked like a slider and was not one — you could not drag it,
         // and it clamped to a band the tuner reaches far outside of. It is now a
         // coarse tuner over a local window, and the ONLY hard stops are the

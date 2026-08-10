@@ -49,9 +49,10 @@ Item {
     // preview; this just reads it, rather than restating the same expression.
     readonly property real readoutHz: bandRail.displayHz
 
-    // Where the tuner can be walked without leaving the part of the spectrum the
-    // user is working in. Null off-band, in which case stepping is unbounded and
-    // the rail shows a local window instead.
+    // Which band the tuner is currently inside, or null off-band. The Go-to
+    // sheet reads this to highlight the matching pill; nextStepHz() reaches the
+    // same answer through its own Util.bandFor() lookup to decide where a step
+    // wraps. Neither the rail nor its window cares about bands at all.
     readonly property var band: Util.bandFor(screen.tunedHz)
 
     // A step overlaps the last one, so a signal sitting on a seam is not missed

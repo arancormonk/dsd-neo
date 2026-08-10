@@ -86,9 +86,10 @@ var BANDS = [
 var TUNER_LOW_HZ = 24.0e6
 var TUNER_HIGH_HZ = 1766.0e6
 
-// The band containing hz, or null when tuned outside all of them. Callers fall
-// back to a local window: a rail spanning everything a tuner can reach would move
-// its marker by a hair across a whole band, which tells the reader nothing.
+// The band containing hz, or null when tuned outside all of them. nextStepHz()
+// is the only caller that treats a null result as a fallback, and what it falls
+// back to is unbounded stepping — off-band there is no window to wrap a step
+// against, so it simply keeps going.
 function bandFor(hz) {
     for (var i = 0; i < BANDS.length; i++) {
         if (hz >= BANDS[i].low && hz < BANDS[i].high)

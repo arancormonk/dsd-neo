@@ -31,6 +31,15 @@ Item {
                                               ? channelBwHz / viewSpanHz : 0
     readonly property bool onScreen: xFraction >= 0 && xFraction <= 1
 
+    // The one pixel column, hairline and tick are all centred on, so the three
+    // cannot drift apart from each other by a rounding of their own.
+    readonly property real centerX: Math.round(xFraction * width)
+
+    // The picture's own edge, not the marker's: at high zoom near a view edge
+    // the column's outer half would otherwise spill past it into the screen
+    // padding this Item is not clipped by anywhere else.
+    clip: true
+
     // No handlers anywhere in here: taps, pinches and drags belong to the
     // gesture area underneath, and an Item that accepted them would make the
     // spectrum untappable exactly where the receiver is.
@@ -44,18 +53,19 @@ Item {
         y: 0
         height: parent.height
         width: Math.max(2, Math.round(marker.bandWidthFraction * parent.width))
-        x: Math.round((marker.xFraction * parent.width) - (width / 2))
+        x: marker.centerX - (width / 2)
     }
 
     Rectangle {
         id: hairline
 
+        objectName: "spectrumTunerHairline"
         visible: marker.onScreen
         color: Theme.textPrimary
         width: 1
         y: 0
         height: parent.height
-        x: Math.round(marker.xFraction * parent.width)
+        x: marker.centerX - (width / 2)
     }
 
     Rectangle {
@@ -65,7 +75,7 @@ Item {
         width: 9
         height: 3
         y: 0
-        x: Math.round((marker.xFraction * parent.width) - (width / 2))
+        x: marker.centerX - (width / 2)
     }
 
     // Off screen the marker is not drawn at all — clamping it to the edge would
