@@ -762,5 +762,77 @@ Item {
                    "the axis did not change with the zoom")
             spectrum.resetView()
         }
+
+        // Where the receiver is, on a picture whose whole point is showing where
+        // signals are. The frame's center bin IS the tuned frequency, so at 1x
+        // this sits mid-screen and only moves once the view is panned or zoomed.
+        function test_22_the_marker_sits_where_the_receiver_is() {
+            var marker = findChild(screenLoader.item, "spectrumTunerMarker")
+            verify(marker !== null, "the tuner marker is missing")
+            verify(marker.onScreen, "the marker is off screen at rest")
+            verify(Math.abs(marker.xFraction - 0.5) < 0.01,
+                   "at rest the marker is at " + marker.xFraction + ", not mid-screen")
+
+            // Pan the viewport and the marker must travel with the spectrum.
+            spectrum.zoom = 4.0
+            spectrum.viewOffsetHz = spectrum.spanHz * 0.1
+            var want = (spectrum.centerFreqHz - spectrum.viewLowHz) / spectrum.viewSpanHz
+            verify(Math.abs(marker.xFraction - want) < 0.001,
+                   "panned, the marker is at " + marker.xFraction + " not " + want)
+            spectrum.resetView()
+        }
+
+        // The column is the channel the demodulator is filtering, so it has to be
+        // that wide against the view — not a fixed number of pixels that would lie
+        // at every zoom but one.
+        function test_23_the_channel_column_is_as_wide_as_the_channel() {
+            var marker = findChild(screenLoader.item, "spectrumTunerMarker")
+            testContext.setMetric("channelBandwidthHz", 12500)
+            var want = 12500 / spectrum.viewSpanHz
+            verify(Math.abs(marker.bandWidthFraction - want) < 1e-6,
+                   "column is " + marker.bandWidthFraction + " of the view, want " + want)
+
+            // Zoomed 4x the same channel covers four times the screen.
+            spectrum.zoom = 4.0
+            want = 12500 / spectrum.viewSpanHz
+            verify(Math.abs(marker.bandWidthFraction - want) < 1e-6, "the column ignored the zoom")
+            spectrum.resetView()
+        }
+
+        // Before the demodulator reports a profile there is no honest width to
+        // draw. The line still says where the receiver is; the column says nothing
+        // rather than claiming zero width.
+        function test_24_an_unknown_channel_width_draws_no_column() {
+            var marker = findChild(screenLoader.item, "spectrumTunerMarker")
+            testContext.setMetric("channelBandwidthHz", 0)
+            compare(marker.bandWidthFraction, 0)
+            verify(marker.onScreen, "the marker vanished with the column")
+            testContext.setMetric("channelBandwidthHz", 12500)
+        }
+
+        // Zoomed in and panned to the far edge, the receiver is genuinely not on
+        // screen. Drawing the marker clamped to the edge would put it on a carrier
+        // it is not tuned to, so it hides and an edge hint points the way back.
+        function test_25_the_marker_hides_when_the_receiver_is_off_screen() {
+            var marker = findChild(screenLoader.item, "spectrumTunerMarker")
+            spectrum.zoom = 8.0
+            spectrum.viewOffsetHz = spectrum.spanHz
+            verify(!marker.onScreen, "the marker claims to be on screen at the far edge")
+            var hint = findChild(screenLoader.item, "spectrumTunerEdgeHint")
+            verify(hint !== null && hint.visible, "nothing points back toward the receiver")
+            spectrum.resetView()
+            verify(marker.onScreen, "the marker did not come back")
+        }
+
+        // Locked to a saved system, or with trunking holding the tuner, is
+        // exactly when "what am I on?" matters most — so the marker belongs to
+        // the picture, not to the tuning controls that disappear in view-only.
+        function test_25b_the_marker_survives_view_only() {
+            var marker = findChild(screenLoader.item, "spectrumTunerMarker")
+            testContext.setMetric("tunerControlled", true)
+            verify(screenLoader.item.viewOnly, "the screen did not go view-only")
+            verify(marker.visible && marker.onScreen, "the marker vanished in view-only")
+            testContext.setMetric("tunerControlled", false)
+        }
     }
 }

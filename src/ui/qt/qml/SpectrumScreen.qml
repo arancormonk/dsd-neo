@@ -617,6 +617,21 @@ Item {
                 hotColor: Theme.magenta
             }
 
+            // Above trace, axis and waterfall as one continuous column. Correct
+            // over waterfall history only because a retune clears it, so every
+            // visible row shares this frame's center — if that ever changes, so
+            // must this.
+            TunerMarker {
+                objectName: "spectrumTunerMarker"
+                anchors.fill: parent
+                visible: spectrum.hasData
+
+                tunedHz: screen.tunedHz
+                channelBwHz: metrics ? metrics.channelBandwidthHz : 0
+                viewLowHz: spectrum.viewLowHz
+                viewSpanHz: spectrum.viewSpanHz
+            }
+
             Text {
                 anchors.centerIn: waterfall
                 visible: !spectrum.hasData

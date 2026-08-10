@@ -65,6 +65,7 @@ qt_add_resources(
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
+        qml/TunerMarker.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml
         fonts/IBMPlexSans-Regular.ttf

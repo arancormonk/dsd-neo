@@ -645,6 +645,8 @@ class Setup : public QObject {
         metrics[QStringLiteral("trunkingEnabled")] = false;
         metrics[QStringLiteral("scannerMode")] = false;
         metrics[QStringLiteral("centerFreqHz")] = static_cast<double>(dsd_neo_qml_stub::kSpectrumCenterHz);
+        // Width of the channel being demodulated; 12.5 kHz is the P25/DMR case.
+        metrics[QStringLiteral("channelBandwidthHz")] = 12500;
         // Whether the decoder has found anything since the tuner last moved. False
         // at rest, which is what lets a sweep keep stepping until a case says so.
         metrics[QStringLiteral("syncedHere")] = false;
