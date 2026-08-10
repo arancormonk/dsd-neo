@@ -1505,6 +1505,21 @@ add_test(
     COMMAND dsd-neo_test_app_control_telemetry_hooks_install
 )
 
+add_executable(
+    dsd-neo_test_app_control_call_view
+    ui/test_app_control_call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_call_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_call_view
+    PRIVATE dsd-neo_test_call_state_support
+)
+add_test(NAME APP_CONTROL_CALL_VIEW COMMAND dsd-neo_test_app_control_call_view)
+
 if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
