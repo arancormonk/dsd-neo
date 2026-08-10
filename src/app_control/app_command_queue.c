@@ -139,22 +139,30 @@ static const int k_ui_cmd_string_ids[] = {
     DSD_APP_CMD_M17_USER_DATA_SET,
 };
 
+/* Setters where only the newest value matters, so a queued one may be overwritten
+   in place rather than walked through. A list rather than a switch for the same
+   reason k_ui_cmd_string_ids above is one: each entry costs a branch in a switch,
+   and this set only grows.
+
+   The last four are discrete choices rather than swept values, and are here on a
+   narrower argument: a segmented control taken twice in a second should land on
+   the second answer without the decoder rebuilding timing for the first one on
+   the way. */
+static const int k_ui_cmd_coalescible_setter_ids[] = {
+    DSD_APP_CMD_GAIN_SET,        DSD_APP_CMD_AGAIN_SET,        DSD_APP_CMD_INPUT_VOL_SET, DSD_APP_CMD_RTL_SET_FREQ,
+    DSD_APP_CMD_MANUAL_TUNE,     DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,   DSD_APP_CMD_RTL_SET_BW,
+    DSD_APP_CMD_RTL_SET_SQL_DB,  DSD_APP_CMD_RTL_SET_VOL_MULT, DSD_APP_CMD_HANGTIME_SET,  DSD_APP_CMD_MOD_SET,
+    DSD_APP_CMD_DECODE_MODE_SET, DSD_APP_CMD_TRUNK_SET,        DSD_APP_CMD_SLOT_PREF_SET,
+};
+
 static int
 ui_cmd_is_coalescible_setter(int cmd_id) {
-    switch (cmd_id) {
-        case DSD_APP_CMD_GAIN_SET:
-        case DSD_APP_CMD_AGAIN_SET:
-        case DSD_APP_CMD_INPUT_VOL_SET:
-        case DSD_APP_CMD_RTL_SET_FREQ:
-        case DSD_APP_CMD_RTL_SET_GAIN:
-        case DSD_APP_CMD_RTL_SET_PPM:
-        case DSD_APP_CMD_RTL_SET_BW:
-        case DSD_APP_CMD_RTL_SET_SQL_DB:
-        case DSD_APP_CMD_RTL_SET_VOL_MULT:
-        case DSD_APP_CMD_HANGTIME_SET:
-        case DSD_APP_CMD_SLOT_PREF_SET: return 1;
-        default: return 0;
+    for (size_t i = 0; i < sizeof k_ui_cmd_coalescible_setter_ids / sizeof k_ui_cmd_coalescible_setter_ids[0]; i++) {
+        if (k_ui_cmd_coalescible_setter_ids[i] == cmd_id) {
+            return 1;
+        }
     }
+    return 0;
 }
 
 static int
@@ -1006,6 +1014,69 @@ ui_cmd_handle_rtl_set_freq(dsd_opts* opts, dsd_state* state, const struct dsd_ap
     return result;
 }
 
+/* Defined further down with the manual-tuning helpers; tap-to-tune needs the
+ * same call-state teardown the manual return-to-CC path uses. */
+static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc);
+
+/*
+ * Live retune from a spectrum tap.
+ *
+ * Kept separate from ui_cmd_handle_rtl_set_freq() on purpose. That one is the
+ * settings-menu tune and documents a no-bookkeeping contract; here the tune is
+ * a navigation gesture, so it (a) evaluates the tuner-ownership gate at drain
+ * time on the authoritative live opts rather than trusting the frontend's
+ * affordance, and (b) drops the stale auto-modulation votes and per-slot call
+ * state that would otherwise slow or corrupt re-acquisition in decode mode
+ * "auto".
+ */
+static int
+ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    uint32_t v = 0;
+    int result = UI_CMD_APPLY_COMPLETED;
+    if (!state || !ui_cmd_parse_u32_payload(c, &v)) {
+        return result;
+    }
+    /* Either automatic controller owns the tuner. Trunking parks on a control
+     * channel; conventional scanner mode steps the channel map on its own once
+     * trunk_hangtime expires (no_carrier_step_scanner_mode_if_needed()), so a
+     * tap accepted under it would be silently undone seconds later — worse than
+     * a refusal, because the toast would have claimed it worked. */
+    if (opts->trunk_enable) {
+        ui_set_toast(state, 3, "Trunking active: tap-to-tune disabled");
+        return result;
+    }
+    if (opts->scanner_mode) {
+        ui_set_toast(state, 3, "Scanner active: tap-to-tune disabled");
+        return result;
+    }
+    /* The third owner, and the one a release cannot clear (see apply_tuner_release):
+     * dsd_trunk_scan_hook_tick() runs on every engine iteration and steps targets on
+     * its own, so a tap accepted under it is undone within a dwell -- and it is the
+     * owner engine_trunk_tuning_owner_active() actually gates dispatch on. */
+    if (opts->trunk_scan_enabled) {
+        ui_set_toast(state, 3, "Trunk scan active: tap-to-tune disabled");
+        return result;
+    }
+    int rc = svc_rtl_set_freq(opts, state, v);
+    result = ui_cmd_apply_status_from_tune_rc(rc);
+    if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
+        /* Only after the tune is accepted, matching how trunk_tuning.c and the
+         * manual return-to-CC path order this — never on the failure path. */
+        dsd_frame_sync_reset_mod_state();
+        reset_call_tracking(opts, state, 1);
+        if (rc == 0) {
+            ui_set_toast(state, 3, "Applied: tuned -> %u Hz", v);
+        } else {
+            ui_set_toast(state, 3, "Accepted: tuned -> %u Hz (pending)", v);
+        }
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: frequency control not available on active backend");
+    } else {
+        ui_set_toast(state, 4, "Failed: tune -> %u Hz", v);
+    }
+    return result;
+}
+
 static int
 ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
@@ -1046,6 +1117,7 @@ static int
 apply_cmd_io_and_import_rtl_b(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_RTL_SET_FREQ, ui_cmd_handle_rtl_set_freq},
+        {DSD_APP_CMD_MANUAL_TUNE, ui_cmd_handle_manual_tune},
         {DSD_APP_CMD_RTL_SET_GAIN, ui_cmd_handle_rtl_set_gain},
         {DSD_APP_CMD_RTL_SET_PPM, ui_cmd_handle_rtl_set_ppm},
     };
@@ -1558,6 +1630,28 @@ apply_cmd_dsp(const struct dsd_app_command* c) {
 static long
 current_cc_freq(const dsd_state* state) {
     return (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+}
+
+/** @brief What to call a decode preset in a message the operator reads. */
+static const char*
+decode_mode_label(dsdneoUserDecodeMode mode) {
+    static const struct {
+        dsdneoUserDecodeMode mode;
+        const char* label;
+    } k_labels[] = {
+        {DSDCFG_MODE_AUTO, "everything"}, {DSDCFG_MODE_P25P1, "P25 Phase 1"}, {DSDCFG_MODE_P25P2, "P25 Phase 2"},
+        {DSDCFG_MODE_TDMA, "P25"},        {DSDCFG_MODE_DMR, "DMR"},           {DSDCFG_MODE_DMR_MONO, "DMR"},
+        {DSDCFG_MODE_NXDN48, "NXDN48"},   {DSDCFG_MODE_NXDN96, "NXDN96"},     {DSDCFG_MODE_X2TDMA, "X2-TDMA"},
+        {DSDCFG_MODE_YSF, "YSF"},         {DSDCFG_MODE_DSTAR, "D-STAR"},      {DSDCFG_MODE_EDACS_PV, "EDACS/ProVoice"},
+        {DSDCFG_MODE_DPMR, "dPMR"},       {DSDCFG_MODE_M17, "M17"},           {DSDCFG_MODE_ANALOG, "analog"},
+    };
+
+    for (size_t i = 0; i < sizeof k_labels / sizeof k_labels[0]; i++) {
+        if (k_labels[i].mode == mode) {
+            return k_labels[i].label;
+        }
+    }
+    return "that mode";
 }
 
 static void
@@ -2190,6 +2284,7 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_SLOT_PREF_CYCLE,
     DSD_APP_CMD_TRUNK_TOGGLE,
     DSD_APP_CMD_SCANNER_TOGGLE,
+    DSD_APP_CMD_TUNER_RELEASE,
     DSD_APP_CMD_PAYLOAD_TOGGLE,
     DSD_APP_CMD_P25_GA_TOGGLE,
     DSD_APP_CMD_LPF_TOGGLE,
@@ -2268,12 +2363,27 @@ static const int k_ui_cmd_action_ids[] = {
 };
 
 static const int k_ui_cmd_i32_ids[] = {
-    DSD_APP_CMD_GAIN_DELTA,          DSD_APP_CMD_AGAIN_DELTA,      DSD_APP_CMD_SPEC_SIZE_DELTA,
-    DSD_APP_CMD_PPM_DELTA,           DSD_APP_CMD_GAIN_SET,         DSD_APP_CMD_AGAIN_SET,
-    DSD_APP_CMD_RTL_SET_DEV,         DSD_APP_CMD_RTL_SET_GAIN,     DSD_APP_CMD_RTL_SET_PPM,
-    DSD_APP_CMD_RTL_SET_BW,          DSD_APP_CMD_RTL_SET_VOL_MULT, DSD_APP_CMD_RTL_SET_BIAS_TEE,
-    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE, DSD_APP_CMD_RTL_SET_AUTO_PPM, DSD_APP_CMD_RIGCTL_SET_MOD_BW,
-    DSD_APP_CMD_SLOT_PREF_SET,       DSD_APP_CMD_SLOTS_ONOFF_SET,  DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_GAIN_DELTA,
+    DSD_APP_CMD_AGAIN_DELTA,
+    DSD_APP_CMD_SPEC_SIZE_DELTA,
+    DSD_APP_CMD_PPM_DELTA,
+    DSD_APP_CMD_GAIN_SET,
+    DSD_APP_CMD_AGAIN_SET,
+    DSD_APP_CMD_RTL_SET_DEV,
+    DSD_APP_CMD_RTL_SET_GAIN,
+    DSD_APP_CMD_RTL_SET_PPM,
+    DSD_APP_CMD_RTL_SET_BW,
+    DSD_APP_CMD_RTL_SET_VOL_MULT,
+    DSD_APP_CMD_RTL_SET_BIAS_TEE,
+    DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
+    DSD_APP_CMD_RTL_SET_AUTO_PPM,
+    DSD_APP_CMD_RIGCTL_SET_MOD_BW,
+    DSD_APP_CMD_SLOT_PREF_SET,
+    DSD_APP_CMD_SLOTS_ONOFF_SET,
+    DSD_APP_CMD_INPUT_VOL_SET,
+    DSD_APP_CMD_MOD_SET,
+    DSD_APP_CMD_DECODE_MODE_SET,
+    DSD_APP_CMD_TRUNK_SET,
 };
 
 static int
@@ -2317,6 +2427,7 @@ int
 dsd_app_command_set_u32(int cmd_id, uint32_t value) {
     switch (cmd_id) {
         case DSD_APP_CMD_RTL_SET_FREQ:
+        case DSD_APP_CMD_MANUAL_TUNE:
         case DSD_APP_CMD_TG_HOLD_SET:
         case DSD_APP_CMD_KEY_BASIC_SET:
         case DSD_APP_CMD_KEY_SCRAMBLER_SET: return dsd_app_command_submit(cmd_id, &value, sizeof value);
@@ -2435,6 +2546,10 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_CALL_ALERT_EVENTS_SET, sizeof(uint8_t)},
     {DSD_APP_CMD_LOCKOUT_SLOT, sizeof(uint8_t)},
     {DSD_APP_CMD_RTL_SET_FREQ, sizeof(uint32_t)},
+    {DSD_APP_CMD_MOD_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_DECODE_MODE_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_TRUNK_SET, sizeof(int32_t)},
+    {DSD_APP_CMD_MANUAL_TUNE, sizeof(uint32_t)},
     {DSD_APP_CMD_TG_HOLD_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_BASIC_SET, sizeof(uint32_t)},
     {DSD_APP_CMD_KEY_SCRAMBLER_SET, sizeof(uint32_t)},
@@ -2809,6 +2924,179 @@ apply_cmd_eye_spectrum(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
 
+/**
+ * @brief Hand the tuner back to the operator: trunking and scanner mode both off.
+ *
+ * Idempotent. A frontend only learns that *something* owns the tuner, not which,
+ * so TRUNK_TOGGLE/SCANNER_TOGGLE cannot express "off" from there without guessing.
+ *
+ * The call-state teardown is not optional and is not left to a following
+ * MANUAL_TUNE: a release is frequently the whole request -- look around from
+ * where we already are -- and then no tune ever runs it. Left set,
+ * opts->trunk_is_tuned keeps update_dmr_bs_sync_times_if_tuned() stamping sync
+ * times, which in turn suppresses the engine's stale-follow-state cleanup, and it
+ * is also the flag whose zero state lets the decoder learn a control channel.
+ *
+ * No dsd_frame_sync_reset_mod_state() here: nothing retuned, so the modulation
+ * votes still describe the signal actually being received.
+ *
+ * opts->trunk_scan_enabled is a third tuner owner (see
+ * engine_trunk_tuning_owner_active()) and is deliberately untouched: it owns live
+ * scan hooks that clearing a flag would not tear down, and it is only reachable
+ * from a frontend that passes --trunk-scan.
+ */
+static int
+apply_tuner_release(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    opts->trunk_enable = 0;
+    opts->scanner_mode = 0;
+    reset_call_tracking(opts, state, 1);
+    ui_set_toast(state, 3, "Automatic tuning stopped");
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/**
+ * @brief Answer a decode-mode request that needs no preset run, or decline to.
+ *
+ * Range-checked before the cast, not after. dsdneoUserDecodeMode is a packed enum
+ * -- one byte -- so a value outside it does not stay outside it: 260 casts to 4,
+ * which is DSDCFG_MODE_DMR, and the whole DMR preset would then run for a command
+ * nobody could have meant. The payload is a plain int32 on the wire and
+ * CommandBridge::setDecodeMode() passes it through unvalidated, so this is the only
+ * place the two widths are reconciled.
+ *
+ * Idempotent for the reason ui_handle_mod_set() is: a chip re-asserts its own state
+ * after a frame it did not cause, and DecodeChip taps whether or not it is already
+ * selected. Applying a preset ends both call epochs, drops the auto-modulation
+ * votes and releases the modulation locks -- so re-applying the mode already in
+ * effect would cut a live call and revert an operator's QPSK pick on a tap that
+ * asked for nothing to change. Compared through dsd_infer_decode_mode_preset(),
+ * which is the same reading the control binds to, so the skip and the selection
+ * cannot answer differently.
+ *
+ * AUTO is excluded because there the reading is not an identification: AUTO is that
+ * helper's catch-all for any frame set matching no single preset, so a session with
+ * one protocol switched off answers AUTO without being it, and "listen for
+ * everything" has to stay able to widen such a set back out.
+ *
+ * @param c        Command whose payload is already known to be wide enough.
+ * @param out_mode Receives the requested mode whenever one could be read.
+ * @return The verdict to answer with, its toast already posted, or
+ *         UI_CMD_APPLY_UNHANDLED when @p out_mode is a mode still to apply.
+ */
+static int
+decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c,
+                              dsdneoUserDecodeMode* out_mode) {
+    int32_t requested = 0;
+    DSD_MEMCPY(&requested, c->data, sizeof requested);
+    if (requested < 0 || requested > (int32_t)DSDCFG_MODE_DMR_MONO) {
+        ui_set_toast(state, 4, "Decode mode not available");
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    *out_mode = (dsdneoUserDecodeMode)requested;
+    if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
+        ui_set_toast(state, 3, "Decoding %s", decode_mode_label(*out_mode));
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    return UI_CMD_APPLY_UNHANDLED;
+}
+
+/**
+ * @brief Switch which protocols are decoded, mid-session.
+ *
+ * Goes through the same preset helper the CLI uses, so a mode chosen here means
+ * exactly what the same mode means at startup rather than a second opinion about
+ * which frame_* flags it implies.
+ *
+ * The CLI profile specifically, not the interactive one: only its AUTO re-enables
+ * the whole frame set. The other profiles leave AUTO as a label because they run
+ * against freshly defaulted options where everything is already on -- but this
+ * command runs against options a previous single-protocol choice has already
+ * narrowed, so "listen for everything" has to actually widen them again.
+ *
+ * Every preset also settles the modulation, which is why a panel offering both
+ * reads modulation back from the engine rather than remembering what it asked for.
+ */
+static int
+apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || c->n < (int)sizeof(int32_t)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsdneoUserDecodeMode mode = DSDCFG_MODE_AUTO;
+    const int early = decode_mode_set_early_verdict(opts, state, c, &mode);
+    if (early != UI_CMD_APPLY_UNHANDLED) {
+        return early;
+    }
+    /* The presets also carry an audio layout, but the output stream was opened
+       once at session start with the layout in force then (openAudioOutput()
+       reads pulse_digi_out_channels/pulse_digi_rate_out and the backend fixes
+       them for the life of the stream). Letting a preset change them here would
+       have dsd_play_synthesized_voice() dispatch mono writes into a stereo
+       stream for the rest of the session, so the session's own layout is kept.
+
+       dmr_stereo is deliberately not in this pair, though the presets set it
+       next to them. It selects two-slot decoding, not a stream shape: the DMR
+       playback paths take the channel count separately and mix both slots down
+       when it is 1 (playSynthesizedVoiceSS3/FS3), so a mono session that switches
+       to DMR still hears both slots. Putting it back with the channel count would
+       instead leave a DMR session on dmr_stereo == 0 with dmr_mono == 0, which no
+       preset produces and which dmr_handle_voice() answers by running the MS
+       bootstrap against BS voice and nothing at all against MS voice. */
+    const int audio_channels = opts->pulse_digi_out_channels;
+    const int audio_rate = opts->pulse_digi_rate_out;
+    /* Released before the preset runs, not after. The presets skip their whole
+       modulation block under mod_cli_lock (decode_mode_apply_dmr() and siblings),
+       so on a session started with `-mq`/`-mg` the new protocol would keep the old
+       modulation -- and svc_publish_symbol_profile() below reads state->rf_mod, so
+       it would then ask the front end for that modulation's demodulator and channel
+       filter at the new protocol's symbol rate, with the lock still on to stop the
+       SPS hunt correcting it. Choosing a protocol here is a fresh answer to what is
+       on this channel and outranks a `-m` flag from session start; this is the same
+       release ui_apply_modulation() performs for the modulation control.
+
+       Restored if the mode turns out to be unsupported, so a refused command
+       changes nothing -- which is the contract the preset helper itself keeps. */
+    const int mod_locks[3] = {opts->mod_cli_lock, opts->mod_p25p2_c4fm, opts->mod_p25p2_profile_lock};
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    opts->mod_cli_lock = 0;
+    if (dsd_apply_decode_mode_preset(mode, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) != 0) {
+        opts->mod_cli_lock = mod_locks[0];
+        opts->mod_p25p2_c4fm = mod_locks[1];
+        opts->mod_p25p2_profile_lock = mod_locks[2];
+        ui_set_toast(state, 4, "Decode mode not available");
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    opts->pulse_digi_out_channels = audio_channels;
+    opts->pulse_digi_rate_out = audio_rate;
+    /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
+       the demod output rate is whatever the capture rate decimates to, so the
+       timing has to be recomputed at the live rate or the decoder is put on the
+       wrong symbol clock for the protocol it was just told to look for.
+
+       Taken from the mode's steady-state profile rather than from the preset's
+       starting timing, because the same profile decides the SPS hunt index and
+       the channel filter published just below, and a mode running on one symbol
+       clock with a hunt profile and a filter built for another is exactly what
+       that costs. */
+    const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(mode);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    /* The SPS hunt resumes from wherever the previous mode left it, and its next
+       pass overwrites the timing just computed; the RTL front end likewise keeps
+       the old mode's demodulator family and channel filter until told otherwise. */
+    svc_publish_symbol_profile(opts, state, profile);
+    /* The decoder was hunting for a different protocol a moment ago: its
+       modulation votes describe frames of the old kind, and any call open on the
+       old protocol will never be closed by the new one. */
+    dsd_frame_sync_reset_mod_state();
+    reset_call_tracking(opts, state, 1);
+    ui_set_toast(state, 3, "Decoding %s", decode_mode_label(mode));
+    return UI_CMD_APPLY_COMPLETED;
+}
+
 static int
 apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     switch (c->id) {
@@ -2855,6 +3143,8 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
             }
             return 1;
         case DSD_APP_CMD_RETURN_CC: return apply_manual_return_to_cc(opts, state);
+        case DSD_APP_CMD_TUNER_RELEASE: return apply_tuner_release(opts, state);
+        case DSD_APP_CMD_DECODE_MODE_SET: return apply_decode_mode_set(opts, state, c);
         case DSD_APP_CMD_SIM_NOCAR:
             if (!state) {
                 return 1;

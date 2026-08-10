@@ -15,6 +15,7 @@ target_sources(
         ui_history.c
         telemetry_hooks_install.c
         menu_services.c
+        symbol_profile.c
         tcp_audio_connect.c
 )
 

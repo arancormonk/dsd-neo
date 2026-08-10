@@ -17,6 +17,7 @@
 
 #include "dsd-neo/app_control/commands.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int
@@ -27,6 +28,34 @@ ui_handle_trunk_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
         opts->trunk_enable = 0;
     } else {
         opts->trunk_enable = 1;
+    }
+    return 1;
+}
+
+static int
+ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)state;
+    int32_t want = 0;
+    if (c->n < (int)sizeof(int32_t)) {
+        /* A truncated payload is not a request to stop trunking. Falling through
+         * with want still 0 would hand the tuner back mid-call on a command nobody
+         * sent, and the session would quietly stop following the system.
+         *
+         * Handled-and-declined, not unhandled: 0 means "this table does not know
+         * this id", so the drain would keep walking every remaining group with a
+         * command they were never meant to see and finally report it as an unknown
+         * id rather than a bad payload. ui_handle_mod_set() answers the same
+         * condition the same way. */
+        return 1;
+    }
+    DSD_MEMCPY(&want, c->data, sizeof(int32_t));
+    const int on = (want != 0) ? 1 : 0;
+    opts->trunk_enable = on;
+    if (on) {
+        // Scanner mode is the other automatic owner of the tuner, and
+        // ui_handle_scanner_toggle clears trunking for the same reason: whichever
+        // one was asked for last is the one driving, not both at once.
+        opts->scanner_mode = 0;
     }
     return 1;
 }
@@ -120,6 +149,7 @@ ui_handle_enc_lockout_clear(dsd_opts* opts, dsd_state* state, const struct dsd_a
 
 const struct dsd_app_command_reg dsd_app_actions_trunk[] = {
     {DSD_APP_CMD_TRUNK_TOGGLE, ui_handle_trunk_toggle},
+    {DSD_APP_CMD_TRUNK_SET, ui_handle_trunk_set},
     {DSD_APP_CMD_SCANNER_TOGGLE, ui_handle_scanner_toggle},
     {DSD_APP_CMD_TRUNK_GROUP_TOGGLE, ui_handle_trunk_group_toggle},
     {DSD_APP_CMD_TG_HOLD_TOGGLE, ui_handle_tg_hold_toggle},

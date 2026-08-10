@@ -306,6 +306,18 @@ typedef struct {
     unsigned long long site;  // Site ID provenance
 } p25_iden_entry_t;
 
+// dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
+// initState() before anything reads it, and C code — which is most of its users —
+// has no constructors to write. A C++ TU that includes this header would otherwise
+// report every one of its ~600 members, one finding per field of a struct nobody
+// default-constructs. Scoped to this struct rather than to the file, which is what
+// a --suppress on the command line could only do: the seventeen other types
+// declared here, and every real C++ class in the tree, still get checked.
+//
+// Inert on cppcheck 2.21 — the check does not fire on a struct with no member
+// functions at all — so this is insurance against a version that does, not a live
+// carve-out. Unmatched suppressions are already suppressed tree-wide.
+// cppcheck-suppress-begin uninitMemberVarNoCtor
 struct dsd_state {
     int* dibit_buf;
     int* dibit_buf_p;
@@ -1268,6 +1280,8 @@ struct dsd_state {
     void* state_ext[DSD_STATE_EXT_MAX];
     dsd_state_ext_cleanup_fn state_ext_cleanup[DSD_STATE_EXT_MAX];
 };
+
+// cppcheck-suppress-end uninitMemberVarNoCtor
 
 // NOLINTEND(clang-analyzer-optin.performance.Padding)
 

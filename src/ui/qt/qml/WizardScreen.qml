@@ -82,6 +82,34 @@ Item {
         nameField.text = ""
     }
 
+    /**
+     * Open on something found while exploring, with the source and frequency
+     * already answered.
+     *
+     * Opens at step 2 rather than step 3: the source is settled, but what to
+     * decode and whether to follow calls are real questions about the system just
+     * found, and answering them for the user would produce a card that does not
+     * work. @a sys supplies the source; it is the explore session's own map.
+     */
+    function openForFound(sys, freqMhz) {
+        editRow = -1
+        step = 1
+        sourceType = (sys && sys.sourceType === "rtltcp") ? "rtltcp" : "usb"
+        hostField.text = sys && sys.host ? sys.host : defaultHostFor(sourceType)
+        portField.text = sys && sys.port > 0 ? String(sys.port) : defaultPortFor(sourceType)
+        fileField.text = ""
+        freqField.text = freqMhz
+        decodeFlag = ""
+        trunking = true
+        advancedOpen = false
+        gainField.text = ""
+        ppmField.text = ""
+        bwField.text = ""
+        biasTee = -1
+        extraField.text = ""
+        nameField.text = ""
+    }
+
     function openForEdit(row) {
         var sys = savedSystems.get(row)
         editRow = row
@@ -421,42 +449,11 @@ Item {
                             color: Theme.textSecondary
                         }
 
-                        Row {
-                            spacing: 8
+                        FrequencyField {
+                            id: freqField
 
-                            TextInput {
-                                id: freqField
-
-                                width: Math.max(implicitWidth, 60)
-                                text: "851.375"
-                                font.family: Theme.mono
-                                font.pixelSize: 32
-                                font.weight: Font.Medium
-                                color: Theme.textPrimary
-                                inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                // The hint only picks the soft keyboard; a hardware
-                                // keyboard types anything. The validator is what keeps
-                                // "851.375M" out of the saved system.
-                                validator: RegularExpressionValidator {
-                                    regularExpression: /^\d{1,5}(\.\d{0,6})?$/
-                                }
-                                selectionColor: Qt.alpha(Theme.cyan, 0.35)
-                                selectedTextColor: Theme.textPrimary
-                            }
-
-                            Text {
-                                text: "MHz"
-                                anchors.baseline: freqField.baseline
-                                font.family: Theme.mono
-                                font.pixelSize: 15
-                                color: Theme.textSubdued
-                            }
-                        }
-
-                        Rectangle {
                             width: parent.width
-                            height: 2
-                            color: Theme.cyan
+                            text: "851.375"
                         }
 
                         Text {

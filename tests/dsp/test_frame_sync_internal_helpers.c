@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -1098,6 +1099,64 @@ test_rtl_symbol_profile_selection(void) {
     assert(dsd_frame_sync_test_rtl_profile_for_sps_index(&opts, &state, 1) == DSD_RTL_STREAM_CHANNEL_PROFILE_6K25);
 }
 
+/*
+ * The decode-mode layer and the SPS hunt each name a symbol rate and a level
+ * count, and the two have to be the same numbers: the mode picks the profile the
+ * hunt then searches from, so a mode claiming 2400/4 while its chosen index means
+ * 4800/4 puts the decoder on one symbol clock and the hunt on another.
+ *
+ * The index also has to be one that can match the mode at all —
+ * frame_sync_sps_profile_has_candidate() offers each profile only to the modes it
+ * carries, so a mode pointed at a profile that never accepts it hunts forever.
+ */
+static void
+test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
+    static const dsdneoUserDecodeMode modes[] = {
+        DSDCFG_MODE_AUTO, DSDCFG_MODE_DSTAR,    DSDCFG_MODE_X2TDMA,   DSDCFG_MODE_P25P1,  DSDCFG_MODE_P25P2,
+        DSDCFG_MODE_DMR,  DSDCFG_MODE_DMR_MONO, DSDCFG_MODE_NXDN48,   DSDCFG_MODE_NXDN96, DSDCFG_MODE_DPMR,
+        DSDCFG_MODE_YSF,  DSDCFG_MODE_M17,      DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_TDMA,   DSDCFG_MODE_ANALOG,
+    };
+
+    for (unsigned i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+        const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(modes[i]);
+        const int index = (int)profile.sps_profile_index;
+        assert(index >= 0 && index < dsd_frame_sync_test_sps_hunt_profile_count());
+        assert(profile.symbol_rate_hz == dsd_frame_sync_test_sps_hunt_profile_rate(index));
+        assert(profile.levels == dsd_frame_sync_test_sps_hunt_profile_levels(index));
+
+        /* Checked against what the preset actually writes, because that is what
+         * the hunt and the UI both read back. */
+        static dsd_opts opts;
+        static dsd_state state;
+        reset(&opts, &state);
+        assert(dsd_apply_decode_mode_preset(modes[i], DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state) == 0);
+
+        /* The half the rate/levels comparison cannot see: an index whose row
+         * happens to carry the right numbers is still useless if the hunt never
+         * offers it to this mode's frame set. Analog is the one mode with no
+         * frame set at all and so no candidate anywhere. */
+        if (modes[i] != DSDCFG_MODE_ANALOG) {
+            assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, index) == 1);
+        }
+
+        /* The modulation half of the same agreement. A two-level profile runs
+         * GFSK and nothing else, so a preset naming C4FM or QPSK on one is
+         * already a pass behind the demodulator: frame_sync_apply_sps_hunt_profile()
+         * normalises rf_mod to GFSK the moment the hunt lands there and never
+         * touches opts->mod_*, which is what the UI's modulation control binds
+         * to -- and nothing afterwards reconciles the pair. Both readings are
+         * asserted because they are separately reachable and it is exactly their
+         * disagreement that is the defect. */
+        assert(state.rf_mod == dsd_frame_sync_profile_modulation(profile.levels, state.rf_mod));
+        assert(dsd_opts_modulation(&opts) == state.rf_mod);
+    }
+
+    /* The two NXDN variants are the pair this is most likely to be got wrong on:
+     * they share a preset symbol timing but not a symbol rate. */
+    assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN48).symbol_rate_hz == 2400);
+    assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN96).symbol_rate_hz == 4800);
+}
+
 static void
 test_rtl_p25p2_timing_reconciliation_preserves_cqpsk(void) {
     static dsd_opts opts;
@@ -1630,6 +1689,7 @@ main(void) {
     test_hamming_helpers_find_best_patterns();
 #ifdef USE_RADIO
     test_rtl_symbol_profile_selection();
+    test_decode_mode_profiles_agree_with_the_sps_hunt_table();
     test_rtl_p25p2_timing_reconciliation_preserves_cqpsk();
     test_unlocked_rtl_p25p2_sync_switches_demod_family();
     test_rtl_sps_profiles_apply_and_lock_on_sync();

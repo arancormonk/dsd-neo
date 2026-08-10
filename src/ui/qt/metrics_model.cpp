@@ -13,7 +13,10 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 
 #include "call_line.h"
@@ -23,6 +26,15 @@
 namespace dsd_qt {
 
 namespace {
+
+/**
+ * @brief How long a lock keeps reading as locked after the last synced frame.
+ *
+ * Long enough to ride out the gaps between frames a 250 ms poll lands in, short
+ * enough that a decoder which has genuinely stopped finding anything says so
+ * while the reader is still looking at it.
+ */
+constexpr double kSyncHoldSeconds = 3.0;
 
 /**
  * @brief Whether the call reads as encrypted over the air, including DECRYPTABLE.
@@ -55,6 +67,59 @@ slot_enc_text(const dsd_call_snapshot& call) {
         .toUpper();
 }
 
+/**
+ * @brief Whether the epoch carries nothing that could name a transmission.
+ *
+ * The decoder opens one on a frame that synced far enough to be a frame and no
+ * further, which happens routinely on a control channel and on noise while
+ * hunting. Rendered, it becomes a call from talkgroup 0 by nobody — and if a
+ * stale crypto header is still on the slot, an encrypted one. On a session that
+ * has not locked onto anything, that is the screen inventing traffic.
+ *
+ * The field list mirrors dsd_call_state_snapshot_has_identity() (call_state.c),
+ * route_text included: D-STAR, NXDN and YSF enrich the repeater pair, and a call
+ * whose route decoded before its callsigns is a named transmission the canonical
+ * layer already counts as one. That helper lives behind call_state_internal.h and
+ * a frontend cannot call it, which is why this mirror exists — but a mirror that
+ * drops a field reports idle for calls the rest of the app is showing.
+ *
+ * X2-TDMA and standalone ProVoice are the deliberate exception, matching
+ * dsd_call_state_protocol_voice_is_anonymous(): those modes never parse voice into
+ * a talkgroup or a source at all, so an identity-less voice epoch is the whole
+ * story the protocol has — not a frame that synced and went nowhere. Suppressed,
+ * their transmissions would play audio and log history rows while the panel said
+ * nothing was happening.
+ */
+bool
+call_has_no_identity(const dsd_call_snapshot& call) {
+    if (DSD_SYNC_IS_X2TDMA(call.protocol) || DSD_SYNC_IS_PROVOICE(call.protocol)) {
+        return false;
+    }
+    return call.ota_target_id == 0U && call.policy_target_id == 0U && call.target_text[0] == '\0'
+           && call.ota_source_id == 0U && call.source_text[0] == '\0' && call.route_text[0][0] == '\0'
+           && call.route_text[1][0] == '\0';
+}
+
+/**
+ * @brief The CSV-imported group name staged on the slot's active history row, or empty.
+ *
+ * The staged row's target_id is stamped OTA-then-policy by the event layer, so it
+ * must be compared against the same preference (the caller's resolved tg_id), not
+ * the OTA id alone — a policy-resolved talkgroup would never match otherwise.
+ * Nonzero required: a text-only target's 0 would "match" a stale staged row.
+ */
+QString
+staged_group_name(const dsd_state* snapshot, quint8 slot, qulonglong tg_id) {
+    if (snapshot->event_history_s == nullptr || tg_id == 0) {
+        return QString();
+    }
+    const Event_History* staged = &snapshot->event_history_s[slot].Event_History_Items[0];
+    if (staged->t_name[0] == '\0' || staged->target_id != static_cast<uint32_t>(tg_id)) {
+        return QString();
+    }
+    return QString::fromUtf8(staged->t_name);
+}
+
 } // namespace
 
 /**
@@ -74,6 +139,12 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
         return out;
     }
 
+    /* An epoch with nothing in it is not a transmission anyone can be shown. */
+    if (call_has_no_identity(call)) {
+        out.state = static_cast<int>(kCallLineIdle);
+        return out;
+    }
+
     const QString target = (call.target_text[0] != '\0') ? QString::fromUtf8(call.target_text)
                                                          : QString::number(static_cast<qulonglong>(call.ota_target_id));
     out.tg_text = target;
@@ -84,17 +155,8 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     out.src_text = (call.source_text[0] != '\0') ? QString::fromUtf8(call.source_text)
                                                  : QString::number(static_cast<qulonglong>(call.ota_source_id));
 
-    out.name = target;
-    if (snapshot->event_history_s != nullptr) {
-        const Event_History* staged = &snapshot->event_history_s[slot].Event_History_Items[0];
-        // The staged row's target_id is stamped OTA-then-policy by the event layer,
-        // so it must be compared against the same preference (out.tg_id), not the
-        // OTA id alone — a policy-resolved talkgroup would never match otherwise.
-        // Nonzero required: a text-only target's 0 would "match" a stale staged row.
-        if (staged->t_name[0] != '\0' && out.tg_id != 0 && staged->target_id == static_cast<uint32_t>(out.tg_id)) {
-            out.name = QString::fromUtf8(staged->t_name);
-        }
-    }
+    const QString staged_name = staged_group_name(snapshot, slot, out.tg_id);
+    out.name = staged_name.isEmpty() ? target : staged_name;
 
     out.enc = call_reads_encrypted(call);
     if (out.enc) {
@@ -148,7 +210,67 @@ MetricsModel::publish(const View& next) {
 void
 MetricsModel::clear() {
     m_messageTimer.stop();
+    /* The latch is per-session state, not part of the published frame: a stopped
+     * session that starts again on the same frequency must not inherit the old
+     * session's answer to "is there anything here". */
+    m_sync_type_here = DSD_SYNC_NONE;
+    m_sync_seen_m = 0.0;
     publish(View());
+}
+
+/**
+ * @brief Fill in what the decoder is doing and what it is set to.
+ *
+ * The settings are read from the options snapshot rather than remembered from the
+ * last command, because a command can be refused and, on Android, the service
+ * that owns them outlives this process.
+ */
+void
+MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) {
+    next.decode_mode = static_cast<int>(dsd_infer_decode_mode_preset(opts_snapshot));
+
+    /* Held for a moment after the last live sync, rather than latched until
+     * something explicitly clears it.
+     *
+     * A hold is needed at all because sync comes and goes between the 250 ms
+     * polls, so an instantaneous reading flickers. But it has to expire on its
+     * own: the first version cleared the latch on a retune or a decode-mode
+     * change, and any such one-shot reset is a race against whatever the poll
+     * happens to read on that same frame -- observed as the strip still naming
+     * P25 minutes after being told to decode DMR, with no P25 sync in the log at
+     * all. Decay answers the question the reader is actually asking ("is it
+     * locked now") and cannot get stuck on an answer to a question they stopped
+     * asking. lastsynctype is deliberately not consulted: it holds the previous
+     * lock until the engine's no-carrier path gets round to clearing it. */
+    if (snapshot->synctype != DSD_SYNC_NONE) {
+        m_sync_type_here = snapshot->synctype;
+        m_sync_seen_m = now_m;
+    } else if (m_sync_type_here != DSD_SYNC_NONE && (now_m - m_sync_seen_m) > kSyncHoldSeconds) {
+        m_sync_type_here = DSD_SYNC_NONE;
+    }
+    next.synced_here = m_sync_type_here != DSD_SYNC_NONE;
+    if (next.synced_here) {
+        next.sync_label = QString::fromUtf8(dsd_synctype_to_string(m_sync_type_here));
+    }
+    /* Rides the same decayed reading as synced_here rather than the raw snapshot:
+     * a control offered on one frame of sync and withdrawn on the next would
+     * flicker under the finger. */
+    next.trunkable_sync = next.synced_here && DSD_SYNC_IS_TRUNKABLE(m_sync_type_here);
+    /* Three states, not two: GFSK is what the DMR and EDACS/ProVoice presets
+     * select, and folding it into C4FM made a control bound to this reading show
+     * C4FM as already-selected on a session that was never on it. Through the
+     * shared helper so this and ui_handle_mod_set()'s skip test cannot drift. */
+    next.modulation = dsd_opts_modulation(opts_snapshot);
+    /* Gated on radio_input like center_freq_hz above, and for the same reason:
+     * on a WAV, UDP, TCP or symbol-file session these are options the front end
+     * never applied, and publishing them would put three plausible tuner
+     * readings on screen for a session that has no tuner. */
+    next.tuner_gain_db = next.radio_input ? opts_snapshot->rtl_gain_value : 0;
+    /* rtl_squelch_level is a mean-power threshold, not decibels — the same
+     * conversion the engine's own status line uses. Publishing the raw value
+     * would put "0" on screen for a squelch of -120 dB. */
+    next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
+    next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
 }
 
 void
@@ -179,6 +301,24 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;
     next.stream_active = metrics.stream_active != 0;
+    /* Where the front end is pointed, and whether something other than the user
+     * is pointing it. Both come from the same options snapshot as radio_input,
+     * so a frame never mixes a center from one generation with a gate from
+     * another. Scanner mode counts alongside trunking: it owns the tuner too,
+     * stepping the channel map once the hangtime expires. */
+    next.center_freq_hz = next.radio_input ? static_cast<double>(opts_snapshot->rtlsdr_center_freq) : 0.0;
+    next.channel_bandwidth_hz = next.radio_input ? metrics.channel_bandwidth_hz : 0;
+    next.trunking_enabled = opts_snapshot->trunk_enable != 0;
+    next.scanner_mode = opts_snapshot->scanner_mode != 0;
+    /* Trunk scan counts as a third owner even though it has no reading of its own:
+     * it steps targets from the engine loop and a release cannot clear it, so an
+     * affordance gated only on the other two offers a tune the scan then undoes. */
+    next.tuner_controlled = next.trunking_enabled || next.scanner_mode || (opts_snapshot->trunk_scan_enabled != 0);
+
+    /* Sync is held for a moment after the last synced frame rather than sampled;
+     * the hold decays on its own rather than being cleared on a retune. See
+     * fillDecoderView(), which documents why a one-shot reset was a race. */
+    fillDecoderView(next, opts_snapshot, snapshot, dsd_time_now_monotonic_s());
 
     /* Selected by modulation, not by cqpsk_enable: the C4FM estimator reads nothing on
      * a GFSK stream. Nothing reads at all on an input with no demodulator behind it

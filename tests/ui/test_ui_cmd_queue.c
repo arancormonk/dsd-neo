@@ -28,6 +28,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/config.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;
@@ -357,6 +358,45 @@ test_command_api(void) {
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("enc lockout purge applied", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("enc lockout purge drops every entry", !dsd_enc_lockout_lookup(&state, 8642U, 1, NULL));
+
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Spectrum tap-to-tune shares the queue with the settings tune but must never
+ * share a coalescing slot with it: a tap storm has to collapse onto its own
+ * newest target while a pending settings tune still lands.
+ *
+ * Trunking is left on here so draining cannot reach the tuner; the gate itself
+ * is asserted against the wrapped tune stub further down.
+ */
+static int
+test_manual_tune_queue_semantics(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 1;
+
+    rc |= expect_int("manual tune rejects i32", dsd_app_command_set_i32(DSD_APP_CMD_MANUAL_TUNE, 1), -1);
+    rc |= expect_int("manual tune u32 posts", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 3000000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tap storm coalesces onto the newest target",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 851000000U), DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_int("a settings tune never absorbs a tap",
+                     dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 852000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("a tap never absorbs a settings tune",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853000000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("distinct tune entries drain", dsd_app_drain_cmds(&opts, &state), 3);
+
+    /* An undersized payload is consumed but must reach no handler at all — with
+     * trunking on, even the refusal toast would prove it got that far. */
+    state.ui_msg[0] = '\0';
+    uint8_t short_payload = 0xFFU;
+    dsd_app_command_submit(DSD_APP_CMD_MANUAL_TUNE, &short_payload, sizeof(short_payload));
+    rc |= expect_int("short manual tune payload drains", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("short manual tune payload is ignored", state.ui_msg, "");
 
     freeState(&state);
     return rc;
@@ -1049,20 +1089,563 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     return rc;
 }
+
+/*
+ * Tap-to-tune is gated on the live options at drain time, not on the frontend
+ * hiding the affordance, and an accepted tap tears down call state so the
+ * decoder re-acquires on the new frequency instead of aging out.
+ */
+static int
+test_manual_tune_trunking_gate_and_reacquisition(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune under trunking queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune under trunking drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under trunking never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_contains("manual tune under trunking explains itself", state.ui_msg, "Trunking active");
+    rc |= expect_int("manual tune under trunking leaves the trunker tuned", opts.trunk_is_tuned, 1);
+    rc |= expect_true("manual tune under trunking leaves the VC", state.p25_vc_freq[0] == 852000000L);
+    freeState(&state);
+
+    /* Conventional scanner mode owns the tuner too: it steps the channel map on
+     * its own once the hangtime expires, so a tap accepted here would be undone
+     * a few seconds later, after a toast claiming it had worked. */
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune under the scanner queued",
+                     dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune under the scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune under the scanner never reaches the tuner", g_io_control_tune_calls, 0);
+    rc |= expect_contains("manual tune under the scanner explains itself", state.ui_msg, "Scanner active");
+    opts.scanner_mode = 0;
+    freeState(&state);
+
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1201);
+    opts.trunk_enable = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("manual tune reaches the tuner once", g_io_control_tune_calls, 1);
+    rc |= expect_true("manual tune targets the tapped frequency", g_io_control_tune_freq == 853125000L);
+    rc |= expect_contains("manual tune reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    rc |= expect_call_phase("manual tune ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_call_phase("manual tune ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_int("manual tune clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_true("manual tune clears the VC", state.p25_vc_freq[0] == 0L);
+    freeState(&state);
+
+    /* A tune the backend only accepted (no hardware confirmation yet) still has
+     * to reset for re-acquisition — the same rule ui_cmd_apply_status_from_tune_rc
+     * encodes for RTL_SET_FREQ. */
+    init_test_context(&opts, &state);
+    seed_active_canonical_calls(&opts, &state, 852000000L, 1301);
+    opts.trunk_enable = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_TIMEOUT);
+    rc |= expect_int("pending manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 854000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("pending manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("pending manual tune reports pending", state.ui_msg, "(pending)");
+    rc |= expect_call_phase("pending manual tune still ends slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    freeState(&state);
+
+    /* A refused tune must leave call state alone. */
+    init_test_context(&opts, &state);
+    seed_active_canonical_calls(&opts, &state, 852000000L, 1401);
+    opts.trunk_enable = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_FAILED);
+    rc |= expect_int("failed manual tune queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 855000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("failed manual tune drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("failed manual tune reports failure", state.ui_msg, "Failed: tune -> 855000000 Hz");
+    rc |= expect_call_phase("failed manual tune keeps slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    freeState(&state);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
+
+/*
+ * Releasing the tuner is how a frontend says "stop moving this on your own"
+ * without knowing which of the two owners is active — so it has to be an
+ * unconditional clear of both, safe to repeat, and it has to leave behind a
+ * decoder that can be tuned by hand.
+ */
+static int
+test_tuner_release(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Trunking: the flags go down and the follow state goes with them. Leaving
+     * trunk_is_tuned or the VC set would keep the DMR sync-time stamping alive
+     * and block the decoder from ever learning a new control channel. */
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1201);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |=
+        expect_int("release queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release clears trunking", opts.trunk_enable, 0);
+    rc |= expect_int("release clears the scanner", opts.scanner_mode, 0);
+    rc |= expect_int("release clears trunk tuned", opts.trunk_is_tuned, 0);
+    rc |= expect_true("release clears the VC", state.p25_vc_freq[0] == 0L && state.trunk_vc_freq[0] == 0L);
+    rc |= expect_call_phase("release ends canonical slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_call_phase("release ends canonical slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_contains("release explains itself", state.ui_msg, "Automatic tuning stopped");
+    rc |= expect_int("release never touches the tuner itself", g_io_control_tune_calls, 0);
+
+    /* And it is the whole point that a tap now works where it was refused. */
+    rc |= expect_int("tune after release queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tune after release drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tune after release reaches the tuner", g_io_control_tune_calls, 1);
+    rc |= expect_contains("tune after release reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+    freeState(&state);
+
+    /* Conventional scanner mode is the other owner, and a frontend cannot tell
+     * the two apart — one release has to cover both, including both at once. */
+    init_test_context(&opts, &state);
+    seed_active_p25_voice(&opts, &state, 851000000L, 852000000L, 1201);
+    opts.scanner_mode = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("release under both queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("release under both drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("release under both clears trunking", opts.trunk_enable, 0);
+    rc |= expect_int("release under both clears the scanner", opts.scanner_mode, 0);
+
+    /* Repeating it is a no-op, not a toggle back on: the frontend re-sends this
+     * whenever it re-enters explore mode and cannot know the current state. */
+    rc |= expect_int("second release queued", dsd_app_command_action(DSD_APP_CMD_TUNER_RELEASE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("second release drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("second release leaves trunking off", opts.trunk_enable, 0);
+    rc |= expect_int("second release leaves the scanner off", opts.scanner_mode, 0);
+    freeState(&state);
+
+    /* It carries no payload, so the setter APIs must not accept it — that is
+     * what keeps the action-id list and the payload rules from drifting. */
+    rc |= expect_int("release rejects a u32 payload", dsd_app_command_set_u32(DSD_APP_CMD_TUNER_RELEASE, 1U),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("release rejects an i32 payload", dsd_app_command_set_i32(DSD_APP_CMD_TUNER_RELEASE, 1),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    return rc;
+}
 #endif
+
+/*
+ * Modulation and decode mode as setters rather than toggles. A panel showing
+ * both choices has to be able to ask for the one it is not on, and re-asserting
+ * the state it is already on must cost nothing — a segmented control re-sends
+ * itself whenever the engine publishes a frame it did not cause.
+ */
+static int
+test_modulation_and_decode_mode_setters(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    state.rf_mod = 0;
+
+    rc |= expect_int("qpsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("qpsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("qpsk selected", opts.mod_qpsk, 1);
+    rc |= expect_int("qpsk clears c4fm", opts.mod_c4fm, 0);
+    rc |= expect_int("qpsk moves rf_mod", state.rf_mod, 1);
+
+    /* Asking again for what it is already on leaves the timing the decoder has
+     * settled on alone. Observable through samplesPerSymbol, which the apply
+     * path rewrites. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("repeat qpsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat qpsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat qpsk changes nothing", state.samplesPerSymbol, 12345);
+
+    rc |= expect_int("c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("c4fm selected", opts.mod_c4fm, 1);
+    rc |= expect_int("c4fm clears qpsk", opts.mod_qpsk, 0);
+    rc |= expect_int("c4fm moves rf_mod", state.rf_mod, 0);
+    rc |= expect_true("c4fm rebuilds timing", state.samplesPerSymbol != 12345);
+    freeState(&state);
+
+    /* GFSK is the third rf_mod value, and the one the DMR and EDACS/ProVoice
+     * presets leave behind. Asking for C4FM from there is a real change, so the
+     * idempotency guard must not swallow it. */
+    init_test_context(&opts, &state);
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 1;
+    state.rf_mod = 2;
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("c4fm from gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("c4fm from gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("c4fm from gfsk selected", opts.mod_c4fm, 1);
+    rc |= expect_int("c4fm from gfsk clears gfsk", opts.mod_gfsk, 0);
+    rc |= expect_int("c4fm from gfsk moves rf_mod", state.rf_mod, 0);
+    rc |= expect_true("c4fm from gfsk rebuilds timing", state.samplesPerSymbol != 12345);
+
+    /* And the other segment from the same starting point. */
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 1;
+    state.rf_mod = 2;
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("qpsk from gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("qpsk from gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("qpsk from gfsk selected", opts.mod_qpsk, 1);
+    rc |= expect_int("qpsk from gfsk clears gfsk", opts.mod_gfsk, 0);
+    rc |= expect_int("qpsk from gfsk moves rf_mod", state.rf_mod, 1);
+
+    /* And back to GFSK, which is why it is a choice and not just a reading: the
+     * preset that selected it is not re-run by the modulation control, so without
+     * this the first tap on any other segment is a one-way door. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 2), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("gfsk selected", opts.mod_gfsk, 1);
+    rc |= expect_int("gfsk clears c4fm", opts.mod_c4fm, 0);
+    rc |= expect_int("gfsk clears qpsk", opts.mod_qpsk, 0);
+    rc |= expect_int("gfsk moves rf_mod", state.rf_mod, 2);
+    rc |= expect_true("gfsk rebuilds timing", state.samplesPerSymbol != 12345);
+
+    /* Idempotent on its own value too, same as the other two. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("repeat gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 2),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat gfsk changes nothing", state.samplesPerSymbol, 12345);
+
+    /* A modulation that does not exist is refused rather than clamped: clamping
+     * would land the demodulator on C4FM, which nobody asked for. */
+    rc |= expect_int("out of range queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 3),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("out of range drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("out of range leaves modulation alone", state.rf_mod, 2);
+    rc |= expect_int("out of range leaves timing alone", state.samplesPerSymbol, 12345);
+    rc |=
+        expect_int("negative queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, -1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("negative drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("negative leaves modulation alone", state.rf_mod, 2);
+    freeState(&state);
+
+    /* Timing comes from the decode set, not from a constant. ProVoice is the one
+     * mode this control reaches that is not 4800 symbols/s, and applying a
+     * modulation at 4800 on a 9600-baud signal is a decoder that stops decoding.
+     *
+     * Started from C4FM so the request below is a real change: ProVoice runs on a
+     * two-level profile, where every request lands on GFSK, so one made from GFSK
+     * is already satisfied. */
+    init_test_context(&opts, &state);
+    opts.frame_provoice = 1;
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 0;
+    opts.frame_ysf = 0;
+    opts.frame_m17 = 0;
+    opts.frame_dstar = 0;
+    opts.frame_x2tdma = 0;
+    opts.frame_dpmr = 0;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+    rc |= expect_int("provoice gfsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 2),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("provoice gfsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    /* 48 kHz / 9600 = 5, the value the EDACS/ProVoice preset itself installs. */
+    rc |= expect_int("provoice keeps its 9600 timing", state.samplesPerSymbol, 5);
+    rc |= expect_int("provoice hunts on the 9600 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_9600_2);
+    freeState(&state);
+
+    /* Two-level decode sets have one modulation. Asking for C4FM on ProVoice used
+     * to be honoured in opts->mod_* and then undone in state->rf_mod alone, by
+     * frame_sync_apply_sps_hunt_profile() normalising the 9600/2 profile back to
+     * GFSK — leaving the control reading C4FM off flags the demodulator had
+     * already contradicted, with no tap able to resynchronise them because the two
+     * disagreeing is exactly what the idempotency guard tests. */
+    init_test_context(&opts, &state);
+    opts.frame_provoice = 1;
+    opts.frame_p25p1 = 0;
+    opts.frame_p25p2 = 0;
+    opts.frame_dmr = 0;
+    opts.frame_nxdn48 = 0;
+    opts.frame_nxdn96 = 0;
+    opts.frame_ysf = 0;
+    opts.frame_m17 = 0;
+    opts.frame_dstar = 0;
+    opts.frame_x2tdma = 0;
+    opts.frame_dpmr = 0;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+    rc |= expect_int("provoice c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("provoice c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("provoice c4fm lands on gfsk", state.rf_mod, 2);
+    rc |= expect_int("provoice c4fm sets the gfsk flag", opts.mod_gfsk, 1);
+    rc |= expect_int("provoice c4fm clears the c4fm flag", opts.mod_c4fm, 0);
+    /* And having landed there, it stays: the two readings now agree, so the guard
+     * fires and the timing is not rebuilt on every repeat of the same tap. */
+    state.samplesPerSymbol = 12345;
+    rc |= expect_int("provoice repeat c4fm queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("provoice repeat c4fm drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("provoice repeat c4fm changes nothing", state.samplesPerSymbol, 12345);
+    freeState(&state);
+
+    /* AUTO enables ProVoice next to the 4800 modes, so its flag alone must not
+     * drag everything else to 9600. */
+    init_test_context(&opts, &state);
+    opts.frame_provoice = 1;
+    opts.frame_p25p1 = 1;
+    opts.mod_c4fm = 1;
+    opts.mod_qpsk = 0;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 0;
+    rc |=
+        expect_int("auto qpsk queued", dsd_app_command_set_i32(DSD_APP_CMD_MOD_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("auto qpsk drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("auto stays on 4800 timing", state.samplesPerSymbol, 10);
+    rc |= expect_int("auto hunts on the 4800 profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    freeState(&state);
+
+    /* Decode mode goes through the same preset helper the CLI uses, so a mode
+     * chosen here means what it means at startup. DMR must leave P25 off. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 0;
+    /* Mid-session the hunt is wherever the previous mode left it — here the P25p2
+     * 6000 profile, part-way through its dwell. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.sps_hunt_counter = 11;
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1501);
+    rc |= expect_int("dmr mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("dmr enabled", opts.frame_dmr, 1);
+    rc |= expect_int("p25p1 disabled", opts.frame_p25p1, 0);
+    rc |= expect_int("p25p2 disabled", opts.frame_p25p2, 0);
+    rc |= expect_contains("decode mode explains itself", state.ui_msg, "DMR");
+    /* Left on the old mode's profile the hunt overwrites the timing installed
+     * here on its very next pass, and the new mode never gets a chance. */
+    rc |= expect_int("dmr mode selects the 4800 hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    rc |= expect_int("dmr mode restarts the hunt dwell", state.sps_hunt_counter, 0);
+    rc |= expect_int("dmr mode installs 4800 timing", state.samplesPerSymbol, 10);
+    /* A call open on the protocol we just stopped decoding would never be closed
+     * by the one we started, so it has to end here. */
+    rc |= expect_call_phase("decode change ends slot 1", &state, 0U, DSD_CALL_PHASE_ENDED);
+    rc |= expect_call_phase("decode change ends slot 2", &state, 1U, DSD_CALL_PHASE_ENDED);
+    freeState(&state);
+
+    /* A mode on a different symbol rate has to carry the hunt with it: NXDN48 is
+     * 2400 sym/s, and a decoder left on the 4800 profile is looking for it at
+     * twice the symbol clock through a 12.5 kHz filter. */
+    init_test_context(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.frame_p25p1 = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = 5;
+    rc |= expect_int("nxdn48 mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_NXDN48),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("nxdn48 mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("nxdn48 enabled", opts.frame_nxdn48, 1);
+    rc |= expect_int("nxdn48 selects the 2400 hunt profile", state.sps_hunt_idx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    rc |= expect_int("nxdn48 restarts the hunt dwell", state.sps_hunt_counter, 0);
+    rc |= expect_int("nxdn48 installs 2400 timing", state.samplesPerSymbol, 20);
+    freeState(&state);
+
+    /* The session's stream shape survives a mode change, because the backend fixed
+     * it when the stream was opened. dmr_stereo is not part of that shape and must
+     * not be dragged along with it: it selects two-slot decoding, and the DMR
+     * playback paths mix the two slots down themselves when the stream is mono
+     * (playSynthesizedVoiceSS3/FS3). Held to dmr_stereo == 1 here because the
+     * alternative pairs it with dmr_mono == 0, which no preset produces and which
+     * dmr_handle_voice() has no branch for on MS voice. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 0;
+    opts.pulse_digi_out_channels = 1;
+    opts.pulse_digi_rate_out = 8000;
+    opts.dmr_stereo = 0;
+    rc |= expect_int("mono dmr mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("mono dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("mono session keeps its one channel", opts.pulse_digi_out_channels, 1);
+    rc |= expect_int("mono session keeps its rate", opts.pulse_digi_rate_out, 8000);
+    rc |= expect_int("dmr still decodes both slots", opts.dmr_stereo, 1);
+    rc |= expect_int("and not as dmr mono", opts.dmr_mono, 0);
+    freeState(&state);
+
+    /* Asking for the mode already in effect must change nothing at all. DecodeChip
+     * taps whether or not it is already selected, so a stray tap on the lit chip
+     * would otherwise run the whole teardown above: it would end a live call and
+     * put the modulation back to the preset's, discarding the operator's own pick.
+     * ui_handle_mod_set() has held this contract since it was written; this is the
+     * same one for the decode chips beside it. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 0;
+    rc |= expect_int("first dmr mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("first dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    /* The session is on DMR now. The operator picks QPSK and a call opens. */
+    opts.mod_c4fm = 0;
+    opts.mod_qpsk = 1;
+    opts.mod_gfsk = 0;
+    state.rf_mod = 1;
+    state.sps_hunt_counter = 7;
+    rc |= seed_active_canonical_calls(&opts, &state, 852000000L, 1502);
+    rc |= expect_int("repeat dmr mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat dmr mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat keeps the operator's modulation", opts.mod_qpsk, 1);
+    rc |= expect_int("repeat leaves the hunt dwell alone", state.sps_hunt_counter, 7);
+    rc |= expect_call_phase("repeat leaves slot 1 active", &state, 0U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_call_phase("repeat leaves slot 2 active", &state, 1U, DSD_CALL_PHASE_ACTIVE);
+    rc |= expect_contains("repeat still names the mode", state.ui_msg, "DMR");
+    freeState(&state);
+
+    /* The payload travels as a plain int32 but dsdneoUserDecodeMode is packed to a
+     * byte, so an out-of-range value does not stay out of range: 260 casts to 4,
+     * which is DSDCFG_MODE_DMR, and the DMR preset would run for a command nobody
+     * could have meant. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 0;
+    rc |= expect_int("out-of-range mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, 260),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("out-of-range mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("out-of-range mode does not alias onto dmr", opts.frame_dmr, 0);
+    rc |= expect_int("out-of-range mode leaves p25 alone", opts.frame_p25p1, 1);
+    freeState(&state);
+
+    /* Back to auto re-enables the set the engine starts with. */
+    init_test_context(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.frame_p25p1 = 0;
+    rc |=
+        expect_int("auto mode queued", dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_AUTO),
+                   DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("auto mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("auto re-enables p25", opts.frame_p25p1, 1);
+    rc |= expect_int("auto keeps dmr", opts.frame_dmr, 1);
+
+    /* Both carry a payload, so the payload-less action API must refuse them. */
+    rc |= expect_int("mod set rejects an action submit", dsd_app_command_action(DSD_APP_CMD_MOD_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("decode mode rejects an action submit", dsd_app_command_action(DSD_APP_CMD_DECODE_MODE_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * TRUNK_SET is the half of tuner ownership a view can name. TUNER_RELEASE clears
+ * both owners without knowing which held it; this one says "trunking, on" or
+ * "trunking, off" from a frontend that does know, which is what a control
+ * offering trunking as a choice needs and what TRUNK_TOGGLE cannot express.
+ */
+static int
+test_trunk_set(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 0;
+
+    rc |=
+        expect_int("trunk on queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk on drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk on enables trunking", opts.trunk_enable, 1);
+
+    /* Asking for it again is not a flip. This is the whole reason the command
+     * exists: TRUNK_TOGGLE here would hand the tuner straight back. */
+    rc |= expect_int("repeat trunk on queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("repeat trunk on drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("repeat trunk on stays on", opts.trunk_enable, 1);
+
+    rc |= expect_int("trunk off queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk off disables trunking", opts.trunk_enable, 0);
+
+    /* Scanner mode is the other automatic owner, and SCANNER_TOGGLE already
+     * clears trunking on the way in. Without the same exclusion here, asking for
+     * trunking from a scanning session would leave two owners driving the tuner. */
+    opts.scanner_mode = 1;
+    rc |= expect_int("trunk on over scanner queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk on over scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk on enables trunking over scanner", opts.trunk_enable, 1);
+    rc |= expect_int("trunk on clears scanner mode", opts.scanner_mode, 0);
+
+    /* Turning it off is the narrow half: TUNER_RELEASE stays the way to clear
+     * both, so this must not reach into scanner mode on the way out. */
+    opts.scanner_mode = 1;
+    rc |= expect_int("trunk off over scanner queued", dsd_app_command_set_i32(DSD_APP_CMD_TRUNK_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk off over scanner drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk off leaves scanner mode alone", opts.scanner_mode, 1);
+
+    /* Carries a payload, so the payload-less action API must refuse it — a bare
+     * action submit would arrive with no bytes and read as "stop trunking". */
+    rc |= expect_int("trunk set rejects an action submit", dsd_app_command_action(DSD_APP_CMD_TRUNK_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    freeState(&state);
+    return rc;
+}
 
 int
 main(void) {
     int rc = 0;
     rc |= test_command_api();
+    rc |= test_manual_tune_queue_semantics();
     rc |= test_setter_coalescing_preserves_fifo_boundaries();
     rc |= test_visibility_and_queue_overflow();
     rc |= test_key_and_runtime_state_commands();
     rc |= test_file_network_and_import_commands();
     rc |= test_io_and_state_commands();
     rc |= test_compact_visualizer_toast();
+    rc |= test_modulation_and_decode_mode_setters();
+    rc |= test_trunk_set();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
+    rc |= test_manual_tune_trunking_gate_and_reacquisition();
+    rc |= test_tuner_release();
 #endif
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");

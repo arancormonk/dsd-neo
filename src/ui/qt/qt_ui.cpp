@@ -16,6 +16,7 @@
 #include <QStringList>
 #include <QUrl>
 #include <dsd-neo/runtime/git_ver.h>
+#include <qqml.h>
 
 #include "app_prefs.h"
 #include "call_history_filter.h"
@@ -25,6 +26,8 @@
 #include "metrics_model.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
+#include "spectrum_model.h"
+#include "spectrum_view_item.h"
 #include "ui_controller.h"
 
 namespace dsd_qt {
@@ -74,6 +77,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
     auto* history = new CallHistoryModel(&engine);
+    auto* spectrum = new SpectrumModel(&engine);
     // Each view that shows the call log owns its filter state: the history tab's
     // search and pills must not silently filter the monitor's recent-calls pane.
     auto* historyView = new CallHistoryFilterModel(&engine);
@@ -89,6 +93,12 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     QObject::connect(prefs, &AppPrefs::keepScreenAwakeChanged, host,
                      [host, prefs]() { host->setKeepScreenAwake(prefs->keepScreenAwake()); });
 
+    /* The trace and waterfall are the only C++ types QML instantiates itself;
+     * everything else it sees is a context property below. They have to be
+     * registered before the engine loads any QML that imports them. */
+    qmlRegisterType<SpectrumTraceItem>("DsdNeo", 1, 0, "SpectrumTrace");
+    qmlRegisterType<WaterfallItem>("DsdNeo", 1, 0, "Waterfall");
+
     QQmlContext* context = engine.rootContext();
     context->setContextProperty(QStringLiteral("decoderHost"), host);
     context->setContextProperty(QStringLiteral("metrics"), metrics);
@@ -100,6 +110,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
+    context->setContextProperty(QStringLiteral("spectrum"), spectrum);
     context->setContextProperty(QStringLiteral("sansFontFamily"),
                                 sans_family.isEmpty() ? QStringLiteral("sans-serif") : sans_family);
     context->setContextProperty(QStringLiteral("monoFontFamily"),

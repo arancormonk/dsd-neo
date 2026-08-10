@@ -92,6 +92,44 @@ check_channel_lpf_protected_edges(demod_state* s) {
     return 0;
 }
 
+/*
+ * The channel, not the filter.
+ *
+ * P25 CQPSK runs a deliberately roomier 7250 Hz cutoff than the other 12.5 kHz
+ * profiles, but the channel it protects is still 12.5 kHz. Reporting the cutoff
+ * would widen the spectrum screen's channel column by 2 kHz the moment the
+ * modulation flipped C4FM->CQPSK on the same system, which reads as the receiver
+ * changing its mind about what it is listening to.
+ */
+static int
+test_channel_lpf_protected_edge(void) {
+    const float tol = 0.5f;
+
+    struct {
+        int profile;
+        float want;
+    } cases[] = {
+        {DSD_CH_LPF_PROFILE_WIDE, 8000.0f},
+        {DSD_CH_LPF_PROFILE_6K25, 3125.0f},
+        {DSD_CH_LPF_PROFILE_12K5, 6250.0f},
+        {DSD_CH_LPF_PROFILE_PROVOICE, 6250.0f},
+        {DSD_CH_LPF_PROFILE_P25_C4FM, 6250.0f},
+        {DSD_CH_LPF_PROFILE_P25_CQPSK, 6250.0f},
+        /* An id from a newer build must fall back, not widen unpredictably. */
+        {99, 8000.0f},
+    };
+
+    for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        float got = (float)dsd_channel_lpf_protected_edge_hz(cases[i].profile);
+        if (!approx_eq(got, cases[i].want, tol)) {
+            DSD_FPRINTF(stderr, "protected_edge(%d): got %f want %f\n", cases[i].profile, (double)got,
+                        (double)cases[i].want);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 int
 main(void) {
     demod_state* s = (demod_state*)malloc(sizeof(demod_state));
@@ -99,6 +137,11 @@ main(void) {
         return 1;
     }
     DSD_MEMSET(s, 0, sizeof(*s));
+
+    if (!test_channel_lpf_protected_edge()) {
+        free(s);
+        return 1;
+    }
 
     // deemph_filter: step response
     {

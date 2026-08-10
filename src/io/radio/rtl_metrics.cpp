@@ -18,9 +18,10 @@
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <pffft.h>
 #include <string.h>
 
+#include "rtl_fft_cache.h"
+#include "rtl_spectrum_kernels.h"
 #include "rtl_stream_shared.hpp"
 
 /* Spectrum capture and carrier diagnostics shared with RTL orchestrator. */
@@ -108,39 +109,11 @@ cqpsk_loop_lock_heuristic(float total_freq_rad, int out_rate_hz) {
     return (freq_stable_blocks >= 2 && ted_lock > 0.25f && costas_err < 0.65f && fll_abs < fll_lock_limit) ? 1 : 0;
 }
 
-static inline PFFFT_Setup*
-pffft_get_cached_setup(int N) {
-    static PFFFT_Setup* setup = nullptr;
-    static int setup_N = 0;
-    if (!setup || setup_N != N) {
-        if (setup) {
-            pffft_destroy_setup(setup);
-            setup = nullptr;
-            setup_N = 0;
-        }
-        setup = pffft_new_setup(N, PFFFT_COMPLEX);
-        setup_N = N;
-    }
-    return setup;
-}
-
-static inline const float*
-rtl_metrics_hann_window(int N) {
-    alignas(16) static float window[kSpecMaxN];
-    static int window_N = 0;
-    if (window_N != N) {
-        if (N <= 1) {
-            window[0] = 1.0f;
-        } else {
-            const float scale = 2.0f * static_cast<float>(M_PI) / static_cast<float>(N - 1);
-            for (int n = 0; n < N; n++) {
-                window[n] = 0.5f * (1.0f - cosf(scale * static_cast<float>(n)));
-            }
-        }
-        window_N = N;
-    }
-    return window;
-}
+/* This tap's own caches. Kept separate from the wideband tap's by construction:
+ * the two analyse different sizes on this same thread, so one shared cache
+ * would rebuild the pffft setup on every alternating call. */
+static dsd_io::FftSetupCache g_spec_fft_setup;
+static dsd_io::HannWindowCache<kSpecMaxN> g_spec_hann;
 
 namespace {
 
@@ -184,17 +157,9 @@ rtl_metrics_prepare_fft_input(const float* iq_interleaved, int pairs, int N, flo
     frame.take = (pairs >= N) ? N : pairs;
     frame.start = pairs - frame.take;
 
-    double sumI = 0.0;
-    double sumQ = 0.0;
-    for (int n = 0; n < frame.take; n++) {
-        int idx = frame.start + n;
-        sumI += static_cast<double>(iq_interleaved[(size_t)(idx << 1)]);
-        sumQ += static_cast<double>(iq_interleaved[(size_t)(idx << 1) + 1]);
-    }
-    if (frame.take > 0) {
-        frame.meanI = static_cast<float>(sumI / static_cast<double>(frame.take));
-        frame.meanQ = static_cast<float>(sumQ / static_cast<double>(frame.take));
-    }
+    const dsd_io::IqBlockMean mean = dsd_io::iq_block_mean(iq_interleaved, frame.start, frame.take);
+    frame.meanI = mean.i;
+    frame.meanQ = mean.q;
 
     if (frame.take < N) {
         for (int n = 0; n < (N << 1); n++) {
@@ -202,15 +167,21 @@ rtl_metrics_prepare_fft_input(const float* iq_interleaved, int pairs, int N, flo
         }
     }
 
-    const float* hann = rtl_metrics_hann_window(N);
-    for (int n = 0; n < frame.take; n++) {
-        int idx = frame.start + n;
-        float I = iq_interleaved[(size_t)(idx << 1)];
-        float Q = iq_interleaved[(size_t)(idx << 1) + 1];
-        float w = hann[n];
-        z[(n << 1)] = w * (I - frame.meanI);
-        z[(n << 1) + 1] = w * (Q - frame.meanQ);
+    const float* hann = g_spec_hann.get(N);
+    if (hann == nullptr) {
+        /* N is clamped to [64, kSpecMaxN] upstream, so this is unreachable in
+         * practice. Hand back a silent frame rather than transforming whatever
+         * the buffer happened to hold. */
+        for (int n = 0; n < (N << 1); n++) {
+            z[n] = 0.0f;
+        }
+        frame.take = 0;
+        return frame;
     }
+    /* The leading frame.take points of an N-point window when the block is
+     * short — a partial window, but the tail of z was zeroed above, so the
+     * transform sees a shorter record rather than a discontinuity. */
+    dsd_io::iq_window_dc_removed(iq_interleaved, frame.start, frame.take, hann, mean, z);
     return frame;
 }
 
@@ -242,21 +213,15 @@ rtl_metrics_phase_cfo_hz(const float* iq_interleaved, const rtl_metrics_fft_fram
     return atan2(acc_im, acc_re) * static_cast<double>(out_rate_hz) / (2.0 * M_PI);
 }
 
+/* Share of each new frame in the smoothed bins. Light, because these feed the
+ * auto-gain spectral gate and a peak search: a decision taken off one noisy
+ * frame is a gain step taken for no reason. */
+static const float kSpecEmaNewWeight = 0.2f;
+
 static void
 rtl_metrics_smooth_spectrum_bins(int N, int out_rate_hz, const float* z) {
-    const float eps = 1e-12f;
     const bool first = (g_spec_ready.load(std::memory_order_relaxed) == 0);
-    for (int k = 0; k < N; k++) {
-        int kk = k + (N >> 1);
-        if (kk >= N) {
-            kk -= N;
-        }
-        float re = z[(kk << 1)];
-        float im = z[(kk << 1) + 1];
-        float mag2 = re * re + im * im;
-        float db = 10.0f * log10f(mag2 + eps);
-        g_spec_db[k] = first ? db : (0.8f * g_spec_db[k] + 0.2f * db);
-    }
+    dsd_io::spectrum_fold_db(z, N, kSpecEmaNewWeight, first, g_spec_db);
     g_spec_rate_hz.store(out_rate_hz, std::memory_order_relaxed);
     g_spec_ready.store(1, std::memory_order_release);
 }
@@ -385,9 +350,7 @@ rtl_metrics_update_spectrum_from_iq(const float* iq_interleaved, int len_interle
     double phase_cfo_hz = rtl_metrics_phase_cfo_hz(iq_interleaved, frame, out_rate_hz);
     g_resid_cfo_phase_hz.store(phase_cfo_hz, std::memory_order_relaxed);
 
-    PFFFT_Setup* setup = pffft_get_cached_setup(N);
-    if (setup) {
-        pffft_transform_ordered(setup, z, z, nullptr, PFFFT_FORWARD);
+    if (g_spec_fft_setup.forward(N, z)) {
         rtl_metrics_smooth_spectrum_bins(N, out_rate_hz, z);
     }
     rtl_metrics_peak_metrics peak = rtl_metrics_compute_peak_metrics(N);

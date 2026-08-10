@@ -5,7 +5,9 @@
 
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -35,6 +37,74 @@ dsd_decode_mode_from_cli_preset(char preset, dsdneoUserDecodeMode* out_mode) {
     }
 }
 
+dsd_decode_mode_profile
+dsd_decode_mode_profile_for(dsdneoUserDecodeMode mode) {
+    dsd_decode_mode_profile profile = {4800, 4, DSD_FRAME_SYNC_SPS_PROFILE_4800_4};
+
+    switch (mode) {
+        case DSDCFG_MODE_P25P2:
+            profile.symbol_rate_hz = 6000;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+            break;
+        case DSDCFG_MODE_NXDN48:
+        case DSDCFG_MODE_DPMR:
+            profile.symbol_rate_hz = 2400;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+            break;
+        case DSDCFG_MODE_EDACS_PV:
+            profile.symbol_rate_hz = 9600;
+            profile.levels = 2;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+            break;
+        case DSDCFG_MODE_DSTAR:
+            /* Two levels, not four. Left on the 4800/4 default the published
+               profile asks the front end for the P25 C4FM filter and parks the
+               hunt on an index frame_sync_sps_profile_has_candidate() never
+               offers a D-STAR-only session -- so it cannot sync until the hunt
+               dwells out and rotates away from what it was just told. */
+            profile.levels = 2;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+            break;
+        case DSDCFG_MODE_X2TDMA:
+            /* Carried at 6000_4 alongside P25p2, for the same reason. */
+            profile.symbol_rate_hz = 6000;
+            profile.sps_profile_index = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+            break;
+        /* NXDN96 belongs here and not with NXDN48: 9600 bps over four levels is
+           4800 sym/s. The hunt agrees -- frame_sync_sps_profile_has_candidate()
+           offers NXDN96 only at 4800_4, so a mode put on 2400_4 would search a
+           profile that can never match it. */
+        default: break;
+    }
+
+    return profile;
+}
+
+int
+dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int levels, int rf_mod) {
+    if (symbol_rate_hz == 2400 || (symbol_rate_hz == 4800 && levels == 2)) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_6K25;
+    }
+    if (symbol_rate_hz == 9600) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
+    }
+    if (rf_mod == 1) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    }
+    if (symbol_rate_hz == 6000 || rf_mod == 2 || dsd_opts_uses_wide_4800_profile(opts)) {
+        return DSD_RTL_STREAM_CHANNEL_PROFILE_12K5;
+    }
+    return DSD_RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+}
+
+/**
+ * @brief The symbol timing a preset starts a mode off on, at 48 kHz.
+ *
+ * Not the same question as dsd_decode_mode_profile_for(): this is where the
+ * preset puts the slicer before any sync, and NXDN96 has historically started at
+ * 20 (2400 sym/s) even though it decodes at 4800. The hunt corrects it, so the
+ * value is left alone here rather than changed underneath the CLI.
+ */
 static void
 decode_mode_base_symbol_timing(dsdneoUserDecodeMode mode, int* out_sps, int* out_center) {
     int sps = 10;
@@ -90,9 +160,23 @@ decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
         o->frame_provoice = 1;
         o->frame_ysf = 1;
         o->frame_m17 = 1;
-        o->mod_c4fm = 1;
-        o->mod_qpsk = 0;
-        s->rf_mod = 0;
+        /* Cleared together, like every sibling preset does. Applied mid-session
+         * (the Qt radio panel's decode chips), a preset that leaves the previous
+         * one's GFSK flag set publishes mod_c4fm=1 && mod_gfsk=1 -- an opts pair
+         * the demodulator and the UI's modulation readout then disagree about.
+         *
+         * Skipped under mod_cli_lock, as decode_mode_apply_dmr() already does:
+         * the lock means the operator named a modulation on the command line, and
+         * frame_sync_apply_cli_mod_lock() re-derives rf_mod from these flags on
+         * every pass -- so clearing mod_gfsk here would turn `-mg -fa` into a
+         * permanent C4FM lock the SPS hunt is then forbidden to correct. The
+         * mid-session path clears the lock before it applies a preset. */
+        if (!o->mod_cli_lock) {
+            o->mod_c4fm = 1;
+            o->mod_qpsk = 0;
+            o->mod_gfsk = 0;
+            s->rf_mod = 0;
+        }
         o->dmr_stereo = 1;
         o->dmr_mono = 0;
         o->pulse_digi_rate_out = 8000;
@@ -322,7 +406,23 @@ decode_mode_apply_dstar(dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     o->dmr_mono = 0;
     s->dmr_stereo = 0;
-    s->rf_mod = 0;
+    /* Set alongside rf_mod, not left to whatever the last preset chose: applied
+     * mid-session, a stale flag here contradicts rf_mod and strands the UI's
+     * modulation control on a value the demodulator is not on. Skipped under
+     * mod_cli_lock for the reason decode_mode_apply_auto() spells out: the lock
+     * makes these flags the operator's own answer, and rewriting them pins the
+     * session to a modulation nothing can move it off.
+     *
+     * GFSK, not C4FM: D-STAR is GMSK over two levels, which is what its 4800/2
+     * symbol profile says and what frame_sync_apply_sps_hunt_profile() normalises
+     * rf_mod to the moment the hunt lands on that profile. Naming C4FM here only
+     * put the flags a pass behind the demodulator. */
+    if (!o->mod_cli_lock) {
+        o->mod_c4fm = 0;
+        o->mod_qpsk = 0;
+        o->mod_gfsk = 1;
+        s->rf_mod = 2;
+    }
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "DSTAR");
 }
 
@@ -451,7 +551,15 @@ decode_mode_apply_analog(dsd_opts* o, dsd_state* s) {
     o->dmr_stereo = 0;
     s->dmr_stereo = 0;
     o->dmr_mono = 0;
-    s->rf_mod = 0;
+    /* As in the other presets: rf_mod and the mod_* flags are one answer, and
+     * leaving half of it behind makes them disagree on a live session -- and, as
+     * there, the operator's own `-m` answer outranks the preset's. */
+    if (!o->mod_cli_lock) {
+        o->mod_c4fm = 1;
+        o->mod_qpsk = 0;
+        o->mod_gfsk = 0;
+        s->rf_mod = 0;
+    }
     o->monitor_input_audio = 1;
     o->analog_only = 1;
     DSD_SNPRINTF(o->output_name, sizeof o->output_name, "%s", "Analog Monitor");
@@ -470,13 +578,8 @@ decode_mode_apply_profiled(dsdneoUserDecodeMode mode, dsdDecodePresetProfile pro
     }
 }
 
-int
-dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
-                             dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-
+static int
+decode_mode_dispatch(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts, dsd_state* state) {
     if (decode_mode_apply_profiled(mode, profile, opts, state) == 0) {
         return 0;
     }
@@ -494,6 +597,43 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
         case DSDCFG_MODE_ANALOG: decode_mode_apply_analog(opts, state); return 0;
         default: return -1;
     }
+}
+
+int
+dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile profile, dsd_opts* opts,
+                             dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+
+    if (decode_mode_dispatch(mode, profile, opts, state) != 0) {
+        return -1;
+    }
+
+    /* Analog monitor is a mode like any other, so leaving it is part of choosing a
+       different one. With nothing clearing analog_only,
+       dsd_infer_decode_mode_preset() answers ANALOG forever: the CLI becomes
+       order-dependent, and every decode chip in the Qt radio panel renders
+       unselected because the engine reports a mode none of them carry. The CLI used
+       to clear it at its own `-f` case; it belongs to the presets, which is where
+       every caller gets it. Applied after the dispatch so an unsupported mode
+       changes nothing at all.
+
+       monitor_input_audio only follows analog_only out. Unlike analog_only --
+       which nothing but this preset and `-fA` ever set -- it is also the `-8`
+       flag and the menu's "Toggle Source Audio Monitor", and this helper runs on
+       every runtime config apply with the mode the session is already in
+       (snapshot_mode_config() always stamps has_mode). Clearing it
+       unconditionally would switch a monitor the operator turned on by hand off
+       again on the next unrelated settings change. analog_only is what marks the
+       analog preset as the one that set it. */
+    if (mode != DSDCFG_MODE_ANALOG) {
+        if (opts->analog_only) {
+            opts->monitor_input_audio = 0;
+        }
+        opts->analog_only = 0;
+    }
+    return 0;
 }
 
 dsdneoUserDecodeMode

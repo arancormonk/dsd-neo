@@ -494,6 +494,12 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/core/talkgroup_policy.h
   C
 )
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_wideband_spectrum
+  HEADERS_PUBLIC_CORE_WIDEBAND_SPECTRUM
+  dsd-neo/core/wideband_spectrum.h
+  C
+)
 
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_dsp_sync_hamming
@@ -1312,7 +1318,9 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_trunk.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_logging.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/symbol_profile.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
 target_include_directories(
@@ -1329,6 +1337,8 @@ add_executable(
     dsd-neo_test_app_control_actions_rtl
     ui/test_ui_radio_actions_rtl.c
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_radio.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/symbol_profile.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
 )
 target_compile_definitions(
     dsd-neo_test_app_control_actions_rtl
@@ -2061,6 +2071,17 @@ add_test(
     COMMAND dsd-neo_test_ui_qt_call_history_merge
 )
 
+# And for the spectrum viewport arithmetic (spectrum_math.h), also header-only
+# and Qt-free: bin<->frequency mapping, pan clamping and the overshoot that
+# turns into a retune, tap snapping, and the pinch anchor. A sign error in any
+# of these lands the receiver on the wrong channel, which no build catches.
+add_executable(dsd-neo_test_ui_qt_spectrum_math ui/test_ui_qt_spectrum_math.cpp)
+target_include_directories(
+    dsd-neo_test_ui_qt_spectrum_math
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+add_test(NAME UI_QT_SPECTRUM_MATH COMMAND dsd-neo_test_ui_qt_spectrum_math)
+
 # The persistence layer itself (json_store atomic writes, the saved-systems
 # field-map round trip, AppPrefs defaults) is thin Qt code, so unlike the
 # policy tests above it links Qt and is registered only when the Qt frontend
@@ -2085,6 +2106,39 @@ if(DSD_ENABLE_QT_UI)
     )
     set_target_properties(dsd-neo_test_ui_qt_persistence PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
+
+    # What MetricsModel makes of a decoder snapshot: the readings screens gate
+    # on. The sync hold in particular -- a lock that outlives the decoder finding
+    # anything reads as "it is working" while nothing is being decoded, which is
+    # exactly what shipped once. The frontend boundary is stubbed in the test so
+    # this stays arithmetic over a snapshot rather than a link against the engine.
+    add_executable(
+        dsd-neo_test_ui_qt_metrics_model
+        ui/test_ui_qt_metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE
+            Qt6::Core
+            dsd-neo_core
+            dsd-neo_runtime
+            dsd-neo_feature_codec2
+            ${LIBS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_metrics_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(NAME UI_QT_METRICS_MODEL COMMAND dsd-neo_test_ui_qt_metrics_model)
 
     # The call-history model's ring ingest, driven against synthetic event
     # rings: the slot/seq row keying, merge-versus-duplicate decisions, the
@@ -2137,6 +2191,49 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_session_args PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_SESSION_ARGS COMMAND dsd-neo_test_ui_qt_session_args)
 
+    # What the spectrum model does with the frames a producer hands it, and what
+    # the waterfall does with the model: the frame-identity check that keeps a
+    # re-read of an unreplaced frame from scrolling a duplicate row, the history
+    # clear that must not swallow the first frame at a new center, and the tap
+    # snap staying inside the visible window. Only the app-control getter is
+    # stubbed, so the polling and viewport under test are the production ones.
+    # DSD_NEO_TEST_HOOKS exposes the single-poll entry point and the row count;
+    # without them this would have to sleep through publish periods and guess.
+    add_executable(
+        dsd-neo_test_ui_qt_spectrum_model
+        ui/test_ui_qt_spectrum_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_spectrum_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    find_package(Qt6 REQUIRED COMPONENTS Gui Quick)
+    target_link_libraries(
+        dsd-neo_test_ui_qt_spectrum_model
+        PRIVATE Qt6::Gui Qt6::Quick
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_spectrum_model
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_spectrum_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SPECTRUM_MODEL
+        COMMAND dsd-neo_test_ui_qt_spectrum_model
+    )
+    # A QQuickItem needs an application object, and a CI runner has no display.
+    set_tests_properties(
+        UI_QT_SPECTRUM_MODEL
+        PROPERTIES
+            ENVIRONMENT
+                "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
+    )
+
     # The QML screens themselves, driven by Qt Quick Test: the call lists keep
     # the latest call in view while the reader is parked at the top, hold their
     # place when the reader is further back, and leave the view where it is while
@@ -2184,11 +2281,23 @@ if(DSD_ENABLE_QT_UI)
         # The header is listed so AUTOMOC processes its Q_OBJECT classes into
         # their own generated translation unit, keeping moc output out of the
         # test's.
+        # The spectrum model and its two painted items are compiled in so the
+        # QML drives the production polling, viewport and tap-snapping; only
+        # the frames behind them are canned (ui/qml_spectrum_stub.cpp supplies
+        # the app-control getter, which keeps this target off the engine).
         add_executable(
             dsd-neo_test_ui_qt_qml
             ui/test_ui_qt_qml_main.cpp
             ui/qml_test_context.h
+            ui/qml_spectrum_stub.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+            # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
+            # production one, so the preset a chip sends is really under test. It
+            # needs the CLI mapping behind it, and that translation unit is
+            # header-only apart from vsnprintf -- it links nothing else in.
+            ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
         )
         target_include_directories(
             dsd-neo_test_ui_qt_qml
@@ -7339,6 +7448,32 @@ if(DSD_HAS_RADIO)
         )
     endif()
     add_test(NAME IO_RTL_DEMOD_CONFIG COMMAND dsd-neo_test_io_rtl_demod_config)
+
+    add_executable(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        io/test_io_rtl_wideband_spectrum.cpp
+        ${PROJECT_SOURCE_DIR}/src/io/radio/rtl_wideband_spectrum.cpp
+        # The Hann window the tap uses comes from the project's own window
+        # builder; firdes.cpp is pure math over <math.h>, so compiling it here
+        # keeps this test standalone rather than linking the whole DSP library.
+        ${PROJECT_SOURCE_DIR}/src/dsp/firdes.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_wideband_spectrum
+        PRIVATE dsd-neo_pffft dsd-neo_platform
+    )
+    add_test(
+        NAME IO_RTL_WIDEBAND_SPECTRUM
+        COMMAND dsd-neo_test_io_rtl_wideband_spectrum
+    )
 
     add_executable(
         dsd-neo_test_io_rtl_ppm_request

@@ -17,6 +17,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/decode_mode.h>
 
 #ifdef USE_RADIO
 #include <stdint.h>
@@ -125,6 +126,24 @@ void svc_toggle_dmr_le(dsd_opts* opts);
 void svc_set_slot_pref(dsd_opts* opts, int pref);
 /** @brief Enable/disable slots using bitmask (bit0=slot1, bit1=slot2). */
 void svc_set_slots_onoff(dsd_opts* opts, int mask);
+
+// Symbol profile
+/**
+ * @brief Make the SPS hunt and the front end agree with the decoder's timing.
+ *
+ * The caller has already put @c samplesPerSymbol / @c symbolCenter on the timing
+ * @p profile calls for; this publishes that decision to everything downstream of
+ * it. The hunt is restarted from the profile's index, because left on the
+ * previous mode's it overwrites the freshly computed timing on its next pass, and
+ * on an RTL front end the demodulator family and channel filter are queued to
+ * match — otherwise the decoder is looking for one protocol through the filter of
+ * another.
+ *
+ * For handlers that change the decoder in place. Ones that retune are already
+ * served by the trunk tuning hook, which stages a profile with the retune, and
+ * a second request from here would fight it.
+ */
+void svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mode_profile profile);
 
 // Per-protocol inversion toggles
 /** @brief Toggle X2-TDMA symbol inversion. */

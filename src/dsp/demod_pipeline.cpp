@@ -133,11 +133,19 @@ clamp_float(float value, float lo, float hi) {
 static const int kChannelLpfTaps = 144;
 static const double kChannelLpfTransitionHz = 1200.0;
 static const double kChannelLpfGuardHz = kChannelLpfTransitionHz * 0.5;
-static const double kChannelLpfWideCutoffHz = 8000.0 + kChannelLpfGuardHz;
-static const double kChannelLpf6k25CutoffHz = 3125.0 + kChannelLpfGuardHz;
-static const double kChannelLpf12k5CutoffHz = 6250.0 + kChannelLpfGuardHz;
-static const double kChannelLpfProvoiceCutoffHz = 6250.0 + kChannelLpfGuardHz;
-static const double kChannelLpfP25C4fmCutoffHz = 6250.0 + kChannelLpfGuardHz;
+/* Protected channel edges: the highest frequency each profile's channel LPF is
+ * designed to pass unattenuated. The cutoff constants below are these plus
+ * design guard, and dsd_channel_lpf_protected_edge_hz() reports these — see its
+ * doc comment for why P25 CQPSK reports 6250 while its cutoff is 7250. */
+static const double kChannelEdgeWideHz = 8000.0;
+static const double kChannelEdge6k25Hz = 3125.0;
+static const double kChannelEdge12k5Hz = 6250.0;
+
+static const double kChannelLpfWideCutoffHz = kChannelEdgeWideHz + kChannelLpfGuardHz;
+static const double kChannelLpf6k25CutoffHz = kChannelEdge6k25Hz + kChannelLpfGuardHz;
+static const double kChannelLpf12k5CutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
+static const double kChannelLpfProvoiceCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
+static const double kChannelLpfP25C4fmCutoffHz = kChannelEdge12k5Hz + kChannelLpfGuardHz;
 static const double kChannelLpfP25CqpskCutoffHz = 7250.0;
 /* Fixed fallback filters are 63 taps (designed for 24 kHz). Only used when
  * dynamic filter generation fails; prefer dynamically generated taps. */
@@ -207,6 +215,18 @@ static const float channel_lpf_wide[kChannelLpfFallbackTaps] = {
     0.0f,
     0.0f,
 };
+
+double
+dsd_channel_lpf_protected_edge_hz(int profile) {
+    switch (profile) {
+        case DSD_CH_LPF_PROFILE_6K25: return kChannelEdge6k25Hz;
+        case DSD_CH_LPF_PROFILE_12K5:
+        case DSD_CH_LPF_PROFILE_PROVOICE:
+        case DSD_CH_LPF_PROFILE_P25_C4FM:
+        case DSD_CH_LPF_PROFILE_P25_CQPSK: return kChannelEdge12k5Hz;
+        default: return kChannelEdgeWideHz;
+    }
+}
 
 /* Fixed digital-profile taps (fc≈5 kHz @ 24 kHz, 63 taps). Designed as
    Blackman-windowed sinc and normalized to unity DC gain. */

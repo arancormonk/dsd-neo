@@ -2048,10 +2048,20 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             break;                                                                                                     \
         }                                                                                                              \
         case 'f': {                                                                                                    \
-            /* Any -f* preset should stop pure analog-monitor mode unless explicitly selecting it. */                  \
-            opts->analog_only = 0;                                                                                     \
-            opts->monitor_input_audio = 0;                                                                             \
-                                                                                                                       \
+            /* Leaving analog-monitor mode is dsd_apply_decode_mode_preset()'s job for every                           \
+               selector that reaches it, so an unrecognized -f selector no longer half-changes                         \
+               the mode. The selectors below are handled by the hand-rolled chain further down                         \
+               and never reach the preset helper, so they have to say it themselves: left set                          \
+               from an earlier -fA, analog_only pins the RTL front end to                                              \
+               DSD_DEMOD_OUTPUT_AUDIO_MONITOR and suppresses the digital output stream, so                             \
+               `-fA -fp` selects ProVoice and then never decodes it. */                                                \
+            const char f_selector = optarg[0];                                                                         \
+            if (f_selector == 'p' || f_selector == 'h' || f_selector == 'H' || f_selector == 'e'                       \
+                || f_selector == 'E' || f_selector == 'Z' || f_selector == 'B' || f_selector == 'P'                    \
+                || f_selector == 'U') {                                                                                \
+                opts->analog_only = 0;                                                                                 \
+                opts->monitor_input_audio = 0;                                                                         \
+            }                                                                                                          \
             const char decode_preset = optarg[0] == 'r' ? 's' : optarg[0];                                             \
             dsdneoUserDecodeMode core_mode = DSDCFG_MODE_UNSET;                                                        \
             if (dsd_decode_mode_from_cli_preset(decode_preset, &core_mode) == 0                                        \
@@ -2119,9 +2129,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'h') {                                                                             \
                 if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    /* Each digit is only read once the one before it proved the                                       \
+                       string reaches that far. `-fh1` is a two-character selector,                                    \
+                       so optarg[3] is a byte past the end of the argv element, and                                    \
+                       whatever it happened to be was parsed into edacs_s_bits. */                                     \
+                    const char afs_a = optarg[1];                                                                      \
+                    const char afs_f = (afs_a != 0) ? optarg[2] : 0;                                                   \
+                    const char afs_s = (afs_f != 0) ? optarg[3] : 0;                                                   \
+                    char abits[2] = {afs_a, 0};                                                                        \
+                    char fbits[2] = {afs_f, 0};                                                                        \
+                    char sbits[2] = {afs_s, 0};                                                                        \
                     state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
                     state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
                     state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
@@ -2170,9 +2187,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'H') {                                                                             \
                 if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    /* Each digit is only read once the one before it proved the                                       \
+                       string reaches that far. `-fH1` is a two-character selector,                                    \
+                       so optarg[3] is a byte past the end of the argv element, and                                    \
+                       whatever it happened to be was parsed into edacs_s_bits. */                                     \
+                    const char afs_a = optarg[1];                                                                      \
+                    const char afs_f = (afs_a != 0) ? optarg[2] : 0;                                                   \
+                    const char afs_s = (afs_f != 0) ? optarg[3] : 0;                                                   \
+                    char abits[2] = {afs_a, 0};                                                                        \
+                    char fbits[2] = {afs_f, 0};                                                                        \
+                    char sbits[2] = {afs_s, 0};                                                                        \
                     state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
                     state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
                     state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
