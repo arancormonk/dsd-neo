@@ -39,8 +39,14 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
     if (c->n < (int)sizeof(int32_t)) {
         /* A truncated payload is not a request to stop trunking. Falling through
          * with want still 0 would hand the tuner back mid-call on a command nobody
-         * sent, and the session would quietly stop following the system. */
-        return 0;
+         * sent, and the session would quietly stop following the system.
+         *
+         * Handled-and-declined, not unhandled: 0 means "this table does not know
+         * this id", so the drain would keep walking every remaining group with a
+         * command they were never meant to see and finally report it as an unknown
+         * id rather than a bad payload. ui_handle_mod_set() answers the same
+         * condition the same way. */
+        return 1;
     }
     DSD_MEMCPY(&want, c->data, sizeof(int32_t));
     const int on = (want != 0) ? 1 : 0;
