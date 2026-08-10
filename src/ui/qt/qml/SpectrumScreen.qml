@@ -43,6 +43,11 @@ Item {
     readonly property real tunedHz: spectrum.hasData ? spectrum.centerFreqHz
                                                      : (metrics ? metrics.centerFreqHz : 0)
 
+    // What the big readout shows. While the rail is being dragged that is where
+    // it is heading, not where the receiver still is — it is the number being
+    // steered.
+    readonly property real readoutHz: bandRail.dragging ? bandRail.pendingHz : screen.tunedHz
+
     // Where the tuner can be walked without leaving the part of the spectrum the
     // user is working in. Null off-band, in which case stepping is unbounded and
     // the rail shows a local window instead.
@@ -319,11 +324,13 @@ Item {
                     objectName: "spectrumCenterReadout"
                     // Never elided: this is the frequency the radio is on, and a
                     // readout that drops a digit is worse than one that is tight.
-                    text: screen.tunedHz > 0 ? Util.fmtMhz(screen.tunedHz) : "—"
+                    text: screen.readoutHz > 0 ? Util.fmtMhz(screen.readoutHz) : "—"
                     font.family: Theme.mono
                     font.pixelSize: 21
                     font.weight: Font.Medium
-                    color: Theme.textPrimary
+                    // Cyan while it is a request rather than a fact, the same way
+                    // every other in-flight thing on this screen reads.
+                    color: bandRail.dragging ? Theme.cyan : Theme.textPrimary
                 }
 
                 // The readout doubles as the way to leave the neighbourhood
@@ -713,81 +720,22 @@ Item {
             spacing: 8
             visible: !screen.viewOnly
 
-            // Where in the band this screenful sits. A readout, not a control:
-            // band-walking loses your place within a few steps, and during a
-            // sweep this is the part that shows it working.
-            Item {
-                id: rail
+            // Where in the neighbourhood this screenful sits, and the way to move
+            // it. A readout until now, which is why it invited a drag it did not
+            // take.
+            BandRail {
+                id: bandRail
 
+                objectName: "spectrumBandRail"
                 width: parent.width
-                height: 16
                 visible: screen.tunedHz > 0
 
-                // Off-band, a local window rather than the whole tuner range: a
-                // marker that moves by a hair across 24-1766 MHz says nothing.
-                readonly property real lowHz: screen.band ? screen.band.low : screen.tunedHz - 10.0e6
-                readonly property real highHz: screen.band ? screen.band.high : screen.tunedHz + 10.0e6
-
-                Text {
-                    id: railLow
-
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: Math.round(rail.lowHz / 1.0e6)
-                    font.family: Theme.mono
-                    font.pixelSize: 10
-                    color: Theme.textSubdued
+                tunedHz: screen.tunedHz
+                onDraggingChanged: {
+                    if (dragging)
+                        screen.stopSweep()
                 }
-
-                Text {
-                    id: railHigh
-
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: Math.round(rail.highHz / 1.0e6)
-                    font.family: Theme.mono
-                    font.pixelSize: 10
-                    color: Theme.textSubdued
-                }
-
-                Item {
-                    id: railTrack
-
-                    anchors.left: railLow.right
-                    anchors.right: railHigh.left
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: parent.height
-
-                    Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        height: 1
-                        color: Theme.divider
-                    }
-
-                    Rectangle {
-                        objectName: "spectrumBandMarker"
-                        width: 3
-                        height: 11
-                        radius: 1.5
-                        anchors.verticalCenter: parent.verticalCenter
-                        x: {
-                            var span = rail.highHz - rail.lowHz
-                            if (!(span > 0))
-                                return 0
-                            var t = (screen.tunedHz - rail.lowHz) / span
-                            return Math.round(Math.max(0, Math.min(1, t)) * (railTrack.width - width))
-                        }
-                        color: Theme.cyan
-
-                        Behavior on x {
-                            NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-                        }
-                    }
-                }
+                onTuneRequested: function (hz) { screen.tuneTo(hz) }
             }
 
             Flow {

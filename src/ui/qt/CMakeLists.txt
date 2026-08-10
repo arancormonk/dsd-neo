@@ -38,6 +38,7 @@ qt_add_resources(
         qml/Theme.qml
         qml/Util.js
         qml/Main.qml
+        qml/BandRail.qml
         qml/BottomNav.qml
         qml/CallRow.qml
         qml/Caret.qml

@@ -834,5 +834,91 @@ Item {
             verify(marker.visible && marker.onScreen, "the marker vanished in view-only")
             testContext.setMetric("tunerControlled", false)
         }
+
+        // The rail looked like a slider and was not one — you could not drag it,
+        // and it clamped to a band the tuner reaches far outside of. It is now a
+        // coarse tuner over a local window, and the ONLY hard stops are the
+        // tuner's own.
+        function test_26_the_rail_window_follows_the_receiver() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            verify(rail !== null, "the band rail is missing")
+            verify(Math.abs(rail.lowHz - (rail.tunedHz - rail.windowHz / 2)) < 1,
+                   "the window is not centred on the receiver")
+            verify(Math.abs((rail.highHz - rail.lowHz) - rail.windowHz) < 1,
+                   "the window is not one window wide")
+        }
+
+        // One retune, on release. A tune per drag frame would block the engine
+        // thread up to 500 ms each time.
+        function test_27_a_rail_drag_retunes_once_on_release() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            var from = rail.tunedHz
+
+            rail.beginDrag()
+            for (var i = 1; i <= 5; i++)
+                rail.dragBy(i * 20, 400)
+            compare(testContext.manualTuneCalls(), 0)
+
+            var want = rail.pendingHz
+            verify(want > from, "dragging right did not walk up the band")
+            rail.endDrag(false)
+            compare(testContext.manualTuneCalls(), 1)
+            verify(Math.abs(testContext.lastManualTuneHz() - want) <= 1,
+                   "tuned to " + testContext.lastManualTuneHz() + " but the rail asked for " + want)
+        }
+
+        // The big mono readout is the number being steered, so it has to show the
+        // pending frequency — and show that it is pending.
+        function test_28_the_readout_previews_the_pending_frequency() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            var readout = findChild(screenLoader.item, "spectrumCenterReadout")
+            var atRest = readout.text
+
+            rail.beginDrag()
+            rail.dragBy(120, 400)
+            verify(readout.text !== atRest, "the readout ignored the drag")
+            verify(readout.text.indexOf((rail.pendingHz / 1.0e6).toFixed(2)) === 0,
+                   "the readout shows " + readout.text + " not the pending " + rail.pendingHz)
+            compare(testContext.manualTuneCalls(), 0)
+
+            rail.endDrag(false)
+            verify(!rail.dragging, "the rail is still dragging after release")
+        }
+
+        // A drag that ended for any reason other than the finger lifting is not a
+        // request to move the receiver.
+        function test_29_a_cancelled_rail_drag_never_retunes() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            rail.beginDrag()
+            rail.dragBy(200, 400)
+            rail.endDrag(true)
+            compare(testContext.manualTuneCalls(), 0)
+        }
+
+        // The tuner's own limits are the only wall. Dragging past one stops there
+        // rather than offering a frequency nothing can reach.
+        function test_30_the_rail_clamps_at_the_tuner_limits() {
+            var rail = findChild(screenLoader.item, "spectrumBandRail")
+            rail.beginDrag()
+            rail.dragBy(-100000, 400)
+            verify(rail.pendingHz >= 24.0e6 - 1, "the rail went below the tuner's low end")
+            rail.endDrag(true)
+
+            rail.beginDrag()
+            rail.dragBy(100000, 400)
+            verify(rail.pendingHz <= 1766.0e6 + 1, "the rail went above the tuner's high end")
+            rail.endDrag(true)
+        }
+
+        // Touching the rail is taking over, exactly like touching the spectrum.
+        function test_31_grabbing_the_rail_stops_a_sweep() {
+            var screen = screenLoader.item
+            var rail = findChild(screen, "spectrumBandRail")
+            screen.startSweep()
+            verify(screen.sweeping, "the sweep did not start")
+            rail.beginDrag()
+            verify(!screen.sweeping, "the sweep survived a rail grab")
+            rail.endDrag(true)
+        }
     }
 }

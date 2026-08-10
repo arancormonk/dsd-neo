@@ -77,6 +77,15 @@ var BANDS = [
     { label: "800", low: 806.0e6, high: 869.0e6, start: 855.0e6 }
 ]
 
+// The tuner's usable range. R820T/R828D — the tuner in essentially every RTL
+// dongle — covers 24-1766 MHz, and RTL over USB or TCP is the only radio this
+// app builds with: both Android presets set DSD_ENABLE_SOAPYSDR=OFF
+// (CMakePresets.json:215,242). Not a hard contract even so — the engine is the
+// authority and refuses an out-of-range tune with its own message. This only
+// stops the rail offering frequencies nothing can reach.
+var TUNER_LOW_HZ = 24.0e6
+var TUNER_HIGH_HZ = 1766.0e6
+
 // The band containing hz, or null when tuned outside all of them. Callers fall
 // back to a local window: a rail spanning everything a tuner can reach would move
 // its marker by a hair across a whole band, which tells the reader nothing.
