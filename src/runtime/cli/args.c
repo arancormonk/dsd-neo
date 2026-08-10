@@ -2129,9 +2129,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'h') {                                                                             \
                 if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    /* Each digit is only read once the one before it proved the                                       \
+                       string reaches that far. `-fh1` is a two-character selector,                                    \
+                       so optarg[3] is a byte past the end of the argv element, and                                    \
+                       whatever it happened to be was parsed into edacs_s_bits. */                                     \
+                    const char afs_a = optarg[1];                                                                      \
+                    const char afs_f = (afs_a != 0) ? optarg[2] : 0;                                                   \
+                    const char afs_s = (afs_f != 0) ? optarg[3] : 0;                                                   \
+                    char abits[2] = {afs_a, 0};                                                                        \
+                    char fbits[2] = {afs_f, 0};                                                                        \
+                    char sbits[2] = {afs_s, 0};                                                                        \
                     state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
                     state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
                     state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
@@ -2180,9 +2187,16 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
                 cli_decode_timing_source = CLI_TIMING_SOURCE_PRESET;                                                   \
             } else if (optarg[0] == 'H') {                                                                             \
                 if (optarg[1] != 0) {                                                                                  \
-                    char abits[2] = {optarg[1], 0};                                                                    \
-                    char fbits[2] = {optarg[2], 0};                                                                    \
-                    char sbits[2] = {optarg[3], 0};                                                                    \
+                    /* Each digit is only read once the one before it proved the                                       \
+                       string reaches that far. `-fH1` is a two-character selector,                                    \
+                       so optarg[3] is a byte past the end of the argv element, and                                    \
+                       whatever it happened to be was parsed into edacs_s_bits. */                                     \
+                    const char afs_a = optarg[1];                                                                      \
+                    const char afs_f = (afs_a != 0) ? optarg[2] : 0;                                                   \
+                    const char afs_s = (afs_f != 0) ? optarg[3] : 0;                                                   \
+                    char abits[2] = {afs_a, 0};                                                                        \
+                    char fbits[2] = {afs_f, 0};                                                                        \
+                    char sbits[2] = {afs_s, 0};                                                                        \
                     state->edacs_a_bits = (int)cli_parse_long_or_default(&abits[0], 10, 0);                            \
                     state->edacs_f_bits = (int)cli_parse_long_or_default(&fbits[0], 10, 0);                            \
                     state->edacs_s_bits = (int)cli_parse_long_or_default(&sbits[0], 10, 0);                            \
