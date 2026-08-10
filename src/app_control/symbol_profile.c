@@ -36,6 +36,17 @@ svc_publish_symbol_profile(const dsd_opts* opts, dsd_state* state, dsd_decode_mo
     if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
         return;
     }
+    /* Analog monitor has no symbol clock and no channel to protect, and the front
+       end already answers that case for itself with DSD_CH_LPF_PROFILE_WIDE
+       (opts_channel_profile_for_rate()). dsd_decode_mode_profile_for() has no
+       entry for it and falls back on 4800/4, so publishing that would ask
+       rtl_stream_set_symbol_profile() for the P25 C4FM filter and narrow the
+       monitor audio to a digital channel's width -- for a command that only chose
+       a mode. Narrower than "no digital decode mode": that is also the shape a
+       modulation change sees before any frame flag is set. */
+    if (opts->analog_only) {
+        return;
+    }
     /* Queued for the demod thread rather than written into demod state from the
        caller's thread. The clamp mirrors the no-override setter this replaced. */
     const int mod = state->rf_mod;
