@@ -412,13 +412,22 @@ WaterfallItem::onFrame() {
     m_range.update(bins.constData(), n);
 
     /* Always full span: that is what lets zoom and pan reach back through
-     * history without invalidating it. */
-    m_columns.resize(kWaterfallWidth);
-    resample_columns(bins.constData(), 0, n, m_columns.data(), kWaterfallWidth);
+     * history without invalidating it.
+     *
+     * Read straight out of the frame when it is already that wide, which is every
+     * frame the producer publishes: staging it costs a 4 KB copy and a second pass
+     * over the same values, fifteen times a second, to hand the row loop a pointer
+     * it could have had. The resample stays for the odd frame that is not. */
+    const float* columns = bins.constData();
+    if (n != kWaterfallWidth) {
+        m_columns.resize(kWaterfallWidth);
+        resample_columns(bins.constData(), 0, n, m_columns.data(), kWaterfallWidth);
+        columns = m_columns.constData();
+    }
 
     QRgb* row = reinterpret_cast<QRgb*>(m_image.scanLine(m_cursor));
     for (int x = 0; x < kWaterfallWidth; x++) {
-        row[x] = rampColor(m_range.normalize(static_cast<double>(m_columns[x])));
+        row[x] = rampColor(m_range.normalize(static_cast<double>(columns[x])));
     }
     m_cursor = (m_cursor - 1 + kWaterfallRows) % kWaterfallRows;
     m_rows_written++;
