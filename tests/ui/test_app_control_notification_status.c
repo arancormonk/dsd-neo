@@ -179,6 +179,35 @@ test_non_radio_input_reports_no_centre(void) {
     free(opts);
 }
 
+/* The record's two halves are published by separate calls, and the opts half is the one
+   that runs first -- dsd_telemetry_publish_both_and_redraw() publishes opts, then the whole
+   snapshot body, then state. So there is a window at the start of every session in which
+   g_have is already set while no slot has been written, and the sentinel has to survive it:
+   a reader following the header's "or -1 for none" and indexing slots[lead_slot] would
+   otherwise headline slot 0 on a session with nothing on the air. */
+static void
+test_opts_only_publish_keeps_the_no_slot_sentinel(void) {
+    dsd_app_notification_reset();
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851012500U;
+    dsd_app_notification_publish_opts(opts);
+    free(opts);
+
+    dsd_app_notification_status status;
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.slots[0].state == DSD_APP_CALL_LINE_NONE);
+    assert(status.slots[1].state == DSD_APP_CALL_LINE_NONE);
+    assert(status.lead_slot == -1);
+
+    /* And through the encoder, which passes lead_slot out verbatim. */
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(strstr(record, "\t-1\t") != NULL);
+}
+
 static void
 test_revision_advances_on_each_publish(void) {
     dsd_state* state = make_state();
@@ -675,14 +704,30 @@ test_reset_forgets_the_published_status(void) {
     destroy_state(state);
 }
 
+/* Both publishers early-return until a reader has asked once (g_wanted, notification_status.c).
+   Every publish below therefore depends on a get() having happened first -- which today is
+   incidental, because test_get_before_any_publish_reports_nothing() happens to run first.
+   Stated here instead so the dependency does not ride on call order: reordering main() would
+   otherwise turn the new first test's publish into a silent no-op and surface as an assertion
+   about the getter, pointing nowhere near the cause. */
+static void
+arm_publishers(void) {
+    dsd_app_notification_status probe;
+    /* Deliberately before test_get_before_any_publish_reports_nothing(): arming is all this
+       does, and get() reports nothing until something is actually published. */
+    (void)dsd_app_notification_get(&probe);
+}
+
 int
 main(void) {
+    arm_publishers();
     test_get_before_any_publish_reports_nothing();
     test_publish_state_carries_protocol_and_call();
     test_unsynced_publishes_empty_protocol();
     test_sync_label_is_held_across_a_frame_with_no_sync();
     test_publish_opts_carries_radio_and_trunking();
     test_non_radio_input_reports_no_centre();
+    test_opts_only_publish_keeps_the_no_slot_sentinel();
     test_revision_advances_on_each_publish();
     test_null_arguments_are_safe();
     test_lead_slot_is_published_and_survives_encoding();

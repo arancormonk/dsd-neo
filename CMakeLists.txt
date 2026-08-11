@@ -213,14 +213,17 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
         # sequence counter. GCC raises the diagnostic from inside libstdc++'s <atomic>,
         # where no pragma at our call site reaches it, so with -Werror it makes the whole
         # preset unbuildable. CI runs this preset under clang, which has no such warning,
-        # which is why it only bites locally. Narrowed to GCC: clang rejects unknown
-        # -Wno-* under -Werror.
-        if(
-            CMAKE_C_COMPILER_ID STREQUAL "GNU"
-            AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        # which is why it only bites locally.
+        #
+        # Per-language, not per-configuration: the diagnostic comes out of libstdc++, so
+        # it is C++-only, and testing both compiler ids meant a mixed CC=clang CXX=g++
+        # tree withheld the flag from the very TU that needs it and stayed unbuildable.
+        # The genex also keeps clang from ever seeing -Wno-tsan, which it rejects as an
+        # unknown warning option under -Werror.
+        list(
+            APPEND _dsd_san_cflags
+            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:GNU>>:-Wno-tsan>
         )
-            list(APPEND _dsd_san_cflags -Wno-tsan)
-        endif()
     endif()
 
     if(_dsd_san_cflags)

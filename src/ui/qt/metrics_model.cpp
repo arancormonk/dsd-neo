@@ -32,8 +32,11 @@ namespace {
  * Long enough to ride out the gaps between frames a 250 ms poll lands in, short
  * enough that a decoder which has genuinely stopped finding anything says so
  * while the reader is still looking at it.
+ *
+ * Shared with the Android notification through app-control, so the two surfaces cannot
+ * drift apart on when a session stops reading as locked.
  */
-constexpr double kSyncHoldSeconds = 3.0;
+constexpr double kSyncHoldSeconds = DSD_APP_SYNC_HOLD_S;
 
 /**
  * @brief "ALG 84 · KID 0001" when the crypto header decoded, else empty.
@@ -215,7 +218,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     /* Drives whether the tuner-facing rows are shown at all. Taken from the options
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */
-    next.radio_input = opts_snapshot->audio_in_type == AUDIO_IN_RTL;
+    next.radio_input = dsd_opts_input_is_radio(opts_snapshot) != 0;
 
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;

@@ -297,8 +297,11 @@ class MetricsModel : public QObject {
      */
     int
     leadSlot() const {
-        const int states[2] = {m_view.slot_call[0].state, m_view.slot_call[1].state};
-        return dsd_app_lead_slot(states, 2U) + 1;
+        int states[DSD_CALL_STATE_SLOT_COUNT];
+        for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+            states[slot] = m_view.slot_call[slot].state;
+        }
+        return dsd_app_lead_slot(states, static_cast<unsigned>(DSD_CALL_STATE_SLOT_COUNT)) + 1;
     }
 
     const QString&
@@ -521,7 +524,10 @@ class MetricsModel : public QObject {
         bool trunking_enabled = false;
         bool scanner_mode = false;
         QString ui_message;
-        SlotCall slot_call[2];
+        /* Sized from the canonical constant rather than a literal 2: leadSlot() ranks the
+         * whole array through dsd_app_lead_slot(), so the two must agree or the ranking
+         * would read past the end the day a third slot appears. */
+        SlotCall slot_call[DSD_CALL_STATE_SLOT_COUNT];
 
         /* Exact comparison is right for the two doubles: they are carried through
          * unmodified from the metrics boundary, so "unchanged" means the identical

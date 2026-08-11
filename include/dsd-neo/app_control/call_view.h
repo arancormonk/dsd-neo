@@ -47,6 +47,20 @@ enum {
  */
 #define DSD_APP_CALL_LINE_ENDED_HOLD_S ((double)DSD_RECENT_ACTIVITY_TTL_MS / 1000.0)
 
+/**
+ * @brief Seconds a sync label survives a frame that found none.
+ *
+ * getFrameSync() re-stamps @c state->synctype every engine iteration and answers NONE
+ * whenever the current search window found nothing, which on a control channel is most of
+ * them. Sampled raw, the protocol label blinks on and off between polls.
+ *
+ * Shared for the same reason the ended hold is: the Qt panel and the Android notification
+ * both decay this field, and a second literal is a promise the compiler cannot keep --
+ * retuning one would leave the two surfaces disagreeing about when a session stops
+ * reading as locked.
+ */
+#define DSD_APP_SYNC_HOLD_S            3.0
+
 enum {
     /**
      * @brief Size of @ref dsd_app_slot_call::name.

@@ -18,7 +18,12 @@
 #include <stdint.h>
 #include <string.h>
 
-static dsd_app_notification_status g_status;
+/* lead_slot starts at, and is reset to, the -1 "no slot" sentinel rather than the zero a
+   plain static initializer or a memset would leave: 0 names slot 0. The two halves of the
+   record are published separately, so an opts-only publish flips g_have with the slot
+   fields still untouched, and a reader that trusts the header's "or -1 for none" would
+   headline slot 0 on a session with nothing on the air. */
+static dsd_app_notification_status g_status = {.lead_slot = -1};
 static int g_have = 0;
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
@@ -32,12 +37,10 @@ static atomic_int g_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
    is the Android service's 1 Hz poll, so a desktop run must not pay for any of it. */
 static atomic_int g_wanted = 0;
 
-/* Seconds a sync label survives a frame that found none. Matches the hold the Qt panel
-   applies to the same field (kSyncHoldSeconds in src/ui/qt/metrics_model.cpp), so the
-   two surfaces agree on when a session stops reading as locked. Guarded by g_mu with the
-   record itself, because dsd_app_notification_reset() clears them together and can be
-   called from a thread other than the publisher's. */
-#define NOTIFICATION_SYNC_HOLD_S 3.0
+/* The sync-hold decay, sharing DSD_APP_SYNC_HOLD_S with the Qt panel so the two surfaces
+   cannot come to disagree about when a session stops reading as locked. Guarded by g_mu
+   with the record itself, because dsd_app_notification_reset() clears them together and
+   can be called from a thread other than the publisher's. */
 static int g_sync_type = DSD_SYNC_NONE;
 static double g_sync_seen_m = 0.0;
 
@@ -71,6 +74,7 @@ dsd_app_notification_publish_state(const dsd_state* state) {
        decode thread must never wait on a JNI poll, and a poll must never see a
        half-written record. */
     dsd_app_slot_call slots[DSD_CALL_STATE_SLOT_COUNT];
+    int line_states[DSD_CALL_STATE_SLOT_COUNT];
     const double now_m = dsd_time_now_monotonic_s();
     /* int, not uint8_t: DSD_CALL_STATE_SLOT_COUNT is an int-typed enum constant, and
        comparing a narrower loop variable against it is what
@@ -78,9 +82,6 @@ dsd_app_notification_publish_state(const dsd_state* state) {
        for this same constant in call_view.c's app_canonical_active_p25_freq(). */
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         dsd_app_slot_call_view(state, (uint8_t)slot, now_m, &slots[slot]);
-    }
-    int line_states[DSD_CALL_STATE_SLOT_COUNT];
-    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         line_states[slot] = slots[slot].state;
     }
     const int8_t lead = (int8_t)dsd_app_lead_slot(line_states, (unsigned)DSD_CALL_STATE_SLOT_COUNT);
@@ -101,7 +102,7 @@ dsd_app_notification_publish_state(const dsd_state* state) {
     if (synctype != DSD_SYNC_NONE) {
         g_sync_type = synctype;
         g_sync_seen_m = now_m;
-    } else if (g_sync_type != DSD_SYNC_NONE && (now_m - g_sync_seen_m) > NOTIFICATION_SYNC_HOLD_S) {
+    } else if (g_sync_type != DSD_SYNC_NONE && (now_m - g_sync_seen_m) > DSD_APP_SYNC_HOLD_S) {
         g_sync_type = DSD_SYNC_NONE;
     }
 
@@ -184,6 +185,8 @@ dsd_app_notification_reset(void) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     DSD_MEMSET(&g_status, 0, sizeof(g_status));
+    /* Back to the sentinel the memset just overwrote; see the declaration. */
+    g_status.lead_slot = -1;
     /* The sync hold goes with the record: carried across, it would let the next session's
        first frames publish the previous one's protocol label. */
     g_sync_type = DSD_SYNC_NONE;

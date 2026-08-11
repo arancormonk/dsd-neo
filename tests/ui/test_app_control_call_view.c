@@ -241,6 +241,45 @@ test_x2tdma_identityless_epoch_still_shows(void) {
     destroy_state(state);
 }
 
+/* The other half of call_has_no_identity()'s protocol exception. Only the X2-TDMA arm was
+   covered, so deleting DSD_SYNC_IS_PROVOICE() from that test left the whole suite green
+   while every standalone ProVoice transmission read IDLE on the terminal, the Qt hero
+   panel and the Android notification at once -- with audio playing and history rows being
+   written the whole time. */
+static void
+test_provoice_identityless_epoch_still_shows(void) {
+    dsd_state* state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_PROVOICE_POS, 0U, 0U, 0U);
+    observation.kind = DSD_CALL_KIND_VOICE;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    destroy_state(state);
+}
+
+/* A numeric source and nothing else is identity enough. Every other case here gives the
+   call a target as well, so the ota_source_id conjunct in call_has_no_identity() was
+   unpinned: dropping it suppressed unit-to-unit traffic -- NXDN, dPMR and DMR private
+   calls, where the source routinely decodes before any target does -- on all three
+   surfaces, with nothing failing. */
+static void
+test_source_id_alone_confers_identity(void) {
+    dsd_state* state = make_state();
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 4242U, 0U);
+    observation.kind = DSD_CALL_KIND_PRIVATE_VOICE;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strcmp(view.src_text, "4242") == 0);
+    destroy_state(state);
+}
+
 static void
 test_encrypted_call_carries_alg_and_kid(void) {
     dsd_state* state = make_state();
@@ -520,6 +559,8 @@ main(void) {
     test_route_text_leg0_confers_identity();
     test_route_text_leg1_confers_identity();
     test_x2tdma_identityless_epoch_still_shows();
+    test_provoice_identityless_epoch_still_shows();
+    test_source_id_alone_confers_identity();
     test_encrypted_call_carries_alg_and_kid();
     test_crypto_classification_reads_encrypted(DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     test_crypto_classification_reads_encrypted(DSD_CALL_CRYPTO_DECRYPTABLE);
