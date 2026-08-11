@@ -132,6 +132,15 @@ dsd_app_notification_get(dsd_app_notification_status* out) {
     return have;
 }
 
+void
+dsd_app_notification_reset(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    DSD_MEMSET(&g_status, 0, sizeof(g_status));
+    g_have = 0;
+    dsd_mutex_unlock(&g_mu);
+}
+
 /**
  * @brief Split a UTF-8 lead byte into its continuation count and leading bits.
  *

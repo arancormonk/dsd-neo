@@ -66,6 +66,18 @@ void dsd_app_notification_publish_opts(const dsd_opts* opts);
  */
 int dsd_app_notification_get(dsd_app_notification_status* out);
 
+/**
+ * @brief Forget everything published, so the next get() reports nothing again.
+ *
+ * The published record is a module static and outlives the session that filled it. The
+ * Android service starts its status poll before the engine reaches
+ * dsd_app_frontend_runtime_start(), so without this a second session's first poll would
+ * render the previous session's last call for as long as a poll interval.
+ *
+ * Called from dsd_app_frontend_runtime_stop(). Safe from any thread.
+ */
+void dsd_app_notification_reset(void);
+
 /** @brief The monotonic clock the publisher stamps call ages from; for tests. */
 double dsd_app_notification_test_now_m(void);
 

@@ -541,6 +541,39 @@ test_concurrent_publish_and_get_never_tears(void) {
     free(state);
 }
 
+/* MUST run last in main(): it puts the module back to its never-published state, which
+   is the one condition every other test here needs not to be in. */
+static void
+test_reset_forgets_the_published_status(void) {
+    dsd_state* state = make_state();
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->trunk_vc_freq[0] = 851012500L;
+    dsd_app_notification_publish_state(state);
+
+    dsd_app_notification_status before;
+    assert(dsd_app_notification_get(&before) == 1);
+    assert(before.protocol[0] != '\0');
+
+    dsd_app_notification_reset();
+
+    dsd_app_notification_status after;
+    /* Poisoned, so "zeroed" is a claim about the callee. */
+    DSD_MEMSET(&after, 0xAB, sizeof(after));
+    /* Back to reporting nothing, not merely to a stale record with a fresh revision:
+       the record is a module static that outlives its session, and the Android service
+       polls it before the next session has published anything. */
+    assert(dsd_app_notification_get(&after) == 0);
+    assert(after.revision == 0U);
+    assert(after.protocol[0] == '\0');
+    assert(after.vc_freq_hz == 0);
+    assert(after.slots[0].state == DSD_APP_CALL_LINE_NONE);
+
+    /* And the encoder, the only thing the service actually reads, has nothing to give. */
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) == 0);
+    free(state);
+}
+
 int
 main(void) {
     test_get_before_any_publish_reports_nothing();
@@ -560,6 +593,7 @@ main(void) {
     test_encode_rejects_a_short_buffer();
     test_encode_matches_expected_record_field_order();
     test_concurrent_publish_and_get_never_tears();
+    test_reset_forgets_the_published_status();
     printf("APP_CONTROL_NOTIFICATION_STATUS ok\n");
     return 0;
 }
