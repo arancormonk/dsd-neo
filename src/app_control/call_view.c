@@ -5,11 +5,14 @@
 
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 /**
  * @brief Whether the call reads as encrypted over the air, including DECRYPTABLE.
@@ -148,4 +151,123 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
     const double ref_m = (line == DSD_APP_CALL_LINE_ENDED) ? call.ended_m : now_m;
     const double elapsed = ref_m - call.started_m;
     out->elapsed_ms = (elapsed > 0.0) ? (uint32_t)(elapsed * 1000.0) : 0U;
+}
+
+static int
+app_is_p25_synctype(int synctype) {
+    return DSD_SYNC_IS_P25P1(synctype) || DSD_SYNC_IS_P25P2(synctype);
+}
+
+static long int
+app_canonical_active_p25_freq(const dsd_call_state_snapshot* calls) {
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        const dsd_call_snapshot* call = &calls->slots[slot];
+        if (call->phase == DSD_CALL_PHASE_ACTIVE && app_is_p25_synctype(call->protocol) && call->frequency_hz > 0) {
+            return (long int)call->frequency_hz;
+        }
+    }
+    return 0;
+}
+
+static int
+app_extract_channel_token(const char* channel_str, char* tok, size_t tok_len) {
+    const char* p = strstr(channel_str, "Ch:");
+    if (!p || tok_len == 0) {
+        return 0;
+    }
+    p += 3;
+    while (*p == ' ') {
+        p++;
+    }
+    size_t t = 0;
+    while (*p && t + 1 < tok_len) {
+        char c = *p;
+        int is_hex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+        if (!is_hex) {
+            break;
+        }
+        tok[t++] = c;
+        p++;
+    }
+    tok[t] = '\0';
+    return t > 0;
+}
+
+static long int
+app_lookup_trunk_chan_map(const dsd_state* state, const char* tok) {
+    char* endp = NULL;
+    long ch_hex = strtol(tok, &endp, 16);
+    if (endp && *endp == '\0' && ch_hex > 0 && ch_hex < 65535) {
+        long int freq = state->trunk_chan_map[ch_hex];
+        if (freq != 0) {
+            return freq;
+        }
+    }
+    long ch_dec = strtol(tok, &endp, 10);
+    if (endp && *endp == '\0' && ch_dec > 0 && ch_dec < 65535) {
+        return state->trunk_chan_map[ch_dec];
+    }
+    return 0;
+}
+
+static long int
+app_recent_activity_vc_freq(const dsd_state* state) {
+    dsd_recent_activity_snapshot recent;
+    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0) {
+        return 0;
+    }
+    const uint64_t now_ms = (uint64_t)(dsd_time_now_monotonic_s() * 1000.0);
+    for (int i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
+        const dsd_recent_activity_entry* entry = &recent.entries[i];
+        if (entry->updated_m_ms != 0U && now_ms >= entry->updated_m_ms
+            && now_ms - entry->updated_m_ms > DSD_RECENT_ACTIVITY_TTL_MS) {
+            continue;
+        }
+        if (entry->observation.frequency_hz > 0) {
+            return (long int)entry->observation.frequency_hz;
+        }
+        const char* activity = entry->notice;
+        if (!activity || activity[0] == '\0') {
+            continue;
+        }
+        char channel[8] = {0};
+        if (!app_extract_channel_token(activity, channel, sizeof(channel))) {
+            continue;
+        }
+        const long int frequency = app_lookup_trunk_chan_map(state, channel);
+        if (frequency != 0) {
+            return frequency;
+        }
+    }
+    return 0;
+}
+
+long int
+dsd_app_vc_freq(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    dsd_call_state_snapshot calls;
+    const int has_canonical = dsd_call_state_copy_snapshot(state, &calls) > 0;
+    if (has_canonical) {
+        const long int canonical_frequency = app_canonical_active_p25_freq(&calls);
+        if (canonical_frequency != 0) {
+            return canonical_frequency;
+        }
+    }
+    if (state->trunk_vc_freq[0] != 0) {
+        return state->trunk_vc_freq[0];
+    }
+    if (state->p25_vc_freq[0] != 0) {
+        return state->p25_vc_freq[0];
+    }
+    return app_recent_activity_vc_freq(state);
+}
+
+long int
+dsd_app_cc_freq(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    return (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
 }

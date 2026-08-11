@@ -391,6 +391,55 @@ test_seconds_truncation_matches_qt_adapter(void) {
     free(state);
 }
 
+static void
+test_vc_freq_prefers_canonical_active_p25_call(void) {
+    dsd_state* state = make_state();
+    state->trunk_vc_freq[0] = 852012500L;
+
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.frequency_hz = 851012500;
+    observation.observed_m = 10.0;
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    /* Step 1 of the chain wins over the trunk_vc_freq fallback. */
+    assert(dsd_app_vc_freq(state) == 851012500L);
+    free(state);
+}
+
+static void
+test_vc_freq_falls_back_through_the_chain(void) {
+    dsd_state* state = make_state();
+    assert(dsd_app_vc_freq(state) == 0L);
+
+    state->p25_vc_freq[0] = 853012500L;
+    assert(dsd_app_vc_freq(state) == 853012500L);
+
+    /* trunk_vc_freq outranks p25_vc_freq. */
+    state->trunk_vc_freq[0] = 852012500L;
+    assert(dsd_app_vc_freq(state) == 852012500L);
+    free(state);
+}
+
+static void
+test_cc_freq_prefers_trunk_over_p25(void) {
+    dsd_state* state = make_state();
+    assert(dsd_app_cc_freq(state) == 0L);
+
+    state->p25_cc_freq = 851512500L;
+    assert(dsd_app_cc_freq(state) == 851512500L);
+
+    state->trunk_cc_freq = 851612500L;
+    assert(dsd_app_cc_freq(state) == 851612500L);
+    free(state);
+}
+
+static void
+test_freq_helpers_are_null_safe(void) {
+    assert(dsd_app_vc_freq(NULL) == 0L);
+    assert(dsd_app_cc_freq(NULL) == 0L);
+}
+
 int
 main(void) {
     test_idle_slot_reports_none();
@@ -413,6 +462,10 @@ main(void) {
     test_call_line_state_boundaries();
     test_null_arguments_are_safe();
     test_seconds_truncation_matches_qt_adapter();
+    test_vc_freq_prefers_canonical_active_p25_call();
+    test_vc_freq_falls_back_through_the_chain();
+    test_cc_freq_prefers_trunk_over_p25();
+    test_freq_helpers_are_null_safe();
     printf("APP_CONTROL_CALL_VIEW ok\n");
     return 0;
 }

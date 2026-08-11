@@ -83,6 +83,26 @@ int dsd_app_call_line_state(int lookup, const dsd_call_snapshot* call, double no
  */
 void dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_app_slot_call* out);
 
+/**
+ * @brief The voice-channel frequency in Hz, or 0 when none resolves.
+ *
+ * Four sources in precedence order: an active P25 call epoch carrying its own frequency,
+ * then @c trunk_vc_freq[0], then @c p25_vc_freq[0], then the newest live recent-activity
+ * entry -- either its own frequency or a "Ch:" token resolved through @c trunk_chan_map.
+ *
+ * The tuner centre is deliberately not in this chain. On a trunked system a retune moves
+ * the centre out from under the call, so it is not a proxy for the voice channel.
+ */
+long int dsd_app_vc_freq(const dsd_state* state);
+
+/**
+ * @brief The control-channel frequency in Hz, or 0 when none is known.
+ *
+ * A different value from @ref dsd_app_vc_freq: on a tuned trunked system the decoder is
+ * sitting on the voice channel while the control channel is where it will return.
+ */
+long int dsd_app_cc_freq(const dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

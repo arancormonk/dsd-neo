@@ -1544,6 +1544,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
