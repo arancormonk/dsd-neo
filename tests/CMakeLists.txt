@@ -1520,6 +1520,26 @@ target_link_libraries(
 )
 add_test(NAME APP_CONTROL_CALL_VIEW COMMAND dsd-neo_test_app_control_call_view)
 
+add_executable(
+    dsd-neo_test_app_control_notification_status
+    ui/test_app_control_notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_NOTIFICATION_STATUS
+    COMMAND dsd-neo_test_app_control_notification_status
+)
+
 if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -2403,6 +2423,9 @@ add_executable(
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -2428,6 +2451,9 @@ add_executable(
     dsd-neo_test_app_control_opts_snapshot
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot
@@ -2435,7 +2461,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_control_opts_snapshot
-    PRIVATE dsd-neo_platform
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
 )
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT

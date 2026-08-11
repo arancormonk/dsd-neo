@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/state.h>
@@ -198,6 +199,10 @@ dsd_app_telemetry_publish_snapshot(const dsd_state* state) {
     g_have = 1;
     g_pub_seq++;
     dsd_mutex_unlock(&g_mu);
+    /* Outside this module's lock on purpose: the notification publisher takes its own,
+       and nesting the two would put a lock-order edge between the snapshot path and a
+       JNI poll. */
+    dsd_app_notification_publish_state(state);
 }
 
 const dsd_state*
