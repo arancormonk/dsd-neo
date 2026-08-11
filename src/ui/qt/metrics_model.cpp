@@ -8,8 +8,8 @@
 #include <QChar>
 #include <QDateTime>
 #include <QtGlobal>
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/frontend.h>
-#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
@@ -19,7 +19,6 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 
-#include "call_line.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -33,91 +32,27 @@ namespace {
  * Long enough to ride out the gaps between frames a 250 ms poll lands in, short
  * enough that a decoder which has genuinely stopped finding anything says so
  * while the reader is still looking at it.
- */
-constexpr double kSyncHoldSeconds = 3.0;
-
-/**
- * @brief Whether the call reads as encrypted over the air, including DECRYPTABLE.
  *
- * Same definition the event ring stamps on history rows (and the terminal UI
- * renders): the live view and the call log must agree on which transmissions
- * were encrypted, or a decrypted call plays clear here and then hides under
- * the log's ENC filter.
+ * Shared with the Android notification through app-control, so the two surfaces cannot
+ * drift apart on when a session stops reading as locked.
  */
-bool
-call_reads_encrypted(const dsd_call_snapshot& call) {
-    return call.crypto == DSD_CALL_CRYPTO_ENCRYPTED || call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING
-           || call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE;
-}
+constexpr double kSyncHoldSeconds = DSD_APP_SYNC_HOLD_S;
 
 /**
  * @brief "ALG 84 · KID 0001" when the crypto header decoded, else empty.
  *
- * What the terminal UI's slot line showed, so AES and RC4 traffic read
- * differently at a glance; the ENC tag alone covers "encrypted, alg unknown".
+ * What the terminal UI's slot line showed, so AES and RC4 traffic read differently at a
+ * glance; the ENC tag alone covers "encrypted, alg unknown".
  */
 QString
-slot_enc_text(const dsd_call_snapshot& call) {
-    if (call.algid == 0U) {
+slot_enc_text(quint8 algid, quint16 kid) {
+    if (algid == 0U) {
         return QString();
     }
     return QStringLiteral("ALG %1 · KID %2")
-        .arg(call.algid, 2, 16, QLatin1Char('0'))
-        .arg(call.kid, 4, 16, QLatin1Char('0'))
+        .arg(algid, 2, 16, QLatin1Char('0'))
+        .arg(kid, 4, 16, QLatin1Char('0'))
         .toUpper();
-}
-
-/**
- * @brief Whether the epoch carries nothing that could name a transmission.
- *
- * The decoder opens one on a frame that synced far enough to be a frame and no
- * further, which happens routinely on a control channel and on noise while
- * hunting. Rendered, it becomes a call from talkgroup 0 by nobody — and if a
- * stale crypto header is still on the slot, an encrypted one. On a session that
- * has not locked onto anything, that is the screen inventing traffic.
- *
- * The field list mirrors dsd_call_state_snapshot_has_identity() (call_state.c),
- * route_text included: D-STAR, NXDN and YSF enrich the repeater pair, and a call
- * whose route decoded before its callsigns is a named transmission the canonical
- * layer already counts as one. That helper lives behind call_state_internal.h and
- * a frontend cannot call it, which is why this mirror exists — but a mirror that
- * drops a field reports idle for calls the rest of the app is showing.
- *
- * X2-TDMA and standalone ProVoice are the deliberate exception, matching
- * dsd_call_state_protocol_voice_is_anonymous(): those modes never parse voice into
- * a talkgroup or a source at all, so an identity-less voice epoch is the whole
- * story the protocol has — not a frame that synced and went nowhere. Suppressed,
- * their transmissions would play audio and log history rows while the panel said
- * nothing was happening.
- */
-bool
-call_has_no_identity(const dsd_call_snapshot& call) {
-    if (DSD_SYNC_IS_X2TDMA(call.protocol) || DSD_SYNC_IS_PROVOICE(call.protocol)) {
-        return false;
-    }
-    return call.ota_target_id == 0U && call.policy_target_id == 0U && call.target_text[0] == '\0'
-           && call.ota_source_id == 0U && call.source_text[0] == '\0' && call.route_text[0][0] == '\0'
-           && call.route_text[1][0] == '\0';
-}
-
-/**
- * @brief The CSV-imported group name staged on the slot's active history row, or empty.
- *
- * The staged row's target_id is stamped OTA-then-policy by the event layer, so it
- * must be compared against the same preference (the caller's resolved tg_id), not
- * the OTA id alone — a policy-resolved talkgroup would never match otherwise.
- * Nonzero required: a text-only target's 0 would "match" a stale staged row.
- */
-QString
-staged_group_name(const dsd_state* snapshot, quint8 slot, qulonglong tg_id) {
-    if (snapshot->event_history_s == nullptr || tg_id == 0) {
-        return QString();
-    }
-    const Event_History* staged = &snapshot->event_history_s[slot].Event_History_Items[0];
-    if (staged->t_name[0] == '\0' || staged->target_id != static_cast<uint32_t>(tg_id)) {
-        return QString();
-    }
-    return QString::fromUtf8(staged->t_name);
 }
 
 } // namespace
@@ -125,46 +60,30 @@ staged_group_name(const dsd_state* snapshot, quint8 slot, qulonglong tg_id) {
 /**
  * @brief Structured identity for one slot, display-ready for the hero panel.
  *
- * The friendly name prefers the CSV-imported group name staged on the slot's active
- * history row, but only when that row is about the same talkgroup — the staged row
- * outlives a call by design and must not caption the next one.
+ * Thin adapter over the shared app-control view: it owns the ended-hold decay, the
+ * identity-less-epoch suppression and the staged CSV group name lookup, so the
+ * terminal, this panel and the Android notification cannot drift apart on any of them.
  */
 MetricsModel::SlotCall
 MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m) {
     MetricsModel::SlotCall out;
-    dsd_call_snapshot call = {};
-    const CallLineState line = call_line_state(dsd_call_state_get(snapshot, slot, &call), call, now_m);
-    out.state = static_cast<int>(line);
-    if (line != kCallLineActive && line != kCallLineEnded) {
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(snapshot, slot, now_m, &view);
+
+    out.state = view.state;
+    if (view.state != DSD_APP_CALL_LINE_ACTIVE && view.state != DSD_APP_CALL_LINE_ENDED) {
         return out;
     }
 
-    /* An epoch with nothing in it is not a transmission anyone can be shown. */
-    if (call_has_no_identity(call)) {
-        out.state = static_cast<int>(kCallLineIdle);
-        return out;
-    }
-
-    const QString target = (call.target_text[0] != '\0') ? QString::fromUtf8(call.target_text)
-                                                         : QString::number(static_cast<qulonglong>(call.ota_target_id));
-    out.tg_text = target;
-    // Same preference order the event layer uses: the OTA id when one decoded,
-    // the policy-resolved id otherwise. Text-only targets stay 0.
-    out.tg_id = (call.ota_target_id != 0U) ? static_cast<qulonglong>(call.ota_target_id)
-                                           : static_cast<qulonglong>(call.policy_target_id);
-    out.src_text = (call.source_text[0] != '\0') ? QString::fromUtf8(call.source_text)
-                                                 : QString::number(static_cast<qulonglong>(call.ota_source_id));
-
-    const QString staged_name = staged_group_name(snapshot, slot, out.tg_id);
-    out.name = staged_name.isEmpty() ? target : staged_name;
-
-    out.enc = call_reads_encrypted(call);
+    out.tg_text = QString::fromUtf8(view.tg_text);
+    out.tg_id = static_cast<qulonglong>(view.tg_id);
+    out.src_text = QString::fromUtf8(view.src_text);
+    out.name = QString::fromUtf8(view.name);
+    out.enc = view.enc != 0U;
     if (out.enc) {
-        out.enc_text = slot_enc_text(call);
+        out.enc_text = slot_enc_text(view.algid, view.kid);
     }
-    const double ref_m = (line == kCallLineEnded) ? call.ended_m : now_m;
-    const double elapsed = ref_m - call.started_m;
-    out.seconds = (elapsed > 0.0) ? static_cast<int>(elapsed) : 0;
+    out.seconds = static_cast<int>(view.elapsed_ms / 1000U);
     return out;
 }
 
@@ -198,6 +117,9 @@ MetricsModel::publish(const View& next) {
     }
     if (slot2Moved) {
         Q_EMIT slot2Changed();
+    }
+    if (slot1Moved || slot2Moved) {
+        Q_EMIT leadSlotChanged();
     }
     if (controlMoved) {
         Q_EMIT controlChanged();
@@ -296,7 +218,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     /* Drives whether the tuner-facing rows are shown at all. Taken from the options
      * the running session was configured with, which is the same authority the
      * metrics fetch above uses to decide whether any of them mean anything. */
-    next.radio_input = opts_snapshot->audio_in_type == AUDIO_IN_RTL;
+    next.radio_input = dsd_opts_input_is_radio(opts_snapshot) != 0;
 
     next.carrier_lock = metrics.carrier_lock != 0;
     next.cfo_hz = metrics.cfo_hz;

@@ -8,7 +8,10 @@
 #include <QCoreApplication>
 #include <QJniEnvironment>
 #include <QJniObject>
+#include <QMetaObject>
 #include <QVariant>
+
+#include <jni.h>
 
 #include "dsdneo_jni.h"
 
@@ -303,3 +306,54 @@ DecoderHostAndroid::setLocalDeviceState(bool ready, const QString& text) {
 }
 
 } // namespace dsd_android
+
+extern "C" {
+
+/**
+ * @brief Asks the Qt event loop to quit, so main() can return.
+ *
+ * Called from DsdNeoActivity.onDestroy() before Qt's own teardown runs, and it has to
+ * be: QtActivityBase.onDestroy() calls QtNative.terminateQtNativeApplication(), which
+ * waits on a semaphore that is only posted once main() has returned — but the quit that
+ * would make it return is raised by Qt only when the Android event dispatcher is already
+ * stopped:
+ *
+ *     if (QAndroidEventDispatcherStopper::instance()->stopped()) {
+ *         QAndroidEventDispatcherStopper::instance()->startAll();
+ *         QCoreApplication::quit();
+ *         ...
+ *     }
+ *     if (startQtAndroidPluginCalled.loadAcquire())
+ *         sem_wait(&m_terminateSemaphore);
+ *
+ * With the dispatcher still running — which is the state a swipe out of recents leaves
+ * behind — no quit is sent and the wait never ends. Without a foreground service the
+ * process is an empty-process kill candidate and Android reaps it before anyone notices;
+ * with the decoder's service up the process is retained, so the block persists and every
+ * later main-thread delivery, the service's own included, times out into an ANR.
+ *
+ * Safe before Qt exists — the Activity can be destroyed after a failed start, when there
+ * is no QCoreApplication instance to end.
+ */
+JNIEXPORT void JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeQuitUi(JNIEnv* env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+
+    QCoreApplication* app = QCoreApplication::instance();
+    if (app == nullptr) {
+        return;
+    }
+    /* exit(), not quit(). Since Qt 6, quit() first asks every top-level window to close
+     * and abandons the quit if any of them refuses -- and Main.qml's onClosing refuses
+     * every time, because that handler is what turns a window close into
+     * moveToBackground() so a decode session survives the user leaving the app. Calling
+     * quit() here therefore did nothing at all: the handler declined, the loop carried on
+     * and the teardown went on waiting. exit() leaves the event loop directly, without
+     * consulting windows, which is what a teardown that cannot be declined needs.
+     *
+     * Queued so the loop unwinds on its own thread; this runs on the Android main thread. */
+    QMetaObject::invokeMethod(app, []() { QCoreApplication::exit(0); }, Qt::QueuedConnection);
+}
+
+} // extern "C"

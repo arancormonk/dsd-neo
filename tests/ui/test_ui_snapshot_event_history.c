@@ -4,12 +4,14 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
@@ -298,6 +300,20 @@ main(void) {
     assert(dsd_tg_policy_lookup_id(snap, 7777U, &lookup) == 0);
     assert(lookup.match == DSD_TG_POLICY_MATCH_EXACT);
     assert(strcmp(lookup.entry.name, "POLICY-ONLY") == 0);
+
+    /* This publisher also feeds the notification record the Android foreground service
+       reads with no Qt in the picture. The fan-out sits at the tail of
+       dsd_app_telemetry_publish_snapshot() and had no coverage anywhere: deleting the call
+       left the whole suite green while the notification went permanently blank. The
+       publishers stay dormant until a reader has asked once, so arm them first. */
+    dsd_app_notification_status notification;
+    (void)dsd_app_notification_get(&notification);
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->trunk_cc_freq = 851006250L;
+    dsd_app_telemetry_publish_snapshot(state);
+    assert(dsd_app_notification_get(&notification) == 1);
+    assert(strcmp(notification.protocol, "P25p2") == 0);
+    assert(notification.cc_freq_hz == 851006250);
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

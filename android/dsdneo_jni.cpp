@@ -7,9 +7,10 @@
  * @file
  * @brief JNI lifecycle surface for the Android app: init/configure/run/stop/destroy.
  *
- * There is no data path here. The Qt UI links the engine in-process and reads
- * app-control directly; JNI only carries what has to cross into Java: the engine
- * lifetime (owned by the foreground service) and platform glue.
+ * The Qt UI links the engine in-process and reads app-control directly, so JNI carries
+ * only what has to cross into Java: lifecycle, platform glue, and one read-only status
+ * record -- the scanner readout the foreground service renders into its notification,
+ * which it needs with no Qt in the picture. No audio, symbols or I/Q cross here.
  *
  * One engine instance per process (ground rule 4), guarded by a single mutex.
  * Nothing throws across JNI — every entry point returns a status code.
@@ -31,6 +32,7 @@
 #include <unistd.h>
 
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -546,6 +548,28 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsUsbFdInUse(JNIEnv* env, jcla
     /* No radio pipeline, so nothing can have taken the descriptor. */
     return JNI_FALSE;
 #endif
+}
+
+JNIEXPORT jstring JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeNotificationStatus(JNIEnv* env, jclass clazz) {
+    (void)clazz;
+
+    /* Deliberately lock-free with respect to g_lock. This is polled from the service's
+     * main thread once a second, and the publisher behind it takes only its own short
+     * mutex -- taking g_lock here would put a UI-thread poll behind nativeConfigure's
+     * whole bootstrap. */
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    if (dsd_app_notification_encode(record, sizeof(record)) == 0) {
+        return nullptr;
+    }
+    jstring result = env->NewStringUTF(record);
+    if (result == nullptr) {
+        /* Allocation failure leaves a pending OutOfMemoryError: returning null with it
+         * still pending would throw into the service's poll loop instead of handing back
+         * a value, so absorb it here and let this poll look like "nothing published". */
+        clear_pending_exception(env);
+    }
+    return result;
 }
 
 } // extern "C"

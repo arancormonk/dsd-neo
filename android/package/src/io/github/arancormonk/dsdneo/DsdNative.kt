@@ -55,4 +55,28 @@ object DsdNative {
      * it to clear before releasing.
      */
     external fun nativeIsUsbFdInUse(): Boolean
+
+    /**
+     * The decoder's current status as one versioned, tab-separated record, or null when
+     * nothing has been published yet.
+     *
+     * One call rather than a field at a time: the service polls this off the decode
+     * thread, and reading fields separately would let a publish land between them and
+     * produce a status describing two different moments.
+     */
+    external fun nativeNotificationStatus(): String?
+
+    /**
+     * Asks the Qt event loop to quit so its `main()` returns.
+     *
+     * Qt's own teardown waits for that to happen but only raises the quit when the
+     * Android event dispatcher is already stopped, which it is not when the task is
+     * swiped out of recents — so without this the wait never ends. Called from
+     * [DsdNeoActivity.onDestroy]; see the JNI side in `android/decoder_host_android.cpp`
+     * for the full account.
+     *
+     * A no-op when no QCoreApplication exists yet, so it is safe on an Activity torn
+     * down before Qt finished starting.
+     */
+    external fun nativeQuitUi()
 }

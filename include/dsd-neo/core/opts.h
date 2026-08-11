@@ -620,6 +620,28 @@ dsd_opts_input_upsample_factor(const dsd_opts* opts) {
 }
 
 /**
+ * @brief Return 1 when a tuner sits behind this session, 0 otherwise.
+ *
+ * The question every surface that renders a tuner reading has to ask first. On a WAV,
+ * stdin, UDP, TCP or symbol-file session the centre frequency, gain, squelch and PPM are
+ * options the front end never applied, and rendering them puts plausible readings on
+ * screen for a run that has no radio; the RTL stream state is process-global and outlives
+ * its session, so the readings themselves cannot be trusted to say so. The input type is
+ * re-parsed per session and can, which is why it is the authority.
+ *
+ * One predicate rather than an open-coded comparison per call site: the moment a second
+ * RTL-family input type appears, whichever site is updated first would otherwise start
+ * disagreeing with the others about whether the same session has a tuner.
+ *
+ * @param opts Decoder options containing the configured input source.
+ * @return 1 for RTL-family input, 0 for everything else and for NULL.
+ */
+static inline int
+dsd_opts_input_is_radio(const dsd_opts* opts) {
+    return (opts != NULL && opts->audio_in_type == AUDIO_IN_RTL) ? 1 : 0;
+}
+
+/**
  * @brief Return the effective PCM rate seen by non-RTL PCM decode paths.
  *
  * @param opts Decoder options containing the configured PCM input sample rate.

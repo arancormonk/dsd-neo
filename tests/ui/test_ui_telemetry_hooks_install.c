@@ -5,6 +5,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
@@ -17,6 +18,12 @@
 static dsd_telemetry_hooks g_hooks;
 static int g_snapshot_calls;
 static int g_opts_snapshot_calls;
+static int g_notification_resets;
+
+void
+dsd_app_notification_reset(void) { // NOLINT(misc-use-internal-linkage)
+    g_notification_resets++;
+}
 
 void
 dsd_telemetry_hooks_set(dsd_telemetry_hooks hooks) { // NOLINT(misc-use-internal-linkage)
@@ -69,5 +76,16 @@ main(void) {
 
     dsd_app_install_telemetry_hooks();
     assert(g_hooks.request_redraw == dsd_app_request_redraw);
+
+    /* Stopping must drop the published status with the hooks. It is a module static
+       that outlives the session, and the Android service polls it again before the next
+       session has published anything -- a stale record would caption the new run with
+       the previous one's last call. */
+    assert(g_notification_resets == 0);
+    dsd_app_frontend_runtime_stop();
+    assert(g_notification_resets == 1);
+    assert(g_hooks.publish_snapshot == NULL);
+    assert(g_hooks.publish_opts_snapshot == NULL);
+    assert(g_hooks.request_redraw == NULL);
     return 0;
 }

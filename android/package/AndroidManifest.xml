@@ -39,8 +39,18 @@
         android:allowBackup="false"
         android:fullBackupOnly="false">
 
+        <!-- QtActivity plus one override: it raises the Qt quit that Qt's own teardown
+             waits for but does not send. See DsdNeoActivity. -->
+        <!-- The launcher activity has to be exported: it carries the MAIN/LAUNCHER filter
+             and the USB_DEVICE_ATTACHED filter, and both are delivered by the system from
+             outside the app. It reads nothing from the intent beyond what Qt takes for its
+             own startup, so there is no control plane behind it to reach. Suppressed on
+             this element and this rule only, rather than excluding the manifest from the
+             scan. The finding predates DsdNeoActivity — it fires on the stock QtActivity
+             declaration too — and only surfaces when a change touches this file. -->
+        <!-- nosemgrep: java.android.security.exported_activity.exported_activity -->
         <activity
-            android:name="org.qtproject.qt.android.bindings.QtActivity"
+            android:name="io.github.arancormonk.dsdneo.DsdNeoActivity"
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
             android:label="-- %%INSERT_APP_NAME%% --"
             android:launchMode="singleTop"

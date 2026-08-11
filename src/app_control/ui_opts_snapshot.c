@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -50,6 +51,10 @@ dsd_app_telemetry_publish_opts_snapshot(const dsd_opts* opts) {
     g_pub_opts_seq++;
     g_have_opts = 1;
     dsd_mutex_unlock(&g_opts_mu);
+    /* Outside this module's lock on purpose, matching ui_snapshot.c: the notification
+       publisher takes its own, and nesting the two would put a lock-order edge between
+       the snapshot path and a JNI poll. */
+    dsd_app_notification_publish_opts(opts);
 }
 
 const dsd_opts*

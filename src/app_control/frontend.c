@@ -49,10 +49,13 @@ frontend_snr_value_is_valid(double snr_db) {
  * with no demodulator behind it had measured them. The input type is what says
  * whether any of it applies; it is re-parsed per session, so it cannot go stale
  * the way the stream globals do.
+ *
+ * Shared with the notification publisher through <dsd-neo/core/opts.h> so the two
+ * cannot come to disagree about whether a session has a tuner behind it.
  */
 static int
 frontend_input_is_radio(const dsd_opts* opts) {
-    return opts != NULL && opts->audio_in_type == AUDIO_IN_RTL;
+    return dsd_opts_input_is_radio(opts);
 }
 
 static void

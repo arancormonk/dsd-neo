@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -56,4 +57,9 @@ void
 dsd_app_frontend_runtime_stop(void) {
     dsd_runtime_set_control_pump(NULL);
     dsd_telemetry_hooks_set((dsd_telemetry_hooks){0});
+    /* Clearing the hooks stops the feed but leaves the last record behind, and that
+       record is a module static that outlives the session. On Android the service starts
+       polling before the next session reaches dsd_app_frontend_runtime_start(), so a
+       stale record would caption the new run with the old one's last call. */
+    dsd_app_notification_reset();
 }

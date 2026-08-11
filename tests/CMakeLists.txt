@@ -416,6 +416,12 @@ dsd_neo_add_public_header_smoke_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_call_view
+  HEADERS_PUBLIC_APP_CONTROL_CALL_VIEW
+  dsd-neo/app_control/call_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS
   dsd-neo/app_control/commands.h
@@ -438,6 +444,21 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_APP_CONTROL_HISTORY
   dsd-neo/app_control/history.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_notification_status
+  HEADERS_PUBLIC_APP_CONTROL_NOTIFICATION_STATUS
+  dsd-neo/app_control/notification_status.h
+  C
+)
+# Also as C++: the only consumer of this header anywhere is android/dsdneo_jni.cpp, which
+# no Linux/macOS/Windows CI job ever compiles, so nothing else would catch it losing its
+# extern "C" guard or a transitively-needed include.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_notification_status_cxx
+  HEADERS_PUBLIC_APP_CONTROL_NOTIFICATION_STATUS_CXX
+  dsd-neo/app_control/notification_status.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_snapshot
@@ -1505,6 +1526,41 @@ add_test(
     COMMAND dsd-neo_test_app_control_telemetry_hooks_install
 )
 
+add_executable(
+    dsd-neo_test_app_control_call_view
+    ui/test_app_control_call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_call_view
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_call_view
+    PRIVATE dsd-neo_test_call_state_support
+)
+add_test(NAME APP_CONTROL_CALL_VIEW COMMAND dsd-neo_test_app_control_call_view)
+
+add_executable(
+    dsd-neo_test_app_control_notification_status
+    ui/test_app_control_notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+target_include_directories(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+target_link_libraries(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
+)
+add_test(
+    NAME APP_CONTROL_NOTIFICATION_STATUS
+    COMMAND dsd-neo_test_app_control_notification_status
+)
+
 if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -1529,6 +1585,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -2046,12 +2103,22 @@ target_include_directories(
 )
 add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
 
-# Same arrangement for the slot-line decay: header-only and free of Qt so the hold
-# window can be tested without an Android build.
-add_executable(dsd-neo_test_ui_qt_call_line ui/test_ui_qt_call_line.cpp)
+# Same arrangement for the slot-line decay: free of Qt so the hold window can be tested
+# without an Android build. call_line.h now delegates to app_control's call_view, so
+# this links the same call_view.c the app_control test below compiles, plus the
+# lightweight call-state support lib it calls into.
+add_executable(
+    dsd-neo_test_ui_qt_call_line
+    ui/test_ui_qt_call_line.cpp
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+)
 target_include_directories(
     dsd-neo_test_ui_qt_call_line
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+target_link_libraries(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 
@@ -2112,10 +2179,14 @@ if(DSD_ENABLE_QT_UI)
     # anything reads as "it is working" while nothing is being decoded, which is
     # exactly what shipped once. The frontend boundary is stubbed in the test so
     # this stays arithmetic over a snapshot rather than a link against the engine.
+    # slotCallView() now delegates to app_control's call_view, so call_view.c is
+    # compiled in too; it needs nothing beyond dsd_call_state_get(), which
+    # dsd-neo_core (below) already provides.
     add_executable(
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -2373,6 +2444,9 @@ add_executable(
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
@@ -2398,6 +2472,9 @@ add_executable(
     dsd-neo_test_app_control_opts_snapshot
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot
@@ -2405,7 +2482,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_app_control_opts_snapshot
-    PRIVATE dsd-neo_platform
+    PRIVATE dsd-neo_test_call_state_support dsd-neo_platform
 )
 add_test(
     NAME APP_CONTROL_OPTS_SNAPSHOT

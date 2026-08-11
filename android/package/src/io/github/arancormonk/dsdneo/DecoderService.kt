@@ -14,9 +14,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
+import java.util.Locale
 
 /**
  * Foreground service that owns the decoder.
@@ -63,12 +66,32 @@ class DecoderService : Service() {
                 stopIfIdle()
             }
         }
+
+        // Here rather than in startDecoding(), so it keys off "this instance is fronting a
+        // live engine" instead of "this instance started it": a duplicate START that
+        // startDecoding() rejects still has to leave the notification tracking the call it
+        // is already fronting. startStatusPolling() removes any queued tick first, so
+        // arriving here twice for one session cannot leave two loops running.
+        //
+        // RUNNING and not merely "not IDLE": STOPPING means nativeStop() has been called,
+        // which is the state a timed-out joinEngineThread() leaves behind (onDestroy runs
+        // stopDecoding() before the join, so the engine is always on its way out by then).
+        // A replacement instance created in that window is fronting a session that is
+        // shutting down, and "Stopping…" is what its notification should say.
+        if (synchronized(lock) { state } == State.RUNNING) {
+            startStatusPolling()
+        }
+
         // A dead process stays dead until the user relaunches: restarting the engine
         // without its configuration would be worse than not restarting at all.
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        // First, and on the same thread the poll runs on: once removeCallbacks() has
+        // returned here, no pending tick can still fire and post a notification behind a
+        // service that is on its way out.
+        stopStatusPolling()
         stopDecoding()
         val stopped = joinEngineThread()
         if (stopped && initialized) {
@@ -155,6 +178,7 @@ class DecoderService : Service() {
         }
         updateNotification(getString(R.string.decoder_running))
         thread.start()
+        // Polling is armed by onStartCommand() once the state settles; see the note there.
     }
 
     /**
@@ -169,6 +193,9 @@ class DecoderService : Service() {
             state = State.IDLE
             lastError = userMessage
         }
+        // No stopStatusPolling() here: stopForegroundCompat() does it first thing, and it
+        // has to, because stopIfIdle() reaches it by a path that does not come through
+        // here. Two calls would only make it ambiguous which one is load-bearing.
         stopForegroundCompat()
         stopSelfLatest()
     }
@@ -185,6 +212,11 @@ class DecoderService : Service() {
         if (!shouldStop) {
             return
         }
+        // Drops the cached record with it, which is what makes the update below visible:
+        // the phase text is only rendered when no status is cached, so leaving the last
+        // polled call in place would answer the user's stop with a call line and a
+        // chronometer still counting up.
+        stopStatusPolling()
         updateNotification(getString(R.string.decoder_stopping))
         DsdNative.nativeStop()
     }
@@ -232,19 +264,248 @@ class DecoderService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    private fun buildNotification(text: String): Notification {
+    /**
+     * The stop action's PendingIntent, built once for this service instance.
+     *
+     * [buildNotification] runs on every status poll — once a second for the length of
+     * every call — and each PendingIntent.getService/getActivity is a binder round trip
+     * on the main thread. A PendingIntent is a process-lifetime token and this one's
+     * identity (request code, target, action) never varies, so building it once costs
+     * nothing in freshness.
+     *
+     * On the instance and not in the companion object, unlike [state] and [engineThread]:
+     * a PendingIntent built from `this` holds the Context, and a companion field would
+     * keep a destroyed service alive for the life of the process.
+     */
+    private val stopPendingIntent: PendingIntent by lazy {
         val stopIntent = Intent(this, DecoderService::class.java).setAction(ACTION_STOP)
-        val stopPending = PendingIntent.getService(
-            this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        PendingIntent.getService(
+            this, REQUEST_STOP, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+    }
 
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.app_name))
-            .setContentText(text)
+    /**
+     * The tap target, built once alongside [stopPendingIntent].
+     *
+     * The launcher's own intent, not an explicit QtActivity component: ACTION_MAIN +
+     * CATEGORY_LAUNCHER + NEW_TASK is what resumes an existing task, whereas an explicit
+     * component can start a second Activity instance and with it a second Qt main(). Null
+     * only if no launcher activity resolves, in which case the body stays inert rather
+     * than taking the service down — and a package cannot gain or lose its launcher
+     * activity without the process being killed, so resolving once is enough.
+     */
+    private val openPendingIntent: PendingIntent? by lazy {
+        packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
+            PendingIntent.getActivity(
+                this, REQUEST_OPEN, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        }
+    }
+
+    /**
+     * Renders the notification from the last polled status, falling back to [text].
+     *
+     * [text] is the phase wording — "Starting…", "Decoding" — and is what shows before
+     * the engine has published anything, which includes the unconditional promotion at
+     * the top of onStartCommand.
+     */
+    private fun buildNotification(text: String): Notification {
+        val status = lastStatus
+        val lead = status?.leadSlot
+
+        val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_dsdneo)
             .setOngoing(true)
-            .addAction(Notification.Action.Builder(null, getString(R.string.action_stop), stopPending).build())
-            .build()
+            // Updates must never re-alert: this posts again on every call boundary.
+            .setOnlyAlertOnce(true)
+            .addAction(Notification.Action.Builder(null, getString(R.string.action_stop), stopPendingIntent).build())
+
+        // No setAutoCancel: this is an ongoing foreground-service notification and must
+        // survive the tap that opens the app.
+        openPendingIntent?.let { builder.setContentIntent(it) }
+
+        if (status == null) {
+            return builder.setContentTitle(getString(R.string.app_name))
+                .setContentText(text)
+                .setShowWhen(false)
+                .build()
+        }
+
+        if (status.protocol.isNotEmpty()) {
+            builder.setSubText(status.protocol)
+        }
+
+        if (lead != null && lead.state == DecoderStatus.LINE_ACTIVE) {
+            builder.setWhen(System.currentTimeMillis() - lead.elapsedMs)
+                .setShowWhen(true)
+                .setUsesChronometer(true)
+        } else {
+            // A Notification chronometer always counts, so an ended call cannot hold it
+            // at its final duration. Hiding it is the honest option; the call's identity
+            // stays for the 3s hold so a late glance still reads who it was.
+            builder.setShowWhen(false).setUsesChronometer(false)
+        }
+
+        // "0" is the encoder's not-decoded sentinel, the same one srcText is filtered for
+        // in bodyText() -- X2-TDMA and standalone ProVoice never parse a talkgroup at all
+        // and their calls arrive carrying it, and a policy-resolved target with no CSV
+        // alias does too. Empty is the other unrenderable case: the record's charset
+        // filter drops a multi-byte sequence the field ended part-way through, which can
+        // take the whole name with it. Either way there is a transmission, it just has no
+        // name, so the phase wording is the honest headline -- "Listening" would say the
+        // opposite of what is happening.
+        val leadName = lead?.name?.takeIf { it.isNotEmpty() && it != "0" }
+        builder.setContentTitle(
+            when {
+                leadName != null -> leadName
+                lead != null -> text
+                else -> getString(R.string.decoder_listening)
+            }
+        )
+        // Resolved once and handed to both renderers: each would otherwise take the
+        // Resources lock for the same two strings, and they must not disagree.
+        val frequency = frequencyPart(status, lead)
+
+        // Back to the phase wording when the status has nothing to say. The record's two
+        // halves are published by separate calls, so a poll can catch a status whose call
+        // and frequency are both still empty, and a blank second line reads as a bug.
+        val body = bodyText(lead, frequency)
+        builder.setContentText(body.ifEmpty { text })
+
+        // Gated on the expanded text itself, not on "some slot has content": a slot whose
+        // name and source are both the encoder's "0" sentinel — X2-TDMA and standalone
+        // ProVoice, which call_view.c deliberately lets through with no identity —
+        // contributes no row at all, so the guard would pass with nothing to show. An
+        // empty big text, or one that just repeats the collapsed line, turns the expand
+        // chevron into a lie.
+        val expanded = expandedText(status, frequency)
+        if (expanded.isNotEmpty() && expanded != body) {
+            builder.setStyle(Notification.BigTextStyle().bigText(expanded))
+        }
+        return builder.build()
+    }
+
+    /**
+     * Resolved once: it is a constant for the life of the process, and [expandedText]
+     * would otherwise take the Resources lock once per rendered row.
+     */
+    private val separator: String by lazy(LazyThreadSafetyMode.NONE) { getString(R.string.notif_separator) }
+
+    /**
+     * `851.012500 MHz`, or null when there is no frequency to show.
+     *
+     * Formatted against Locale.ROOT, not the resource configuration's locale, which is
+     * what `getString(id, args)` would use: Java's `%f` localises both the decimal
+     * separator and the zero digit, so a device set to German would render
+     * `851,012500 MHz` and one set to Arabic with native digits would render the number in
+     * Arabic-Indic numerals beside English words. Every other frequency readout in the
+     * project is C-locale `%.06lf`, and a frequency is a machine value the user reads back
+     * into a config file.
+     */
+    private fun freqText(hz: Long): String? =
+        if (hz <= 0L) null else String.format(Locale.ROOT, getString(R.string.notif_freq_mhz), hz / 1_000_000.0)
+
+    /**
+     * The frequency line, by first-match precedence.
+     *
+     * The tuner centre is never a stand-in for the voice channel: on a trunked system a
+     * retune moves the centre out from under the call.
+     */
+    private fun frequencyPart(status: DecoderStatus, lead: SlotCall?): String? {
+        // hasContent, not LINE_ACTIVE: the lead slot stays ENDED for the hold that follows
+        // every transmission, and trunkTuned is still set for as much of it as the trunk
+        // state machine takes to hand the tuner back. Testing for ACTIVE alone made the
+        // body fall through to the branch below and label the control channel as where the
+        // receiver was, for three seconds after every call, while it was still parked on
+        // the voice channel.
+        if (lead != null && lead.hasContent && status.trunking && status.trunkTuned) {
+            freqText(status.vcFreqHz)?.let { return it }
+        }
+        if (status.trunking) {
+            freqText(status.ccFreqHz)?.let { return getString(R.string.notif_control_freq, it) }
+        }
+        // Only the tuner centre is gated on the input being a radio, and only the tuner
+        // centre should be: the publisher already zeroes it for every other input, whereas
+        // the voice and control channels above are decoded off the air and are just as
+        // true on a rigctl-tuned trunked session fed over UDP, TCP or from a file. Gating
+        // the whole chain here left those sessions with no frequency line at all.
+        return if (status.radioInput) freqText(status.centerFreqHz) else null
+    }
+
+    /**
+     * `Encrypted`, plus `ALG xx` / `KID xxxx` once a crypto header has decoded.
+     *
+     * One helper for both renderers: written out twice, the expanded view had only the
+     * bare `Encrypted` while the collapsed line carried the algorithm — so pulling the
+     * notification open *removed* the one thing that tells AES from RC4 at a glance,
+     * which is the whole reason the Qt panel formats it.
+     *
+     * algid 0 is "encrypted, but no crypto header decoded yet"; the ENC word alone is the
+     * whole of what is known. Same rule the Qt panel applies.
+     */
+    private fun cryptoParts(call: SlotCall?): List<String> {
+        if (call == null || !call.enc) {
+            return emptyList()
+        }
+        if (call.algid == 0) {
+            return listOf(getString(R.string.notif_encrypted))
+        }
+        return listOf(
+            getString(R.string.notif_encrypted),
+            getString(R.string.notif_alg, "%02X".format(call.algid)),
+            getString(R.string.notif_kid, "%04X".format(call.kid))
+        )
+    }
+
+    /**
+     * Parts in priority order, because Android truncates the tail: why there is no audio
+     * first, who is talking second, where third.
+     */
+    private fun bodyText(lead: SlotCall?, frequency: String?): String {
+        val parts = mutableListOf<String>()
+        parts += cryptoParts(lead)
+        // "0" is what the encoder writes for a source that never decoded, not a unit.
+        if (lead != null && lead.srcText.isNotEmpty() && lead.srcText != "0") {
+            parts += getString(R.string.notif_unit, lead.srcText)
+        }
+        frequency?.let { parts += it }
+        return parts.joinToString(separator)
+    }
+
+    /**
+     * One row per slot with content, plus the frequency. Prose, not columns: notification
+     * body text is proportional, so an aligned table would ragged out.
+     */
+    private fun expandedText(status: DecoderStatus, frequency: String?): String {
+        val occupied = status.slots.count { it.hasContent }
+        val rows = mutableListOf<String>()
+        status.slots.forEachIndexed { index, call ->
+            if (!call.hasContent) {
+                return@forEachIndexed
+            }
+            val parts = mutableListOf<String>()
+            // Only when the number tells the reader something. Slot 1 is the only slot
+            // P25 Phase 1, D-STAR, M17, YSF, NXDN, dPMR, EDACS and ProVoice ever fill, and
+            // labelling their single row "Slot 1" invents a TDMA concept those modes do
+            // not have.
+            if (occupied > 1) {
+                parts += getString(R.string.notif_slot, index + 1)
+            }
+            // Same two unrenderable cases the content title guards against; a bare "0" or
+            // an empty name would otherwise leave a row that is nothing but a separator.
+            if (call.name.isNotEmpty() && call.name != "0") {
+                parts += call.name
+            }
+            if (call.srcText.isNotEmpty() && call.srcText != "0") {
+                parts += getString(R.string.notif_unit, call.srcText)
+            }
+            parts += cryptoParts(call)
+            if (parts.isNotEmpty()) {
+                rows += parts.joinToString(separator)
+            }
+        }
+        frequency?.let { rows += it }
+        return rows.joinToString("\n")
     }
 
     private fun startForegroundNotification(text: String) {
@@ -261,7 +522,111 @@ class DecoderService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
     }
 
+    private val statusHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * The record [statusPoll] read last, and the only input [buildNotification] renders.
+     *
+     * On the instance rather than in the companion, unlike [state] and [engineThread]:
+     * this is a rendering cache, not lifecycle state. A service instance that replaces
+     * one destroyed mid-run should render its own first poll rather than inherit a
+     * predecessor's record and skip it as unchanged.
+     */
+    private var lastStatusRecord: String? = null
+
+    /**
+     * [lastStatusRecord] parsed, and the only input [buildNotification] renders.
+     *
+     * Parsed once where the record changes rather than once per notification build: a
+     * build happens on every phase update too, and re-splitting 27 fields to render the
+     * same status again is work for nothing. Kept in step with [lastStatusRecord] — both
+     * are written together and cleared together.
+     */
+    private var lastStatus: DecoderStatus? = null
+
+    /**
+     * Re-reads the published status once a second, re-posting only on a change.
+     *
+     * Re-posts itself from the tail and only while RUNNING, so the loop unwinds on its
+     * own the moment a session ends or a stop lands — there is no timer left pointing at
+     * a service that has been told to go away.
+     */
+    private val statusPoll = object : Runnable {
+        override fun run() {
+            if (synchronized(lock) { state } != State.RUNNING) {
+                // Also where a session that ended by itself gets its call line taken down.
+                // Every deliberate teardown calls stopStatusPolling() first, but the engine
+                // thread drops the state to IDLE from its own thread when nativeRun returns
+                // — end of a file, a dropped rtl_tcp connection, a decode error — and
+                // cannot touch the main-thread cache. Left in place, the last polled record
+                // keeps the finished transmission on the notification with its chronometer
+                // still counting up, until Android gets round to destroying the service.
+                if (lastStatusRecord != null) {
+                    lastStatusRecord = null
+                    lastStatus = null
+                    // Not currentStatusText(): it maps IDLE to "Starting…" for the
+                    // promotion at the top of onStartCommand, where IDLE means a start is
+                    // about to happen. Here it means the run just ended and stopSelf has
+                    // been called, so the service really is on its way down.
+                    updateNotification(getString(R.string.decoder_stopping))
+                }
+                return
+            }
+            val record = try {
+                DsdNative.nativeNotificationStatus()
+            } catch (e: UnsatisfiedLinkError) {
+                // A native method with nothing bound behind it never acquires an
+                // implementation later in the same process, so this drops the loop
+                // instead of re-posting: retrying would only log the same failure every
+                // second for the rest of the session. The notification keeps whatever it
+                // last rendered.
+                Log.e(TAG, "status accessor unavailable; stopping status polling", e)
+                return
+            }
+            if (record != lastStatusRecord) {
+                lastStatusRecord = record
+                lastStatus = DecoderStatus.parse(record)
+                if (record != null && lastStatus == null) {
+                    // A record this build cannot read — a field added on one side of JNI
+                    // without the other, or a version it does not know. Silent otherwise:
+                    // the notification would render the phase wording for the rest of the
+                    // session with nothing on either side saying why.
+                    Log.w(TAG, "unreadable status record; notification limited to phase text")
+                }
+                // Only when the record itself changed, which on a quiet channel is
+                // almost never. A live call does re-render each second — its elapsed_ms
+                // advances — but setOnlyAlertOnce keeps every one of those silent.
+                updateNotification(currentStatusText())
+            }
+            statusHandler.postDelayed(this, STATUS_POLL_MS)
+        }
+    }
+
+    private fun startStatusPolling() {
+        // removeCallbacks first so a restart cannot leave two loops posting each other.
+        statusHandler.removeCallbacks(statusPoll)
+        statusHandler.post(statusPoll)
+    }
+
+    /**
+     * Stops the loop and forgets the cached record, so the notification falls back to the
+     * phase wording rather than freezing on the last call it saw.
+     *
+     * Safe against a tick that is already queued: the poll runs on the main looper, and
+     * every caller of this is on the main thread too, so removeCallbacks() cannot race
+     * one that is halfway through.
+     */
+    private fun stopStatusPolling() {
+        statusHandler.removeCallbacks(statusPoll)
+        lastStatusRecord = null
+        lastStatus = null
+    }
+
     private fun stopForegroundCompat() {
+        // Before dropping the notification, not after: once it is gone a queued tick that
+        // re-posted would put an ongoing notification back with no foreground service
+        // behind it, and nothing left alive to take it down again.
+        stopStatusPolling()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
@@ -320,6 +685,24 @@ class DecoderService : Service() {
          * tidy join is the wrong way round.
          */
         private const val ENGINE_JOIN_TIMEOUT_MS = 1000L
+
+        /**
+         * How often the service re-reads the published status.
+         *
+         * A second is well under the shortest transmission worth showing and well over
+         * the cost of the read, which is one short mutex and a string copy. Faster would
+         * only buy sub-second precision on a chronometer that shows whole seconds.
+         */
+        private const val STATUS_POLL_MS = 1000L
+
+        /**
+         * Request codes for the two pending intents.
+         *
+         * Distinct so FLAG_UPDATE_CURRENT can never have one rewrite the other: the
+         * request code is part of a PendingIntent's identity, the extras are not.
+         */
+        private const val REQUEST_STOP = 0
+        private const val REQUEST_OPEN = 1
 
         const val ACTION_START = "io.github.arancormonk.dsdneo.action.START"
         const val ACTION_STOP = "io.github.arancormonk.dsdneo.action.STOP"

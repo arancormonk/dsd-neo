@@ -224,8 +224,35 @@ main(int argc, char** argv) {
         model.refresh(&opts, &state);
         expect("a call with a talkgroup is presented", model.slot1CallState() == 2);
         expect("a call with a talkgroup names it", model.slot1TgText() == QStringLiteral("1201"));
+
+        /* leadSlot is what MonitorScreen.qml binds heroSlot to, and it is one-based so 0
+         * falls out as "neither" — the rebasing of dsd_app_lead_slot()'s -1 happens here
+         * and nowhere else. An off-by-one hides the hero panel or headlines the wrong
+         * slot, which no C test of dsd_app_lead_slot() and no QML case can see. */
+        expect("the only live call headlines", model.leadSlot() == 1);
+
+        /* Slot 2 live as well: an open epoch on the lower slot still outranks it. */
+        dsd_call_observation other = named;
+        other.slot = 1U;
+        other.ota_target_id = 1202U;
+        other.observed_m = 2.5;
+        (void)dsd_call_state_observe(&state, &other, DSD_CALL_BOUNDARY_BEGIN);
+        model.refresh(&opts, &state);
+        expect("slot 2 is live too", model.slot2CallState() == 2);
+        expect("between two live calls the lower slot headlines", model.leadSlot() == 1);
+
+        /* With slot 1 ended and slot 2 still open, the open epoch wins outright — the
+         * rule that made two surfaces name different units before it was shared. */
         (void)dsd_call_state_end(&state, 0U, 3.0);
+        model.refresh(&opts, &state);
+        expect("an open call outranks an ended one on a lower slot", model.leadSlot() == 2);
+
+        (void)dsd_call_state_end(&state, 1U, 3.5);
     }
+
+    /* Nothing on the air: one-based leadSlot answers 0 rather than naming slot 1. */
+    model.clear();
+    expect("a cleared model headlines no slot", model.leadSlot() == 0);
 
     /* A stopped session must not leave its answers behind for the next one. */
     state.synctype = DSD_SYNC_P25P1_POS;

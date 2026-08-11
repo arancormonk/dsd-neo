@@ -4,8 +4,9 @@
 
 An arm64-v8a app: a Qt Quick UI (shared with the future desktop GUI, `src/ui/qt/`),
 a foreground service that owns the decoder, and a small JNI surface between them.
-The engine is linked into the app process as native code — there is no data path
-across JNI, only lifecycle and platform glue.
+The engine is linked into the app process as native code, so JNI carries only
+lifecycle, platform glue, and one read-only status record (the scanner readout the
+service renders into its notification).
 
 Supported inputs: a directly attached RTL-SDR over USB-OTG, `rtl_tcp`, UDP PCM,
 TCP PCM, and local files.
