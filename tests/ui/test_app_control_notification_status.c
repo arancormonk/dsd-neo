@@ -206,24 +206,40 @@ test_encode_rejects_a_short_buffer(void) {
     free(state);
 }
 
-/* A field-count check cannot catch two adjacent same-typed fields swapped (say, algid
-   and kid, or cc_freq_hz and vc_freq_hz) -- only a comparison against an independently
-   built expected record can. Every field below except elapsed_ms is a deterministic
-   function of the inputs set here; elapsed_ms is wall-clock-derived (time since the
-   call epoch opened), so it is read back from the published status rather than
-   guessed, to keep the comparison from flaking. */
+/* A field-count check cannot catch two same-typed fields swapped (say, algid and kid,
+   or cc_freq_hz and vc_freq_hz) -- only a comparison against an independently built
+   expected record can, and only if the two fields actually hold different values.
+   Every *adjacent* same-typed pair below is deliberately given different values, so a
+   transposition of neighboring encoder arguments -- the shape a copy/paste or
+   reordering slip actually takes -- changes the string:
+    - radio_input=1, trunking=0, trunk_tuned=1: neighbors differ (1,0) and (0,1).
+      radio_input and trunk_tuned do land on the same value, but they are not
+      neighbors -- trunking sits between them -- and with only two possible values for
+      three boolean flags, some pair has to repeat.
+    - name and tg_text differ because a CSV-imported group name is staged on the slot's
+      history row below; without one, dsd_app_slot_call_view() (call_view.c) makes name
+      fall back to tg_text verbatim, which would make that swap invisible.
+   Every field except elapsed_ms is otherwise a deterministic function of the inputs set
+   here; elapsed_ms is wall-clock-derived (time since the call epoch opened), so it is
+   read back from the published status rather than guessed, to keep the comparison from
+   flaking. */
 static void
 test_encode_matches_expected_record_field_order(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     assert(opts != NULL);
     opts->audio_in_type = AUDIO_IN_RTL;
-    opts->trunk_enable = 1;
-    opts->trunk_is_tuned = 0;
+    opts->trunk_enable = 0;
+    opts->trunk_is_tuned = 1;
     opts->rtlsdr_center_freq = 851500000U;
     dsd_app_notification_publish_opts(opts);
     free(opts);
 
     dsd_state* state = make_state();
+    /* Attaches a staged history row purely so the CSV-group-name lookup below has
+       something to read; see dsd_app_slot_call_view()'s staged_group_name(). */
+    Event_History_I* history = (Event_History_I*)calloc(DSD_CALL_STATE_SLOT_COUNT, sizeof(Event_History_I));
+    assert(history != NULL);
+    state->event_history_s = history;
     state->synctype = DSD_SYNC_P25P2_POS;
     state->trunk_cc_freq = 851006250L;
 
@@ -232,6 +248,13 @@ test_encode_matches_expected_record_field_order(void) {
     observation.frequency_hz = 851012500;
     observation.observed_m = dsd_app_notification_test_now_m();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    /* Staged on the same talkgroup id the observation above carries, so
+       staged_group_name() actually uses it for slot 0's name instead of falling back
+       to tg_text. */
+    history[0].Event_History_Items[0].target_id = 51023U;
+    DSD_SNPRINTF(history[0].Event_History_Items[0].t_name, sizeof(history[0].Event_History_Items[0].t_name), "%s",
+                 "Riverside Fire");
 
     dsd_call_crypto_update crypto;
     DSD_MEMSET(&crypto, 0, sizeof(crypto));
@@ -248,6 +271,8 @@ test_encode_matches_expected_record_field_order(void) {
     assert(status.slots[0].enc == 1U);
     assert(status.slots[0].algid == 0xAAU);
     assert(status.slots[0].kid == 0x1234U);
+    assert(strcmp(status.slots[0].name, "Riverside Fire") == 0);
+    assert(strcmp(status.slots[0].tg_text, "51023") == 0);
 
     char expected[DSD_APP_NOTIFICATION_RECORD_SIZE];
     const int n =
@@ -255,15 +280,16 @@ test_encode_matches_expected_record_field_order(void) {
                      "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld"
                      "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u"
                      "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u",
-                     "P25p2", 1U, 1U, 0U, 851006250LL, 851012500LL, 851500000LL, DSD_APP_CALL_LINE_ACTIVE, "51023",
-                     "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U, (unsigned)status.slots[0].elapsed_ms,
-                     DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U);
+                     "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, DSD_APP_CALL_LINE_ACTIVE,
+                     "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
+                     (unsigned)status.slots[0].elapsed_ms, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U);
     assert(n > 0 && (size_t)n < sizeof(expected));
 
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
     assert(strcmp(record, expected) == 0);
 
+    free(history);
     free(state);
 }
 

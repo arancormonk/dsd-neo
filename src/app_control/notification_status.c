@@ -15,7 +15,6 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
