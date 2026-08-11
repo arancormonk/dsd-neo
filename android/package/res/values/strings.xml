@@ -7,6 +7,18 @@
     <string name="decoder_starting">Starting…</string>
     <string name="decoder_running">Decoding</string>
     <string name="decoder_stopping">Stopping…</string>
+    <string name="decoder_listening">Listening</string>
+    <!-- Quoted because aapt2 strips leading and trailing whitespace from a string
+         resource: written bare, this compiles to "·" and the notification body runs
+         together as "Encrypted·Unit 1234". The quotes are the delimiter, not content. -->
+    <string name="notif_separator">" · "</string>
+    <string name="notif_unit">Unit %1$s</string>
+    <string name="notif_encrypted">Encrypted</string>
+    <string name="notif_alg">ALG %1$s</string>
+    <string name="notif_kid">KID %1$s</string>
+    <string name="notif_control_freq">Control %1$s</string>
+    <string name="notif_freq_mhz">%.06f MHz</string>
+    <string name="notif_slot">Slot %1$d</string>
     <!-- Shown in the app when a start dies before the engine ever runs. The code is
          carried through because the underlying reason only exists in logcat. -->
     <string name="error_init_failed">The decoder could not be initialised (code %1$d).</string>
