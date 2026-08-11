@@ -614,7 +614,7 @@ jobs:
           "$tools/zipalign" -c -P 16 4 "${OUT_APK}"
           echo "SIGNED=true" >> "$GITHUB_OUTPUT"
 
-      - name: Verify every packaged library is arm64 with 16 KB page alignment
+      - name: Verify every packaged library is arm64, 16 KB aligned, and stored uncompressed
         shell: bash
         env:
           APK_PATH: ${{ steps.names.outputs.APK_PATH }}
@@ -639,6 +639,16 @@ jobs:
             echo "APK contains ABIs other than arm64-v8a" >&2
             exit 1
           fi
+          # Stored (uncompressed) libraries are what lets Google Play delta-patch
+          # updates; Qt's stock Gradle template compresses them by mistake, which
+          # android/package/build.gradle overrides. Deflated entries here mean the
+          # override stopped being applied and every Play update ships near-full-size.
+          if ! unzip -v "$APK_PATH" 'lib/*.so' \
+            | awk '$8 ~ /^lib\// && $2 != "Stored" {print "compressed: " $8; bad = 1} END {exit bad}'; then
+            echo "APK compresses native libraries; Play delta updates would ship near-full downloads" >&2
+            exit 1
+          fi
+          echo "All packaged libraries are stored uncompressed"
 
       - name: Verify the APK carries the required license files
         shell: bash

@@ -1,0 +1,111 @@
+// Copyright (C) The Qt Company Ltd.
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Vendored from Qt 6.11.1's androiddeployqt template
+// (<Qt>/android_arm64_v8a/src/android/templates/build.gradle) with one fix, marked
+// DSD-NEO below. Files in QT_ANDROID_PACKAGE_SOURCE_DIR override the Qt template, so
+// this copy is what Gradle actually runs. Re-diff against the Qt template when the
+// pinned Qt version changes.
+//
+// The fix: gradle.properties values are Strings, and Qt's template assigns
+// `useLegacyPackaging = legacyPackaging` directly. Groovy coerces the non-empty
+// String "false" to boolean true, so legacy jniLibs packaging (compressed .so
+// entries, android:extractNativeLibs="true") was always on. Compressed native libs
+// defeat Google Play's delta patching — every update re-downloaded the full app —
+// and get extracted to a second on-disk copy at install. `.toBoolean()` restores
+// the intended value.
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        //noinspection AndroidGradlePluginVersion
+        classpath 'com.android.tools.build:gradle:9.0.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0"
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+apply plugin: qtGradlePluginType
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
+    //noinspection GradleDependency
+    implementation 'androidx.core:core:1.17.0'
+}
+
+android {
+    /*******************************************************
+     * The following variables:
+     * - androidBuildToolsVersion,
+     * - androidCompileSdkVersion
+     * - qtAndroidDir - holds the path to qt android files
+     *                   needed to build any Qt application
+     *                   on Android.
+     * - qtGradlePluginType - whether to build an app or a library
+     *
+     * are defined in gradle.properties file. This file is
+     * updated by QtCreator and androiddeployqt tools.
+     * Changing them manually might break the compilation!
+     *******************************************************/
+
+    namespace = androidPackageName
+    compileSdkVersion androidCompileSdkVersion
+    buildToolsVersion androidBuildToolsVersion
+    ndkVersion = androidNdkVersion
+
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = [qtAndroidDir + '/src', 'src', 'java']
+            kotlin.srcDirs = [qtAndroidDir + '/src', 'src', 'kotlin']
+            aidl.srcDirs = [qtAndroidDir + '/src', 'src', 'aidl']
+            res.srcDirs = [qtAndroidDir + '/res', 'res']
+            resources.srcDirs = ['resources']
+            renderscript.srcDirs = ['src']
+            assets.srcDirs = ['assets']
+            jniLibs.srcDirs = ['libs']
+       }
+    }
+
+    tasks.withType(JavaCompile) {
+        options.incremental = true
+        options.compilerArgs += ['-Xlint:all']
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lintOptions {
+        abortOnError = false
+    }
+
+    aaptOptions {
+        // Do not compress Qt binary resources file
+        noCompress 'rcc'
+    }
+
+    packagingOptions {
+        jniLibs {
+            // DSD-NEO: Qt's template assigns the raw String property, which Groovy
+            // coerces to true regardless of its value. See header comment.
+            useLegacyPackaging = legacyPackaging.toBoolean()
+        }
+    }
+
+    defaultConfig {
+        resConfig "en"
+        minSdkVersion qtMinSdkVersion
+        targetSdkVersion qtTargetSdkVersion
+        ndk.abiFilters = qtTargetAbiList.split(",")
+    }
+}
