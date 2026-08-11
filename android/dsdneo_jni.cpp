@@ -7,9 +7,10 @@
  * @file
  * @brief JNI lifecycle surface for the Android app: init/configure/run/stop/destroy.
  *
- * There is no data path here. The Qt UI links the engine in-process and reads
- * app-control directly; JNI only carries what has to cross into Java: the engine
- * lifetime (owned by the foreground service) and platform glue.
+ * The Qt UI links the engine in-process and reads app-control directly, so JNI carries
+ * only what has to cross into Java: lifecycle, platform glue, and one read-only status
+ * record -- the scanner readout the foreground service renders into its notification,
+ * which it needs with no Qt in the picture. No audio, symbols or I/Q cross here.
  *
  * One engine instance per process (ground rule 4), guarded by a single mutex.
  * Nothing throws across JNI — every entry point returns a status code.
