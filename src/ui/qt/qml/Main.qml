@@ -239,11 +239,30 @@ Window {
         }
     }
 
+    // ---- Safe area ----
+    // From Android 15 (targetSdk 35+) the window is edge-to-edge: the status
+    // bar and gesture-nav bar are transparent overlays on the window, whose
+    // color paints the full bleed behind them. Every UI layer anchors to this
+    // item rather than the window, which keeps content out from under the
+    // bars. On desktop the margins are zero and this is the whole window.
+    // Bound to the window's margins, not this item's own: positioning an item
+    // by its own safe area is a binding loop.
+    Item {
+        id: safeArea
+
+        objectName: "safeArea"
+        anchors.fill: parent
+        anchors.topMargin: mainRoot.SafeArea.margins.top
+        anchors.leftMargin: mainRoot.SafeArea.margins.left
+        anchors.rightMargin: mainRoot.SafeArea.margins.right
+        anchors.bottomMargin: mainRoot.SafeArea.margins.bottom
+    }
+
     // ---- Tab shell ----
     Item {
         id: shell
 
-        anchors.fill: parent
+        anchors.fill: safeArea
         opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
                   || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
@@ -312,7 +331,7 @@ Window {
     ExploreSetupScreen {
         id: exploreSetup
 
-        anchors.fill: parent
+        anchors.fill: safeArea
         opacity: mainRoot.exploreSetupOpen && !mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -346,7 +365,7 @@ Window {
         id: monitor
 
         objectName: "monitorScreen"
-        anchors.fill: parent
+        anchors.fill: safeArea
         system: mainRoot.sessionSystem
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
@@ -375,7 +394,7 @@ Window {
     Loader {
         id: spectrumLoader
 
-        anchors.fill: parent
+        anchors.fill: safeArea
         active: false
         sourceComponent: spectrumScreen
         opacity: mainRoot.monitorMode && mainRoot.spectrumOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
@@ -441,7 +460,7 @@ Window {
     WizardScreen {
         id: wizard
 
-        anchors.fill: parent
+        anchors.fill: safeArea
         opacity: mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -465,7 +484,7 @@ Window {
 
     // ---- First-run onboarding ----
     OnboardingScreen {
-        anchors.fill: parent
+        anchors.fill: safeArea
         opacity: !prefs.onboardingDone && !mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
