@@ -65,4 +65,18 @@ object DsdNative {
      * produce a status describing two different moments.
      */
     external fun nativeNotificationStatus(): String?
+
+    /**
+     * Asks the Qt event loop to quit so its `main()` returns.
+     *
+     * Qt's own teardown waits for that to happen but only raises the quit when the
+     * Android event dispatcher is already stopped, which it is not when the task is
+     * swiped out of recents — so without this the wait never ends. Called from
+     * [DsdNeoActivity.onDestroy]; see the JNI side in `android/decoder_host_android.cpp`
+     * for the full account.
+     *
+     * A no-op when no QCoreApplication exists yet, so it is safe on an Activity torn
+     * down before Qt finished starting.
+     */
+    external fun nativeQuitUi()
 }
