@@ -25,6 +25,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -67,6 +68,24 @@ int dsd_app_notification_get(dsd_app_notification_status* out);
 
 /** @brief The monotonic clock the publisher stamps call ages from; for tests. */
 double dsd_app_notification_test_now_m(void);
+
+enum {
+    /** Comfortably larger than any record the encoder produces. */
+    DSD_APP_NOTIFICATION_RECORD_SIZE = 1024,
+};
+
+/**
+ * @brief Encode the latest status as one versioned, tab-separated record.
+ *
+ * One record per call so a reader cannot tear its view across fields. Text fields have
+ * control characters replaced with spaces: they arrive from CSV imports and off the air,
+ * and an embedded tab would invent a field and desynchronise everything after it.
+ *
+ * @return Characters written excluding the NUL, or 0 when nothing is published, @p out is
+ *         NULL, or @p out_size cannot hold the whole record. Never truncates -- a partial
+ *         record is one a reader would happily parse as a shorter one.
+ */
+size_t dsd_app_notification_encode(char* out, size_t out_size);
 
 #ifdef __cplusplus
 }

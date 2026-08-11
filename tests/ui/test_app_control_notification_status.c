@@ -146,6 +146,127 @@ test_null_arguments_are_safe(void) {
     assert(dsd_app_notification_get(NULL) == 0);
 }
 
+static size_t
+count_fields(const char* record) {
+    size_t fields = 1;
+    for (const char* p = record; *p != '\0'; p++) {
+        if (*p == '\t') {
+            fields++;
+        }
+    }
+    return fields;
+}
+
+static void
+test_encode_has_version_and_field_count(void) {
+    dsd_state* state = make_state();
+    state->synctype = DSD_SYNC_P25P2_POS;
+    dsd_app_notification_publish_state(state);
+
+    char record[1024];
+    const size_t written = dsd_app_notification_encode(record, sizeof(record));
+    assert(written > 0);
+    assert(strncmp(record, "v1\t", 3) == 0);
+    assert(count_fields(record) == 26);
+    /* One line: a newline would break the reader's single-record assumption. */
+    assert(strchr(record, '\n') == NULL);
+    free(state);
+}
+
+static void
+test_encode_sanitises_control_characters(void) {
+    dsd_state* state = make_state();
+    state->synctype = DSD_SYNC_P25P2_POS;
+
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.observed_m = dsd_app_notification_test_now_m();
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "Metro\tFire\nDispatch");
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_notification_publish_state(state);
+
+    char record[1024];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    /* Text arrives from CSV imports and off the air; an embedded tab would invent a
+       field and desynchronise every field after it. */
+    assert(count_fields(record) == 26);
+    assert(strstr(record, "Metro Fire Dispatch") != NULL);
+    free(state);
+}
+
+static void
+test_encode_rejects_a_short_buffer(void) {
+    dsd_state* state = make_state();
+    dsd_app_notification_publish_state(state);
+
+    char tiny[8];
+    /* Truncation would hand the reader a record it could parse as a shorter one. */
+    assert(dsd_app_notification_encode(tiny, sizeof(tiny)) == 0);
+    assert(dsd_app_notification_encode(NULL, 0) == 0);
+    free(state);
+}
+
+/* A field-count check cannot catch two adjacent same-typed fields swapped (say, algid
+   and kid, or cc_freq_hz and vc_freq_hz) -- only a comparison against an independently
+   built expected record can. Every field below except elapsed_ms is a deterministic
+   function of the inputs set here; elapsed_ms is wall-clock-derived (time since the
+   call epoch opened), so it is read back from the published status rather than
+   guessed, to keep the comparison from flaking. */
+static void
+test_encode_matches_expected_record_field_order(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    assert(opts != NULL);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 0;
+    opts->rtlsdr_center_freq = 851500000U;
+    dsd_app_notification_publish_opts(opts);
+    free(opts);
+
+    dsd_state* state = make_state();
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->trunk_cc_freq = 851006250L;
+
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 7654321U, 51023U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.frequency_hz = 851012500;
+    observation.observed_m = dsd_app_notification_test_now_m();
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    dsd_call_crypto_update crypto;
+    DSD_MEMSET(&crypto, 0, sizeof(crypto));
+    crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+    crypto.algid = 0xAAU;
+    crypto.kid = 0x1234U;
+    crypto.observed_m = dsd_app_notification_test_now_m();
+    assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
+
+    dsd_app_notification_publish_state(state);
+
+    dsd_app_notification_status status;
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.slots[0].enc == 1U);
+    assert(status.slots[0].algid == 0xAAU);
+    assert(status.slots[0].kid == 0x1234U);
+
+    char expected[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    const int n =
+        DSD_SNPRINTF(expected, sizeof(expected),
+                     "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld"
+                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u"
+                     "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u",
+                     "P25p2", 1U, 1U, 0U, 851006250LL, 851012500LL, 851500000LL, DSD_APP_CALL_LINE_ACTIVE, "51023",
+                     "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U, (unsigned)status.slots[0].elapsed_ms,
+                     DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U);
+    assert(n > 0 && (size_t)n < sizeof(expected));
+
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    assert(strcmp(record, expected) == 0);
+
+    free(state);
+}
+
 /* Below: the multi-consumer property itself. Every test above drives publish and get
    from a single thread, which can never race itself. The publisher's entire reason to
    exist is that dsd_app_notification_get() is safe to call from any thread, and from
@@ -273,6 +394,10 @@ main(void) {
     test_non_radio_input_reports_no_centre();
     test_revision_advances_on_each_publish();
     test_null_arguments_are_safe();
+    test_encode_has_version_and_field_count();
+    test_encode_sanitises_control_characters();
+    test_encode_rejects_a_short_buffer();
+    test_encode_matches_expected_record_field_order();
     test_concurrent_publish_and_get_never_tears();
     printf("APP_CONTROL_NOTIFICATION_STATUS ok\n");
     return 0;

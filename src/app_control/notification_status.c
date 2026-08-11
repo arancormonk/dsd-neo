@@ -15,6 +15,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -130,4 +131,75 @@ dsd_app_notification_get(dsd_app_notification_status* out) {
     }
     dsd_mutex_unlock(&g_mu);
     return have;
+}
+
+/**
+ * @brief Copy @p in into @p out with control characters folded to spaces.
+ *
+ * Tabs separate fields and a newline would end the record, so neither may survive from
+ * text the app did not author.
+ */
+static void
+sanitize_field(char* out, size_t out_size, const char* in) {
+    size_t i = 0;
+    for (; in[i] != '\0' && i + 1 < out_size; i++) {
+        const unsigned char c = (unsigned char)in[i];
+        out[i] = (c < 0x20U || c == 0x7FU) ? ' ' : in[i];
+    }
+    out[i] = '\0';
+}
+
+size_t
+dsd_app_notification_encode(char* out, size_t out_size) {
+    if (out == NULL || out_size == 0) {
+        return 0;
+    }
+
+    dsd_app_notification_status status;
+    if (!dsd_app_notification_get(&status)) {
+        return 0;
+    }
+
+    char protocol[DSD_APP_NOTIFICATION_PROTOCOL_SIZE];
+    sanitize_field(protocol, sizeof(protocol), status.protocol);
+
+    /* scratch is built up front and only copied into *out once it is known to hold the
+       whole record: a reader must never be handed a prefix it could parse as a complete,
+       shorter record. */
+    char scratch[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    int used =
+        DSD_SNPRINTF(scratch, sizeof(scratch), "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld", protocol,
+                     (unsigned)status.radio_input, (unsigned)status.trunking, (unsigned)status.trunk_tuned,
+                     (long long)status.cc_freq_hz, (long long)status.vc_freq_hz, (long long)status.center_freq_hz);
+    /* DSD_SNPRINTF forwards to vsnprintf: a negative return is an encoding error, and a
+       return >= the buffer size means the formatted record was truncated. Either way,
+       there is no whole record to hand back. */
+    if (used < 0 || (size_t)used >= sizeof(scratch)) {
+        return 0;
+    }
+
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        const dsd_app_slot_call* call = &status.slots[slot];
+        char name[DSD_CALL_IDENTITY_TEXT_SIZE];
+        char tg[DSD_CALL_IDENTITY_TEXT_SIZE];
+        char src[DSD_CALL_IDENTITY_TEXT_SIZE];
+        sanitize_field(name, sizeof(name), call->name);
+        sanitize_field(tg, sizeof(tg), call->tg_text);
+        sanitize_field(src, sizeof(src), call->src_text);
+
+        const int added =
+            DSD_SNPRINTF(scratch + used, sizeof(scratch) - (size_t)used, "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u",
+                         call->state, name, tg, src, (unsigned long long)call->tg_id, (unsigned)call->enc,
+                         (unsigned)call->algid, (unsigned)call->kid, (unsigned)call->elapsed_ms);
+        if (added < 0 || (size_t)added >= sizeof(scratch) - (size_t)used) {
+            return 0;
+        }
+        used += added;
+    }
+
+    if ((size_t)used + 1U > out_size) {
+        return 0;
+    }
+    DSD_MEMCPY(out, scratch, (size_t)used + 1U);
+    return (size_t)used;
 }
