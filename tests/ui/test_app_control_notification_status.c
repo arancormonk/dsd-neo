@@ -146,6 +146,18 @@ test_null_arguments_are_safe(void) {
     assert(dsd_app_notification_get(NULL) == 0);
 }
 
+/* Byte-exact rather than strchr(): strchr() takes an int and converts it to char, so a
+   high byte written as a literal reads differently depending on whether char is signed. */
+static int
+record_has_byte(const char* record, unsigned char byte) {
+    for (const char* p = record; *p != '\0'; p++) {
+        if ((unsigned char)*p == byte) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static size_t
 count_fields(const char* record) {
     size_t fields = 1;
@@ -191,6 +203,124 @@ test_encode_sanitises_control_characters(void) {
        field and desynchronise every field after it. */
     assert(count_fields(record) == 26);
     assert(strstr(record, "Metro Fire Dispatch") != NULL);
+    free(state);
+}
+
+/* Publishes one call whose target text is @p target verbatim, then encodes it into
+   @p record. Callsigns arrive off the air as raw decoded octets and CSV names arrive
+   unvalidated, so this is the shape every charset case below takes. */
+static void
+encode_with_target_text(const char* target, char* record, size_t record_size) {
+    dsd_state* state = make_state();
+    state->synctype = DSD_SYNC_P25P2_POS;
+
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.observed_m = dsd_app_notification_test_now_m();
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", target);
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_notification_publish_state(state);
+
+    assert(dsd_app_notification_encode(record, record_size) > 0);
+    free(state);
+}
+
+/* The record is handed straight to JNI's NewStringUTF(), which requires modified UTF-8
+   and aborts the process under CheckJNI when it does not get it. Nothing upstream
+   filters for charset: D-STAR and YSF callsigns are raw decoded octets off the air, so
+   any byte value at all can reach here. */
+static void
+test_encode_replaces_a_lone_continuation_byte(void) {
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    /* 0x9F with no lead byte in front of it: not part of any sequence. */
+    encode_with_target_text("KD\x9F"
+                            "ABC",
+                            record, sizeof(record));
+    assert(strstr(record, "KD?ABC") != NULL);
+    assert(!record_has_byte(record, 0x9FU));
+}
+
+static void
+test_encode_drops_a_truncated_trailing_sequence(void) {
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    /* U+20AC is E2 82 AC; the field ends one byte short of it. Emitting the stump would
+       hand NewStringUTF() a lead byte with a missing continuation -- the exact shape
+       CheckJNI aborts on -- and a '?' per byte would invent characters the sender never
+       sent. */
+    encode_with_target_text("NET\xE2\x82", record, sizeof(record));
+    assert(strstr(record, "\tNET\t") != NULL);
+    assert(!record_has_byte(record, 0xE2U));
+    assert(!record_has_byte(record, 0x82U));
+}
+
+static void
+test_encode_replaces_an_overlong_encoding(void) {
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    /* C0 AF is a non-minimal encoding of '/'. Decoders that accept it are how a filter
+       that only looks at single bytes gets walked past, so both bytes are rejected. */
+    encode_with_target_text("A\xC0\xAF"
+                            "B",
+                            record, sizeof(record));
+    assert(strstr(record, "A??B") != NULL);
+    assert(!record_has_byte(record, 0xC0U));
+    assert(!record_has_byte(record, 0xAFU));
+}
+
+static void
+test_encode_keeps_valid_multibyte_text(void) {
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    /* Two-byte (U+00C7), three-byte (U+20AC) and four-byte (U+1F525) sequences, all
+       well-formed: the filter must pass them through byte for byte. A charset check
+       that rejected everything above 0x7F would be just as wrong as no check at all. */
+    encode_with_target_text("A\xC3\x87 \xE2\x82\xAC \xF0\x9F\x94\xA5", record, sizeof(record));
+    assert(strstr(record, "A\xC3\x87 \xE2\x82\xAC \xF0\x9F\x94\xA5") != NULL);
+    assert(strchr(record, '?') == NULL);
+}
+
+/* Event_History::t_name is a char[200] and dsd_app_slot_call::name must match it: it is
+   the Qt monitor's heroName, which returned the alias unbounded before it moved behind
+   app-control. Sizing it like tg_text/src_text (char[64], and correctly so, since those
+   come from the canonical call state) cut every CSV alias at 63 characters. */
+static void
+test_encode_round_trips_a_long_group_name(void) {
+    dsd_state* state = make_state();
+    Event_History_I* history = (Event_History_I*)calloc(DSD_CALL_STATE_SLOT_COUNT, sizeof(Event_History_I));
+    assert(history != NULL);
+    state->event_history_s = history;
+    state->synctype = DSD_SYNC_P25P2_POS;
+
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.observed_m = dsd_app_notification_test_now_m();
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+
+    /* 199 characters, with a distinct tail so a truncation cannot pass on a prefix
+       match, and comfortably past the 63 the old sizing allowed. */
+    char alias[200];
+    DSD_MEMSET(alias, 'A', sizeof(alias) - 1U);
+    alias[sizeof(alias) - 1U] = '\0';
+    DSD_MEMCPY(alias + 190, "TAILEND", 7U);
+    history[0].Event_History_Items[0].target_id = 51023U;
+    DSD_SNPRINTF(history[0].Event_History_Items[0].t_name, sizeof(history[0].Event_History_Items[0].t_name), "%s",
+                 alias);
+
+    dsd_app_notification_publish_state(state);
+
+    dsd_app_notification_status status;
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(strcmp(status.slots[0].name, alias) == 0);
+
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    /* Tab-delimited on both sides: a truncated alias would still match a bare strstr
+       of its prefix. */
+    char expected[sizeof(alias) + 2U];
+    DSD_SNPRINTF(expected, sizeof(expected), "\t%s\t", alias);
+    assert(strstr(record, expected) != NULL);
+    /* The record must still fit, which is the other half of the fix. */
+    assert(count_fields(record) == 26);
+
+    free(history);
     free(state);
 }
 
@@ -422,6 +552,11 @@ main(void) {
     test_null_arguments_are_safe();
     test_encode_has_version_and_field_count();
     test_encode_sanitises_control_characters();
+    test_encode_replaces_a_lone_continuation_byte();
+    test_encode_drops_a_truncated_trailing_sequence();
+    test_encode_replaces_an_overlong_encoding();
+    test_encode_keeps_valid_multibyte_text();
+    test_encode_round_trips_a_long_group_name();
     test_encode_rejects_a_short_buffer();
     test_encode_matches_expected_record_field_order();
     test_concurrent_publish_and_get_never_tears();

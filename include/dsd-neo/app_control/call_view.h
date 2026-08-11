@@ -43,6 +43,20 @@ enum {
  */
 #define DSD_APP_CALL_LINE_ENDED_HOLD_S 3.0
 
+enum {
+    /**
+     * @brief Size of @ref dsd_app_slot_call::name.
+     *
+     * Its own constant rather than DSD_CALL_IDENTITY_TEXT_SIZE, because the two fields
+     * are copied from differently sized sources: @c name comes from a CSV import, held
+     * in @c Event_History::t_name as a @c char[200], while @c tg_text and @c src_text
+     * come from the canonical call state's @c char[DSD_CALL_IDENTITY_TEXT_SIZE] fields.
+     * Sizing @c name like the other two silently cut a long talkgroup alias down to 63
+     * characters on its way to the hero panel.
+     */
+    DSD_APP_CALL_NAME_SIZE = 200,
+};
+
 /**
  * @brief Display-ready identity for one slot.
  *
@@ -52,7 +66,7 @@ enum {
 typedef struct {
     int state; /**< One of the DSD_APP_CALL_LINE_* values. */
     /** CSV-imported group name when one is staged for this talkgroup, else @c tg_text. */
-    char name[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char name[DSD_APP_CALL_NAME_SIZE];
     char tg_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char src_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     uint64_t tg_id;      /**< OTA target when one decoded, else the policy-resolved id. */

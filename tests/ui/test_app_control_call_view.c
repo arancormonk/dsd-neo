@@ -342,6 +342,35 @@ test_staged_group_name_respects_slot(void) {
     free(state);
 }
 
+/* The CSV group name is the only field here whose source is wider than the canonical
+   call state's identity text: Event_History::t_name is a char[200], while target_text
+   and source_text are char[DSD_CALL_IDENTITY_TEXT_SIZE]. Sizing name like the latter
+   two truncated long aliases -- the Qt monitor's heroName -- at 63 characters, and no
+   test noticed because every other staged-name case here uses a short name. */
+static void
+test_staged_group_name_longer_than_identity_text_survives(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 51023U, 1234567U, 10.0);
+
+    /* 199 characters: exactly what t_name can hold, and what a CSV import can stage. */
+    char alias[200];
+    DSD_MEMSET(alias, 'A', sizeof(alias) - 1U);
+    alias[sizeof(alias) - 1U] = '\0';
+    /* Distinct tail, so a truncation cannot pass by matching a prefix. */
+    DSD_MEMCPY(alias + 190, "TAILEND", 7U);
+    stage_group_name(history, 0U, 51023U, alias);
+    assert(strlen(history[0].Event_History_Items[0].t_name) == 199U);
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strlen(view.name) == 199U);
+    assert(strcmp(view.name, alias) == 0);
+    free(history);
+    free(state);
+}
+
 static void
 test_call_line_state_boundaries(void) {
     dsd_call_snapshot call;
@@ -461,6 +490,7 @@ main(void) {
     test_staged_group_name_ignored_for_other_talkgroup();
     test_staged_group_name_ignored_when_empty();
     test_staged_group_name_respects_slot();
+    test_staged_group_name_longer_than_identity_text_survives();
     test_call_line_state_boundaries();
     test_null_arguments_are_safe();
     test_seconds_truncation_matches_qt_adapter();

@@ -133,19 +133,153 @@ dsd_app_notification_get(dsd_app_notification_status* out) {
 }
 
 /**
- * @brief Copy @p in into @p out with control characters folded to spaces.
+ * @brief Split a UTF-8 lead byte into its continuation count and leading bits.
+ *
+ * @param cp Receives the code-point bits the lead byte carries. Untouched on failure.
+ * @return How many continuation bytes must follow (0 for ASCII), or -1 when @p lead
+ *         cannot begin a sequence at all: 0x80..0xBF is a continuation byte with
+ *         nothing leading it, and 0xF8..0xFF leads a length UTF-8 has not had since it
+ *         was capped at four bytes.
+ */
+static int
+utf8_lead_bits(unsigned char lead, uint32_t* cp) {
+    if (lead < 0x80U) {
+        *cp = lead;
+        return 0;
+    }
+    if ((lead & 0xE0U) == 0xC0U) {
+        *cp = (uint32_t)(lead & 0x1FU);
+        return 1;
+    }
+    if ((lead & 0xF0U) == 0xE0U) {
+        *cp = (uint32_t)(lead & 0x0FU);
+        return 2;
+    }
+    if ((lead & 0xF8U) == 0xF0U) {
+        *cp = (uint32_t)(lead & 0x07U);
+        return 3;
+    }
+    return -1;
+}
+
+/** @brief Lowest code point encodable with @p trailing continuation bytes. */
+static uint32_t
+utf8_min_code_point(int trailing) {
+    if (trailing == 1) {
+        return 0x80U;
+    }
+    if (trailing == 2) {
+        return 0x800U;
+    }
+    return 0x10000U;
+}
+
+/**
+ * @brief Whether @p cp is a code point UTF-8 may encode with @p trailing bytes.
+ *
+ * Rejects surrogates and anything past U+10FFFF, plus overlong forms -- a code point
+ * that fits in fewer bytes must use them.
+ */
+static int
+utf8_code_point_is_valid(uint32_t cp, int trailing) {
+    if (cp > 0x10FFFFU) {
+        return 0;
+    }
+    if (cp >= 0xD800U && cp <= 0xDFFFU) {
+        return 0;
+    }
+    return cp >= utf8_min_code_point(trailing);
+}
+
+/**
+ * @brief Classify the UTF-8 sequence starting at @p in.
+ *
+ * Stricter than the modified-UTF-8 decoder on the other side of JNI: overlong forms,
+ * surrogate code points and anything past U+10FFFF are rejected here even though ART's
+ * CheckJNI would let them by. An overlong is the classic way to smuggle a tab or a NUL
+ * past a byte-wise filter, and rejecting more than the consumer does can only ever
+ * produce input it still accepts.
+ *
+ * @return The sequence length in bytes (1..4) when @p in starts a complete, well-formed,
+ *         minimally-encoded sequence; 0 when the byte at @p in cannot be part of one;
+ *         -1 when a well-formed sequence starts but the string ends inside it.
+ */
+static int
+utf8_sequence_len(const unsigned char* in) {
+    uint32_t cp = 0U;
+    const int trailing = utf8_lead_bits(in[0], &cp);
+    if (trailing < 0) {
+        return 0;
+    }
+    if (trailing == 0) {
+        return 1;
+    }
+
+    for (int k = 1; k <= trailing; k++) {
+        const unsigned char c = in[k];
+        if (c == '\0') {
+            return -1; /* The field ends inside the sequence. */
+        }
+        if ((c & 0xC0U) != 0x80U) {
+            return 0;
+        }
+        cp = (cp << 6) | (uint32_t)(c & 0x3FU);
+    }
+
+    return utf8_code_point_is_valid(cp, trailing) ? trailing + 1 : 0;
+}
+
+/**
+ * @brief Copy @p in into @p out, folded to control-free, well-formed UTF-8.
  *
  * Tabs separate fields and a newline would end the record, so neither may survive from
- * text the app did not author.
+ * text the app did not author; C0 controls and DEL become spaces.
+ *
+ * The charset half matters just as much, and for a different consumer: this record is
+ * handed to JNI's NewStringUTF(), which requires modified UTF-8 and aborts the process
+ * under CheckJNI when it does not get it. Nothing upstream filters for charset --
+ * D-STAR and YSF callsigns are raw decoded octets off the air, and CSV names are
+ * imported unvalidated -- so every byte that is not part of a well-formed sequence
+ * becomes a '?' here. A sequence the field ends part-way through is dropped rather than
+ * emitted, which is also what keeps a byte-count truncation upstream from leaving a
+ * split sequence behind.
+ *
+ * A multi-byte sequence is written whole or not at all, so the output can be shorter
+ * than @p out_size - 1 even with input left over.
  */
 static void
 sanitize_field(char* out, size_t out_size, const char* in) {
-    size_t i = 0;
-    for (; in[i] != '\0' && i + 1 < out_size; i++) {
-        const unsigned char c = (unsigned char)in[i];
-        out[i] = (c < 0x20U || c == 0x7FU) ? ' ' : in[i];
+    if (out_size == 0) {
+        return;
     }
-    out[i] = '\0';
+
+    size_t used = 0;
+    size_t i = 0;
+    while (in[i] != '\0' && used + 1U < out_size) {
+        const int len = utf8_sequence_len((const unsigned char*)in + i);
+        if (len < 0) {
+            break; /* Trailing incomplete sequence: drop it. */
+        }
+        if (len == 0) {
+            out[used++] = '?';
+            i++;
+            continue;
+        }
+        if (len == 1) {
+            const unsigned char c = (unsigned char)in[i];
+            out[used++] = (c < 0x20U || c == 0x7FU) ? ' ' : in[i];
+            i++;
+            continue;
+        }
+        if (used + (size_t)len + 1U > out_size) {
+            break; /* Splitting it here would emit the truncation this guards against. */
+        }
+        for (int k = 0; k < len; k++) {
+            out[used++] = in[i + (size_t)k];
+        }
+        i += (size_t)len;
+    }
+    out[used] = '\0';
 }
 
 size_t
@@ -179,7 +313,7 @@ dsd_app_notification_encode(char* out, size_t out_size) {
 
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         const dsd_app_slot_call* call = &status.slots[slot];
-        char name[DSD_CALL_IDENTITY_TEXT_SIZE];
+        char name[DSD_APP_CALL_NAME_SIZE];
         char tg[DSD_CALL_IDENTITY_TEXT_SIZE];
         char src[DSD_CALL_IDENTITY_TEXT_SIZE];
         sanitize_field(name, sizeof(name), call->name);
