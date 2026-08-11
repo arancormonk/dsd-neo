@@ -22,20 +22,10 @@ Item {
                                        : callHistory.sessionLabel.length > 0 ? callHistory.sessionLabel
                                                                              : qsTr("Listening")
 
-    // Which slot the hero shows: an active call wins, then a recently ended one.
-    readonly property int heroSlot: {
-        if (!metrics)
-            return 0
-        if (metrics.slot1CallState === 2)
-            return 1
-        if (metrics.slot2CallState === 2)
-            return 2
-        if (metrics.slot1CallState === 3)
-            return 1
-        if (metrics.slot2CallState === 3)
-            return 2
-        return 0
-    }
+    // Which slot the hero shows: an active call wins, then a recently ended one, and
+    // between equals the lower slot. Decided by dsd_app_lead_slot() rather than here, so
+    // this panel and the Android notification cannot headline different slots.
+    readonly property int heroSlot: metrics ? metrics.leadSlot : 0
     readonly property bool heroActive: heroSlot === 1 ? metrics.slot1CallState === 2
                                                       : heroSlot === 2 ? metrics.slot2CallState === 2 : false
     readonly property string heroName: heroSlot === 1 ? metrics.slot1CallName

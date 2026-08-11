@@ -12,6 +12,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
@@ -25,6 +26,18 @@ make_state(void) {
     assert(state != NULL);
     assert(dsd_call_state_ensure(state) > 0);
     return state;
+}
+
+/* Counterpart to make_state(): dsd_call_state_ensure() hangs a ~17 KB call-state
+   block off the extension table, so freeing the dsd_state alone leaks it. */
+static void
+destroy_state(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_state_ext_free_all(state);
+    free(state->event_history_s);
+    free(state);
 }
 
 static void
@@ -66,7 +79,7 @@ test_idle_slot_reports_none(void) {
     dsd_app_slot_call_view(state, 0U, 10.0, &view);
     assert(view.state == DSD_APP_CALL_LINE_NONE);
     assert(view.tg_text[0] == '\0');
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -84,7 +97,7 @@ test_active_call_reports_identity(void) {
     assert(view.tg_id == 51023U);
     assert(view.enc == 0U);
     assert(view.elapsed_ms >= 1900U && view.elapsed_ms <= 2100U);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -105,7 +118,7 @@ test_tg_id_falls_back_to_policy_target_id(void) {
     /* tg_text still falls back to the (zero) OTA numeric id: policy resolution
        feeds tg_id/name lookups, not the OTA display text. */
     assert(strcmp(view.tg_text, "0") == 0);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -125,7 +138,7 @@ test_target_text_used_verbatim(void) {
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
     assert(strcmp(view.tg_text, "DISPATCH-1") == 0);
     assert(strcmp(view.name, "DISPATCH-1") == 0);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -141,7 +154,7 @@ test_source_text_used_verbatim(void) {
     dsd_app_slot_call_view(state, 0U, 12.0, &view);
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
     assert(strcmp(view.src_text, "N0CALL") == 0);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -159,7 +172,7 @@ test_ended_call_holds_then_expires(void) {
     dsd_app_slot_call expired;
     dsd_app_slot_call_view(state, 0U, 12.0 + DSD_APP_CALL_LINE_ENDED_HOLD_S + 0.5, &expired);
     assert(expired.state == DSD_APP_CALL_LINE_IDLE);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -171,7 +184,7 @@ test_identityless_epoch_reads_idle(void) {
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 10.5, &view);
     assert(view.state == DSD_APP_CALL_LINE_IDLE);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -192,7 +205,7 @@ test_route_text_leg0_confers_identity(void) {
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 10.5, &view);
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -209,7 +222,7 @@ test_route_text_leg1_confers_identity(void) {
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 10.5, &view);
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -225,7 +238,7 @@ test_x2tdma_identityless_epoch_still_shows(void) {
     /* X2-TDMA never parses voice into a talkgroup, so an identity-less epoch is
        the whole story the protocol has. Suppressing it would hide real traffic. */
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -246,7 +259,7 @@ test_encrypted_call_carries_alg_and_kid(void) {
     assert(view.enc == 1U);
     assert(view.algid == 0x84U);
     assert(view.kid == 0x0101U);
-    free(state);
+    destroy_state(state);
 }
 
 /* call_reads_encrypted() treats ENCRYPTED, ENCRYPTED_PENDING and DECRYPTABLE as
@@ -271,7 +284,7 @@ test_crypto_classification_reads_encrypted(dsd_call_crypto_state classification)
     assert(view.enc == 1U);
     assert(view.algid == 0xAAU);
     assert(view.kid == 0x2222U);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -287,8 +300,7 @@ test_staged_group_name_used_when_target_matches(void) {
     assert(strcmp(view.name, "Metro Fire Dispatch") == 0);
     /* The staged name replaces the display name; it does not touch tg_text. */
     assert(strcmp(view.tg_text, "51023") == 0);
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -305,8 +317,7 @@ test_staged_group_name_ignored_for_other_talkgroup(void) {
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 12.0, &view);
     assert(strcmp(view.name, "51023") == 0);
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -321,8 +332,7 @@ test_staged_group_name_ignored_when_empty(void) {
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 12.0, &view);
     assert(strcmp(view.name, "51023") == 0);
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -338,8 +348,7 @@ test_staged_group_name_respects_slot(void) {
     dsd_app_slot_call view;
     dsd_app_slot_call_view(state, 0U, 12.0, &view);
     assert(strcmp(view.name, "51023") == 0);
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 /* The CSV group name is the only field here whose source is wider than the canonical
@@ -367,8 +376,7 @@ test_staged_group_name_longer_than_identity_text_survives(void) {
     assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
     assert(strlen(view.name) == 199U);
     assert(strcmp(view.name, alias) == 0);
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -419,7 +427,7 @@ test_seconds_truncation_matches_qt_adapter(void) {
     dsd_app_slot_call just_over;
     dsd_app_slot_call_view(state, 0U, 13.001, &just_over);
     assert(just_over.elapsed_ms / 1000U == 3U);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -435,7 +443,7 @@ test_vc_freq_prefers_canonical_active_p25_call(void) {
 
     /* Step 1 of the chain wins over the trunk_vc_freq fallback. */
     assert(dsd_app_vc_freq(state) == 851012500L);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -449,7 +457,7 @@ test_vc_freq_falls_back_through_the_chain(void) {
     /* trunk_vc_freq outranks p25_vc_freq. */
     state->trunk_vc_freq[0] = 852012500L;
     assert(dsd_app_vc_freq(state) == 852012500L);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -462,13 +470,42 @@ test_cc_freq_prefers_trunk_over_p25(void) {
 
     state->trunk_cc_freq = 851612500L;
     assert(dsd_app_cc_freq(state) == 851612500L);
-    free(state);
+    destroy_state(state);
 }
 
 static void
 test_freq_helpers_are_null_safe(void) {
     assert(dsd_app_vc_freq(NULL) == 0L);
     assert(dsd_app_cc_freq(NULL) == 0L);
+}
+
+/* The headline rule the Qt hero panel and the Android notification share. Both once
+   answered this for themselves and disagreed: on a TDMA system with both slots up the
+   panel headlined slot 1 while the notification headlined whichever call started later,
+   so the same record named different units on the two surfaces. */
+static void
+test_lead_slot_prefers_active_then_lower_slot(void) {
+    const int none[2] = {DSD_APP_CALL_LINE_NONE, DSD_APP_CALL_LINE_IDLE};
+    assert(dsd_app_lead_slot(none, 2U) == -1);
+
+    const int second_only[2] = {DSD_APP_CALL_LINE_IDLE, DSD_APP_CALL_LINE_ACTIVE};
+    assert(dsd_app_lead_slot(second_only, 2U) == 1);
+
+    /* An open epoch outranks a merely-ended one even on the higher slot: the ended hold
+       keeps slot 0 renderable for seconds after its call finished, and headlining it
+       would bury the transmission actually on the air. */
+    const int ended_over_active[2] = {DSD_APP_CALL_LINE_ENDED, DSD_APP_CALL_LINE_ACTIVE};
+    assert(dsd_app_lead_slot(ended_over_active, 2U) == 1);
+
+    /* Equal rank falls to the lower slot, in both directions, so the headline does not
+       swap between two simultaneous transmissions as their relative timings shift. */
+    const int both_active[2] = {DSD_APP_CALL_LINE_ACTIVE, DSD_APP_CALL_LINE_ACTIVE};
+    assert(dsd_app_lead_slot(both_active, 2U) == 0);
+    const int both_ended[2] = {DSD_APP_CALL_LINE_ENDED, DSD_APP_CALL_LINE_ENDED};
+    assert(dsd_app_lead_slot(both_ended, 2U) == 0);
+
+    assert(dsd_app_lead_slot(NULL, 2U) == -1);
+    assert(dsd_app_lead_slot(both_active, 0U) == -1);
 }
 
 int
@@ -498,6 +535,7 @@ main(void) {
     test_vc_freq_falls_back_through_the_chain();
     test_cc_freq_prefers_trunk_over_p25();
     test_freq_helpers_are_null_safe();
+    test_lead_slot_prefers_active_then_lower_slot();
     printf("APP_CONTROL_CALL_VIEW ok\n");
     return 0;
 }

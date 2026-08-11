@@ -39,9 +39,13 @@ enum {
  *
  * Long enough to catch the end of a call glanced at a moment late, short enough that a
  * quiet channel does not keep advertising a transmission that finished minutes ago.
- * Matches DSD_RECENT_ACTIVITY_TTL_MS so the decay windows in the UI agree.
+ *
+ * Derived from DSD_RECENT_ACTIVITY_TTL_MS rather than restated as its own literal: the
+ * two decay windows have to agree, and a second literal is a promise the compiler cannot
+ * keep -- retuning the recent-activity TTL would silently leave the slot line holding an
+ * ended call past the point the frequency behind it expired.
  */
-#define DSD_APP_CALL_LINE_ENDED_HOLD_S 3.0
+#define DSD_APP_CALL_LINE_ENDED_HOLD_S ((double)DSD_RECENT_ACTIVITY_TTL_MS / 1000.0)
 
 enum {
     /**
@@ -96,6 +100,28 @@ int dsd_app_call_line_state(int lookup, const dsd_call_snapshot* call, double no
  * empty text. Safe with a NULL @p state; a NULL @p out is a no-op.
  */
 void dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_app_slot_call* out);
+
+/**
+ * @brief Which slot's call should headline a surface with room for only one.
+ *
+ * The Qt hero panel and the Android notification each show a single call and each has
+ * to answer this. Stated once per frontend it is a rule that drifts -- and it did: two
+ * surfaces reading the same record named different units on a TDMA system with both
+ * slots up, which is routine on DMR and P25 Phase 2.
+ *
+ * An open epoch outranks a merely-ended one. Between two of equal rank the lower slot
+ * wins: a fixed order, so the headline does not swap between two simultaneous
+ * transmissions as their relative timings shift.
+ *
+ * Takes the line states rather than the whole views because that is all the rule reads,
+ * and the Qt model keeps its slots in a QML-facing struct of its own.
+ *
+ * @param line_states Array of @p count DSD_APP_CALL_LINE_* values, indexed by slot.
+ * @param count       Number of entries in @p line_states.
+ * @return Index of the headline slot, or -1 when no slot has anything to show and when
+ *         @p line_states is NULL.
+ */
+int dsd_app_lead_slot(const int* line_states, unsigned count);
 
 /**
  * @brief The voice-channel frequency in Hz, or 0 when none resolves.

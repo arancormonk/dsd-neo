@@ -19,6 +19,7 @@
 #include <QString>
 #include <QTimer>
 #include <QtGlobal>
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -57,6 +58,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(QString slot2EncText READ slot2EncText NOTIFY slot2Changed)
     Q_PROPERTY(int slot1CallSeconds READ slot1CallSeconds NOTIFY slot1Changed)
     Q_PROPERTY(int slot2CallSeconds READ slot2CallSeconds NOTIFY slot2Changed)
+    /* Its own signal rather than slot1Changed: it reads both slots, and Q_PROPERTY takes
+       only one NOTIFY -- bound to either slot alone it would go stale when the other moved. */
+    Q_PROPERTY(int leadSlot READ leadSlot NOTIFY leadSlotChanged)
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
@@ -284,6 +288,19 @@ class MetricsModel : public QObject {
         return m_view.slot_call[1].state;
     }
 
+    /**
+     * @brief Which slot the hero should show: 1, 2, or 0 when nothing is on the air.
+     *
+     * One-based to match the slotN* properties QML reads it against, so 0 falls out as
+     * "neither". The rule itself lives in dsd_app_lead_slot() and is shared with the
+     * Android notification, which has the same one-call-at-a-time problem.
+     */
+    int
+    leadSlot() const {
+        const int states[2] = {m_view.slot_call[0].state, m_view.slot_call[1].state};
+        return dsd_app_lead_slot(states, 2U) + 1;
+    }
+
     const QString&
     slot1CallName() const {
         return m_view.slot_call[0].name;
@@ -443,6 +460,7 @@ class MetricsModel : public QObject {
     void tunerChanged();
     void slot1Changed();
     void slot2Changed();
+    void leadSlotChanged();
     void controlChanged();
     void uiMessageChanged();
 

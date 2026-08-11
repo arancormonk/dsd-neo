@@ -637,6 +637,10 @@ class Setup : public QObject {
             metrics[p + QStringLiteral("EncText")] = QString();
             metrics[p + QStringLiteral("TgId")] = 0;
         }
+        // Which slot the hero headlines, one-based, 0 for neither. Derived natively by
+        // dsd_app_lead_slot() in the real model; here it is a plain reading a case sets
+        // alongside the slotNCallState it is meant to agree with.
+        metrics[QStringLiteral("leadSlot")] = 0;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
         // Whether an automatic controller owns the tuner, which one, and where it

@@ -416,6 +416,12 @@ dsd_neo_add_public_header_smoke_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_call_view
+  HEADERS_PUBLIC_APP_CONTROL_CALL_VIEW
+  dsd-neo/app_control/call_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_commands
   HEADERS_PUBLIC_APP_CONTROL_COMMANDS
   dsd-neo/app_control/commands.h
@@ -438,6 +444,21 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_APP_CONTROL_HISTORY
   dsd-neo/app_control/history.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_notification_status
+  HEADERS_PUBLIC_APP_CONTROL_NOTIFICATION_STATUS
+  dsd-neo/app_control/notification_status.h
+  C
+)
+# Also as C++: the only consumer of this header anywhere is android/dsdneo_jni.cpp, which
+# no Linux/macOS/Windows CI job ever compiles, so nothing else would catch it losing its
+# extern "C" guard or a transitively-needed include.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_notification_status_cxx
+  HEADERS_PUBLIC_APP_CONTROL_NOTIFICATION_STATUS_CXX
+  dsd-neo/app_control/notification_status.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_snapshot

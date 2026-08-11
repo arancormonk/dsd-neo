@@ -23,6 +23,24 @@ static int g_have = 0;
 static dsd_mutex_t g_mu;
 static atomic_int g_mu_state = 0; /* 0=uninit, 1=initing, 2=init */
 
+/* Armed by the first read; see dsd_app_notification_get(). The publishers hang off the
+   telemetry hook, which runs on the decode thread at protocol frame rate -- unthrottled
+   at the DMR/P25p2/D-STAR/M17/EDACS sites, so tens of times a second -- and deriving the
+   record is not cheap: dsd_app_vc_freq() alone copies the whole recent-activity snapshot
+   under the canonical call-state lock whenever no voice frequency is cached, which is
+   every publish of a conventional or not-yet-tuned session. The only reader in the tree
+   is the Android service's 1 Hz poll, so a desktop run must not pay for any of it. */
+static atomic_int g_wanted = 0;
+
+/* Seconds a sync label survives a frame that found none. Matches the hold the Qt panel
+   applies to the same field (kSyncHoldSeconds in src/ui/qt/metrics_model.cpp), so the
+   two surfaces agree on when a session stops reading as locked. Guarded by g_mu with the
+   record itself, because dsd_app_notification_reset() clears them together and can be
+   called from a thread other than the publisher's. */
+#define NOTIFICATION_SYNC_HOLD_S 3.0
+static int g_sync_type = DSD_SYNC_NONE;
+static double g_sync_seen_m = 0.0;
+
 /* Same lazy-init shape as ui_snapshot.c's and ui_opts_snapshot.c's ensure_mu_init():
    the publisher can be reached before any explicit setup, and app-control has no start
    hook that is guaranteed to run first. The loser of the first-call race must wait --
@@ -43,14 +61,9 @@ ensure_mu_init(void) {
     }
 }
 
-double
-dsd_app_notification_test_now_m(void) {
-    return dsd_time_now_monotonic_s();
-}
-
 void
 dsd_app_notification_publish_state(const dsd_state* state) {
-    if (state == NULL) {
+    if (state == NULL || atomic_load(&g_wanted) == 0) {
         return;
     }
 
@@ -66,25 +79,50 @@ dsd_app_notification_publish_state(const dsd_state* state) {
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         dsd_app_slot_call_view(state, (uint8_t)slot, now_m, &slots[slot]);
     }
+    int line_states[DSD_CALL_STATE_SLOT_COUNT];
+    for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
+        line_states[slot] = slots[slot].state;
+    }
+    const int8_t lead = (int8_t)dsd_app_lead_slot(line_states, (unsigned)DSD_CALL_STATE_SLOT_COUNT);
+
     const long int vc = dsd_app_vc_freq(state);
     const long int cc = dsd_app_cc_freq(state);
+
+    const int synctype = state->synctype;
+
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    /* Held rather than sampled, the same way the Qt panel holds it and for the same
+       reason: getFrameSync() re-stamps state->synctype every engine iteration and answers
+       NONE whenever the current search window found nothing, which on a control channel
+       is most of them. Published raw, the label blinks on and off between polls -- and
+       because that changes the encoded record, the service re-posts the notification at
+       the full poll rate on a channel carrying no traffic at all. */
+    if (synctype != DSD_SYNC_NONE) {
+        g_sync_type = synctype;
+        g_sync_seen_m = now_m;
+    } else if (g_sync_type != DSD_SYNC_NONE && (now_m - g_sync_seen_m) > NOTIFICATION_SYNC_HOLD_S) {
+        g_sync_type = DSD_SYNC_NONE;
+    }
 
     /* Zeroed rather than just NUL-terminated at [0]: the whole buffer is copied into
        the published record below, and a partial DSD_SNPRINTF() only overwrites the
        label plus its NUL, leaving stack garbage past it otherwise. */
     char protocol[DSD_APP_NOTIFICATION_PROTOCOL_SIZE];
     DSD_MEMSET(protocol, 0, sizeof(protocol));
-    const char* label = dsd_synctype_to_string(state->synctype);
-    /* NONE means not synced and UNKNOWN means synced to something unnameable. Neither is
-       worth a label, and an empty one is what distinguishes an unsynced session. */
-    if (label != NULL && strcmp(label, "NONE") != 0 && strcmp(label, "UNKNOWN") != 0) {
+    /* Not synced is asked of the sync id, not of its rendered label: round-tripping the
+       question through display text would couple this filter to the wording of the table
+       in synctype.c, where renaming a label is a display-only change nobody would expect
+       to reach app-control. UNKNOWN has no sentinel of its own -- it is what the table
+       returns for an id it does not map -- so that half still has to be a string test. */
+    const char* label = (g_sync_type != DSD_SYNC_NONE) ? dsd_synctype_to_string(g_sync_type) : NULL;
+    if (label != NULL && strcmp(label, "UNKNOWN") != 0) {
         DSD_SNPRINTF(protocol, sizeof(protocol), "%s", label);
     }
 
-    ensure_mu_init();
-    dsd_mutex_lock(&g_mu);
     DSD_MEMCPY(g_status.slots, slots, sizeof(slots));
     DSD_MEMCPY(g_status.protocol, protocol, sizeof(protocol));
+    g_status.lead_slot = lead;
     g_status.vc_freq_hz = (int64_t)vc;
     g_status.cc_freq_hz = (int64_t)cc;
     g_status.revision++;
@@ -94,15 +132,17 @@ dsd_app_notification_publish_state(const dsd_state* state) {
 
 void
 dsd_app_notification_publish_opts(const dsd_opts* opts) {
-    if (opts == NULL) {
+    if (opts == NULL || atomic_load(&g_wanted) == 0) {
         return;
     }
 
     /* Gated on RTL-family input for the same reason the Qt metrics are: on a WAV, UDP,
        TCP or symbol-file session the tuner readings are options the front end never
        applied, and publishing them would put a plausible frequency on a run with no
-       tuner. Frontends omit the row rather than render a zero. */
-    const int radio = (opts->audio_in_type == AUDIO_IN_RTL);
+       tuner. Frontends omit the row rather than render a zero. Through the shared
+       predicate so this and dsd_app_frontend_get_metrics() cannot come to disagree about
+       whether a session has a tuner behind it. */
+    const int radio = dsd_opts_input_is_radio(opts);
 
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
@@ -120,6 +160,9 @@ dsd_app_notification_get(dsd_app_notification_status* out) {
     if (out == NULL) {
         return 0;
     }
+    /* Arms the publishers; see g_wanted. Sticky for the life of the process rather than
+       per session, so a host that has polled once keeps a live record across restarts. */
+    atomic_store(&g_wanted, 1);
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     const int have = g_have;
@@ -127,6 +170,10 @@ dsd_app_notification_get(dsd_app_notification_status* out) {
         DSD_MEMCPY(out, &g_status, sizeof(*out));
     } else {
         DSD_MEMSET(out, 0, sizeof(*out));
+        /* Not left at the zero the memset wrote: 0 is a valid slot index, so a caller
+           rendering straight from the struct would headline slot 0 on a session that has
+           published nothing at all. -1 is the "no slot" sentinel. */
+        out->lead_slot = -1;
     }
     dsd_mutex_unlock(&g_mu);
     return have;
@@ -137,6 +184,10 @@ dsd_app_notification_reset(void) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
     DSD_MEMSET(&g_status, 0, sizeof(g_status));
+    /* The sync hold goes with the record: carried across, it would let the next session's
+       first frames publish the previous one's protocol label. */
+    g_sync_type = DSD_SYNC_NONE;
+    g_sync_seen_m = 0.0;
     g_have = 0;
     dsd_mutex_unlock(&g_mu);
 }
@@ -309,10 +360,10 @@ dsd_app_notification_encode(char* out, size_t out_size) {
        whole record: a reader must never be handed a prefix it could parse as a complete,
        shorter record. */
     char scratch[DSD_APP_NOTIFICATION_RECORD_SIZE];
-    int used =
-        DSD_SNPRINTF(scratch, sizeof(scratch), "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld", protocol,
-                     (unsigned)status.radio_input, (unsigned)status.trunking, (unsigned)status.trunk_tuned,
-                     (long long)status.cc_freq_hz, (long long)status.vc_freq_hz, (long long)status.center_freq_hz);
+    int used = DSD_SNPRINTF(scratch, sizeof(scratch), "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d", protocol,
+                            (unsigned)status.radio_input, (unsigned)status.trunking, (unsigned)status.trunk_tuned,
+                            (long long)status.cc_freq_hz, (long long)status.vc_freq_hz,
+                            (long long)status.center_freq_hz, (int)status.lead_slot);
     /* DSD_SNPRINTF forwards to vsnprintf: a negative return is an encoding error, and a
        return >= the buffer size means the formatted record was truncated. Either way,
        there is no whole record to hand back. */

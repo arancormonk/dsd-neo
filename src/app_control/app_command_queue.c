@@ -5,6 +5,7 @@
 
 /* Frontend → decoder app-command queue (bounded). */
 
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/audio.h>
@@ -1627,9 +1628,11 @@ apply_cmd_dsp(const struct dsd_app_command* c) {
 }
 #endif
 
+/* Through the shared chain rather than a fourth copy of the same ternary: the retune and
+   tune commands here have to name the control channel the status surfaces name. */
 static long
 current_cc_freq(const dsd_state* state) {
-    return (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+    return dsd_app_cc_freq(state);
 }
 
 /** @brief What to call a decode preset in a message the operator reads. */

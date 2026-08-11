@@ -19,6 +19,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
+import java.util.Locale
 
 /**
  * Foreground service that owns the decoder.
@@ -65,6 +66,18 @@ class DecoderService : Service() {
                 stopIfIdle()
             }
         }
+
+        // Here rather than in startDecoding(), so it keys off "this instance is fronting a
+        // live engine" instead of "this instance started it". joinEngineThread() leaves a
+        // timed-out engine RUNNING on purpose, and the replacement service's START is then
+        // rejected as a duplicate before it ever reaches startDecoding()'s tail — but its
+        // notification is the only surface the user has, so it still has to track the call.
+        // startStatusPolling() removes any queued tick first, so arriving here twice for
+        // one session cannot leave two loops running.
+        if (synchronized(lock) { state } == State.RUNNING) {
+            startStatusPolling()
+        }
+
         // A dead process stays dead until the user relaunches: restarting the engine
         // without its configuration would be worse than not restarting at all.
         return START_NOT_STICKY
@@ -161,7 +174,7 @@ class DecoderService : Service() {
         }
         updateNotification(getString(R.string.decoder_running))
         thread.start()
-        startStatusPolling()
+        // Polling is armed by onStartCommand() once the state settles; see the note there.
     }
 
     /**
@@ -327,7 +340,22 @@ class DecoderService : Service() {
             builder.setShowWhen(false).setUsesChronometer(false)
         }
 
-        builder.setContentTitle(if (lead != null) lead.name else getString(R.string.decoder_listening))
+        // "0" is the encoder's not-decoded sentinel, the same one srcText is filtered for
+        // in bodyText() -- X2-TDMA and standalone ProVoice never parse a talkgroup at all
+        // and their calls arrive carrying it, and a policy-resolved target with no CSV
+        // alias does too. Empty is the other unrenderable case: the record's charset
+        // filter drops a multi-byte sequence the field ended part-way through, which can
+        // take the whole name with it. Either way there is a transmission, it just has no
+        // name, so the phase wording is the honest headline -- "Listening" would say the
+        // opposite of what is happening.
+        val leadName = lead?.name?.takeIf { it.isNotEmpty() && it != "0" }
+        builder.setContentTitle(
+            when {
+                leadName != null -> leadName
+                lead != null -> text
+                else -> getString(R.string.decoder_listening)
+            }
+        )
         // Back to the phase wording when the status has nothing to say. The record's two
         // halves are published by separate calls, so a poll can catch a status whose call
         // and frequency are both still empty, and a blank second line reads as a bug.
@@ -336,16 +364,30 @@ class DecoderService : Service() {
         if (status.slots.any { it.hasContent }) {
             // Only when there is something to expand into: a BigTextStyle whose text is
             // just the collapsed line again turns the expand chevron into a lie.
-            builder.setStyle(Notification.BigTextStyle().bigText(expandedText(status)))
+            builder.setStyle(Notification.BigTextStyle().bigText(expandedText(status, lead)))
         }
         return builder.build()
     }
 
-    private fun sep() = getString(R.string.notif_separator)
+    /**
+     * Resolved once: it is a constant for the life of the process, and [expandedText]
+     * would otherwise take the Resources lock once per rendered row.
+     */
+    private val separator: String by lazy(LazyThreadSafetyMode.NONE) { getString(R.string.notif_separator) }
 
-    /** `851.012500 MHz`, or null when there is no frequency to show. */
+    /**
+     * `851.012500 MHz`, or null when there is no frequency to show.
+     *
+     * Formatted against Locale.ROOT, not the resource configuration's locale, which is
+     * what `getString(id, args)` would use: Java's `%f` localises both the decimal
+     * separator and the zero digit, so a device set to German would render
+     * `851,012500 MHz` and one set to Arabic with native digits would render the number in
+     * Arabic-Indic numerals beside English words. Every other frequency readout in the
+     * project is C-locale `%.06lf`, and a frequency is a machine value the user reads back
+     * into a config file.
+     */
     private fun freqText(hz: Long): String? =
-        if (hz <= 0L) null else getString(R.string.notif_freq_mhz, hz / 1_000_000.0)
+        if (hz <= 0L) null else String.format(Locale.ROOT, getString(R.string.notif_freq_mhz), hz / 1_000_000.0)
 
     /**
      * The frequency line, by first-match precedence.
@@ -357,7 +399,13 @@ class DecoderService : Service() {
         if (!status.radioInput) {
             return null
         }
-        if (lead?.state == DecoderStatus.LINE_ACTIVE && status.trunking && status.trunkTuned) {
+        // hasContent, not LINE_ACTIVE: the lead slot stays ENDED for the hold that follows
+        // every transmission, and trunkTuned is still set for as much of it as the trunk
+        // state machine takes to hand the tuner back. Testing for ACTIVE alone made the
+        // body fall through to the branch below and label the control channel as where the
+        // receiver was, for three seconds after every call, while it was still parked on
+        // the voice channel.
+        if (lead != null && lead.hasContent && status.trunking && status.trunkTuned) {
             freqText(status.vcFreqHz)?.let { return it }
         }
         if (status.trunking) {
@@ -386,29 +434,44 @@ class DecoderService : Service() {
             parts += getString(R.string.notif_unit, lead.srcText)
         }
         frequencyPart(status, lead)?.let { parts += it }
-        return parts.joinToString(sep())
+        return parts.joinToString(separator)
     }
 
     /**
      * One row per slot with content, plus the frequency. Prose, not columns: notification
      * body text is proportional, so an aligned table would ragged out.
      */
-    private fun expandedText(status: DecoderStatus): String {
+    private fun expandedText(status: DecoderStatus, lead: SlotCall?): String {
+        val occupied = status.slots.count { it.hasContent }
         val rows = mutableListOf<String>()
         status.slots.forEachIndexed { index, call ->
             if (!call.hasContent) {
                 return@forEachIndexed
             }
-            val parts = mutableListOf(getString(R.string.notif_slot, index + 1), call.name)
+            val parts = mutableListOf<String>()
+            // Only when the number tells the reader something. Slot 1 is the only slot
+            // P25 Phase 1, D-STAR, M17, YSF, NXDN, dPMR, EDACS and ProVoice ever fill, and
+            // labelling their single row "Slot 1" invents a TDMA concept those modes do
+            // not have.
+            if (occupied > 1) {
+                parts += getString(R.string.notif_slot, index + 1)
+            }
+            // Same two unrenderable cases the content title guards against; a bare "0" or
+            // an empty name would otherwise leave a row that is nothing but a separator.
+            if (call.name.isNotEmpty() && call.name != "0") {
+                parts += call.name
+            }
             if (call.srcText.isNotEmpty() && call.srcText != "0") {
                 parts += getString(R.string.notif_unit, call.srcText)
             }
             if (call.enc) {
                 parts += getString(R.string.notif_encrypted)
             }
-            rows += parts.joinToString(sep())
+            if (parts.isNotEmpty()) {
+                rows += parts.joinToString(separator)
+            }
         }
-        frequencyPart(status, status.leadSlot)?.let { rows += it }
+        frequencyPart(status, lead)?.let { rows += it }
         return rows.joinToString("\n")
     }
 
@@ -448,6 +511,21 @@ class DecoderService : Service() {
     private val statusPoll = object : Runnable {
         override fun run() {
             if (synchronized(lock) { state } != State.RUNNING) {
+                // Also where a session that ended by itself gets its call line taken down.
+                // Every deliberate teardown calls stopStatusPolling() first, but the engine
+                // thread drops the state to IDLE from its own thread when nativeRun returns
+                // — end of a file, a dropped rtl_tcp connection, a decode error — and
+                // cannot touch the main-thread cache. Left in place, the last polled record
+                // keeps the finished transmission on the notification with its chronometer
+                // still counting up, until Android gets round to destroying the service.
+                if (lastStatusRecord != null) {
+                    lastStatusRecord = null
+                    // Not currentStatusText(): it maps IDLE to "Starting…" for the
+                    // promotion at the top of onStartCommand, where IDLE means a start is
+                    // about to happen. Here it means the run just ended and stopSelf has
+                    // been called, so the service really is on its way down.
+                    updateNotification(getString(R.string.decoder_stopping))
+                }
                 return
             }
             val record = try {
@@ -492,6 +570,10 @@ class DecoderService : Service() {
     }
 
     private fun stopForegroundCompat() {
+        // Before dropping the notification, not after: once it is gone a queued tick that
+        // re-posted would put an ongoing notification back with no foreground service
+        // behind it, and nothing left alive to take it down again.
+        stopStatusPolling()
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
 

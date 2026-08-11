@@ -48,19 +48,40 @@ typedef struct {
     uint8_t trunking;       /**< opts->trunk_enable. */
     uint8_t trunk_tuned;    /**< opts->trunk_is_tuned. */
     dsd_app_slot_call slots[DSD_CALL_STATE_SLOT_COUNT];
+    /**
+     * @brief Index into @c slots of the call that should headline, or -1 for none.
+     *
+     * Carried rather than left to the reader: the notification has room for one call and
+     * so does the Qt hero panel, and a reader deciding for itself is how the two came to
+     * name different units at the same instant. See dsd_app_lead_slot().
+     */
+    int8_t lead_slot;
 } dsd_app_notification_status;
 
-/** @brief Publish the state-derived half. Called on the decode thread. */
+/**
+ * @brief Publish the state-derived half. Called on the decode thread.
+ *
+ * A no-op until something has called dsd_app_notification_get() at least once. Deriving
+ * the record is not free -- the voice-channel chain copies the recent-activity snapshot
+ * under the canonical call-state lock -- and these publishers hang off the telemetry
+ * hook, which fires at protocol frame rate on the decode thread of every frontend. Only
+ * the Android service reads the record, so a run with no reader pays one atomic load.
+ */
 void dsd_app_notification_publish_state(const dsd_state* state);
 
-/** @brief Publish the options-derived half. Called on the decode thread. */
+/** @brief Publish the options-derived half. Called on the decode thread. Same gate. */
 void dsd_app_notification_publish_opts(const dsd_opts* opts);
 
 /**
  * @brief Copy the latest status out.
  *
  * Safe from any thread, and from any number of them concurrently -- unlike the snapshot
- * accessors. Zeroes @p out when nothing has been published yet.
+ * accessors. Zeroes @p out when nothing has been published yet, except for @c lead_slot,
+ * which is left at its -1 "no slot" sentinel rather than at a zero that names slot 0.
+ *
+ * Also arms the publishers, which stay dormant until a reader has asked once. The first
+ * call therefore reports nothing on a session that is already decoding; the next one, a
+ * poll interval later, has a record.
  *
  * @return 1 when @p out holds a published status, 0 otherwise.
  */
@@ -77,9 +98,6 @@ int dsd_app_notification_get(dsd_app_notification_status* out);
  * Called from dsd_app_frontend_runtime_stop(). Safe from any thread.
  */
 void dsd_app_notification_reset(void);
-
-/** @brief The monotonic clock the publisher stamps call ages from; for tests. */
-double dsd_app_notification_test_now_m(void);
 
 enum {
     /**

@@ -36,17 +36,18 @@ data class DecoderStatus(
     val vcFreqHz: Long,
     val centerFreqHz: Long,
     val slots: List<SlotCall>,
+    val leadSlotIndex: Int,
 ) {
-    /** The slot whose call should headline, or null when nothing is on the air. */
+    /**
+     * The slot whose call should headline, or null when nothing is on the air.
+     *
+     * The choice is made natively by dsd_app_lead_slot() and carried on the wire rather
+     * than recomputed here. Deciding it a second time in Kotlin is how this surface and
+     * the Qt hero panel came to headline different slots from the same record on a TDMA
+     * system with both slots up.
+     */
     val leadSlot: SlotCall?
-        get() = slots.filter { it.hasContent }
-            .minWithOrNull(
-                // Active outranks merely ended. Among equals the smallest elapsed time is
-                // the most recently started, which is the transmission the user just heard
-                // begin -- so a plain ascending compare on elapsedMs is the tie-break.
-                compareByDescending<SlotCall> { it.state == LINE_ACTIVE }
-                    .thenBy { it.elapsedMs },
-            )
+        get() = slots.getOrNull(leadSlotIndex)?.takeIf { it.hasContent }
 
     companion object {
         const val LINE_NONE = 0
@@ -55,7 +56,7 @@ data class DecoderStatus(
         const val LINE_ENDED = 3
 
         private const val VERSION = "v1"
-        private const val HEADER_FIELDS = 8
+        private const val HEADER_FIELDS = 9
         private const val SLOT_FIELDS = 9
         private const val SLOT_COUNT = 2
         private const val TOTAL_FIELDS = HEADER_FIELDS + SLOT_FIELDS * SLOT_COUNT
@@ -88,6 +89,9 @@ data class DecoderStatus(
                     ccFreqHz = f[5].toLong(),
                     vcFreqHz = f[6].toLong(),
                     centerFreqHz = f[7].toLong(),
+                    // -1 when no slot has anything to show; getOrNull() in leadSlot turns
+                    // that (and any out-of-range value) back into "nothing on the air".
+                    leadSlotIndex = f[8].toInt(),
                     slots = (0 until SLOT_COUNT).map { slot ->
                         val b = HEADER_FIELDS + slot * SLOT_FIELDS
                         SlotCall(

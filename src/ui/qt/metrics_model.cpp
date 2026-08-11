@@ -115,6 +115,9 @@ MetricsModel::publish(const View& next) {
     if (slot2Moved) {
         Q_EMIT slot2Changed();
     }
+    if (slot1Moved || slot2Moved) {
+        Q_EMIT leadSlotChanged();
+    }
     if (controlMoved) {
         Q_EMIT controlChanged();
     }

@@ -11,16 +11,29 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/threading.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The record's shape, spelled out rather than left as a bare total: DecoderStatus.kt
+   mirrors it as HEADER_FIELDS/SLOT_FIELDS, and a field added on one side without the
+   other makes parse() return null for every record -- at which point the notification
+   silently stops updating, with nothing logged on either side of JNI. Split the same way
+   the Kotlin constants are so the two read as the same statement. */
+enum {
+    NOTIFICATION_HEADER_FIELDS = 9, /**< version, protocol, 3 flags, 3 frequencies, lead slot. */
+    NOTIFICATION_SLOT_FIELDS = 9,   /**< state, name, tg, src, tg_id, enc, algid, kid, elapsed. */
+    NOTIFICATION_TOTAL_FIELDS = NOTIFICATION_HEADER_FIELDS + NOTIFICATION_SLOT_FIELDS * DSD_CALL_STATE_SLOT_COUNT,
+};
 
 static dsd_state*
 make_state(void) {
@@ -29,6 +42,18 @@ make_state(void) {
     assert(dsd_call_state_ensure(state) > 0);
     state->synctype = DSD_SYNC_NONE;
     return state;
+}
+
+/* Counterpart to make_state(): dsd_call_state_ensure() hangs a ~17 KB call-state
+   block off the extension table, so freeing the dsd_state alone leaks it. */
+static void
+destroy_state(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    dsd_state_ext_free_all(state);
+    free(state->event_history_s);
+    free(state);
 }
 
 /* MUST run first in main(): it is the only point at which nothing has been published
@@ -48,6 +73,10 @@ test_get_before_any_publish_reports_nothing(void) {
     assert(status.center_freq_hz == 0);
     assert(status.slots[0].state == DSD_APP_CALL_LINE_NONE);
     assert(status.slots[1].state == DSD_APP_CALL_LINE_NONE);
+    /* The one field that is not simply zeroed: 0 is a real slot index, so a caller
+       rendering straight from the struct would headline slot 0 on a process that has
+       published nothing at all. */
+    assert(status.lead_slot == -1);
 }
 
 static void
@@ -58,7 +87,7 @@ test_publish_state_carries_protocol_and_call(void) {
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.frequency_hz = 851012500;
-    observation.observed_m = dsd_app_notification_test_now_m();
+    observation.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     dsd_app_notification_publish_state(state);
@@ -69,13 +98,18 @@ test_publish_state_carries_protocol_and_call(void) {
     assert(status.vc_freq_hz == 851012500);
     assert(status.slots[0].state == DSD_APP_CALL_LINE_ACTIVE);
     assert(strcmp(status.slots[0].tg_text, "51023") == 0);
-    free(state);
+    destroy_state(state);
 }
 
 static void
 test_unsynced_publishes_empty_protocol(void) {
     dsd_state* state = make_state();
     state->synctype = DSD_SYNC_NONE;
+    /* The label is held for a few seconds after the last frame that carried one, so a
+       session that has never synced has to start from a cleared hold rather than from
+       whatever the test above left behind -- which, in a suite that runs in
+       microseconds, is still inside the window. */
+    dsd_app_notification_reset();
     dsd_app_notification_publish_state(state);
 
     dsd_app_notification_status status;
@@ -83,7 +117,28 @@ test_unsynced_publishes_empty_protocol(void) {
     /* NONE and UNKNOWN are not labels worth showing; an empty string is what tells an
        unsynced session from a locked one. */
     assert(status.protocol[0] == '\0');
-    free(state);
+    destroy_state(state);
+}
+
+/* The hold itself: a frame that finds no sync must not blank a label the frame before it
+   published. getFrameSync() answers NONE on most iterations of a hunt, so publishing the
+   instantaneous value made the label blink -- and, because the record changed each time,
+   made the Android service re-post its notification once a second on a silent channel. */
+static void
+test_sync_label_is_held_across_a_frame_with_no_sync(void) {
+    dsd_state* state = make_state();
+    dsd_app_notification_reset();
+
+    state->synctype = DSD_SYNC_P25P2_POS;
+    dsd_app_notification_publish_state(state);
+
+    state->synctype = DSD_SYNC_NONE;
+    dsd_app_notification_publish_state(state);
+
+    dsd_app_notification_status status;
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(strcmp(status.protocol, "P25p2") == 0);
+    destroy_state(state);
 }
 
 static void
@@ -136,7 +191,55 @@ test_revision_advances_on_each_publish(void) {
     dsd_app_notification_status second;
     assert(dsd_app_notification_get(&second) == 1);
     assert(second.revision > first.revision);
-    free(state);
+    destroy_state(state);
+}
+
+/* The headline choice rides the wire rather than being remade by the reader. DecoderStatus.kt
+   used to pick for itself and picked differently from the Qt hero panel, so the shade and
+   the app named different units at the same instant on a two-slot system. */
+static void
+test_lead_slot_is_published_and_survives_encoding(void) {
+    dsd_state* state = make_state();
+    dsd_app_notification_reset();
+
+    dsd_app_notification_status status;
+    dsd_app_notification_publish_state(state);
+    assert(dsd_app_notification_get(&status) == 1);
+    /* -1, not 0: 0 is a real slot index, and a reader rendering straight from the struct
+       would headline slot 0 on a session with nothing on the air. */
+    assert(status.lead_slot == -1);
+
+    /* Slot 1 alone: the lead is the slot with the call, not simply the lowest one. */
+    dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 1U, 1234567U, 51023U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.observed_m = dsd_time_now_monotonic_s();
+    assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_notification_publish_state(state);
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.lead_slot == 1);
+
+    /* Both up: the lower slot takes the headline, matching MonitorScreen.qml's hero. */
+    dsd_call_observation other = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 7654321U, 51024U);
+    other.kind = DSD_CALL_KIND_GROUP_VOICE;
+    other.observed_m = dsd_time_now_monotonic_s();
+    assert(dsd_call_state_observe(state, &other, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    dsd_app_notification_publish_state(state);
+    assert(dsd_app_notification_get(&status) == 1);
+    assert(status.lead_slot == 0);
+
+    /* And it reaches the reader: the field sits at the end of the header, ahead of the
+       first slot's state. */
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
+    const char* eighth = record;
+    for (int field = 0; field < NOTIFICATION_HEADER_FIELDS - 1; field++) {
+        eighth = strchr(eighth, '\t');
+        assert(eighth != NULL);
+        eighth++;
+    }
+    assert(eighth[0] == '0' && eighth[1] == '\t');
+
+    destroy_state(state);
 }
 
 static void
@@ -179,10 +282,10 @@ test_encode_has_version_and_field_count(void) {
     const size_t written = dsd_app_notification_encode(record, sizeof(record));
     assert(written > 0);
     assert(strncmp(record, "v1\t", 3) == 0);
-    assert(count_fields(record) == 26);
+    assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
     /* One line: a newline would break the reader's single-record assumption. */
     assert(strchr(record, '\n') == NULL);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -192,7 +295,7 @@ test_encode_sanitises_control_characters(void) {
 
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_app_notification_test_now_m();
+    observation.observed_m = dsd_time_now_monotonic_s();
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "Metro\tFire\nDispatch");
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
@@ -201,9 +304,9 @@ test_encode_sanitises_control_characters(void) {
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
     /* Text arrives from CSV imports and off the air; an embedded tab would invent a
        field and desynchronise every field after it. */
-    assert(count_fields(record) == 26);
+    assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
     assert(strstr(record, "Metro Fire Dispatch") != NULL);
-    free(state);
+    destroy_state(state);
 }
 
 /* Publishes one call whose target text is @p target verbatim, then encodes it into
@@ -216,13 +319,13 @@ encode_with_target_text(const char* target, char* record, size_t record_size) {
 
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_app_notification_test_now_m();
+    observation.observed_m = dsd_time_now_monotonic_s();
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", target);
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
     dsd_app_notification_publish_state(state);
 
     assert(dsd_app_notification_encode(record, record_size) > 0);
-    free(state);
+    destroy_state(state);
 }
 
 /* The record is handed straight to JNI's NewStringUTF(), which requires modified UTF-8
@@ -291,7 +394,7 @@ test_encode_round_trips_a_long_group_name(void) {
 
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 1234567U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
-    observation.observed_m = dsd_app_notification_test_now_m();
+    observation.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     /* 199 characters, with a distinct tail so a truncation cannot pass on a prefix
@@ -318,10 +421,9 @@ test_encode_round_trips_a_long_group_name(void) {
     DSD_SNPRINTF(expected, sizeof(expected), "\t%s\t", alias);
     assert(strstr(record, expected) != NULL);
     /* The record must still fit, which is the other half of the fix. */
-    assert(count_fields(record) == 26);
+    assert(count_fields(record) == (size_t)NOTIFICATION_TOTAL_FIELDS);
 
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 static void
@@ -333,7 +435,7 @@ test_encode_rejects_a_short_buffer(void) {
     /* Truncation would hand the reader a record it could parse as a shorter one. */
     assert(dsd_app_notification_encode(tiny, sizeof(tiny)) == 0);
     assert(dsd_app_notification_encode(NULL, 0) == 0);
-    free(state);
+    destroy_state(state);
 }
 
 /* A field-count check cannot catch two same-typed fields swapped (say, algid and kid,
@@ -376,7 +478,7 @@ test_encode_matches_expected_record_field_order(void) {
     dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 7654321U, 51023U);
     observation.kind = DSD_CALL_KIND_GROUP_VOICE;
     observation.frequency_hz = 851012500;
-    observation.observed_m = dsd_app_notification_test_now_m();
+    observation.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
 
     /* Staged on the same talkgroup id the observation above carries, so
@@ -391,7 +493,7 @@ test_encode_matches_expected_record_field_order(void) {
     crypto.classification = DSD_CALL_CRYPTO_ENCRYPTED;
     crypto.algid = 0xAAU;
     crypto.kid = 0x1234U;
-    crypto.observed_m = dsd_app_notification_test_now_m();
+    crypto.observed_m = dsd_time_now_monotonic_s();
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) > 0);
 
     dsd_app_notification_publish_state(state);
@@ -407,10 +509,10 @@ test_encode_matches_expected_record_field_order(void) {
     char expected[DSD_APP_NOTIFICATION_RECORD_SIZE];
     const int n =
         DSD_SNPRINTF(expected, sizeof(expected),
-                     "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld"
+                     "v1\t%s\t%u\t%u\t%u\t%lld\t%lld\t%lld\t%d"
                      "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u"
                      "\t%d\t%s\t%s\t%s\t%llu\t%u\t%u\t%u\t%u",
-                     "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, DSD_APP_CALL_LINE_ACTIVE,
+                     "P25p2", 1U, 0U, 1U, 851006250LL, 851012500LL, 851500000LL, 0, DSD_APP_CALL_LINE_ACTIVE,
                      "Riverside Fire", "51023", "7654321", 51023ULL, 1U, 0xAAU, 0x1234U,
                      (unsigned)status.slots[0].elapsed_ms, DSD_APP_CALL_LINE_NONE, "", "", "", 0ULL, 0U, 0U, 0U, 0U);
     assert(n > 0 && (size_t)n < sizeof(expected));
@@ -419,8 +521,7 @@ test_encode_matches_expected_record_field_order(void) {
     assert(dsd_app_notification_encode(record, sizeof(record)) > 0);
     assert(strcmp(record, expected) == 0);
 
-    free(history);
-    free(state);
+    destroy_state(state);
 }
 
 /* Below: the multi-consumer property itself. Every test above drives publish and get
@@ -538,7 +639,7 @@ test_concurrent_publish_and_get_never_tears(void) {
        only ever seen the pre-seeded value before the writer got scheduled. */
     assert(reader_ctx_a.matches > 0);
     assert(reader_ctx_b.matches > 0);
-    free(state);
+    destroy_state(state);
 }
 
 /* MUST run last in main(): it puts the module back to its never-published state, which
@@ -571,7 +672,7 @@ test_reset_forgets_the_published_status(void) {
     /* And the encoder, the only thing the service actually reads, has nothing to give. */
     char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
     assert(dsd_app_notification_encode(record, sizeof(record)) == 0);
-    free(state);
+    destroy_state(state);
 }
 
 int
@@ -579,10 +680,12 @@ main(void) {
     test_get_before_any_publish_reports_nothing();
     test_publish_state_carries_protocol_and_call();
     test_unsynced_publishes_empty_protocol();
+    test_sync_label_is_held_across_a_frame_with_no_sync();
     test_publish_opts_carries_radio_and_trunking();
     test_non_radio_input_reports_no_centre();
     test_revision_advances_on_each_publish();
     test_null_arguments_are_safe();
+    test_lead_slot_is_published_and_survives_encoding();
     test_encode_has_version_and_field_count();
     test_encode_sanitises_control_characters();
     test_encode_replaces_a_lone_continuation_byte();

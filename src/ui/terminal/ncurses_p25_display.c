@@ -612,7 +612,7 @@ ui_print_p25_sm_overview(const dsd_state* state) {
 
 static int
 ui_print_p25_cc_vc_metric(const dsd_state* state) {
-    long cc = (state->trunk_cc_freq != 0) ? state->trunk_cc_freq : state->p25_cc_freq;
+    long cc = dsd_app_cc_freq(state);
     long vc = ui_guess_active_vc_freq(state);
     char cc_buf[48];
     char vc_buf[48];

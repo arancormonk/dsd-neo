@@ -10,8 +10,17 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The one field whose width is copied rather than shared: dsd_app_slot_call::name is
+   sized to hold a CSV-imported group name whole, and the source is a bare char[200] with
+   no constant of its own. Widening t_name without widening this would silently
+   re-introduce the truncation DSD_APP_CALL_NAME_SIZE exists to prevent, in the Qt hero
+   panel and the Android notification alike, with nothing failing. */
+_Static_assert(sizeof(((Event_History*)0)->t_name) == DSD_APP_CALL_NAME_SIZE,
+               "dsd_app_slot_call::name must match Event_History::t_name");
 
 /**
  * @brief Whether the call reads as encrypted over the air, including DECRYPTABLE.
@@ -149,19 +158,39 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
 
     const double ref_m = (line == DSD_APP_CALL_LINE_ENDED) ? call.ended_m : now_m;
     const double elapsed = ref_m - call.started_m;
-    out->elapsed_ms = (elapsed > 0.0) ? (uint32_t)(elapsed * 1000.0) : 0U;
+    const double elapsed_ms = (elapsed > 0.0) ? (elapsed * 1000.0) : 0.0;
+    /* Saturating rather than a bare cast: converting a double whose value does not fit
+       the destination is undefined behavior, not a wrap (C11 6.3.1.4), and UBSan's
+       float-cast-overflow traps it. An ACTIVE epoch is held open by sync alone -- nothing
+       ages one out -- so 49.7 days is reachable in principle on a long-lived session. */
+    out->elapsed_ms = (elapsed_ms >= (double)UINT32_MAX) ? UINT32_MAX : (uint32_t)elapsed_ms;
 }
 
-static int
-app_is_p25_synctype(int synctype) {
-    return DSD_SYNC_IS_P25P1(synctype) || DSD_SYNC_IS_P25P2(synctype);
+int
+dsd_app_lead_slot(const int* line_states, unsigned count) {
+    if (line_states == NULL) {
+        return -1;
+    }
+    /* Two passes rather than one ranked comparison: the first slot found ACTIVE wins
+       outright, so an ended call on a lower slot never outranks a live one above it. */
+    for (unsigned slot = 0; slot < count; slot++) {
+        if (line_states[slot] == DSD_APP_CALL_LINE_ACTIVE) {
+            return (int)slot;
+        }
+    }
+    for (unsigned slot = 0; slot < count; slot++) {
+        if (line_states[slot] == DSD_APP_CALL_LINE_ENDED) {
+            return (int)slot;
+        }
+    }
+    return -1;
 }
 
 static long int
 app_canonical_active_p25_freq(const dsd_call_state_snapshot* calls) {
     for (int slot = 0; slot < DSD_CALL_STATE_SLOT_COUNT; slot++) {
         const dsd_call_snapshot* call = &calls->slots[slot];
-        if (call->phase == DSD_CALL_PHASE_ACTIVE && app_is_p25_synctype(call->protocol) && call->frequency_hz > 0) {
+        if (call->phase == DSD_CALL_PHASE_ACTIVE && DSD_SYNC_IS_P25(call->protocol) && call->frequency_hz > 0) {
             return (long int)call->frequency_hz;
         }
     }
