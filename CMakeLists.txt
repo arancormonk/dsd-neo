@@ -206,6 +206,21 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
     if(DSD_ENABLE_TSAN)
         list(APPEND _dsd_san_cflags -fsanitize=thread -fno-omit-frame-pointer)
         list(APPEND _dsd_san_ldflags -fsanitize=thread)
+        # GCC's -Wtsan reports that ThreadSanitizer cannot model atomic_thread_fence.
+        # That is a statement about the sanitizer's coverage, not a defect: the wideband
+        # spectrum publisher (src/io/radio/rtl_wideband_spectrum.cpp) is a seqlock, and a
+        # seqlock needs standalone release/acquire fences to order its payload against the
+        # sequence counter. GCC raises the diagnostic from inside libstdc++'s <atomic>,
+        # where no pragma at our call site reaches it, so with -Werror it makes the whole
+        # preset unbuildable. CI runs this preset under clang, which has no such warning,
+        # which is why it only bites locally. Narrowed to GCC: clang rejects unknown
+        # -Wno-* under -Werror.
+        if(
+            CMAKE_C_COMPILER_ID STREQUAL "GNU"
+            AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+        )
+            list(APPEND _dsd_san_cflags -Wno-tsan)
+        endif()
     endif()
 
     if(_dsd_san_cflags)
