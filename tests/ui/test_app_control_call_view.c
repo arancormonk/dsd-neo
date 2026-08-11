@@ -374,6 +374,23 @@ test_null_arguments_are_safe(void) {
     dsd_app_slot_call_view(NULL, 0U, 10.0, NULL);
 }
 
+static void
+test_seconds_truncation_matches_qt_adapter(void) {
+    /* Qt renders whole seconds as (int)(elapsed_ms / 1000). Pin the boundaries so the
+       adapter's integer division cannot drift from the old (int)elapsed_seconds. */
+    dsd_state* state = make_state();
+    observe_group_call(state, 0U, 51023U, 1234567U, 10.0);
+
+    dsd_app_slot_call just_under;
+    dsd_app_slot_call_view(state, 0U, 12.999, &just_under);
+    assert(just_under.elapsed_ms / 1000U == 2U);
+
+    dsd_app_slot_call just_over;
+    dsd_app_slot_call_view(state, 0U, 13.001, &just_over);
+    assert(just_over.elapsed_ms / 1000U == 3U);
+    free(state);
+}
+
 int
 main(void) {
     test_idle_slot_reports_none();
@@ -395,6 +412,7 @@ main(void) {
     test_staged_group_name_respects_slot();
     test_call_line_state_boundaries();
     test_null_arguments_are_safe();
+    test_seconds_truncation_matches_qt_adapter();
     printf("APP_CONTROL_CALL_VIEW ok\n");
     return 0;
 }

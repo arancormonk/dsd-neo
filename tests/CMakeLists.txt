@@ -2061,12 +2061,22 @@ target_include_directories(
 )
 add_test(NAME UI_QT_SESSION_STATE COMMAND dsd-neo_test_ui_qt_session_state)
 
-# Same arrangement for the slot-line decay: header-only and free of Qt so the hold
-# window can be tested without an Android build.
-add_executable(dsd-neo_test_ui_qt_call_line ui/test_ui_qt_call_line.cpp)
+# Same arrangement for the slot-line decay: free of Qt so the hold window can be tested
+# without an Android build. call_line.h now delegates to app_control's call_view, so
+# this links the same call_view.c the app_control test below compiles, plus the
+# lightweight call-state support lib it calls into.
+add_executable(
+    dsd-neo_test_ui_qt_call_line
+    ui/test_ui_qt_call_line.cpp
+    ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+)
 target_include_directories(
     dsd-neo_test_ui_qt_call_line
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+)
+target_link_libraries(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE dsd-neo_test_call_state_support
 )
 add_test(NAME UI_QT_CALL_LINE COMMAND dsd-neo_test_ui_qt_call_line)
 
@@ -2127,10 +2137,14 @@ if(DSD_ENABLE_QT_UI)
     # anything reads as "it is working" while nothing is being decoded, which is
     # exactly what shipped once. The frontend boundary is stubbed in the test so
     # this stays arithmetic over a snapshot rather than a link against the engine.
+    # slotCallView() now delegates to app_control's call_view, so call_view.c is
+    # compiled in too; it needs nothing beyond dsd_call_state_get(), which
+    # dsd-neo_core (below) already provides.
     add_executable(
         dsd-neo_test_ui_qt_metrics_model
         ui/test_ui_qt_metrics_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/metrics_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
