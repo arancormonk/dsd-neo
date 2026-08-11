@@ -55,4 +55,14 @@ object DsdNative {
      * it to clear before releasing.
      */
     external fun nativeIsUsbFdInUse(): Boolean
+
+    /**
+     * The decoder's current status as one versioned, tab-separated record, or null when
+     * nothing has been published yet.
+     *
+     * One call rather than a field at a time: the service polls this off the decode
+     * thread, and reading fields separately would let a publish land between them and
+     * produce a status describing two different moments.
+     */
+    external fun nativeNotificationStatus(): String?
 }

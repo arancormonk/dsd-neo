@@ -31,6 +31,7 @@
 #include <unistd.h>
 
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -546,6 +547,28 @@ Java_io_github_arancormonk_dsdneo_DsdNative_nativeIsUsbFdInUse(JNIEnv* env, jcla
     /* No radio pipeline, so nothing can have taken the descriptor. */
     return JNI_FALSE;
 #endif
+}
+
+JNIEXPORT jstring JNICALL
+Java_io_github_arancormonk_dsdneo_DsdNative_nativeNotificationStatus(JNIEnv* env, jclass clazz) {
+    (void)clazz;
+
+    /* Deliberately lock-free with respect to g_lock. This is polled from the service's
+     * main thread once a second, and the publisher behind it takes only its own short
+     * mutex -- taking g_lock here would put a UI-thread poll behind nativeConfigure's
+     * whole bootstrap. */
+    char record[DSD_APP_NOTIFICATION_RECORD_SIZE];
+    if (dsd_app_notification_encode(record, sizeof(record)) == 0) {
+        return nullptr;
+    }
+    jstring result = env->NewStringUTF(record);
+    if (result == nullptr) {
+        /* Allocation failure leaves a pending OutOfMemoryError: returning null with it
+         * still pending would throw into the service's poll loop instead of handing back
+         * a value, so absorb it here and let this poll look like "nothing published". */
+        clear_pending_exception(env);
+    }
+    return result;
 }
 
 } // extern "C"
