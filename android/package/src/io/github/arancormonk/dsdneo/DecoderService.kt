@@ -246,6 +246,44 @@ class DecoderService : Service() {
     }
 
     /**
+     * The stop action's PendingIntent, built once for this service instance.
+     *
+     * [buildNotification] runs on every status poll — once a second for the length of
+     * every call — and each PendingIntent.getService/getActivity is a binder round trip
+     * on the main thread. A PendingIntent is a process-lifetime token and this one's
+     * identity (request code, target, action) never varies, so building it once costs
+     * nothing in freshness.
+     *
+     * On the instance and not in the companion object, unlike [state] and [engineThread]:
+     * a PendingIntent built from `this` holds the Context, and a companion field would
+     * keep a destroyed service alive for the life of the process.
+     */
+    private val stopPendingIntent: PendingIntent by lazy {
+        val stopIntent = Intent(this, DecoderService::class.java).setAction(ACTION_STOP)
+        PendingIntent.getService(
+            this, REQUEST_STOP, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+    }
+
+    /**
+     * The tap target, built once alongside [stopPendingIntent].
+     *
+     * The launcher's own intent, not an explicit QtActivity component: ACTION_MAIN +
+     * CATEGORY_LAUNCHER + NEW_TASK is what resumes an existing task, whereas an explicit
+     * component can start a second Activity instance and with it a second Qt main(). Null
+     * only if no launcher activity resolves, in which case the body stays inert rather
+     * than taking the service down — and a package cannot gain or lose its launcher
+     * activity without the process being killed, so resolving once is enough.
+     */
+    private val openPendingIntent: PendingIntent? by lazy {
+        packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
+            PendingIntent.getActivity(
+                this, REQUEST_OPEN, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+        }
+    }
+
+    /**
      * Renders the notification from the last polled status, falling back to [text].
      *
      * [text] is the phase wording — "Starting…", "Decoding" — and is what shows before
@@ -253,22 +291,6 @@ class DecoderService : Service() {
      * the top of onStartCommand.
      */
     private fun buildNotification(text: String): Notification {
-        val stopIntent = Intent(this, DecoderService::class.java).setAction(ACTION_STOP)
-        val stopPending = PendingIntent.getService(
-            this, REQUEST_STOP, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        // The launcher's own intent, not an explicit QtActivity component: ACTION_MAIN +
-        // CATEGORY_LAUNCHER + NEW_TASK is what resumes an existing task, whereas an
-        // explicit component can start a second Activity instance and with it a second Qt
-        // main(). Null only if no launcher activity resolves, in which case the body stays
-        // inert rather than taking the service down.
-        val openPending = packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
-            PendingIntent.getActivity(
-                this, REQUEST_OPEN, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-        }
-
         val status = DecoderStatus.parse(lastStatusRecord)
         val lead = status?.leadSlot
 
@@ -277,11 +299,11 @@ class DecoderService : Service() {
             .setOngoing(true)
             // Updates must never re-alert: this posts again on every call boundary.
             .setOnlyAlertOnce(true)
-            .addAction(Notification.Action.Builder(null, getString(R.string.action_stop), stopPending).build())
+            .addAction(Notification.Action.Builder(null, getString(R.string.action_stop), stopPendingIntent).build())
 
         // No setAutoCancel: this is an ongoing foreground-service notification and must
         // survive the tap that opens the app.
-        openPending?.let { builder.setContentIntent(it) }
+        openPendingIntent?.let { builder.setContentIntent(it) }
 
         if (status == null) {
             return builder.setContentTitle(getString(R.string.app_name))
