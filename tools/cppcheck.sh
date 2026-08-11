@@ -92,6 +92,13 @@ CPPCHECK_ARGS=(
   "-DQ_SLOTS="
   "-DQ_INVOKABLE="
   "-DQ_EMIT="
+  # The NDK's jni.h is not on the include path here, so JNIEXPORT/JNICALL would
+  # otherwise stay unknown identifiers and be parsed as part of the return type --
+  # which makes a `JNIEXPORT void JNICALL` entry point look non-void and every bare
+  # `return;` in it a missingReturn. Empty is what jni.h expands JNICALL to, and
+  # JNIEXPORT's visibility attribute has no bearing on analysis.
+  "-DJNIEXPORT="
+  "-DJNICALL="
   --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
   --inline-suppr
   -I include
@@ -125,6 +132,9 @@ if [[ $STRICT -eq 1 ]]; then
     "-DQ_SLOTS="
     "-DQ_INVOKABLE="
     "-DQ_EMIT="
+    # See the note on the non-strict argument list above.
+    "-DJNIEXPORT="
+    "-DJNICALL="
     --cppcheck-build-dir="$CPPCHECK_BUILD_DIR"
     --inline-suppr
     -I include

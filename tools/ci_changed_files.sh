@@ -257,10 +257,14 @@ if [[ $EXPAND_HEADERS -eq 1 && ${#changed_headers[@]} -gt 0 ]]; then
   fi
 fi
 
+# Keep in step with the target list in tools/cppcheck.sh (src/, include/, android/),
+# so a PR is checked over the same tree the push build scans. Leaving android/ out
+# here meant a finding in the JNI and host glue only ever surfaced on main, after
+# the merge. The vendored subtree under android/ was already dropped above.
 cppcheck_sources=()
 for p in "${analysis_tus[@]}"; do
   case "$p" in
-    src/*) cppcheck_sources+=("$p") ;;
+    src/* | include/* | android/*) cppcheck_sources+=("$p") ;;
   esac
 done
 
