@@ -128,7 +128,13 @@ canonical_snapshot_reader(void* arg) {
 static int g_open_wav_count;
 static int g_close_wav_count;
 static int g_close_wav_export_count;
-static SNDFILE* g_open_wav_result;
+// Held as void* rather than SNDFILE*: this file is compiled twice, once against the real
+// <sndfile.h> and once against the alt-tag stub header (CORE_CALL_ALERT_HISTORY_SNDFILE_ALT_TAG),
+// so a SNDFILE*-typed static is two differently-typed declarations sharing one source location.
+// Whole-program analyzers that merge the two translation units then see one of the pair with no
+// reads at all and report it as dead (CodeQL cpp/unused-static-variable). A type that is identical
+// in both builds keeps the stub's handle a single declaration.
+static void* g_open_wav_result;
 static double g_observed_m;
 
 SNDFILE*
@@ -139,7 +145,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
     UNUSED(sample_rate);
     UNUSED(ext);
     g_open_wav_count++;
-    return g_open_wav_result;
+    return (SNDFILE*)g_open_wav_result;
 }
 
 SNDFILE*
@@ -2315,7 +2321,7 @@ test_reacquired_transmission_commits_one_row(void) {
     reset_fixture(&opts, &state, event_history);
     opts.call_alert_events = DSD_CALL_ALERT_EVENT_VOICE_START | DSD_CALL_ALERT_EVENT_VOICE_END;
     opts.wav_out_f = (SNDFILE*)&wav_sentinel;
-    g_open_wav_result = (SNDFILE*)&wav_sentinel;
+    g_open_wav_result = &wav_sentinel;
 
     for (int pass = 0; pass < 3; pass++) {
         if (pass == 0) {
