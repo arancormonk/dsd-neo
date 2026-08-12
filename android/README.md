@@ -65,7 +65,12 @@ unsigned; see [Release signing](#release-signing) for signing and installing it.
 
 CMake is the outer build: vcpkg chainloads Qt's `qt.toolchain.cmake`, which
 chainloads the NDK toolchain, and androiddeployqt generates and drives the Gradle
-project from `android/package/`.
+project from `android/package/`. `android/package/build.gradle` is a vendored
+copy of Qt's androiddeployqt template — files in `QT_ANDROID_PACKAGE_SOURCE_DIR`
+override the Qt template — carrying the per-artifact native-library packaging
+described under [Google Play](#google-play-the-app-bundle); re-diff it against
+`<Qt>/android_arm64_v8a/src/android/templates/build.gradle` whenever the pinned
+Qt version changes.
 
 androiddeployqt is pointed at a staged copy of that directory
 (`build/android-app/android/package`) rather than the source tree, because it
@@ -141,9 +146,11 @@ pull requests as well as pushes to `main`:
 - **`android-ci` / APK (Qt Quick app)** — builds the `android-app` preset through
   androiddeployqt, signs the APK, then unpacks it and asserts the same alignment
   for every packaged `.so` (ours and Qt's), that `arm64-v8a` is the only ABI
-  inside, that the license files are present, and that the launcher identity is
-  intact (label `DSD-neo`, a declared icon, a non-placeholder version code and
-  the icon/splash/theme resources). The APK is uploaded as a build
+  inside, that every `.so` is Deflate-compressed with the manifest extracting at
+  install (the AAB check asserts the inverse for Play — see
+  [Google Play](#google-play-the-app-bundle)), that the license files are
+  present, and that the launcher identity is intact (label `DSD-neo`, a declared
+  icon, a non-placeholder version code and the icon/splash/theme resources). The APK is uploaded as a build
   artifact, and on `main` and release tags the `Publish APK` job attaches it to a
   release (see [Release signing](#release-signing)). On `main` and release tags
   the same `build-apk` job also builds and signs the Play bundle — the `Publish
@@ -260,7 +267,18 @@ find build/android-app -name '*.aab'
 `QT_ANDROID_SIGN_AAB` only adds `--sign` to the `aab` target — the APK target
 stays governed by `QT_ANDROID_SIGN_APK` — but building `aab` re-runs
 androiddeployqt with `--sign`, which also apksigner-signs the APK and overwrites
-the build-tree `dsd-neo-app.apk` with the signed copy in passing. Signing
+the build-tree `dsd-neo-app.apk` with the signed copy in passing. That overwrite
+is also *Play-shaped*: the bundle invocation packages the in-passing APK with
+uncompressed libraries and `extractNativeLibs=false` (see
+[Native libraries](#native-libraries-sideload-apk-vs-play-bundle)), roughly
+doubling it. A plain rebuild of the apk target will not undo this — the aab
+build changes no inputs the apk target's depfile tracks, so it is a no-op.
+Delete the build-tree APK first to force androiddeployqt to re-run:
+
+```sh
+rm build/android-app/android/android-build/dsd-neo-app.apk
+cmake --build --preset android-app -j
+``` Signing
 happens in the build because androiddeployqt signs a bundle with `jarsigner`;
 `apksigner` cannot sign an AAB at all, so the post-hoc recipe above does not
 transfer. The four `QT_ANDROID_KEYSTORE_*` variables keep the passwords out of
@@ -289,6 +307,26 @@ an AAB cannot be installed, so beside the APK it only misleads, and under Play
 App Signing the uploaded bundle carries the upload key while Google re-signs what
 users install — it corresponds to no shipped binary. Download it by hand when
 updating a Play track.
+
+### Native libraries: sideload APK vs Play bundle
+
+The app's 79 `.so` files (the monolithic app library plus Qt) total ~67 MiB
+uncompressed, so how they are packaged dominates artifact size, and the two
+artifacts deliberately differ. The bundle keeps them stored uncompressed
+(`extractNativeLibs=false`): Play's delta patching diffs the raw ELF bytes, so
+updates download only what changed, and the installed app loads the libraries
+straight out of the APK with no second on-disk copy. The sideload APK instead
+uses legacy packaging — Deflate-compressed entries with
+`android:extractNativeLibs="true"` — which roughly halves the GitHub release
+download (~77 MB → ~31 MB) at the cost of the platform extracting the ~67 MB of
+libraries at install. Sideload updates are full downloads either way, so
+download size wins there; Play installs never pay the extraction cost.
+
+The switch lives in the vendored `android/package/build.gradle`, keyed on the
+Gradle invocation androiddeployqt hardcodes: `assembleRelease` (the apk target)
+gets legacy packaging, `assembleRelease bundle` (the aab target) honors the
+non-legacy default. CI asserts both sides — every `.so` in the published APK is
+compressed, and the AAB's base manifest keeps `extractNativeLibs=false`.
 
 Two consequences worth knowing before enrolling in Play App Signing:
 

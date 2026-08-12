@@ -614,7 +614,7 @@ jobs:
           "$tools/zipalign" -c -P 16 4 "${OUT_APK}"
           echo "SIGNED=true" >> "$GITHUB_OUTPUT"
 
-      - name: Verify every packaged library is arm64, 16 KB aligned, and stored uncompressed
+      - name: Verify every packaged library is arm64, 16 KB aligned, and compressed for sideload
         shell: bash
         env:
           APK_PATH: ${{ steps.names.outputs.APK_PATH }}
@@ -639,16 +639,28 @@ jobs:
             echo "APK contains ABIs other than arm64-v8a" >&2
             exit 1
           fi
-          # Stored (uncompressed) libraries are what lets Google Play delta-patch
-          # updates; Qt's stock Gradle template compresses them by mistake, which
-          # android/package/build.gradle overrides. Deflated entries here mean the
-          # override stopped being applied and every Play update ships near-full-size.
+          # The sideload APK compresses its native libs (legacy jniLibs
+          # packaging) so the GitHub release download stays roughly half the
+          # size; only the Play AAB stores them uncompressed for delta
+          # patching. android/package/build.gradle branches on the Gradle
+          # invocation. A Stored entry here means that branch regressed and the
+          # sideload download doubled.
           if ! unzip -v "$APK_PATH" 'lib/*.so' \
-            | awk '$8 ~ /^lib\// && $2 != "Stored" {print "compressed: " $8; bad = 1} END {exit bad}'; then
-            echo "APK compresses native libraries; Play delta updates would ship near-full downloads" >&2
+            | awk '$8 ~ /^lib\// && $2 !~ /^Defl/ {print "not compressed: " $8; bad = 1} END {exit bad}'; then
+            echo "APK stores native libraries uncompressed; the sideload download doubles" >&2
             exit 1
           fi
-          echo "All packaged libraries are stored uncompressed"
+          # Compressed libs require install-time extraction: the platform
+          # cannot load them straight from the APK, so legacy packaging has AGP
+          # write extractNativeLibs=true into the merged manifest. Anything
+          # else here means the manifest and the lib entries disagree.
+          aapt2="${ANDROID_SDK_ROOT:?ANDROID_SDK_ROOT is not set}/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          if ! "$aapt2" dump xmltree "$APK_PATH" --file AndroidManifest.xml \
+            | grep -q 'extractNativeLibs([x0-9a-f]*)=true'; then
+            echo "APK manifest does not set extractNativeLibs=true while its libs are compressed" >&2
+            exit 1
+          fi
+          echo "All packaged libraries are compressed; the platform extracts them at install"
 
       - name: Verify the APK carries the required license files
         shell: bash
@@ -776,6 +788,11 @@ jobs:
       # bundle is useless - Play rejects it on upload - and the missing-secrets
       # warning (or the tag-fatal error) was already issued by "Materialize the
       # signing keystore".
+      #
+      # Must run after "Sign the APK": this step's Gradle invocation repackages
+      # the build-tree dsd-neo-app.apk with the bundle's Play-shaped packaging
+      # (uncompressed libs, extractNativeLibs=false), so the sideload APK has to
+      # be signed and copied to dist/ first.
       - name: Build the AAB
         id: aab_build
         if: >-
@@ -873,7 +890,17 @@ jobs:
             echo "ERROR: unexpected ABIs in the AAB: ${abis:-none}" >&2
             exit 1
           fi
-          echo "AAB OK: signed, arm64-v8a only."
+          # The Play-side invariant the sideload APK deliberately no longer
+          # carries: the bundle must keep extractNativeLibs=false so Play-served
+          # APKs store libs uncompressed and delta updates stay small. The base
+          # manifest is proto-encoded; the attribute value is the
+          # length-prefixed string "false", hence the \x1a\x05 bytes.
+          if ! unzip -p "$AAB_PATH" base/manifest/AndroidManifest.xml \
+            | grep -aqF $'extractNativeLibs\x1a\x05false'; then
+            echo "ERROR: the AAB base manifest does not set extractNativeLibs=false; Play updates would ship near-full downloads" >&2
+            exit 1
+          fi
+          echo "AAB OK: signed, arm64-v8a only, extractNativeLibs=false."
 
       - name: Upload AAB
         id: aab_upload
