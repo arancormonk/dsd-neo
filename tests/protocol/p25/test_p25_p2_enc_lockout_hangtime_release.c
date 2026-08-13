@@ -14,7 +14,6 @@
  * followed call ended.
  */
 
-#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -128,6 +127,38 @@ backdate(double stamp_m, double by_s) {
 }
 
 /*
+ * Re-stamp the clear companion's stop to now. The re-lock's stay-or-release
+ * action compares that stamp against the configured hangtime with the real
+ * clock, so without this the "holds within companion gap" assertions would
+ * depend on the test itself running in under trunk_hangtime seconds -- which a
+ * parallel ctest, a sanitizer build, or a throttled container need not.
+ */
+static void
+restamp_companion_stop_now(int slot) {
+    p25_sm_get_ctx()->slots[slot].last_stop_m = dsd_time_now_monotonic_s();
+}
+
+/*
+ * Age out only the hangtime countdown and the stamps that keep the locked-out
+ * slot looking occupied. t_tune_m and crypto_attempt_m stay fresh on purpose:
+ * the grant timeout and the crypto-classification timeout can then not fire, so
+ * a release observed after this can only have come from the hangtime tick the
+ * test names.
+ */
+static void
+expire_hangtime_only(void) {
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    const double by_s = (double)g_opts.trunk_hangtime + 0.5;
+    ctx->t_hangtime_m = backdate(ctx->t_hangtime_m, by_s);
+    ctx->t_voice_m = backdate(ctx->t_voice_m, by_s);
+    ctx->slots[0].last_stop_m = backdate(ctx->slots[0].last_stop_m, by_s);
+    ctx->slots[0].last_end_m = backdate(ctx->slots[0].last_end_m, by_s);
+    ctx->slots[1].last_stop_m = backdate(ctx->slots[1].last_stop_m, by_s);
+    ctx->slots[1].last_grant_m = backdate(ctx->slots[1].last_grant_m, by_s);
+    ctx->slots[1].last_enc_suppress_m = backdate(ctx->slots[1].last_enc_suppress_m, by_s);
+}
+
+/*
  * Slot 0 follows a clear call while slot 1 carries a locked-out encrypted
  * transmission that outlives it. After the clear END arms the hangtime
  * countdown, the locked-out call's continuing signaling -- a clear-claiming
@@ -171,35 +202,29 @@ test_enc_signaling_does_not_starve_hangtime_release(void) {
     rc |= expect("clear-claiming grant update re-admits probe", ctx->slots[1].grant_active == 1);
     rc |= expect("probe re-grant preserves armed hangtime", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
 
-    /* The probe's first contradicting ESS tuple quarantines as pending; the
-     * suppressed MAC voice start that follows must also leave the countdown
-     * running. */
+    /* The re-admitted probe's ESS contradicts the grant's clear claim right
+     * away: the slot classifies BLOCKED, the lockout re-arms, and the
+     * stay-or-release action holds for the companion's unexpired gap -- with
+     * the countdown still armed and still anchored where the clear END put it. */
+    restamp_companion_stop_now(0);
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 1, ENC_ALGID, ENC_KEYID, 0, ENC_TG);
-    (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
-    rc |= expect("suppressed MAC start keeps slot inactive", ctx->slots[1].voice_active == 0);
-    rc |= expect("suppressed MAC start preserves armed hangtime", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
-
-    /* The repeat tuple completes the classification: BLOCKED again, lockout
-     * re-arms, and the stay-or-release action holds for the companion's
-     * unexpired gap -- with the countdown still armed. */
-    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 1, ENC_ALGID, ENC_KEYID, 0, ENC_TG);
+    rc |= expect("probe re-classifies BLOCKED", g_state.p25_crypto_state[1] == DSD_P25_CRYPTO_BLOCKED);
     rc |= expect("enc re-lock holds within companion gap", g_opts.trunk_is_tuned == 1);
-    rc |= expect("enc re-lock leaves hangtime armed", ctx->t_hangtime_m > 0.0);
+    rc |= expect("enc re-lock leaves hangtime armed", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+
+    /* The re-lock tore the assignment down with the rest of the slot, so the
+     * locked-out call's remaining MAC repeats are dropped before they reach any
+     * timing at all -- and the countdown keeps running toward its deadline. */
+    for (int repeat = 0; repeat < 3; repeat++) {
+        (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
+        rc |= expect("post-lockout MAC repeat keeps slot inactive", ctx->slots[1].voice_active == 0);
+        rc |= expect("post-lockout MAC repeat preserves armed hangtime", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+    }
 
     /* Hangtime elapses while the encrypted transmission continues and its ESS
      * stops decoding (no further classification transitions). Only the tick
      * can release the channel now. */
-    const double by_s = (double)g_opts.trunk_hangtime + 0.5;
-    ctx->t_hangtime_m = backdate(ctx->t_hangtime_m, by_s);
-    ctx->t_tune_m = backdate(ctx->t_tune_m, by_s);
-    ctx->t_voice_m = backdate(ctx->t_voice_m, by_s);
-    ctx->slots[0].last_stop_m = backdate(ctx->slots[0].last_stop_m, by_s);
-    ctx->slots[0].last_end_m = backdate(ctx->slots[0].last_end_m, by_s);
-    ctx->slots[1].last_stop_m = backdate(ctx->slots[1].last_stop_m, by_s);
-    ctx->slots[1].last_grant_m = backdate(ctx->slots[1].last_grant_m, by_s);
-    ctx->slots[1].last_enc_suppress_m = backdate(ctx->slots[1].last_enc_suppress_m, by_s);
-    ctx->slots[1].crypto_attempt_m = backdate(ctx->slots[1].crypto_attempt_m, by_s);
-
+    expire_hangtime_only();
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("hangtime expiry releases channel", g_opts.trunk_is_tuned == 0);
     return rc;
@@ -237,24 +262,21 @@ test_enc_relock_hold_arms_hangtime_for_ended_companion(void) {
 
     /* The probe's ESS classifies BLOCKED again; the re-lock holds for the
      * companion's unexpired gap and must arm the countdown from the
-     * companion's stop, because no further transition will revisit it. */
+     * companion's stop, because no further transition will revisit it.
+     *
+     * The anchor is the assertion: arming from now instead would give the
+     * locked-out call a full extra hangtime on every re-lock, which is the
+     * failure this arm exists to avoid. */
+    restamp_companion_stop_now(0);
+    rc |= expect("clear END left the countdown unarmed", ctx->t_hangtime_m <= 0.0);
     resolve_enc_blocked();
     rc |= expect("enc re-lock holds within companion gap", g_opts.trunk_is_tuned == 1);
-    rc |= expect("enc re-lock arms hangtime from companion stop", ctx->t_hangtime_m > 0.0);
+    rc |= expect("enc re-lock arms hangtime from companion stop",
+                 ctx->t_hangtime_m > 0.0 && fabs(ctx->t_hangtime_m - ctx->slots[0].last_stop_m) <= 1.0e-9);
 
     /* Hangtime elapses with the encrypted transmission still up and its ESS
      * quiet; the tick must release the channel. */
-    const double by_s = (double)g_opts.trunk_hangtime + 0.5;
-    ctx->t_hangtime_m = backdate(ctx->t_hangtime_m, by_s);
-    ctx->t_tune_m = backdate(ctx->t_tune_m, by_s);
-    ctx->t_voice_m = backdate(ctx->t_voice_m, by_s);
-    ctx->slots[0].last_stop_m = backdate(ctx->slots[0].last_stop_m, by_s);
-    ctx->slots[0].last_end_m = backdate(ctx->slots[0].last_end_m, by_s);
-    ctx->slots[1].last_stop_m = backdate(ctx->slots[1].last_stop_m, by_s);
-    ctx->slots[1].last_grant_m = backdate(ctx->slots[1].last_grant_m, by_s);
-    ctx->slots[1].last_enc_suppress_m = backdate(ctx->slots[1].last_enc_suppress_m, by_s);
-    ctx->slots[1].crypto_attempt_m = backdate(ctx->slots[1].crypto_attempt_m, by_s);
-
+    expire_hangtime_only();
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("hangtime expiry releases channel after re-lock", g_opts.trunk_is_tuned == 0);
     return rc;

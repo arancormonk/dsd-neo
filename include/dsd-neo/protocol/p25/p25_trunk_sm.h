@@ -186,6 +186,21 @@ typedef struct {
     int valid;           // 1 while matching ambiguous CC updates remain quarantined
 } p25_sm_recent_call_end_t;
 
+/** Targets tracked for the encryption-lockout reprobe backoff. */
+enum { P25_SM_ENC_REPROBE_MEMO_MAX = 4 };
+
+/**
+ * One target re-admitted from the encryption-lockout ledger because a grant
+ * claimed clear service options. The ledger entry is consumed by that
+ * admission, so without this record every repeat of the same grant update
+ * looks like the first one.
+ */
+typedef struct {
+    double admitted_m; // Monotonic timestamp of the re-admission, 0 when unused
+    uint32_t target;   // OTA talkgroup for group calls, destination RID for private calls
+    uint8_t is_group;  // 1 for group/SG target, 0 for private destination
+} p25_sm_enc_reprobe_memo_t;
+
 /* ============================================================================
  * State Machine Context
  * ============================================================================ */
@@ -220,6 +235,13 @@ typedef struct {
 
     // Per-slot activity (index 0 = left/P1, index 1 = right)
     p25_sm_slot_ctx_t slots[2];
+
+    // Targets recently re-admitted from the encryption-lockout ledger by a
+    // clear-claiming grant. Survives the carrier release the failed reprobe
+    // ends in, which is the whole point: the ledger entry the reprobe consumed
+    // is gone by then, so nothing else can tell the site's next identical grant
+    // update apart from the first one.
+    p25_sm_enc_reprobe_memo_t enc_reprobes[P25_SM_ENC_REPROBE_MEMO_MAX];
 
     // Timing
     double t_tune_m;             // Monotonic time of last VC tune
