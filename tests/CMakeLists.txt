@@ -5169,6 +5169,44 @@ add_test(
     COMMAND dsd-neo_test_p25_p2_hangtime_events
 )
 
+# Enc lockout on a TDMA VC: the locked-out slot's MAC repeats must not restart
+# the hangtime countdown armed by the clear companion call's END
+add_executable(
+    dsd-neo_test_p25_p2_enc_lockout_hangtime_release
+    protocol/p25/test_p25_p2_enc_lockout_hangtime_release.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_enc_lockout_hangtime_release
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_enc_lockout_hangtime_release
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_ENC_LOCKOUT_HANGTIME_RELEASE
+    COMMAND dsd-neo_test_p25_p2_enc_lockout_hangtime_release
+)
+
+# Who may arm, restart, or cancel the hangtime countdown: P1 identity waits,
+# followed voice starts, crypto classification budgets, and lockout reprobes
+add_executable(
+    dsd-neo_test_p25_hangtime_arm_rules
+    protocol/p25/test_p25_hangtime_arm_rules.c
+)
+target_include_directories(
+    dsd-neo_test_p25_hangtime_arm_rules
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_hangtime_arm_rules
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_HANGTIME_ARM_RULES
+    COMMAND dsd-neo_test_p25_hangtime_arm_rules
+)
+
 # P25p2 ACTIVE-observed transmissions: the first-seen MAC_PTT folds into the
 # ACTIVE-begun canonical epoch instead of force-minting a duplicate event row
 add_executable(

@@ -15,7 +15,12 @@
  *
  * Release paths, in decreasing strength:
  *  - explicit clear evidence (clear service options, regroup clear-key
- *    override, or a call that resolves decryptable) removes the entry;
+ *    override, or a call that resolves decryptable) removes the entry. This
+ *    store honours every such request; a protocol may still rate-limit how
+ *    often it believes the weakest form of that evidence -- P25 spaces out
+ *    re-admissions driven by a bare grant service bit, because sites whose
+ *    grant bits do not track encryption repeat one per second for the life of
+ *    the encrypted call;
  *  - new key material bumps the global key epoch instead of dropping
  *    entries: a stale-epoch entry stops blocking, the next grant runs one
  *    silent classification probe, and the outcome either re-locks the entry

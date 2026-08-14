@@ -174,9 +174,20 @@ canonical_call_begin_p1(uint64_t target, uint64_t source, uint16_t service_optio
     return dsd_call_state_observe(&g_state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0;
 }
 
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
+}
+
 static void
 expire_traffic_hang(p25_sm_ctx_t* ctx) {
-    ctx->t_hangtime_m = dsd_time_now_monotonic_s() - ctx->config.hangtime_s - 0.1;
+    set_hangtime_started(ctx, dsd_time_now_monotonic_s() - ctx->config.hangtime_s - 0.1);
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
 }
 
@@ -324,7 +335,7 @@ test_private_ptt_preserves_grant_identity(void) {
     ev = p25_sm_ev_end_call_at(0, 0x4567, 0x010203, ctx.slots[0].last_start_m + 0.001);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].voice_active || !ctx.slots[0].grant_active || ctx.slots[0].last_end_m <= 0.0
-        || ctx.t_hangtime_m <= 0.0) {
+        || p25_sm_hangtime_started_m(&ctx) <= 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Private END treated the MAC group field as the destination identity\n");
         return 1;
     }
@@ -923,7 +934,7 @@ test_pending_crypto_uses_classification_deadline(void) {
     ev = p25_sm_ev_ptt_call(0, 1000, 0, 123, 1, P25_SM_SVC_UNKNOWN);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_ENCRYPTED_PENDING || ctx.slots[0].voice_active
-        || ctx.slots[0].crypto_attempt_m <= 0.0 || ctx.t_hangtime_m > 0.0) {
+        || ctx.slots[0].crypto_attempt_m <= 0.0 || p25_sm_hangtime_started_m(&ctx) > 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Pending crypto did not retain its classification-only deadline\n");
         return 1;
     }
@@ -1786,7 +1797,7 @@ test_end_clears_voice(void) {
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || !ctx.slots[0].grant_active) {
+    if (ctx.state != P25_SM_TUNED || p25_sm_hangtime_started_m(&ctx) <= 0.0 || !ctx.slots[0].grant_active) {
         DSD_FPRINTF(stderr, "FAIL: Expected retained TUNED allocation after END, got %s\n",
                     p25_sm_state_name(ctx.state));
         return 1;
@@ -1822,7 +1833,7 @@ test_tdma_boundaries_only_hang_after_last_assigned_voice(void) {
 
     ev = p25_sm_ev_idle(1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.vc_activity_seen || ctx.t_hangtime_m > 0.0 || !ctx.slots[0].grant_active) {
+    if (ctx.vc_activity_seen || p25_sm_hangtime_started_m(&ctx) > 0.0 || !ctx.slots[0].grant_active) {
         DSD_FPRINTF(stderr, "FAIL: Unassigned companion IDLE manufactured traffic activity or hang\n");
         return 1;
     }
@@ -1852,14 +1863,14 @@ test_tdma_boundaries_only_hang_after_last_assigned_voice(void) {
 
     ev = p25_sm_ev_hangtime(1);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (!ctx.slots[0].voice_active || ctx.slots[1].voice_active || ctx.t_hangtime_m > 0.0) {
+    if (!ctx.slots[0].voice_active || ctx.slots[1].voice_active || p25_sm_hangtime_started_m(&ctx) > 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Ending one assigned slot armed hang while its companion remained active\n");
         return 1;
     }
 
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+    if (p25_sm_hangtime_started_m(&ctx) <= 0.0 || g_return_requests != 0) {
         DSD_FPRINTF(stderr, "FAIL: Last assigned voice transition did not arm traffic hang\n");
         return 1;
     }
@@ -1892,7 +1903,7 @@ test_tdma_idle_ends_voice_with_newer_grant(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.slots[0].voice_active || !ctx.slots[0].grant_active || ctx.slots[0].target_id != 1000
         || ctx.slots[0].src != 123 || fabs(ctx.slots[0].last_grant_m - newer_grant_m) > 1.0e-9
-        || ctx.t_hangtime_m <= 0.0 || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR
+        || p25_sm_hangtime_started_m(&ctx) <= 0.0 || g_state.p25_crypto_state[0] != DSD_P25_CRYPTO_CLEAR
         || g_state.p25_p2_audio_allowed[0]) {
         DSD_FPRINTF(stderr, "FAIL: TDMA IDLE did not end voice while preserving its newer grant\n");
         return 1;
@@ -1998,12 +2009,13 @@ test_unassigned_companion_start_is_rejected(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    const double hang_started_m = ctx.t_hangtime_m;
+    const double hang_started_m = p25_sm_hangtime_started_m(&ctx);
 
     ev = p25_sm_ev_active_call(1, 2000, 0, 456, 1, 0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.slots[1].voice_active || fabs(ctx.t_hangtime_m - hang_started_m) > 1.0e-9 || ctx.state != P25_SM_TUNED
-        || g_return_requests != 0 || !g_state.p25_p2_media_rejected[1] || g_state.p25_p2_audio_allowed[1] != 0) {
+    if (ctx.slots[1].voice_active || fabs(p25_sm_hangtime_started_m(&ctx) - hang_started_m) > 1.0e-9
+        || ctx.state != P25_SM_TUNED || g_return_requests != 0 || !g_state.p25_p2_media_rejected[1]
+        || g_state.p25_p2_audio_allowed[1] != 0) {
         DSD_FPRINTF(stderr, "FAIL: Unassigned companion ACTIVE bypassed routing policy or canceled hang\n");
         return 1;
     }
@@ -2138,7 +2150,7 @@ test_tdma_partial_end_stays_tuned(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
     // Both transmissions have ended, but the physical allocation remains.
-    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+    if (ctx.state != P25_SM_TUNED || p25_sm_hangtime_started_m(&ctx) <= 0.0 || g_return_requests != 0) {
         DSD_FPRINTF(stderr, "FAIL: Expected retained TDMA carrier after both ENDs, got %s\n",
                     p25_sm_state_name(ctx.state));
         return 1;
@@ -2191,8 +2203,11 @@ test_tdma_pending_other_slot_blocks_release(void) {
         DSD_FPRINTF(stderr, "FAIL: END discarded a retained slot assignment\n");
         return 1;
     }
-    if (ctx.t_hangtime_m > 0.0) {
-        DSD_FPRINTF(stderr, "FAIL: Pending companion grant was placed on the shorter traffic hang timer\n");
+    /* The countdown runs -- slot 0's END is a fact about slot 0 -- but a
+       companion assignment the SM has reason to follow outranks it until its
+       own acquisition window closes, which the two ticks below pin. */
+    if (p25_sm_hangtime_started_m(&ctx) <= 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: Expected the ended slot to start the hangtime countdown\n");
         return 1;
     }
 
@@ -2228,8 +2243,8 @@ test_tdma_pending_other_slot_blocks_release(void) {
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.t_hangtime_m > 0.0 || !ctx.slots[1].grant_active || !ctx.slots[1].data_call) {
-        DSD_FPRINTF(stderr, "FAIL: Pending data companion was placed on the traffic hang timer\n");
+    if (p25_sm_hangtime_started_m(&ctx) <= 0.0 || !ctx.slots[1].grant_active || !ctx.slots[1].data_call) {
+        DSD_FPRINTF(stderr, "FAIL: Expected the ended slot to start the countdown beside the data grant\n");
         return 1;
     }
     acquisition_m = dsd_time_now_monotonic_s() - ctx.config.hangtime_s - 0.1;
@@ -2287,7 +2302,7 @@ test_tdma_enc_lockout_slot_does_not_block_release(void) {
 
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
-    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || g_return_requests != 0) {
+    if (ctx.state != P25_SM_TUNED || p25_sm_hangtime_started_m(&ctx) <= 0.0 || g_return_requests != 0) {
         DSD_FPRINTF(stderr, "FAIL: Expected hang retention after clear slot END with encrypted slot muted, got %s\n",
                     p25_sm_state_name(ctx.state));
         return 1;
@@ -2344,7 +2359,8 @@ test_tdma_single_slot_end_retains_carrier(void) {
     ev = p25_sm_ev_end(0);
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
 
-    if (ctx.state != P25_SM_TUNED || ctx.t_hangtime_m <= 0.0 || !ctx.slots[0].grant_active || g_return_requests != 0) {
+    if (ctx.state != P25_SM_TUNED || p25_sm_hangtime_started_m(&ctx) <= 0.0 || !ctx.slots[0].grant_active
+        || g_return_requests != 0) {
         DSD_FPRINTF(stderr, "FAIL: Expected retained carrier after END on single-slot TDMA call, got %s\n",
                     p25_sm_state_name(ctx.state));
         return 1;
@@ -2753,7 +2769,7 @@ test_inband_policy_reject_releases_after_companion_ended(void) {
     ev = p25_sm_ev_end_call_at(1, 2000, 202, dsd_time_now_monotonic_s());
     p25_sm_event(&ctx, &g_opts, &g_state, &ev);
     if (ctx.state != P25_SM_TUNED || ctx.slots[1].voice_active || !ctx.slots[1].grant_active
-        || ctx.t_hangtime_m > 0.0) {
+        || p25_sm_hangtime_started_m(&ctx) > 0.0) {
         DSD_FPRINTF(stderr, "FAIL: Companion END did not leave the active slot in control of the carrier\n");
         return 1;
     }

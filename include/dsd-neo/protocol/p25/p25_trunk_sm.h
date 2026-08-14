@@ -139,9 +139,16 @@ typedef struct {
  * ============================================================================ */
 
 typedef struct {
-    double last_active_m;    // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
-    double last_start_m;     // Monotonic timestamp of the last PTT/ACTIVE call-epoch boundary
-    double last_stop_m;      // Monotonic timestamp when the last followed epoch transitioned inactive
+    double last_active_m; // Monotonic timestamp of last activity (PTT/ACTIVE/voice)
+    double last_start_m;  // Monotonic timestamp of the last PTT/ACTIVE call-epoch boundary
+    double last_stop_m;   // Monotonic timestamp when the last followed epoch transitioned inactive
+    // Monotonic timestamp this slot last carried traffic the SM was following,
+    // 0 when it has carried none on the current carrier. The hangtime deadline
+    // is derived from these two per-slot stamps rather than armed
+    // (p25_sm_hangtime_started_m), so signaling the SM is not following -- a
+    // locked-out slot's MAC repeats, an encryption-lockout reprobe assignment
+    // -- can neither restart nor erase the countdown by construction.
+    double last_followed_m;
     int voice_active;        // 1 if voice is currently active on this slot
     int algid;               // Current algorithm ID for this slot
     int keyid;               // Current key ID for this slot
@@ -157,6 +164,10 @@ typedef struct {
     int data_call;           // 1 for data grant, 0 for voice
     int svc_bits;            // Service options, or P25_SM_SVC_UNKNOWN when absent
     int enc_override_clear;  // 1 when regroup KEY=0 supplied the current clear classification
+    int enc_lockout_reprobe; // 1 when this assignment was re-admitted from the encryption-lockout
+                             // ledger by a clear-claiming grant. The SM has no positive evidence
+                             // for it, so it may acquire but may not outlive the hangtime the last
+                             // followed transmission set.
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
@@ -185,6 +196,26 @@ typedef struct {
     int probe_attempted; // 1 after the bounded validation tune becomes eligible
     int valid;           // 1 while matching ambiguous CC updates remain quarantined
 } p25_sm_recent_call_end_t;
+
+/**
+ * Targets tracked for the encryption-lockout reprobe backoff. Sized so that a
+ * busy site's set of concurrently locked-out talkgroups fits: a live cooldown
+ * is never evicted to make room, so a table too small to hold them would hand
+ * the overflow targets no backoff at all.
+ */
+enum { P25_SM_ENC_REPROBE_MEMO_MAX = 16 };
+
+/**
+ * One target re-admitted from the encryption-lockout ledger because a grant
+ * claimed clear service options. The ledger entry is consumed by that
+ * admission, so without this record every repeat of the same grant update
+ * looks like the first one.
+ */
+typedef struct {
+    double admitted_m; // Monotonic timestamp of the re-admission, 0 when unused
+    uint32_t target;   // OTA talkgroup for group calls, destination RID for private calls
+    uint8_t is_group;  // 1 for group/SG target, 0 for private destination
+} p25_sm_enc_reprobe_memo_t;
 
 /* ============================================================================
  * State Machine Context
@@ -221,10 +252,18 @@ typedef struct {
     // Per-slot activity (index 0 = left/P1, index 1 = right)
     p25_sm_slot_ctx_t slots[2];
 
+    // Targets recently re-admitted from the encryption-lockout ledger by a
+    // clear-claiming grant. Survives the carrier release the failed reprobe
+    // ends in, which is the whole point: the ledger entry the reprobe consumed
+    // is gone by then, so nothing else can tell the site's next identical grant
+    // update apart from the first one.
+    p25_sm_enc_reprobe_memo_t enc_reprobes[P25_SM_ENC_REPROBE_MEMO_MAX];
+
     // Timing
-    double t_tune_m;             // Monotonic time of last VC tune
-    double t_voice_m;            // Monotonic time of last voice activity
-    double t_hangtime_m;         // Monotonic time hangtime started
+    double t_tune_m;  // Monotonic time of last VC tune
+    double t_voice_m; // Monotonic time of last voice activity
+    // The hangtime countdown has no field: it is derived from the per-slot
+    // last_followed_m stamps by p25_sm_hangtime_started_m().
     double t_cc_sync_m;          // Monotonic time of last CC sync
     double t_cc_tune_m;          // Monotonic time of last CC tune awaiting decode
     double t_cc_reacquire_m;     // Monotonic time a soft CQPSK reacquire was queued
@@ -376,6 +415,21 @@ const char* p25_sm_state_name(p25_sm_state_e state);
  * @return Pointer to global state machine context.
  */
 p25_sm_ctx_t* p25_sm_get_ctx(void);
+
+/**
+ * @brief When the tuned carrier's hangtime countdown started, or 0 when none runs.
+ *
+ * Derived, never armed: the most recent moment any slot carried traffic the SM
+ * was following, and 0 while a slot still is. Because only followed traffic
+ * writes p25_sm_slot_ctx_t.last_followed_m, no amount of signaling from a
+ * locked-out slot -- suppressed voice starts, ESS repeats, clear-claiming grant
+ * updates -- can restart or cancel the countdown.
+ *
+ * @param ctx State machine context (may be NULL).
+ * @return Monotonic start of the countdown, or 0.0 when the carrier is not in
+ *         hangtime.
+ */
+double p25_sm_hangtime_started_m(const p25_sm_ctx_t* ctx);
 
 /**
  * @brief Trigger explicit release and return to CC.

@@ -224,13 +224,24 @@ test_followup_reuses_retained_carrier(void) {
     p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4401, 5401, dsd_time_now_monotonic_s());
     p25_sm_event(&ctx, &opts, &state, &end);
     rc |= expect_true("transmission end retained carrier",
-                      ctx.state == P25_SM_TUNED && ctx.t_hangtime_m > 0.0 && g_return_calls == 0);
+                      ctx.state == P25_SM_TUNED && p25_sm_hangtime_started_m(&ctx) > 0.0 && g_return_calls == 0);
     p25_sm_event(&ctx, &opts, &state, &followup);
-    rc |= expect_true("followup reopened without tune", g_tune_calls == 1 && g_return_calls == 0
-                                                            && ctx.slots[0].voice_active == 1
-                                                            && ctx.slots[0].src == 5402 && ctx.t_hangtime_m == 0.0);
+    rc |= expect_true("followup reopened without tune",
+                      g_tune_calls == 1 && g_return_calls == 0 && ctx.slots[0].voice_active == 1
+                          && ctx.slots[0].src == 5402 && p25_sm_hangtime_started_m(&ctx) <= 0.0);
     dsd_state_ext_free_all(&state);
     return rc;
+}
+
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
 }
 
 static int
@@ -248,12 +259,12 @@ test_same_carrier_assignment_restarts_wait_window(void) {
     p25_sm_event(&ctx, &opts, &state, &ptt);
     p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4451, 5451, dsd_time_now_monotonic_s());
     p25_sm_event(&ctx, &opts, &state, &end);
-    ctx.t_hangtime_m = dsd_time_now_monotonic_s() - ctx.config.hangtime_s + 0.01;
+    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - ctx.config.hangtime_s + 0.01);
     const double previous_tune_m = ctx.t_tune_m;
 
     p25_sm_event(&ctx, &opts, &state, &grant);
     rc |= expect_true("same-carrier assignment restarted acquisition",
-                      ctx.state == P25_SM_TUNED && ctx.t_hangtime_m == 0.0 && ctx.vc_activity_seen == 0
+                      ctx.state == P25_SM_TUNED && p25_sm_hangtime_started_m(&ctx) <= 0.0 && ctx.vc_activity_seen == 0
                           && ctx.t_tune_m > previous_tune_m && ctx.slots[0].last_end_m == 0.0 && g_tune_calls == 1);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     rc |= expect_true("fresh same-carrier assignment survived immediate tick", g_return_calls == 0);
@@ -325,7 +336,7 @@ test_p1_source_less_update_validation(void) {
     p25_sm_event(&ctx, &opts, &state, &ptt);
     p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4701, 5701, dsd_time_now_monotonic_s());
     p25_sm_event(&ctx, &opts, &state, &end);
-    ctx.t_hangtime_m = dsd_time_now_monotonic_s() - 3.0;
+    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - 3.0);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     note_cc_reacquired(&ctx, &state);
 
@@ -371,7 +382,7 @@ test_p1_tdu_preserves_identified_end_source(void) {
     p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4751, 5751, dsd_time_now_monotonic_s());
     p25_sm_event(&ctx, &opts, &state, &end);
     const double guard_end_m = ctx.recent_call_ends[0].end_m;
-    const double hang_started_m = ctx.t_hangtime_m;
+    const double hang_started_m = p25_sm_hangtime_started_m(&ctx);
     const double time_epsilon_s = 1.0e-9;
 
     p25_sm_event_t tdu = p25_sm_ev_tdu();
@@ -380,9 +391,9 @@ test_p1_tdu_preserves_identified_end_source(void) {
                       ctx.slots[0].last_end_tg == 4751 && ctx.slots[0].last_end_src == 5751
                           && ctx.recent_call_ends[0].src == 5751
                           && fabs(ctx.recent_call_ends[0].end_m - guard_end_m) <= time_epsilon_s
-                          && fabs(ctx.t_hangtime_m - hang_started_m) <= time_epsilon_s);
+                          && fabs(p25_sm_hangtime_started_m(&ctx) - hang_started_m) <= time_epsilon_s);
 
-    ctx.t_hangtime_m = dsd_time_now_monotonic_s() - 3.0;
+    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - 3.0);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     note_cc_reacquired(&ctx, &state);
     p25_sm_event_t update = p25_sm_ev_group_grant_update(channel, freq, 4751, 5752, P25_SM_SVC_UNKNOWN);
@@ -409,7 +420,7 @@ test_failed_validation_probe_does_not_loop(void) {
     p25_sm_event(&ctx, &opts, &state, &ptt);
     p25_sm_event_t end = p25_sm_ev_end_call_at(0, 4501, 5501, dsd_time_now_monotonic_s());
     p25_sm_event(&ctx, &opts, &state, &end);
-    ctx.t_hangtime_m = dsd_time_now_monotonic_s() - 3.0;
+    set_hangtime_started(&ctx, dsd_time_now_monotonic_s() - 3.0);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     note_cc_reacquired(&ctx, &state);
 

@@ -357,14 +357,25 @@ matrix_send_initial_grant(matrix_fixture* fixture, const matrix_mode_case* mode,
     return rc;
 }
 
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
+}
+
 static void
 matrix_age_tuned_timers(matrix_fixture* fixture) {
     double now_m = dsd_time_now_monotonic_s();
     double stale_m = now_m - 1.0;
     fixture->ctx.t_tune_m = stale_m;
     fixture->ctx.t_voice_m = stale_m;
-    if (fixture->ctx.t_hangtime_m > 0.0) {
-        fixture->ctx.t_hangtime_m = stale_m;
+    if (p25_sm_hangtime_started_m(&fixture->ctx) > 0.0) {
+        set_hangtime_started(&fixture->ctx, stale_m);
     }
     fixture->state->last_vc_sync_time = time(NULL) - 1;
     fixture->state->last_vc_sync_time_m = stale_m;

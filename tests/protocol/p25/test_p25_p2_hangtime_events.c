@@ -144,7 +144,7 @@ test_same_identity_mac_active_reopens_call(void) {
     rc |= expect("same-source ACTIVE reopens call", slot0_matches(DSD_CALL_PHASE_ACTIVE, TEST_TG, TEST_SRC));
     rc |= expect("same-source ACTIVE starts epoch", slot0_epoch() != ended_epoch);
     rc |= expect("same-source ACTIVE remains clear", g_state.p25_crypto_state[0] == DSD_P25_CRYPTO_CLEAR);
-    rc |= expect("same-source ACTIVE clears hangtime", fabs(p25_sm_get_ctx()->t_hangtime_m) <= 1.0e-9);
+    rc |= expect("same-source ACTIVE clears hangtime", fabs(p25_sm_hangtime_started_m(p25_sm_get_ctx())) <= 1.0e-9);
     return rc;
 }
 

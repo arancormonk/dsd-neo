@@ -551,12 +551,84 @@ test_facch_double_end_holds_channel_while_companion_enc_suppressed(void) {
     return rc;
 }
 
+// The suppression stamp reads "occupied right now" from ESS repeats alone, but
+// the locked-out call also announces its own end: its MAC_END_PTT still decodes
+// and reaches the SM, where the missing assignment gets it discarded. That
+// observed END must terminate the stamp -- otherwise a clear call ending within
+// one hangtime of the encrypted call loses its double-END fast release to a
+// companion that is no longer transmitting, and the CC return waits out the
+// full hangtime instead.
+static int
+test_facch_double_end_releases_after_companion_end_observed(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    p25_sm_ctx_t* ctx = NULL;
+    setup_tuned_tdma(&opts, &state, &ctx);
+    ctx->config.hangtime_s = 2.0;
+    state.event_history_s = calloc(2, sizeof(Event_History_I));
+    if (state.event_history_s == NULL) {
+        return 1;
+    }
+    for (int i = 0; i < 2; i++) {
+        init_event_history(&state.event_history_s[i], 0, 255);
+    }
+    g_return_to_cc_called = 0;
+
+    int rc = 0;
+
+    // Clear transmission decoding on slot 0.
+    state.p25_crypto_state[0] = DSD_P25_CRYPTO_CLEAR;
+    rc |= expect_eq("clear voice start accepted", p25_sm_emit_active_call(&opts, &state, 0, 1234, 0, 42, 1, 0x00), 1);
+    state.p25_p2_audio_allowed[0] = 1;
+
+    // Slot 1 carries the locked-out encrypted call; the lockout action leaves
+    // only the suppression stamp behind.
+    (void)p25_crypto_resolve(&opts, &state, DSD_P25_CRYPTO_PHASE2, 1, 0x84, 0x2710, 0x1111222233334444ULL, 5678);
+    rc |= expect_eq("companion suppressed: stamp recorded", ctx->slots[1].last_enc_suppress_m > 0.0, 1);
+
+    // The locked-out call un-keys: its MAC_END_PTT decodes on slot 1 even
+    // though lockout erased the assignment it would have applied to. The
+    // active clear call still holds the channel.
+    const double enc_end_m = dsd_time_now_monotonic_s();
+    (void)p25_sm_emit_facch_end_call_at(&opts, &state, 1, 5678, 0xFFFFFF, enc_end_m);
+    rc |= expect_eq("companion end observed: still tuned", ctx->state == P25_SM_TUNED, 1);
+    rc |= expect_eq("companion end observed: no cc return", g_return_to_cc_called, 0);
+    rc |= expect_eq("companion end observed: stamp terminated", ctx->slots[1].last_enc_suppress_m <= 0.0, 1);
+
+    // The clear talker un-keys half a second later -- well inside what stamp
+    // aging alone would still call occupied -- and the END repeat lands 0.2 s
+    // after that. With both transmissions over, the fast release must fire
+    // promptly instead of waiting out the hangtime.
+    const double end_m = enc_end_m + 0.5;
+    rc |= expect_eq("first facch end applied", p25_sm_emit_facch_end_call_at(&opts, &state, 0, 1234, 42, end_m),
+                    P25_SM_END_APPLIED);
+    state.p25_p2_audio_allowed[0] = 0;
+    (void)p25_sm_emit_facch_end_call_at(&opts, &state, 0, 1234, 42, end_m + 0.2);
+    rc |= expect_eq("double end after companion end: released to cc", g_return_to_cc_called, 1);
+
+    dsd_state_ext_free_all(&state);
+    free(state.event_history_s);
+    state.event_history_s = NULL;
+    return rc;
+}
+
 // The crypto layer edge-triggers the ENC event on the classification
 // transition: a FEC-accepted ESS repeat of an already-BLOCKED Phase 2 slot
 // under lockout refreshes the suppression stamp instead of re-running the full
 // lockout action, so it never revisits stay-or-release -- even when the
 // companion's gap has outlived the hangtime. Releasing that emptied channel is
 // the hangtime tick's job.
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
+}
+
 static int
 test_enc_blocked_repeat_edge_triggered_tick_owns_release(void) {
     static dsd_opts opts;
@@ -605,7 +677,7 @@ test_enc_blocked_repeat_edge_triggered_tick_owns_release(void) {
     ctx->slots[0].last_start_m = past_stop_m - 1.0;
     ctx->slots[0].last_grant_m = past_stop_m - 1.0;
     ctx->slots[0].last_stop_m = past_stop_m;
-    ctx->t_hangtime_m = past_stop_m;
+    set_hangtime_started(ctx, past_stop_m);
 
     // Pre-fix, this repeat re-ran the lockout action and released the channel
     // itself. Edge-triggered, it only refreshes the stamp.
@@ -749,6 +821,7 @@ main(void) {
     rc |= test_enc_repeat_holds_channel_through_companion_hangtime();
     rc |= test_enc_lockout_idle_companion_still_releases();
     rc |= test_facch_double_end_holds_channel_while_companion_enc_suppressed();
+    rc |= test_facch_double_end_releases_after_companion_end_observed();
     rc |= test_enc_blocked_repeat_edge_triggered_tick_owns_release();
     rc |= test_enc_key_identity_change_reemits_lockout();
     rc |= test_companion_voice_burst_preserves_clear_superframe();
