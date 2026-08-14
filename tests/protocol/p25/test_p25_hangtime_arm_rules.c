@@ -163,6 +163,17 @@ resolve_enc_blocked(void) {
  * Encryption lockout is disabled here on purpose -- this path is reached in
  * plain follow mode, outside the lockout rules entirely.
  */
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
+}
+
 static int
 test_p1_identity_wait_rearms_hangtime(void) {
     int rc = 0;
@@ -173,21 +184,21 @@ test_p1_identity_wait_rearms_hangtime(void) {
 
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
     rc |= expect("identity-bearing start is followed traffic",
-                 ctx->slots[0].voice_active == 1 && ctx->t_hangtime_m <= 0.0);
+                 ctx->slots[0].voice_active == 1 && p25_sm_hangtime_started_m(ctx) <= 0.0);
 
     /* The TDU ends the over: the countdown arms and the next epoch owes an
      * identity before its audio may open. */
     p25_sm_emit_tdu(&g_opts, &g_state);
-    rc |= expect("tdu arms hangtime", ctx->t_hangtime_m > 0.0);
+    rc |= expect("tdu arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
     rc |= expect("tdu marks p1 identity pending", g_state.p25_p1_identity_pending == 1);
 
     /* Most of the window has gone by when the next over keys up, and its first
      * voice frames carry no decoded identity yet. */
     const double stale_m = dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime - 0.1);
-    ctx->t_hangtime_m = stale_m;
+    set_hangtime_started(ctx, stale_m);
     p25_sm_event_t identity_less = p25_sm_ev_active(0);
     p25_sm_event(ctx, &g_opts, &g_state, &identity_less);
-    rc |= expect("identity wait re-arms hangtime", ctx->t_hangtime_m > stale_m + 0.05);
+    rc |= expect("identity wait re-arms hangtime", p25_sm_hangtime_started_m(ctx) > stale_m + 0.05);
 
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("identity wait keeps the carrier", g_opts.trunk_is_tuned == 1);
@@ -207,10 +218,10 @@ test_followed_voice_start_cancels_hangtime(void) {
 
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
     p25_sm_emit_tdu(&g_opts, &g_state);
-    rc |= expect("tdu arms hangtime", ctx->t_hangtime_m > 0.0);
+    rc |= expect("tdu arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
     transmit(0, CLEAR_TG, CLEAR_SRC, 0x33U);
-    rc |= expect("followed voice start cancels hangtime", ctx->t_hangtime_m <= 0.0);
+    rc |= expect("followed voice start cancels hangtime", p25_sm_hangtime_started_m(ctx) <= 0.0);
     rc |= expect("followed voice start marks the slot active", ctx->slots[0].voice_active == 1);
     return rc;
 }
@@ -253,7 +264,7 @@ test_locked_out_repeats_do_not_arm_beside_a_live_companion(void) {
 
     for (int repeat = 0; repeat < 3; repeat++) {
         (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
-        rc |= expect("locked-out repeat leaves the countdown unarmed", ctx->t_hangtime_m <= 0.0);
+        rc |= expect("locked-out repeat leaves the countdown unarmed", p25_sm_hangtime_started_m(ctx) <= 0.0);
         rc |= expect("locked-out repeat leaves the companion alone", ctx->slots[0].voice_active == 1);
     }
     return rc;
@@ -278,7 +289,7 @@ test_pending_classification_outranks_hangtime(void) {
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
     (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
     p25_crypto_reset_slot(&g_state, 0);
-    rc |= expect("clear END arms hangtime", ctx->t_hangtime_m > 0.0);
+    rc |= expect("clear END arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
     /* The companion slot is granted with no service options, which under
      * lockout is admitted as one silent classification probe. */
@@ -291,16 +302,16 @@ test_pending_classification_outranks_hangtime(void) {
      * start the SM is not following is what let the site's repeats hold the
      * carrier for the life of the encrypted call. */
     const double armed_m = dsd_time_now_monotonic_s() - 0.25;
-    ctx->t_hangtime_m = armed_m;
+    set_hangtime_started(ctx, armed_m);
     for (int repeat = 0; repeat < 3; repeat++) {
         (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, P25_SM_SVC_UNKNOWN);
         rc |= expect("pending MAC start keeps slot inactive", ctx->slots[1].voice_active == 0);
         rc |= expect("pending MAC start neither cancels nor restarts the countdown",
-                     fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+                     fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
     }
 
     /* The hangtime elapses while the classification budget still runs. */
-    ctx->t_hangtime_m = dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5);
+    set_hangtime_started(ctx, dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5));
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("classification in flight holds the carrier", g_opts.trunk_is_tuned == 1);
 
@@ -328,6 +339,12 @@ test_lockout_enabled_mid_call_arms_once(void) {
     start_tuned_tdma();
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
 
+    /* Slot 0's own call runs and ends, so the carrier carries no assignment
+       still waiting for its first voice -- one of those outranks the countdown
+       until its acquisition window closes, which is a different rule. */
+    transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+
     /* Follow mode accepts the encrypted call and keeps its assignment. */
     grant_slot1(ENC_TG, ENC_SRC, 0x40);
     transmit(1, ENC_TG, ENC_SRC, 0x22U);
@@ -336,7 +353,7 @@ test_lockout_enabled_mid_call_arms_once(void) {
     rc |= expect("follow mode keeps the assignment", ctx->slots[1].grant_active == 1);
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
     rc |= expect("follow mode marks the slot active", ctx->slots[1].voice_active == 1);
-    rc |= expect("followed start cancels any countdown", ctx->t_hangtime_m <= 0.0);
+    rc |= expect("followed start cancels any countdown", p25_sm_hangtime_started_m(ctx) <= 0.0);
 
     /* The user turns encryption lockout on while the call is up. */
     g_opts.trunk_tune_enc_calls = 0;
@@ -344,18 +361,19 @@ test_lockout_enabled_mid_call_arms_once(void) {
     /* The next repeat is suppressed, and clearing the now-stale activity arms
      * the countdown so the tuned timer can release the carrier. */
     (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
-    const double armed_m = ctx->t_hangtime_m;
+    const double armed_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("suppressing stale activity arms the countdown", armed_m > 0.0);
     rc |= expect("suppressed start clears the stale activity", ctx->slots[1].voice_active == 0);
 
     /* Every repeat after it is just the same transmission still going. */
     for (int repeat = 0; repeat < 3; repeat++) {
         (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
-        rc |= expect("suppressed repeat does not restart the countdown", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+        rc |= expect("suppressed repeat does not restart the countdown",
+                     fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
     }
 
     /* So the deadline actually arrives. */
-    ctx->t_hangtime_m = dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5);
+    set_hangtime_started(ctx, dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5));
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("countdown releases the carrier", g_opts.trunk_is_tuned == 0);
     return rc;
@@ -385,12 +403,13 @@ test_reprobe_still_answers_to_grant_timeout(void) {
 
     (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
     p25_crypto_reset_slot(&g_state, 0);
-    const double armed_m = ctx->t_hangtime_m;
+    const double armed_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("clear END arms hangtime", armed_m > 0.0);
 
     grant_slot1(ENC_TG, ENC_SRC, 0x00);
-    rc |= expect("clear-claiming grant re-admits the reprobe", ctx->slots[1].grant_active == 1);
-    rc |= expect("reprobe preserves the armed countdown", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+    rc |= expect("clear-claiming grant re-admits the reprobe",
+                 ctx->slots[1].grant_active == 1 && ctx->slots[1].enc_lockout_reprobe == 1);
+    rc |= expect("reprobe preserves the armed countdown", fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
 
     /* No voice follows. The 30s hangtime is nowhere near expiring, so only the
      * grant timeout can end this. */
@@ -398,9 +417,79 @@ test_reprobe_still_answers_to_grant_timeout(void) {
     ctx->t_tune_m = timed_out_m;
     ctx->slots[1].last_grant_m = timed_out_m;
     rc |= expect("hangtime is nowhere near expiry",
-                 (dsd_time_now_monotonic_s() - ctx->t_hangtime_m) < (double)g_opts.trunk_hangtime);
+                 (dsd_time_now_monotonic_s() - p25_sm_hangtime_started_m(ctx)) < (double)g_opts.trunk_hangtime);
     p25_sm_tick_ctx(ctx, &g_opts, &g_state);
     rc |= expect("reprobe without voice gives the carrier up", g_opts.trunk_is_tuned == 0);
+    return rc;
+}
+
+/*
+ * A reprobe may acquire, but it may not extend the carrier's stay: it rests on
+ * one grant bit the ledger contradicts, so unlike an assignment the SM has
+ * reason to follow it does not outrank the countdown the last followed
+ * transmission left running.
+ */
+static int
+test_reprobe_does_not_outrank_the_countdown(void) {
+    int rc = 0;
+    reset_test_state(2.0f, /*tune_enc_calls*/ 0);
+    start_tuned_tdma();
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+
+    transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
+    p25_sm_note_encrypted_call_typed(&g_opts, &g_state, ENC_TG, 1, ENC_ALGID, ENC_KEYID);
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    p25_crypto_reset_slot(&g_state, 0);
+    rc |= expect("clear END starts the countdown", p25_sm_hangtime_started_m(ctx) > 0.0);
+
+    /* The reprobe is admitted on the retained carrier and its voice never
+       arrives, so its acquisition window is still wide open below. */
+    grant_slot1(ENC_TG, ENC_SRC, 0x00);
+    rc |= expect("clear-claiming grant re-admits the reprobe",
+                 ctx->slots[1].grant_active == 1 && ctx->slots[1].enc_lockout_reprobe == 1);
+
+    /* Age the countdown out while every acquisition stamp stays fresh: only the
+       reprobe's own window could still be holding the carrier. */
+    ctx->slots[0].last_followed_m = dsd_time_now_monotonic_s() - ((double)g_opts.trunk_hangtime + 0.5);
+    rc |= expect("reprobe acquisition window is still open",
+                 (dsd_time_now_monotonic_s() - ctx->slots[1].last_grant_m) < ctx->config.grant_timeout_s);
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect("reprobe does not hold the carrier past the hangtime", g_opts.trunk_is_tuned == 0);
+    return rc;
+}
+
+/*
+ * The same rule when the reprobe lands on the very slot whose transmission
+ * started the countdown -- a single-carrier re-grant, or a TDMA site reusing
+ * the slot the clear conversation just left. Taking the slot over is what
+ * clears its followed history for every other assignment; a reprobe is not
+ * followed traffic, so it must leave that history where it is.
+ */
+static int
+test_reprobe_on_the_countdown_slot_keeps_it(void) {
+    int rc = 0;
+    reset_test_state(2.0f, /*tune_enc_calls*/ 0);
+    start_tuned_tdma();
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+
+    /* The clear conversation runs on the companion slot and ends there. */
+    grant_slot1(CLEAR_TG, CLEAR_SRC, 0x00);
+    transmit(1, CLEAR_TG, CLEAR_SRC, 0x11U);
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 1, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    p25_crypto_reset_slot(&g_state, 1);
+    const double armed_m = p25_sm_hangtime_started_m(ctx);
+    rc |= expect("clear END starts the countdown on slot 1",
+                 armed_m > 0.0 && fabs(armed_m - ctx->slots[1].last_followed_m) <= 1.0e-9);
+
+    /* The locked-out target is then granted that same slot on a clear claim. */
+    p25_sm_note_encrypted_call_typed(&g_opts, &g_state, ENC_TG, 1, ENC_ALGID, ENC_KEYID);
+    grant_slot1(ENC_TG, ENC_SRC, 0x00);
+    rc |= expect("reprobe takes the countdown's own slot",
+                 ctx->slots[1].grant_active == 1 && ctx->slots[1].enc_lockout_reprobe == 1);
+    rc |= expect("reprobe leaves the countdown where the clear END put it",
+                 fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
     return rc;
 }
 
@@ -505,11 +594,11 @@ test_stale_epoch_entry_is_not_a_reprobe(void) {
 
     (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
     p25_crypto_reset_slot(&g_state, 0);
-    rc |= expect("clear END arms hangtime", ctx->t_hangtime_m > 0.0);
+    rc |= expect("clear END arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
     grant_slot1(ENC_TG, ENC_SRC, 0x00);
     rc |= expect("stale-epoch target is admitted", ctx->slots[1].grant_active == 1);
-    rc |= expect("nothing was blocking, so nothing is a reprobe", ctx->t_hangtime_m <= 0.0);
+    rc |= expect("nothing was blocking, so nothing is a reprobe", ctx->slots[1].enc_lockout_reprobe == 0);
     return rc;
 }
 
@@ -557,7 +646,7 @@ test_patch_clear_key_release_is_not_a_reprobe(void) {
 
     (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
     p25_crypto_reset_slot(&g_state, 0);
-    rc |= expect("clear END arms hangtime", ctx->t_hangtime_m > 0.0);
+    rc |= expect("clear END arms hangtime", p25_sm_hangtime_started_m(ctx) > 0.0);
 
     /* The regroup announces an explicitly clear key for the target, and the
      * grant still claims encryption. */
@@ -566,7 +655,7 @@ test_patch_clear_key_release_is_not_a_reprobe(void) {
     rc |= expect("patch clear key admits the call", ctx->slots[1].grant_active == 1);
     rc |= expect("patch clear key releases the ledger entry",
                  dsd_enc_lockout_lookup(&g_state, (uint32_t)ENC_TG, 1, NULL) == 0);
-    rc |= expect("patch clear key is followed traffic, not a reprobe", ctx->t_hangtime_m <= 0.0);
+    rc |= expect("patch clear key is followed traffic, not a reprobe", ctx->slots[1].enc_lockout_reprobe == 0);
 
     /* And it is not spending a reprobe, so a re-lock does not lock it out of
      * its next grant. */
@@ -586,6 +675,8 @@ main(void) {
     rc |= test_lockout_enabled_mid_call_arms_once();
     rc |= test_pending_classification_outranks_hangtime();
     rc |= test_reprobe_still_answers_to_grant_timeout();
+    rc |= test_reprobe_does_not_outrank_the_countdown();
+    rc |= test_reprobe_on_the_countdown_slot_keeps_it();
     rc |= test_failed_reprobe_is_not_repeated_per_grant_update();
     rc |= test_follow_mode_does_not_erase_the_ledger();
     rc |= test_stale_epoch_entry_is_not_a_reprobe();

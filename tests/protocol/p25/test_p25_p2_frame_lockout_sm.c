@@ -557,6 +557,17 @@ test_facch_double_end_holds_channel_while_companion_enc_suppressed(void) {
 // lockout action, so it never revisits stay-or-release -- even when the
 // companion's gap has outlived the hangtime. Releasing that emptied channel is
 // the hangtime tick's job.
+/*
+ * Force the derived hangtime countdown to have started at @p started_m. The
+ * deadline is the most recent moment any slot carried followed traffic, so one
+ * slot carries the forced value and the other is cleared.
+ */
+static void
+set_hangtime_started(p25_sm_ctx_t* ctx, double started_m) {
+    ctx->slots[0].last_followed_m = started_m;
+    ctx->slots[1].last_followed_m = 0.0;
+}
+
 static int
 test_enc_blocked_repeat_edge_triggered_tick_owns_release(void) {
     static dsd_opts opts;
@@ -605,7 +616,7 @@ test_enc_blocked_repeat_edge_triggered_tick_owns_release(void) {
     ctx->slots[0].last_start_m = past_stop_m - 1.0;
     ctx->slots[0].last_grant_m = past_stop_m - 1.0;
     ctx->slots[0].last_stop_m = past_stop_m;
-    ctx->t_hangtime_m = past_stop_m;
+    set_hangtime_started(ctx, past_stop_m);
 
     // Pre-fix, this repeat re-ran the lockout action and released the channel
     // itself. Edge-triggered, it only refreshes the stamp.

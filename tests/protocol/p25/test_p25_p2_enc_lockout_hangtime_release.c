@@ -139,23 +139,18 @@ restamp_companion_stop_now(int slot) {
 }
 
 /*
- * Age out only the hangtime countdown and the stamps that keep the locked-out
- * slot looking occupied. t_tune_m and crypto_attempt_m stay fresh on purpose:
- * the grant timeout and the crypto-classification timeout can then not fire, so
- * a release observed after this can only have come from the hangtime tick the
- * test names.
+ * Age out only the derived hangtime countdown -- the per-slot record of when
+ * each slot last carried followed traffic. Every other stamp stays where it is
+ * on purpose: the grant timeout and the crypto-classification timeout can then
+ * not fire, so a release observed after this can only have come from the
+ * hangtime tick the test names.
  */
 static void
 expire_hangtime_only(void) {
     p25_sm_ctx_t* ctx = p25_sm_get_ctx();
     const double by_s = (double)g_opts.trunk_hangtime + 0.5;
-    ctx->t_hangtime_m = backdate(ctx->t_hangtime_m, by_s);
-    ctx->t_voice_m = backdate(ctx->t_voice_m, by_s);
-    ctx->slots[0].last_stop_m = backdate(ctx->slots[0].last_stop_m, by_s);
-    ctx->slots[0].last_end_m = backdate(ctx->slots[0].last_end_m, by_s);
-    ctx->slots[1].last_stop_m = backdate(ctx->slots[1].last_stop_m, by_s);
-    ctx->slots[1].last_grant_m = backdate(ctx->slots[1].last_grant_m, by_s);
-    ctx->slots[1].last_enc_suppress_m = backdate(ctx->slots[1].last_enc_suppress_m, by_s);
+    ctx->slots[0].last_followed_m = backdate(ctx->slots[0].last_followed_m, by_s);
+    ctx->slots[1].last_followed_m = backdate(ctx->slots[1].last_followed_m, by_s);
 }
 
 /*
@@ -191,7 +186,7 @@ test_enc_signaling_does_not_starve_hangtime_release(void) {
      * countdown arms. */
     (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
     p25_crypto_reset_slot(&g_state, 0);
-    const double armed_m = ctx->t_hangtime_m;
+    const double armed_m = p25_sm_hangtime_started_m(ctx);
     rc |= expect("clear END arms hangtime", armed_m > 0.0);
 
     /* The site's next grant update for the still-transmitting encrypted call
@@ -200,7 +195,7 @@ test_enc_signaling_does_not_starve_hangtime_release(void) {
      * it must not erase the armed countdown. */
     grant_companion(ENC_TG, ENC_SRC, 0x00);
     rc |= expect("clear-claiming grant update re-admits probe", ctx->slots[1].grant_active == 1);
-    rc |= expect("probe re-grant preserves armed hangtime", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+    rc |= expect("probe re-grant preserves armed hangtime", fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
 
     /* The re-admitted probe's ESS contradicts the grant's clear claim right
      * away: the slot classifies BLOCKED, the lockout re-arms, and the
@@ -210,7 +205,7 @@ test_enc_signaling_does_not_starve_hangtime_release(void) {
     (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 1, ENC_ALGID, ENC_KEYID, 0, ENC_TG);
     rc |= expect("probe re-classifies BLOCKED", g_state.p25_crypto_state[1] == DSD_P25_CRYPTO_BLOCKED);
     rc |= expect("enc re-lock holds within companion gap", g_opts.trunk_is_tuned == 1);
-    rc |= expect("enc re-lock leaves hangtime armed", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+    rc |= expect("enc re-lock leaves hangtime armed", fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
 
     /* The re-lock tore the assignment down with the rest of the slot, so the
      * locked-out call's remaining MAC repeats are dropped before they reach any
@@ -218,7 +213,8 @@ test_enc_signaling_does_not_starve_hangtime_release(void) {
     for (int repeat = 0; repeat < 3; repeat++) {
         (void)p25_sm_emit_active_call(&g_opts, &g_state, 1, ENC_TG, 0, ENC_SRC, 1, 0x40);
         rc |= expect("post-lockout MAC repeat keeps slot inactive", ctx->slots[1].voice_active == 0);
-        rc |= expect("post-lockout MAC repeat preserves armed hangtime", fabs(ctx->t_hangtime_m - armed_m) <= 1.0e-9);
+        rc |= expect("post-lockout MAC repeat preserves armed hangtime",
+                     fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
     }
 
     /* Hangtime elapses while the encrypted transmission continues and its ESS
@@ -260,19 +256,21 @@ test_enc_relock_hold_arms_hangtime_for_ended_companion(void) {
     (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
     p25_crypto_reset_slot(&g_state, 0);
 
+    /* The countdown is not something the END had to remember to arm: it is
+       derived from slot 0's own record of following traffic until it stopped,
+       so the phase alignment that used to leave it unarmed cannot arise. */
+    rc |= expect("clear END starts the countdown from its own stop",
+                 fabs(p25_sm_hangtime_started_m(ctx) - ctx->slots[0].last_followed_m) <= 1.0e-9
+                     && ctx->slots[0].last_followed_m > 0.0);
+
     /* The probe's ESS classifies BLOCKED again; the re-lock holds for the
-     * companion's unexpired gap and must arm the countdown from the
-     * companion's stop, because no further transition will revisit it.
-     *
-     * The anchor is the assertion: arming from now instead would give the
-     * locked-out call a full extra hangtime on every re-lock, which is the
-     * failure this arm exists to avoid. */
+     * companion's unexpired gap and must leave that countdown running. */
     restamp_companion_stop_now(0);
-    rc |= expect("clear END left the countdown unarmed", ctx->t_hangtime_m <= 0.0);
+    const double armed_m = p25_sm_hangtime_started_m(ctx);
     resolve_enc_blocked();
     rc |= expect("enc re-lock holds within companion gap", g_opts.trunk_is_tuned == 1);
-    rc |= expect("enc re-lock arms hangtime from companion stop",
-                 ctx->t_hangtime_m > 0.0 && fabs(ctx->t_hangtime_m - ctx->slots[0].last_stop_m) <= 1.0e-9);
+    rc |= expect("enc re-lock leaves the countdown where the clear END put it",
+                 fabs(p25_sm_hangtime_started_m(ctx) - armed_m) <= 1.0e-9);
 
     /* Hangtime elapses with the encrypted transmission still up and its ESS
      * quiet; the tick must release the channel. */

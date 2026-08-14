@@ -384,7 +384,7 @@ test_voice_user_metadata_does_not_restart_call(void) {
         DSD_SNPRINTF(label, sizeof(label), "%s remains inactive", cases[i].name);
         rc |= expect_eq_int(label, ctx->slots[0].voice_active, 0);
         DSD_SNPRINTF(label, sizeof(label), "%s preserves hang timer", cases[i].name);
-        rc |= expect_true(label, ctx->t_hangtime_m > 0.0);
+        rc |= expect_true(label, p25_sm_hangtime_started_m(ctx) > 0.0);
         dsd_state_ext_free_all(&state);
     }
     return rc;
