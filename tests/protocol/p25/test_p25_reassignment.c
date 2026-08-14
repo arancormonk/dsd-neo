@@ -228,7 +228,7 @@ test_followup_reuses_retained_carrier(void) {
     p25_sm_event(&ctx, &opts, &state, &followup);
     rc |= expect_true("followup reopened without tune",
                       g_tune_calls == 1 && g_return_calls == 0 && ctx.slots[0].voice_active == 1
-                          && ctx.slots[0].src == 5402 && p25_sm_hangtime_started_m(&ctx) == 0.0);
+                          && ctx.slots[0].src == 5402 && p25_sm_hangtime_started_m(&ctx) <= 0.0);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -264,7 +264,7 @@ test_same_carrier_assignment_restarts_wait_window(void) {
 
     p25_sm_event(&ctx, &opts, &state, &grant);
     rc |= expect_true("same-carrier assignment restarted acquisition",
-                      ctx.state == P25_SM_TUNED && p25_sm_hangtime_started_m(&ctx) == 0.0 && ctx.vc_activity_seen == 0
+                      ctx.state == P25_SM_TUNED && p25_sm_hangtime_started_m(&ctx) <= 0.0 && ctx.vc_activity_seen == 0
                           && ctx.t_tune_m > previous_tune_m && ctx.slots[0].last_end_m == 0.0 && g_tune_calls == 1);
     p25_sm_tick_ctx(&ctx, &opts, &state);
     rc |= expect_true("fresh same-carrier assignment survived immediate tick", g_return_calls == 0);

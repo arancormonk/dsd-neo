@@ -197,8 +197,13 @@ typedef struct {
     int valid;           // 1 while matching ambiguous CC updates remain quarantined
 } p25_sm_recent_call_end_t;
 
-/** Targets tracked for the encryption-lockout reprobe backoff. */
-enum { P25_SM_ENC_REPROBE_MEMO_MAX = 4 };
+/**
+ * Targets tracked for the encryption-lockout reprobe backoff. Sized so that a
+ * busy site's set of concurrently locked-out talkgroups fits: a live cooldown
+ * is never evicted to make room, so a table too small to hold them would hand
+ * the overflow targets no backoff at all.
+ */
+enum { P25_SM_ENC_REPROBE_MEMO_MAX = 16 };
 
 /**
  * One target re-admitted from the encryption-lockout ledger because a grant

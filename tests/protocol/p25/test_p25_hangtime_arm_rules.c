@@ -666,6 +666,49 @@ test_patch_clear_key_release_is_not_a_reprobe(void) {
     return rc;
 }
 
+/*
+ * A MAC_RELEASE ends a followed transmission just as a MAC_END_PTT does, so it
+ * owes the countdown the same stamp. Without one the derived origin falls back
+ * to whatever an earlier over left behind, and the carrier is dropped the
+ * instant this one stops -- with no hangtime at all, and a "hang_expired"
+ * elapsed reading of however long the two overs together ran.
+ */
+static int
+test_mac_release_stamps_the_countdown(void) {
+    int rc = 0;
+    reset_test_state(2.0f, /*tune_enc_calls*/ 0);
+    start_tuned_tdma();
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+
+    /* Over 1 ends with an explicit END, stamping the countdown. */
+    transmit(0, CLEAR_TG, CLEAR_SRC, 0x11U);
+    (void)p25_crypto_resolve(&g_opts, &g_state, DSD_P25_CRYPTO_PHASE2, 0, 0x80, 0, 0, CLEAR_TG);
+    (void)p25_sm_emit_end_call_at(&g_opts, &g_state, 0, CLEAR_TG, CLEAR_SRC, dsd_time_now_monotonic_s());
+    rc |= expect("over 1 END starts the countdown", p25_sm_hangtime_started_m(ctx) > 0.0);
+
+    /* Age over 1 out entirely -- including the retention-tail stamps that
+     * suppress a same-identity repeat -- so a fallback to its followed stamp
+     * would be long expired. Then run over 2 on the same slot with the next
+     * talker and end it with MAC_RELEASE. */
+    ctx->slots[0].last_followed_m -= 20.0;
+    ctx->slots[0].last_stop_m -= 20.0;
+    ctx->slots[0].last_end_m -= 20.0;
+    ctx->slots[0].facch_end_m = 0.0;
+    p25_crypto_reset_slot(&g_state, 0);
+    (void)p25_sm_emit_active_call(&g_opts, &g_state, 0, CLEAR_TG, 0, CLEAR_SRC + 7, 1, 0);
+    rc |= expect("over 2 is followed", ctx->slots[0].voice_active == 1);
+    rc |= expect("followed voice suspends the countdown", p25_sm_hangtime_started_m(ctx) <= 0.0);
+
+    p25_sm_emit_mac_release(&g_opts, &g_state, 0, dsd_time_now_monotonic_s());
+    const double started_m = p25_sm_hangtime_started_m(ctx);
+    rc |= expect("MAC_RELEASE starts the countdown from its own end, not over 1's",
+                 started_m > 0.0 && (dsd_time_now_monotonic_s() - started_m) < (double)g_opts.trunk_hangtime);
+
+    p25_sm_tick_ctx(ctx, &g_opts, &g_state);
+    rc |= expect("MAC_RELEASE leaves the hangtime bridge intact", g_opts.trunk_is_tuned == 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -682,6 +725,7 @@ main(void) {
     rc |= test_stale_epoch_entry_is_not_a_reprobe();
     rc |= test_policy_only_evaluation_does_not_spend_the_ledger();
     rc |= test_patch_clear_key_release_is_not_a_reprobe();
+    rc |= test_mac_release_stamps_the_countdown();
     dsd_state_ext_free_all(&g_state);
 
     if (rc == 0) {
