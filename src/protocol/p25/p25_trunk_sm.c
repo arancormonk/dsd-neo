@@ -3973,6 +3973,22 @@ p25_voice_end_clear_policy_route(const p25_sm_ctx_t* ctx, dsd_state* state, int 
     (void)dsd_tg_policy_clear_active_call(state, ctx->vc_is_tdma ? slot : -1);
 }
 
+// A suppressed companion's transmission announces its own end here: the
+// explicit MAC END still decodes after lockout erased the assignment, so it
+// arrives only to be rejected as no-assignment. Terminate the suppression
+// stamp anyway -- whatever identity the END names, it ends the transmission
+// occupying this slot -- or the FACCH double-END fast release stays held
+// against a companion that already stopped transmitting, for up to one
+// hangtime of stamp aging. A new encrypted over re-creates the stamp through
+// the full lockout action.
+static void
+p25_voice_end_terminate_enc_suppression(p25_sm_ctx_t* ctx, int slot, int is_explicit_end) {
+    if (!is_explicit_end || ctx->slots[slot].last_enc_suppress_m <= 0.0) {
+        return;
+    }
+    ctx->slots[slot].last_enc_suppress_m = 0.0;
+}
+
 // `end_reason` records what the triggering event actually said about the air:
 // DSD_CALL_END_TERMINATOR for over-the-air end signaling (a MAC_END_PTT, a Phase 1 TDU), so the
 // event layer can keep an audible epoch whose call identity never decoded, and
@@ -3991,6 +4007,7 @@ handle_voice_end(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot, 
     }
 
     int s = (slot >= 0 && slot <= 1) ? slot : 0;
+    p25_voice_end_terminate_enc_suppression(ctx, s, is_explicit_end);
     const char* reject_reason =
         p25_voice_end_event_reject_reason(ctx, state, s, is_explicit_end, arm_stale_regrant_guard, ev);
     if (reject_reason) {
