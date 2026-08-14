@@ -95,6 +95,7 @@ main(int argc, char** argv) {
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &state);
     rc |= expect_eq("init tune_count", state.p25_sm_tune_count, 0);
     rc |= expect_eq("init release_count", state.p25_sm_release_count, 0);
+    rc |= expect_eq("init cc_return_count", state.p25_sm_cc_return_count, 0);
 
     // Validated current-site updates supply two CC candidates.
     long cc_candidates[3] = {851012500, 851537500, 0};
@@ -152,6 +153,7 @@ main(int argc, char** argv) {
     state.dmrburstR = 24;
     p25_sm_release(p25_sm_get_ctx(), &opts, &state, "explicit-release");
     rc |= expect_eq("release_count", state.p25_sm_release_count, 1);
+    rc |= expect_eq("cc_return_count", state.p25_sm_cc_return_count, 1);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;

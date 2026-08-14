@@ -903,7 +903,7 @@ p25_sm_note_encrypted_call_typed(dsd_opts* opts, dsd_state* state, int target, i
     }
 
     if (dsd_enc_lockout_note(state, (uint32_t)target, is_group, algid, keyid)) {
-        p25_sm_diagf(opts, state, NULL, "enc_lockout_arm", "kind=%s target=%d algid=0x%02X keyid=0x%04X",
+        p25_sm_diagf(opts, state, p25_sm_get_ctx(), "enc_lockout_arm", "kind=%s target=%d algid=0x%02X keyid=0x%04X",
                      is_group ? "group" : "private", target, algid & 0xFF, keyid & 0xFFFF);
         sm_log(opts, state, "enc-lockout-arm");
     }
@@ -1083,7 +1083,7 @@ p25_grant_release_enc_lockout_on_grant_bit(p25_sm_ctx_t* ctx, const dsd_opts* op
     // rather than spending another tune on it.
     const double now_m = dsd_time_now_monotonic_s();
     if (p25_grant_enc_reprobe_in_cooldown(ctx, target, is_group, now_m)) {
-        p25_sm_diagf((dsd_opts*)opts, state, NULL, "enc_lockout_reprobe_declined", "kind=%s target=%u reason=cooldown",
+        p25_sm_diagf((dsd_opts*)opts, state, ctx, "enc_lockout_reprobe_declined", "kind=%s target=%u reason=cooldown",
                      is_group ? "group" : "private", target);
         return;
     }
@@ -1234,12 +1234,12 @@ p25_grant_eval_policy(const dsd_opts* opts, const dsd_state* state, const p25_sm
 // it were ever revived a slot-1 target would write its lockout notice over
 // whatever unrelated call slot 0 was carrying.
 static int
-p25_grant_handle_policy_block(dsd_opts* opts, dsd_state* state, const p25_grant_eval_ctx_t* eval_ctx,
-                              const dsd_tg_policy_decision* decision) {
+p25_grant_handle_policy_block(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state,
+                              const p25_grant_eval_ctx_t* eval_ctx, const dsd_tg_policy_decision* decision) {
     if (!opts || !state || !eval_ctx || !decision || decision->tune_allowed) {
         return 0;
     }
-    p25_sm_diagf((dsd_opts*)opts, state, NULL, "grant_block",
+    p25_sm_diagf((dsd_opts*)opts, state, ctx, "grant_block",
                  "reason=%s tg=%d policy_tg=%u svc=0x%02X data=%d enc=%d indiv=%d block=0x%08X",
                  grant_block_log_tag(eval_ctx->is_indiv, decision->block_reasons), eval_ctx->tg, decision->target_id,
                  eval_ctx->svc, eval_ctx->data_call, eval_ctx->encrypted_call, eval_ctx->is_indiv,
@@ -1291,7 +1291,7 @@ grant_allowed(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_
         return 0;
     }
 
-    if (p25_grant_handle_policy_block(opts, state, &eval_ctx, &decision)) {
+    if (p25_grant_handle_policy_block(ctx, opts, state, &eval_ctx, &decision)) {
         if (out_decision) {
             *out_decision = decision;
         }
@@ -2498,8 +2498,9 @@ p25_sm_apply_group_grant_policy(dsd_opts* opts, dsd_state* state, int channel, i
 
     p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, tg, src, svc_bits);
     dsd_tg_policy_decision decision;
-    if (grant_allowed(p25_sm_get_ctx(), opts, state, &ev, &decision, NULL, 0)) {
-        p25_sm_diagf(opts, state, NULL, "grant_policy_only", "ch=0x%04X tg=%d src=%d svc=0x%02X policy_tg=%u",
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (grant_allowed(ctx, opts, state, &ev, &decision, NULL, 0)) {
+        p25_sm_diagf(opts, state, ctx, "grant_policy_only", "ch=0x%04X tg=%d src=%d svc=0x%02X policy_tg=%u",
                      channel & 0xFFFF, tg, src, svc_bits & 0xFF, decision.target_id);
     }
 }
@@ -4633,6 +4634,10 @@ p25_release_clear_decoder_state(dsd_opts* opts, dsd_state* state) {
         p25_crypto_reset_slot(state, 0);
         p25_crypto_reset_slot(state, 1);
         state->p25_sm_release_count++;
+        // Mirror of ctx->cc_return_count for readers without the ctx (UI, NULL-ctx
+        // diag lines); p25_release_clear_context() bumps the ctx side on the same
+        // two release paths that call this helper.
+        state->p25_sm_cc_return_count++;
     }
     if (opts) {
         opts->trunk_is_tuned = 0;
@@ -4755,6 +4760,10 @@ do_release(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const char* reas
     // nearly the same time (e.g., explicit call termination + watchdog tick).
     int expected = 0;
     if (!atomic_compare_exchange_strong(&g_p25_sm_release_lock, &expected, 1)) {
+        // The trace must show the lost race: the winner logs its own release
+        // under its own reason, and without this line a deadline that fired
+        // here is indistinguishable from one that never fired.
+        p25_sm_diagf(opts, state, ctx, "release_contended", "reason=%s", reason ? reason : "none");
         return 0;
     }
 
