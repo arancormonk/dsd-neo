@@ -46,8 +46,15 @@ regression fails the test instead of merely moving a counter. The whole set runs
 in about 7 seconds because I/Q replay defaults to `--iq-replay-rate fast`.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
-voice), P25 Phase 2, DMR voice, DMR Tier III control, NXDN48, NXDN96, dPMR,
-D-STAR, YSF, EDACS, and M17.
+voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
+voice, DMR Tier III control, NXDN48, NXDN96, dPMR, D-STAR, YSF, EDACS, and M17.
+
+The simulcast case (`DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC`) is derived from the
+clean CQPSK control-channel capture by summing a delayed (62.5 µs), attenuated
+(-4.4 dB), frequency-offset (+1.5 Hz) second ray, so the composite sweeps
+through the beat fading and frequency-selective ISI seen on real LSM simulcast
+systems. Derived fixtures regenerate offline from the committed sources:
+`python3 tools/build_iq_fixtures.py --derived-only` (no network or ffmpeg).
 
 Fixture provenance and regeneration live in `tools/build_iq_fixtures.py`; see
 `THIRD_PARTY.md` for sample attribution. After regenerating a fixture, re-verify

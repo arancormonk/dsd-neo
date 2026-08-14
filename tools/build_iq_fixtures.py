@@ -108,6 +108,22 @@ FIXTURES = [
     ("m17", "m17", "audio", 19, 4.3, 0.15),
 ]
 
+# Derived fixtures synthesized from already-committed fixtures (no network or
+# ffmpeg needed; run with --derived-only to regenerate just these).
+#
+# Simulcast: a second ray of the same transmission arrives with a launch-time
+# offset, an amplitude ratio, and a small carrier offset. The carrier offset
+# sweeps the composite through constructive and destructive combining (the
+# beat fading seen on real LSM simulcast systems), and the delay makes the
+# channel frequency-selective (ISI). 3 samples at 48 kHz = 62.5 us, ~30% of a
+# 4800-baud symbol; +1.5 Hz gives a 0.67 s beat so a 2 s fixture crosses at
+# least two deep fades.
+#
+# name, source fixture, delay_samples, ray2 amplitude, ray2 CFO Hz, ray2 phase
+DERIVED_SIMULCAST = [
+    ("p25p1_cqpsk_cc_simulcast", "p25p1_cqpsk_cc", 3, 0.6, 1.5, 0.7),
+]
+
 METADATA_TEMPLATE = """{{
   "format": "dsd-neo-iq",
   "version": 1,
@@ -259,34 +275,73 @@ def write_fixture(out_dir, name, samples):
     return len(payload)
 
 
+def load_cu8_fixture(path):
+    """Read a committed cu8 fixture back into complex baseband."""
+    raw = np.fromfile(path, dtype=np.uint8).astype(np.float64)
+    centered = (raw - 127.5) / 127.5
+    return centered[0::2] + 1j * centered[1::2]
+
+
+def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2):
+    """Sum the signal with a delayed, attenuated, frequency-offset copy."""
+    if delay_samples > 0:
+        delayed = np.concatenate([np.zeros(delay_samples, dtype=samples.dtype), samples[:-delay_samples]])
+    else:
+        delayed = samples
+    n = np.arange(len(samples))
+    rotation = np.exp(1j * (2.0 * math.pi * cfo_hz * n / SAMPLE_RATE_HZ + phase2))
+    return samples + amp2 * delayed * rotation
+
+
+def build_derived(out_dir):
+    total = 0
+    for name, source, delay_samples, amp2, cfo_hz, phase2 in DERIVED_SIMULCAST:
+        source_path = os.path.join(out_dir, source + ".iq")
+        samples = load_cu8_fixture(source_path)
+        impaired = simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2)
+        written = write_fixture(out_dir, name, impaired)
+        total += written
+        print(f"{name:28s} derived {written // 1024:6d} KiB")
+    return total
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=os.path.join("tests", "fixtures", "iq"))
     parser.add_argument("--cache", default=".iq-fixture-cache")
+    parser.add_argument(
+        "--derived-only",
+        action="store_true",
+        help="only regenerate fixtures derived from committed ones (no network/ffmpeg)",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    os.makedirs(args.cache, exist_ok=True)
-
-    resolved = {}
-    for key, url in SOURCES.items():
-        path = fetch(args.cache, key, url)
-        if key in ZIP_MEMBERS:
-            resolved.update(extract_zip_members(args.cache, key, path))
-        else:
-            resolved[key] = path
 
     total = 0
-    for name, source_key, kind, start_s, duration_s, deviation in FIXTURES:
-        path = resolved[source_key]
-        if kind == "iq":
-            samples = load_iq(path, start_s, duration_s)
-        else:
-            audio = ffmpeg_read(path, 1, start_s, duration_s)
-            samples = remodulate(audio, deviation or DEFAULT_DEVIATION)
-        written = write_fixture(args.out, name, samples)
-        total += written
-        print(f"{name:16s} {kind:5s} {written // 1024:6d} KiB")
+    if not args.derived_only:
+        os.makedirs(args.cache, exist_ok=True)
+
+        resolved = {}
+        for key, url in SOURCES.items():
+            path = fetch(args.cache, key, url)
+            if key in ZIP_MEMBERS:
+                resolved.update(extract_zip_members(args.cache, key, path))
+            else:
+                resolved[key] = path
+
+        for name, source_key, kind, start_s, duration_s, deviation in FIXTURES:
+            path = resolved[source_key]
+            if kind == "iq":
+                samples = load_iq(path, start_s, duration_s)
+            else:
+                audio = ffmpeg_read(path, 1, start_s, duration_s)
+                samples = remodulate(audio, deviation or DEFAULT_DEVIATION)
+            written = write_fixture(args.out, name, samples)
+            total += written
+            print(f"{name:28s} {kind:5s}   {written // 1024:6d} KiB")
+
+    total += build_derived(args.out)
     print(f"total {total // 1024} KiB in {args.out}")
     return 0
 
