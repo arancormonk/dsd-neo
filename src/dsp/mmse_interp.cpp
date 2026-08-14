@@ -68,10 +68,15 @@ interpolate_real_8tap(const float* samples, float mu) {
     const float* upper_taps = kMmseTaps[lower_index + 1];
     const float lower_weight = 1.0f - fraction;
 
+    /* GNU Radio's fir_filter stores taps REVERSED before the dot product, so
+     * the table rows above must be applied back-to-front. Applied straight,
+     * the interpolator runs backward in time (x[4 - mu] instead of x[3 + mu]),
+     * which inverts the fractional feedback of the Gardner timing loop and
+     * makes it limit-cycle across a whole sample. */
     float result = 0.0f;
     for (int i = 0; i < DSD_MMSE_INTERP_TAPS; i++) {
         const float tap = lower_weight * lower_taps[i] + fraction * upper_taps[i];
-        result += tap * samples[i];
+        result += tap * samples[DSD_MMSE_INTERP_TAPS - 1 - i];
     }
     return result;
 }
