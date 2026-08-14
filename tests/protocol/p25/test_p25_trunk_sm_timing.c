@@ -84,6 +84,12 @@ setup_tdma_grant(dsd_state* st, int* out_channel) {
     st->p25_iden_tdma[id_t].populated = 1;
     st->p25_chan_tdma_explicit[id_t] = 2; // TDMA known
 
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    st->p2_wacn = 0xBEE00;
+    st->p2_sysid = 0x1A2;
+    st->p2_cc = 0x293;
+
     // Odd channel low bit -> slot 1
     *out_channel = (id_t << 12) | 0x0001;
 }

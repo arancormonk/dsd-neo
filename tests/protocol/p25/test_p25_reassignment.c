@@ -87,6 +87,11 @@ init_case(dsd_opts* opts, dsd_state* state, p25_sm_ctx_t* ctx) {
     state->p25_iden_tdma[id].trust = 2;
     state->p25_iden_tdma[id].populated = 1;
     state->p25_chan_tdma_explicit[id] = 2;
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    state->p2_wacn = 0xBEE00;
+    state->p2_sysid = 0x1A2;
+    state->p2_cc = 0x293;
     p25_sm_init_ctx(ctx, opts, state);
     g_tune_calls = 0;
     g_return_calls = 0;

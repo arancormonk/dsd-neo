@@ -153,6 +153,11 @@ seed_tdma_iden(dsd_state* state, int iden) {
     state->p25_iden_tdma[iden].trust = 2;
     state->p25_iden_tdma[iden].populated = 1;
     state->p25_chan_tdma_explicit[iden] = 2;
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    state->p2_wacn = 0xBEE00;
+    state->p2_sysid = 0x1A2;
+    state->p2_cc = 0x293;
 }
 
 static int

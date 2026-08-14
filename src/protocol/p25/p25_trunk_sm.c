@@ -2346,6 +2346,36 @@ p25_grant_prepare_route(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     return 1;
 }
 
+// The TDMA burst descrambler is seeded from WACN/SYSID/NAC, so a Phase 2 voice
+// channel tuned before the Network Status Broadcast has been decoded cannot be
+// descrambled -- the tune just burns the grant-voice timeout. 0 and the
+// all-ones broadcast placeholders are the "not yet known" values.
+static int
+p25_grant_tdma_site_known(const dsd_state* state) {
+    return state->p2_wacn != 0 && state->p2_sysid != 0 && state->p2_cc != 0 && state->p2_wacn != 0xFFFFF
+           && state->p2_sysid != 0xFFF && state->p2_cc != 0xFFF;
+}
+
+// Defer TDMA grants until the site identity needed to seed the descrambler is
+// known. Runs before anything is released or retuned, so a deferred grant
+// leaves the receiver parked on the CC; grants repeat there, and NET_STS_BCST
+// cycles every few seconds, so the deferral self-resolves.
+static int
+p25_grant_deferred_for_tdma_site(const p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
+                                 const p25_grant_route_ctx_t* grant) {
+    if (!ctx || !state || !ev || !grant) {
+        return 0;
+    }
+    if (!is_tdma_channel(state, ev->channel) || p25_grant_tdma_site_known(state)) {
+        return 0;
+    }
+    p25_sm_diagf(opts, state, ctx, "grant_tdma_site_defer",
+                 "ch=0x%04X freq=%ld slot=%d target=%d wacn=0x%05llX sysid=0x%03llX nac=0x%03llX", ev->channel & 0xFFFF,
+                 grant->freq, grant->slot, grant->target_id, state->p2_wacn, state->p2_sysid, state->p2_cc);
+    sm_log(opts, state, "grant-tdma-site-defer");
+    return 1;
+}
+
 static int
 p25_grant_blocked_by_pending_cc(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev,
                                 const p25_grant_route_ctx_t* grant) {
@@ -2436,6 +2466,9 @@ handle_grant(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const p25_sm_e
     }
 
     if (!p25_grant_prepare_route(ctx, opts, state, ev, &decision, &eval_ctx, &grant)) {
+        return;
+    }
+    if (p25_grant_deferred_for_tdma_site(ctx, opts, state, ev, &grant)) {
         return;
     }
     if (p25_grant_blocked_by_pending_cc(ctx, opts, state, ev, &grant)) {

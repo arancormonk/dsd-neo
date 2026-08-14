@@ -71,6 +71,11 @@ reset_test_state(void) {
     g_opts.trunk_tune_group_calls = 1;
     g_opts.verbose = 0;
     g_state.p25_cc_freq = 851000000; // Fake CC freq
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    g_state.p2_wacn = 0xBEE00;
+    g_state.p2_sysid = 0x1A2;
+    g_state.p2_cc = 0x293;
 }
 
 static int
