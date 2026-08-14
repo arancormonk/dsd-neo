@@ -62,6 +62,17 @@ struct dsd_iq_capture_writer {
     size_t block_bytes;
     size_t block_count;
 
+    /*
+     * Staging block being packed by the producer. Submissions arrive far smaller
+     * than block_bytes (an RTL dongle hands over ~8 KiB at a time), so bytes are
+     * appended here and the block is published only once it is full. Without
+     * this the queue would hold one submission per block regardless of size,
+     * reducing an N-block pool to N submissions of buffering.
+     */
+    size_t fill_index;
+    size_t fill_len;
+    int fill_valid;
+
     dsd_atomic_u64 accepted_bytes;
     dsd_atomic_u64 written_bytes;
     dsd_atomic_u64 dropped_bytes;
@@ -677,6 +688,17 @@ writer_count_drop(struct dsd_iq_capture_writer* w, uint64_t dropped_bytes, uint6
     writer_maybe_emit_drop_warning(w);
 }
 
+/*
+ * Remaining room under the configured size limit (--iq-capture-max-mb).
+ *
+ * Bytes refused because this budget is exhausted are deliberately NOT counted
+ * as drops and do not raise the drop warning. They are not data loss: the file
+ * is complete and contiguous up to the limit the operator asked for, and the
+ * capture simply stops there. Counting them made a healthy capped capture
+ * report hundreds of megabytes of "drops" for as long as the run continued
+ * afterwards, which reads as a corrupt capture. capture_drops is reserved for
+ * its one real meaning: the writer thread could not keep up.
+ */
 static uint64_t
 writer_remaining_budget(const struct dsd_iq_capture_writer* w) {
     if (!w || w->cfg.max_bytes == 0) {
@@ -736,6 +758,9 @@ writer_queue_init(struct dsd_iq_capture_writer* w) {
     w->q_head = 0;
     w->q_tail = 0;
     w->q_count = 0;
+    w->fill_index = 0;
+    w->fill_len = 0;
+    w->fill_valid = 0;
     w->free_top = w->block_count;
     for (size_t i = 0; i < w->block_count; i++) {
         w->free_stack[i] = w->block_count - 1U - i;
@@ -764,6 +789,8 @@ writer_queue_destroy(struct dsd_iq_capture_writer* w) {
     free(w->block_pool);
     w->block_pool = NULL;
     w->q_head = w->q_tail = w->q_count = 0;
+    w->fill_index = w->fill_len = 0;
+    w->fill_valid = 0;
     w->free_top = 0;
 }
 
@@ -1010,38 +1037,26 @@ validate_capture_event_for_replay(const struct dsd_iq_capture_writer* writer, co
     return validate_retune_or_reset_event_for_replay(writer, event);
 }
 
-static int
-writer_enqueue_chunk(struct dsd_iq_capture_writer* w, const uint8_t* data, size_t len) {
-    if (!w || !data || len == 0) {
-        return -1;
-    }
-
-    dsd_mutex_lock(&w->q_m);
-    if (w->writer_failed || !w->run) {
-        dsd_mutex_unlock(&w->q_m);
-        return -1;
-    }
-    if (w->free_top == 0) {
-        dsd_mutex_unlock(&w->q_m);
-        return 0;
-    }
-
-    size_t block_index = w->free_stack[--w->free_top];
-    uint8_t* dst = w->block_pool + (block_index * w->block_bytes);
-    DSD_MEMCPY(dst, data, len);
-
-    w->queue_entries[w->q_tail].block_index = block_index;
-    w->queue_entries[w->q_tail].len = len;
+/* Hand the staging block to the writer thread. Caller holds w->q_m; the block
+ * must be valid and non-empty, and a free queue slot is guaranteed because a
+ * block can only be staged after being popped off the free stack. */
+static void
+writer_publish_fill_locked(struct dsd_iq_capture_writer* w) {
+    w->queue_entries[w->q_tail].block_index = w->fill_index;
+    w->queue_entries[w->q_tail].len = w->fill_len;
     w->q_tail = (w->q_tail + 1U) % w->block_count;
     w->q_count++;
-
+    w->fill_valid = 0;
+    w->fill_len = 0;
     dsd_cond_signal(&w->q_ready);
-    dsd_mutex_unlock(&w->q_m);
-
-    (void)dsd_atomic_u64_fetch_add_relaxed(&w->accepted_bytes, (uint64_t)len);
-    return 1;
 }
 
+/*
+ * Append a submission to the queue, packing it into the staging block so that
+ * one pool block carries many submissions. Everything up to the point where the
+ * pool is exhausted is accepted; the remainder is dropped as a single tail,
+ * because no block can be returned to the free stack while q_m is held.
+ */
 static int
 writer_submit_bytes(struct dsd_iq_capture_writer* w, const uint8_t* data, size_t bytes) {
     if (!w || (!data && bytes > 0)) {
@@ -1051,37 +1066,51 @@ writer_submit_bytes(struct dsd_iq_capture_writer* w, const uint8_t* data, size_t
         return DSD_IQ_OK;
     }
 
+    uint64_t accepted = 0;
     uint64_t dropped_bytes = 0;
     uint64_t dropped_blocks = 0;
+    int fatal = 0;
 
-    while (bytes > 0) {
-        size_t chunk = bytes;
-        if (chunk > w->block_bytes) {
-            chunk = w->block_bytes;
-        }
+    dsd_mutex_lock(&w->q_m);
+    if (w->writer_failed || !w->run) {
+        fatal = 1;
+    } else {
+        while (bytes > 0) {
+            if (!w->fill_valid) {
+                if (w->free_top == 0) {
+                    /* Writer thread is behind; the rest of this submission is lost. */
+                    dropped_bytes = (uint64_t)bytes;
+                    dropped_blocks = 1;
+                    break;
+                }
+                w->fill_index = w->free_stack[--w->free_top];
+                w->fill_len = 0;
+                w->fill_valid = 1;
+            }
 
-        int rc = writer_enqueue_chunk(w, data, chunk);
-        if (rc == 1) {
-            data += chunk;
-            bytes -= chunk;
-            continue;
-        }
-        if (rc == 0) {
-            dropped_bytes += (uint64_t)chunk;
-            dropped_blocks += 1;
-            data += chunk;
-            bytes -= chunk;
-            continue;
-        }
+            size_t room = w->block_bytes - w->fill_len;
+            size_t take = (bytes < room) ? bytes : room;
+            DSD_MEMCPY(w->block_pool + (w->fill_index * w->block_bytes) + w->fill_len, data, take);
+            w->fill_len += take;
+            data += take;
+            bytes -= take;
+            accepted += (uint64_t)take;
 
-        if (dropped_bytes > 0) {
-            writer_count_drop(w, dropped_bytes, dropped_blocks);
+            if (w->fill_len == w->block_bytes) {
+                writer_publish_fill_locked(w);
+            }
         }
-        return DSD_IQ_ERR_QUEUE_INIT;
     }
+    dsd_mutex_unlock(&w->q_m);
 
+    if (accepted > 0) {
+        (void)dsd_atomic_u64_fetch_add_relaxed(&w->accepted_bytes, accepted);
+    }
     if (dropped_bytes > 0) {
         writer_count_drop(w, dropped_bytes, dropped_blocks);
+    }
+    if (fatal) {
+        return DSD_IQ_ERR_QUEUE_INIT;
     }
 
     return DSD_IQ_OK;
@@ -1105,9 +1134,8 @@ writer_submit_aligned(struct dsd_iq_capture_writer* w, const uint8_t* data, size
             return rc;
         }
     }
-    if (writable < bytes) {
-        writer_count_drop(w, (uint64_t)(bytes - writable), 1);
-    }
+    /* writable < bytes here means the size limit truncated the tail; see
+     * writer_remaining_budget() for why that is not a drop. */
     return DSD_IQ_OK;
 }
 
@@ -1125,9 +1153,8 @@ writer_submit_cu8(struct dsd_iq_capture_writer* w, const uint8_t* in, size_t byt
                 if (rc != DSD_IQ_OK) {
                     return rc;
                 }
-            } else {
-                writer_count_drop(w, 2, 1);
             }
+            /* else: size limit reached, not a drop (see writer_remaining_budget) */
             w->cu8_carry_valid = 0;
             consumed = 1;
         } else {
@@ -1158,9 +1185,7 @@ writer_submit_cu8(struct dsd_iq_capture_writer* w, const uint8_t* in, size_t byt
                 return rc;
             }
         }
-        if (aligned < aligned_available) {
-            writer_count_drop(w, (uint64_t)(aligned_available - aligned), 1);
-        }
+        /* aligned < aligned_available means the size limit truncated the tail. */
         consumed += aligned;
     }
 
@@ -1168,9 +1193,8 @@ writer_submit_cu8(struct dsd_iq_capture_writer* w, const uint8_t* in, size_t byt
         if (writer_has_budget_for(w, 2)) {
             w->cu8_carry = in[consumed];
             w->cu8_carry_valid = 1;
-        } else {
-            writer_count_drop(w, 1, 1);
         }
+        /* else: size limit reached, so the odd byte is discarded, not dropped. */
     }
 
     return DSD_IQ_OK;
@@ -1402,11 +1426,32 @@ writer_stop_thread(struct dsd_iq_capture_writer* writer) {
     if (!writer || !writer->queue_inited) {
         return;
     }
+    uint64_t stranded = 0;
+
     dsd_mutex_lock(&writer->q_m);
+    /* Publish the partially-filled staging block before the writer thread is
+     * told to finish, otherwise the tail of the capture is silently discarded.
+     * The thread only exits once the queue has drained, so the entry is written.
+     * When the writer has already failed nothing more can reach the file, so the
+     * staged bytes are counted as dropped instead. */
+    if (writer->fill_valid && writer->fill_len > 0) {
+        if (writer->writer_failed) {
+            stranded = (uint64_t)writer->fill_len;
+            writer->free_stack[writer->free_top++] = writer->fill_index;
+            writer->fill_valid = 0;
+            writer->fill_len = 0;
+        } else {
+            writer_publish_fill_locked(writer);
+        }
+    }
     writer->run = 0;
     dsd_cond_broadcast(&writer->q_ready);
     dsd_cond_broadcast(&writer->q_space);
     dsd_mutex_unlock(&writer->q_m);
+
+    if (stranded > 0) {
+        writer_count_drop(writer, stranded, 1);
+    }
 
     if (writer->writer_thread_started) {
         dsd_thread_join(writer->writer_thread);
