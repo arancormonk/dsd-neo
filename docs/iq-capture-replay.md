@@ -46,6 +46,10 @@ The writer records:
 - replay rate-chain fields (`base_decimation`, `post_downsample`, `demod_rate_hz`).
 - source identity (`source_backend`, `source_args`).
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
+- `size_limit_reached`: `true` when the capture ended because `--iq-capture-max-mb` was reached rather than being cut
+  short. Reaching the limit is not data loss and is not counted in `capture_drops`, so this is what distinguishes a
+  completed capped capture from one that is still running. Absent from metadata written by older builds, where it reads
+  back as `false`.
 - retune fields (`contains_retunes`, `capture_retune_count`).
 - for v2 captures, an `events` array describing scheduled replay events.
 
@@ -65,11 +69,18 @@ Event objects contain:
 The integrity summary fields remain present. `contains_retunes` and `capture_retune_count` summarize retune activity, while
 the v2 `events` array provides the ordering needed for replay.
 
+`data_bytes` is reconciled against the finished file at close, so it reports what is actually on disk rather than what
+the writer handed to `fwrite`. Anything the file system refused — a full disk, a size-limited file system — shows up in
+`capture_drops` alongside queue overruns, and `notes` says the capture ended early. Because event `byte_offset` is
+stamped from bytes accepted rather than bytes written, offsets past the end of a truncated capture are clamped to
+`data_bytes` so the surviving part of the capture stays replayable.
+
 `--iq-info` reports:
 
 - metadata bytes vs actual file bytes.
 - aligned effective replay bytes and estimated duration.
 - event timeline count.
+- whether the size limit was reached.
 - warnings for interrupted captures (`data_bytes == 0`), metadata/data mismatch, misalignment, and retune-containing
   captures that do not include a replay event timeline.
 

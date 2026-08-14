@@ -5480,6 +5480,16 @@ capture_drop_warning_log(void* user, uint64_t dropped_bytes, uint64_t dropped_bl
              (unsigned long long)dropped_bytes, (unsigned long long)dropped_blocks);
 }
 
+/* Fires once. Reaching the limit is not a fault, but the file stops growing and
+ * capture_drops stays 0, so without this the capture looks like it is still
+ * running. */
+static void
+capture_size_limit_log(void* user, uint64_t max_bytes) {
+    UNUSED(user);
+    LOG_INFO("IQ capture size limit reached (%llu bytes); no further samples will be captured.\n",
+             (unsigned long long)max_bytes);
+}
+
 static int
 capture_stage_for_format(int format, char* out_stage, size_t out_stage_size) {
     if (!out_stage || out_stage_size == 0) {
@@ -5609,6 +5619,7 @@ stream_open_fill_capture_writer_config(const dsd_opts* opts, RadioSourceKind sou
     capture_backend_args(opts, source_kind, cfg->source_args, sizeof(cfg->source_args));
     cfg->max_bytes = opts->iq_capture_max_bytes;
     cfg->drop_warning_cb = capture_drop_warning_log;
+    cfg->size_limit_cb = capture_size_limit_log;
     return 0;
 }
 

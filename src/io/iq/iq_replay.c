@@ -1515,6 +1515,11 @@ metadata_parse_field_group_c2(metadata_parse_state* st, const char* key, const j
             st->seen.input_ring_drops = 1;
         }
         *handled = 1;
+    } else if (strcmp(key, "size_limit_reached") == 0) {
+        /* Optional: metadata written before this field existed is still valid,
+         * so it is deliberately absent from the required-field list. */
+        rc = token_to_bool(val_tok, &st->cfg.size_limit_reached, err_buf, err_buf_size, "size_limit_reached");
+        *handled = 1;
     }
     return rc;
 }
@@ -2095,6 +2100,7 @@ dsd_iq_info_print_summary(const dsd_iq_replay_config* cfg, const char* display_p
     DSD_FPRINTF(out, "  Capture drops:       %" PRIu64 " (%" PRIu64 " blocks)\n", cfg->capture_drops,
                 cfg->capture_drop_blocks);
     DSD_FPRINTF(out, "  Input ring drops:    %" PRIu64 "\n", cfg->input_ring_drops);
+    DSD_FPRINTF(out, "  Size limit reached:  %s\n", cfg->size_limit_reached ? "yes" : "no");
     DSD_FPRINTF(out, "  Contains retunes:    %s (%u retune events)\n", cfg->contains_retunes ? "yes" : "no",
                 cfg->capture_retune_count);
     DSD_FPRINTF(out, "  Event timeline:      %u event(s)\n", cfg->event_count);

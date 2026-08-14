@@ -42,8 +42,22 @@ typedef struct {
     uint64_t max_bytes;
     size_t queue_block_bytes;
     size_t queue_block_count;
+    /**
+     * Age at which a partially filled queue block is written out even though it
+     * is not full, in milliseconds. Bounds how long submitted bytes can sit in
+     * memory when the stream goes quiet (muted channel, reconfigure hold), which
+     * is the window lost if the process is killed. 0 selects the default.
+     */
+    uint32_t queue_flush_interval_ms;
     void (*drop_warning_cb)(void* user, uint64_t dropped_bytes, uint64_t dropped_blocks);
     void* drop_warning_user;
+    /**
+     * Called once, the first time @ref max_bytes stops a submission. Reaching the
+     * limit is not data loss and deliberately does not raise drop_warning_cb, but
+     * it does end the capture, so it needs its own signal.
+     */
+    void (*size_limit_cb)(void* user, uint64_t max_bytes);
+    void* size_limit_user;
 } dsd_iq_capture_config;
 
 typedef struct {
