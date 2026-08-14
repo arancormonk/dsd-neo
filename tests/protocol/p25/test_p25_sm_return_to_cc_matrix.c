@@ -291,6 +291,10 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     fixture->state->p25_last_cc_msg_time_m = now_m;
     fixture->state->nac = 0x293;
     fixture->state->p2_cc = 0x293;
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    fixture->state->p2_wacn = 0xBEE00;
+    fixture->state->p2_sysid = 0x1A2;
     fixture->state->synctype = mode->synctype;
     fixture->state->lastsynctype = mode->synctype;
     fixture->state->p25_cc_is_tdma = mode->cc_is_tdma;

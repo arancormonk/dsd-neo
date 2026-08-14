@@ -259,6 +259,11 @@ setup_tdma_iden(dsd_state* s, int id) {
     s->p25_iden_tdma[id].trust = 2;
     s->p25_iden_tdma[id].populated = 1;
     s->p25_chan_tdma_explicit[id] = 2;
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    s->p2_wacn = 0xBEE00;
+    s->p2_sysid = 0x1A2;
+    s->p2_cc = 0x293;
 }
 
 static void
@@ -2130,6 +2135,9 @@ main(void) {
     s19.p25_iden_fdma[id9].trust = 2;
     s19.p25_iden_fdma[id9].populated = 1;
     s19.p25_chan_tdma_explicit[id9] = 2;
+    s19.p2_wacn = 0xBEE00; // TDMA grants need the decoded descrambler seed
+    s19.p2_sysid = 0x1A2;
+    s19.p2_cc = 0x293;
     s19.p25_vc_cqpsk_pref = -1;
     (void)dsd_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();
@@ -2178,6 +2186,9 @@ main(void) {
     s20.p25_iden_fdma[id9].trust = 2;
     s20.p25_iden_fdma[id9].populated = 1;
     s20.p25_chan_tdma_explicit[id9] = 2;
+    s20.p2_wacn = 0xBEE00; // TDMA grants need the decoded descrambler seed
+    s20.p2_sysid = 0x1A2;
+    s20.p2_cc = 0x293;
     s20.p25_vc_cqpsk_pref = -1;
     (void)dsd_unsetenv("DSD_NEO_CQPSK");
     dsd_neo_config_init();

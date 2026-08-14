@@ -183,6 +183,11 @@ main(void) {
     st.p25_iden_tdma[id].trust = 2;
     st.p25_iden_tdma[id].populated = 1;
     st.p25_chan_tdma_explicit[id] = 2; // TDMA known
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    st.p2_wacn = 0xBEE00;
+    st.p2_sysid = 0x1A2;
+    st.p2_cc = 0x293;
     st.event_history_s = event_history;
 
     p25_sm_init_ctx(p25_sm_get_ctx(), &opts, &st);

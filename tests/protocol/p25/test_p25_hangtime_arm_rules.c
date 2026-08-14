@@ -107,6 +107,11 @@ start_tuned_tdma(void) {
     g_state.trunk_chan_map[TDMA_CH_SLOT0] = TDMA_VC_FREQ;
     g_state.trunk_chan_map[TDMA_CH_SLOT1] = TDMA_VC_FREQ;
     g_state.p25_chan_tdma_explicit[1] = 2;
+    // The SM defers TDMA grants until the descrambler seed (WACN/SYSID/NAC)
+    // has been decoded from the control channel.
+    g_state.p2_wacn = 0xBEE00;
+    g_state.p2_sysid = 0x1A2;
+    g_state.p2_cc = 0x293;
     p25_sm_init_ctx(ctx, &g_opts, &g_state);
     g_opts.trunk_is_tuned = 1;
     p25_sm_event_t grant = p25_sm_ev_group_grant(TDMA_CH_SLOT0, TDMA_VC_FREQ, CLEAR_TG, CLEAR_SRC, 0);

@@ -6536,6 +6536,24 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_p25_sm_core PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_SM_CORE COMMAND dsd-neo_test_p25_sm_core)
 
+# P25 SM Phase 2 grant gating on decoded WACN/SYSID/NAC
+add_executable(
+    dsd-neo_test_p25_p2_grant_site_gate
+    protocol/p25/test_p25_p2_grant_site_gate.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_grant_site_gate
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_grant_site_gate
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_GRANT_SITE_GATE
+    COMMAND dsd-neo_test_p25_p2_grant_site_gate
+)
+
 # P25 SM diagnostic log records
 add_executable(dsd-neo_test_p25_sm_diag_log protocol/p25/test_p25_sm_diag_log.c)
 target_include_directories(
