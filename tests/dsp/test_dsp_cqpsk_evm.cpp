@@ -8,17 +8,21 @@
  *
  * Synthesizes a raised-cosine-shaped pi/4-DQPSK stream (the TIA-102 CAI
  * transmit Nyquist filter model: flat to 0.4*Rs, cosine rolloff to 0.6*Rs) at
- * 48 kHz / 10 samples per symbol, runs it through the full CQPSK chain
- * (channel LPF -> AGC -> FLL -> Gardner -> diff_phasor -> Costas -> phase
- * slicer) via full_demod(), and measures symbol EVM against the ideal
- * {-3,-1,+1,+3} grid.
+ * 48 kHz, runs it through the full CQPSK chain (channel LPF -> AGC -> FLL ->
+ * Gardner -> diff_phasor -> Costas -> phase slicer) via full_demod(), and
+ * measures symbol EVM against the ideal {-3,-1,+1,+3} grid.
+ *
+ * Both CQPSK rate profiles are pinned: P25 Phase 1 LSM (4800 baud, 10
+ * samples/symbol) and P25 Phase 2 H-DQPSK (6000 baud, 8 samples/symbol) share
+ * this chain and differ only in ted_sps.
  *
  * The clean-channel bound is the load-bearing assertion: it pins the
  * implementation floor of the whole timing/carrier chain. A time-reversed
  * MMSE interpolator (the bug this test was written against) inverts the
  * Gardner loop's fractional feedback, which then limit-cycles across a whole
- * sample and floors EVM near 8% no matter how clean the input is. The AWGN
- * bound checks the chain degrades gracefully instead of unlocking.
+ * sample and floors EVM near 8% at sps=10 and 11% at sps=8 no matter how
+ * clean the input is. The AWGN bound checks the chain degrades gracefully
+ * instead of unlocking.
  */
 
 #include <cmath>
@@ -34,17 +38,17 @@
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr int kSps = 10;
+constexpr int kRateHz = 48000;
 constexpr double kAlpha = 0.2;
 constexpr int kTxSpanSymbols = 16; /* TX pulse span (symbols) */
 constexpr int kNumSymbols = 12000;
 constexpr int kWarmupSymbols = 2000;
 
 /* Full raised-cosine impulse response (TIA-102 TX Nyquist filter model),
-   t in samples, symbol period T = kSps. */
+   t in samples, symbol period T = sps samples. */
 double
-rc_impulse(double t) {
-    const double T = (double)kSps;
+rc_impulse(double t, int sps) {
+    const double T = (double)sps;
     const double a = kAlpha;
     const double x = t / T;
 
@@ -95,14 +99,14 @@ struct Waveform {
     int pairs; /* complex sample count */
 };
 
-/* Build a raised-cosine-shaped pi/4-DQPSK baseband waveform at kSps
+/* Build a raised-cosine-shaped pi/4-DQPSK baseband waveform at sps
    samples/symbol, optionally with complex AWGN of the given sigma. */
 Waveform
-synthesize_lsm(double noise_sigma) {
+synthesize_lsm(int sps, double noise_sigma) {
     static const double kPhaseStep[4] = {kPi / 4.0, 3.0 * kPi / 4.0, -kPi / 4.0, -3.0 * kPi / 4.0};
 
-    const int half_span = (kTxSpanSymbols / 2) * kSps;
-    const int pairs = kNumSymbols * kSps;
+    const int half_span = (kTxSpanSymbols / 2) * sps;
+    const int pairs = kNumSymbols * sps;
 
     double* phase = (double*)malloc((size_t)kNumSymbols * sizeof(double));
     float* iq = (float*)calloc((size_t)pairs * 2, sizeof(float));
@@ -128,7 +132,7 @@ synthesize_lsm(double noise_sigma) {
     for (int k = 0; k < kNumSymbols; k++) {
         const double si = std::cos(phase[k]) * amp;
         const double sq = std::sin(phase[k]) * amp;
-        const int center = k * kSps;
+        const int center = k * sps;
         int n0 = center - half_span;
         int n1 = center + half_span;
         if (n0 < 0) {
@@ -138,7 +142,7 @@ synthesize_lsm(double noise_sigma) {
             n1 = pairs - 1;
         }
         for (int n = n0; n <= n1; n++) {
-            const double p = rc_impulse((double)(n - center));
+            const double p = rc_impulse((double)(n - center), sps);
             iq[(size_t)n * 2 + 0] += (float)(si * p);
             iq[(size_t)n * 2 + 1] += (float)(sq * p);
         }
@@ -160,7 +164,7 @@ synthesize_lsm(double noise_sigma) {
 }
 
 demod_state*
-make_state(void) {
+make_state(int sps) {
     demod_state* s = (demod_state*)malloc(sizeof(demod_state));
     if (!s) {
         return nullptr;
@@ -168,14 +172,14 @@ make_state(void) {
     DSD_MEMSET(s, 0, sizeof(*s));
     ted_init_state(&s->ted_state);
 
-    s->rate_in = 48000;
-    s->rate_out = 48000;
+    s->rate_in = kRateHz;
+    s->rate_out = kRateHz;
     s->downsample_passes = 0;
     s->cqpsk_enable = 1;
-    s->ted_sps = kSps;
+    s->ted_sps = sps;
     s->sps_is_integer = 1;
     s->output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
-    s->symbol_rate_hz = 4800;
+    s->symbol_rate_hz = kRateHz / sps;
     s->symbol_levels = 4;
     s->channel_lpf_enable = 1;
     s->channel_lpf_profile = DSD_CH_LPF_PROFILE_P25_CQPSK;
@@ -189,8 +193,8 @@ make_state(void) {
 
 /* Run the waveform through full_demod, returning EVM% over post-warmup symbols. */
 int
-run_chain_evm(const Waveform& wf, double* evm_out, int* symbols_out) {
-    demod_state* s = make_state();
+run_chain_evm(const Waveform& wf, int sps, double* evm_out, int* symbols_out) {
+    demod_state* s = make_state(sps);
     if (!s) {
         return 1;
     }
@@ -240,14 +244,59 @@ run_chain_evm(const Waveform& wf, double* evm_out, int* symbols_out) {
 }
 
 int
-run_leg(double noise_sigma, double* evm, int* syms) {
-    Waveform wf = synthesize_lsm(noise_sigma);
+run_leg(int sps, double noise_sigma, double* evm, int* syms) {
+    Waveform wf = synthesize_lsm(sps, noise_sigma);
     if (!wf.iq) {
         DSD_FPRINTF(stderr, "waveform synthesis failed\n");
         return 1;
     }
-    int rc = run_chain_evm(wf, evm, syms);
+    int rc = run_chain_evm(wf, sps, evm, syms);
     free(wf.iq);
+    return rc;
+}
+
+/* Clean-floor and AWGN sanity assertions for one CQPSK rate profile. */
+int
+check_profile(const char* label, int sps) {
+    int rc = 0;
+
+    /* Clean channel: implementation floor of the timing/carrier chain.
+       Measured ~1.3% (sps=10) and ~1.5% (sps=8); a time-reversed interpolator
+       limit-cycles to ~8-11%. */
+    double clean_evm = 0.0;
+    int clean_syms = 0;
+    if (run_leg(sps, 0.0, &clean_evm, &clean_syms) != 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "cqpsk evm %s: clean=%.2f%% symbols=%d\n", label, clean_evm, clean_syms);
+
+    const int expected = kNumSymbols;
+    if (clean_syms < (expected * 98) / 100 || clean_syms > (expected * 102) / 100) {
+        DSD_FPRINTF(stderr, "cqpsk evm %s: symbol count %d outside 2%% of %d\n", label, clean_syms, expected);
+        rc = 1;
+    }
+    if (!(clean_evm < 2.5)) {
+        DSD_FPRINTF(stderr, "cqpsk evm %s: clean-channel EVM %.2f%% exceeds 2.5%% floor bound\n", label, clean_evm);
+        rc = 1;
+    }
+
+    /* AWGN channel: the chain must degrade gracefully, not unlock. */
+    double noisy_evm = 0.0;
+    int noisy_syms = 0;
+    if (run_leg(sps, 0.05, &noisy_evm, &noisy_syms) != 0) {
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "cqpsk evm %s: noisy=%.2f%% symbols=%d\n", label, noisy_evm, noisy_syms);
+
+    if (noisy_syms < (expected * 98) / 100 || noisy_syms > (expected * 102) / 100) {
+        DSD_FPRINTF(stderr, "cqpsk evm %s: noisy symbol count %d outside 2%% of %d\n", label, noisy_syms, expected);
+        rc = 1;
+    }
+    if (!(noisy_evm > 3.0 && noisy_evm < 10.0)) {
+        DSD_FPRINTF(stderr, "cqpsk evm %s: noisy EVM %.2f%% outside sane 3..10%% window\n", label, noisy_evm);
+        rc = 1;
+    }
+
     return rc;
 }
 
@@ -256,42 +305,7 @@ run_leg(double noise_sigma, double* evm, int* syms) {
 int
 main(void) {
     int rc = 0;
-
-    /* Clean channel: implementation floor of the timing/carrier chain.
-       Measured ~1.3%; a time-reversed interpolator limit-cycles to ~8%. */
-    double clean_evm = 0.0;
-    int clean_syms = 0;
-    if (run_leg(0.0, &clean_evm, &clean_syms) != 0) {
-        return 1;
-    }
-    DSD_FPRINTF(stderr, "cqpsk evm: clean=%.2f%% symbols=%d\n", clean_evm, clean_syms);
-
-    const int expected = kNumSymbols;
-    if (clean_syms < (expected * 98) / 100 || clean_syms > (expected * 102) / 100) {
-        DSD_FPRINTF(stderr, "cqpsk evm: symbol count %d outside 2%% of %d\n", clean_syms, expected);
-        rc = 1;
-    }
-    if (!(clean_evm < 2.5)) {
-        DSD_FPRINTF(stderr, "cqpsk evm: clean-channel EVM %.2f%% exceeds 2.5%% floor bound\n", clean_evm);
-        rc = 1;
-    }
-
-    /* AWGN channel: the chain must degrade gracefully, not unlock. */
-    double noisy_evm = 0.0;
-    int noisy_syms = 0;
-    if (run_leg(0.05, &noisy_evm, &noisy_syms) != 0) {
-        return 1;
-    }
-    DSD_FPRINTF(stderr, "cqpsk evm: noisy=%.2f%% symbols=%d\n", noisy_evm, noisy_syms);
-
-    if (noisy_syms < (expected * 98) / 100 || noisy_syms > (expected * 102) / 100) {
-        DSD_FPRINTF(stderr, "cqpsk evm: noisy symbol count %d outside 2%% of %d\n", noisy_syms, expected);
-        rc = 1;
-    }
-    if (!(noisy_evm > 3.0 && noisy_evm < 10.0)) {
-        DSD_FPRINTF(stderr, "cqpsk evm: noisy EVM %.2f%% outside sane 3..10%% window\n", noisy_evm);
-        rc = 1;
-    }
-
+    rc |= check_profile("p25p1 4800/sps10", 10);
+    rc |= check_profile("p25p2 6000/sps8", 8);
     return rc;
 }
