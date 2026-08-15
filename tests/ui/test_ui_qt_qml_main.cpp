@@ -16,7 +16,18 @@
  */
 
 #include <QtQuickTest>
+#include <dsd-neo/core/state_fwd.h>
 
 #include "qml_test_context.h"
+
+/* Pulled in by the DMR library that backs the imports library's CSV validation.
+ * Nothing here decodes anything, so the vocoder descrambler is a stub -- the
+ * same arrangement UI_QT_IMPORTED_FILES uses. */
+void
+LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
+    (void)BufferIn;
+    (void)BufferOut;
+    (void)state;
+}
 
 QUICK_TEST_MAIN_WITH_SETUP(dsd_neo_qml, Setup)

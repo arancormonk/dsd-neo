@@ -34,7 +34,9 @@
 #define DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_
 
 #include <QAbstractListModel>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QFontDatabase>
 #include <QHash>
@@ -43,20 +45,58 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QRegularExpression>
+#include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
 #include <QtQuickTest>
 
+#include "app_prefs.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
 #include "decode_mode_flag.h"
+#include "decoder_host.h"
+#include "imported_files_model.h"
 #include "qml_spectrum_stub.h"
+#include "saved_systems_model.h"
+#include "session_args.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
+
+/**
+ * @brief Minimal DecoderHost so ImportedFilesModel has one to copy through.
+ *
+ * Only importDocument() is exercised here, and that is DecoderHost's own
+ * non-virtual desktop implementation. The lifecycle members exist because the
+ * base class is abstract; the `decoderHost` the QML reads is still the plain map
+ * below, which is what keeps the screens' session bindings drivable from a case.
+ */
+class ImportOnlyHost : public dsd_qt::DecoderHost {
+    Q_OBJECT
+
+  public:
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return QString();
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        Q_UNUSED(argv)
+        return false;
+    }
+
+    void
+    stop() override {}
+};
 
 /**
  * @brief Stand-in for CommandBridge that records instead of submitting.
@@ -573,6 +613,15 @@ class Setup : public QObject {
      */
     void
     applicationAvailable() {
+        /* The library and saved-systems models persist to the app data tree, so
+         * point that at disposable test storage before either is constructed --
+         * a run must not read or write a real profile (same arrangement as
+         * UI_QT_PERSISTENCE and UI_QT_IMPORTED_FILES). */
+        QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
+        QCoreApplication::setApplicationName(QStringLiteral("dsd-neo-qml-%1").arg(QCoreApplication::applicationPid()));
+        QStandardPaths::setTestModeEnabled(true);
+        QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
         for (const QString& file :
              {QStringLiteral("IBMPlexSans-Regular.ttf"), QStringLiteral("IBMPlexSans-SemiBold.ttf"),
               QStringLiteral("IBMPlexSans-Bold.ttf"), QStringLiteral("IBMPlexMono-Regular.ttf"),
@@ -610,6 +659,23 @@ class Setup : public QObject {
         prefs[QStringLiteral("appearance")] = 2;
         prefs[QStringLiteral("onboardingDone")] = true;
         prefs[QStringLiteral("backgroundListening")] = false;
+        prefs[QStringLiteral("keepScreenAwake")] = false;
+        prefs[QStringLiteral("skipEncrypted")] = false;
+        /* The radio defaults the settings screen and the explore setup edit.
+         * AppPrefs' own defaults, so a case that reads one sees what a fresh
+         * install would. */
+        prefs[QStringLiteral("autoPpm")] = false;
+        prefs[QStringLiteral("gainDb")] = 30;
+        prefs[QStringLiteral("ppm")] = 0;
+        prefs[QStringLiteral("bandwidthKhz")] = 48;
+        prefs[QStringLiteral("biasTee")] = false;
+        prefs[QStringLiteral("extraArgs")] = QString();
+        /* Empty on purpose: it is what makes the explore setup's first tap ask
+         * for a source rather than start something that cannot tune. */
+        prefs[QStringLiteral("exploreSourceType")] = QString();
+        prefs[QStringLiteral("exploreHost")] = QString();
+        prefs[QStringLiteral("explorePort")] = 1234;
+        prefs[QStringLiteral("exploreFreqMhz")] = QString();
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -674,6 +740,15 @@ class Setup : public QObject {
         /* The spectrum view gates production on a live session, so the fixture
          * has to claim one or its frames would never start. */
         host[QStringLiteral("sessionActive")] = true;
+        /* Why the last session stopped, empty while nothing has failed. */
+        host[QStringLiteral("failureText")] = QString();
+        /* The Android-only capabilities the settings screen hides rows on: a
+         * desktop host brokers no USB device and cannot hold the screen awake,
+         * which is the arrangement this offscreen run matches. */
+        host[QStringLiteral("keepScreenAwakeSupported")] = false;
+        host[QStringLiteral("localDeviceBrokered")] = false;
+        host[QStringLiteral("localDeviceReady")] = false;
+        host[QStringLiteral("localDeviceStatus")] = QString();
         m_host = host;
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
 
@@ -686,6 +761,25 @@ class Setup : public QObject {
         m_commands = new CommandRecorder();
         m_commands->setParent(engine);
         ctx->setContextProperty(QStringLiteral("commands"), m_commands);
+
+        /* Production models, not stand-ins. Two of these back a ListView whose
+         * delegate declares `required property` per role, so a stand-in would
+         * have to mirror all nineteen roles exactly or the delegate would fail
+         * to instantiate -- and a mirror that drifted would fail as the real
+         * thing passing. They persist under the disposable app data tree set up
+         * in applicationAvailable(), and start empty there. Without them the
+         * home screen, the imports library, the wizard's pickers and the explore
+         * setup all raised ReferenceError and rendered nothing. */
+        m_import_host = new ImportOnlyHost();
+        m_import_host->setParent(engine);
+        auto* imported_files = new dsd_qt::ImportedFilesModel(m_import_host, engine);
+        auto* saved_systems = new dsd_qt::SavedSystemsModel(engine);
+        auto* app_prefs = new dsd_qt::AppPrefs(engine);
+        auto* session_args = new dsd_qt::SessionArgsBuilder(app_prefs, engine);
+        ctx->setContextProperty(QStringLiteral("importedFiles"), imported_files);
+        ctx->setContextProperty(QStringLiteral("savedSystems"), saved_systems);
+        ctx->setContextProperty(QStringLiteral("sessionArgs"), session_args);
+        ctx->setContextProperty(QStringLiteral("appVersionText"), QStringLiteral("0.0.0-test"));
     }
 
   private:
@@ -695,6 +789,7 @@ class Setup : public QObject {
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;
+    ImportOnlyHost* m_import_host = nullptr;
 };
 
 #endif /* DSD_NEO_TESTS_UI_QML_TEST_CONTEXT_H_ */
