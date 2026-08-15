@@ -87,13 +87,15 @@ option(
     "Fail configure when SoapySDR is enabled but not found"
     OFF
 )
-# Codec2 and libcurl are auto-detected, and a build that silently loses either
-# still links: M17 just stops emitting voice, and rdio uploads disappear. Cross
-# builds cannot be smoke-tested on the build host, so let them demand the
-# dependency instead of degrading quietly. Use
-# CMAKE_DISABLE_FIND_PACKAGE_CODEC2/CURL to turn detection off outright.
+# Codec2, libcurl and expat are auto-detected, and a build that silently loses
+# one still links: M17 just stops emitting voice, rdio uploads disappear, and
+# RadioReference import goes unavailable. Cross builds cannot be smoke-tested on
+# the build host, so let them demand the dependency instead of degrading
+# quietly. Use CMAKE_DISABLE_FIND_PACKAGE_CODEC2/CURL/EXPAT to turn detection
+# off outright.
 option(DSD_REQUIRE_CODEC2 "Fail configure when Codec2 is not found" OFF)
 option(DSD_REQUIRE_CURL "Fail configure when libcurl is not found" OFF)
+option(DSD_REQUIRE_EXPAT "Fail configure when expat is not found" OFF)
 option(
     DSD_FORCE_RADIO_PIPELINE
     "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"
@@ -816,6 +818,7 @@ endif()
 
 find_package(CODEC2)
 find_package(CURL 7.56.0)
+find_package(EXPAT)
 
 # Catch the contradictory pair explicitly: CMAKE_DISABLE_FIND_PACKAGE_* is the
 # off switch (tools/install_linux.sh drives Codec2 that way), so pairing it with
@@ -834,6 +837,13 @@ if(DSD_REQUIRE_CURL AND CMAKE_DISABLE_FIND_PACKAGE_CURL)
     )
 endif()
 
+if(DSD_REQUIRE_EXPAT AND CMAKE_DISABLE_FIND_PACKAGE_EXPAT)
+    message(
+        FATAL_ERROR
+        "DSD_REQUIRE_EXPAT=ON conflicts with CMAKE_DISABLE_FIND_PACKAGE_EXPAT=ON."
+    )
+endif()
+
 # Normalize to ON/OFF so the status lines below stay greppable; the find modules
 # report found-ness in their own spellings.
 set(DSD_HAS_CODEC2 OFF)
@@ -844,6 +854,11 @@ endif()
 set(DSD_HAS_CURL OFF)
 if(CURL_FOUND)
     set(DSD_HAS_CURL ON)
+endif()
+
+set(DSD_HAS_EXPAT OFF)
+if(EXPAT_FOUND)
+    set(DSD_HAS_EXPAT ON)
 endif()
 
 if(DSD_REQUIRE_CODEC2 AND NOT DSD_HAS_CODEC2)
@@ -860,11 +875,20 @@ if(DSD_REQUIRE_CURL AND NOT DSD_HAS_CURL)
     )
 endif()
 
-# Both degrade silently when absent and the binary still links: M17 simply stops
-# emitting voice, and rdio uploads disappear. Report either way so a build that
-# quietly lost one is visible in the configure log.
+if(DSD_REQUIRE_EXPAT AND NOT DSD_HAS_EXPAT)
+    message(
+        FATAL_ERROR
+        "expat was required but not found. Install an expat development package or disable DSD_REQUIRE_EXPAT."
+    )
+endif()
+
+# All three degrade silently when absent and the binary still links: M17 simply
+# stops emitting voice, rdio uploads disappear, and RadioReference import
+# disappears. Report either way so a build that quietly lost one is visible in
+# the configure log.
 message(STATUS "Codec2 available: ${DSD_HAS_CODEC2} (M17 voice)")
 message(STATUS "libcurl available: ${DSD_HAS_CURL} (rdio API uploads)")
+message(STATUS "expat available: ${DSD_HAS_EXPAT} (RadioReference import)")
 
 # Audio backend selection
 set(DSD_AUDIO_BACKEND
@@ -1108,6 +1132,14 @@ if(DSD_HAS_CURL)
     target_link_libraries(dsd-neo_feature_curl INTERFACE CURL::libcurl)
 else()
     add_library(dsd-neo_feature_curl INTERFACE)
+endif()
+
+if(DSD_HAS_EXPAT)
+    add_library(dsd-neo_feature_expat INTERFACE)
+    target_compile_definitions(dsd-neo_feature_expat INTERFACE USE_EXPAT)
+    target_link_libraries(dsd-neo_feature_expat INTERFACE EXPAT::EXPAT)
+else()
+    add_library(dsd-neo_feature_expat INTERFACE)
 endif()
 
 if(AUDIO_SYSTEM_LIBS)

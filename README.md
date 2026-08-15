@@ -110,7 +110,7 @@ Requirements
 - CMake ≥ 3.20.
 - Dependencies:
   - Required: libsndfile; OpenSSL 3.x libcrypto; a curses backend (ncursesw/PDCurses); and an audio backend (PulseAudio by default, PortAudio on Windows).
-  - Optional: librtlsdr (RTL‑SDR support), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl >= 7.56.0 (rdio API uploads), PortAudio on non-Windows builds, help2man (man page generation).
+  - Optional: librtlsdr (RTL‑SDR support), SoapySDR >= 0.8.1 (non‑RTL SDR backends), Codec2 (additional vocoder paths), libcurl >= 7.56.0 (rdio API uploads), expat 2.x (RadioReference import), PortAudio on non-Windows builds, help2man (man page generation).
   - Vocoder: mbelib-neo 2.x (`mbe-neo` CMake package) is required.
 
 OS package hints
@@ -306,6 +306,8 @@ These are CMake cache options (set at configure time via `-D...`).
     configure instead; `-DCMAKE_DISABLE_FIND_PACKAGE_CODEC2=ON` turns detection off outright.
   - rdio API upload support is enabled when libcurl is found. `-DDSD_REQUIRE_CURL=ON` and
     `-DCMAKE_DISABLE_FIND_PACKAGE_CURL=ON` are the matching switches.
+  - RadioReference import support is enabled when expat is found. `-DDSD_REQUIRE_EXPAT=ON` and
+    `-DCMAKE_DISABLE_FIND_PACKAGE_EXPAT=ON` are the matching switches.
 
 ## CI Backend Policy
 
@@ -314,7 +316,7 @@ These are CMake cache options (set at configure time via `-D...`).
 - Linux CI also builds and tests the Android configuration on the host (no audio library, no terminal UI, no SDR
   library, no Codec2, radio pipeline forced on), and `android-ci` cross-compiles the arm64 CLI and the APK on every pull
   request, then signs and publishes the APK from `main` and release tags.
-- The Android and `win-msvc-*` presets require Codec2 and libcurl, so a vcpkg detection regression fails configure
+- The Android and `win-msvc-*` presets require Codec2, libcurl and expat, so a vcpkg detection regression fails configure
   rather than shipping a build that decodes no M17 voice. The host job above covers the opposite case: that the
   degraded build still works.
 - Release/packaging/static-analysis jobs that are expected to exercise radio backends configure with:

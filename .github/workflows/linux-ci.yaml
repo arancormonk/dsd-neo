@@ -65,7 +65,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -114,7 +114,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
 
       - name: Build and install mbelib-neo
         run: |
@@ -206,6 +206,7 @@ jobs:
             -DDSD_ENABLE_RTLSDR=OFF \
             -DDSD_ENABLE_SOAPYSDR=OFF \
             -DDSD_FORCE_RADIO_PIPELINE=ON \
+            -DCMAKE_DISABLE_FIND_PACKAGE_EXPAT=ON \
             2>&1 | tee "$log"
           grep -F "RTL-SDR backend enabled: OFF (available: OFF)" "$log"
           grep -F "SoapySDR backend enabled: OFF (available: OFF)" "$log"
@@ -213,7 +214,10 @@ jobs:
           # No libcodec2-dev on this runner: the Android presets require Codec2,
           # but the degraded build must still work. libcurl is not asserted --
           # the runner image ships it whether or not this job asks for it.
+          # expat is the same kind of transitive freebie, so this job disables
+          # detection outright rather than trusting the image to lack it.
           grep -F "Codec2 available: OFF (M17 voice)" "$log"
+          grep -F "expat available: OFF (RadioReference import)" "$log"
 
       - name: Build (android shape)
         run: cmake --build --preset dev-debug -j
@@ -281,7 +285,7 @@ jobs:
             build-essential cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran libcurl4-openssl-dev
+            gfortran libcurl4-openssl-dev libexpat1-dev
 
       - name: Prepare ccache environment
         id: prep-ccache
@@ -1135,7 +1139,7 @@ jobs:
             build-essential clang cmake ninja-build pkg-config git ccache \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev \
-            gfortran libcurl4-openssl-dev
+            gfortran libcurl4-openssl-dev libexpat1-dev
 
       - name: Prepare ccache environment
         run: |

@@ -10,6 +10,7 @@
     "openssl",
     "libsndfile",
     "curl",
+    "expat",
     {
       "name": "portaudio",
       "platform": "!android"

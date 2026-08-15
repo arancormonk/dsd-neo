@@ -1,10 +1,11 @@
 #
 # vcpkg dependency contract check (cross-platform, CMake-only).
 #
-# The Android and Windows presets both take Codec2 and libcurl from the vcpkg
-# manifest and both require them. Codec2 and libcurl are otherwise silent
-# auto-detections that still link when absent, so losing one degrades M17 voice
-# or rdio uploads with nothing failing: on Android nothing on the build host can
+# The Android and Windows presets take Codec2, libcurl and expat from the vcpkg
+# manifest and require all three. Codec2, libcurl and expat are otherwise silent
+# auto-detections that still link when absent, so losing one degrades M17 voice,
+# rdio uploads or RadioReference import with nothing failing: on Android nothing
+# on the build host can
 # smoke-test the APK, and on Windows the same regression would only show up in
 # a user's hands. Pin the manifest filters and the preset settings here.
 #
@@ -48,6 +49,7 @@ math(EXPR _ADC_DEP_LAST "${_ADC_DEP_COUNT} - 1")
 # name -> platform expression ("" when unrestricted, "<absent>" when missing)
 set(_ADC_CODEC2_PLATFORM "<absent>")
 set(_ADC_CURL_PLATFORM "<absent>")
+set(_ADC_EXPAT_PLATFORM "<absent>")
 
 foreach(_adc_i RANGE 0 ${_ADC_DEP_LAST})
     string(JSON _adc_entry GET "${_ADC_MANIFEST_JSON}" dependencies ${_adc_i})
@@ -72,6 +74,8 @@ foreach(_adc_i RANGE 0 ${_ADC_DEP_LAST})
         set(_ADC_CODEC2_PLATFORM "${_adc_platform}")
     elseif(_adc_name STREQUAL "curl")
         set(_ADC_CURL_PLATFORM "${_adc_platform}")
+    elseif(_adc_name STREQUAL "expat")
+        set(_ADC_EXPAT_PLATFORM "${_adc_platform}")
     endif()
 endforeach()
 
@@ -98,6 +102,17 @@ elseif(NOT _ADC_CURL_PLATFORM STREQUAL "")
     _adc_error(
         "vcpkg.json: curl must stay unrestricted, but carries platform \"${_ADC_CURL_PLATFORM}\". "
         "Android needs libcurl for rdio API uploads (USE_CURL)."
+    )
+endif()
+
+# expat gates the RadioReference SOAP parser (USE_EXPAT). Keep it unrestricted:
+# every vcpkg-driven preset requires it.
+if(_ADC_EXPAT_PLATFORM STREQUAL "<absent>")
+    _adc_error("vcpkg.json: expat is not declared; the Android and Windows builds require it")
+elseif(NOT _ADC_EXPAT_PLATFORM STREQUAL "")
+    _adc_error(
+        "vcpkg.json: expat must stay unrestricted, but carries platform \"${_ADC_EXPAT_PLATFORM}\". "
+        "Android needs expat for RadioReference import (USE_EXPAT)."
     )
 endif()
 
@@ -143,7 +158,7 @@ foreach(_adc_i RANGE 0 ${_ADC_PRESET_LAST})
         continue()
     endif()
 
-    foreach(_adc_var DSD_REQUIRE_CODEC2 DSD_REQUIRE_CURL)
+    foreach(_adc_var DSD_REQUIRE_CODEC2 DSD_REQUIRE_CURL DSD_REQUIRE_EXPAT)
         string(
             JSON _adc_value
             ERROR_VARIABLE _adc_value_err
@@ -164,6 +179,7 @@ foreach(_adc_i RANGE 0 ${_ADC_PRESET_LAST})
         _adc_var
         CMAKE_DISABLE_FIND_PACKAGE_CODEC2
         CMAKE_DISABLE_FIND_PACKAGE_CURL
+        CMAKE_DISABLE_FIND_PACKAGE_EXPAT
     )
         string(
             JSON _adc_value

@@ -165,7 +165,8 @@
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vcpkg-triplets",
         "VCPKG_INSTALLED_DIR": "${sourceDir}/vcpkg_installed",
         "DSD_REQUIRE_CODEC2": "ON",
-        "DSD_REQUIRE_CURL": "ON"
+        "DSD_REQUIRE_CURL": "ON",
+        "DSD_REQUIRE_EXPAT": "ON"
       }
     },
     {
@@ -190,7 +191,8 @@
         "DSD_ENABLE_LTO": "ON",
         "DSD_ENABLE_FAST_MATH": "ON",
         "DSD_REQUIRE_CODEC2": "ON",
-        "DSD_REQUIRE_CURL": "ON"
+        "DSD_REQUIRE_CURL": "ON",
+        "DSD_REQUIRE_EXPAT": "ON"
       }
     },
     {
@@ -215,6 +217,7 @@
         "DSD_ENABLE_SOAPYSDR": "OFF",
         "DSD_REQUIRE_CODEC2": "ON",
         "DSD_REQUIRE_CURL": "ON",
+        "DSD_REQUIRE_EXPAT": "ON",
         "DSD_WARNINGS_AS_ERRORS": "ON"
       }
     },
@@ -242,6 +245,7 @@
         "DSD_ENABLE_SOAPYSDR": "OFF",
         "DSD_REQUIRE_CODEC2": "ON",
         "DSD_REQUIRE_CURL": "ON",
+        "DSD_REQUIRE_EXPAT": "ON",
         "DSD_WARNINGS_AS_ERRORS": "ON"
       }
     }

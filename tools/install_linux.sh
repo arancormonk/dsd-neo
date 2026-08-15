@@ -249,27 +249,27 @@ prompt_for_packages() {
 
 case "$PM" in
   apt)
-    BASE_PACKAGES="bash build-essential cmake ninja-build pkg-config git ca-certificates libssl-dev libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev"
+    BASE_PACKAGES="bash build-essential cmake ninja-build pkg-config git ca-certificates libssl-dev libsndfile1-dev libpulse-dev libncurses-dev libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran libcurl4-openssl-dev libexpat1-dev"
     CODEC2_PACKAGES="libcodec2-dev"
     RADIO_PACKAGES="librtlsdr-dev libsoapysdr-dev"
     ;;
   dnf)
-    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config git ca-certificates openssl-devel libsndfile-devel pulseaudio-libs-devel ncurses-devel libusb1-devel fftw-devel blas-devel lapack-devel gcc-gfortran libcurl-devel"
+    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja-build pkgconf-pkg-config git ca-certificates openssl-devel libsndfile-devel pulseaudio-libs-devel ncurses-devel libusb1-devel fftw-devel blas-devel lapack-devel gcc-gfortran libcurl-devel expat-devel"
     CODEC2_PACKAGES="codec2-devel"
     RADIO_PACKAGES="rtl-sdr-devel SoapySDR-devel"
     ;;
   zypper)
-    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja pkgconf git ca-certificates libopenssl-devel libsndfile-devel libpulse-devel ncurses-devel libusb-1_0-devel fftw3-devel blas-devel lapack-devel gcc-fortran libcurl-devel"
+    BASE_PACKAGES="bash gcc gcc-c++ make cmake ninja pkgconf git ca-certificates libopenssl-devel libsndfile-devel libpulse-devel ncurses-devel libusb-1_0-devel fftw3-devel blas-devel lapack-devel gcc-fortran libcurl-devel libexpat-devel"
     CODEC2_PACKAGES="codec2-devel"
     RADIO_PACKAGES="rtl-sdr-devel soapy-sdr-devel"
     ;;
   apk)
-    BASE_PACKAGES="bash build-base cmake ninja pkgconf git ca-certificates openssl-dev libsndfile-dev pulseaudio-dev ncurses-dev libusb-dev fftw-dev blas-dev lapack-dev gfortran curl-dev"
+    BASE_PACKAGES="bash build-base cmake ninja pkgconf git ca-certificates openssl-dev libsndfile-dev pulseaudio-dev ncurses-dev libusb-dev fftw-dev blas-dev lapack-dev gfortran curl-dev expat-dev"
     CODEC2_PACKAGES="codec2-dev"
     RADIO_PACKAGES="librtlsdr-dev soapy-sdr-dev"
     ;;
   pacman)
-    BASE_PACKAGES="bash base-devel cmake ninja pkgconf git ca-certificates openssl libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran curl"
+    BASE_PACKAGES="bash base-devel cmake ninja pkgconf git ca-certificates openssl libsndfile libpulse ncurses libusb fftw blas lapack gcc-fortran curl expat"
     CODEC2_PACKAGES="codec2"
     RADIO_PACKAGES="rtl-sdr soapysdr"
     ;;

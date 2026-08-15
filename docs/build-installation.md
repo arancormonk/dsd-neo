@@ -79,11 +79,12 @@ backend, no terminal UI, and the RTL-SDR backend satisfied from the vendored
 libusb/librtlsdr under `android/third_party`. The same option shape minus the NDK
 is built and tested on the host by CI so the configuration keeps test coverage.
 
-They also set `DSD_REQUIRE_CODEC2=ON` and `DSD_REQUIRE_CURL=ON`. Codec2 and
-libcurl are otherwise auto-detected and degrade silently — a build that lost
-Codec2 still links and simply stops emitting M17 voice — which nothing on the
-build host would catch before the APK reached a device. vcpkg supplies both for
-Android. The `win-msvc-*` presets set the same two options for the same reason.
+They also set `DSD_REQUIRE_CODEC2=ON`, `DSD_REQUIRE_CURL=ON` and
+`DSD_REQUIRE_EXPAT=ON`. Codec2, libcurl and expat are otherwise auto-detected
+and degrade silently — a build that lost Codec2 still links and simply stops
+emitting M17 voice — which nothing on the build host would catch before the APK
+reached a device. vcpkg supplies all three for Android. The `win-msvc-*` presets
+set the same three options for the same reason.
 `VCPKG_DEPENDENCY_CONTRACT` (a CTest case) pins the manifest filters and the
 preset settings that keep it that way.
 

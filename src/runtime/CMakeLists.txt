@@ -79,6 +79,7 @@ target_link_libraries(
         dsd-neo_feature_rtlsdr
         dsd-neo_feature_colors_logs
         dsd-neo_feature_curl
+        dsd-neo_feature_expat
 )
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_io_iq)
 if(WIN32)

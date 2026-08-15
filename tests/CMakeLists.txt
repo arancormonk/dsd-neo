@@ -85,6 +85,7 @@ function(dsd_neo_link_dsp_test target_name)
                 dsd-neo_feature_rtlsdr
                 dsd-neo_feature_colors_logs
                 dsd-neo_feature_curl
+                dsd-neo_feature_expat
                 ws2_32
         )
         add_dependencies(

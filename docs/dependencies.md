@@ -30,6 +30,8 @@ Optional compiled dependencies are:
   7.85 use the integer protocol-mask option needed by the Ubuntu 20.04
   AppImage toolchain; remove that branch when portable packaging no longer
   supports libcurl below 7.85.
+- expat 2.x for RadioReference trunking-data import. On Windows and Android it
+  comes from the vcpkg manifest, and those presets set `DSD_REQUIRE_EXPAT=ON`.
 - PortAudio on non-Windows builds when selected
 - help2man for generated man pages
 
