@@ -78,6 +78,10 @@ SavedSystemsModel::tuningRoleValue(const Row& row, int role) {
         case BiasTeeRole: return row.biasTee;
         case ExtraArgsRole: return row.extraArgs;
         case LastHeardRole: return row.lastHeard;
+        case ChanCsvPathRole: return row.chanCsvPath;
+        case GroupCsvPathRole: return row.groupCsvPath;
+        case KeyCsvPathRole: return row.keyCsvPath;
+        case KeyCsvHexRole: return row.keyCsvHex;
         default: return QVariant();
     }
 }
@@ -109,6 +113,10 @@ SavedSystemsModel::roleNames() const {
     roles.insert(ExtraArgsRole, QByteArrayLiteral("extraArgs"));
     roles.insert(FilePathRole, QByteArrayLiteral("filePath"));
     roles.insert(LastHeardRole, QByteArrayLiteral("lastHeard"));
+    roles.insert(ChanCsvPathRole, QByteArrayLiteral("chanCsvPath"));
+    roles.insert(GroupCsvPathRole, QByteArrayLiteral("groupCsvPath"));
+    roles.insert(KeyCsvPathRole, QByteArrayLiteral("keyCsvPath"));
+    roles.insert(KeyCsvHexRole, QByteArrayLiteral("keyCsvHex"));
     return roles;
 }
 
@@ -157,6 +165,18 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     if (map.contains(QStringLiteral("lastHeard"))) {
         row.lastHeard = map.value(QStringLiteral("lastHeard")).toLongLong();
     }
+    if (map.contains(QStringLiteral("chanCsvPath"))) {
+        row.chanCsvPath = map.value(QStringLiteral("chanCsvPath")).toString();
+    }
+    if (map.contains(QStringLiteral("groupCsvPath"))) {
+        row.groupCsvPath = map.value(QStringLiteral("groupCsvPath")).toString();
+    }
+    if (map.contains(QStringLiteral("keyCsvPath"))) {
+        row.keyCsvPath = map.value(QStringLiteral("keyCsvPath")).toString();
+    }
+    if (map.contains(QStringLiteral("keyCsvHex"))) {
+        row.keyCsvHex = map.value(QStringLiteral("keyCsvHex")).toBool();
+    }
     return row;
 }
 
@@ -177,6 +197,10 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("extraArgs"), row.extraArgs);
     map.insert(QStringLiteral("filePath"), row.filePath);
     map.insert(QStringLiteral("lastHeard"), row.lastHeard);
+    map.insert(QStringLiteral("chanCsvPath"), row.chanCsvPath);
+    map.insert(QStringLiteral("groupCsvPath"), row.groupCsvPath);
+    map.insert(QStringLiteral("keyCsvPath"), row.keyCsvPath);
+    map.insert(QStringLiteral("keyCsvHex"), row.keyCsvHex);
     return map;
 }
 
@@ -232,6 +256,52 @@ SavedSystemsModel::touch(int row) {
     Q_EMIT dataChanged(idx, idx, {LastHeardRole});
     Q_EMIT mostRecentRowChanged();
     save();
+}
+
+QStringList
+SavedSystemsModel::systemsReferencingPath(const QString& path) const {
+    QStringList names;
+    if (path.isEmpty()) {
+        return names;
+    }
+    for (const Row& row : m_rows) {
+        if (row.chanCsvPath == path || row.groupCsvPath == path || row.keyCsvPath == path) {
+            names.append(row.name);
+        }
+    }
+    return names;
+}
+
+void
+SavedSystemsModel::clearCsvPath(const QString& path) {
+    if (path.isEmpty()) {
+        return;
+    }
+    bool changed = false;
+    for (int i = 0; i < m_rows.size(); i++) {
+        Row& row = m_rows[i];
+        bool rowChanged = false;
+        if (row.chanCsvPath == path) {
+            row.chanCsvPath.clear();
+            rowChanged = true;
+        }
+        if (row.groupCsvPath == path) {
+            row.groupCsvPath.clear();
+            rowChanged = true;
+        }
+        if (row.keyCsvPath == path) {
+            row.keyCsvPath.clear();
+            rowChanged = true;
+        }
+        if (rowChanged) {
+            const QModelIndex idx = index(i);
+            Q_EMIT dataChanged(idx, idx);
+            changed = true;
+        }
+    }
+    if (changed) {
+        save();
+    }
 }
 
 int

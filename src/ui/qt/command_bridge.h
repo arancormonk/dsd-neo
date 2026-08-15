@@ -109,6 +109,22 @@ class CommandBridge : public QObject {
 
     /** @brief Cycle the event-history display mode. */
     Q_INVOKABLE int cycleHistoryMode() const;
+
+    /**
+     * @brief Import a channel map CSV into the running session.
+     *
+     * The runtime handler replaces the previous map atomically; a file that
+     * cannot be opened leaves the live map untouched. Like every command here,
+     * the queue only drains while the engine runs — callers gate on
+     * decoderHost.running and treat an idle-time import as library-only.
+     */
+    Q_INVOKABLE bool importChannelMap(const QString& path) const;
+
+    /** @brief Import a talkgroup list CSV into the running session (atomic swap). */
+    Q_INVOKABLE bool importGroupList(const QString& path) const;
+
+    /** @brief Import an encryption key CSV; @p hex picks -K semantics over -k. */
+    Q_INVOKABLE bool importKeys(const QString& path, bool hex) const;
 };
 
 } // namespace dsd_qt

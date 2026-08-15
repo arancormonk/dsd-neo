@@ -147,6 +147,44 @@ test_defaults_and_overrides(void) {
 }
 
 void
+test_csv_args(void) {
+    SessionArgsError error = SessionArgsError::None;
+
+    /* CSV paths must be discrete argv elements: the extraArgs field is
+     * whitespace-split, so a path with a space can only survive here. */
+    QVariantMap sys = usb_system();
+    sys.insert(QStringLiteral("chanCsvPath"), QStringLiteral("/data/imports/chan map.csv"));
+    sys.insert(QStringLiteral("groupCsvPath"), QStringLiteral("/data/imports/county.csv"));
+    sys.insert(QStringLiteral("keyCsvPath"), QStringLiteral("/data/imports/keys.csv"));
+    sys.insert(QStringLiteral("keyCsvHex"), false);
+    sys.insert(QStringLiteral("extraArgs"), QStringLiteral("--wav-dir /tmp"));
+    const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("csv build succeeds", error == SessionArgsError::None);
+    qsizetype at = args.indexOf(QStringLiteral("-C"));
+    expect("chan path follows -C intact",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/chan map.csv"));
+    at = args.indexOf(QStringLiteral("-G"));
+    expect("group path follows -G",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/county.csv"));
+    at = args.indexOf(QStringLiteral("-k"));
+    expect("dec keys use -k",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/keys.csv"));
+    expect("dec keys never emit -K", !args.contains(QStringLiteral("-K")));
+    expect("csv args coexist with extra args", args.contains(QStringLiteral("--wav-dir")));
+
+    sys.insert(QStringLiteral("keyCsvHex"), true);
+    const QStringList hexArgs = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("hex keys use -K", hexArgs.contains(QStringLiteral("-K")));
+    expect("hex keys never emit -k", !hexArgs.contains(QStringLiteral("-k")));
+
+    /* Absent or empty fields emit nothing — legacy systems keep their argv. */
+    const QStringList bare = session_args_build(usb_system(), SessionArgPrefs(), &error);
+    expect("no csv fields emit no csv flags",
+           !bare.contains(QStringLiteral("-C")) && !bare.contains(QStringLiteral("-G"))
+               && !bare.contains(QStringLiteral("-k")) && !bare.contains(QStringLiteral("-K")));
+}
+
+void
 test_ppm_shapes(void) {
     SessionArgsError error = SessionArgsError::None;
     QVariantMap sys = usb_system();
@@ -235,6 +273,7 @@ int
 main(void) {
     test_freq_validation();
     test_defaults_and_overrides();
+    test_csv_args();
     test_ppm_shapes();
     test_bias_tee_tristate();
     test_network_and_file_sources();

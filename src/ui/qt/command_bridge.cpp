@@ -116,4 +116,29 @@ CommandBridge::cycleHistoryMode() const {
     return dsd_app_frontend_history_cycle_mode();
 }
 
+bool
+CommandBridge::importChannelMap(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, path.toUtf8().constData()));
+}
+
+bool
+CommandBridge::importGroupList(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_GROUP_LIST, path.toUtf8().constData()));
+}
+
+bool
+CommandBridge::importKeys(const QString& path, bool hex) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_string(hex ? DSD_APP_CMD_IMPORT_KEYS_HEX : DSD_APP_CMD_IMPORT_KEYS_DEC,
+                                               path.toUtf8().constData()));
+}
+
 } // namespace dsd_qt

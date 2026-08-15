@@ -94,6 +94,30 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
     }
 }
 
+/**
+ * @brief Append the per-system CSV paths as discrete argv elements.
+ *
+ * Discrete, not folded into extraArgs: the extras field is whitespace-split
+ * with no quoting, so an imported file whose display name carries a space
+ * ("chan map.csv") only survives as its own element.
+ */
+void
+append_csv_args(QStringList& args, const QVariantMap& system) {
+    const QString chan = system.value(QStringLiteral("chanCsvPath")).toString();
+    if (!chan.isEmpty()) {
+        args << QStringLiteral("-C") << chan;
+    }
+    const QString group = system.value(QStringLiteral("groupCsvPath")).toString();
+    if (!group.isEmpty()) {
+        args << QStringLiteral("-G") << group;
+    }
+    const QString key = system.value(QStringLiteral("keyCsvPath")).toString();
+    if (!key.isEmpty()) {
+        args << (system.value(QStringLiteral("keyCsvHex")).toBool() ? QStringLiteral("-K") : QStringLiteral("-k"))
+             << key;
+    }
+}
+
 /** @brief Append the decode chip, trunking, policy flags, and extra CLI args. */
 void
 append_flag_args(QStringList& args, const QVariantMap& system, const SessionArgPrefs& prefs) {
@@ -166,6 +190,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     QStringList args{QStringLiteral("--frontend"), QStringLiteral("none")};
     append_input_args(args, system, sourceType, tail, bias);
     args << QStringLiteral("-o") << QStringLiteral("pulse");
+    append_csv_args(args, system);
     append_flag_args(args, system, prefs);
     return args;
 }
