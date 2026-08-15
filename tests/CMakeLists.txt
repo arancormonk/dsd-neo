@@ -383,6 +383,18 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_generate
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_GENERATE
+  dsd-neo/runtime/radioreference_generate.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_generate_cxx
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_GENERATE_CXX
+  dsd-neo/runtime/radioreference_generate.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rdio_export
   HEADERS_PUBLIC_RUNTIME_RDIO_EXPORT
   dsd-neo/runtime/rdio_export.h
@@ -2757,6 +2769,31 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RR_CLIENT COMMAND dsd-neo_test_runtime_rr_client)
+
+# The generators round-trip their output through the real validators, which live
+# in dsd-neo_core; dsd-neo_runtime alone cannot reach them. dsd-neo_proto_dmr is
+# required because dsd_import.c calls dmr_parse_static_keystream_spec. The
+# private include path is for rr_soap.h: the goldens are driven from the same
+# fixtures the parser is, rather than from hand-written structs.
+add_executable(
+    dsd-neo_test_runtime_rr_generate
+    runtime/test_runtime_rr_generate.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_rr_generate
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_rr_generate
+    PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_generate
+    PRIVATE dsd-neo_runtime dsd-neo_core dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
 
 add_executable(
     dsd-neo_test_runtime_trunk_tuning_hooks
