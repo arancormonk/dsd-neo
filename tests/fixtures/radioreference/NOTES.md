@@ -1,9 +1,16 @@
 # RadioReference SOAP fixtures — capture notes
 
 Captured 2026-08-15 against the live v18 API (`POST https://api.radioreference.com/soap2/`) with a
-real premium account. Bodies are byte-exact `curl --output` captures with **one** edit: the
-`<username>` value in `user_data.xml` was replaced with the low-entropy placeholder `user`. No
-request bodies are stored here, and no appKey, username or password appears in any file.
+real premium account. Bodies are byte-exact `curl --output` captures with **two** edits, both
+recorded here so nobody mistakes them for wire behaviour:
+
+1. the `<username>` value in `user_data.xml` is the placeholder `user`;
+2. one `<license>` value in `trs_sites_dmr_conv.xml` is the placeholder `CALLSIGN`. That field is
+   an FCC/amateur licence callsign inside `siteLicenses`, and on this ham network it happened to
+   equal the capturing account's RR username (RR usernames are often callsigns). Nothing parses
+   `siteLicenses`, so the substitution has no effect on any test.
+
+No request bodies are stored here, and no appKey, username or password appears in any file.
 
 These files are the parsing contract for `src/runtime/radioreference/`. Everything below was
 observed, not inferred.
@@ -23,6 +30,8 @@ observed, not inferred.
 | `trs_details_dmr_tier3.xml`, `trs_sites_dmr_tier3.xml`, `trs_talkgroups_dmr_tier3.xml` | sid 8697 | Alliant Energy, DMR Tier 3 Standard — 129 sites, `ch_id` populated |
 | `trs_details_nxdn.xml`, `trs_sites_nxdn.xml`, `trs_talkgroups_nxdn.xml` | sid 12918 | Duane Arnold, NXDN NEXEDGE 4800 — 1 site, `ch_id` populated |
 | `trs_details_edacs.xml`, `trs_sites_edacs.xml`, `trs_talkgroups_edacs.xml` | sid 220 | Hillsborough County FL, EDACS Networked Standard — 2 sites, 8 contiguous LCNs each |
+| `trs_details_dmr_conv.xml`, `trs_sites_dmr_conv.xml`, `trs_talkgroups_dmr_conv.xml` | sid 9340 | Iowa DMR Users Group, DMR **Conventional Networked** — **36 single-frequency sites**, 14 talkgroups |
+| `trs_sites_dmr_conv_small.xml` | sid 12244 | Linn County REC, DMR Conventional Networked — 2 sites, the ordinary small case |
 | `user_data.xml` | `getUserData` | username scrubbed to `user`; `subExpireDate` `11-24-2026` |
 | `fault_auth.xml` | `getUserData` with a wrong password | HTTP 500, `faultcode` `AUTH` |
 
@@ -165,9 +174,37 @@ carried `version=18`, `style=rpc` on every call.
 - **Non-ASCII coverage**: `trs_talkgroups_p25.xml` is the only fixture with high bytes — 10 of them,
   UTF-8 encoded, in the alpha tag `CR MERCY ER Ø` (`\xc3\x98`). That is the encoding regression
   case; it round-trips only if expat honours the `utf-8` prolog.
-- **DMR flavor `Conventional Networked` exists** (flavor 43, e.g. sid 9340, 12244) and is *not* a
-  trunked system. The Stage-6 classifier's `DMR … else → TIER3` fallback would silently classify it
-  as Tier 3. Same for NXDN flavor 45 `Conventional Networked`. Worth an explicit UNSUPPORTED branch.
+### Conventional Networked (DMR flavor 43, NXDN flavor 45)
+
+These are catalogued as trunked systems but have **no trunking and no control channel**. The
+Stage-6 classifier's `DMR … else → TIER3` fallback would otherwise classify them as Tier 3 and
+generate a channel map for a system that has no control channel to find, so they get their own
+protocol kind and their own generator path.
+
+What the wire actually shows, across sid 9340 (36 sites) and sid 12244 (2 sites):
+
+- **One site is one repeater, with exactly one frequency, and `lcn` is always `1`.** Every site in
+  both systems has a single `TrsSiteFreq`. The LCN is therefore meaningless as a channel number;
+  the site *is* the unit.
+- **`colorCode` is populated per repeater** (`1`, `2`, …) and differs between sites. It is
+  display-only for dsd-neo: there is no colour-code option in `dsd_opts`, because the DMR colour
+  code is decoded off-air. Show it in the preview; never put it in a file.
+- **`use` is nil on every frequency** — as it must be, there is no control channel.
+- **`ch_id` is nil**, so the ch_id-overrides-lcn rule is inert here.
+- **`zoneNumber`/`zoneDescr` are nil** — non-zoned, like Cap+ and NXDN.
+- `siteNumber` is not necessarily small: the ham network uses DMR-ID-like values (310011, 311471),
+  while the co-op uses 1, 2. Never assume a site number is an index.
+- **`siteLicenses[license]` carries FCC/amateur callsigns.** Nothing parses it; see the scrub note
+  at the top of this file.
+- Site descriptions are plain place names (`Waukee`, `Ames`, `Marion`, `North Liberty`), which is
+  what makes a multi-site picker usable.
+
+**Why 36 sites matters:** `state->trunk_lcn_freq[]` holds 26 entries, so a scan list built from
+this system must truncate and warn. That is the golden the fixture exists for.
+
+**No NXDN Conventional Networked system was findable** in any of the 33 counties probed across
+Iowa and Florida, though flavor 45 is in the live flavor table. The classifier branch is therefore
+covered by the support-list fixture rather than by a system fixture.
 - **NXDN flavors carry the 4800/9600 rate**, e.g. `NEXEDGE 9600`, `NEXEDGE 4800`, alongside
   `Icom IDAS Type C`/`Type D` and `Kenwood Type D`. The plan's classifier reads the *voice*
   description for `4800`/`9600`; the flavor is the more reliable source here, so check both.
