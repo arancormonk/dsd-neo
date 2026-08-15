@@ -123,6 +123,16 @@ test_import_document(void) {
     expect("replace returns the replaced path", replaced == imported);
     expect("replace updates the content", read_file(imported) == "channel,freq\n9,860000000\n");
 
+    /* A replace target inside the imports dir that no longer exists is still a
+     * write target: QFileInfo::canonicalPath() gives up on a missing leaf, and
+     * falling back to a fresh unique copy would strand a file no library row
+     * references while the update reports failure. */
+    expect("stored copy removable", QFile::remove(imported));
+    const QString recreated =
+        host.importDocument(QUrl::fromLocalFile(sourceC).toString(), QStringLiteral("updated.csv"), imported);
+    expect("missing replace target is recreated in place", recreated == imported);
+    expect("recreated copy has the source content", read_file(imported) == "channel,freq\n9,860000000\n");
+
     /* replacePath outside the imports dir is not a write target — treat it as
      * a fresh import instead of scribbling wherever the caller points. */
     const QString outside = sourceDir.filePath(QStringLiteral("outside.csv"));
@@ -234,6 +244,22 @@ test_imported_files_model(void) {
         expect("load drops rows for missing files", model.rowCount() == 1);
         expect("survivor is the header-only row",
                model.get(0).value(QStringLiteral("name")).toString() == QStringLiteral("header_only.csv"));
+
+        /* Pruning the row is only half the repair: a saved system still holding
+         * that path builds a `-G <missing>` argv and fails to start with a parse
+         * error naming the input settings, not the file. The owner reconciles
+         * that, so the path has to survive the prune long enough to be handed
+         * over — and exactly once, or a later caller would re-clear a path some
+         * system had legitimately re-selected. */
+        const QStringList pruned = model.takePrunedPaths();
+        expect("prune reports the vanished path", pruned == QStringList{storedGroupPath});
+        expect("prune is reported only once", model.takePrunedPaths().isEmpty());
+    }
+
+    {
+        /* Nothing missing: no reconciliation for the owner to do. */
+        dsd_qt::ImportedFilesModel model(&host);
+        expect("a clean load prunes nothing", model.takePrunedPaths().isEmpty());
     }
 }
 

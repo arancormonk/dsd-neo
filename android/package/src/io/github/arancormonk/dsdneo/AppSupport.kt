@@ -136,6 +136,12 @@ object AppSupport {
             val importsDir = File(context.filesDir, "imports")
             importsDir.mkdirs()
 
+            // A process death mid-copy skips the finally below, and filesDir is
+            // not cache, so nothing else ever reclaims the staging file. Sweep
+            // leftovers here rather than letting them accumulate forever.
+            importsDir.listFiles { f -> f.isFile && f.name.startsWith(".import") && f.name.endsWith(".tmp") }
+                ?.forEach { it.delete() }
+
             var target: File? = null
             if (replacePath.isNotEmpty()) {
                 val candidate = File(replacePath)

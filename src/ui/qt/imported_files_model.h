@@ -80,6 +80,19 @@ class ImportedFilesModel : public QAbstractListModel {
     /** @brief Row index whose stored path matches, or -1. */
     Q_INVOKABLE int rowForPath(const QString& path) const;
 
+    /**
+     * @brief Stored paths dropped by load() because the file was gone, then forgets them.
+     *
+     * Pruning a ghost row is only half the repair: saved systems reference stored
+     * paths, and one left pointing at a deleted file makes the session fail to
+     * start on `-G <missing>` with a parse error that names the input settings
+     * rather than the CSV. The owner has to hand these to
+     * SavedSystemsModel::clearCsvPath(), which is what the library's own remove
+     * flow does. A signal cannot carry them: load() runs from the constructor,
+     * before anything could have connected to one.
+     */
+    Q_INVOKABLE QStringList takePrunedPaths();
+
   Q_SIGNALS:
     void countChanged();
 
@@ -94,7 +107,7 @@ class ImportedFilesModel : public QAbstractListModel {
     };
 
     static Row rowFromMap(const QVariantMap& map);
-    QVariantMap mapFromRow(const Row& row) const;
+    static QVariantMap mapFromRow(const Row& row);
 
     /** @brief Dry-run validate @p path as @p type; false when it cannot be parsed. */
     static bool validate(const QString& path, const QString& type, int* accepted, int* skipped);
@@ -104,6 +117,7 @@ class ImportedFilesModel : public QAbstractListModel {
 
     DecoderHost* m_host = nullptr;
     QList<Row> m_rows;
+    QStringList m_pruned_paths;
 };
 
 } // namespace dsd_qt

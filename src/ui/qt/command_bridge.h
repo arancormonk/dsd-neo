@@ -125,6 +125,20 @@ class CommandBridge : public QObject {
 
     /** @brief Import an encryption key CSV; @p hex picks -K semantics over -k. */
     Q_INVOKABLE bool importKeys(const QString& path, bool hex) const;
+
+    /*
+     * Unloading. A system that clears its CSV selection has to say so: the
+     * import calls above all reject an empty path, so re-importing cannot
+     * express "none" and the previous file would stay live for the session.
+     */
+    /** @brief Drop the running session's channel map, LCN list and trust bytes. */
+    Q_INVOKABLE bool clearChannelMap() const;
+
+    /** @brief Drop the running session's talkgroup list. */
+    Q_INVOKABLE bool clearGroupList() const;
+
+    /** @brief Drop the running session's keyring (both CSV kinds share one). */
+    Q_INVOKABLE bool clearKeys() const;
 };
 
 } // namespace dsd_qt

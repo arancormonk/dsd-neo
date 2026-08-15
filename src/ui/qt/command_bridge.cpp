@@ -141,4 +141,22 @@ CommandBridge::importKeys(const QString& path, bool hex) const {
                                                path.toUtf8().constData()));
 }
 
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::clearChannelMap() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::clearGroupList() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR));
+}
+
+bool
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::clearKeys() const {
+    return accepted(dsd_app_command_action(DSD_APP_CMD_IMPORT_KEYS_CLEAR));
+}
+
 } // namespace dsd_qt

@@ -122,28 +122,30 @@ SavedSystemsModel::roleNames() const {
 
 namespace {
 
-/** @brief Overwrite @p target only when @p key is present; absent keys keep the base value. */
+/**
+ * @brief Overwrite @p target only when @p key is present; absent keys keep the base value.
+ *
+ * @p key is a QString so callers can pass QStringLiteral: building one from a
+ * `const char*` here would heap-allocate on every field of every stored row.
+ */
 void
-map_take_string(const QVariantMap& map, const char* key, QString* target) {
-    const QString name = QLatin1String(key);
-    if (map.contains(name)) {
-        *target = map.value(name).toString();
+map_take_string(const QVariantMap& map, const QString& key, QString* target) {
+    if (map.contains(key)) {
+        *target = map.value(key).toString();
     }
 }
 
 void
-map_take_int(const QVariantMap& map, const char* key, int* target) {
-    const QString name = QLatin1String(key);
-    if (map.contains(name)) {
-        *target = map.value(name).toInt();
+map_take_int(const QVariantMap& map, const QString& key, int* target) {
+    if (map.contains(key)) {
+        *target = map.value(key).toInt();
     }
 }
 
 void
-map_take_bool(const QVariantMap& map, const char* key, bool* target) {
-    const QString name = QLatin1String(key);
-    if (map.contains(name)) {
-        *target = map.value(name).toBool();
+map_take_bool(const QVariantMap& map, const QString& key, bool* target) {
+    if (map.contains(key)) {
+        *target = map.value(key).toBool();
     }
 }
 
@@ -152,28 +154,28 @@ map_take_bool(const QVariantMap& map, const char* key, bool* target) {
 SavedSystemsModel::Row
 SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     Row row = base;
-    map_take_string(map, "name", &row.name);
-    map_take_string(map, "sourceType", &row.sourceType);
-    map_take_string(map, "host", &row.host);
-    map_take_int(map, "port", &row.port);
-    map_take_string(map, "freqMhz", &row.freqMhz);
-    map_take_string(map, "decodeFlag", &row.decodeFlag);
-    map_take_bool(map, "trunking", &row.trunking);
-    map_take_int(map, "gainDb", &row.gainDb);
-    map_take_string(map, "ppm", &row.ppm);
-    map_take_int(map, "bandwidthKhz", &row.bandwidthKhz);
+    map_take_string(map, QStringLiteral("name"), &row.name);
+    map_take_string(map, QStringLiteral("sourceType"), &row.sourceType);
+    map_take_string(map, QStringLiteral("host"), &row.host);
+    map_take_int(map, QStringLiteral("port"), &row.port);
+    map_take_string(map, QStringLiteral("freqMhz"), &row.freqMhz);
+    map_take_string(map, QStringLiteral("decodeFlag"), &row.decodeFlag);
+    map_take_bool(map, QStringLiteral("trunking"), &row.trunking);
+    map_take_int(map, QStringLiteral("gainDb"), &row.gainDb);
+    map_take_string(map, QStringLiteral("ppm"), &row.ppm);
+    map_take_int(map, QStringLiteral("bandwidthKhz"), &row.bandwidthKhz);
     if (map.contains(QStringLiteral("biasTee"))) {
         row.biasTee = bias_tee_from_stored(map.value(QStringLiteral("biasTee")));
     }
-    map_take_string(map, "extraArgs", &row.extraArgs);
-    map_take_string(map, "filePath", &row.filePath);
+    map_take_string(map, QStringLiteral("extraArgs"), &row.extraArgs);
+    map_take_string(map, QStringLiteral("filePath"), &row.filePath);
     if (map.contains(QStringLiteral("lastHeard"))) {
         row.lastHeard = map.value(QStringLiteral("lastHeard")).toLongLong();
     }
-    map_take_string(map, "chanCsvPath", &row.chanCsvPath);
-    map_take_string(map, "groupCsvPath", &row.groupCsvPath);
-    map_take_string(map, "keyCsvPath", &row.keyCsvPath);
-    map_take_bool(map, "keyCsvHex", &row.keyCsvHex);
+    map_take_string(map, QStringLiteral("chanCsvPath"), &row.chanCsvPath);
+    map_take_string(map, QStringLiteral("groupCsvPath"), &row.groupCsvPath);
+    map_take_string(map, QStringLiteral("keyCsvPath"), &row.keyCsvPath);
+    map_take_bool(map, QStringLiteral("keyCsvHex"), &row.keyCsvHex);
     return row;
 }
 

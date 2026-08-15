@@ -88,6 +88,15 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     monitorView->setSourceModel(history);
     auto* controller = new UiController(host, metrics, history, &engine);
 
+    // The library drops rows whose stored copy vanished behind the app's back;
+    // saved systems that still point at one would build a `-G <missing>` argv and
+    // fail to start with a parse error naming the input settings, not the file.
+    // Reconciled here because the library cannot: it loads in its constructor,
+    // and it has no business knowing what references it.
+    for (const QString& gone : importedFiles->takePrunedPaths()) {
+        systems->clearCsvPath(gone);
+    }
+
     // The keep-awake preference is storage; the effect is the host's (an Android
     // window flag). Re-asserted here on every process start because the platform
     // recreates the window without consulting anyone's QSettings.

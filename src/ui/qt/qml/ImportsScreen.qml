@@ -53,17 +53,24 @@ Item {
             screen.noticeIsProblem = true
             return
         }
-        var type = result.path.length > 0 && importedFiles.rowForPath(result.path) >= 0
-                   ? importedFiles.get(importedFiles.rowForPath(result.path)).type : ""
-        screen.notice = verb + " · " + result.accepted + " " + screen.nounFor(type, result.accepted)
+        // The model already knew the kind when it built this result; reverse-
+        // looking it up by path would scan the library twice and quietly name a
+        // channel map "keys" if the lookup missed.
+        screen.notice = verb + " · " + result.accepted + " " + screen.nounFor(result.type, result.accepted)
         screen.noticeIsProblem = false
     }
 
     // No CSV name filter: on Android it becomes a SAF MIME filter, and the
     // Files app indexes .csv as text/comma-separated-values — not the text/csv
     // Qt asks for — which greys out exactly the files the user came to pick.
-    // The kind was already chosen in the sheet, and validation rejects files
-    // that do not parse as it.
+    //
+    // The kind was already chosen in the sheet, and the dry run counts rows
+    // against that kind, so a file of the wrong kind lands here as "no usable
+    // rows". That check is by content, not by name: a channel map and a decimal
+    // key list are both `number,number`, and the header line is free text, so
+    // what separates them is the channel importer refusing a second column that
+    // cannot be a radio frequency. Two lists of the same kind are still
+    // indistinguishable — nothing stops one site's map being picked for another.
     FileDialog {
         id: fileDialog
 

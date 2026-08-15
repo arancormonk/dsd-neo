@@ -131,6 +131,7 @@ ImportedFilesModel::importFile(const QString& reference, const QString& fileName
     result.insert(QStringLiteral("error"), accepted == 0 ? QStringLiteral("empty") : QString());
     result.insert(QStringLiteral("path"), row.path);
     result.insert(QStringLiteral("name"), row.name);
+    result.insert(QStringLiteral("type"), row.type);
     result.insert(QStringLiteral("accepted"), accepted);
     result.insert(QStringLiteral("skipped"), skipped);
     return result;
@@ -145,12 +146,19 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
         return result;
     }
 
-    Row& stored = m_rows[row];
-    const QString path = m_host->importDocument(reference, fileName, stored.path);
-    if (path != stored.path || path.isEmpty()) {
+    const QString target = m_rows.at(row).path;
+    const QString path = m_host->importDocument(reference, fileName, target);
+    if (path != target || path.isEmpty()) {
+        // The host wrote somewhere other than the row's file (its replace target
+        // was not usable), so the copy that just landed belongs to no row and
+        // nothing else would ever delete it. Same rollback importFile() does.
+        if (!path.isEmpty()) {
+            QFile::remove(path);
+        }
         return result;
     }
 
+    Row& stored = m_rows[row];
     int accepted = 0;
     int skipped = 0;
     if (!validate(path, stored.type, &accepted, &skipped)) {
@@ -168,6 +176,7 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
     result.insert(QStringLiteral("error"), accepted == 0 ? QStringLiteral("empty") : QString());
     result.insert(QStringLiteral("path"), stored.path);
     result.insert(QStringLiteral("name"), stored.name);
+    result.insert(QStringLiteral("type"), stored.type);
     result.insert(QStringLiteral("accepted"), accepted);
     result.insert(QStringLiteral("skipped"), skipped);
     return result;
@@ -197,11 +206,9 @@ ImportedFilesModel::get(int row) const {
 QVariantList
 ImportedFilesModel::entriesForType(const QString& type) const {
     QVariantList entries;
-    for (int i = 0; i < m_rows.size(); i++) {
-        if (m_rows.at(i).type == type) {
-            QVariantMap entry = mapFromRow(m_rows.at(i));
-            entry.insert(QStringLiteral("row"), i);
-            entries.append(entry);
+    for (const Row& row : m_rows) {
+        if (row.type == type) {
+            entries.append(mapFromRow(row));
         }
     }
     return entries;
@@ -230,7 +237,7 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
 }
 
 QVariantMap
-ImportedFilesModel::mapFromRow(const Row& row) const {
+ImportedFilesModel::mapFromRow(const Row& row) {
     QVariantMap map;
     map.insert(QStringLiteral("name"), row.name);
     map.insert(QStringLiteral("path"), row.path);
@@ -253,14 +260,30 @@ ImportedFilesModel::load() {
         // A copy Android or the user deleted behind the app's back must not
         // survive as a ghost row pointing nowhere.
         if (row.path.isEmpty() || !QFile::exists(row.path)) {
+            if (!row.path.isEmpty() && !m_pruned_paths.contains(row.path)) {
+                m_pruned_paths.append(row.path);
+            }
             continue;
         }
         rows.append(row);
     }
+    const bool pruned = rows.size() != array.size();
     beginResetModel();
     m_rows = rows;
     endResetModel();
     Q_EMIT countChanged();
+    if (pruned) {
+        // Persist the prune, or every launch re-stats files that are gone and
+        // the index keeps advertising rows the library no longer has.
+        save();
+    }
+}
+
+QStringList
+ImportedFilesModel::takePrunedPaths() {
+    QStringList paths;
+    paths.swap(m_pruned_paths);
+    return paths;
 }
 
 void

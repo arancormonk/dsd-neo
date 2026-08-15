@@ -115,6 +115,10 @@ Window {
                 prefs.exploreFreqMhz = mainRoot.lastExploreFreqMhz
             mainRoot.exploring = false
             mainRoot.spectrumOpen = false
+            // Row indices shift when a system is removed, and Home is reachable
+            // again from here; a row remembered past its session would name a
+            // different system by the time anything read it.
+            mainRoot.sessionRow = -1
         }
         if (monitorMode) {
             // The frequency field usually still holds focus; the keyboard would
@@ -458,6 +462,10 @@ Window {
                     mainRoot.sessionSystem ? mainRoot.sessionSystem.host : "",
                     mainRoot.sessionSystem ? mainRoot.sessionSystem.port : 0,
                     exploreFreqMhz)
+                // Which also means the saved row is no longer this session's, so
+                // the monitor's edit gesture must not open — and push CSVs into —
+                // a system the session detached from.
+                mainRoot.sessionRow = -1
                 uiController.flushHistory()
                 callHistory.sessionLabel = qsTr("Exploring")
             }
@@ -494,14 +502,39 @@ Window {
             // Saving the system the running session was started from applies its
             // CSV files live — the session's argv was built at start, so without
             // this a changed talkgroup list would silently wait for a restart.
+            // Only files that actually changed are pushed: re-importing a channel
+            // map replaces the live one wholesale (discarding anything the
+            // protocol learned since), and re-importing keys bumps the
+            // encrypted-target key epoch, so a name-only edit must not do either.
             if (decoderHost.running && row >= 0 && row === mainRoot.sessionRow) {
+                var was = mainRoot.sessionSystem || {}
                 var sys = savedSystems.get(row)
-                if (sys.chanCsvPath.length > 0)
-                    commands.importChannelMap(sys.chanCsvPath)
-                if (sys.groupCsvPath.length > 0)
-                    commands.importGroupList(sys.groupCsvPath)
-                if (sys.keyCsvPath.length > 0)
-                    commands.importKeys(sys.keyCsvPath, sys.keyCsvHex)
+                // Clearing a picker to "None" is a change like any other, and
+                // only the clear commands can express it — the import commands
+                // all reject an empty path. Without this the file the user just
+                // deselected keeps mapping channels, naming talkgroups and
+                // decrypting for the rest of the session.
+                if (sys.chanCsvPath !== was.chanCsvPath) {
+                    if (sys.chanCsvPath.length > 0)
+                        commands.importChannelMap(sys.chanCsvPath)
+                    else if ((was.chanCsvPath || "").length > 0)
+                        commands.clearChannelMap()
+                }
+                if (sys.groupCsvPath !== was.groupCsvPath) {
+                    if (sys.groupCsvPath.length > 0)
+                        commands.importGroupList(sys.groupCsvPath)
+                    else if ((was.groupCsvPath || "").length > 0)
+                        commands.clearGroupList()
+                }
+                if (sys.keyCsvPath !== was.keyCsvPath || sys.keyCsvHex !== was.keyCsvHex) {
+                    if (sys.keyCsvPath.length > 0)
+                        commands.importKeys(sys.keyCsvPath, sys.keyCsvHex)
+                    else if ((was.keyCsvPath || "").length > 0)
+                        commands.clearKeys()
+                }
+                // The monitor header reads sessionSystem; without this it keeps
+                // naming and metering the system as it was before the edit.
+                mainRoot.sessionSystem = sys
             }
             mainRoot.wizardOpen = false
             mainRoot.currentTab = 0
@@ -510,9 +543,15 @@ Window {
     }
 
     // ---- Imported-files library (pushed from Settings) ----
+    // The monitor owns the screen once a session goes active, so this layer
+    // stands down for it the way the explore setup and onboarding do — two lit,
+    // enabled full-screen layers means one tap lands on both, and the bottom
+    // "Import file" button sits exactly over "Stop listening".
     ImportsScreen {
+        objectName: "importsScreen"
+
         anchors.fill: safeArea
-        opacity: mainRoot.importsOpen ? 1.0 : 0.0
+        opacity: mainRoot.importsOpen && !mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
 

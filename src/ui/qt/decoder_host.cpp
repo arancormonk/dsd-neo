@@ -5,13 +5,15 @@
 
 #include "decoder_host.h"
 
+#include <QByteArray>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
 #include <QSaveFile>
-#include <QStandardPaths>
 #include <QUrl>
+
+#include "json_store.h"
 
 namespace dsd_qt {
 
@@ -19,7 +21,9 @@ namespace {
 
 QString
 imports_dir_path() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/imports");
+    // Same root json_store uses, so the library index and the files it points at
+    // can never end up under different app-data locations.
+    return json_store_path(QStringLiteral("imports"));
 }
 
 /** @brief chan.csv, chan (2).csv, chan (3).csv … first name not already taken. */
@@ -39,6 +43,55 @@ unique_destination(const QDir& dir, const QString& fileName) {
         }
     }
     return QString();
+}
+
+/**
+ * @brief @p replacePath when it names a file directly inside @p dir, else empty.
+ *
+ * Canonicalizes the *directory*, not the file: QFileInfo::canonicalPath() gives
+ * up on a missing leaf and returns ".", which would silently turn an update of a
+ * copy that vanished behind the app's back into a fresh unique copy the caller
+ * then rejects and never cleans up. The Android host resolves the parent too, so
+ * this keeps the two in step.
+ */
+QString
+replace_destination(const QDir& dir, const QString& replacePath) {
+    if (replacePath.isEmpty()) {
+        return QString();
+    }
+    const QString canonicalDir = QFileInfo(dir.absolutePath()).canonicalFilePath();
+    const QString canonicalTarget = QFileInfo(QFileInfo(replacePath).absolutePath()).canonicalFilePath();
+    if (canonicalDir.isEmpty() || canonicalTarget != canonicalDir) {
+        return QString();
+    }
+    return replacePath;
+}
+
+/**
+ * @brief Copy @p source to @p out in chunks; false on any read or write error.
+ *
+ * Loops on the read result rather than atEnd(): a read error returns an empty
+ * chunk without advancing pos(), so an atEnd()-driven loop would spin forever on
+ * it, and a readable source QFile reports size 0 for (a FIFO, /proc) claims to be
+ * at its end before a byte has been read.
+ */
+bool
+copy_stream(QIODevice& source, QSaveFile& out) {
+    QByteArray chunk(1 << 16, Qt::Uninitialized);
+    for (;;) {
+        const qint64 n = source.read(chunk.data(), chunk.size());
+        if (n < 0) {
+            out.cancelWriting();
+            return false;
+        }
+        if (n == 0) {
+            return true;
+        }
+        if (out.write(chunk.constData(), n) != n) {
+            out.cancelWriting();
+            return false;
+        }
+    }
 }
 
 } // namespace
@@ -81,14 +134,7 @@ DecoderHost::importDocument(const QString& reference, const QString& fileName, c
         return QString();
     }
 
-    QString destination;
-    if (!replacePath.isEmpty()) {
-        const QString canonicalDir = QFileInfo(importsDir.absolutePath()).canonicalFilePath();
-        const QString canonicalTarget = QFileInfo(replacePath).canonicalPath();
-        if (!canonicalDir.isEmpty() && canonicalTarget == canonicalDir) {
-            destination = replacePath;
-        }
-    }
+    QString destination = replace_destination(importsDir, replacePath);
     if (destination.isEmpty()) {
         destination = unique_destination(importsDir, name);
     }
@@ -102,14 +148,7 @@ DecoderHost::importDocument(const QString& reference, const QString& fileName, c
     if (!out.open(QIODevice::WriteOnly)) {
         return QString();
     }
-    while (!source.atEnd()) {
-        const QByteArray chunk = source.read(1 << 16);
-        if (out.write(chunk) != chunk.size()) {
-            out.cancelWriting();
-            return QString();
-        }
-    }
-    if (!out.commit()) {
+    if (!copy_stream(source, out) || !out.commit()) {
         return QString();
     }
     return destination;

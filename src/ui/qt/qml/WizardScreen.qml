@@ -46,6 +46,11 @@ Item {
     property string pickerTarget: "source"
     // Dec/hex choice for a new key-file import from the picker sheet.
     property bool pickerKeyHex: false
+    // Outcome of the last trunking-data import, shown under the picker rows.
+    // Without it a file that could not be read, or that parsed to nothing,
+    // leaves the row reading "None" with no explanation.
+    property string csvNotice: ""
+    property bool csvNoticeIsProblem: false
 
     // Step 3 state
     property alias nameText: nameField.text
@@ -94,6 +99,8 @@ Item {
         groupCsvPath = ""
         keyCsvPath = ""
         keyCsvHex = false
+        csvNotice = ""
+        csvNoticeIsProblem = false
     }
 
     /**
@@ -126,6 +133,8 @@ Item {
         groupCsvPath = ""
         keyCsvPath = ""
         keyCsvHex = false
+        csvNotice = ""
+        csvNoticeIsProblem = false
     }
 
     function openForEdit(row) {
@@ -150,6 +159,8 @@ Item {
         groupCsvPath = sys.groupCsvPath
         keyCsvPath = sys.keyCsvPath
         keyCsvHex = sys.keyCsvHex
+        csvNotice = ""
+        csvNoticeIsProblem = false
     }
 
     // Display line for a picker row: the file's name, or "None".
@@ -287,6 +298,8 @@ Item {
 
     // Assign an imported/picked library path to the field the picker serves.
     function assignCsvPath(target, path, hex) {
+        csvNotice = ""
+        csvNoticeIsProblem = false
         if (target === "chan") {
             chanCsvPath = path
         } else if (target === "group") {
@@ -316,8 +329,19 @@ Item {
             var type = wizard.pickerTarget === "keys"
                        ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget
             var result = importedFiles.importFile(reference, hint, type)
-            if (result.ok)
-                wizard.assignCsvPath(wizard.pickerTarget, result.path, wizard.pickerKeyHex)
+            if (!result.ok) {
+                wizard.csvNotice = qsTr("Could not read that file")
+                wizard.csvNoticeIsProblem = true
+                return
+            }
+            wizard.assignCsvPath(wizard.pickerTarget, result.path, wizard.pickerKeyHex)
+            if (result.error === "empty") {
+                wizard.csvNotice = qsTr("%1 has no usable rows — check the file format.").arg(result.name)
+                wizard.csvNoticeIsProblem = true
+            } else {
+                wizard.csvNotice = ""
+                wizard.csvNoticeIsProblem = false
+            }
         }
     }
 
@@ -718,6 +742,19 @@ Item {
                             leftPadding: Theme.cardPadding
                             rightPadding: Theme.cardPadding
                             bottomPadding: 6
+                            visible: wizard.csvNotice.length > 0
+                            text: wizard.csvNotice
+                            font.family: Theme.sans
+                            font.pixelSize: 12
+                            color: wizard.csvNoticeIsProblem ? Theme.magenta : Theme.textSubdued
+                            wrapMode: Text.Wrap
+                        }
+
+                        Text {
+                            width: parent.width
+                            leftPadding: Theme.cardPadding
+                            rightPadding: Theme.cardPadding
+                            bottomPadding: 6
                             text: qsTr("Imported files are shared between systems. Manage them in Settings.")
                             font.family: Theme.sans
                             font.pixelSize: 12
@@ -1036,45 +1073,65 @@ Item {
                   : qsTr("Encryption keys")
         }
 
-        Repeater {
-            model: csvSheet.entries
+        // The library is unbounded, and the sheet is centred with no scrolling of
+        // its own: past a handful of files an unclipped Repeater would push the
+        // "None"/import controls off the bottom and the title off the top, with
+        // no way to reach either. Cap the list and let it scroll instead.
+        Flickable {
+            width: parent.width
+            height: Math.min(entryColumn.height, 46 * 5)
+            visible: csvSheet.entries && csvSheet.entries.length > 0
+            clip: true
+            contentHeight: entryColumn.height
+            boundsBehavior: Flickable.StopAtBounds
 
-            Item {
-                required property var modelData
+            Column {
+                id: entryColumn
 
                 width: parent.width
-                height: 46
 
-                Column {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2
+                Repeater {
+                    model: csvSheet.entries
 
-                    Text {
-                        width: parent.width
-                        text: modelData.name
-                        font.family: Theme.sans
-                        font.pixelSize: 15
-                        font.weight: Font.DemiBold
-                        color: modelData.path === csvSheet.currentPath ? Theme.cyan : Theme.textPrimary
-                        elide: Text.ElideRight
-                    }
+                    Item {
+                        required property var modelData
 
-                    Text {
-                        width: parent.width
-                        text: csvSheet.entrySummary(modelData)
-                        font.family: Theme.sans
-                        font.pixelSize: 12
-                        color: Theme.textSubdued
-                        elide: Text.ElideRight
-                    }
-                }
+                        width: entryColumn.width
+                        height: 46
 
-                TapHandler {
-                    onTapped: {
-                        wizard.assignCsvPath(wizard.pickerTarget, modelData.path, modelData.type === "keysHex")
-                        csvSheet.visible = false
+                        Column {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 2
+
+                            Text {
+                                width: parent.width
+                                text: modelData.name
+                                font.family: Theme.sans
+                                font.pixelSize: 15
+                                font.weight: Font.DemiBold
+                                color: modelData.path === csvSheet.currentPath ? Theme.cyan : Theme.textPrimary
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: csvSheet.entrySummary(modelData)
+                                font.family: Theme.sans
+                                font.pixelSize: 12
+                                color: Theme.textSubdued
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        TapHandler {
+                            onTapped: {
+                                wizard.assignCsvPath(wizard.pickerTarget, modelData.path,
+                                                     modelData.type === "keysHex")
+                                csvSheet.visible = false
+                            }
+                        }
                     }
                 }
             }
@@ -1095,7 +1152,14 @@ Item {
             visible: wizard.pickerTarget === "keys"
             model: [qsTr("Decimal keys"), qsTr("Hex keys")]
             currentIndex: wizard.pickerKeyHex ? 1 : 0
-            onSelected: function (index) { wizard.pickerKeyHex = index === 1 }
+            // Also re-reads the already-assigned file: the control opens showing
+            // that file's dec/hex state, so flipping it has to change it —
+            // otherwise it looks like a setting and silently does nothing.
+            onSelected: function (index) {
+                wizard.pickerKeyHex = index === 1
+                if (wizard.pickerTarget === "keys" && wizard.keyCsvPath.length > 0)
+                    wizard.keyCsvHex = wizard.pickerKeyHex
+            }
         }
 
         GradientButton {
