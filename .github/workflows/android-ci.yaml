@@ -288,6 +288,7 @@ jobs:
             dsd-neo_test_ui_qt_persistence \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_session_args \
+            dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_call_history_merge \
             dsd-neo_test_ui_qt_call_line \
             dsd-neo_test_ui_qt_session_state \
