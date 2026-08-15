@@ -942,7 +942,6 @@ init_state_nxdn_and_dmr_defaults(dsd_state* state) {
     //dmr trunking/ncurses stuff
     state->dmr_rest_channel = -1; //init on -1
     state->dmr_mfid = -1;         //
-    state->dmr_cc_lpcn = 0;
     state->tg_hold = 0;
 
     //new nxdn stuff

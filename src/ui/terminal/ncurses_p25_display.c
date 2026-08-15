@@ -450,6 +450,78 @@ ui_print_p1_header_metric(const dsd_state* state, int is_p25p1) {
     return 1;
 }
 
+/*
+ * Soft-decision rescues: frames the hard-decision decoders would have dropped.
+ * Zero is the healthy case and says nothing, so the row appears only once the
+ * soft path has actually saved something.
+ */
+static int
+ui_print_p1_soft_fec_metric(const dsd_state* state, int is_p25p1) {
+    if (!is_p25p1) {
+        return 0;
+    }
+    unsigned int any = state->p25_p1_soft_hamming_ok | state->p25_p1_soft_golay_ok | state->p25_p1_soft_rs_ok
+                       | state->p25_p1_soft_combined_ok;
+    if (any == 0) {
+        return 0;
+    }
+    printw("| P1 Soft FEC: Ham %u Golay %u RS %u Comb %u\n", state->p25_p1_soft_hamming_ok, state->p25_p1_soft_golay_ok,
+           state->p25_p1_soft_rs_ok, state->p25_p1_soft_combined_ok);
+    return 1;
+}
+
+/*
+ * NID BCH health. Parity overrides are reported apart from corrections because
+ * they are accepted final-parity mismatches, not corrected symbol errors.
+ */
+static int
+ui_print_p1_nid_metric(const dsd_state* state, int is_p25p1) {
+    if (!is_p25p1) {
+        return 0;
+    }
+    unsigned int any = state->nid_corrections_total | state->nid_failures_total | state->nid_parity_overrides;
+    if (any == 0) {
+        return 0;
+    }
+    printw("| P1 NID: corr %u fail %u parity %u\n", state->nid_corrections_total, state->nid_failures_total,
+           state->nid_parity_overrides);
+    return 1;
+}
+
+/*
+ * What the vocoder did with each accepted IMBE frame, which the FEC and BER rows
+ * above do not answer: a corrected frame was heard, a concealed one was not.
+ *
+ * Tagged "session" because, unlike every other row in this panel, these counters
+ * survive retune and no-carrier -- they are never reset for the life of the run.
+ */
+static int
+ui_print_p1_voice_frame_metric(const dsd_state* state, int is_p25p1) {
+    if (!is_p25p1 || state->p25_p1_accepted_frames == 0U) {
+        return 0;
+    }
+    printw("| P1 Frames (session): acc %llu (cln %llu cor %llu cnc %llu) fix %llu\n",
+           (unsigned long long)state->p25_p1_accepted_frames, (unsigned long long)state->p25_p1_clean_frames,
+           (unsigned long long)state->p25_p1_corrected_frames, (unsigned long long)state->p25_p1_concealed_frames,
+           (unsigned long long)state->p25_p1_accepted_corrections);
+    return 1;
+}
+
+/*
+ * Tail-erasure suppression is rare enough to earn its own row only when it has
+ * fired; folding it into the frame row above would pad every line for a case
+ * most runs never hit.
+ */
+static int
+ui_print_p1_tail_erasure_metric(const dsd_state* state, int is_p25p1) {
+    if (!is_p25p1 || state->p25_p1_suppressed_tail_frames == 0U) {
+        return 0;
+    }
+    printw("| P1 Tail (session): supp %llu excl %llu\n", (unsigned long long)state->p25_p1_suppressed_tail_frames,
+           (unsigned long long)state->p25_p1_excluded_tail_corrections);
+    return 1;
+}
+
 static int
 ui_print_p1_voice_percentile_metric(const dsd_state* state) {
     int n = state->p25_p1_voice_err_hist_len;
@@ -475,8 +547,12 @@ ui_print_p25_core_metrics(const dsd_state* state, int is_p25p1, int is_p25p2) {
     lines += ui_print_p1_voice_err_metric(state);
     lines += ui_print_p1_cc_fec_metric(state);
     lines += ui_print_p1_voice_fec_metric(state, is_p25p1);
+    lines += ui_print_p1_soft_fec_metric(state, is_p25p1);
+    lines += ui_print_p1_nid_metric(state, is_p25p1);
     lines += ui_print_p1_header_metric(state, is_p25p1);
     lines += ui_print_p1_voice_percentile_metric(state);
+    lines += ui_print_p1_voice_frame_metric(state, is_p25p1);
+    lines += ui_print_p1_tail_erasure_metric(state, is_p25p1);
     return lines;
 }
 
@@ -552,6 +628,22 @@ ui_print_p2_rs_metric(const dsd_state* state) {
     return lines;
 }
 
+/*
+ * Soft-decision recoveries on the Phase 2 side, counted where hard-decision RS
+ * would have failed. Max depth is the deepest erasure set the soft ESS decoder
+ * had to reach for, so it says how hard the channel is working the decoder.
+ */
+static int
+ui_print_p2_soft_fec_metric(const dsd_state* state) {
+    unsigned int any = state->p25_p2_soft_erasure_ok | state->p25_p2_soft_ess_ok;
+    if (any == 0) {
+        return 0;
+    }
+    printw("| P2 Soft FEC: erasure %u ESS %u (max depth %u)\n", state->p25_p2_soft_erasure_ok,
+           state->p25_p2_soft_ess_ok, state->p25_p2_soft_ess_max_depth);
+    return 1;
+}
+
 static int
 ui_print_p25p2_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p1, int is_p25p2) {
     if (!is_p25p2 && !(is_p25p1 && opts && opts->trunk_enable == 1)) {
@@ -561,6 +653,7 @@ ui_print_p25p2_metrics(const dsd_opts* opts, const dsd_state* state, int is_p25p
     lines += ui_print_p2_voice_avg_metric(state);
     lines += ui_print_p2_voice_percentile_metric(state);
     lines += ui_print_p2_rs_metric(state);
+    lines += ui_print_p2_soft_fec_metric(state);
     return lines;
 }
 

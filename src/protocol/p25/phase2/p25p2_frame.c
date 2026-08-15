@@ -1138,11 +1138,8 @@ p25p2_ess_decode(dsd_state* state) {
 }
 
 static double
-p25p2_frame_mac_hold_s(const dsd_state* state, double fallback) {
+p25p2_frame_mac_hold_s(double fallback) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (state->p25_cfg_mac_hold_s > 0.0) {
-        return state->p25_cfg_mac_hold_s;
-    }
     if (cfg && cfg->p25_mac_hold_is_set) {
         return cfg->p25_mac_hold_s;
     }
@@ -1150,11 +1147,8 @@ p25p2_frame_mac_hold_s(const dsd_state* state, double fallback) {
 }
 
 static double
-p25p2_frame_vc_grace_s(const dsd_state* state, double fallback) {
+p25p2_frame_vc_grace_s(double fallback) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (state->p25_cfg_vc_grace_s > 0.0) {
-        return state->p25_cfg_vc_grace_s;
-    }
     if (cfg && cfg->p25_vc_grace_is_set) {
         return cfg->p25_vc_grace_s;
     }
@@ -1540,13 +1534,13 @@ p25p2_duid_compute_pending_release(dsd_opts* opts, dsd_state* state, time_t now)
         return 0;
     }
 
-    double vc_grace = p25p2_frame_vc_grace_s(state, 0.75);
+    double vc_grace = p25p2_frame_vc_grace_s(0.75);
     double dt_since_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now - state->p25_last_vc_tune_time) : 1e9;
     if (dt_since_tune < vc_grace) {
         return 0;
     }
 
-    double mac_hold = p25p2_frame_mac_hold_s(state, 0.75);
+    double mac_hold = p25p2_frame_mac_hold_s(0.75);
     int left_mac_active = (state->p25_p2_last_mac_active_m[0] > 0.0)
                           && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[0]) <= mac_hold;
     int right_mac_active = (state->p25_p2_last_mac_active_m[1] > 0.0)
@@ -1720,7 +1714,7 @@ p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
     int no_recent_voice = (state->last_vc_sync_time != 0) && ((now2 - state->last_vc_sync_time) > opts->trunk_hangtime);
     int both_slots_idle = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
     double dt_since_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
-    double vc_grace = p25p2_frame_vc_grace_s(state, 0.75);
+    double vc_grace = p25p2_frame_vc_grace_s(0.75);
     if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {
         state->p25_sm_force_release = 1;
         p25p2_teardown_call(opts, state);

@@ -890,20 +890,6 @@ struct dsd_state {
     // Monotonic confirmation ticket handed to each armed/refreshed entry; the
     // eviction LRU orders on this rather than on one-second wall clock.
     uint64_t enc_lockout_seq;
-    // Cached P25 SM tunables (seconds), resolved once at p25_sm_init_ctx()
-    double p25_cfg_vc_grace_s;
-    double p25_cfg_grant_voice_to_s;
-    double p25_cfg_min_follow_dwell_s;
-    double p25_cfg_mac_hold_s;
-    double p25_cfg_cc_grace_s;
-    double p25_cfg_ring_hold_s;        // seconds to honor audio ring after recent MAC
-    double p25_cfg_force_rel_extra_s;  // safety-net extra seconds beyond hang
-    double p25_cfg_force_rel_margin_s; // safety-net hard margin seconds beyond extra
-    double p25_cfg_tail_ms;            // P2 tail wait in ms before early release
-    double p25_cfg_p1_tail_ms;         // P1 tail wait in ms before early release
-    double p25_cfg_p1_err_hold_pct;    // P1 elevated-error threshold percentage
-    double p25_cfg_p1_err_hold_s;      // P1 elevated-error additional hold seconds
-
     // P25 Phase 1 control/data channel FEC/CRC telemetry (for BER display)
     // NOTE: This does not reflect IMBE voice quality. Voice frames have their own
     // Golay/Hamming/RS protection and IMBE ECC; see P1 Voice metrics and
@@ -1073,12 +1059,8 @@ struct dsd_state {
 
     //dmr trunking stuff
     int dmr_rest_channel;
-    int dmr_mfid; //just when 'fid' is used as a manufacturer ID and not a feature set id
-    int dmr_vc_lcn;
-    int dmr_vc_lsn;
-    int dmr_tuned_lcn;
-    uint16_t dmr_cc_lpcn; //dmr t3 logical physical channel number
-    uint32_t tg_hold;     //single TG to hold on when enabled
+    int dmr_mfid;     //just when 'fid' is used as a manufacturer ID and not a feature set id
+    uint32_t tg_hold; //single TG to hold on when enabled
 
     //edacs
     int ea_mode;

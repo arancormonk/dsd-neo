@@ -905,11 +905,8 @@ p25p2_vpdu_gate_slot_audio(dsd_state* state, int slot) {
 }
 
 static double
-p25p2_vpdu_cfg_mac_hold_s(const dsd_state* state, double fallback) {
+p25p2_vpdu_cfg_mac_hold_s(double fallback) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (state && state->p25_cfg_mac_hold_s > 0.0) {
-        return state->p25_cfg_mac_hold_s;
-    }
     if (cfg && cfg->p25_mac_hold_is_set) {
         return cfg->p25_mac_hold_s;
     }
@@ -926,11 +923,8 @@ p25p2_vpdu_cfg_voice_hold_s(double fallback) {
 }
 
 static double
-p25p2_vpdu_cfg_vc_grace_s(const dsd_state* state, double fallback) {
+p25p2_vpdu_cfg_vc_grace_s(double fallback) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-    if (state->p25_cfg_vc_grace_s > 0.0) {
-        return state->p25_cfg_vc_grace_s;
-    }
     if (cfg && cfg->p25_vc_grace_is_set) {
         return cfg->p25_vc_grace_s;
     }
@@ -971,7 +965,7 @@ p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, doubl
 
 static int
 p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
-    double vc_grace = p25p2_vpdu_cfg_vc_grace_s(state, 0.75);
+    double vc_grace = p25p2_vpdu_cfg_vc_grace_s(0.75);
     double nowm = dsd_time_now_monotonic_s();
     double dt_since_tune = (state->p25_last_vc_tune_time_m > 0.0) ? (nowm - state->p25_last_vc_tune_time_m) : 1e9;
     if (dt_since_tune < vc_grace) {
@@ -3437,7 +3431,7 @@ p25p2_vpdu_iter_block_44(p25p2_vpdu_ctx* ctx) {
         int resr2 = MAC[6 + len_a] >> 4;
         int cc = ((MAC[6 + len_a] & 0xF) << 8) | MAC[7 + len_a];
         int eslot = slot;
-        double mac_hold = p25p2_vpdu_cfg_mac_hold_s(state, 0.75);
+        double mac_hold = p25p2_vpdu_cfg_mac_hold_s(0.75);
         double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.75);
         int other_audio = 0;
         uint8_t released_slot = (uint8_t)(eslot & 1);
