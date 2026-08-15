@@ -11,6 +11,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/io/control.h>
@@ -313,6 +314,22 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * Adopt an imported channel map wholesale. The importer is additive
  * (lcn_freq_count only grows, stale trunk_chan_map slots survive), so a
  * runtime re-import must replace the previous map rather than append to it.
+ *
+ * Replace, deliberately, and not a merge: what the protocol layer learned on
+ * the air (dmr_csbk, p25_frequency, edacs-fme) is discarded along with the old
+ * CSV's entries, so a grant for an LCN the new file omits resolves to 0 Hz
+ * until the site re-announces it. A merge was considered and rejected -- "apply
+ * this file" would stop meaning the map is what the file says, a re-import
+ * could no longer shrink a map, and correcting a wrong frequency in the CSV
+ * would not take on a site that had already announced it. Emptying the map is
+ * svc_clear_channel_map()'s job, so nothing needs the merge to express it.
+ *
+ * dmr_lcn_trust is provenance for the map, not a separate table: leaving it
+ * behind would let a stale "learned on the control channel" byte authorize an
+ * off-CC tune to a frequency that only the new CSV asserts. Clearing it matches
+ * what -C produces at startup, and dmr_learn_chan_map() re-earns trust for any
+ * LCN the new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
+ * shorter list has to restart the hunt rather than resume mid-way.
  */
 static void
 chan_map_adopt(dsd_state* dst, const dsd_state* src) {
@@ -321,6 +338,8 @@ chan_map_adopt(dsd_state* dst, const dsd_state* src) {
     dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
     DSD_MEMCPY(dst->trunk_lcn_freq, src->trunk_lcn_freq, sizeof dst->trunk_lcn_freq);
     dst->lcn_freq_count = src->lcn_freq_count;
+    dst->lcn_freq_roll = 0;
+    DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;
 }
 
@@ -329,21 +348,83 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
         return -1;
     }
+    // Same invariant the CLI enforces for -C: a trunk-scan run gets its channel
+    // maps per target, and adopting a global one here would wipe the target's.
+    if (opts->trunk_scan_enabled == 1) {
+        return -1;
+    }
     DSD_STRNCPY(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
 
     // Import into throwaway heap state (dsd_state is multi-megabyte) so a
-    // failed import leaves the live map untouched.
+    // failed import leaves the live map untouched. The allocation is large and
+    // this runs on the decoder thread, but it happens once per user import
+    // rather than per frame, and it is the same validate-then-swap shape
+    // dsd_tg_policy_reload_group_file() uses for the same reason.
     dsd_state* imported = (dsd_state*)calloc(1, sizeof(*imported));
     if (!imported) {
         return -1;
     }
-    if (csvChanImport(opts, imported) != 0) {
-        free(imported);
+    const int import_rc = csvChanImport(opts, imported);
+    // The importer reports success for any file it could open, so a mispicked
+    // CSV (a talkgroup list, a header-only file) parses to an empty map. Adopting
+    // that would replace the live map with zeros; refuse instead, which is what
+    // the additive import used to do by doing nothing.
+    const int mapped_any = (imported->trunk_chan_map_used_count > 0);
+    if (import_rc == 0 && mapped_any) {
+        chan_map_adopt(state, imported);
+    }
+    dsd_state_ext_free_all(imported);
+    free(imported);
+    return (import_rc == 0 && mapped_any) ? 0 : -1;
+}
+
+int
+svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
         return -1;
     }
-    chan_map_adopt(state, imported);
-    free(imported);
+    // The same invariant svc_import_channel_map() enforces: under trunk scan the
+    // per-target maps are not this frontend's to empty.
+    if (opts->trunk_scan_enabled == 1) {
+        return -1;
+    }
+    opts->chan_in_file[0] = '\0';
+    DSD_MEMSET(state->trunk_chan_map, 0, sizeof state->trunk_chan_map);
+    DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
+    state->trunk_chan_map_used_count = 0;
+    DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
+    state->lcn_freq_count = 0;
+    state->lcn_freq_roll = 0;
+    // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving
+    // "learned on the control channel" byte would authorize an off-CC tune to a
+    // frequency no longer in the map.
+    DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
+    state->trunk_chan_map_seq++;
+    return 0;
+}
+
+int
+svc_clear_group_list(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    opts->group_in_file[0] = '\0';
+    return dsd_tg_policy_clear(state);
+}
+
+int
+svc_clear_keys(dsd_opts* opts, dsd_state* state) {
+    if (!opts || !state) {
+        return -1;
+    }
+    // One keyring behind both CSV kinds, so one clear covers dec and hex.
+    opts->key_in_file[0] = '\0';
+    DSD_MEMSET(state->rkey_array, 0, sizeof state->rkey_array);
+    DSD_MEMSET(state->rkey_array_loaded, 0, sizeof state->rkey_array_loaded);
+    // Disarm the keyring the way svc_import_keys_dec() arms it. Leaving it set
+    // would keep every consumer treating the now-zeroed array as loaded keys.
+    state->keyloader = 0;
     return 0;
 }
 
@@ -364,7 +445,15 @@ svc_import_keys_dec(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     DSD_STRNCPY(opts->key_in_file, path, sizeof opts->key_in_file - 1);
     opts->key_in_file[sizeof opts->key_in_file - 1] = '\0';
-    return csvKeyImportDec(opts, state);
+    const int rc = csvKeyImportDec(opts, state);
+    if (rc == 0) {
+        // Arm the keyring, exactly as -k does. Without this the rows land in
+        // rkey_array but every consumer (dsd_mbe, P25/NXDN crypto) gates on
+        // keyloader, so a session that started without a key file would report
+        // the import as applied and keep failing to decrypt.
+        state->keyloader = 1;
+    }
+    return rc;
 }
 
 int
@@ -374,7 +463,11 @@ svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     DSD_STRNCPY(opts->key_in_file, path, sizeof opts->key_in_file - 1);
     opts->key_in_file[sizeof opts->key_in_file - 1] = '\0';
-    return csvKeyImportHex(opts, state);
+    const int rc = csvKeyImportHex(opts, state);
+    if (rc == 0) {
+        state->keyloader = 1; // see svc_import_keys_dec
+    }
+    return rc;
 }
 
 void

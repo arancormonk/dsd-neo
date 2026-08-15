@@ -34,6 +34,7 @@
 #include "services.h"
 
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/sockets.h"
@@ -162,18 +163,20 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+static int g_key_import_result = -1;
+
 int
 csvKeyImportDec(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    return -1;
+    return g_key_import_result;
 }
 
 int
 csvKeyImportHex(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    return -1;
+    return g_key_import_result;
 }
 
 int
@@ -181,6 +184,25 @@ dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     return -1;
+}
+
+/* Counts calls rather than returning a canned value: what svc_clear_group_list()
+ * owes the caller is that the policy was asked to empty itself, and the emptying
+ * itself belongs to CORE_TALKGROUP_POLICY. */
+static int g_tg_policy_clear_calls = 0;
+
+int
+dsd_tg_policy_clear(dsd_state* state) {
+    (void)state;
+    g_tg_policy_clear_calls++;
+    return 0;
+}
+
+/* The throwaway import state may carry module extensions; nothing under test
+ * allocates one, so releasing it is a no-op here. */
+void
+dsd_state_ext_free_all(dsd_state* state) {
+    (void)state;
 }
 
 double
@@ -771,6 +793,128 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("failed reimport preserves chan", (int)state.trunk_chan_map[201], 860000000);
     rc |= expect_str("failed reimport still stores path", opts.chan_in_file, "bad.csv");
 
+    // The importer reports success for any file it can open, so a mispicked CSV
+    // parses to an empty map. Adopting that would replace the live map with
+    // zeros; the service has to refuse instead.
+    g_chan_import_result = 0;
+    g_chan_import_count = 0;
+    rc |= expect_int("empty import refused", svc_import_channel_map(&opts, &state, "talkgroups.csv"), -1);
+    rc |= expect_int("empty import preserves chan", (int)state.trunk_chan_map[201], 860000000);
+    rc |= expect_int("empty import preserves lcn count", state.lcn_freq_count, 2);
+
+    // Trunk scan owns per-target maps; a global runtime import would wipe them.
+    opts.trunk_scan_enabled = 1;
+    g_chan_import_count = 1;
+    g_chan_import_chan[0] = 301;
+    g_chan_import_freq[0] = 870000000L;
+    rc |= expect_int("trunk-scan import refused", svc_import_channel_map(&opts, &state, "scan.csv"), -1);
+    rc |= expect_int("trunk-scan import preserves chan", (int)state.trunk_chan_map[201], 860000000);
+    opts.trunk_scan_enabled = 0;
+
+    // dmr_lcn_trust is provenance for the map, not a separate table: a stale
+    // "learned on the CC" byte would authorize an off-CC tune to a frequency
+    // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
+    state.dmr_lcn_trust[201] = 2;
+    state.lcn_freq_roll = 1;
+    g_chan_import_count = 1;
+    g_chan_import_chan[0] = 401;
+    g_chan_import_freq[0] = 880000000L;
+    rc |= expect_int("adopt ok", svc_import_channel_map(&opts, &state, "c.csv"), 0);
+    rc |= expect_int("adopt clears stale lcn trust", (int)state.dmr_lcn_trust[201], 0);
+    rc |= expect_int("adopt restarts the lcn roll", state.lcn_freq_roll, 0);
+
+    return rc;
+}
+
+/*
+ * Runtime key import has to arm the keyring the way -k/-K does: every consumer
+ * of rkey_array gates on keyloader, so without this the rows load and nothing
+ * ever uses them while the UI reports success.
+ */
+static int
+test_key_import_arms_keyloader(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    g_key_import_result = -1;
+    rc |= expect_int("dec key import failure rc", svc_import_keys_dec(&opts, &state, "keys.csv"), -1);
+    rc |= expect_int("failed dec key import leaves keyloader off", state.keyloader, 0);
+
+    g_key_import_result = 0;
+    rc |= expect_int("dec key import ok", svc_import_keys_dec(&opts, &state, "keys.csv"), 0);
+    rc |= expect_int("dec key import arms keyloader", state.keyloader, 1);
+
+    state.keyloader = 0;
+    rc |= expect_int("hex key import ok", svc_import_keys_hex(&opts, &state, "keys.hex"), 0);
+    rc |= expect_int("hex key import arms keyloader", state.keyloader, 1);
+
+    g_key_import_result = -1;
+    return rc;
+}
+
+/*
+ * Unloading. A frontend whose system can deselect a CSV needs a way to say
+ * "none": every importer takes a path and rejects an empty one, so without
+ * these the deselected file stays live for the rest of the session.
+ */
+static int
+test_clear_services_unload_what_the_importers_loaded(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    g_chan_import_result = 0;
+    g_chan_import_count = 2;
+    g_chan_import_chan[0] = 101;
+    g_chan_import_freq[0] = 851000000L;
+    g_chan_import_chan[1] = 102;
+    g_chan_import_freq[1] = 852000000L;
+    rc |= expect_int("clear: seed import ok", svc_import_channel_map(&opts, &state, "a.csv"), 0);
+    state.dmr_lcn_trust[101] = 2;
+    state.lcn_freq_roll = 1;
+    const unsigned int seq_before = state.trunk_chan_map_seq;
+
+    rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
+    rc |= expect_str("chan map clear forgets the path", opts.chan_in_file, "");
+    rc |= expect_int("chan map clear empties the map", (int)state.trunk_chan_map[101], 0);
+    rc |= expect_int("chan map clear empties used count", (int)state.trunk_chan_map_used_count, 0);
+    rc |= expect_int("chan map clear empties lcn list", state.lcn_freq_count, 0);
+    rc |= expect_int("chan map clear restarts the lcn roll", state.lcn_freq_roll, 0);
+    // Provenance goes with the map for the same reason it does on an adopt: a
+    // surviving trust byte authorizes an off-CC tune to a frequency now gone.
+    rc |= expect_int("chan map clear drops lcn trust", (int)state.dmr_lcn_trust[101], 0);
+    rc |= expect_int("chan map clear advances the map seq", (int)(state.trunk_chan_map_seq != seq_before), 1);
+
+    // Trunk scan owns per-target maps; emptying a global one is not this
+    // frontend's call, exactly as on the import side.
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_int("trunk-scan chan map clear refused", svc_clear_channel_map(&opts, &state), -1);
+    opts.trunk_scan_enabled = 0;
+
+    DSD_SNPRINTF(opts.group_in_file, sizeof opts.group_in_file, "%s", "groups.csv");
+    const int clears_before = g_tg_policy_clear_calls;
+    rc |= expect_int("group list clear ok", svc_clear_group_list(&opts, &state), 0);
+    rc |= expect_str("group list clear forgets the path", opts.group_in_file, "");
+    rc |= expect_int("group list clear empties the policy", g_tg_policy_clear_calls - clears_before, 1);
+
+    g_key_import_result = 0;
+    rc |= expect_int("clear: seed key import ok", svc_import_keys_dec(&opts, &state, "keys.csv"), 0);
+    state.rkey_array[7] = 0x1234ULL;
+    state.rkey_array_loaded[7] = 1U;
+    rc |= expect_int("keys clear ok", svc_clear_keys(&opts, &state), 0);
+    rc |= expect_str("keys clear forgets the path", opts.key_in_file, "");
+    rc |= expect_int("keys clear empties the keyring", (int)state.rkey_array[7], 0);
+    rc |= expect_int("keys clear marks the slot unloaded", (int)state.rkey_array_loaded[7], 0);
+    // Disarmed, or every consumer keeps treating the zeroed array as loaded keys.
+    rc |= expect_int("keys clear disarms the keyloader", state.keyloader, 0);
+
+    g_chan_import_result = -1;
+    g_key_import_result = -1;
     return rc;
 }
 
@@ -787,5 +931,7 @@ main(void) {
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_channel_map_reimport_replaces_previous_map();
+    rc |= test_key_import_arms_keyloader();
+    rc |= test_clear_services_unload_what_the_importers_loaded();
     return rc ? 1 : 0;
 }

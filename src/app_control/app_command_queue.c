@@ -1546,12 +1546,64 @@ ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct dsd
 }
 
 static int
+ui_cmd_handle_import_channel_map_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const int rc = svc_clear_channel_map(opts, state);
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: Channel map cleared");
+    } else {
+        ui_set_toast(state, 4, "Failed: Channel map clear");
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
+static int
+ui_cmd_handle_import_group_list_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const int rc = svc_clear_group_list(opts, state);
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: Group list cleared");
+    } else {
+        ui_set_toast(state, 4, "Failed: Group list clear");
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
+static int
+ui_cmd_handle_import_keys_clear(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    (void)c;
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const int rc = svc_clear_keys(opts, state);
+    if (rc == 0) {
+        // The lockout ledger is keyed on the key epoch, so targets skipped for
+        // want of a key have to be reconsidered against the empty keyring the
+        // same way they are against a newly imported one.
+        dsd_enc_lockout_bump_key_epoch(state);
+        ui_set_toast(state, 3, "Applied: Keys cleared");
+    } else {
+        ui_set_toast(state, 4, "Failed: Keys clear");
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
+static int
 apply_cmd_io_and_import_imports(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
         {DSD_APP_CMD_IMPORT_CHANNEL_MAP, ui_cmd_handle_import_channel_map},
         {DSD_APP_CMD_IMPORT_GROUP_LIST, ui_cmd_handle_import_group_list},
         {DSD_APP_CMD_IMPORT_KEYS_DEC, ui_cmd_handle_import_keys_dec},
         {DSD_APP_CMD_IMPORT_KEYS_HEX, ui_cmd_handle_import_keys_hex},
+        {DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR, ui_cmd_handle_import_channel_map_clear},
+        {DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR, ui_cmd_handle_import_group_list_clear},
+        {DSD_APP_CMD_IMPORT_KEYS_CLEAR, ui_cmd_handle_import_keys_clear},
     };
     if (!opts || !c) {
         return 0;
