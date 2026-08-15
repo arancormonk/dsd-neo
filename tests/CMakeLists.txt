@@ -5836,6 +5836,24 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_dsp_costas)
 add_test(NAME DSP_COSTAS COMMAND dsd-neo_test_dsp_costas)
 
+# MMSE interpolator time-direction and seam conventions
+add_executable(dsd-neo_test_dsp_mmse_interp dsp/test_dsp_mmse_interp.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_mmse_interp
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_mmse_interp)
+add_test(NAME DSP_MMSE_INTERP COMMAND dsd-neo_test_dsp_mmse_interp)
+
+# CQPSK chain EVM floor regression (pins interpolator time direction)
+add_executable(dsd-neo_test_dsp_cqpsk_evm dsp/test_dsp_cqpsk_evm.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_cqpsk_evm
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_dsp_cqpsk_evm)
+add_test(NAME DSP_CQPSK_EVM COMMAND dsd-neo_test_dsp_cqpsk_evm)
+
 # DMR utility/CRC property tests
 add_executable(dsd-neo_test_dmr_crc_props protocol/dmr/test_dmr_crc_props.c)
 target_include_directories(
@@ -8173,6 +8191,15 @@ if(DSD_HAS_RADIO)
         p25p1_cqpsk_vc
         -f1
         "Group Voice Channel User"
+    )
+    # Two-ray simulcast impairment (62.5 us delay spread, -4.4 dB second ray,
+    # +1.5 Hz carrier beat) derived from the clean CQPSK CC capture; exercises
+    # LSM reception through beat fading and frequency-selective ISI.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC
+        p25p1_cqpsk_cc_simulcast
+        -f1
+        "Group Voice Channel Grant Update - Implicit"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_P25P2_CC p25p2_cc -f2 "P25p2 SACCH")
     dsd_neo_add_iq_decode_test(
