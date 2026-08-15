@@ -120,63 +120,60 @@ SavedSystemsModel::roleNames() const {
     return roles;
 }
 
+namespace {
+
+/** @brief Overwrite @p target only when @p key is present; absent keys keep the base value. */
+void
+map_take_string(const QVariantMap& map, const char* key, QString* target) {
+    const QString name = QLatin1String(key);
+    if (map.contains(name)) {
+        *target = map.value(name).toString();
+    }
+}
+
+void
+map_take_int(const QVariantMap& map, const char* key, int* target) {
+    const QString name = QLatin1String(key);
+    if (map.contains(name)) {
+        *target = map.value(name).toInt();
+    }
+}
+
+void
+map_take_bool(const QVariantMap& map, const char* key, bool* target) {
+    const QString name = QLatin1String(key);
+    if (map.contains(name)) {
+        *target = map.value(name).toBool();
+    }
+}
+
+} // namespace
+
 SavedSystemsModel::Row
 SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     Row row = base;
-    if (map.contains(QStringLiteral("name"))) {
-        row.name = map.value(QStringLiteral("name")).toString();
-    }
-    if (map.contains(QStringLiteral("sourceType"))) {
-        row.sourceType = map.value(QStringLiteral("sourceType")).toString();
-    }
-    if (map.contains(QStringLiteral("host"))) {
-        row.host = map.value(QStringLiteral("host")).toString();
-    }
-    if (map.contains(QStringLiteral("port"))) {
-        row.port = map.value(QStringLiteral("port")).toInt();
-    }
-    if (map.contains(QStringLiteral("freqMhz"))) {
-        row.freqMhz = map.value(QStringLiteral("freqMhz")).toString();
-    }
-    if (map.contains(QStringLiteral("decodeFlag"))) {
-        row.decodeFlag = map.value(QStringLiteral("decodeFlag")).toString();
-    }
-    if (map.contains(QStringLiteral("trunking"))) {
-        row.trunking = map.value(QStringLiteral("trunking")).toBool();
-    }
-    if (map.contains(QStringLiteral("gainDb"))) {
-        row.gainDb = map.value(QStringLiteral("gainDb")).toInt();
-    }
-    if (map.contains(QStringLiteral("ppm"))) {
-        row.ppm = map.value(QStringLiteral("ppm")).toString();
-    }
-    if (map.contains(QStringLiteral("bandwidthKhz"))) {
-        row.bandwidthKhz = map.value(QStringLiteral("bandwidthKhz")).toInt();
-    }
+    map_take_string(map, "name", &row.name);
+    map_take_string(map, "sourceType", &row.sourceType);
+    map_take_string(map, "host", &row.host);
+    map_take_int(map, "port", &row.port);
+    map_take_string(map, "freqMhz", &row.freqMhz);
+    map_take_string(map, "decodeFlag", &row.decodeFlag);
+    map_take_bool(map, "trunking", &row.trunking);
+    map_take_int(map, "gainDb", &row.gainDb);
+    map_take_string(map, "ppm", &row.ppm);
+    map_take_int(map, "bandwidthKhz", &row.bandwidthKhz);
     if (map.contains(QStringLiteral("biasTee"))) {
         row.biasTee = bias_tee_from_stored(map.value(QStringLiteral("biasTee")));
     }
-    if (map.contains(QStringLiteral("extraArgs"))) {
-        row.extraArgs = map.value(QStringLiteral("extraArgs")).toString();
-    }
-    if (map.contains(QStringLiteral("filePath"))) {
-        row.filePath = map.value(QStringLiteral("filePath")).toString();
-    }
+    map_take_string(map, "extraArgs", &row.extraArgs);
+    map_take_string(map, "filePath", &row.filePath);
     if (map.contains(QStringLiteral("lastHeard"))) {
         row.lastHeard = map.value(QStringLiteral("lastHeard")).toLongLong();
     }
-    if (map.contains(QStringLiteral("chanCsvPath"))) {
-        row.chanCsvPath = map.value(QStringLiteral("chanCsvPath")).toString();
-    }
-    if (map.contains(QStringLiteral("groupCsvPath"))) {
-        row.groupCsvPath = map.value(QStringLiteral("groupCsvPath")).toString();
-    }
-    if (map.contains(QStringLiteral("keyCsvPath"))) {
-        row.keyCsvPath = map.value(QStringLiteral("keyCsvPath")).toString();
-    }
-    if (map.contains(QStringLiteral("keyCsvHex"))) {
-        row.keyCsvHex = map.value(QStringLiteral("keyCsvHex")).toBool();
-    }
+    map_take_string(map, "chanCsvPath", &row.chanCsvPath);
+    map_take_string(map, "groupCsvPath", &row.groupCsvPath);
+    map_take_string(map, "keyCsvPath", &row.keyCsvPath);
+    map_take_bool(map, "keyCsvHex", &row.keyCsvHex);
     return row;
 }
 

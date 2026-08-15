@@ -575,6 +575,38 @@ group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_ra
     return rc;
 }
 
+/** @brief Parse and commit one group data row. @return 0 when the row loaded. */
+static int
+group_import_row(dsd_state* state, const char* filename, unsigned int row_count, char* buffer,
+                 const group_policy_header* header, size_t* dropped_policy_alloc_rows) {
+    char* fields[32];
+    size_t field_count = 0;
+    uint32_t id_start = 0;
+    uint32_t id_end = 0;
+    int is_range = 0;
+    const char* mode_field = NULL;
+    const char* name_field = NULL;
+    dsd_tg_policy_entry entry;
+    int mode_blocking = 0;
+
+    field_count = group_split_csv_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
+    if (field_count < 3) {
+        LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
+        return -1;
+    }
+
+    if (!group_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
+        LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count, fields[0]);
+        return -1;
+    }
+
+    mode_field = trim_ws(fields[1]);
+    name_field = fields[2];
+    group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
+    group_apply_policy_fields(header, filename, row_count, field_count, fields, &entry, mode_blocking);
+    return group_commit_entry(state, &entry, is_range, filename, row_count, dropped_policy_alloc_rows);
+}
+
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
 group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_validation* stats) {
@@ -584,7 +616,6 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
     unsigned int row_count = 0;
     size_t dropped_policy_alloc_rows = 0;
     group_policy_header header = {0, 0, 0};
-    int warned_header_order = 0;
 
     if (!group_file_path || group_file_path[0] == '\0' || !state) {
         return -1;
@@ -596,16 +627,6 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
     }
 
     while (fgets(buffer, BSIZE, fp)) {
-        char* fields[32];
-        size_t field_count = 0;
-        uint32_t id_start = 0;
-        uint32_t id_end = 0;
-        int is_range = 0;
-        const char* mode_field = NULL;
-        const char* name_field = NULL;
-        dsd_tg_policy_entry entry;
-        int mode_blocking = 0;
-
         row_count++;
         trim_eol(buffer);
 
@@ -613,8 +634,7 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
             char header_copy[BSIZE];
             DSD_SNPRINTF(header_copy, sizeof(header_copy), "%s", buffer);
             header = group_parse_policy_header(header_copy);
-            if (header.policy_active && header.invalid_order && !warned_header_order) {
-                warned_header_order = 1;
+            if (header.policy_active && header.invalid_order) {
                 LOG_WARN("WARNING: Group file '%s' header optional policy columns are out of order; ignoring "
                          "mismatched and later "
                          "optional columns.\n",
@@ -626,25 +646,7 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
         if (stats) {
             stats->total++;
         }
-
-        field_count = group_split_csv_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
-        if (field_count < 3) {
-            LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
-            continue;
-        }
-
-        if (!group_parse_id_field(fields[0], &id_start, &id_end, &is_range)) {
-            LOG_WARN("WARNING: Group file '%s' row %u has invalid id '%s'; skipping.\n", filename, row_count,
-                     fields[0]);
-            continue;
-        }
-
-        mode_field = trim_ws(fields[1]);
-        name_field = fields[2];
-        group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
-        group_apply_policy_fields(&header, filename, row_count, field_count, fields, &entry, mode_blocking);
-        if (group_commit_entry(state, &entry, is_range, filename, row_count, &dropped_policy_alloc_rows) == 0
-            && stats) {
+        if (group_import_row(state, filename, row_count, buffer, &header, &dropped_policy_alloc_rows) == 0 && stats) {
             stats->accepted++;
         }
     }
