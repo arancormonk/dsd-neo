@@ -36,6 +36,16 @@ Item {
     // antenna must not be fed the tee's 4.5 V.
     property int biasTee: -1
     property alias extraText: extraField.text
+    // Imported trunking-data files; stored library paths, empty = none.
+    property string chanCsvPath: ""
+    property string groupCsvPath: ""
+    property string keyCsvPath: ""
+    property bool keyCsvHex: false
+    // Which field the shared FileDialog is serving: "source" is the step-1
+    // audio/capture pick; "chan"/"group"/"keys" are the trunking-data picks.
+    property string pickerTarget: "source"
+    // Dec/hex choice for a new key-file import from the picker sheet.
+    property bool pickerKeyHex: false
 
     // Step 3 state
     property alias nameText: nameField.text
@@ -80,6 +90,10 @@ Item {
         biasTee = -1
         extraField.text = ""
         nameField.text = ""
+        chanCsvPath = ""
+        groupCsvPath = ""
+        keyCsvPath = ""
+        keyCsvHex = false
     }
 
     /**
@@ -108,6 +122,10 @@ Item {
         biasTee = -1
         extraField.text = ""
         nameField.text = ""
+        chanCsvPath = ""
+        groupCsvPath = ""
+        keyCsvPath = ""
+        keyCsvHex = false
     }
 
     function openForEdit(row) {
@@ -128,6 +146,18 @@ Item {
         biasTee = sys.biasTee
         extraField.text = sys.extraArgs
         nameField.text = sys.name
+        chanCsvPath = sys.chanCsvPath
+        groupCsvPath = sys.groupCsvPath
+        keyCsvPath = sys.keyCsvPath
+        keyCsvHex = sys.keyCsvHex
+    }
+
+    // Display line for a picker row: the file's name, or "None".
+    function csvLabel(path) {
+        if (path.length === 0)
+            return qsTr("None")
+        var row = importedFiles.rowForPath(path)
+        return row >= 0 ? importedFiles.get(row).name : path.substring(path.lastIndexOf('/') + 1)
     }
 
     // parseInt alone lets a hardware-keyboard "abc" become NaN, which QVariant
@@ -172,7 +202,11 @@ Item {
             bandwidthKhz: bwText.length > 0 ? intOr(bwText, -1) : -1,
             biasTee: biasTee,
             extraArgs: extraText.trim(),
-            filePath: fileText
+            filePath: fileText,
+            chanCsvPath: chanCsvPath,
+            groupCsvPath: groupCsvPath,
+            keyCsvPath: keyCsvPath,
+            keyCsvHex: keyCsvHex
         }
         if (editRow >= 0) {
             savedSystems.update(editRow, sys)
@@ -183,15 +217,105 @@ Item {
         }
     }
 
+    // One trunking-data picker row: title, current file (or "None"), caret.
+    component CsvPickerRow: Item {
+        id: pickerRow
+
+        property string title: ""
+        property string target: ""
+        property string path: ""
+        property bool showDivider: false
+
+        width: parent ? parent.width : 0
+        height: 58
+
+        Column {
+            anchors.left: parent.left
+            anchors.right: rowCaret.left
+            anchors.leftMargin: Theme.cardPadding
+            anchors.rightMargin: 12
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 3
+
+            Text {
+                width: parent.width
+                text: pickerRow.title
+                font.family: Theme.sans
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                color: Theme.textPrimary
+                elide: Text.ElideRight
+            }
+
+            Text {
+                width: parent.width
+                text: wizard.csvLabel(pickerRow.path)
+                font.family: Theme.sans
+                font.pixelSize: 12
+                color: pickerRow.path.length > 0 ? Theme.textSecondary : Theme.textSubdued
+                elide: Text.ElideRight
+            }
+        }
+
+        Caret {
+            id: rowCaret
+            anchors.right: parent.right
+            anchors.rightMargin: Theme.cardPadding
+            anchors.verticalCenter: parent.verticalCenter
+            rotation: -90
+            color: Theme.textSubdued
+        }
+
+        Rectangle {
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.leftMargin: Theme.cardPadding
+            height: 1
+            visible: pickerRow.showDivider
+            color: Theme.divider
+        }
+
+        TapHandler {
+            onTapped: {
+                wizard.pickerTarget = pickerRow.target
+                wizard.pickerKeyHex = wizard.pickerTarget === "keys" ? wizard.keyCsvHex : false
+                csvSheet.visible = true
+            }
+        }
+    }
+
+    // Assign an imported/picked library path to the field the picker serves.
+    function assignCsvPath(target, path, hex) {
+        if (target === "chan") {
+            chanCsvPath = path
+        } else if (target === "group") {
+            groupCsvPath = path
+        } else if (target === "keys") {
+            keyCsvPath = path
+            keyCsvHex = hex
+        }
+    }
+
     FileDialog {
         id: fileDialog
+
+        nameFilters: wizard.pickerTarget === "source" ? [] : [qsTr("CSV files (*.csv)"), qsTr("All files (*)")]
 
         onAccepted: {
             var reference = selectedFile.toString()
             var hint = reference.substring(reference.lastIndexOf('/') + 1)
-            var path = decoderHost.importContentUri(reference, hint)
-            if (path.length > 0)
-                fileField.text = path
+            if (wizard.pickerTarget === "source") {
+                var path = decoderHost.importContentUri(reference, hint)
+                if (path.length > 0)
+                    fileField.text = path
+                return
+            }
+            var type = wizard.pickerTarget === "keys"
+                       ? (wizard.pickerKeyHex ? "keysHex" : "keysDec") : wizard.pickerTarget
+            var result = importedFiles.importFile(reference, hint, type)
+            if (result.ok)
+                wizard.assignCsvPath(wizard.pickerTarget, result.path, wizard.pickerKeyHex)
         }
     }
 
@@ -416,7 +540,10 @@ Item {
                             id: browse
                             width: 96
                             text: qsTr("Browse")
-                            onClicked: fileDialog.open()
+                            onClicked: {
+                                wizard.pickerTarget = "source"
+                                fileDialog.open()
+                            }
                         }
                     }
                 }
@@ -540,6 +667,61 @@ Item {
                         anchors.verticalCenter: parent.verticalCenter
                         checked: wizard.trunking
                         onToggled: function (state) { wizard.trunking = state }
+                    }
+                }
+
+                // Trunking data: the imported CSVs this system starts with. One
+                // reusable row per file kind, each opening the shared picker sheet.
+                UiPanel {
+                    width: parent.width
+                    height: csvColumn.height + Theme.cardPadding + 4
+
+                    Column {
+                        id: csvColumn
+
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.topMargin: Theme.cardPadding
+                        spacing: 0
+
+                        MicroLabel {
+                            text: qsTr("Trunking data")
+                            leftPadding: Theme.cardPadding
+                            bottomPadding: 6
+                        }
+
+                        CsvPickerRow {
+                            title: qsTr("Channel map")
+                            target: "chan"
+                            path: wizard.chanCsvPath
+                            showDivider: true
+                        }
+
+                        CsvPickerRow {
+                            title: qsTr("Talkgroups")
+                            target: "group"
+                            path: wizard.groupCsvPath
+                            showDivider: true
+                        }
+
+                        CsvPickerRow {
+                            title: qsTr("Encryption keys")
+                            target: "keys"
+                            path: wizard.keyCsvPath
+                        }
+
+                        Text {
+                            width: parent.width
+                            leftPadding: Theme.cardPadding
+                            rightPadding: Theme.cardPadding
+                            bottomPadding: 6
+                            text: qsTr("Imported files are shared between systems. Manage them in Settings.")
+                            font.family: Theme.sans
+                            font.pixelSize: 12
+                            color: Theme.textSubdued
+                            wrapMode: Text.Wrap
+                        }
                     }
                 }
 
@@ -817,4 +999,110 @@ Item {
         }
     }
 
+    // Picker for one trunking-data field: the library's files of that kind,
+    // "None", and a fresh import.
+    ModalSheet {
+        id: csvSheet
+
+        readonly property string currentPath: wizard.pickerTarget === "chan" ? wizard.chanCsvPath
+                                              : wizard.pickerTarget === "group" ? wizard.groupCsvPath
+                                              : wizard.keyCsvPath
+        readonly property var entries: {
+            var n = importedFiles.count // dependency: recompute when the library changes
+            if (!visible || wizard.pickerTarget === "source")
+                return []
+            return wizard.pickerTarget === "keys"
+                   ? importedFiles.entriesForType("keysDec").concat(importedFiles.entriesForType("keysHex"))
+                   : importedFiles.entriesForType(wizard.pickerTarget)
+        }
+
+        function entrySummary(entry) {
+            var noun = wizard.pickerTarget === "chan"
+                       ? (entry.accepted === 1 ? qsTr("channel") : qsTr("channels"))
+                       : wizard.pickerTarget === "group"
+                         ? (entry.accepted === 1 ? qsTr("talkgroup") : qsTr("talkgroups"))
+                         : (entry.accepted === 1 ? qsTr("key") : qsTr("keys"))
+            var line = entry.accepted + " " + noun
+            if (wizard.pickerTarget === "keys")
+                line += " · " + (entry.type === "keysHex" ? qsTr("hex") : qsTr("decimal"))
+            return line
+        }
+
+        MicroLabel {
+            text: wizard.pickerTarget === "chan" ? qsTr("Channel map")
+                  : wizard.pickerTarget === "group" ? qsTr("Talkgroups")
+                  : qsTr("Encryption keys")
+        }
+
+        Repeater {
+            model: csvSheet.entries
+
+            Item {
+                required property var modelData
+
+                width: parent.width
+                height: 46
+
+                Column {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 2
+
+                    Text {
+                        width: parent.width
+                        text: modelData.name
+                        font.family: Theme.sans
+                        font.pixelSize: 15
+                        font.weight: Font.DemiBold
+                        color: modelData.path === csvSheet.currentPath ? Theme.cyan : Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: csvSheet.entrySummary(modelData)
+                        font.family: Theme.sans
+                        font.pixelSize: 12
+                        color: Theme.textSubdued
+                        elide: Text.ElideRight
+                    }
+                }
+
+                TapHandler {
+                    onTapped: {
+                        wizard.assignCsvPath(wizard.pickerTarget, modelData.path, modelData.type === "keysHex")
+                        csvSheet.visible = false
+                    }
+                }
+            }
+        }
+
+        OutlineButton {
+            width: parent.width
+            visible: csvSheet.currentPath.length > 0
+            text: qsTr("None")
+            onClicked: {
+                wizard.assignCsvPath(wizard.pickerTarget, "", false)
+                csvSheet.visible = false
+            }
+        }
+
+        SegmentedControl {
+            width: parent.width
+            visible: wizard.pickerTarget === "keys"
+            model: [qsTr("Decimal keys"), qsTr("Hex keys")]
+            currentIndex: wizard.pickerKeyHex ? 1 : 0
+            onSelected: function (index) { wizard.pickerKeyHex = index === 1 }
+        }
+
+        GradientButton {
+            width: parent.width
+            text: qsTr("Import new file")
+            onClicked: {
+                csvSheet.visible = false
+                fileDialog.open()
+            }
+        }
+    }
 }

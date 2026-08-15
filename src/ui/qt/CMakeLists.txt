@@ -43,6 +43,7 @@ qt_add_resources(
         qml/BottomNav.qml
         qml/CallRow.qml
         qml/Caret.qml
+        qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
         qml/EncTag.qml
@@ -53,6 +54,7 @@ qt_add_resources(
         qml/GradientButton.qml
         qml/HistoryScreen.qml
         qml/HomeScreen.qml
+        qml/ImportsScreen.qml
         qml/LevelMeter.qml
         qml/LogoMark.qml
         qml/MicroLabel.qml

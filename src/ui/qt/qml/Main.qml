@@ -43,6 +43,10 @@ Window {
     property int currentTab: 0
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
+    property bool importsOpen: false
+    // The saved-systems row the running session was started from, or -1. Lets a
+    // wizard save on that same row push its CSV files into the live session.
+    property int sessionRow: -1
     // The spectrum view is pushed over the monitor, so it can only be open
     // while a session is; ending one has to take it down with it.
     property bool spectrumOpen: false
@@ -189,6 +193,7 @@ Window {
             return
         }
         mainRoot.sessionSystem = sys
+        mainRoot.sessionRow = row
         // The session's intent, decided here and nowhere else: a system someone
         // saved is a thing to listen to, and the spectrum watches it. Only a
         // session with no saved system behind it is free to wander.
@@ -264,7 +269,7 @@ Window {
 
         anchors.fill: safeArea
         opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
-                  || !prefs.onboardingDone) ? 0.0 : 1.0
+                  || mainRoot.importsOpen || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
@@ -314,6 +319,8 @@ Window {
             anchors.right: parent.right
             anchors.bottom: nav.top
             visible: mainRoot.currentTab === 2
+
+            onOpenImports: mainRoot.importsOpen = true
         }
 
         BottomNav {
@@ -476,10 +483,36 @@ Window {
             Qt.inputMethod.hide()
         }
         onSaved: function (row) {
+            // Saving the system the running session was started from applies its
+            // CSV files live — the session's argv was built at start, so without
+            // this a changed talkgroup list would silently wait for a restart.
+            if (decoderHost.running && row >= 0 && row === mainRoot.sessionRow) {
+                var sys = savedSystems.get(row)
+                if (sys.chanCsvPath.length > 0)
+                    commands.importChannelMap(sys.chanCsvPath)
+                if (sys.groupCsvPath.length > 0)
+                    commands.importGroupList(sys.groupCsvPath)
+                if (sys.keyCsvPath.length > 0)
+                    commands.importKeys(sys.keyCsvPath, sys.keyCsvHex)
+            }
             mainRoot.wizardOpen = false
             mainRoot.currentTab = 0
             Qt.inputMethod.hide()
         }
+    }
+
+    // ---- Imported-files library (pushed from Settings) ----
+    ImportsScreen {
+        anchors.fill: safeArea
+        opacity: mainRoot.importsOpen ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+
+        onClosed: mainRoot.importsOpen = false
     }
 
     // ---- First-run onboarding ----
