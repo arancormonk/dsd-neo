@@ -2,9 +2,11 @@
 #include <ctype.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/crypto/dmr_keystream.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -550,18 +552,18 @@ group_apply_policy_fields(const group_policy_header* header, const char* filenam
     group_enforce_media_constraints(filename, row_count, entry, mode_blocking, has_audio, has_record, has_stream);
 }
 
-static void
+static int
 group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_range, const char* filename,
                    unsigned int row_count, size_t* dropped_policy_alloc_rows) {
     int rc = 0;
     if (!state || !entry || !filename || !dropped_policy_alloc_rows) {
-        return;
+        return -1;
     }
 
     rc = is_range ? dsd_tg_policy_add_range_entry(state, entry) : dsd_tg_policy_append_exact(state, entry);
     if (rc == -1) {
         (*dropped_policy_alloc_rows)++;
-        return;
+        return rc;
     }
     if (rc == 1) {
         if (!is_range) {
@@ -570,10 +572,12 @@ group_commit_entry(dsd_state* state, const dsd_tg_policy_entry* entry, int is_ra
             LOG_WARN("WARNING: Group file '%s' row %u has invalid range and was skipped.\n", filename, row_count);
         }
     }
+    return rc;
 }
 
-int
-csvGroupImportPath(const char* group_file_path, dsd_state* state) {
+/* stats may be NULL; when set, counts data rows so a dry run can report them. */
+static int
+group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_validation* stats) {
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
     FILE* fp = NULL;
@@ -619,6 +623,10 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
             continue; //don't want labels
         }
 
+        if (stats) {
+            stats->total++;
+        }
+
         field_count = group_split_csv_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
         if (field_count < 3) {
             LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
@@ -635,7 +643,10 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
         name_field = fields[2];
         group_entry_init(&entry, id_start, id_end, is_range, mode_field, name_field, row_count, &mode_blocking);
         group_apply_policy_fields(&header, filename, row_count, field_count, fields, &entry, mode_blocking);
-        group_commit_entry(state, &entry, is_range, filename, row_count, &dropped_policy_alloc_rows);
+        if (group_commit_entry(state, &entry, is_range, filename, row_count, &dropped_policy_alloc_rows) == 0
+            && stats) {
+            stats->accepted++;
+        }
     }
 
     if (dropped_policy_alloc_rows > 0) {
@@ -648,6 +659,11 @@ csvGroupImportPath(const char* group_file_path, dsd_state* state) {
 }
 
 int
+csvGroupImportPath(const char* group_file_path, dsd_state* state) {
+    return group_import_path_stats(group_file_path, state, NULL);
+}
+
+int
 csvGroupImport(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
@@ -656,7 +672,8 @@ csvGroupImport(const dsd_opts* opts, dsd_state* state) {
 }
 
 static void
-csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number) {
+csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
+                            int* freq_parsed) {
     if (!state || !field || !chan_number) {
         return;
     }
@@ -680,6 +697,9 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
     long int freq = 0;
     if (parse_dec_long_strict(field, &freq)) {
         dsd_state_set_trunk_chan_freq(state, (uint32_t)*chan_number, freq);
+        if (freq_parsed) {
+            *freq_parsed = 1;
+        }
     }
 
     if (state->lcn_freq_count < 0
@@ -716,7 +736,7 @@ csv_key_import_dec_normalize_keynumber(const char* field) {
     return hash & 0xFFFFULL; // make sure its no larger than 16-bits
 }
 
-static void
+static int
 csv_key_import_dec_store_value(dsd_state* state, unsigned long long keynumber, const char* field) {
     unsigned long long keyvalue = 0;
     const int parsed_keyvalue = parse_dec_u64_strict(field, &keyvalue);
@@ -728,31 +748,36 @@ csv_key_import_dec_store_value(dsd_state* state, unsigned long long keynumber, c
     if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
         state->rkey_array[key_index] = keyvalue & 0xFFFFFFFFFFULL; // doesn't exceed 40-bit value
         state->rkey_array_loaded[key_index] = parsed_keyvalue ? 1U : 0U;
+        return parsed_keyvalue ? 1 : 0;
     }
+    return 0;
 }
 
 static void
-csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* field, unsigned long long* keynumber) {
+csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* field, unsigned long long* keynumber,
+                               int* stored) {
     if (field_count == 0) {
         *keynumber = csv_key_import_dec_normalize_keynumber(field);
         return;
     }
     if (field_count == 1) {
-        csv_key_import_dec_store_value(state, *keynumber, field);
+        if (csv_key_import_dec_store_value(state, *keynumber, field) && stored) {
+            *stored = 1;
+        }
     }
 }
 
-int
-csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
-{
-    if (!opts || !state || opts->chan_in_file[0] == '\0') {
+/* stats may be NULL; when set, counts data rows so a dry run can report them. */
+static int
+chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validation* stats) {
+    if (!chan_file_path || chan_file_path[0] == '\0' || !state) {
         return -1;
     }
 
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
 
     char buffer[BSIZE];
-    FILE* fp = csv_open_user_read_file("channel map file", opts->chan_in_file, filename, sizeof filename);
+    FILE* fp = csv_open_user_read_file("channel map file", chan_file_path, filename, sizeof filename);
     if (fp == NULL) {
         return -1;
     }
@@ -762,17 +787,24 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 
     while (fgets(buffer, BSIZE, fp)) {
         int field_count = 0;
+        int freq_parsed = 0;
         chan_number = -1;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
+        if (stats) {
+            stats->total++;
+        }
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
-            csv_chan_import_apply_field(state, field_count, field, &chan_number);
+            csv_chan_import_apply_field(state, field_count, field, &chan_number, &freq_parsed);
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
+        }
+        if (stats && freq_parsed) {
+            stats->accepted++;
         }
         if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
             LOG_INFO("Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
@@ -783,18 +815,27 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
     return 0;
 }
 
-//Decimal Variant of Key Import
 int
-csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
+csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 {
-    if (!opts || !state || opts->key_in_file[0] == '\0') {
+    if (!opts || !state) {
+        return -1;
+    }
+    return chan_import_stats(opts->chan_in_file, state, NULL);
+}
+
+//Decimal Variant of Key Import
+/* stats may be NULL; when set, counts data rows so a dry run can report them. */
+static int
+key_import_dec_stats(const dsd_opts* opts, const char* key_file_path, dsd_state* state, dsd_csv_validation* stats) {
+    if (!key_file_path || key_file_path[0] == '\0' || !state) {
         return -1;
     }
 
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
 
     char buffer[BSIZE];
-    FILE* fp = csv_open_user_read_file("key file", opts->key_in_file, filename, sizeof filename);
+    FILE* fp = csv_open_user_read_file("key file", key_file_path, filename, sizeof filename);
     if (fp == NULL) {
         return -1;
     }
@@ -803,16 +844,23 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
     while (fgets(buffer, BSIZE, fp)) {
         unsigned long long int keynumber = 0;
         int field_count = 0;
+        int stored = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
+        if (stats) {
+            stats->total++;
+        }
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
-            csv_key_import_dec_apply_field(state, field_count, field, &keynumber);
+            csv_key_import_dec_apply_field(state, field_count, field, &keynumber, &stored);
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
+        }
+        if (stats && stored) {
+            stats->accepted++;
         }
         char key_id_text[32];
         (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%03lld", keynumber);
@@ -832,21 +880,32 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
     return 0;
 }
 
-static void
+int
+csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
+{
+    if (!opts || !state) {
+        return -1;
+    }
+    return key_import_dec_stats(opts, opts->key_in_file, state, NULL);
+}
+
+static int
 csv_key_import_hex_store_value(dsd_state* state, unsigned long long keynumber, unsigned long long offset,
                                const char* field) {
     if (!state || !field) {
-        return;
+        return 0;
     }
     size_t idx = 0;
     if (!csv_rkey_index(keynumber, offset, &idx)) {
-        return;
+        return 0;
     }
     unsigned long long v = 0;
     if (parse_hex_u64_strict(field, &v)) {
         state->rkey_array[idx] = v;
         state->rkey_array_loaded[idx] = 1U;
+        return 1;
     }
+    return 0;
 }
 
 static void
@@ -885,7 +944,7 @@ csv_key_import_hex_log_offsets(const dsd_state* state, unsigned long long keynum
 }
 
 static unsigned long long
-csv_key_import_hex_parse_row(dsd_state* state, char* buffer) {
+csv_key_import_hex_parse_row(dsd_state* state, char* buffer, int* stored_segments) {
     static const unsigned long long offsets[] = {0x0ULL, 0x101ULL, 0x201ULL, 0x301ULL};
     unsigned long long keynumber = 0;
     char* saveptr = NULL;
@@ -896,7 +955,9 @@ csv_key_import_hex_parse_row(dsd_state* state, char* buffer) {
                 keynumber = 0;
             }
         } else if (field_count <= (int)(sizeof(offsets) / sizeof(offsets[0]))) {
-            csv_key_import_hex_store_value(state, keynumber, offsets[field_count - 1], field);
+            if (csv_key_import_hex_store_value(state, keynumber, offsets[field_count - 1], field) && stored_segments) {
+                (*stored_segments)++;
+            }
         }
         field = dsd_strtok_r(NULL, ",", &saveptr);
     }
@@ -1005,27 +1066,34 @@ vertex_ks_apply_to_state(dsd_state* state, const vertex_map_tmp_t* tmp, const ch
 }
 
 //Hex Variant of Key Import
-int
-csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex keys
-{
-    if (!opts || !state || opts->key_in_file[0] == '\0') {
+/* stats may be NULL; when set, counts data rows so a dry run can report them. */
+static int
+key_import_hex_stats(const dsd_opts* opts, const char* key_file_path, dsd_state* state, dsd_csv_validation* stats) {
+    if (!key_file_path || key_file_path[0] == '\0' || !state) {
         return -1;
     }
 
     char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
     char buffer[BSIZE];
-    FILE* fp = csv_open_user_read_file("key file", opts->key_in_file, filename, sizeof filename);
+    FILE* fp = csv_open_user_read_file("key file", key_file_path, filename, sizeof filename);
     if (fp == NULL) {
         return -1;
     }
     int row_count = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
+        int stored_segments = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
-        unsigned long long keynumber = csv_key_import_hex_parse_row(state, buffer);
+        if (stats) {
+            stats->total++;
+        }
+        unsigned long long keynumber = csv_key_import_hex_parse_row(state, buffer, &stored_segments);
+        if (stats && stored_segments > 0) {
+            stats->accepted++;
+        }
         size_t key_index = 0;
         if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
             char key_id_text[32];
@@ -1052,6 +1120,85 @@ csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex key
     }
     fclose(fp);
     return 0;
+}
+
+int
+csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex keys
+{
+    if (!opts || !state) {
+        return -1;
+    }
+    return key_import_hex_stats(opts, opts->key_in_file, state, NULL);
+}
+
+typedef int (*csv_validate_run_fn)(const dsd_opts* opts, const char* path, dsd_state* state, dsd_csv_validation* out);
+
+/*
+ * Dry-run harness: parses through the real import loop, but into throwaway
+ * heap state (dsd_state is multi-megabyte, and the group import allocates a
+ * TG-policy state extension that must be freed) so no live state is touched.
+ */
+static int
+csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_validate_run_fn run) {
+    if (!path || path[0] == '\0' || !out || !run) {
+        return -1;
+    }
+    out->accepted = 0U;
+    out->skipped = 0U;
+    out->total = 0U;
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    int rc = -1;
+    if (opts && state) {
+        rc = run(opts, path, state, out);
+    }
+    if (state) {
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+    free(opts);
+
+    if (rc != 0) {
+        out->accepted = 0U;
+        out->skipped = 0U;
+        out->total = 0U;
+        return -1;
+    }
+    out->skipped = out->total - out->accepted;
+    return 0;
+}
+
+static int
+csv_validate_run_group(const dsd_opts* opts, const char* path, dsd_state* state, dsd_csv_validation* out) {
+    (void)opts;
+    return group_import_path_stats(path, state, out);
+}
+
+static int
+csv_validate_run_chan(const dsd_opts* opts, const char* path, dsd_state* state, dsd_csv_validation* out) {
+    (void)opts;
+    return chan_import_stats(path, state, out);
+}
+
+int
+dsd_csv_validate_group_file(const char* path, dsd_csv_validation* out) {
+    return csv_validate_into_throwaway(path, out, csv_validate_run_group);
+}
+
+int
+dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out) {
+    return csv_validate_into_throwaway(path, out, csv_validate_run_chan);
+}
+
+int
+dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out) {
+    return csv_validate_into_throwaway(path, out, key_import_dec_stats);
+}
+
+int
+dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out) {
+    return csv_validate_into_throwaway(path, out, key_import_hex_stats);
 }
 
 int

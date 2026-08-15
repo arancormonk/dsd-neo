@@ -510,6 +510,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_csv_validate
+  HEADERS_PUBLIC_CORE_CSV_VALIDATE
+  dsd-neo/core/csv_validate.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_talkgroup_policy
   HEADERS_PUBLIC_CORE_TALKGROUP_POLICY
   dsd-neo/core/talkgroup_policy.h
@@ -3026,6 +3032,17 @@ target_link_libraries(
     PRIVATE dsd-neo_core dsd-neo_proto_dmr
 )
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
+
+add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
+target_include_directories(
+    dsd-neo_test_core_csv_validate
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_csv_validate
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr
+)
+add_test(NAME CORE_CSV_VALIDATE COMMAND dsd-neo_test_core_csv_validate)
 
 add_executable(
     dsd-neo_test_core_talkgroup_policy
