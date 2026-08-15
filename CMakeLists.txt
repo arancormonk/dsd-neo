@@ -96,6 +96,31 @@ option(
 option(DSD_REQUIRE_CODEC2 "Fail configure when Codec2 is not found" OFF)
 option(DSD_REQUIRE_CURL "Fail configure when libcurl is not found" OFF)
 option(DSD_REQUIRE_EXPAT "Fail configure when expat is not found" OFF)
+
+# RadioReference issues an application key per application. Bake it in when one
+# is supplied, otherwise the app prompts the user for their own. Prefer the
+# environment variable: -D writes the value into CMakeCache.txt in plaintext,
+# while the env-var route keeps it out of the build tree entirely.
+set(DSD_RR_APP_KEY
+    ""
+    CACHE STRING
+    "RadioReference application key baked into this build"
+)
+if(DSD_RR_APP_KEY STREQUAL "" AND DEFINED ENV{DSD_RR_APP_KEY})
+    set(DSD_RR_APP_KEY "$ENV{DSD_RR_APP_KEY}")
+endif()
+# Load-bearing: configure_file substitutes verbatim into a C string literal with
+# no escaping, so a quote or backslash here would emit a file that cannot
+# compile. Never echo the value in the message.
+if(
+    NOT DSD_RR_APP_KEY STREQUAL ""
+    AND NOT DSD_RR_APP_KEY MATCHES "^[A-Za-z0-9._~-]+$"
+)
+    message(
+        FATAL_ERROR
+        "DSD_RR_APP_KEY must match ^[A-Za-z0-9._~-]+$ (it is substituted verbatim into a C string literal)."
+    )
+endif()
 option(
     DSD_FORCE_RADIO_PIPELINE
     "Build the radio pipeline (rtl_tcp, radio-path IQ replay) without an SDR library"

@@ -53,6 +53,7 @@ target_sources(
         bootstrap/audio.c
         bootstrap/interactive.c
         ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
+        ${CMAKE_CURRENT_BINARY_DIR}/radioreference/rr_app_key.c
 )
 
 # Generate git version source within this target's build dir
@@ -60,6 +61,16 @@ file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/version)
 configure_file(
     ${PROJECT_SOURCE_DIR}/src/runtime/version/git_ver.c.in
     ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
+    @ONLY
+)
+
+# Bake in the RadioReference application key, if this build was given one. The
+# generated file lives only under build/, outside the ARCH_RULES glob root and
+# outside what tools/format.sh touches, and must never be copied into src/.
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/radioreference)
+configure_file(
+    ${PROJECT_SOURCE_DIR}/src/runtime/radioreference/rr_app_key.c.in
+    ${CMAKE_CURRENT_BINARY_DIR}/radioreference/rr_app_key.c
     @ONLY
 )
 
