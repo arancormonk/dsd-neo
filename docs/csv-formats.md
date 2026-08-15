@@ -15,6 +15,19 @@ If you want known-good starting points, see `examples/` in the repository.
 - Imported text fields are copied into fixed-size runtime buffers. Keep short fields concise; long `mode` and `name`
   values are truncated in runtime display/policy state.
 
+## Importing on Android
+
+The Android app does not take CLI flags directly. Import CSVs through the UI instead: **Settings → Imported files**
+manages the library (import, update, remove), and the add/edit-system wizard's **Trunking data** panel assigns a
+channel map, talkgroup list, or key file to a system. Files are picked with the system document picker and copied into
+app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive, …) and is not read again
+after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
+shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
+"No usable rows". Saving the system a running session was started from applies its files to that session live.
+
+Programmatic validation uses the same dry-run parser: `dsd_csv_validate_*` in `<dsd-neo/core/csv_validate.h>` reports
+accepted/skipped/total row counts without touching live decoder state.
+
 ## Channel Map CSV (`-C <file>` / `[trunking] chan_csv`)
 
 Purpose: Map a trunking channel number to an RF frequency.
