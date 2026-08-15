@@ -20,13 +20,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "curl_common.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 
 #ifdef USE_CURL
 #include <curl/curl.h>
-#include <curl/curlver.h>
 #endif
 
 #define DSD_RDIO_PATH_MAX         2048
@@ -762,70 +762,13 @@ dsd_rdio_normalize_upload_options(const dsd_rdio_api_config* api, int* timeout_m
     return 0;
 }
 
-static int
-dsd_rdio_ensure_curl_global_ready(void) {
-    static int curl_global_state = 0; // 0=uninitialized, 1=ready, -1=failed
-    if (curl_global_state == 0) {
-        CURLcode gc = curl_global_init(CURL_GLOBAL_DEFAULT);
-        if (gc != CURLE_OK) {
-            LOG_ERROR("Rdio API upload: curl_global_init failed: %s\n", curl_easy_strerror(gc));
-            curl_global_state = -1;
-            return -1;
-        }
-        curl_global_state = 1;
-    }
-    return (curl_global_state < 0) ? -1 : 0;
-}
-
-#ifdef __ANDROID__
-/*
- * OpenSSL compiles in /etc/ssl/certs as its default trust store, and Android has
- * no such directory: every https:// upload would fail certificate verification
- * while http:// kept working. Android keeps the system roots in OpenSSL's own
- * hashed-CApath layout, under the APEX module since API 34 with the older
- * location still present on most devices. Point libcurl at the first one that
- * exists rather than weakening verification.
- */
-static const char* const k_android_trust_stores[] = {
-    "/apex/com.android.conscrypt/cacerts",
-    "/system/etc/security/cacerts",
-};
-
-static const char*
-dsd_rdio_android_ca_path(void) {
-    for (size_t i = 0; i < sizeof(k_android_trust_stores) / sizeof(k_android_trust_stores[0]); i++) {
-        dsd_stat_t st;
-        if (dsd_stat_path(k_android_trust_stores[i], &st) == 0 && S_ISDIR(st.st_mode)) {
-            return k_android_trust_stores[i];
-        }
-    }
-    return NULL;
-}
-#endif
-
 static void
 dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoint, int timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_URL, endpoint);
     curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, (long)timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout_ms);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-#if LIBCURL_VERSION_NUM >= 0x075500
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
-#else
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, (long)(CURLPROTO_HTTP | CURLPROTO_HTTPS));
-#endif
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "dsd-neo/rdio-export");
+    /* Both timeouts take the same value here, which is what this call has always done. */
+    dsd_curl_apply_hardening(curl, timeout_ms, timeout_ms, "dsd-neo/rdio-export");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dsd_rdio_discard_write_cb);
-#ifdef __ANDROID__
-    {
-        const char* ca_path = dsd_rdio_android_ca_path();
-        if (ca_path != NULL) {
-            curl_easy_setopt(curl, CURLOPT_CAPATH, ca_path);
-        }
-    }
-#endif
 }
 
 static void
@@ -907,7 +850,7 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
         return -1;
     }
 
-    if (dsd_rdio_ensure_curl_global_ready() != 0) {
+    if (dsd_curl_global_ready() != 0) {
         return -1;
     }
 
