@@ -70,6 +70,24 @@ is_ascii_space(unsigned char c) {
     return (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v');
 }
 
+/*
+ * A blank line is filler, not a data row. Editors and several exporters leave a
+ * trailing empty line; counting it would make the dry-run validators report a
+ * clean file as "N rows skipped" (and the group importer warn about it).
+ */
+static int
+csv_line_is_blank(const char* s) {
+    if (!s) {
+        return 1;
+    }
+    for (const unsigned char* p = (const unsigned char*)s; *p != '\0'; p++) {
+        if (!is_ascii_space(*p)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static char*
 trim_ws(char* s) {
     if (s == NULL) {
@@ -643,6 +661,9 @@ group_import_path_stats(const char* group_file_path, dsd_state* state, dsd_csv_v
             continue; //don't want labels
         }
 
+        if (csv_line_is_blank(buffer)) {
+            continue;
+        }
         if (stats) {
             stats->total++;
         }
@@ -673,6 +694,30 @@ csvGroupImport(const dsd_opts* opts, dsd_state* state) {
     return csvGroupImportPath(opts->group_in_file, state);
 }
 
+/*
+ * A channel map row is `channel,frequency_hz`, which is the same shape as a
+ * decimal key row (`key_id,value`) -- nothing in the file distinguishes them,
+ * and the header line is free text by convention, so it cannot either. Picking
+ * a key list as a channel map used to load its values as frequencies: the
+ * doc's own example row `2,70` became a channel at 70 Hz, which the trunking SM
+ * would then try to tune.
+ *
+ * The range is what the front ends can actually reach, generously bounded: the
+ * low end sits under any HF-capable SoapySDR device, the high end above the
+ * 6 GHz ceiling of the widest-tuning ones (LimeSDR, B210, HackRF). It is not a
+ * band plan -- it only rejects numbers that cannot be radio frequencies at all,
+ * including the 0 a blank column parses to. Long is 32-bit on the MSVC presets,
+ * so the comparison is done in long long or the upper bound would not fit.
+ */
+#define CSV_CHAN_FREQ_MIN_HZ 100000LL
+#define CSV_CHAN_FREQ_MAX_HZ 6000000000LL
+
+static int
+csv_chan_freq_plausible(long int freq) {
+    const long long hz = (long long)freq;
+    return hz >= CSV_CHAN_FREQ_MIN_HZ && hz <= CSV_CHAN_FREQ_MAX_HZ;
+}
+
 static void
 csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
                             int* freq_parsed) {
@@ -697,7 +742,8 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
     }
 
     long int freq = 0;
-    if (parse_dec_long_strict(field, &freq)) {
+    const int usable = parse_dec_long_strict(field, &freq) && csv_chan_freq_plausible(freq);
+    if (usable) {
         dsd_state_set_trunk_chan_freq(state, (uint32_t)*chan_number, freq);
         if (freq_parsed) {
             *freq_parsed = 1;
@@ -709,19 +755,22 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
         return;
     }
 
-    if (parse_dec_long_strict(field, &freq)) {
-        state->trunk_lcn_freq[state->lcn_freq_count] = freq;
-    } else {
-        state->trunk_lcn_freq[state->lcn_freq_count] = 0;
-    }
+    // The LCN list is positional -- EDACS reads it in row order -- so a row the
+    // map refused still has to take its slot, as a 0 every consumer reads as
+    // "unknown". Dropping it would renumber every LCN below it.
+    state->trunk_lcn_freq[state->lcn_freq_count] = usable ? freq : 0L;
     state->lcn_freq_count++; // keep tally of number of Frequencies imported
 }
 
+/* id_ok may be NULL; set when the key-id column actually parsed as decimal. */
 static unsigned long long
-csv_key_import_dec_normalize_keynumber(const char* field) {
+csv_key_import_dec_normalize_keynumber(const char* field, int* id_ok) {
     unsigned long long keynumber = 0;
     if (!parse_dec_u64_strict(field, &keynumber)) {
         return 0;
+    }
+    if (id_ok) {
+        *id_ok = 1;
     }
 
     if (keynumber <= 0xFFFFULL) {
@@ -757,9 +806,9 @@ csv_key_import_dec_store_value(dsd_state* state, unsigned long long keynumber, c
 
 static void
 csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* field, unsigned long long* keynumber,
-                               int* stored) {
+                               int* id_ok, int* stored) {
     if (field_count == 0) {
-        *keynumber = csv_key_import_dec_normalize_keynumber(field);
+        *keynumber = csv_key_import_dec_normalize_keynumber(field, id_ok);
         return;
     }
     if (field_count == 1) {
@@ -767,6 +816,25 @@ csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* fi
             *stored = 1;
         }
     }
+}
+
+/** @brief Parse one channel row into @p state. @return 1 when a frequency loaded. */
+static int
+chan_import_row(dsd_state* state, char* buffer, int* out_field_count, long int* out_chan_number) {
+    int field_count = 0;
+    int freq_parsed = 0;
+    long int chan_number = -1;
+    char* saveptr = NULL;
+
+    const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
+    while (field) {
+        csv_chan_import_apply_field(state, field_count, field, &chan_number, &freq_parsed);
+        field = dsd_strtok_r(NULL, ",", &saveptr);
+        field_count++;
+    }
+    *out_field_count = field_count;
+    *out_chan_number = chan_number;
+    return freq_parsed;
 }
 
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
@@ -785,28 +853,30 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
     }
     int row_count = 0;
 
-    long int chan_number;
-
     while (fgets(buffer, BSIZE, fp)) {
         int field_count = 0;
-        int freq_parsed = 0;
-        chan_number = -1;
+        long int chan_number = -1;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
         }
+        if (csv_line_is_blank(buffer)) {
+            continue;
+        }
+        const int freq_parsed = chan_import_row(state, buffer, &field_count, &chan_number);
         if (stats) {
+            // A dry run exists to produce the three counters; echoing every row
+            // through the process-global logger would put thousands of records
+            // on the caller's thread for an import that never happened.
             stats->total++;
+            stats->accepted += (freq_parsed ? 1U : 0U);
+            continue;
         }
-        char* saveptr = NULL;
-        const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
-        while (field) {
-            csv_chan_import_apply_field(state, field_count, field, &chan_number, &freq_parsed);
-            field = dsd_strtok_r(NULL, ",", &saveptr);
-            field_count++;
-        }
-        if (stats && freq_parsed) {
-            stats->accepted++;
+        if (!freq_parsed) {
+            // Say so rather than echoing the map slot, which still holds
+            // whatever was there before this row failed to land.
+            LOG_WARN("WARNING: Channel map file '%s' row %d has no usable frequency; skipping.\n", filename, row_count);
+            continue;
         }
         if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
             LOG_INFO("Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
@@ -829,7 +899,7 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) //channel map import
 //Decimal Variant of Key Import
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
-key_import_dec_stats(const dsd_opts* opts, const char* key_file_path, dsd_state* state, dsd_csv_validation* stats) {
+key_import_dec_stats(int show_keys, const char* key_file_path, dsd_state* state, dsd_csv_validation* stats) {
     if (!key_file_path || key_file_path[0] == '\0' || !state) {
         return -1;
     }
@@ -846,10 +916,14 @@ key_import_dec_stats(const dsd_opts* opts, const char* key_file_path, dsd_state*
     while (fgets(buffer, BSIZE, fp)) {
         unsigned long long int keynumber = 0;
         int field_count = 0;
+        int id_ok = 0;
         int stored = 0;
         row_count++;
         if (row_count == 1) {
             continue; //don't want labels
+        }
+        if (csv_line_is_blank(buffer)) {
+            continue;
         }
         if (stats) {
             stats->total++;
@@ -857,24 +931,28 @@ key_import_dec_stats(const dsd_opts* opts, const char* key_file_path, dsd_state*
         char* saveptr = NULL;
         const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
         while (field) {
-            csv_key_import_dec_apply_field(state, field_count, field, &keynumber, &stored);
+            csv_key_import_dec_apply_field(state, field_count, field, &keynumber, &id_ok, &stored);
             field = dsd_strtok_r(NULL, ",", &saveptr);
             field_count++;
         }
-        if (stats && stored) {
+        // An unparsed key-id column normalizes to 0, so the row would still
+        // "store" — onto slot 0, together with every other broken row. Counting
+        // that as loaded is how a hex-id file validates as "N keys".
+        if (stats && stored && id_ok) {
             stats->accepted++;
+        }
+        if (stats) {
+            continue; // dry run: the counters are the product, not the log
         }
         char key_id_text[32];
         (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%03lld", keynumber);
         char key_text[16];
-        if (opts->show_keys != 0) {
+        if (show_keys != 0) {
             LOG_INFO("Key [%s] [%s]", key_id_text,
-                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->rkey_array[keynumber],
-                                               5U));
+                     dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->rkey_array[keynumber], 5U));
         } else {
             LOG_INFO("Key [%s] loaded: %s", key_id_text,
-                     dsd_secret_format_decimal(key_text, sizeof key_text, opts->show_keys, state->rkey_array[keynumber],
-                                               5U));
+                     dsd_secret_format_decimal(key_text, sizeof key_text, show_keys, state->rkey_array[keynumber], 5U));
         }
         LOG_INFO("\n");
     }
@@ -888,7 +966,7 @@ csvKeyImportDec(const dsd_opts* opts, dsd_state* state) //multi-key support
     if (!opts || !state) {
         return -1;
     }
-    return key_import_dec_stats(opts, opts->key_in_file, state, NULL);
+    return key_import_dec_stats(opts->show_keys, opts->key_in_file, state, NULL);
 }
 
 static int
@@ -1070,7 +1148,7 @@ vertex_ks_apply_to_state(dsd_state* state, const vertex_map_tmp_t* tmp, const ch
 //Hex Variant of Key Import
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
 static int
-key_import_hex_stats(const dsd_opts* opts, const char* key_file_path, dsd_state* state, dsd_csv_validation* stats) {
+key_import_hex_stats(int show_keys, const char* key_file_path, dsd_state* state, dsd_csv_validation* stats) {
     if (!key_file_path || key_file_path[0] == '\0' || !state) {
         return -1;
     }
@@ -1089,6 +1167,9 @@ key_import_hex_stats(const dsd_opts* opts, const char* key_file_path, dsd_state*
         if (row_count == 1) {
             continue; //don't want labels
         }
+        if (csv_line_is_blank(buffer)) {
+            continue;
+        }
         if (stats) {
             stats->total++;
         }
@@ -1096,22 +1177,25 @@ key_import_hex_stats(const dsd_opts* opts, const char* key_file_path, dsd_state*
         if (stats && stored_segments > 0) {
             stats->accepted++;
         }
+        if (stats) {
+            continue; // dry run: the counters are the product, not the log
+        }
         size_t key_index = 0;
         if (csv_rkey_index(keynumber, 0ULL, &key_index)) {
             char key_id_text[32];
             (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%04llX", keynumber);
             char key_text[17];
-            if (opts->show_keys != 0) {
-                LOG_INFO("Key [%s] [%s]", key_id_text,
-                         dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->rkey_array[key_index],
-                                               16U, 0));
+            if (show_keys != 0) {
+                LOG_INFO(
+                    "Key [%s] [%s]", key_id_text,
+                    dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->rkey_array[key_index], 16U, 0));
             } else {
-                LOG_INFO("Key [%s] loaded: %s", key_id_text,
-                         dsd_secret_format_hex(key_text, sizeof key_text, opts->show_keys, state->rkey_array[key_index],
-                                               16U, 0));
+                LOG_INFO(
+                    "Key [%s] loaded: %s", key_id_text,
+                    dsd_secret_format_hex(key_text, sizeof key_text, show_keys, state->rkey_array[key_index], 16U, 0));
             }
             // If longer key is loaded (or clash with the 0x101, 0x201, 0x301 offset), then print the full key listing.
-            csv_key_import_hex_log_offsets(state, keynumber, opts->show_keys);
+            csv_key_import_hex_log_offsets(state, keynumber, show_keys);
         } else {
             char key_id_text[32];
             (void)DSD_SNPRINTF(key_id_text, sizeof key_id_text, "%04llX", keynumber);
@@ -1130,10 +1214,10 @@ csvKeyImportHex(const dsd_opts* opts, dsd_state* state) //key import for hex key
     if (!opts || !state) {
         return -1;
     }
-    return key_import_hex_stats(opts, opts->key_in_file, state, NULL);
+    return key_import_hex_stats(opts->show_keys, opts->key_in_file, state, NULL);
 }
 
-typedef int (*csv_validate_run_fn)(const dsd_opts* opts, const char* path, dsd_state* state, dsd_csv_validation* out);
+typedef int (*csv_validate_run_fn)(const char* path, dsd_state* state, dsd_csv_validation* out);
 
 /*
  * Dry-run harness: parses through the real import loop, but into throwaway
@@ -1149,17 +1233,13 @@ csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_valid
     out->skipped = 0U;
     out->total = 0U;
 
-    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     int rc = -1;
-    if (opts && state) {
-        rc = run(opts, path, state, out);
-    }
     if (state) {
+        rc = run(path, state, out);
         dsd_state_ext_free_all(state);
     }
     free(state);
-    free(opts);
 
     if (rc != 0) {
         out->accepted = 0U;
@@ -1172,35 +1252,33 @@ csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_valid
 }
 
 static int
-csv_validate_run_group(const dsd_opts* opts, const char* path, dsd_state* state, dsd_csv_validation* out) {
-    (void)opts;
-    return group_import_path_stats(path, state, out);
+csv_validate_run_key_dec(const char* path, dsd_state* state, dsd_csv_validation* out) {
+    return key_import_dec_stats(0, path, state, out);
 }
 
 static int
-csv_validate_run_chan(const dsd_opts* opts, const char* path, dsd_state* state, dsd_csv_validation* out) {
-    (void)opts;
-    return chan_import_stats(path, state, out);
+csv_validate_run_key_hex(const char* path, dsd_state* state, dsd_csv_validation* out) {
+    return key_import_hex_stats(0, path, state, out);
 }
 
 int
 dsd_csv_validate_group_file(const char* path, dsd_csv_validation* out) {
-    return csv_validate_into_throwaway(path, out, csv_validate_run_group);
+    return csv_validate_into_throwaway(path, out, group_import_path_stats);
 }
 
 int
 dsd_csv_validate_chan_file(const char* path, dsd_csv_validation* out) {
-    return csv_validate_into_throwaway(path, out, csv_validate_run_chan);
+    return csv_validate_into_throwaway(path, out, chan_import_stats);
 }
 
 int
 dsd_csv_validate_key_file_dec(const char* path, dsd_csv_validation* out) {
-    return csv_validate_into_throwaway(path, out, key_import_dec_stats);
+    return csv_validate_into_throwaway(path, out, csv_validate_run_key_dec);
 }
 
 int
 dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out) {
-    return csv_validate_into_throwaway(path, out, key_import_hex_stats);
+    return csv_validate_into_throwaway(path, out, csv_validate_run_key_hex);
 }
 
 int
