@@ -22,9 +22,11 @@
 
 /* Pulled in by the DMR library that backs the imports library's CSV validation.
  * Nothing here decodes anything, so the vocoder descrambler is a stub -- the
- * same arrangement UI_QT_IMPORTED_FILES uses. */
+ * same arrangement UI_QT_IMPORTED_FILES uses. External linkage is the point: the
+ * library's undefined reference is what this definition satisfies, so it cannot
+ * be made static. */
 void
-LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
+LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
     (void)BufferIn;
     (void)BufferOut;
     (void)state;

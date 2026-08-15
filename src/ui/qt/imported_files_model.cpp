@@ -6,6 +6,7 @@
 #include "imported_files_model.h"
 
 #include <QByteArray>
+#include <QChar>
 #include <QDateTime>
 #include <QFile>
 #include <QHash>
@@ -13,6 +14,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
+#include <QMap>
 #include <QVariant>
 
 #include <dsd-neo/core/csv_validate.h>

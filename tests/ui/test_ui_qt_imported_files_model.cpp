@@ -9,15 +9,19 @@
  * wizard and imports screen share. Registered only when the Qt frontend is
  * enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QIODevice>
+#include <QList>
+#include <QMap>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QUrl>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <dsd-neo/core/state_fwd.h>

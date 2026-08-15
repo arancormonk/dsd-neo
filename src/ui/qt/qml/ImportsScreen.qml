@@ -158,12 +158,21 @@ Item {
     ListView {
         id: fileList
 
+        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+        objectName: "importedFilesList"
+
         anchors.top: noticeLine.visible ? noticeLine.bottom : countLabel.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: importButton.top
         anchors.topMargin: 14
         anchors.bottomMargin: 14
+        // The screen padding is the view's, not the delegate's: a vertical
+        // ListView writes each item's x itself on every layout pass, so an x
+        // declared in the delegate is overwritten with 0 and the cards end up
+        // flush against the left edge with the whole inset piled on the right.
+        anchors.leftMargin: Theme.screenPadding
+        anchors.rightMargin: Theme.screenPadding
         clip: true
         model: importedFiles
         spacing: Theme.gap
@@ -179,8 +188,7 @@ Item {
             required property int skipped
             required property var importedAt
 
-            width: fileList.width - 2 * Theme.screenPadding
-            x: Theme.screenPadding
+            width: ListView.view.width
             height: rowColumn.height + 2 * Theme.cardPadding
 
             Column {
@@ -238,8 +246,13 @@ Item {
 
         // Empty state: an invitation to act, not mood.
         Text {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "importsEmptyMessage"
+
             anchors.centerIn: parent
-            width: parent.width - 4 * Theme.screenPadding
+            // The view is already inset by the screen padding, so this is the
+            // second step in from the edge, not the first.
+            width: parent.width - 2 * Theme.screenPadding
             visible: importedFiles.count === 0
             text: qsTr("No imported files yet. Import a channel map, talkgroup list, or key file to use it in your systems.")
             font.family: Theme.sans
@@ -252,6 +265,9 @@ Item {
 
     GradientButton {
         id: importButton
+
+        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+        objectName: "importFileButton"
 
         anchors.left: parent.left
         anchors.right: parent.right

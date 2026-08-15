@@ -20,6 +20,7 @@
 #include <QTimer>
 #include <QtGlobal>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>

@@ -499,6 +499,32 @@ class Setup : public QObject {
         return dsd_neo_qml_stub::spectrum_peak_hz();
     }
 
+    /**
+     * @brief Write @p contents to a disposable CSV and answer its path.
+     *
+     * The imports library only grows a row by copying a real file through
+     * DecoderHost::importDocument() and parsing what landed, and QML cannot
+     * create one. The file goes under the same disposable app data tree the
+     * library itself persists to, so a run leaves nothing behind.
+     */
+    Q_INVOKABLE QString
+    writeFixtureCsv(const QString& name, const QString& contents) const {
+        QDir dir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/fixtures"));
+        if (!dir.mkpath(QStringLiteral("."))) {
+            return QString();
+        }
+        const QString path = dir.filePath(name);
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            return QString();
+        }
+        if (file.write(contents.toUtf8()) < 0) {
+            return QString();
+        }
+        file.close();
+        return path;
+    }
+
     /** @brief Forget every recorded command. */
     Q_INVOKABLE void
     resetCommands() {
