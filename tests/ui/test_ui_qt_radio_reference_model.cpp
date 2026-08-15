@@ -118,6 +118,10 @@ struct Fake {
     int calls = 0;
     bool serveFault = false;
     QByteArray lastRequest;
+    /* Rewrites the served payload, so a case can make the database change under
+     * a refresh. Empty `from` leaves every fixture byte-exact. */
+    QByteArray replaceFrom;
+    QByteArray replaceTo;
 };
 
 QByteArray
@@ -232,8 +236,11 @@ fake_perform(void* ctx, const dsd_rr_request* req, dsd_rr_response* resp) {
     fake->lastRequest = QByteArray(req->body, static_cast<int>(req->body_len));
 
     const QString method = method_of(fake->lastRequest);
-    const QByteArray payload = read_fixture(fake->serveFault ? QStringLiteral("fault_auth.xml")
-                                                             : fixture_for(method, sid_of(fake->lastRequest)));
+    QByteArray payload = read_fixture(fake->serveFault ? QStringLiteral("fault_auth.xml")
+                                                       : fixture_for(method, sid_of(fake->lastRequest)));
+    if (!fake->replaceFrom.isEmpty()) {
+        payload.replace(fake->replaceFrom, fake->replaceTo);
+    }
     if (payload.isEmpty()) {
         resp->status = DSD_RR_ERR_HTTP;
         (void)DSD_SNPRINTF(resp->error, sizeof(resp->error), "%s", "no fixture for this method");
@@ -307,6 +314,28 @@ warned(const QVariantMap& plan, const QString& needle) {
         }
     }
     return false;
+}
+
+/** @brief The bytes of a stored library file. */
+QByteArray
+read_stored(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        expect("stored file is readable", false);
+        return QByteArray();
+    }
+    return file.readAll();
+}
+
+/** @brief The library row of @p type, or -1. */
+int
+row_of_type(const dsd_qt::ImportedFilesModel& library, const QString& type) {
+    for (int row = 0; row < library.rowCount(); row++) {
+        if (library.get(row).value(QStringLiteral("type")).toString() == type) {
+            return row;
+        }
+    }
+    return -1;
 }
 
 int
@@ -580,6 +609,86 @@ test_import_lands_in_the_library(void) {
 }
 
 void
+test_refresh_replaces_a_row_in_place(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    Harness h;
+
+    /* Two repeaters, because that is the selection the singular rrSiteNumber
+     * cannot carry: a refresh driven by it alone would shrink the scan list to
+     * one row. */
+    h.model.loadSystem(12244);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan(QVariantList{0, 1}, QVariantMap());
+    expect("a two-repeater plan built", plan.value(QStringLiteral("ok")).toBool());
+    expect_str("the plan records the whole selection", plan.value(QStringLiteral("siteNumbers")).toString(),
+               QStringLiteral("1,2"));
+
+    expect("import ok",
+           h.model.performImport(plan, QStringLiteral("Linn County REC"), -1).value(QStringLiteral("ok")).toBool());
+
+    const int chanRow = row_of_type(h.library, QStringLiteral("chan"));
+    expect("a channel map row exists", chanRow >= 0);
+    if (chanRow < 0) {
+        return;
+    }
+    const QVariantMap before = h.library.get(chanRow);
+    const QString path = before.value(QStringLiteral("path")).toString();
+    expect_str("provenance records the whole selection", before.value(QStringLiteral("rrSiteNumbers")).toString(),
+               QStringLiteral("1,2"));
+    const QByteArray original = read_stored(path);
+    expect("the stored map carries the second repeater", original.contains("464525000"));
+
+    int finishedRow = -2;
+    QVariantMap finished;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::refreshFinished, &h.model,
+                     [&finishedRow, &finished](int row, const QVariantMap& result) {
+                         finishedRow = row;
+                         finished = result;
+                     });
+
+    /* RadioReference moved one of the repeaters. */
+    h.fake.replaceFrom = QByteArrayLiteral("464.525");
+    h.fake.replaceTo = QByteArrayLiteral("464.550");
+    expect("the refresh starts", h.model.refreshRow(chanRow));
+    pump(h.model);
+
+    expect_int("the refresh reported the row it was given", finishedRow, chanRow);
+    expect("the refresh succeeded", finished.value(QStringLiteral("ok")).toBool());
+    /* The path is the row's identity: every saved system referencing it would
+     * break if a refresh moved the file. */
+    expect_str("the stored path is unchanged", h.library.get(chanRow).value(QStringLiteral("path")).toString(), path);
+
+    const QByteArray refreshed = read_stored(path);
+    expect("the refreshed map follows the database", refreshed.contains("464550000"));
+    expect("the moved repeater is gone from the file", !refreshed.contains("464525000"));
+    /* Both repeaters survive: matching by site number is what reproduces the
+     * original selection, and a lost one would silently shorten the scan list. */
+    expect("the refreshed map still carries the first repeater", refreshed.contains("451275000"));
+    expect_int("the refreshed map has the same row count", row_count(QString::fromUtf8(refreshed)),
+               row_count(QString::fromUtf8(original)));
+
+    /* The destructive-refresh guard: a fetch that fails must leave the stored
+     * copy byte-identical, or a fault page would destroy working local data. */
+    h.fake.replaceFrom.clear();
+    h.fake.serveFault = true;
+    finishedRow = -2;
+    finished.clear();
+    expect("a refresh against a failing server still starts", h.model.refreshRow(chanRow));
+    pump(h.model);
+    expect_int("the failed refresh reported the row", finishedRow, chanRow);
+    expect("the failed refresh reports failure", !finished.value(QStringLiteral("ok")).toBool());
+    expect("a failed refresh leaves the stored file byte-identical", read_stored(path) == refreshed);
+    expect_int("a failed refresh adds no row", h.library.rowCount(), 2);
+    h.fake.serveFault = false;
+
+    /* A picked file has no provenance, so there is nothing to re-fetch. */
+    const int groupRow = row_of_type(h.library, QStringLiteral("group"));
+    expect("a talkgroup row exists", groupRow >= 0);
+    expect("a row outside the library cannot be refreshed", !h.model.refreshRow(99));
+}
+
+void
 test_error_and_cancel(void) {
     Harness h;
     h.fake.serveFault = true;
@@ -647,6 +756,7 @@ main(int argc, char** argv) {
     test_trunked_system();
     test_conventional_system();
     test_import_lands_in_the_library();
+    test_refresh_replaces_a_row_in_place();
     test_error_and_cancel();
     test_destroy_with_requests_in_flight();
 

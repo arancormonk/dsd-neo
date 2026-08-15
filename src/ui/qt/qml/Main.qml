@@ -572,6 +572,9 @@ Window {
         objectName: "importsScreen"
 
         anchors.fill: safeArea
+        // So a RadioReference refresh can tell whether the file it just replaced
+        // is one the running session is actually using.
+        sessionSystem: mainRoot.sessionSystem
         opacity: mainRoot.importsOpen && !mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9

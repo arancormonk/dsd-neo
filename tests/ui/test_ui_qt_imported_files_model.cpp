@@ -402,6 +402,9 @@ test_generated_import_and_refresh(void) {
     origin.insert(QStringLiteral("origin"), QStringLiteral("radioreference"));
     origin.insert(QStringLiteral("rrSid"), 6673);
     origin.insert(QStringLiteral("rrSiteNumber"), 10);
+    /* The whole selection, so a refresh can reproduce it: the singular key
+     * above records only the first repeater of a conventional import. */
+    origin.insert(QStringLiteral("rrSiteNumbers"), QStringLiteral("10,11,12"));
     origin.insert(QStringLiteral("rrKind"), QStringLiteral("group"));
 
     QString storedPath;
@@ -424,6 +427,8 @@ test_generated_import_and_refresh(void) {
          * siteNumber, and siteId means nothing to a user. */
         expect("provenance site number recorded", row.value(QStringLiteral("rrSiteNumber")).toInt() == 10);
         expect("provenance kind recorded", row.value(QStringLiteral("rrKind")).toString() == QStringLiteral("group"));
+        expect("provenance site list recorded",
+               row.value(QStringLiteral("rrSiteNumbers")).toString() == QStringLiteral("10,11,12"));
         expect("generated import keeps its type",
                row.value(QStringLiteral("type")).toString() == QStringLiteral("group"));
 
@@ -446,6 +451,8 @@ test_generated_import_and_refresh(void) {
         expect("provenance persists across instances",
                model.get(0).value(QStringLiteral("origin")).toString() == QStringLiteral("radioreference"));
         expect("persisted sid", model.get(0).value(QStringLiteral("rrSid")).toInt() == 6673);
+        expect("persisted site list",
+               model.get(0).value(QStringLiteral("rrSiteNumbers")).toString() == QStringLiteral("10,11,12"));
 
         /* Refresh: same path, new content, re-validated counts. */
         const QByteArray second =
@@ -514,6 +521,8 @@ test_legacy_store_without_provenance(void) {
     expect("legacy row defaults sid to zero", row.value(QStringLiteral("rrSid")).toInt() == 0);
     expect("legacy row defaults site number to zero", row.value(QStringLiteral("rrSiteNumber")).toInt() == 0);
     expect("legacy row defaults kind to empty", row.value(QStringLiteral("rrKind")).toString().isEmpty());
+    expect("legacy row defaults the site list to empty",
+           row.value(QStringLiteral("rrSiteNumbers")).toString().isEmpty());
     expect("legacy row is not prunable", model.takePrunedPaths().isEmpty());
 }
 

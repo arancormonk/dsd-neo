@@ -535,6 +535,9 @@ RadioReferenceModel::startBatch(const QString& status) {
     const bool wasBusy = busy();
     m_outstanding = 0;
     m_systemPending = 0;
+    /* Whatever the user just asked for retires a refresh still in flight;
+     * refreshRow() records its own state after the loadSystem() that calls this. */
+    m_refreshRow = -1;
     m_generation++;
     m_errorKind = NoError;
     m_errorText.clear();
@@ -794,6 +797,14 @@ RadioReferenceModel::applyReply(const Reply& reply) {
         m_systemPending = 0;
         setError(reply.errorKind, reply.errorText);
         setStatus(QString());
+        if (m_refreshRow >= 0) {
+            /* finishSystemLoad() will never run for this batch, so the caller
+             * would otherwise wait for an answer that never comes. */
+            QVariantMap result;
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("error"), QStringLiteral("open"));
+            endRefresh(result);
+        }
         return;
     }
 
@@ -873,6 +884,10 @@ RadioReferenceModel::finishSystemLoad() {
 
     setStatus(QString());
     Q_EMIT systemChanged();
+
+    if (m_refreshRow >= 0) {
+        completeRefresh();
+    }
 }
 
 void
@@ -979,6 +994,16 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
      * rather than being enforced twice with two different messages. */
     plan.insert(QStringLiteral("siteCount"), conventional() ? sites.size() : 1);
     plan.insert(QStringLiteral("siteNumber"), sites.first().site_number);
+    /* The whole selection, so a later refresh can reproduce it. Only the first
+     * entry for a trunked import, because that is all the generator uses. */
+    QStringList numbers;
+    for (const dsd_rr_site& site : sites) {
+        numbers.append(QString::number(site.site_number));
+        if (!conventional()) {
+            break;
+        }
+    }
+    plan.insert(QStringLiteral("siteNumbers"), numbers.join(QLatin1Char(',')));
 
     if (!generateFiles(sites, options.value(QStringLiteral("partialEncAsDe"), true).toBool(), &plan, &warnings)) {
         plan.insert(QStringLiteral("blockedReason"), tr("The channel map could not be generated."));
@@ -1049,6 +1074,7 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     origin.insert(QStringLiteral("origin"), QStringLiteral("radioreference"));
     origin.insert(QStringLiteral("rrSid"), m_sid);
     origin.insert(QStringLiteral("rrSiteNumber"), plan.value(QStringLiteral("siteNumber")).toInt());
+    origin.insert(QStringLiteral("rrSiteNumbers"), plan.value(QStringLiteral("siteNumbers")).toString());
 
     static const struct {
         const char* planKey;
@@ -1090,6 +1116,147 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     result.insert(QStringLiteral("trunking"), plan.value(QStringLiteral("trunking")));
     result.insert(QStringLiteral("savedRow"), savedRow);
     return result;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Refresh                                                                    */
+/* ------------------------------------------------------------------------- */
+
+namespace {
+
+/**
+ * @brief The site numbers a generated row was built from.
+ *
+ * `rrSiteNumbers` carries the whole selection; `rrSiteNumber` is the first one
+ * and is all a row written before that key existed has.
+ */
+QList<int>
+site_numbers_of(const QVariantMap& entry) {
+    QList<int> numbers;
+    const QString joined = entry.value(QStringLiteral("rrSiteNumbers")).toString();
+    const QStringList parts = joined.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (const QString& part : parts) {
+        bool ok = false;
+        const int value = part.trimmed().toInt(&ok);
+        if (ok && !numbers.contains(value)) {
+            numbers.append(value);
+        }
+    }
+    if (numbers.isEmpty()) {
+        const int single = entry.value(QStringLiteral("rrSiteNumber")).toInt();
+        if (single != 0) {
+            numbers.append(single);
+        }
+    }
+    return numbers;
+}
+
+} // namespace
+
+bool
+RadioReferenceModel::refreshRow(int row) {
+    if (m_importedFiles == nullptr) {
+        return false;
+    }
+    const QVariantMap entry = m_importedFiles->get(row);
+    if (entry.value(QStringLiteral("origin")).toString() != QLatin1String("radioreference")) {
+        setError(ConfigError, tr("That file did not come from RadioReference."));
+        return false;
+    }
+    const int sid = entry.value(QStringLiteral("rrSid")).toInt();
+    const QList<int> numbers = site_numbers_of(entry);
+    if (sid <= 0 || numbers.isEmpty()) {
+        setError(ConfigError,
+                 tr("This file does not record which system it came from. Import it again to refresh it."));
+        return false;
+    }
+    if (!credentialsReady()) {
+        setError(ConfigError, tr("Enter your RadioReference username, password and application key first."));
+        return false;
+    }
+
+    /* Replaces whatever system the RadioReference screen had loaded: one client,
+     * one system at a time, and a refresh is started from the library rather
+     * than from that screen. */
+    loadSystem(sid);
+    if (m_systemPending == 0) {
+        /* Nothing was queued; beginFetch() has already reported why. */
+        return false;
+    }
+    /* After loadSystem(), because the startBatch() inside it clears this. */
+    m_refreshRow = row;
+    m_refreshKind = entry.value(QStringLiteral("rrKind")).toString();
+    m_refreshSiteNumbers = numbers;
+    return true;
+}
+
+void
+RadioReferenceModel::endRefresh(const QVariantMap& result) {
+    const int row = m_refreshRow;
+    m_refreshRow = -1;
+    m_refreshKind.clear();
+    m_refreshSiteNumbers.clear();
+    Q_EMIT refreshFinished(row, result);
+}
+
+void
+RadioReferenceModel::completeRefresh() {
+    QVariantMap result;
+    result.insert(QStringLiteral("ok"), false);
+    result.insert(QStringLiteral("error"), QStringLiteral("open"));
+
+    /* Matched by site NUMBER, never by index: RadioReference is free to reorder
+     * getTrsSites, and an index would refresh the wrong repeater. A site that is
+     * gone is dropped rather than shifting the rest of the list. */
+    QList<dsd_rr_site> sites;
+    for (const int number : m_refreshSiteNumbers) {
+        for (size_t i = 0; i < m_siteData.count; i++) {
+            if (m_siteData.items[i].site_number == number) {
+                sites.append(m_siteData.items[i]);
+                break;
+            }
+        }
+    }
+    if (sites.isEmpty()) {
+        setError(ServerError, tr("RadioReference no longer lists the site this file was built from."));
+        endRefresh(result);
+        return;
+    }
+
+    QVariantMap plan;
+    QVariantList warnings;
+    /* partialEncAsDe is not recorded in provenance, so this is the UI default
+     * rather than the answer the original import was given. */
+    if (!generateFiles(sites, true, &plan, &warnings)) {
+        setError(ParseError, tr("The refreshed data could not be turned into a file."));
+        endRefresh(result);
+        return;
+    }
+
+    const bool isChan = (m_refreshKind == QLatin1String("chan"));
+    const QString text = plan.value(isChan ? QStringLiteral("chanCsvText") : QStringLiteral("groupCsvText")).toString();
+    if (text.isEmpty()) {
+        setError(ParseError, tr("RadioReference has no data for this file any more."));
+        endRefresh(result);
+        return;
+    }
+
+    const QString dir = staging_dir_path();
+    const QString path = dir + QLatin1Char('/') + QLatin1String(isChan ? kStagingChan : kStagingGroup);
+    if (!QDir().mkpath(dir) || !write_staging(path, text)) {
+        setError(ConfigError, tr("The refreshed file could not be written."));
+        endRefresh(result);
+        return;
+    }
+
+    /* Path preserved and staging pre-validated, so a fault page or a truncated
+     * body leaves the stored copy byte-identical. */
+    result = m_importedFiles->refreshGeneratedFile(m_refreshRow, path);
+    QFile::remove(path);
+    if (!result.value(QStringLiteral("ok")).toBool()) {
+        setError(ParseError, tr("The refreshed file could not be read back, so the stored copy was kept."));
+    }
+    endRefresh(result);
 }
 
 } // namespace dsd_qt

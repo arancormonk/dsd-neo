@@ -58,6 +58,7 @@ ImportedFilesModel::data(const QModelIndex& index, int role) const {
         case RrSidRole: return row.rrSid;
         case RrSiteNumberRole: return row.rrSiteNumber;
         case RrKindRole: return row.rrKind;
+        case RrSiteNumbersRole: return row.rrSiteNumbers;
         default: return QVariant();
     }
 }
@@ -75,6 +76,7 @@ ImportedFilesModel::roleNames() const {
     roles.insert(RrSidRole, QByteArrayLiteral("rrSid"));
     roles.insert(RrSiteNumberRole, QByteArrayLiteral("rrSiteNumber"));
     roles.insert(RrKindRole, QByteArrayLiteral("rrKind"));
+    roles.insert(RrSiteNumbersRole, QByteArrayLiteral("rrSiteNumbers"));
     return roles;
 }
 
@@ -126,6 +128,7 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
     row.rrSid = origin.value(QStringLiteral("rrSid")).toInt();
     row.rrSiteNumber = origin.value(QStringLiteral("rrSiteNumber")).toInt();
     row.rrKind = origin.value(QStringLiteral("rrKind")).toString();
+    row.rrSiteNumbers = origin.value(QStringLiteral("rrSiteNumbers")).toString();
 
     beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
     m_rows.append(row);
@@ -332,6 +335,7 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
     row.rrSiteNumber = map.value(QStringLiteral("rrSiteNumber")).toInt();
     row.rrKind = map.value(QStringLiteral("rrKind")).toString();
+    row.rrSiteNumbers = map.value(QStringLiteral("rrSiteNumbers")).toString();
     return row;
 }
 
@@ -350,6 +354,7 @@ ImportedFilesModel::mapFromRow(const Row& row) {
     map.insert(QStringLiteral("rrSid"), row.rrSid);
     map.insert(QStringLiteral("rrSiteNumber"), row.rrSiteNumber);
     map.insert(QStringLiteral("rrKind"), row.rrKind);
+    map.insert(QStringLiteral("rrSiteNumbers"), row.rrSiteNumbers);
     return map;
 }
 

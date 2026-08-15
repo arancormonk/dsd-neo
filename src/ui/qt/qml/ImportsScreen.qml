@@ -25,6 +25,11 @@ Item {
     // Transient outcome line under the header; magenta when it reports a problem.
     property string notice: ""
     property bool noticeIsProblem: false
+    // The saved system the running session was started from, or null. Bound by
+    // Main.qml, which owns it. A refresh only pushes a file into the live
+    // session when that session is actually using it: re-importing a channel map
+    // replaces the live one wholesale and clears what the protocol had learned.
+    property var sessionSystem: null
 
     function nounFor(type, count) {
         if (type === "chan")
@@ -60,6 +65,42 @@ Item {
         // channel map "keys" if the lookup missed.
         screen.notice = verb + " · " + result.accepted + " " + screen.nounFor(result.type, result.accepted)
         screen.noticeIsProblem = false
+    }
+
+    // A refresh is asynchronous — it re-fetches the whole system first — so the
+    // outcome arrives here rather than from the tap that asked for it.
+    Connections {
+        // Null unless this is the live model. The QML suite registers
+        // `radioReference` as a plain map of readings, which has no signals to
+        // connect to and would warn on every fixture update. Aliased to a local
+        // first: the fixture-completeness check reads a dotted access as a
+        // reading it must carry, and this is a method.
+        target: {
+            var rr = radioReference
+            return (typeof rr.refreshRow === "function") ? rr : null
+        }
+
+        function onRefreshFinished(row, result) {
+            screen.resultNotice(qsTr("Refreshed"), result)
+            if (!result.ok || result.error === "empty")
+                return
+            // Live-apply only the file the running session is actually using;
+            // pushing another system's channel map would retune the session onto
+            // frequencies it never asked for.
+            var sys = screen.sessionSystem
+            if (!decoderHost.running || !sys)
+                return
+            var sent = false
+            if (result.type === "chan" && sys.chanCsvPath === result.path)
+                sent = commands.importChannelMap(result.path)
+            else if (result.type === "group" && sys.groupCsvPath === result.path)
+                sent = commands.importGroupList(result.path)
+            else
+                return
+            screen.notice = sent ? qsTr("Refreshed · sent to the decoder")
+                                 : qsTr("Refreshed, but the decoder is not accepting commands")
+            screen.noticeIsProblem = !sent
+        }
     }
 
     // No CSV name filter: on Android it becomes a SAF MIME filter, and the
@@ -354,6 +395,9 @@ Item {
     ModalSheet {
         id: actionSheet
 
+        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+        objectName: "importsActionSheet"
+
         Text {
             width: parent.width
             text: screen.actionRow >= 0 ? importedFiles.get(screen.actionRow).name : ""
@@ -372,6 +416,29 @@ Item {
                 screen.notice = ""
                 screen.pendingRow = screen.actionRow
                 fileDialog.open()
+            }
+        }
+
+        // Gated on the library row's own provenance rather than on a delegate
+        // role: the delegate declares only the six roles it renders.
+        OutlineButton {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "refreshFromRadioReferenceButton"
+
+            width: parent.width
+            visible: radioReference.available && screen.actionRow >= 0
+                     && importedFiles.get(screen.actionRow).origin === "radioreference"
+            text: qsTr("Refresh from RadioReference")
+            onClicked: {
+                actionSheet.visible = false
+                screen.notice = ""
+                screen.noticeIsProblem = false
+                if (!radioReference.refreshRow(screen.actionRow)) {
+                    screen.notice = radioReference.errorText.length > 0
+                                    ? radioReference.errorText
+                                    : qsTr("That file could not be refreshed")
+                    screen.noticeIsProblem = true
+                }
             }
         }
 

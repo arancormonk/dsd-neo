@@ -47,7 +47,8 @@ class ImportedFilesModel : public QAbstractListModel {
         OriginRole,       // "" for a picked file, "radioreference" for a generated one
         RrSidRole,        // RadioReference system id
         RrSiteNumberRole, // TrsSite.siteNumber, the RF site - never siteId
-        RrKindRole        // "group" | "chan"
+        RrKindRole,       // "group" | "chan"
+        RrSiteNumbersRole // every selected siteNumber, comma-joined, in selection order
     };
 
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
@@ -91,7 +92,7 @@ class ImportedFilesModel : public QAbstractListModel {
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
      * @param type       "chan" | "group" | "keysDec" | "keysHex".
-     * @param origin     Provenance: {origin, rrSid, rrSiteNumber, rrKind}.
+     * @param origin     Provenance: {origin, rrSid, rrSiteNumber, rrSiteNumbers, rrKind}.
      * @return Same shape as importFile().
      */
     Q_INVOKABLE QVariantMap importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
@@ -154,6 +155,11 @@ class ImportedFilesModel : public QAbstractListModel {
         int rrSid = 0;
         int rrSiteNumber = 0;
         QString rrKind;
+        /* Every selected site, comma-joined in selection order. rrSiteNumber
+         * alone records only the first, which is exact for a trunked import but
+         * loses the rest of a conventional repeater selection — a refresh driven
+         * by it would silently shrink a scan list to one row. */
+        QString rrSiteNumbers;
     };
 
     static Row rowFromMap(const QVariantMap& map);

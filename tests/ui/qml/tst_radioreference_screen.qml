@@ -28,6 +28,16 @@ Item {
         source: uiDir + "/RadioReferenceScreen.qml"
     }
 
+    // The refresh entry point lives in the imports library, not on the screen
+    // above, so it needs the library loaded to be reachable at all.
+    Loader {
+        id: importsLoader
+
+        anchors.fill: parent
+        active: false
+        source: uiDir + "/ImportsScreen.qml"
+    }
+
     TestCase {
         id: tc
 
@@ -239,6 +249,71 @@ Item {
             testContext.setRadioReference("errorIsSubscription", true)
             tryVerify(function () { return notice.text.indexOf("premium") >= 0 },
                       2000, "an expired subscription was not named as such: " + notice.text)
+        }
+    }
+
+    // "Refresh from RadioReference" is offered on a row this app generated and on
+    // nothing else — a picked file has no system to re-fetch. The gate reads the
+    // row's own provenance through importedFiles.get(), because the delegate
+    // declares only the six roles it renders and a role it never asked for comes
+    // back `undefined`.
+    TestCase {
+        id: refreshCase
+
+        name: "RadioReferenceRefreshEntryPoint"
+        when: windowShown
+
+        property var screen: null
+
+        function initTestCase() {
+            testContext.setRadioReference("available", true)
+            importsLoader.active = true
+            refreshCase.screen = importsLoader.item
+            verify(refreshCase.screen !== null, "ImportsScreen.qml failed to load")
+
+            // A generated row and a picked one, so the gate has both to answer.
+            var generated = testContext.writeFixtureCsv(
+                "rr_group.csv", "TG,Mode,Name\n1001,A,Dispatch\n")
+            verify(generated.length > 0, "could not write the generated fixture")
+            var adopted = importedFiles.importGeneratedFile(
+                generated, "SARA group.csv", "group",
+                { "origin": "radioreference", "rrSid": 6673, "rrSiteNumber": 1,
+                  "rrSiteNumbers": "1", "rrKind": "group" })
+            verify(adopted.ok, "the generated fixture did not import")
+
+            var picked = testContext.writeFixtureCsv("picked.csv", "TG,Mode,Name\n2001,A,Works\n")
+            verify(picked.length > 0, "could not write the picked fixture")
+            verify(importedFiles.importFile(picked, "picked.csv", "group").ok,
+                   "the picked fixture did not import")
+        }
+
+        function cleanupTestCase() {
+            // The library is one persistent model shared by every case in this
+            // suite; rows left behind would hand the next file a fixture it
+            // never asked for.
+            while (importedFiles.count > 0) {
+                importedFiles.remove(0)
+            }
+            testContext.setRadioReference("available", false)
+        }
+
+        function test_01_refresh_is_offered_only_for_a_generated_row() {
+            var sheet = findChild(refreshCase.screen, "importsActionSheet")
+            verify(sheet !== null, "the action sheet is missing")
+            var refresh = findChild(refreshCase.screen, "refreshFromRadioReferenceButton")
+            verify(refresh !== null, "the refresh action is missing")
+
+            refreshCase.screen.actionRow = 0
+            sheet.visible = true
+            tryVerify(function () { return refresh.visible },
+                      2000, "a RadioReference-generated row was not offered a refresh")
+
+            refreshCase.screen.actionRow = 1
+            tryVerify(function () { return !refresh.visible },
+                      2000, "a picked file was offered a refresh it cannot serve")
+
+            sheet.visible = false
+            refreshCase.screen.actionRow = -1
         }
     }
 }

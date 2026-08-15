@@ -216,6 +216,29 @@ class RadioReferenceModel : public QObject {
     Q_INVOKABLE QVariantMap performImport(const QVariantMap& plan, const QString& systemName, int savedRow);
 
     /**
+     * @brief Re-fetch a generated library row and replace its file in place.
+     *
+     * Asynchronous: the answer arrives as refreshFinished(). The stored path is
+     * preserved, so every saved system referencing it stays valid, and the
+     * staging file is validated before the stored copy is touched.
+     *
+     * The site selection is recovered from the row's `rrSiteNumbers` provenance
+     * (falling back to the singular `rrSiteNumber` for a row written before that
+     * key existed) and matched by site NUMBER, never by index: RadioReference is
+     * free to reorder getTrsSites, and an index would refresh the wrong repeater.
+     *
+     * Two things provenance does not record and this therefore cannot restore:
+     * the "treat partly encrypted as encrypted" answer, which falls back to the
+     * UI default of on, and whatever system the RadioReference screen currently
+     * has loaded, which this replaces.
+     *
+     * @param row Library row.
+     * @return false when the refresh could not even be started; the reason is in
+     *         errorText. true means refreshFinished() will follow.
+     */
+    Q_INVOKABLE bool refreshRow(int row);
+
+    /**
      * @brief Replace the HTTP transport. Test seam; NULL restores the built-in one.
      *
      * Not Q_INVOKABLE: it names a C struct QML has no way to build.
@@ -228,6 +251,8 @@ class RadioReferenceModel : public QObject {
     void statusChanged();
     void listsChanged();
     void systemChanged();
+    /** @brief One refreshRow() outcome; @p result has importFile()'s shape. */
+    void refreshFinished(int row, const QVariantMap& result);
 
   private:
     /** @brief Which call a completion belongs to. */
@@ -297,6 +322,12 @@ class RadioReferenceModel : public QObject {
     bool generateFiles(const QList<dsd_rr_site>& sites, bool partialEncAsDe, QVariantMap* plan,
                        QVariantList* warnings) const;
 
+    /** @brief Regenerate and commit the pending refresh. GUI thread only. */
+    void completeRefresh();
+
+    /** @brief Report a refresh outcome and forget the pending state. */
+    void endRefresh(const QVariantMap& result);
+
     AppPrefs* m_prefs = nullptr;
     ImportedFilesModel* m_importedFiles = nullptr;
     DecoderHost* m_host = nullptr;
@@ -333,6 +364,12 @@ class RadioReferenceModel : public QObject {
     /* How many of the four system calls are still outstanding, so the preview is
      * assembled once rather than four times. */
     int m_systemPending = 0;
+
+    /* The library row a refresh is fetching for, or -1. Cleared by startBatch(),
+     * so any other action the user takes retires a refresh still in flight. */
+    int m_refreshRow = -1;
+    QString m_refreshKind;
+    QList<int> m_refreshSiteNumbers;
 };
 
 } // namespace dsd_qt
