@@ -24,7 +24,19 @@ app-private storage (`files/imports/`), so the original can live anywhere (Downl
 after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
 "No usable rows". While a session is running, long-press its title on the monitor screen to edit that system; saving
-applies its files to the live session immediately.
+applies the files that changed to the live session immediately, including clearing a field to "None" — that unloads the
+channel map, talkgroup list or keys from the running session. One limit is worth knowing: the gesture only works for a
+session this app instance started (after the Activity is recreated while the service kept running, there is no
+saved-system row to write back to).
+
+Applying a channel map **replaces** the live one rather than merging into it, so anything the decoder learned on the
+air is discarded along with the previous file's entries; a grant for a channel the new file omits stays unresolved
+until the site announces it again.
+
+The library validates against the kind you picked, by content rather than by file name. A channel map and a decimal key
+file share the same `number,number` grammar and the header line is free text, so what separates them is the frequency
+column: picking a key list as a channel map reports "No usable rows". Two files of the same kind are still
+indistinguishable — nothing stops one site's map being picked for another.
 
 Programmatic validation uses the same dry-run parser: `dsd_csv_validate_*` in `<dsd-neo/core/csv_validate.h>` reports
 accepted/skipped/total row counts without touching live decoder state.
@@ -41,6 +53,10 @@ Required columns:
 Notes:
 
 - `frequency_hz` is parsed as an integer (no `K/M/G` suffixes).
+- `frequency_hz` must be between 100000 (100 kHz) and 6000000000 (6 GHz) — the range any supported front end can
+  reach. A row outside it (including `0`) is skipped with a warning, and its slot in the LCN list below is left at 0 so
+  later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
+  `number,number` shape.
 - Extra columns are ignored; use them for labels like "default CC".
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. The LCN list stores at most 26 frequencies.
