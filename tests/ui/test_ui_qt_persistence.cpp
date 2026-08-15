@@ -262,6 +262,11 @@ test_app_prefs(void) {
         expect("ppm defaults to 0", prefs.ppm() == 0);
         expect("bandwidth defaults to 48 kHz", prefs.bandwidthKhz() == 48);
         expect("extra args default empty", prefs.extraArgs().isEmpty());
+        /* Both empty on a fresh install, which is what makes the RadioReference
+         * screen open on its credentials gate. An empty app key means "use the
+         * key baked in at build time, if this build carries one". */
+        expect("RadioReference username defaults empty", prefs.rrUsername().isEmpty());
+        expect("RadioReference app key defaults empty", prefs.rrAppKey().isEmpty());
         /* Empty is what makes the first Explore tap ask where to point the radio
          * instead of starting on a guess. */
         expect("explore source starts unchosen", prefs.exploreSourceType().isEmpty());
@@ -289,6 +294,8 @@ test_app_prefs(void) {
         prefs.setExplorePort(1234);
         /* Text, not a number: the trailing zeros say which channel this was. */
         prefs.setExploreFreqMhz(QStringLiteral("769.76875"));
+        prefs.setRrUsername(QStringLiteral("someuser"));
+        prefs.setRrAppKey(QStringLiteral("user-supplied-key"));
     }
 
     AppPrefs reloaded;
@@ -300,6 +307,12 @@ test_app_prefs(void) {
     expect("explore port persists", reloaded.explorePort() == 1234);
     expect("explore frequency persists with its digits intact",
            reloaded.exploreFreqMhz() == QStringLiteral("769.76875"));
+    expect("RadioReference username persists", reloaded.rrUsername() == QStringLiteral("someuser"));
+    expect("RadioReference app key persists", reloaded.rrAppKey() == QStringLiteral("user-supplied-key"));
+    /* There is deliberately no password preference: it is held in memory for the
+     * session and re-prompted next launch, so it can never reach a settings file
+     * or a device backup. */
+    expect("no RadioReference password preference exists", reloaded.metaObject()->indexOfProperty("rrPassword") == -1);
 }
 
 } // namespace

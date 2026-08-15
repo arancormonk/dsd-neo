@@ -25,6 +25,10 @@ constexpr const char kPpm[] = "tuner/ppm";
 constexpr const char kBandwidthKhz[] = "tuner/bandwidthKhz";
 constexpr const char kBiasTee[] = "tuner/biasTee";
 constexpr const char kExtraArgs[] = "decode/extraArgs";
+// RadioReference account. There is deliberately no password key: the password is
+// held in memory for the session and re-prompted next launch.
+constexpr const char kRrUsername[] = "rr/username";
+constexpr const char kRrAppKey[] = "rr/appKey";
 // Where the last explore session was pointed, so the next one resumes there
 // instead of asking again. Not a saved system: exploring has no card, no name and
 // no trunking, and it must not appear in the list of things to listen to.
@@ -234,6 +238,34 @@ AppPrefs::setExtraArgs(const QString& args) {
     }
     m_settings.setValue(QLatin1String(kExtraArgs), args);
     Q_EMIT extraArgsChanged();
+}
+
+QString
+AppPrefs::rrUsername() const {
+    return m_settings.value(QLatin1String(kRrUsername), QString()).toString();
+}
+
+void
+AppPrefs::setRrUsername(const QString& username) {
+    if (username == rrUsername()) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kRrUsername), username);
+    Q_EMIT rrUsernameChanged();
+}
+
+QString
+AppPrefs::rrAppKey() const {
+    return m_settings.value(QLatin1String(kRrAppKey), QString()).toString();
+}
+
+void
+AppPrefs::setRrAppKey(const QString& key) {
+    if (key == rrAppKey()) {
+        return;
+    }
+    m_settings.setValue(QLatin1String(kRrAppKey), key);
+    Q_EMIT rrAppKeyChanged();
 }
 
 QString

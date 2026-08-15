@@ -35,13 +35,19 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_PROPERTY(int count READ count NOTIFY countChanged)
 
   public:
+    /* Append new roles; never insert. A delegate that binds by number would
+     * silently start reading a different column. */
     enum Roles {
         NameRole = Qt::UserRole + 1,
-        PathRole,       // absolute stored path; the row's identity
-        TypeRole,       // "chan" | "group" | "keysDec" | "keysHex"
-        ImportedAtRole, // seconds since epoch
-        AcceptedRole,   // usable rows at the last validation
-        SkippedRole     // malformed rows at the last validation
+        PathRole,         // absolute stored path; the row's identity
+        TypeRole,         // "chan" | "group" | "keysDec" | "keysHex"
+        ImportedAtRole,   // seconds since epoch
+        AcceptedRole,     // usable rows at the last validation
+        SkippedRole,      // malformed rows at the last validation
+        OriginRole,       // "" for a picked file, "radioreference" for a generated one
+        RrSidRole,        // RadioReference system id
+        RrSiteNumberRole, // TrsSite.siteNumber, the RF site - never siteId
+        RrKindRole        // "group" | "chan"
     };
 
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
@@ -66,8 +72,44 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     Q_INVOKABLE QVariantMap importFile(const QString& reference, const QString& fileName, const QString& type);
 
-    /** @brief Re-pick flow: overwrite the row's stored file in place and re-validate. */
+    /**
+     * @brief Re-pick flow: replace the row's stored file and re-validate.
+     *
+     * The pick is staged beside the library and validated BEFORE it is committed
+     * over the row's file, so a file that is not parseable as the row's type
+     * leaves the stored copy byte-identical. Every saved system referencing that
+     * path keeps working.
+     */
     Q_INVOKABLE QVariantMap updateFile(int row, const QString& reference, const QString& fileName);
+
+    /**
+     * @brief Adopt a file this process generated, recording where it came from.
+     *
+     * Same validate/rollback/persist flow as importFile(), but the source is a
+     * plain path we wrote rather than a picker reference.
+     *
+     * @param sourcePath Absolute path of the generated file.
+     * @param fileName   Display name to store it under.
+     * @param type       "chan" | "group" | "keysDec" | "keysHex".
+     * @param origin     Provenance: {origin, rrSid, rrSiteNumber, rrKind}.
+     * @return Same shape as importFile().
+     */
+    Q_INVOKABLE QVariantMap importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
+                                                const QVariantMap& origin);
+
+    /**
+     * @brief Replace a generated row's file in place, keeping its stored path.
+     *
+     * The path is preserved so saved systems pointing at it stay valid, and the
+     * staging file is validated before the stored copy is touched: a refresh that
+     * fetched a fault page or a truncated body must not destroy working local
+     * data.
+     *
+     * @param row        Library row.
+     * @param sourcePath Absolute path of the freshly generated file.
+     * @return Same shape as importFile().
+     */
+    Q_INVOKABLE QVariantMap refreshGeneratedFile(int row, const QString& sourcePath);
 
     /** @brief Delete the stored file, then the row. Persists immediately. */
     Q_INVOKABLE void remove(int row);
@@ -105,6 +147,13 @@ class ImportedFilesModel : public QAbstractListModel {
         qint64 importedAt = 0;
         int accepted = 0;
         int skipped = 0;
+        /* Provenance, absent on a picked file. Stores written before this existed
+         * load unchanged: rowFromMap reads through QVariantMap::value, which
+         * default-constructs a missing key. */
+        QString origin;
+        int rrSid = 0;
+        int rrSiteNumber = 0;
+        QString rrKind;
     };
 
     static Row rowFromMap(const QVariantMap& map);
@@ -112,6 +161,19 @@ class ImportedFilesModel : public QAbstractListModel {
 
     /** @brief Dry-run validate @p path as @p type; false when it cannot be parsed. */
     static bool validate(const QString& path, const QString& type, int* accepted, int* skipped);
+
+    /**
+     * @brief Validate an already-stored copy and record a library row for it.
+     *
+     * Shared tail of importFile() and importGeneratedFile(): on a validation
+     * failure the copy is taken back out, because a row that cannot be parsed is
+     * a dead entry and nothing else would ever delete the file.
+     */
+    QVariantMap adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin);
+
+    /** @brief Shared tail of updateFile() and refreshGeneratedFile(): stamp the
+     *         row's new counts, notify, persist, and build the result map. */
+    QVariantMap commitReplacedRow(int row, int accepted, int skipped);
 
     void load();
     void save() const;

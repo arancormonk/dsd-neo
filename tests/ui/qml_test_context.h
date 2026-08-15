@@ -702,6 +702,13 @@ class Setup : public QObject {
         prefs[QStringLiteral("exploreHost")] = QString();
         prefs[QStringLiteral("explorePort")] = 1234;
         prefs[QStringLiteral("exploreFreqMhz")] = QString();
+        /* RadioReference account: empty on purpose, so the screen's first state
+         * is the credentials gate a fresh install shows. This map answers reads
+         * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
+         * that WRITES prefs.rrUsername silently no-ops here while persisting in
+         * production. Never assert persistence through it. */
+        prefs[QStringLiteral("rrUsername")] = QString();
+        prefs[QStringLiteral("rrAppKey")] = QString();
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 

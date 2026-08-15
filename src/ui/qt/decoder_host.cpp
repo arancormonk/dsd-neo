@@ -113,7 +113,11 @@ DecoderHost::~DecoderHost() = default;
 QString
 DecoderHost::importDocument(const QString& reference, const QString& fileName, const QString& replacePath) {
     const QUrl url(reference);
-    const QString sourcePath = url.isLocalFile() ? url.toLocalFile() : reference;
+    return importLocalFile(url.isLocalFile() ? url.toLocalFile() : reference, fileName, replacePath);
+}
+
+QString
+DecoderHost::importLocalFile(const QString& sourcePath, const QString& fileName, const QString& replacePath) {
     QFile source(sourcePath);
     if (!source.open(QIODevice::ReadOnly)) {
         return QString();
