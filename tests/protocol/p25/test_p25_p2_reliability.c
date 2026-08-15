@@ -401,6 +401,23 @@ set_p25p2_threshold(int threshold) {
     dsd_neo_config_init();
 }
 
+/*
+ * VC grace is resolved from the runtime config only. `seconds` must sit inside
+ * the config's own accepted range (0..10 s) or the knob reads as unset and the
+ * decoder falls back to its 0.75 s default, which would make a test silently
+ * measure the default instead of the value it asked for. Pass NULL to clear it
+ * again so the setting cannot leak into a later case.
+ */
+static void
+set_p25_vc_grace(const char* seconds) {
+    if (seconds) {
+        dsd_setenv("DSD_NEO_P25_VC_GRACE", seconds, 1);
+    } else {
+        (void)dsd_unsetenv("DSD_NEO_P25_VC_GRACE");
+    }
+    dsd_neo_config_init();
+}
+
 static void
 reset_ess_stubs(void) {
     g_ess_hard_rc = 0;
@@ -1244,10 +1261,17 @@ test_duid_lcch_release_defers_during_vc_grace(void) {
     opts.trunk_hangtime = 1;
     state.currentslot = 0;
     state.last_vc_sync_time = now - 10;
-    state.p25_last_vc_tune_time = now;
-    state.p25_cfg_vc_grace_s = 60.0;
+    /*
+     * Tuned 5 s ago against a 10 s grace. The offset is deliberately larger than
+     * the 0.75 s built-in default: tuning "now" would defer the release under
+     * any grace at all, so the case would pass even if the configured value
+     * never reached the decoder, which is exactly the bug this wiring can have.
+     */
+    state.p25_last_vc_tune_time = now - 5;
+    set_p25_vc_grace("10.0");
 
     p25p2_process_duid(&opts, &state);
+    set_p25_vc_grace(NULL);
 
     int rc = 0;
     rc |= expect_int("grace release force", state.p25_sm_force_release, 0);
@@ -1282,13 +1306,16 @@ test_duid_lcch_release_tears_down_after_vc_grace(void) {
     state.currentslot = 0;
     state.last_vc_sync_time = now - 10;
     state.p25_last_vc_tune_time = now - 10;
-    state.p25_cfg_vc_grace_s = 0.25;
     seed_teardown_dirty_state(&state);
     state.last_vc_sync_time = now - 10;
     state.p25_last_vc_tune_time = now - 10;
-    state.p25_cfg_vc_grace_s = 0.25;
+    /* Tuned 10 s ago, so a 0.25 s grace has long expired. Set after
+     * seed_teardown_dirty_state() only for symmetry with the case above; the
+     * grace now lives in the runtime config, which that helper does not touch. */
+    set_p25_vc_grace("0.25");
 
     p25p2_process_duid(&opts, &state);
+    set_p25_vc_grace(NULL);
 
     int rc = 0;
     rc |= expect_int("post-grace release consumed", state.p25_sm_force_release, 0);

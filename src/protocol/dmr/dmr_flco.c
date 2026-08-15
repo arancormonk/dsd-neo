@@ -682,7 +682,13 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         .ota_target_id = ctx->target,
         .policy_target_id = ctx->target,
         .ota_source_id = ctx->source,
-        .channel = (uint32_t)(ctx->state->dmr_vc_lsn > 0 ? ctx->state->dmr_vc_lsn : ctx->state->dmr_vc_lcn),
+        /*
+         * No channel: the embedded LC carries none. The DMR trunk SM owns this
+         * field and publishes the tuned LPCN from the grant that sent us here
+         * (handle_voice_sync() in dmr_trunk_sm.c), and dsd_call_state_observe()
+         * leaves a previously observed channel alone when an observation omits
+         * one, so saying nothing here is what preserves the SM's value.
+         */
         .frequency_hz = ctx->state->trunk_vc_freq[ctx->slot],
         .service_options = ctx->so,
         .emergency = (uint8_t)((ctx->so & 0x80U) != 0U),

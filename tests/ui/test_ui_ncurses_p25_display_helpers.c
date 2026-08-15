@@ -720,6 +720,79 @@ run_p2_gate_helper_cases(void) {
     return 0;
 }
 
+/*
+ * These four rows report counters that the decode path has always maintained but
+ * that nothing rendered. Each is gated on its own family being non-zero, so the
+ * zero case -- a clean signal, or a run that never decoded P25 -- must stay
+ * silent rather than print a row of zeros.
+ */
+static int
+run_soft_fec_and_nid_display_cases(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    /* Nothing decoded yet: every new row stays silent. */
+    reset_printw_capture();
+    assert(ui_print_p1_soft_fec_metric(&state, 1) == 0);
+    assert(ui_print_p1_nid_metric(&state, 1) == 0);
+    assert(ui_print_p1_voice_frame_metric(&state, 1) == 0);
+    assert(ui_print_p1_tail_erasure_metric(&state, 1) == 0);
+    assert(ui_print_p2_soft_fec_metric(&state) == 0);
+    assert(g_printw_capture[0] == '\0');
+
+    state.p25_p1_soft_hamming_ok = 3U;
+    state.p25_p1_soft_golay_ok = 5U;
+    state.p25_p1_soft_rs_ok = 7U;
+    state.p25_p1_soft_combined_ok = 9U;
+    reset_printw_capture();
+    assert(ui_print_p1_soft_fec_metric(&state, 1) == 1);
+    assert_capture_contains("| P1 Soft FEC: Ham 3 Golay 5 RS 7 Comb 9");
+    assert_capture_lines_fit(g_test_cols);
+
+    /* Not P25 Phase 1 right now: the row belongs to the P1 section only. */
+    reset_printw_capture();
+    assert(ui_print_p1_soft_fec_metric(&state, 0) == 0);
+    assert(g_printw_capture[0] == '\0');
+
+    state.nid_corrections_total = 11U;
+    state.nid_failures_total = 2U;
+    state.nid_parity_overrides = 1U;
+    reset_printw_capture();
+    assert(ui_print_p1_nid_metric(&state, 1) == 1);
+    assert_capture_contains("| P1 NID: corr 11 fail 2 parity 1");
+    assert_capture_lines_fit(g_test_cols);
+
+    state.p25_p1_accepted_frames = 4000U;
+    state.p25_p1_clean_frames = 3800U;
+    state.p25_p1_corrected_frames = 150U;
+    state.p25_p1_concealed_frames = 50U;
+    state.p25_p1_accepted_corrections = 900U;
+    reset_printw_capture();
+    assert(ui_print_p1_voice_frame_metric(&state, 1) == 1);
+    assert_capture_contains("| P1 Frames (session): acc 4000 (cln 3800 cor 150 cnc 50) fix 900");
+    assert_capture_lines_fit(g_test_cols);
+
+    /* Tail suppression is rare, so it earns a row only once it has fired. */
+    reset_printw_capture();
+    assert(ui_print_p1_tail_erasure_metric(&state, 1) == 0);
+    state.p25_p1_suppressed_tail_frames = 6U;
+    state.p25_p1_excluded_tail_corrections = 72U;
+    reset_printw_capture();
+    assert(ui_print_p1_tail_erasure_metric(&state, 1) == 1);
+    assert_capture_contains("| P1 Tail (session): supp 6 excl 72");
+    assert_capture_lines_fit(g_test_cols);
+
+    state.p25_p2_soft_erasure_ok = 12U;
+    state.p25_p2_soft_ess_ok = 4U;
+    state.p25_p2_soft_ess_max_depth = 5U;
+    reset_printw_capture();
+    assert(ui_print_p2_soft_fec_metric(&state) == 1);
+    assert_capture_contains("| P2 Soft FEC: erasure 12 ESS 4 (max depth 5)");
+    assert_capture_lines_fit(g_test_cols);
+
+    return 0;
+}
+
 int
 main(void) {
     run_iden_match_cases();
@@ -732,6 +805,7 @@ main(void) {
     run_p25_frequency_display_cases();
     run_service_metric_display_cases();
     run_p2_gate_helper_cases();
+    run_soft_fec_and_nid_display_cases();
     printf("UI_NCURSES_P25_DISPLAY_HELPERS: OK\n");
     return 0;
 }
