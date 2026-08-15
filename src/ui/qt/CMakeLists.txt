@@ -66,6 +66,7 @@ qt_add_resources(
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
         qml/PlexTextField.qml
+        qml/RadioReferenceScreen.qml
         qml/RadioSheet.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml

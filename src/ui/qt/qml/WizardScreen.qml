@@ -12,6 +12,9 @@ Item {
 
     signal closed()
     signal saved(int row)
+    // Asks Main.qml to push the RadioReference screen over this one; the result
+    // comes back through applyRadioReference().
+    signal openRadioReference()
 
     property int step: 0
     // -1 appends a new system; >= 0 edits in place.
@@ -308,6 +311,34 @@ Item {
             keyCsvPath = path
             keyCsvHex = hex
         }
+    }
+
+    /**
+     * Fill the tune answers from a finished RadioReference import.
+     *
+     * The generated files go through the same seam a hand-picked one does, so
+     * the wizard stays the single writer of the saved system and the user's
+     * source, gain and ppm answers survive. @a result is performImport()'s map;
+     * chanCsvPath is absent when no channel map was generated, which is a valid
+     * outcome for a single conventional repeater.
+     */
+    function applyRadioReference(result) {
+        wizard.assignCsvPath("chan", result.chanCsvPath !== undefined ? result.chanCsvPath : "", false)
+        wizard.assignCsvPath("group", result.groupCsvPath !== undefined ? result.groupCsvPath : "", false)
+        if (result.freqMhz && result.freqMhz.length > 0)
+            freqField.text = result.freqMhz
+        wizard.decodeFlag = result.decodeFlag
+        wizard.trunking = result.trunking
+        // Only when the wizard has no name yet: an edit already has one the user
+        // chose, and RadioReference's is a database title, not their label.
+        if (nameField.text.trim().length === 0 && result.name)
+            nameField.text = result.name
+        wizard.csvNotice = qsTr("Imported from RadioReference")
+        wizard.csvNoticeIsProblem = false
+        // Land on the tune step: the frequency, decode flag and files are all
+        // answered now, and step 2 is where they are shown.
+        if (wizard.step < 1)
+            wizard.step = 1
     }
 
     // No CSV name filter for the trunking-data picks: on Android it becomes a
@@ -735,6 +766,71 @@ Item {
                             title: qsTr("Encryption keys")
                             target: "keys"
                             path: wizard.keyCsvPath
+                            showDivider: radioReference.available
+                        }
+
+                        // Not a CsvPickerRow: that component's TapHandler always
+                        // opens the file-picker sheet. A Column collapses an
+                        // invisible child, so nothing moves where the feature is
+                        // absent.
+                        Item {
+                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                            objectName: "wizardRadioReferenceRow"
+
+                            width: parent.width
+                            visible: radioReference.available
+                            height: 58
+
+                            Column {
+                                anchors.left: parent.left
+                                anchors.right: rrCaret.left
+                                anchors.leftMargin: Theme.cardPadding
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 3
+
+                                Text {
+                                    width: parent.width
+                                    text: qsTr("Import from RadioReference…")
+                                    font.family: Theme.sans
+                                    font.pixelSize: 15
+                                    font.weight: Font.DemiBold
+                                    color: Theme.textPrimary
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    width: parent.width
+                                    text: qsTr("Generates both files from the online database")
+                                    font.family: Theme.sans
+                                    font.pixelSize: 12
+                                    color: Theme.textSubdued
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            Caret {
+                                id: rrCaret
+
+                                anchors.right: parent.right
+                                anchors.rightMargin: Theme.cardPadding
+                                anchors.verticalCenter: parent.verticalCenter
+                                rotation: -90
+                                color: Theme.textSubdued
+                            }
+
+                            Rectangle {
+                                anchors.bottom: parent.bottom
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.leftMargin: Theme.cardPadding
+                                height: 1
+                                color: Theme.divider
+                            }
+
+                            TapHandler {
+                                onTapped: wizard.openRadioReference()
+                            }
                         }
 
                         Text {

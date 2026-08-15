@@ -39,6 +39,7 @@ Item {
         property var app: null
         property var monitor: null
         property var imports: null
+        property var radioReference: null
 
         function initTestCase() {
             tc.app = appLoader.item
@@ -47,12 +48,15 @@ Item {
             verify(tc.monitor !== null, "the monitor screen is missing")
             tc.imports = findChild(tc.app, "importsScreen")
             verify(tc.imports !== null, "the imports screen is missing")
+            tc.radioReference = findChild(tc.app, "radioReferenceScreen")
+            verify(tc.radioReference !== null, "the RadioReference screen is missing")
         }
 
         function init() {
             tc.app.spectrumOpen = false
             tc.app.wizardOpen = false
             tc.app.importsOpen = false
+            tc.app.radioReferenceOpen = false
         }
 
         // The baseline the other cases are measured against: with a live session
@@ -105,6 +109,26 @@ Item {
             tc.app.importsOpen = false
             tryVerify(function () { return tc.monitor.enabled },
                       2000, "the monitor stayed inert after the imports library closed")
+        }
+
+        // The RadioReference import screen is reached the same way the library
+        // is — from Settings, or from the library itself — so it stands down for
+        // the monitor too. Its bottom "Import this system" button sits at the
+        // same rect as "Stop listening".
+        function test_06_the_radioreference_screen_stands_down_for_the_monitor() {
+            tc.app.radioReferenceOpen = true
+            // Waited out rather than tryVerify'd, for the reason test_05 gives:
+            // `enabled` follows a 150ms animated opacity, so "it is inert" is
+            // true on the fade's first frame regardless of the binding.
+            wait(400)
+            verify(!tc.radioReference.enabled,
+                   "a tap on the RadioReference screen also reaches the monitor underneath")
+            verify(tc.monitor.enabled,
+                   "the monitor gave up its taps to a layer that is standing down")
+
+            tc.app.radioReferenceOpen = false
+            tryVerify(function () { return tc.monitor.enabled },
+                      2000, "the monitor stayed inert after the RadioReference screen closed")
         }
 
         // The wizard opens over the spectrum ("Save as a system"), so both are up

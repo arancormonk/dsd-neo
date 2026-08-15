@@ -12,6 +12,8 @@ Item {
     id: screen
 
     signal closed()
+    // Asks Main.qml to push the RadioReference screen over this one.
+    signal openRadioReference()
 
     // FileDialog routing: a row index means "update that row in place";
     // -1 means a new import of pendingType.
@@ -164,7 +166,7 @@ Item {
         anchors.top: noticeLine.visible ? noticeLine.bottom : countLabel.bottom
         anchors.left: parent.left
         anchors.right: parent.right
-        anchors.bottom: importButton.top
+        anchors.bottom: radioReferenceButton.visible ? radioReferenceButton.top : importButton.top
         anchors.topMargin: 14
         anchors.bottomMargin: 14
         // The screen padding is the view's, not the delegate's: a vertical
@@ -260,6 +262,27 @@ Item {
             color: Theme.textSubdued
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
+        }
+    }
+
+    // The header here holds only the back chevron and the title, so the second
+    // way in stacks above the primary action rather than sitting up there.
+    OutlineButton {
+        id: radioReferenceButton
+
+        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+        objectName: "importFromRadioReferenceButton"
+
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: importButton.top
+        anchors.margins: Theme.screenPadding
+        anchors.bottomMargin: Theme.gap
+        visible: radioReference.available
+        text: qsTr("Import from RadioReference")
+        onClicked: {
+            screen.notice = ""
+            screen.openRadioReference()
         }
     }
 
