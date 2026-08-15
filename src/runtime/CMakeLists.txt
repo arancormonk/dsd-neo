@@ -25,6 +25,8 @@ target_sources(
         rtl_stream_metrics_hooks.c
         m17_udp_hooks.c
         curl_common.c
+        radioreference/rr_types.c
+        radioreference/rr_soap.c
         rdio_export.c
         p25_optional_hooks.c
         p25_p2_audio_ring.c

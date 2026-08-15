@@ -368,6 +368,21 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE
+  dsd-neo/runtime/radioreference.h
+  C
+)
+# Also as C++: the Android JNI and Qt sources are the real consumers and no
+# Linux/macOS CI job compiles them, so nothing else would catch this header
+# losing its extern "C" guard.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_cxx
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_CXX
+  dsd-neo/runtime/radioreference.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rdio_export
   HEADERS_PUBLIC_RUNTIME_RDIO_EXPORT
   dsd-neo/runtime/rdio_export.h
@@ -2701,6 +2716,30 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
+
+# Byte-exact captures from the live RadioReference v18 API; see NOTES.md there.
+# Defined once and reused by every RadioReference test: CTest runs from the build
+# tree, so a fixture can never be resolved through the working directory.
+set(_DSD_NEO_RR_FIXTURE_DIR
+    "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
+)
+
+add_executable(dsd-neo_test_runtime_rr_soap runtime/test_runtime_rr_soap.c)
+target_include_directories(
+    dsd-neo_test_runtime_rr_soap
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_rr_soap
+    PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_soap
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_SOAP COMMAND dsd-neo_test_runtime_rr_soap)
 
 add_executable(
     dsd-neo_test_runtime_trunk_tuning_hooks
