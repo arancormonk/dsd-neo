@@ -5,8 +5,9 @@
 
 /* Unit tests: the Qt frontend's imported-files layer — DecoderHost's desktop
  * importDocument() default (copy into the app's imports dir, unique-ify on
- * collision, atomic replace on update). Registered only when the Qt frontend
- * is enabled (DSD_ENABLE_QT_UI), since these link Qt. */
+ * collision, atomic replace on update) and the ImportedFilesModel library the
+ * wizard and imports screen share. Registered only when the Qt frontend is
+ * enabled (DSD_ENABLE_QT_UI), since these link Qt. */
 
 #include <QCoreApplication>
 #include <QDir>
@@ -17,10 +18,22 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QUrl>
+#include <QVariantList>
+#include <QVariantMap>
+#include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdio.h>
 
 #include "decoder_host.h"
 #include "dsd-neo/core/safe_api.h"
+#include "imported_files_model.h"
+
+void
+LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
+    (void)BufferIn;
+    (void)BufferOut;
+    (void)state;
+}
 
 namespace {
 
@@ -124,6 +137,106 @@ test_import_document(void) {
     expect("missing source returns empty", missing.isEmpty());
 }
 
+void
+test_imported_files_model(void) {
+    /* Fresh app-data tree: the imports directory is shared state, and copies
+     * left by the importDocument tests would unique-ify this test's names. */
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    TestHost host;
+    QTemporaryDir sourceDir;
+    expect("model source dir created", sourceDir.isValid());
+
+    const QString groupSrc = sourceDir.filePath(QStringLiteral("county.csv"));
+    expect("group source written", write_file(groupSrc, "TG,Mode,Name\n101,D,Dispatch\n102,D,Fire\nbogus,D,Bad\n"));
+    const QString chanSrc = sourceDir.filePath(QStringLiteral("chan.csv"));
+    expect("chan source written", write_file(chanSrc, "channel,freq\n1,851000000\n"));
+    const QString emptySrc = sourceDir.filePath(QStringLiteral("header_only.csv"));
+    expect("empty source written", write_file(emptySrc, "TG,Mode,Name\n"));
+
+    QString storedGroupPath;
+    {
+        dsd_qt::ImportedFilesModel model(&host);
+        expect("model starts empty", model.rowCount() == 0);
+
+        const QVariantMap imported = model.importFile(QUrl::fromLocalFile(groupSrc).toString(),
+                                                      QStringLiteral("county.csv"), QStringLiteral("group"));
+        expect("group import ok", imported.value(QStringLiteral("ok")).toBool());
+        expect("group import counts accepted", imported.value(QStringLiteral("accepted")).toInt() == 2);
+        expect("group import counts skipped", imported.value(QStringLiteral("skipped")).toInt() == 1);
+        expect("group import has no error", imported.value(QStringLiteral("error")).toString().isEmpty());
+        storedGroupPath = imported.value(QStringLiteral("path")).toString();
+        expect("group import stores a path", !storedGroupPath.isEmpty() && QFile::exists(storedGroupPath));
+        expect("group import adds a row", model.rowCount() == 1);
+
+        const QVariantMap chan = model.importFile(QUrl::fromLocalFile(chanSrc).toString(), QStringLiteral("chan.csv"),
+                                                  QStringLiteral("chan"));
+        expect("chan import ok", chan.value(QStringLiteral("ok")).toBool());
+        expect("chan import counts accepted", chan.value(QStringLiteral("accepted")).toInt() == 1);
+
+        /* A parseable file with zero usable rows is kept — recoverable via
+         * update — but flagged so the UI can warn instead of silently storing
+         * a talkgroup list that names nothing. */
+        const QVariantMap empty = model.importFile(QUrl::fromLocalFile(emptySrc).toString(),
+                                                   QStringLiteral("header_only.csv"), QStringLiteral("group"));
+        expect("empty import kept", empty.value(QStringLiteral("ok")).toBool());
+        expect("empty import flagged", empty.value(QStringLiteral("error")).toString() == QStringLiteral("empty"));
+        expect("empty import accepted zero", empty.value(QStringLiteral("accepted")).toInt() == 0);
+
+        const QVariantMap bad = model.importFile(QUrl::fromLocalFile(sourceDir.filePath("absent.csv")).toString(),
+                                                 QStringLiteral("absent.csv"), QStringLiteral("group"));
+        expect("unreadable import rejected", !bad.value(QStringLiteral("ok")).toBool());
+        expect("unreadable import adds no row", model.rowCount() == 3);
+
+        const QVariantList groups = model.entriesForType(QStringLiteral("group"));
+        expect("type filter finds group rows", groups.size() == 2);
+        const QVariantList chans = model.entriesForType(QStringLiteral("chan"));
+        expect("type filter finds chan row",
+               chans.size() == 1
+                   && chans.at(0).toMap().value(QStringLiteral("name")).toString() == QStringLiteral("chan.csv"));
+
+        expect("rowForPath finds the stored file", model.rowForPath(storedGroupPath) == 0);
+        expect("rowForPath misses unknown path", model.rowForPath(QStringLiteral("/nope.csv")) == -1);
+    }
+
+    {
+        /* Fresh instance: the library must reload from disk. */
+        dsd_qt::ImportedFilesModel model(&host);
+        expect("library persists across instances", model.rowCount() == 3);
+        const QVariantMap row = model.get(0);
+        expect("persisted row keeps name",
+               row.value(QStringLiteral("name")).toString() == QStringLiteral("county.csv"));
+        expect("persisted row keeps type", row.value(QStringLiteral("type")).toString() == QStringLiteral("group"));
+        expect("persisted row keeps counts", row.value(QStringLiteral("accepted")).toInt() == 2);
+
+        /* Update in place: the stored path must not change, the counts must. */
+        const QString updatedSrc = sourceDir.filePath(QStringLiteral("updated.csv"));
+        expect("updated source written",
+               write_file(updatedSrc, "TG,Mode,Name\n201,D,PD\n202,D,FD\n203,D,EMS\n204,D,DPW\n"));
+        const QVariantMap updated =
+            model.updateFile(0, QUrl::fromLocalFile(updatedSrc).toString(), QStringLiteral("updated.csv"));
+        expect("update ok", updated.value(QStringLiteral("ok")).toBool());
+        expect("update keeps the stored path", updated.value(QStringLiteral("path")).toString() == storedGroupPath);
+        expect("update refreshes counts", model.get(0).value(QStringLiteral("accepted")).toInt() == 4);
+
+        /* Remove deletes the stored file with the row. */
+        const QString chanPath = model.get(1).value(QStringLiteral("path")).toString();
+        model.remove(1);
+        expect("remove drops the row", model.rowCount() == 2);
+        expect("remove deletes the file", !QFile::exists(chanPath));
+    }
+
+    {
+        /* A stored file deleted behind the app's back must not survive as a
+         * ghost row pointing nowhere. */
+        expect("stored group file removable", QFile::remove(storedGroupPath));
+        dsd_qt::ImportedFilesModel model(&host);
+        expect("load drops rows for missing files", model.rowCount() == 1);
+        expect("survivor is the header-only row",
+               model.get(0).value(QStringLiteral("name")).toString() == QStringLiteral("header_only.csv"));
+    }
+}
+
 } // namespace
 
 int
@@ -139,6 +252,7 @@ main(int argc, char** argv) {
     QDir(dataDir).removeRecursively();
 
     test_import_document();
+    test_imported_files_model();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

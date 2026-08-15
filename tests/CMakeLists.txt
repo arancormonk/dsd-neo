@@ -2275,6 +2275,8 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_imported_files_model
         ui/test_ui_qt_imported_files_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_imported_files_model
@@ -2282,7 +2284,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(
         dsd-neo_test_ui_qt_imported_files_model
-        PRIVATE Qt6::Core
+        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_imported_files_model

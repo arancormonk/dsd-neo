@@ -23,6 +23,7 @@
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
+#include "imported_files_model.h"
 #include "metrics_model.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
@@ -76,6 +77,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* prefs = new AppPrefs(&engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
+    auto* importedFiles = new ImportedFilesModel(host, &engine);
     auto* history = new CallHistoryModel(&engine);
     auto* spectrum = new SpectrumModel(&engine);
     // Each view that shows the call log owns its filter state: the history tab's
@@ -107,6 +109,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("prefs"), prefs);
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
+    context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);

@@ -18,6 +18,7 @@ target_sources(
         call_history_model.cpp
         command_bridge.cpp
         decoder_host.cpp
+        imported_files_model.cpp
         json_store.cpp
         metrics_model.cpp
         qt_ui.cpp
