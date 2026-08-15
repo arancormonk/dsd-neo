@@ -24,6 +24,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -307,6 +308,22 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
 }
 
 // Trunking & control --------------------------------------------------------
+
+/*
+ * Adopt an imported channel map wholesale. The importer is additive
+ * (lcn_freq_count only grows, stale trunk_chan_map slots survive), so a
+ * runtime re-import must replace the previous map rather than append to it.
+ */
+static void
+chan_map_adopt(dsd_state* dst, const dsd_state* src) {
+    DSD_MEMCPY(dst->trunk_chan_map, src->trunk_chan_map, sizeof dst->trunk_chan_map);
+    DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
+    dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
+    DSD_MEMCPY(dst->trunk_lcn_freq, src->trunk_lcn_freq, sizeof dst->trunk_lcn_freq);
+    dst->lcn_freq_count = src->lcn_freq_count;
+    dst->trunk_chan_map_seq++;
+}
+
 int
 svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
@@ -314,7 +331,20 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     }
     DSD_STRNCPY(opts->chan_in_file, path, sizeof opts->chan_in_file - 1);
     opts->chan_in_file[sizeof opts->chan_in_file - 1] = '\0';
-    return csvChanImport(opts, state);
+
+    // Import into throwaway heap state (dsd_state is multi-megabyte) so a
+    // failed import leaves the live map untouched.
+    dsd_state* imported = (dsd_state*)calloc(1, sizeof(*imported));
+    if (!imported) {
+        return -1;
+    }
+    if (csvChanImport(opts, imported) != 0) {
+        free(imported);
+        return -1;
+    }
+    chan_map_adopt(state, imported);
+    free(imported);
+    return 0;
 }
 
 int

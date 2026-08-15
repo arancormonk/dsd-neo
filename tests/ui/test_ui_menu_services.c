@@ -140,11 +140,26 @@ openWavOutFileRaw(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+/*
+ * Controllable importer stub: fills whichever state it is handed, the way the
+ * real importer does, so the service's replace-vs-append behavior is observable.
+ */
+static int g_chan_import_result = -1;
+static int g_chan_import_count = 0;
+static uint32_t g_chan_import_chan[4];
+static long int g_chan_import_freq[4];
+
 int
 csvChanImport(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
-    return -1;
+    if (g_chan_import_result != 0 || !state) {
+        return g_chan_import_result;
+    }
+    for (int i = 0; i < g_chan_import_count; i++) {
+        dsd_state_set_trunk_chan_freq(state, g_chan_import_chan[i], g_chan_import_freq[i]);
+        state->trunk_lcn_freq[state->lcn_freq_count++] = g_chan_import_freq[i];
+    }
+    return 0;
 }
 
 int
@@ -704,6 +719,7 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_int("rigctl socket invalid after connect failure", opts.rigctl_sockfd, DSD_INVALID_SOCKET);
     rc |= expect_int("rigctl disabled after connect failure", opts.use_rigctl, 0);
 
+    g_chan_import_result = -1;
     rc |= expect_int("channel import failure", svc_import_channel_map(&opts, &state, "channels.csv"), -1);
     rc |= expect_str("channel import path stored", opts.chan_in_file, "channels.csv");
     rc |= expect_int("group import failure", svc_import_group_list(&opts, &state, "groups.csv"), -1);
@@ -712,6 +728,48 @@ test_file_network_and_import_failure_contracts(void) {
     rc |= expect_str("keys dec import path stored", opts.key_in_file, "keys.csv");
     rc |= expect_int("keys hex import failure", svc_import_keys_hex(&opts, &state, "keys.hex"), -1);
     rc |= expect_str("keys hex import path stored", opts.key_in_file, "keys.hex");
+
+    return rc;
+}
+
+static int
+test_channel_map_reimport_replaces_previous_map(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    g_chan_import_result = 0;
+    g_chan_import_count = 3;
+    g_chan_import_chan[0] = 101;
+    g_chan_import_freq[0] = 851000000L;
+    g_chan_import_chan[1] = 102;
+    g_chan_import_freq[1] = 852000000L;
+    g_chan_import_chan[2] = 103;
+    g_chan_import_freq[2] = 853000000L;
+    rc |= expect_int("chan map first import ok", svc_import_channel_map(&opts, &state, "a.csv"), 0);
+    rc |= expect_int("first import lcn count", state.lcn_freq_count, 3);
+    rc |= expect_int("first import chan applied", (int)state.trunk_chan_map[101], 851000000);
+    rc |= expect_int("first import used count", (int)state.trunk_chan_map_used_count, 3);
+
+    g_chan_import_count = 2;
+    g_chan_import_chan[0] = 201;
+    g_chan_import_freq[0] = 860000000L;
+    g_chan_import_chan[1] = 202;
+    g_chan_import_freq[1] = 861000000L;
+    rc |= expect_int("chan map reimport ok", svc_import_channel_map(&opts, &state, "b.csv"), 0);
+    rc |= expect_int("reimport replaces lcn count", state.lcn_freq_count, 2);
+    rc |= expect_int("reimport clears stale chan", (int)state.trunk_chan_map[101], 0);
+    rc |= expect_int("reimport applies new chan", (int)state.trunk_chan_map[201], 860000000);
+    rc |= expect_int("reimport replaces used count", (int)state.trunk_chan_map_used_count, 2);
+    rc |= expect_int("reimport replaces lcn list", (int)state.trunk_lcn_freq[0], 860000000);
+
+    g_chan_import_result = -1;
+    rc |= expect_int("failed reimport rc", svc_import_channel_map(&opts, &state, "bad.csv"), -1);
+    rc |= expect_int("failed reimport preserves lcn count", state.lcn_freq_count, 2);
+    rc |= expect_int("failed reimport preserves chan", (int)state.trunk_chan_map[201], 860000000);
+    rc |= expect_str("failed reimport still stores path", opts.chan_in_file, "bad.csv");
 
     return rc;
 }
@@ -728,5 +786,6 @@ main(void) {
     rc |= test_rtl_service_option_contracts();
 #endif
     rc |= test_file_network_and_import_failure_contracts();
+    rc |= test_channel_map_reimport_replaces_previous_map();
     return rc ? 1 : 0;
 }
