@@ -26,14 +26,14 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 #ifdef USE_CURL
 #include <curl/curl.h>
+#include <curl/system.h>
 #endif
 
 #define RR_QUEUE_MAX      128U
-#define RR_BODY_CAP_BYTES (32U * 1024U * 1024U)
+#define RR_BODY_CAP_BYTES ((size_t)32U * 1024U * 1024U)
 #define RR_RETRY_DELAY_MS 500U
 
 struct dsd_rr_cancel_token {
@@ -45,8 +45,11 @@ dsd_rr_cancel_requested(const dsd_rr_cancel_token* cancel) {
     if (cancel == NULL) {
         return 0;
     }
-    /* Cast away const: the flag is atomic, and the read is the whole point. */
-    return atomic_load(&((dsd_rr_cancel_token*)(uintptr_t)cancel)->flag) != 0 ? 1 : 0;
+    /* Cast away const: the flag is atomic, and the read is the whole point.
+     * A plain pointer cast, not one through uintptr_t — the integer round trip
+     * reads as an int-to-pointer conversion and pessimizes the optimizer. */
+    dsd_rr_cancel_token* token = (dsd_rr_cancel_token*)cancel;
+    return atomic_load(&token->flag) != 0 ? 1 : 0;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -188,17 +191,21 @@ rr_xferinfo_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t u
  */
 static dsd_rr_status
 rr_status_from_curl(CURLcode code) {
-    switch (code) {
-        case CURLE_ABORTED_BY_CALLBACK: return DSD_RR_ERR_CANCELLED;
-        case CURLE_WRITE_ERROR: return DSD_RR_ERR_PARSE;
-        case CURLE_OPERATION_TIMEDOUT:
-        case CURLE_COULDNT_CONNECT:
-        case CURLE_COULDNT_RESOLVE_HOST:
-        case CURLE_COULDNT_RESOLVE_PROXY:
-        case CURLE_RECV_ERROR:
-        case CURLE_SEND_ERROR: return DSD_RR_ERR_NETWORK;
-        default: return DSD_RR_ERR_NETWORK;
+    if (code == CURLE_ABORTED_BY_CALLBACK) {
+        return DSD_RR_ERR_CANCELLED;
     }
+    if (code == CURLE_WRITE_ERROR) {
+        /* The body-buffer hard cap: the write callback returned 0. Never
+         * retried — a retry would re-download up to the whole 32 MB. */
+        return DSD_RR_ERR_PARSE;
+    }
+    /* Everything else is the retryable NETWORK class. Written as a fallthrough
+     * rather than as a case list for CURLE_OPERATION_TIMEDOUT,
+     * CURLE_COULDNT_CONNECT, CURLE_COULDNT_RESOLVE_HOST,
+     * CURLE_COULDNT_RESOLVE_PROXY, CURLE_RECV_ERROR and CURLE_SEND_ERROR,
+     * because an unknown transport failure gets the same treatment and a case
+     * list plus an identical default is a branch clone. */
+    return DSD_RR_ERR_NETWORK;
 }
 
 /**
@@ -226,7 +233,8 @@ rr_apply_request_options(CURL* curl, const dsd_rr_request* req, dsd_curl_body_bu
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, rr_xferinfo_cb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)(uintptr_t)req->cancel);
+    /* The callback only reads the token; CURLOPT_XFERINFODATA takes a void*. */
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)(dsd_rr_cancel_token*)req->cancel);
     dsd_curl_apply_hardening(curl, req->config->connect_timeout_ms, req->config->total_timeout_ms,
                              "dsd-neo/radioreference");
 }
@@ -1048,6 +1056,13 @@ dsd_rr_cancel(dsd_rr_client* client, uint64_t request_id) {
     return found ? 0 : -1;
 }
 
+/* cppcheck-suppress-begin funcArgNamesDifferentUnnamed
+ *
+ * Every one of these is declared in radioreference.h with the same parameter
+ * names it is defined with; cppcheck reports the declaration as unnamed
+ * whatever the header actually says (verified by renaming it and watching the
+ * message not change). The common factor is the dsd_rr_done_cb function-pointer
+ * parameter. Scoped to this block and to that one check id. */
 uint64_t
 dsd_rr_fetch_user_data(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_done_cb cb, void* user) {
     return rr_submit(client, auth, RR_M_USER_DATA, 0, cb, user);
@@ -1116,3 +1131,5 @@ dsd_rr_fetch_support_maps(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr
      * getter once it has a worker-free moment. */
     return rr_submit(client, auth, RR_M_SUPPORT_TYPE, 0, cb, user);
 }
+
+/* cppcheck-suppress-end funcArgNamesDifferentUnnamed */

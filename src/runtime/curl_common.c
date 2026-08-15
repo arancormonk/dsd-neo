@@ -7,8 +7,8 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
-#include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/platform/file_compat.h>  // IWYU pragma: keep (dsd_stat_t under __ANDROID__)
+#include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (S_ISDIR fallback under __ANDROID__)
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
@@ -110,6 +110,8 @@ dsd_curl_apply_hardening(CURL* curl, int connect_timeout_ms, int total_timeout_m
     }
 
     const char* ca_path = dsd_curl_android_ca_path();
+    // cppcheck-suppress knownConditionTrueFalse -- off Android the helper is
+    // defined to return NULL, which is what lets callers skip an #ifdef.
     if (ca_path != NULL) {
         curl_easy_setopt(curl, CURLOPT_CAPATH, ca_path);
     }
@@ -174,6 +176,7 @@ dsd_curl_body_buf_reserve(dsd_curl_body_buf* buf, size_t need) {
 }
 
 size_t
+// cppcheck-suppress constParameterPointer -- signature fixed by libcurl's CURLOPT_WRITEFUNCTION
 dsd_curl_body_write_cb(char* ptr, size_t size, size_t nmemb, void* userdata) {
     dsd_curl_body_buf* buf = (dsd_curl_body_buf*)userdata;
     if (buf == NULL) {

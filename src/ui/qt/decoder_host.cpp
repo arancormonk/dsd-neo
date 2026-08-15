@@ -15,6 +15,9 @@
 
 #include "json_store.h"
 
+#include <Qt>
+#include <QtGlobal>
+
 namespace dsd_qt {
 
 namespace {

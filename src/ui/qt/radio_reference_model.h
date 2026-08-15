@@ -27,8 +27,10 @@
 #define DSD_NEO_SRC_UI_QT_RADIO_REFERENCE_MODEL_H_
 
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QString>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
@@ -314,12 +316,12 @@ class RadioReferenceModel : public QObject {
     QList<dsd_rr_site> selectedSites(const QVariantList& siteIndexes, QVariantList* warnings) const;
 
     /**
-     * @brief Run both generators for @p sites into @p plan.
+     * @brief Run both generators for @p chosen into @p plan.
      *
      * @return false only on a hard generator failure; an empty channel map is a
      *         valid outcome, not an error.
      */
-    bool generateFiles(const QList<dsd_rr_site>& sites, bool partialEncAsDe, QVariantMap* plan,
+    bool generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
                        QVariantList* warnings) const;
 
     /** @brief Regenerate and commit the pending refresh. GUI thread only. */

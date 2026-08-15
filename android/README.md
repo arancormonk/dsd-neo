@@ -234,7 +234,7 @@ update across a signing identity change.
 
 CI signs the same way with the project release key and publishes the result as
 `dsd-neo-android-arm64-app-<version>.apk` (`-nightly` off `main`). It needs four
-repository secrets:
+signing secrets, plus one optional secret for the RadioReference import:
 
 | Secret | Value |
 | --- | --- |
@@ -242,6 +242,16 @@ repository secrets:
 | `ANDROID_KEYSTORE_PASSWORD` | keystore password |
 | `ANDROID_KEY_ALIAS` | key alias inside the keystore |
 | `ANDROID_KEY_PASSWORD` | key password |
+| `RADIOREFERENCE_APP_KEY` | RadioReference application key, baked into the APK |
+
+`RADIOREFERENCE_APP_KEY` reaches the build through the `Configure (android-app)`
+step's environment as `DSD_RR_APP_KEY`, which keeps it out of
+`build/android-app/CMakeCache.txt`. It is optional in every sense: unset, the
+secret expands to the empty string, the build succeeds, and the app asks the
+user for a key instead. It is also not a secret in the shipped artifact --
+`strings` recovers it from any APK. Set it the same way as the others,
+`gh secret set RADIOREFERENCE_APP_KEY` reading from stdin, so it stays out of
+shell history. See `docs/radioreference-import.md`.
 
 Generate the keystore once, outside the working tree so no `git add` can reach
 it, and back it up somewhere durable before uploading anything. Android has no
@@ -468,20 +478,24 @@ cd /tmp/rtlsdr && patch -p1 < <repo>/android/third_party/patches/0001-librtlsdr-
 # regenerate the patch against the new baseline, and update the table above
 ```
 
-## Codec2 and libcurl
+## Codec2, libcurl and expat
 
-Both come from vcpkg and both are required by the Android presets
-(`DSD_REQUIRE_CODEC2`, `DSD_REQUIRE_CURL`), so a detection regression fails
-configure rather than producing an APK that quietly decodes no M17 voice. The
-triplet links statically, so they end up inside
-`libdsd-neo-app_arm64-v8a.so` — there is no extra `.so` to package and no
-`System.loadLibrary` change.
+All three come from vcpkg and all three are required by the Android presets
+(`DSD_REQUIRE_CODEC2`, `DSD_REQUIRE_CURL`, `DSD_REQUIRE_EXPAT`), so a detection
+regression fails configure rather than producing an APK that quietly decodes no
+M17 voice or has lost the RadioReference import. The triplet links statically,
+so they end up inside `libdsd-neo-app_arm64-v8a.so` — there is no extra `.so` to
+package and no `System.loadLibrary` change.
 
 libcurl backs the rdio-scanner upload path. `android.permission.INTERNET` is
 already declared, and because OpenSSL's compiled-in `/etc/ssl/certs` does not
 exist on Android, `rdio_export.c` points libcurl at the system trust store
 (`/apex/com.android.conscrypt/cacerts`, falling back to
-`/system/etc/security/cacerts`) so `https://` endpoints verify normally.
+`/system/etc/security/cacerts`) so `https://` endpoints verify normally. The
+RadioReference client shares that hardening through `src/runtime/curl_common.c`.
+
+expat parses the RadioReference SOAP responses. It is a pure-C port with no Qt
+module behind it, so androiddeployqt has nothing extra to package.
 
 ## Known limits
 

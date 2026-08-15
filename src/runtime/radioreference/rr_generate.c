@@ -23,6 +23,7 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -338,12 +339,11 @@ rr_classify_dmr(const char* flavor) {
  */
 static dsd_rr_protocol
 rr_classify_nxdn(const char* flavor, const char* voice) {
-    int wide = 0;
-    if (rr_contains_ci(flavor, "9600")) {
-        wide = 1;
-    } else if (!rr_contains_ci(flavor, "4800") && rr_contains_ci(voice, "9600")) {
-        wide = 1;
-    }
+    /* The flavor answers when it names a rate at all; only then does the voice
+     * string get a say, which is what the IDAS and Kenwood rows need. */
+    const int flavor_wide = rr_contains_ci(flavor, "9600");
+    const int flavor_narrow = rr_contains_ci(flavor, "4800");
+    const int wide = flavor_wide || (!flavor_narrow && rr_contains_ci(voice, "9600"));
 
     if (rr_contains_ci(flavor, "Conventional")) {
         return wide ? DSD_RR_PROTO_NXDN96_CONV : DSD_RR_PROTO_NXDN48_CONV;

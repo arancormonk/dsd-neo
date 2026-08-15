@@ -26,7 +26,9 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +96,11 @@ dump_warnings(const dsd_rr_warning_list* warnings) {
 /* Fixtures                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/* Fixture reads allocate this fixed cap rather than a size taken from the file
+ * system: a constant allocation is what keeps the terminator index provably in
+ * range. The largest captured response is ~1.3 MB. */
+#define RR_FIXTURE_CAP_BYTES ((size_t)8U * 1024U * 1024U)
+
 /**
  * @brief Parse a fixture into `sink`.
  *
@@ -116,30 +123,29 @@ parse_fixture(const char* leaf, rr_shape shape, void* sink) {
         g_failures++;
         return -1;
     }
-    if (fseek(fp, 0, SEEK_END) != 0) {
-        fclose(fp);
-        g_failures++;
-        return -1;
-    }
-    const long size = ftell(fp);
-    if (size < 0 || fseek(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        g_failures++;
-        return -1;
-    }
-    char* body = (char*)malloc((size_t)size + 1U);
+    char* body = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
     if (body == NULL) {
         fclose(fp);
         g_failures++;
         return -1;
     }
-    const size_t got = fread(body, 1, (size_t)size, fp);
+    const size_t got = fread(body, 1, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
     fclose(fp);
-    body[got] = '\0';
+    if (hit_cap) {
+        /* Bigger than the cap, so what was read is a truncated body. */
+        free(body);
+        g_failures++;
+        return -1;
+    }
+    /* Clamped explicitly: `got` cannot exceed the cap, but saying so is what
+     * keeps the terminator index inside the allocation for a static analyzer. */
+    const size_t len = (got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES;
+    body[len] = '\0';
 
     dsd_rr_error err;
     DSD_MEMSET(&err, 0, sizeof(err));
-    const int rc = rr_soap_parse(body, got, shape, sink, &err, NULL);
+    const int rc = rr_soap_parse(body, len, shape, sink, &err, NULL);
     free(body);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "FAIL: %s parse failed: status=%d detail=\"%s\"\n", leaf, (int)err.status, err.detail);

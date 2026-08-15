@@ -15,12 +15,17 @@
  * thread is pumped with a deadline. */
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
 #include <QIODevice>
+#include <QLatin1String>
+#include <QList>
+#include <QMap>
+#include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -35,7 +40,6 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "app_prefs.h"
 #include "decoder_host.h"
@@ -59,9 +63,12 @@ int g_failures = 0;
 
 /* A value that could only have come from the password, so an assertion that it
  * is absent from a user-visible string is a real leak check. */
-const QString kPassword = QStringLiteral("SENTINEL_PW_9d3");
-const QString kUsername = QStringLiteral("SENTINEL_USER_4f1");
-const QString kAppKey = QStringLiteral("SENTINEL_KEY_7b2");
+/* QLatin1String, not QString: its constructor is constexpr and cannot throw, so
+ * these need no dynamic initialization. QString converts implicitly where a
+ * setter wants one, and QString::contains() takes a QLatin1String directly. */
+constexpr QLatin1String kPassword("SENTINEL_PW_9d3");
+constexpr QLatin1String kUsername("SENTINEL_USER_4f1");
+constexpr QLatin1String kAppKey("SENTINEL_KEY_7b2");
 
 void
 expect(const char* what, bool ok) {

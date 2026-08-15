@@ -24,15 +24,10 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/radioreference.h>
-#include <errno.h>
-#include <limits.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/select.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 #endif
 #include <stdint.h>
 #include <stdio.h>
@@ -70,6 +65,11 @@ expect_ll(const char* what, long long got, long long want) {
     }
 }
 
+/* Fixture reads allocate this fixed cap rather than a size taken from the file
+ * system: a constant allocation is what keeps the terminator index provably in
+ * range. The largest captured response is ~1.3 MB. */
+#define RR_FIXTURE_CAP_BYTES ((size_t)8U * 1024U * 1024U)
+
 static int
 read_fixture(const char* leaf, char** out, size_t* out_len) {
     char path[DSD_TEST_PATH_MAX];
@@ -80,29 +80,25 @@ read_fixture(const char* leaf, char** out, size_t* out_len) {
     if (fp == NULL) {
         return -1;
     }
-    if (fseek(fp, 0, SEEK_END) != 0) {
-        fclose(fp);
-        return -1;
-    }
-    const long size = ftell(fp);
-    if (size < 0 || fseek(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        return -1;
-    }
-    char* buf = (char*)malloc((size_t)size + 1U);
+    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
     if (buf == NULL) {
         fclose(fp);
         return -1;
     }
-    const size_t got = fread(buf, 1, (size_t)size, fp);
+    const size_t got = fread(buf, 1, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
     fclose(fp);
-    if (got != (size_t)size) {
+    if (hit_cap) {
+        /* Bigger than the cap, so what was read is a truncated body. */
         free(buf);
         return -1;
     }
-    buf[got] = '\0';
+    /* Clamped explicitly: `got` cannot exceed the cap, but saying so is what
+     * keeps the terminator index inside the allocation for a static analyzer. */
+    const size_t len = (got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES;
+    buf[len] = '\0';
     *out = buf;
-    *out_len = got;
+    *out_len = len;
     return 0;
 }
 
@@ -846,6 +842,12 @@ rr_test_server_start(rr_test_server* server, char* out_url, size_t out_url_sz, c
     server->stall_ms = stall_ms;
 
     if (body != NULL) {
+        /* Bounded before the allocation below is derived from it: the caller's
+         * length comes from a file read, and the fixture cap is what says how
+         * large that can be. */
+        if (body_len > RR_FIXTURE_CAP_BYTES) {
+            return 1;
+        }
         char headers[256];
         const int hn = DSD_SNPRINTF(headers, sizeof(headers),
                                     "%s\r\nContent-Type: text/xml; charset=utf-8\r\n"
@@ -854,14 +856,26 @@ rr_test_server_start(rr_test_server* server, char* out_url, size_t out_url_sz, c
         if (hn <= 0 || (size_t)hn >= sizeof(headers)) {
             return 1;
         }
-        server->response_len = (size_t)hn + body_len;
-        server->response = (char*)malloc(server->response_len + 1U);
+        /* Bounded on the value the allocation uses, and kept in a local: read
+         * back out of the struct after the copies below, the bound no longer
+         * travels with it. */
+        const size_t total = (size_t)hn + body_len;
+        if (total > sizeof(headers) + RR_FIXTURE_CAP_BYTES) {
+            return 1;
+        }
+        server->response = (char*)malloc(total + 1U);
         if (server->response == NULL) {
             return 1;
         }
         DSD_MEMCPY(server->response, headers, (size_t)hn);
         DSD_MEMCPY(server->response + hn, body, body_len);
-        server->response[server->response_len] = '\0';
+        /* `total` is bounded above and the allocation is exactly total + 1, so
+         * this index is in range by construction. The analyzer keeps the taint
+         * on the fread-derived length no matter how it is bounded, and refuses
+         * to relate it back to the malloc it just sized. */
+        // NOLINTNEXTLINE(clang-analyzer-security.ArrayBound)
+        server->response[total] = '\0';
+        server->response_len = total;
     }
 
     if (dsd_socket_init() != 0) {

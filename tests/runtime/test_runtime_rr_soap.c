@@ -51,6 +51,11 @@ expect_ll(const char* what, long long got, long long want) {
     }
 }
 
+/* Fixture reads allocate this fixed cap rather than a size taken from the file
+ * system: a constant allocation is what keeps the terminator index provably in
+ * range. The largest captured response is ~1.3 MB. */
+#define RR_FIXTURE_CAP_BYTES ((size_t)8U * 1024U * 1024U)
+
 /**
  * @brief Read a fixture into a heap buffer.
  *
@@ -69,30 +74,25 @@ read_fixture(const char* leaf, char** out, size_t* out_len) {
         DSD_FPRINTF(stderr, "FAIL: cannot open fixture %s\n", path);
         return -1;
     }
-    if (fseek(fp, 0, SEEK_END) != 0) {
-        fclose(fp);
-        return -1;
-    }
-    const long size = ftell(fp);
-    if (size < 0 || fseek(fp, 0, SEEK_SET) != 0) {
-        fclose(fp);
-        return -1;
-    }
-
-    char* buf = (char*)malloc((size_t)size + 1U);
+    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
     if (buf == NULL) {
         fclose(fp);
         return -1;
     }
-    const size_t got = fread(buf, 1, (size_t)size, fp);
+    const size_t got = fread(buf, 1, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
     fclose(fp);
-    if (got != (size_t)size) {
+    if (hit_cap) {
+        /* Bigger than the cap, so what was read is a truncated body. */
         free(buf);
         return -1;
     }
-    buf[got] = '\0';
+    /* Clamped explicitly: `got` cannot exceed the cap, but saying so is what
+     * keeps the terminator index inside the allocation for a static analyzer. */
+    const size_t len = (got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES;
+    buf[len] = '\0';
     *out = buf;
-    *out_len = got;
+    *out_len = len;
     return 0;
 }
 
@@ -622,7 +622,7 @@ test_nil_and_nonzoned_sites(void) {
                 if (edacs.items[0].freqs[i].is_control || edacs.items[0].freqs[i].is_alt_control) {
                     any_control = 1;
                 }
-                expect_ll("edacs lcn is positional", edacs.items[0].freqs[i].lcn, (long long)(i + 1));
+                expect_ll("edacs lcn is positional", edacs.items[0].freqs[i].lcn, (long long)i + 1);
             }
             expect("edacs site marks no control channel", any_control == 0);
             expect_ll("edacs first freq", edacs.items[0].freqs[0].freq_hz, 851375000LL);

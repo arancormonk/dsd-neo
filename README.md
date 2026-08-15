@@ -422,6 +422,7 @@ Quick examples
 - SoapySDR non-RTL setup and usage: `docs/soapysdr.md`
 - User config system (INI): `docs/config-system.md`
 - Trunking and trunk scan CSV formats: `docs/csv-formats.md` (examples in `examples/`)
+- RadioReference.com system import (Android app): `docs/radioreference-import.md`
 - Network audio I/O details (TCP/UDP/stdin/stdout): `docs/network-audio.md`
 - Terminal UI hotkeys and menus: `docs/ui-terminal.md`
 - Android app build, USB-OTG flow, and limits: `android/README.md`

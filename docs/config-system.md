@@ -757,6 +757,13 @@ Older releases also wrote per-system P25 control-channel candidate files under
 loader and both environment variables after the cache support window ends or a
 migration imports the saved frequencies into current channel-map inputs.
 
+The RadioReference import (`docs/radioreference-import.md`) has **no INI keys in
+v1**. Its account settings live in the Qt app's own settings store, and the
+password is never persisted anywhere. A `[radioreference]` section with
+`username` and `app_key` is reserved for a future terminal-UI adopter; nothing
+reads one today, so a config carrying it is ignored like any other unknown
+section.
+
 Separately, normal loading ignores unknown keys and sections so configuration
 introduced during a staged deployment can survive rollback to an older binary;
 `--validate-config` recursively checks included files and reports each unknown

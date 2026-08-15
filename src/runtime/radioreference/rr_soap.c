@@ -15,6 +15,7 @@
 #include "rr_internal.h"
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/radioreference.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@
 
 #ifdef USE_EXPAT
 #include <expat.h>
+#include <expat_external.h>
 #endif
 
 /* ------------------------------------------------------------------------- */
@@ -183,7 +185,12 @@ rr_render_param_value(const rr_soap_param* param, char* value, size_t value_sz) 
         }
         return "xsd:int";
     }
-    if (rr_xml_escape(param->svalue != NULL ? param->svalue : "", value, value_sz) != 0) {
+    /* An absent string part is an empty element, which needs no escaping pass. */
+    if (param->svalue == NULL) {
+        value[0] = '\0';
+        return "xsd:string";
+    }
+    if (rr_xml_escape(param->svalue, value, value_sz) != 0) {
         return NULL;
     }
     return "xsd:string";
@@ -881,7 +888,7 @@ rr_count_bandplan(rr_parse_ctx* ctx) {
  * @return 1 when an href attribute was seen, 0 otherwise.
  */
 static int
-rr_atts_have_href(rr_parse_ctx* ctx, const XML_Char** atts) {
+rr_atts_have_href(const rr_parse_ctx* ctx, const XML_Char** atts) {
     if (atts == NULL || ctx->body_depth < 0) {
         return 0;
     }

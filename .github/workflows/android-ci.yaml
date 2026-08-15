@@ -463,6 +463,15 @@ jobs:
 
       - name: Configure (android-app)
         shell: bash
+        env:
+          # Baked into the APK at configure time, so only this step needs it —
+          # "Build the APK" and "Build the AAB" just run cmake --build. Passed
+          # through the step environment rather than interpolated into the run
+          # body, the way the signing secrets are. An unset secret expands to
+          # the empty string, which yields an empty built-in key and the in-app
+          # prompt rather than a broken build. The env-var route also keeps the
+          # value out of build/android-app/CMakeCache.txt, unlike -D.
+          DSD_RR_APP_KEY: ${{ secrets.RADIOREFERENCE_APP_KEY }}
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-android-app.log"

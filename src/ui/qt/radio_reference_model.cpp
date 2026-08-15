@@ -11,20 +11,23 @@
 #include <QIODevice>
 #include <QLatin1Char>
 #include <QLatin1String>
-#include <QMetaObject>
 #include <QPointer>
 #include <QSaveFile>
 #include <QSet>
 #include <QStringList>
 #include <QVariant>
+#include <Qt>
 
 #include <memory>
+#include <stdint.h>
 #include <stdlib.h>
+#include <type_traits>
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/radioreference_generate.h>
 
 #include "app_prefs.h"
-#include "decoder_host.h"
 #include "imported_files_model.h"
 #include "json_store.h"
 
@@ -436,6 +439,7 @@ RadioReferenceModel::~RadioReferenceModel() {
 /* ------------------------------------------------------------------------- */
 
 bool
+// cppcheck-suppress functionStatic -- a Q_PROPERTY READ accessor cannot be static
 RadioReferenceModel::available() const {
     return dsd_rr_available() != 0;
 }
@@ -825,7 +829,7 @@ void
 RadioReferenceModel::finishSystemLoad() {
     m_recordSaysSimulcast = false;
 
-    QVariantList sites;
+    QVariantList rows;
     for (size_t i = 0; i < m_siteData.count; i++) {
         const dsd_rr_site& site = m_siteData.items[i];
         QVariantMap row;
@@ -847,9 +851,9 @@ RadioReferenceModel::finishSystemLoad() {
         if (dsd_rr_site_is_simulcast(&site) != 0) {
             m_recordSaysSimulcast = true;
         }
-        sites.append(row);
+        rows.append(row);
     }
-    m_sites = sites;
+    m_sites = rows;
 
     int encCount = 0;
     int partialCount = 0;
@@ -922,15 +926,15 @@ RadioReferenceModel::selectedSites(const QVariantList& siteIndexes, QVariantList
 }
 
 bool
-RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& sites, bool partialEncAsDe, QVariantMap* plan,
+RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
                                    QVariantList* warnings) const {
     dsd_rr_warning_list generated;
     DSD_MEMSET(&generated, 0, sizeof(generated));
 
     char* chanText = nullptr;
     size_t chanLen = 0;
-    if (dsd_rr_generate_chan_csv(m_protocol, sites.constData(), static_cast<size_t>(sites.size()), &chanText, &chanLen,
-                                 &generated)
+    if (dsd_rr_generate_chan_csv(m_protocol, chosen.constData(), static_cast<size_t>(chosen.size()), &chanText,
+                                 &chanLen, &generated)
         != 0) {
         dsd_rr_warning_list_free(&generated);
         return false;
@@ -982,8 +986,8 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
         return plan;
     }
 
-    QList<dsd_rr_site> sites = selectedSites(siteIndexes, &warnings);
-    if (sites.isEmpty()) {
+    const QList<dsd_rr_site> chosen = selectedSites(siteIndexes, &warnings);
+    if (chosen.isEmpty()) {
         plan.insert(QStringLiteral("blockedReason"),
                     conventional() ? tr("Select at least one repeater.") : tr("Select a site."));
         plan.insert(QStringLiteral("warnings"), warnings);
@@ -992,12 +996,12 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
     /* The full selection goes to the generator even for a trunked system: it
      * uses the first and warns about the rest, so that rule lives in one place
      * rather than being enforced twice with two different messages. */
-    plan.insert(QStringLiteral("siteCount"), conventional() ? sites.size() : 1);
-    plan.insert(QStringLiteral("siteNumber"), sites.first().site_number);
+    plan.insert(QStringLiteral("siteCount"), conventional() ? chosen.size() : 1);
+    plan.insert(QStringLiteral("siteNumber"), chosen.first().site_number);
     /* The whole selection, so a later refresh can reproduce it. Only the first
      * entry for a trunked import, because that is all the generator uses. */
     QStringList numbers;
-    for (const dsd_rr_site& site : sites) {
+    for (const dsd_rr_site& site : chosen) {
         numbers.append(QString::number(site.site_number));
         if (!conventional()) {
             break;
@@ -1005,7 +1009,7 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
     }
     plan.insert(QStringLiteral("siteNumbers"), numbers.join(QLatin1Char(',')));
 
-    if (!generateFiles(sites, options.value(QStringLiteral("partialEncAsDe"), true).toBool(), &plan, &warnings)) {
+    if (!generateFiles(chosen, options.value(QStringLiteral("partialEncAsDe"), true).toBool(), &plan, &warnings)) {
         plan.insert(QStringLiteral("blockedReason"), tr("The channel map could not be generated."));
         plan.insert(QStringLiteral("warnings"), warnings);
         return plan;
@@ -1014,7 +1018,7 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
     /* Defaults come from the RadioReference record for the SITE the user picked,
      * not from "any site on this system", and stay overridable. */
     const bool simulcast =
-        options.value(QStringLiteral("simulcast"), dsd_rr_site_is_simulcast(&sites.first()) != 0).toBool();
+        options.value(QStringLiteral("simulcast"), dsd_rr_site_is_simulcast(&chosen.first()) != 0).toBool();
     const bool esk = options.value(QStringLiteral("esk"), m_recordSaysEsk).toBool();
     const char* flag = dsd_rr_decode_flag(m_protocol, simulcast ? 1 : 0, esk ? 1 : 0,
                                           plan.value(QStringLiteral("scanList")).toBool() ? 1 : 0);
@@ -1022,8 +1026,8 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
 
     /* The control channel for a trunked system, the first selected repeater for
      * a conventional one. */
-    const long long tuneHz = dsd_rr_protocol_is_trunked(m_protocol) ? dsd_rr_site_control_freq_hz(&sites.first())
-                                                                    : dsd_rr_site_first_freq_hz(&sites.first());
+    const long long tuneHz = dsd_rr_protocol_is_trunked(m_protocol) ? dsd_rr_site_control_freq_hz(&chosen.first())
+                                                                    : dsd_rr_site_first_freq_hz(&chosen.first());
     plan.insert(QStringLiteral("freqMhz"), hz_to_mhz_text(tuneHz));
     if (tuneHz <= 0) {
         plan.insert(QStringLiteral("blockedReason"),
@@ -1208,16 +1212,16 @@ RadioReferenceModel::completeRefresh() {
     /* Matched by site NUMBER, never by index: RadioReference is free to reorder
      * getTrsSites, and an index would refresh the wrong repeater. A site that is
      * gone is dropped rather than shifting the rest of the list. */
-    QList<dsd_rr_site> sites;
+    QList<dsd_rr_site> chosen;
     for (const int number : m_refreshSiteNumbers) {
         for (size_t i = 0; i < m_siteData.count; i++) {
             if (m_siteData.items[i].site_number == number) {
-                sites.append(m_siteData.items[i]);
+                chosen.append(m_siteData.items[i]);
                 break;
             }
         }
     }
-    if (sites.isEmpty()) {
+    if (chosen.isEmpty()) {
         setError(ServerError, tr("RadioReference no longer lists the site this file was built from."));
         endRefresh(result);
         return;
@@ -1227,7 +1231,7 @@ RadioReferenceModel::completeRefresh() {
     QVariantList warnings;
     /* partialEncAsDe is not recorded in provenance, so this is the UI default
      * rather than the answer the original import was given. */
-    if (!generateFiles(sites, true, &plan, &warnings)) {
+    if (!generateFiles(chosen, true, &plan, &warnings)) {
         setError(ParseError, tr("The refreshed data could not be turned into a file."));
         endRefresh(result);
         return;
