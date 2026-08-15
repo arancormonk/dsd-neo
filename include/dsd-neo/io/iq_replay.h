@@ -49,6 +49,10 @@ typedef struct {
     uint64_t capture_drops;
     uint64_t capture_drop_blocks;
     uint64_t input_ring_drops;
+    /* Capture stopped because it hit --iq-capture-max-mb rather than being cut
+     * short. Absent from metadata written before this field existed, in which
+     * case it reads back as 0. */
+    int size_limit_reached;
     char source_backend[32];
     char source_args[256];
     char capture_started_utc[64];

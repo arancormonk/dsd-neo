@@ -9,12 +9,22 @@
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/timing.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "test_support.h"
+
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#else
+#include <signal.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#endif
 
 static int
 expect_true(const char* label, int cond) {
@@ -59,6 +69,31 @@ path_join(char* out, size_t out_size, const char* a, const char* b) {
     return dsd_test_path_join(out, out_size, a, b);
 }
 
+/*
+ * Remove a capture's files, and its temp directory once it is empty.
+ *
+ * Every test here calls mk_temp_dir, so without this each run leaves another
+ * mkdtemp directory (and its .iq payload) behind in the build tree. Pass a NULL
+ * dir when a test writes several captures into one directory and only the last
+ * call should try to remove it.
+ */
+static void
+cleanup_capture(const char* dir, const char* data_path, const char* metadata_path) {
+    if (data_path && data_path[0] != '\0') {
+        (void)remove(data_path);
+    }
+    if (metadata_path && metadata_path[0] != '\0') {
+        (void)remove(metadata_path);
+    }
+    if (dir && dir[0] != '\0') {
+#if DSD_PLATFORM_WIN_NATIVE
+        (void)_rmdir(dir);
+#else
+        (void)rmdir(dir);
+#endif
+    }
+}
+
 static int
 read_file_all(const char* path, uint8_t* out, size_t out_cap, size_t* out_n) {
     if (!path || !out || !out_n) {
@@ -72,6 +107,16 @@ read_file_all(const char* path, uint8_t* out, size_t out_cap, size_t* out_n) {
     fclose(fp);
     *out_n = n;
     return 0;
+}
+
+static int g_size_limit_calls;
+static uint64_t g_size_limit_max_bytes;
+
+static void
+count_size_limit(void* user, uint64_t max_bytes) {
+    (void)user;
+    g_size_limit_calls++;
+    g_size_limit_max_bytes = max_bytes;
 }
 
 static void
@@ -121,6 +166,7 @@ test_submit_small_blocks_and_contents(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -146,6 +192,7 @@ test_submit_small_blocks_and_contents(void) {
         rc |= expect_true("small file payload", got_n == sizeof(want) && memcmp(got, want, sizeof(want)) == 0);
     }
 
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -174,6 +221,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         dsd_iq_capture_writer* writer = NULL;
         rc |= expect_int("open cu8", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
         if (!writer) {
+            cleanup_capture(dir, data_path, metadata_path);
             return rc;
         }
 
@@ -189,6 +237,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         if (dsd_stat_path(data_path, &st) == 0) {
             rc |= expect_u64("cu8 max aligned bytes", (uint64_t)st.st_size, 4);
         }
+        cleanup_capture(NULL, data_path, metadata_path);
     }
 
     {
@@ -207,6 +256,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         dsd_iq_capture_writer* writer = NULL;
         rc |= expect_int("open cf32", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
         if (!writer) {
+            cleanup_capture(dir, data_path, metadata_path);
             return rc;
         }
 
@@ -222,6 +272,7 @@ test_max_bytes_alignment_cu8_and_cf32(void) {
         if (dsd_stat_path(data_path, &st) == 0) {
             rc |= expect_u64("cf32 max aligned bytes", (uint64_t)st.st_size, 8);
         }
+        cleanup_capture(dir, data_path, metadata_path);
     }
 
     return rc;
@@ -249,6 +300,7 @@ test_odd_cu8_preserves_iq_alignment(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open odd", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -273,6 +325,373 @@ test_odd_cu8_preserves_iq_alignment(void) {
         }
     }
 
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/*
+ * A burst of submissions far smaller than one queue block must be packed into
+ * blocks rather than consuming a block each. The burst is an exact multiple of
+ * the block size, so every block is published by the fill path; the close-time
+ * flush of a partial block is covered by test_partial_trailing_block_is_flushed.
+ *
+ * The assertion is timing-independent: with packing, a burst no larger than the
+ * whole pool (block_bytes * block_count) can always be staged even if the writer
+ * thread never runs, so zero drops is guaranteed. Before packing, each of the
+ * 1024 submissions claimed a whole block from a 4-block pool, which made real
+ * captures drop roughly half of a 3 MB/s RTL stream.
+ */
+static int
+test_small_submissions_pack_into_blocks(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    enum { kBlockBytes = 4096, kBlockCount = 4, kChunk = 16 };
+
+    enum { kTotal = kBlockBytes * kBlockCount };
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "packed.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "packed.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.queue_block_bytes = kBlockBytes;
+    cfg.queue_block_count = kBlockCount;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open packed", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    static uint8_t expected[kTotal];
+    for (size_t i = 0; i < (size_t)kTotal; i++) {
+        expected[i] = (uint8_t)(i & 0xFFU);
+    }
+    for (size_t off = 0; off < (size_t)kTotal; off += (size_t)kChunk) {
+        if (dsd_iq_capture_submit(writer, expected + off, (size_t)kChunk) != DSD_IQ_OK) {
+            rc |= expect_true("submit packed chunk", 0);
+            break;
+        }
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        static uint8_t got[kTotal + 64];
+        size_t got_n = 0;
+        rc |= expect_int("read packed file", read_file_all(data_path, got, sizeof(got), &got_n), 0);
+        rc |= expect_u64("packed file bytes", got_n, (uint64_t)kTotal);
+        rc |=
+            expect_true("packed payload order", got_n == (size_t)kTotal && memcmp(got, expected, (size_t)kTotal) == 0);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("packed metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                         DSD_IQ_OK);
+        rc |= expect_u64("packed drops", meta.capture_drops, 0);
+        rc |= expect_u64("packed drop blocks", meta.capture_drop_blocks, 0);
+        rc |= expect_u64("packed data bytes", meta.data_bytes, (uint64_t)kTotal);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/*
+ * Hitting --iq-capture-max-mb is not data loss, so it must not inflate
+ * capture_drops. A capped capture that reports drops reads as corrupt, and the
+ * warning callback firing for the rest of the run hides real writer overruns.
+ */
+static int
+test_size_limit_is_not_counted_as_drops(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "capped.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "capped.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.max_bytes = 64;
+    cfg.queue_block_bytes = 4096;
+    cfg.queue_block_count = 4;
+    g_size_limit_calls = 0;
+    g_size_limit_max_bytes = 0;
+    cfg.size_limit_cb = count_size_limit;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open capped", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    {
+        /* Far more than the cap, submitted the way a dongle does: many small runs. */
+        uint8_t payload[256];
+        DSD_MEMSET(payload, 0x5a, sizeof(payload));
+        for (int i = 0; i < 64; i++) {
+            rc |= expect_int("submit capped", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+        }
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        /* The capped bytes only reach the file through the close-time flush, so
+         * check the file itself and not just the counter echoed into the JSON. */
+        uint8_t got[256];
+        size_t got_n = 0;
+        rc |= expect_int("read capped file", read_file_all(data_path, got, sizeof(got), &got_n), 0);
+        rc |= expect_u64("capped file bytes", got_n, 64);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("capped metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                         DSD_IQ_OK);
+        rc |= expect_u64("capped data bytes", meta.data_bytes, 64);
+        rc |= expect_u64("capped drops", meta.capture_drops, 0);
+        rc |= expect_u64("capped drop blocks", meta.capture_drop_blocks, 0);
+        /* Zero drops is only readable as "healthy" if something else says the
+         * capture ended on purpose. */
+        rc |= expect_int("capped size_limit_reached", meta.size_limit_reached, 1);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    rc |= expect_int("capped size limit callback fires once", g_size_limit_calls, 1);
+    rc |= expect_u64("capped size limit callback max_bytes", g_size_limit_max_bytes, 64);
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/*
+ * A capture that never reaches its limit must not claim it did, and one with no
+ * limit at all must report the field as false rather than omitting it.
+ */
+static int
+test_size_limit_not_reached_reports_false(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "under_cap.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "under_cap.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.max_bytes = 4096;
+    cfg.queue_block_bytes = 512;
+    cfg.queue_block_count = 4;
+    g_size_limit_calls = 0;
+    cfg.size_limit_cb = count_size_limit;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open under cap", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    {
+        uint8_t payload[64];
+        DSD_MEMSET(payload, 0x11, sizeof(payload));
+        rc |= expect_int("submit under cap", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("under cap metadata parse",
+                         dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        rc |= expect_u64("under cap data bytes", meta.data_bytes, 64);
+        rc |= expect_int("under cap size_limit_reached", meta.size_limit_reached, 0);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    rc |= expect_int("under cap size limit callback silent", g_size_limit_calls, 0);
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/*
+ * A partial trailing SAMPLE is different from a size-limit truncation. cf32 and
+ * cs16 have no carry byte, so the fragment is discarded outright and the stream
+ * loses sample alignment -- that is real data loss and must stay in
+ * capture_drops even though a capped capture must not.
+ */
+static int
+test_unaligned_tail_is_counted_as_a_drop(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "unaligned.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "unaligned.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CF32);
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_driver_cf32_pre_ring");
+    cfg.queue_block_bytes = 4096;
+    cfg.queue_block_count = 2;
+    /* No size limit, so the only thing that can shorten the write is alignment. */
+    cfg.max_bytes = 0;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open unaligned", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    {
+        uint8_t payload[12];
+        DSD_MEMSET(payload, 0x3c, sizeof(payload));
+        rc |= expect_int("submit unaligned", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("unaligned metadata parse",
+                         dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        rc |= expect_u64("unaligned data bytes", meta.data_bytes, 8);
+        rc |= expect_u64("unaligned drops", meta.capture_drops, 4);
+        rc |= expect_u64("unaligned drop blocks", meta.capture_drop_blocks, 1);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/*
+ * The shape of every real capture: several full blocks published by the fill
+ * path, then a remainder that never fills its block and only reaches the file
+ * through the close-time flush. Both halves have to land, in order.
+ *
+ * Deterministic: kTotal is smaller than the whole pool, so the burst stages
+ * even if the writer thread never runs before close.
+ */
+static int
+test_partial_trailing_block_is_flushed(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    enum { kBlockBytes = 64, kBlockCount = 8, kChunk = 10, kTotal = 250 };
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "partial.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "partial.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.queue_block_bytes = kBlockBytes;
+    cfg.queue_block_count = kBlockCount;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open partial", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    uint8_t payload[kTotal];
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)(0xA0U ^ (i & 0xFFU));
+    }
+    for (size_t off = 0; off < sizeof(payload); off += (size_t)kChunk) {
+        size_t n = sizeof(payload) - off;
+        if (n > (size_t)kChunk) {
+            n = (size_t)kChunk;
+        }
+        if (dsd_iq_capture_submit(writer, payload + off, n) != DSD_IQ_OK) {
+            rc |= expect_true("submit partial chunk", 0);
+            break;
+        }
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        uint8_t got[kTotal + 64];
+        size_t got_n = 0;
+        rc |= expect_int("read partial file", read_file_all(data_path, got, sizeof(got), &got_n), 0);
+        /* 250 = 3 full 64-byte blocks published + a 58-byte tail flushed at close. */
+        rc |= expect_u64("partial file bytes", got_n, sizeof(payload));
+        rc |= expect_true("partial payload", got_n == sizeof(payload) && memcmp(got, payload, sizeof(payload)) == 0);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("partial metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                         DSD_IQ_OK);
+        rc |= expect_u64("partial data bytes", meta.data_bytes, (uint64_t)sizeof(payload));
+        rc |= expect_u64("partial drops", meta.capture_drops, 0);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -298,6 +717,7 @@ test_queue_overflow_updates_drop_counters(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open overflow", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -327,6 +747,7 @@ test_queue_overflow_updates_drop_counters(void) {
         dsd_iq_replay_config_clear(&meta);
     }
 
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -352,6 +773,7 @@ test_retune_stats_without_events_marks_not_replayable(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open retune stats", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -379,6 +801,7 @@ test_retune_stats_without_events_marks_not_replayable(void) {
                      dsd_iq_replay_open(metadata_path, &meta, &replay, err, sizeof(err)), DSD_IQ_ERR_RETUNE_REJECT);
     rc |= expect_true("retune stats replay source null", replay == NULL);
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -418,6 +841,7 @@ test_open_resolves_single_capture_path(void) {
         rc |= expect_true("data-only metadata data_path", strcmp(meta.data_path, data_path) == 0);
         dsd_iq_replay_config_clear(&meta);
     }
+    cleanup_capture(NULL, data_path, metadata_path);
 
     path_join(data_path, sizeof(data_path), dir, "metadata_only.iq");
     path_join(metadata_path, sizeof(metadata_path), dir, "metadata_only.iq.json");
@@ -442,6 +866,7 @@ test_open_resolves_single_capture_path(void) {
         rc |= expect_true("metadata-only derived data path", strcmp(meta.data_path, data_path) == 0);
         dsd_iq_replay_config_clear(&meta);
     }
+    cleanup_capture(dir, data_path, metadata_path);
 
     fill_base_capture_cfg(&cfg, "", "", DSD_IQ_FORMAT_CU8);
     writer = NULL;
@@ -473,6 +898,7 @@ test_rejects_unaligned_mute_event(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open bad mute", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -499,6 +925,7 @@ test_rejects_unaligned_mute_event(void) {
                      DSD_IQ_OK);
     rc |= expect_int("bad mute event_count", (int)meta.event_count, 0);
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -524,6 +951,7 @@ test_rejects_event_control_bytes_and_unknown_kind(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open bad event meta", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -559,6 +987,7 @@ test_rejects_event_control_bytes_and_unknown_kind(void) {
                      dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
     rc |= expect_int("bad event meta event_count", (int)meta.event_count, 0);
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -584,6 +1013,7 @@ test_rejects_unreplayable_retune_reset_events(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open bad reconfig events", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -624,6 +1054,7 @@ test_rejects_unreplayable_retune_reset_events(void) {
                      DSD_IQ_OK);
     rc |= expect_int("bad reconfig event_count", (int)meta.event_count, 0);
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -649,6 +1080,7 @@ test_same_offset_mute_events_merge_duration(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open mute merge", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -683,6 +1115,7 @@ test_same_offset_mute_events_merge_duration(void) {
         rc |= expect_u64("mute merge duration", meta.events[0].duration_bytes, 6);
     }
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -708,6 +1141,7 @@ test_retune_event_orders_before_same_offset_mute(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open event order", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -744,6 +1178,7 @@ test_retune_event_orders_before_same_offset_mute(void) {
         rc |= expect_u64("same offset retained", meta.events[0].byte_offset, meta.events[1].byte_offset);
     }
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -769,6 +1204,7 @@ test_event_boundary_drops_pending_cu8_carry(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open carry event", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -806,6 +1242,7 @@ test_event_boundary_drops_pending_cu8_carry(void) {
         rc |= expect_u64("carry event offset", meta.events[0].byte_offset, 0);
     }
     dsd_iq_replay_config_clear(&meta);
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
 
@@ -829,6 +1266,7 @@ test_abort_removes_metadata(void) {
     dsd_iq_capture_writer* writer = NULL;
     rc |= expect_int("open abort", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
     if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
         return rc;
     }
 
@@ -844,8 +1282,291 @@ test_abort_removes_metadata(void) {
         rc |= expect_true("metadata removed", dsd_stat_path(metadata_path, &st) != 0);
     }
 
+    cleanup_capture(dir, data_path, metadata_path);
     return rc;
 }
+
+/*
+ * Packing makes a partly filled block wait for more data. On a stream that goes
+ * quiet -- a muted channel, a reconfigure hold -- that wait is otherwise
+ * unbounded, and everything staged is lost if the process is killed. The writer
+ * thread has to age the block out on its own: no further submission, no close.
+ */
+static int
+test_idle_partial_block_reaches_the_file_before_close(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    enum { kPayload = 8, kFlushMs = 20, kPollMs = 5, kPollTries = 200 };
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "idle.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "idle.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    /* A block far larger than the payload, so only the age-out can publish it. */
+    cfg.queue_block_bytes = 4096;
+    cfg.queue_block_count = 4;
+    cfg.queue_flush_interval_ms = kFlushMs;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open idle", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    uint8_t payload[kPayload] = {1, 2, 3, 4, 5, 6, 7, 8};
+    rc |= expect_int("submit idle", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+
+    {
+        /* Poll rather than sleep once: the assertion is "it lands without any
+         * further help", not "it lands within exactly one interval". */
+        uint64_t size_before_close = 0;
+        for (int i = 0; i < kPollTries; i++) {
+            dsd_stat_t st;
+            if (dsd_stat_path(data_path, &st) == 0 && st.st_size >= 0
+                && (uint64_t)st.st_size >= (uint64_t)sizeof(payload)) {
+                size_before_close = (uint64_t)st.st_size;
+                break;
+            }
+            dsd_sleep_ms(kPollMs);
+        }
+        rc |= expect_u64("idle block flushed while still capturing", size_before_close, sizeof(payload));
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        uint8_t got[64];
+        size_t got_n = 0;
+        rc |= expect_int("read idle file", read_file_all(data_path, got, sizeof(got), &got_n), 0);
+        rc |= expect_u64("idle file bytes", got_n, sizeof(payload));
+        rc |= expect_true("idle payload", got_n == sizeof(payload) && memcmp(got, payload, sizeof(payload)) == 0);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("idle metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                         DSD_IQ_OK);
+        /* Ageing a block out early must not look like a drop. */
+        rc |= expect_u64("idle drops", meta.capture_drops, 0);
+        rc |= expect_u64("idle data bytes", meta.data_bytes, sizeof(payload));
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+/*
+ * A submission larger than the whole pool overruns it: the producer never blocks
+ * (see writer_submit_bytes), so the tail past block_bytes * block_count is
+ * dropped rather than waited on. What must still hold is the bookkeeping --
+ * every byte written or counted exactly once, and the file a clean prefix of the
+ * submission rather than an interleaved mess.
+ *
+ * Deliberately not asserted: how much survives. That depends on whether the
+ * writer thread got scheduled during the copy, and in practice for a 64 KiB
+ * memcpy against a 1 KiB pool it does not.
+ */
+static int
+test_submission_larger_than_pool_stays_accounted(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    enum { kBlockBytes = 512, kBlockCount = 2, kPoolBytes = kBlockBytes * kBlockCount, kTotal = 64 * 1024 };
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "oversize.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "oversize.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.queue_block_bytes = kBlockBytes;
+    cfg.queue_block_count = kBlockCount;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open oversize", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    static uint8_t payload[kTotal];
+    for (size_t i = 0; i < sizeof(payload); i++) {
+        payload[i] = (uint8_t)((i * 7U) & 0xFFU);
+    }
+    rc |= expect_int("submit oversize", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("oversize metadata parse", dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)),
+                         DSD_IQ_OK);
+        rc |= expect_u64("oversize bytes all accounted", meta.data_bytes + meta.capture_drops, (uint64_t)kTotal);
+        rc |= expect_true("oversize keeps at least the whole pool", meta.data_bytes >= (uint64_t)kPoolBytes);
+
+        {
+            static uint8_t got[kTotal];
+            size_t got_n = 0;
+            rc |= expect_int("read oversize file", read_file_all(data_path, got, sizeof(got), &got_n), 0);
+            rc |= expect_u64("oversize file matches data_bytes", (uint64_t)got_n, meta.data_bytes);
+            rc |= expect_true("oversize file is a prefix of the submission",
+                              got_n <= sizeof(payload) && memcmp(got, payload, got_n) == 0);
+        }
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+
+#if !DSD_PLATFORM_WIN_NATIVE && defined(RLIMIT_FSIZE)
+/*
+ * A capture whose writes start failing part-way through -- the disk filling up
+ * mid-run, reproduced here with RLIMIT_FSIZE.
+ *
+ * Two things used to go wrong. fwrite() is buffered, so bytes it reported as
+ * written were counted into data_bytes whether or not they ever reached the
+ * disk, leaving metadata that claimed a larger file than exists. And event
+ * byte_offset is stamped from accepted bytes, so an event recorded after the
+ * failure sat past data_bytes and made iq_replay reject the whole metadata file
+ * -- taking the readable part of the capture down with it.
+ */
+static int
+test_write_failure_is_counted_and_metadata_stays_readable(void) {
+    int rc = 0;
+    char dir[256];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    enum { kFileLimit = 4096, kChunk = 512, kMaxChunks = 200 };
+
+    struct rlimit saved;
+    struct rlimit capped;
+    if (getrlimit(RLIMIT_FSIZE, &saved) != 0) {
+        return 0; /* cannot set up the fixture; not a product failure */
+    }
+    if (saved.rlim_max != RLIM_INFINITY && saved.rlim_max < (rlim_t)kFileLimit) {
+        return 0;
+    }
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(data_path, sizeof(data_path), dir, "nospace.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "nospace.iq.json");
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+    cfg.queue_block_bytes = kChunk;
+    cfg.queue_block_count = 8;
+    cfg.queue_flush_interval_ms = 10;
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open nospace", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+
+    /* Exceeding RLIMIT_FSIZE raises SIGXFSZ as well as failing the write; the
+     * metadata JSON stays well under the limit, so it is unaffected. */
+    void (*saved_xfsz)(int) = signal(SIGXFSZ, SIG_IGN);
+    capped = saved;
+    capped.rlim_cur = (rlim_t)kFileLimit;
+    if (setrlimit(RLIMIT_FSIZE, &capped) != 0) {
+        (void)signal(SIGXFSZ, saved_xfsz);
+        dsd_iq_capture_abort(writer);
+        cleanup_capture(dir, data_path, metadata_path);
+        return 0;
+    }
+
+    int submit_refused = 0;
+    {
+        uint8_t payload[kChunk];
+        DSD_MEMSET(payload, 0x2b, sizeof(payload));
+        for (int i = 0; i < kMaxChunks; i++) {
+            if (dsd_iq_capture_submit(writer, payload, sizeof(payload)) != DSD_IQ_OK) {
+                submit_refused = 1;
+                break;
+            }
+            dsd_sleep_ms(1);
+        }
+    }
+    rc |= expect_true("nospace capture stops accepting data", submit_refused);
+
+    {
+        /* Stamped from accepted bytes, so this lands past whatever reached the
+         * file -- exactly the offset that used to poison the metadata. */
+        dsd_iq_event ev;
+        DSD_MEMSET(&ev, 0, sizeof(ev));
+        ev.kind = DSD_IQ_EVENT_RESET;
+        ev.center_frequency_hz = cfg.center_frequency_hz;
+        ev.capture_center_frequency_hz = cfg.capture_center_frequency_hz;
+        ev.sample_rate_hz = cfg.sample_rate_hz;
+        DSD_SNPRINTF(ev.reason, sizeof(ev.reason), "%s", "after_write_failure");
+        rc |= expect_int("record nospace event", dsd_iq_capture_record_event(writer, &ev), DSD_IQ_OK);
+    }
+
+    {
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    (void)setrlimit(RLIMIT_FSIZE, &saved);
+    (void)signal(SIGXFSZ, saved_xfsz);
+
+    {
+        uint64_t on_disk = 0;
+        dsd_stat_t st;
+        rc |= expect_true("nospace stat", dsd_stat_path(data_path, &st) == 0);
+        if (dsd_stat_path(data_path, &st) == 0 && st.st_size >= 0) {
+            on_disk = (uint64_t)st.st_size;
+        }
+
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("nospace metadata stays readable",
+                         dsd_iq_replay_read_metadata(metadata_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        rc |= expect_u64("nospace data_bytes matches the file", meta.data_bytes, on_disk);
+        rc |= expect_true("nospace reports drops", meta.capture_drops > 0);
+        rc |= expect_int("nospace event survives", (int)meta.event_count, 1);
+        if (meta.event_count == 1) {
+            rc |= expect_true("nospace event offset within data", meta.events[0].byte_offset <= meta.data_bytes);
+        }
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(dir, data_path, metadata_path);
+    return rc;
+}
+#endif /* !DSD_PLATFORM_WIN_NATIVE && RLIMIT_FSIZE */
 
 static int
 test_public_error_contracts(void) {
@@ -939,6 +1660,13 @@ int
 main(void) {
     int rc = 0;
     rc |= test_submit_small_blocks_and_contents();
+    rc |= test_small_submissions_pack_into_blocks();
+    rc |= test_size_limit_is_not_counted_as_drops();
+    rc |= test_size_limit_not_reached_reports_false();
+    rc |= test_unaligned_tail_is_counted_as_a_drop();
+    rc |= test_partial_trailing_block_is_flushed();
+    rc |= test_idle_partial_block_reaches_the_file_before_close();
+    rc |= test_submission_larger_than_pool_stays_accounted();
     rc |= test_max_bytes_alignment_cu8_and_cf32();
     rc |= test_odd_cu8_preserves_iq_alignment();
     rc |= test_queue_overflow_updates_drop_counters();
@@ -951,6 +1679,9 @@ main(void) {
     rc |= test_retune_event_orders_before_same_offset_mute();
     rc |= test_event_boundary_drops_pending_cu8_carry();
     rc |= test_abort_removes_metadata();
+#if !DSD_PLATFORM_WIN_NATIVE && defined(RLIMIT_FSIZE)
+    rc |= test_write_failure_is_counted_and_metadata_stays_readable();
+#endif
     rc |= test_public_error_contracts();
     return rc ? 1 : 0;
 }
