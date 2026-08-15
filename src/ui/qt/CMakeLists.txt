@@ -22,6 +22,7 @@ target_sources(
         json_store.cpp
         metrics_model.cpp
         qt_ui.cpp
+        radio_reference_model.cpp
         saved_systems_model.cpp
         spectrum_model.cpp
         spectrum_view_item.cpp

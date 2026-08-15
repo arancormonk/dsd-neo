@@ -1,5 +1,14 @@
 set(DSD_NEO_TEST_MATH_LIB $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
 
+# Byte-exact captures from the live RadioReference v18 API; see NOTES.md there.
+# Defined once and reused by every RadioReference test - including the Qt model
+# test, which is registered earlier in this file than the runtime ones, so this
+# has to sit above both. CTest runs from the build tree, which is why a fixture
+# can never be resolved through the working directory.
+set(_DSD_NEO_RR_FIXTURE_DIR
+    "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
+)
+
 link_libraries(dsd-neo_warnings)
 
 add_library(dsd-neo_test_support INTERFACE)
@@ -2327,6 +2336,43 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_imported_files_model
     )
 
+    # The RadioReference model, driven end to end with the captured API
+    # responses through an injected transport: no network, no UI. dsd-neo_runtime
+    # is mandatory because it carries the dsd_rr_* objects and the curl/expat
+    # feature interfaces they link; listing those sources by hand would force
+    # this target to find CURL and EXPAT itself.
+    add_executable(
+        dsd-neo_test_ui_qt_radio_reference_model
+        ui/test_ui_qt_radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PRIVATE
+            QT_NO_KEYWORDS
+            "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_RADIO_REFERENCE
+        COMMAND dsd-neo_test_ui_qt_radio_reference_model
+    )
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
@@ -2728,13 +2774,6 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
-
-# Byte-exact captures from the live RadioReference v18 API; see NOTES.md there.
-# Defined once and reused by every RadioReference test: CTest runs from the build
-# tree, so a fixture can never be resolved through the working directory.
-set(_DSD_NEO_RR_FIXTURE_DIR
-    "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
-)
 
 add_executable(dsd-neo_test_runtime_rr_soap runtime/test_runtime_rr_soap.c)
 target_include_directories(

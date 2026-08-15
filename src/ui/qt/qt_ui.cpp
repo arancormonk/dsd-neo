@@ -25,6 +25,7 @@
 #include "decoder_host.h"
 #include "imported_files_model.h"
 #include "metrics_model.h"
+#include "radio_reference_model.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
 #include "spectrum_model.h"
@@ -86,6 +87,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     historyView->setSourceModel(history);
     auto* monitorView = new CallHistoryFilterModel(&engine);
     monitorView->setSourceModel(history);
+    auto* radioReference = new RadioReferenceModel(prefs, importedFiles, host, &engine);
     auto* controller = new UiController(host, metrics, history, &engine);
 
     // The library drops rows whose stored copy vanished behind the app's back;
@@ -119,6 +121,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
     context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
+    context->setContextProperty(QStringLiteral("radioReference"), radioReference);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);
