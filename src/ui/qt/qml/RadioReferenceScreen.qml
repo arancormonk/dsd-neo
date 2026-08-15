@@ -536,10 +536,6 @@ Item {
         anchors.bottomMargin: 14
         contentHeight: content.height + 2 * Theme.screenPadding
         clip: true
-        // Covering the body with the busy overlay is not enough to stop a tap
-        // reaching it — TapHandlers take no exclusive grab — so the layer that
-        // must not act says so itself.
-        enabled: !radioReference.busy
 
         Column {
             id: content
@@ -548,6 +544,15 @@ Item {
             y: Theme.screenPadding
             width: parent.width - 2 * Theme.screenPadding
             spacing: Theme.gap
+            // Deliberately NOT `enabled: !radioReference.busy`. `enabled` is
+            // hierarchical, so binding it on a container fights the explicit
+            // `enabled` bindings on the buttons inside — Qt reports that as a
+            // binding loop, and only at run time on device, never in the
+            // offscreen QML suite. The buttons carry the busy term themselves
+            // instead, and a tap that does slip through during a request is
+            // harmless: every action starts with startBatch(), which cancels
+            // what is in flight and bumps the generation so the superseded
+            // reply is dropped.
 
             // ---- Credentials gate ----
             // Every user authenticates with their own RadioReference account and
@@ -679,7 +684,7 @@ Item {
                         objectName: "radioReferenceCheckAccountButton"
 
                         width: parent.width
-                        enabled: radioReference.credentialsReady
+                        enabled: !radioReference.busy && radioReference.credentialsReady
                         text: qsTr("Check account")
                         onClicked: screen.verifyAccount()
                     }
@@ -747,8 +752,11 @@ Item {
                         OutlineButton {
                             id: zipGo
 
+                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                            objectName: "radioReferenceZipGo"
+
                             width: 96
-                            enabled: zipField.text.length > 0
+                            enabled: !radioReference.busy && zipField.text.length > 0
                             text: qsTr("Find")
                             onClicked: screen.findByZip()
                         }
@@ -780,7 +788,7 @@ Item {
                             objectName: "radioReferenceCountyRow"
                             title: qsTr("County")
                             value: screen.browseCountyName.length > 0 ? screen.browseCountyName : qsTr("Choose")
-                            enabled: screen.browseStid >= 0
+                            enabled: !radioReference.busy && screen.browseStid >= 0
                             onTapped: screen.browseCounties()
                         }
                     }
@@ -819,7 +827,7 @@ Item {
                             id: sidGo
 
                             width: 96
-                            enabled: sidField.text.length > 0
+                            enabled: !radioReference.busy && sidField.text.length > 0
                             text: qsTr("Open")
                             onClicked: screen.findBySid()
                         }
@@ -1345,8 +1353,6 @@ Item {
     ModalSheet {
         id: countrySheet
 
-        enabled: !radioReference.busy
-
         MicroLabel {
             text: qsTr("Country")
         }
@@ -1407,8 +1413,6 @@ Item {
     ModalSheet {
         id: stateSheet
 
-        enabled: !radioReference.busy
-
         MicroLabel {
             text: qsTr("State")
         }
@@ -1468,8 +1472,6 @@ Item {
 
     ModalSheet {
         id: countySheet
-
-        enabled: !radioReference.busy
 
         MicroLabel {
             text: qsTr("County")

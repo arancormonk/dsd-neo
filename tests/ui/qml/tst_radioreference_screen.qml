@@ -204,30 +204,42 @@ Item {
             compare(tc.screen.siteRows[0].index, 1, "sorting lost the row's index into sites()")
         }
 
-        // Covering a layer is not what stops a tap reaching it — TapHandlers take
-        // no exclusive grab — so the body says so itself while a request runs.
-        function test_05_a_running_request_makes_the_screen_inert() {
+        // While a request runs, the overlay goes up and the actions that would
+        // start another one go inert. The gate is on those buttons and not on a
+        // container: `enabled` is hierarchical, so binding it on an ancestor
+        // fights the buttons' own `enabled` bindings and Qt reports a binding
+        // loop — on device only, never in this offscreen suite. That shipped
+        // once; this case is here so the gate cannot quietly move back up.
+        function test_05_a_running_request_makes_the_actions_inert() {
             testContext.setRadioReference("hasAppKey", true)
             testContext.setRadioReference("credentialsReady", true)
+            tc.screen.zipText = "52401"
 
-            var sourcePanel = findChild(tc.screen, "radioReferenceSourcePanel")
-            tryVerify(function () { return sourcePanel.enabled },
-                      2000, "the screen was inert with nothing running")
+            var find = findChild(tc.screen, "radioReferenceZipGo")
+            verify(find !== null, "the zip Find button is missing")
+            tryVerify(function () { return find.enabled },
+                      2000, "Find was inert with a zip typed and nothing running")
 
             testContext.setRadioReference("busy", true)
             var overlay = findChild(tc.screen, "radioReferenceBusyOverlay")
             verify(overlay !== null, "the busy overlay is missing")
             tryVerify(function () { return overlay.visible },
                       2000, "no busy overlay while a request was running")
-            verify(!sourcePanel.enabled, "a tap could still reach the screen under the busy overlay")
+            verify(!find.enabled, "Find could start a second request while one was running")
+
+            // The container itself must NOT carry the gate — that is the shape
+            // that loops.
+            var sourcePanel = findChild(tc.screen, "radioReferenceSourcePanel")
+            verify(sourcePanel.enabled, "the busy gate moved back onto a container")
 
             var cancel = findChild(tc.screen, "radioReferenceCancelButton")
             verify(cancel !== null, "the cancel button is missing")
             verify(cancel.enabled, "the cancel button was inert, leaving no way out of a slow request")
 
             testContext.setRadioReference("busy", false)
-            tryVerify(function () { return sourcePanel.enabled },
-                      2000, "the screen stayed inert after the request finished")
+            tryVerify(function () { return find.enabled },
+                      2000, "Find stayed inert after the request finished")
+            tc.screen.zipText = ""
         }
 
         // Auth and subscription failures are the two the user can actually act
