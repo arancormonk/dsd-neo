@@ -2741,6 +2741,23 @@ target_link_libraries(
 )
 add_test(NAME RUNTIME_RR_SOAP COMMAND dsd-neo_test_runtime_rr_soap)
 
+add_executable(dsd-neo_test_runtime_rr_client runtime/test_runtime_rr_client.c)
+target_include_directories(
+    dsd-neo_test_runtime_rr_client
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+)
+target_compile_definitions(
+    dsd-neo_test_runtime_rr_client
+    PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_client
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_CLIENT COMMAND dsd-neo_test_runtime_rr_client)
+
 add_executable(
     dsd-neo_test_runtime_trunk_tuning_hooks
     runtime/test_runtime_trunk_tuning_hooks.c

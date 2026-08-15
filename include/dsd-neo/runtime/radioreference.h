@@ -400,7 +400,8 @@ int dsd_rr_get_trs_talkgroup_cats(dsd_rr_client* client, const dsd_rr_auth* auth
  *
  * @param client Client.
  * @param auth   Credentials.
- * @param out    Receives borrowed-by-value lists; free with dsd_rr_support_maps_free.
+ * @param out    Receives a BORROWED view of the client's cache. Do not free it and
+ *               do not use it after dsd_rr_client_destroy().
  * @param err    Receives failure detail.
  * @return 0 on success, -1 on failure.
  */
@@ -471,11 +472,18 @@ typedef struct {
     const dsd_rr_cancel_token* cancel;
 } dsd_rr_request;
 
-/** One HTTP response. `body` is owned by the transport's caller after perform(). */
+/**
+ * One HTTP response. `body` is owned by the transport's caller after perform().
+ *
+ * `status` carries the failure class when perform() returns -1. It is not
+ * cosmetic: only DSD_RR_ERR_NETWORK is retried, DSD_RR_ERR_CANCELLED must never
+ * be, and an oversized body must not trigger a second multi-megabyte download.
+ */
 typedef struct {
     char* body;
     size_t body_len;
     long http_status;
+    dsd_rr_status status;
     char error[256];
 } dsd_rr_response;
 

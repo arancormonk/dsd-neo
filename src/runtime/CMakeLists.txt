@@ -27,6 +27,7 @@ target_sources(
         curl_common.c
         radioreference/rr_types.c
         radioreference/rr_soap.c
+        radioreference/rr_client.c
         rdio_export.c
         p25_optional_hooks.c
         p25_p2_audio_ring.c

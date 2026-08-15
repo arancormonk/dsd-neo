@@ -65,6 +65,22 @@ int rr_parse_hex_strict(const char* text, unsigned long long* out);
  */
 void rr_copy_field(char* dst, size_t dst_sz, const char* src);
 
+/**
+ * @brief Whether a RadioReference subscription expiry date has passed.
+ *
+ * The date arrives as MM-DD-YYYY. An UNPARSEABLE value is treated as valid, not
+ * expired: RR answers "Never - Feed Provider" and "Never - Admin" for those
+ * accounts, and locking them out would be worse than trusting them. Two days of
+ * slack absorbs time-zone skew between client and server.
+ *
+ * Exposed here rather than kept static so it can be tested against a fixed clock.
+ *
+ * @param sub_expire        The subExpireDate string, or NULL.
+ * @param now_epoch_seconds Current time as seconds since the Unix epoch.
+ * @return 1 when definitely expired, 0 when valid or undeterminable.
+ */
+int rr_subscription_expired(const char* sub_expire, long long now_epoch_seconds);
+
 #ifdef __cplusplus
 }
 #endif

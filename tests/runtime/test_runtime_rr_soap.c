@@ -108,7 +108,7 @@ parse_fixture(const char* leaf, rr_shape shape, void* sink, dsd_rr_error* err) {
     if (read_fixture(leaf, &body, &len) != 0) {
         return -1;
     }
-    const int rc = rr_soap_parse(body, len, shape, sink, err);
+    const int rc = rr_soap_parse(body, len, shape, sink, err, NULL);
     free(body);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "FAIL: %s parse failed: status=%d detail=\"%s\"\n", leaf, (int)err->status, err->detail);
@@ -726,10 +726,12 @@ test_fault_classification(void) {
     dsd_rr_error err;
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
-    const int rc = rr_soap_parse(body, len, RR_SHAPE_USER_INFO, &user, &err);
+    rr_parse_outcome outcome = RR_PARSE_OK;
+    const int rc = rr_soap_parse(body, len, RR_SHAPE_USER_INFO, &user, &err, &outcome);
     free(body);
 
     expect("fault parse reports failure", rc != 0);
+    expect_ll("fault outcome", (long long)outcome, (long long)RR_PARSE_FAULT);
     /* Classified on faultcode, never on the English faultstring. */
     expect_ll("fault classified as AUTH", (long long)err.status, (long long)DSD_RR_ERR_AUTH);
     expect("faultstring kept for display", strstr(err.detail, "Invalid Username or Password") != NULL);
@@ -748,7 +750,8 @@ test_hostile_and_malformed_input(void) {
                                     "<Envelope><Body><return><username>&xxe;</username></return></Body></Envelope>";
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
-    expect("DOCTYPE rejected", rr_soap_parse(k_doctype, sizeof(k_doctype) - 1U, RR_SHAPE_USER_INFO, &user, &err) != 0);
+    expect("DOCTYPE rejected",
+           rr_soap_parse(k_doctype, sizeof(k_doctype) - 1U, RR_SHAPE_USER_INFO, &user, &err, NULL) != 0);
     expect_ll("DOCTYPE is a parse error", (long long)err.status, (long long)DSD_RR_ERR_PARSE);
     expect_str("DOCTYPE username untouched", user.username, "");
 
@@ -762,7 +765,8 @@ test_hostile_and_malformed_input(void) {
                                  "</getUserDataResponse></Body></Envelope>";
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
-    expect("href attribute rejected", rr_soap_parse(k_href, sizeof(k_href) - 1U, RR_SHAPE_USER_INFO, &user, &err) != 0);
+    expect("href attribute rejected",
+           rr_soap_parse(k_href, sizeof(k_href) - 1U, RR_SHAPE_USER_INFO, &user, &err, NULL) != 0);
     expect_ll("href is a parse error", (long long)err.status, (long long)DSD_RR_ERR_PARSE);
 
     static const char k_href_text[] = "<?xml version=\"1.0\"?>"
@@ -772,7 +776,7 @@ test_hostile_and_malformed_input(void) {
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
     expect("literal href= in text is fine",
-           rr_soap_parse(k_href_text, sizeof(k_href_text) - 1U, RR_SHAPE_USER_INFO, &user, &err) == 0);
+           rr_soap_parse(k_href_text, sizeof(k_href_text) - 1U, RR_SHAPE_USER_INFO, &user, &err, NULL) == 0);
     expect_str("text containing href= survives", user.username, "a href= b");
 
     /* Truncated body. */
@@ -782,7 +786,7 @@ test_hostile_and_malformed_input(void) {
         dsd_rr_site_list sites;
         DSD_MEMSET(&sites, 0, sizeof(sites));
         DSD_MEMSET(&err, 0, sizeof(err));
-        expect("truncated XML rejected", rr_soap_parse(body, len / 2U, RR_SHAPE_SITE_LIST, &sites, &err) != 0);
+        expect("truncated XML rejected", rr_soap_parse(body, len / 2U, RR_SHAPE_SITE_LIST, &sites, &err, NULL) != 0);
         expect_ll("truncation is a parse error", (long long)err.status, (long long)DSD_RR_ERR_PARSE);
         dsd_rr_site_list_free(&sites);
         free(body);
@@ -791,15 +795,25 @@ test_hostile_and_malformed_input(void) {
     /* Empty body. */
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
-    expect("empty body rejected", rr_soap_parse("", 0, RR_SHAPE_USER_INFO, &user, &err) != 0);
+    expect("empty body rejected", rr_soap_parse("", 0, RR_SHAPE_USER_INFO, &user, &err, NULL) != 0);
 
     /* Well-formed XML with no result element must not look like success. */
     static const char k_no_return[] = "<?xml version=\"1.0\"?><html><body>Service Unavailable</body></html>";
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
+    rr_parse_outcome outcome = RR_PARSE_OK;
     expect("body with no result element rejected",
-           rr_soap_parse(k_no_return, sizeof(k_no_return) - 1U, RR_SHAPE_USER_INFO, &user, &err) != 0);
+           rr_soap_parse(k_no_return, sizeof(k_no_return) - 1U, RR_SHAPE_USER_INFO, &user, &err, &outcome) != 0);
     expect("no-result detail is specific", strstr(err.detail, "no result element") != NULL);
+    /* The client needs this distinguished from malformed XML so a proxy error
+     * page on a 5xx is reported as an HTTP failure, not as a parser bug. */
+    expect_ll("no-result outcome", (long long)outcome, (long long)RR_PARSE_NO_RESULT);
+
+    DSD_MEMSET(&user, 0, sizeof(user));
+    DSD_MEMSET(&err, 0, sizeof(err));
+    outcome = RR_PARSE_OK;
+    (void)rr_soap_parse("<not xml", 8, RR_SHAPE_USER_INFO, &user, &err, &outcome);
+    expect_ll("malformed outcome", (long long)outcome, (long long)RR_PARSE_MALFORMED);
 }
 
 static void
@@ -816,7 +830,7 @@ test_unknown_elements_are_ignored(void) {
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
     expect("unknown element tolerated",
-           rr_soap_parse(k_future, sizeof(k_future) - 1U, RR_SHAPE_USER_INFO, &user, &err) == 0);
+           rr_soap_parse(k_future, sizeof(k_future) - 1U, RR_SHAPE_USER_INFO, &user, &err, NULL) == 0);
     expect_str("known fields still decoded", user.username, "user");
     expect_str("later field still decoded", user.sub_expire, "11-24-2026");
 }

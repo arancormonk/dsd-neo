@@ -1119,8 +1119,60 @@ rr_install_handlers(XML_Parser parser, rr_parse_ctx* ctx) {
     XML_SetParamEntityParsing(parser, XML_PARAM_ENTITY_PARSING_NEVER);
 }
 
+/**
+ * @brief Turn the finished parse state into a status and an outcome.
+ *
+ * @param ctx     Parse context.
+ * @param xml_ok  XML_Parse's return value.
+ * @param shape   Response shape.
+ * @param err     Receives failure detail.
+ * @param outcome Optional; receives why the parse ended as it did.
+ * @return 0 on success, -1 on failure.
+ */
+static int
+rr_parse_finish(rr_parse_ctx* ctx, int xml_ok, rr_shape shape, dsd_rr_error* err, rr_parse_outcome* outcome) {
+    if (ctx->failed) {
+        err->status = ctx->fail_status;
+        rr_copy_field(err->detail, sizeof(err->detail), ctx->fail_detail);
+        return -1;
+    }
+    if (ctx->in_fault) {
+        /* Classify on faultcode; faultstring is English prose RR may reword. */
+        err->status = (strcmp(ctx->fault_code, "AUTH") == 0) ? DSD_RR_ERR_AUTH : DSD_RR_ERR_SOAP_FAULT;
+        rr_copy_field(err->detail, sizeof(err->detail), ctx->fault_string);
+        if (outcome != NULL) {
+            *outcome = RR_PARSE_FAULT;
+        }
+        return -1;
+    }
+    if (xml_ok == XML_STATUS_ERROR) {
+        err->status = DSD_RR_ERR_PARSE;
+        rr_copy_field(err->detail, sizeof(err->detail), XML_ErrorString(XML_GetErrorCode(ctx->parser)));
+        return -1;
+    }
+    if (ctx->return_depth < 0) {
+        err->status = DSD_RR_ERR_PARSE;
+        rr_copy_field(err->detail, sizeof(err->detail), "response contains no result element");
+        if (outcome != NULL) {
+            *outcome = RR_PARSE_NO_RESULT;
+        }
+        return -1;
+    }
+
+    if (shape == RR_SHAPE_COUNTY_LIST) {
+        rr_finish_county_list(ctx);
+    }
+    if (outcome != NULL) {
+        *outcome = RR_PARSE_OK;
+    }
+    return 0;
+}
+
 int
-rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_error* err) {
+rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_error* err, rr_parse_outcome* outcome) {
+    if (outcome != NULL) {
+        *outcome = RR_PARSE_MALFORMED;
+    }
     if (body == NULL || sink == NULL || err == NULL) {
         return -1;
     }
@@ -1160,28 +1212,7 @@ rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_e
     rr_install_handlers(parser, ctx);
 
     const int ok = XML_Parse(parser, body, (int)len, XML_TRUE);
-    int rc = 0;
-
-    if (ctx->failed) {
-        err->status = ctx->fail_status;
-        rr_copy_field(err->detail, sizeof(err->detail), ctx->fail_detail);
-        rc = -1;
-    } else if (ctx->in_fault) {
-        /* Classify on faultcode; faultstring is English prose RR may reword. */
-        err->status = (strcmp(ctx->fault_code, "AUTH") == 0) ? DSD_RR_ERR_AUTH : DSD_RR_ERR_SOAP_FAULT;
-        rr_copy_field(err->detail, sizeof(err->detail), ctx->fault_string);
-        rc = -1;
-    } else if (ok == XML_STATUS_ERROR) {
-        err->status = DSD_RR_ERR_PARSE;
-        rr_copy_field(err->detail, sizeof(err->detail), XML_ErrorString(XML_GetErrorCode(parser)));
-        rc = -1;
-    } else if (ctx->return_depth < 0) {
-        err->status = DSD_RR_ERR_PARSE;
-        rr_copy_field(err->detail, sizeof(err->detail), "response contains no result element");
-        rc = -1;
-    } else if (shape == RR_SHAPE_COUNTY_LIST) {
-        rr_finish_county_list(ctx);
-    }
+    const int rc = rr_parse_finish(ctx, ok, shape, err, outcome);
 
     XML_ParserFree(parser);
     free(ctx);
@@ -1191,11 +1222,14 @@ rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_e
 #else /* !USE_EXPAT */
 
 int
-rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_error* err) {
+rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_error* err, rr_parse_outcome* outcome) {
     (void)body;
     (void)len;
     (void)shape;
     (void)sink;
+    if (outcome != NULL) {
+        *outcome = RR_PARSE_MALFORMED;
+    }
     if (err == NULL) {
         return -1;
     }
