@@ -23,7 +23,8 @@ channel map, talkgroup list, or key file to a system. Files are picked with the 
 app-private storage (`files/imports/`), so the original can live anywhere (Downloads, Drive, …) and is not read again
 after import — use "Update from file" to pull in a changed original. Each import is validated immediately and the row
 shows how many entries loaded ("412 talkgroups · 3 rows skipped"); a file whose rows all fail to parse is flagged
-"No usable rows". Saving the system a running session was started from applies its files to that session live.
+"No usable rows". While a session is running, long-press its title on the monitor screen to edit that system; saving
+applies its files to the live session immediately.
 
 Programmatic validation uses the same dry-run parser: `dsd_csv_validate_*` in `<dsd-neo/core/csv_validate.h>` reports
 accepted/skipped/total row counts without touching live decoder state.

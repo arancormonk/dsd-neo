@@ -73,8 +73,11 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
     } else if (sourceType == QLatin1String("rtltcp")) {
         // The engine parses a trailing bias token on rtltcp specs exactly as it
         // does on rtl ones; a remote dongle feeding an LNA needs it just as much.
+        // The host is spliced into the ':'-delimited spec verbatim, so stray
+        // whitespace from the soft keyboard or a paste must be trimmed here —
+        // "10.0.2.2 " resolves to nothing and the start fails opaquely.
         QString spec = QStringLiteral("rtltcp:%1:%2")
-                           .arg(system.value(QStringLiteral("host")).toString())
+                           .arg(system.value(QStringLiteral("host")).toString().trimmed())
                            .arg(system.value(QStringLiteral("port")).toInt())
                        + tail;
         if (bias) {
@@ -87,7 +90,7 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
     } else if (sourceType == QLatin1String("tcp")) {
         args << QStringLiteral("-i")
              << QStringLiteral("tcp:%1:%2")
-                    .arg(system.value(QStringLiteral("host")).toString())
+                    .arg(system.value(QStringLiteral("host")).toString().trimmed())
                     .arg(system.value(QStringLiteral("port")).toInt());
     } else {
         args << QStringLiteral("-i") << system.value(QStringLiteral("filePath")).toString();

@@ -59,10 +59,13 @@ Item {
         screen.noticeIsProblem = false
     }
 
+    // No CSV name filter: on Android it becomes a SAF MIME filter, and the
+    // Files app indexes .csv as text/comma-separated-values — not the text/csv
+    // Qt asks for — which greys out exactly the files the user came to pick.
+    // The kind was already chosen in the sheet, and validation rejects files
+    // that do not parse as it.
     FileDialog {
         id: fileDialog
-
-        nameFilters: [qsTr("CSV files (*.csv)"), qsTr("All files (*)")]
 
         onAccepted: {
             var reference = selectedFile.toString()

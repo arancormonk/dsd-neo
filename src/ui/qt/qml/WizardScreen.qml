@@ -297,10 +297,12 @@ Item {
         }
     }
 
+    // No CSV name filter for the trunking-data picks: on Android it becomes a
+    // SAF MIME filter, and the Files app indexes .csv as
+    // text/comma-separated-values — not the text/csv Qt asks for — which greys
+    // out exactly the files the user came to pick.
     FileDialog {
         id: fileDialog
-
-        nameFilters: wizard.pickerTarget === "source" ? [] : [qsTr("CSV files (*.csv)"), qsTr("All files (*)")]
 
         onAccepted: {
             var reference = selectedFile.toString()

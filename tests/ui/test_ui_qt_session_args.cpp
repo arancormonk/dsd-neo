@@ -96,13 +96,16 @@ test_explore_system(void) {
                                                             && !args.contains(QStringLiteral("-fs"))
                                                             && !args.contains(QStringLiteral("-ft")));
 
-    // Over rtl_tcp it is the same session with a different front end.
+    // Over rtl_tcp it is the same session with a different front end. The host
+    // lands in the ':'-delimited spec verbatim, so stray whitespace from the
+    // soft keyboard or a paste must be trimmed here — "10.0.2.2 " resolves to
+    // nothing and the start fails with an opaque input error.
     sys.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
-    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2  "));
     sys.insert(QStringLiteral("port"), 1234);
     const QStringList remote = session_args_build(sys, SessionArgPrefs(), &error);
     expect("explore builds over rtl_tcp", error == SessionArgsError::None);
-    expect("explore reaches the remote tuner",
+    expect("explore reaches the remote tuner, host trimmed",
            input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:855.0000M:30:0:48:0:2"));
 
     // A frequency that never made it into the prefs must be refused here, the

@@ -392,6 +392,14 @@ Window {
             spectrumLoader.active = true
             mainRoot.spectrumOpen = true
         }
+        onEditSystem: {
+            // Only a session started from a saved row has a system to edit; a
+            // reattached or quick-start session has no row to write back to.
+            if (mainRoot.sessionRow >= 0) {
+                wizard.openForEdit(mainRoot.sessionRow)
+                mainRoot.wizardOpen = true
+            }
+        }
     }
 
     // ---- Spectrum (pushed over the monitor) ----
