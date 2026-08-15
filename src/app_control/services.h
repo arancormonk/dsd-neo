@@ -110,6 +110,19 @@ int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
 int svc_import_keys_dec(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import keys from a hexadecimal CSV. */
 int svc_import_keys_hex(dsd_opts* opts, dsd_state* state, const char* path);
+
+/*
+ * Unload counterparts. The importers all take a path and reject an empty one,
+ * so a frontend whose system can deselect a CSV has no way to say "none"
+ * without these; the previous file would otherwise stay live for the session.
+ * Each returns 0 when the data is gone afterwards, -1 when it could not be.
+ */
+/** @brief Drop the runtime channel map, its LCN list and its trust bytes. */
+int svc_clear_channel_map(dsd_opts* opts, dsd_state* state);
+/** @brief Drop every loaded talkgroup entry. */
+int svc_clear_group_list(dsd_opts* opts, dsd_state* state);
+/** @brief Drop the keyring and disarm the key loader (covers dec and hex). */
+int svc_clear_keys(dsd_opts* opts, dsd_state* state);
 /** @brief Set the current talkgroup hold value. */
 void svc_set_tg_hold(dsd_state* state, unsigned tg);
 /** @brief Set trunking hang time (seconds, clamped to >=0). */

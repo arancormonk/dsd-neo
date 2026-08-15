@@ -96,13 +96,16 @@ test_explore_system(void) {
                                                             && !args.contains(QStringLiteral("-fs"))
                                                             && !args.contains(QStringLiteral("-ft")));
 
-    // Over rtl_tcp it is the same session with a different front end.
+    // Over rtl_tcp it is the same session with a different front end. The host
+    // lands in the ':'-delimited spec verbatim, so stray whitespace from the
+    // soft keyboard or a paste must be trimmed here — "10.0.2.2 " resolves to
+    // nothing and the start fails with an opaque input error.
     sys.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
-    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2  "));
     sys.insert(QStringLiteral("port"), 1234);
     const QStringList remote = session_args_build(sys, SessionArgPrefs(), &error);
     expect("explore builds over rtl_tcp", error == SessionArgsError::None);
-    expect("explore reaches the remote tuner",
+    expect("explore reaches the remote tuner, host trimmed",
            input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:855.0000M:30:0:48:0:2"));
 
     // A frequency that never made it into the prefs must be refused here, the
@@ -144,6 +147,44 @@ test_defaults_and_overrides(void) {
     expect("auto-ppm pref adds the flag", args.contains(QStringLiteral("--auto-ppm")));
     expect("system and app extra args both land",
            args.contains(QStringLiteral("chan.csv")) && args.contains(QStringLiteral("--wav-dir")));
+}
+
+void
+test_csv_args(void) {
+    SessionArgsError error = SessionArgsError::None;
+
+    /* CSV paths must be discrete argv elements: the extraArgs field is
+     * whitespace-split, so a path with a space can only survive here. */
+    QVariantMap sys = usb_system();
+    sys.insert(QStringLiteral("chanCsvPath"), QStringLiteral("/data/imports/chan map.csv"));
+    sys.insert(QStringLiteral("groupCsvPath"), QStringLiteral("/data/imports/county.csv"));
+    sys.insert(QStringLiteral("keyCsvPath"), QStringLiteral("/data/imports/keys.csv"));
+    sys.insert(QStringLiteral("keyCsvHex"), false);
+    sys.insert(QStringLiteral("extraArgs"), QStringLiteral("--wav-dir /tmp"));
+    const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("csv build succeeds", error == SessionArgsError::None);
+    qsizetype at = args.indexOf(QStringLiteral("-C"));
+    expect("chan path follows -C intact",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/chan map.csv"));
+    at = args.indexOf(QStringLiteral("-G"));
+    expect("group path follows -G",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/county.csv"));
+    at = args.indexOf(QStringLiteral("-k"));
+    expect("dec keys use -k",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/keys.csv"));
+    expect("dec keys never emit -K", !args.contains(QStringLiteral("-K")));
+    expect("csv args coexist with extra args", args.contains(QStringLiteral("--wav-dir")));
+
+    sys.insert(QStringLiteral("keyCsvHex"), true);
+    const QStringList hexArgs = session_args_build(sys, SessionArgPrefs(), &error);
+    expect("hex keys use -K", hexArgs.contains(QStringLiteral("-K")));
+    expect("hex keys never emit -k", !hexArgs.contains(QStringLiteral("-k")));
+
+    /* Absent or empty fields emit nothing — legacy systems keep their argv. */
+    const QStringList bare = session_args_build(usb_system(), SessionArgPrefs(), &error);
+    expect("no csv fields emit no csv flags",
+           !bare.contains(QStringLiteral("-C")) && !bare.contains(QStringLiteral("-G"))
+               && !bare.contains(QStringLiteral("-k")) && !bare.contains(QStringLiteral("-K")));
 }
 
 void
@@ -235,6 +276,7 @@ int
 main(void) {
     test_freq_validation();
     test_defaults_and_overrides();
+    test_csv_args();
     test_ppm_shapes();
     test_bias_tee_tristate();
     test_network_and_file_sources();

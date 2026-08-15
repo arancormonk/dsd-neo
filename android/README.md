@@ -36,6 +36,30 @@ The service state machine, the native `g_running` atomic and the failure path ar
 folded into that one phase by `session_state_map.h`, which is deliberately free of
 Qt and JNI so `UI_QT_SESSION_STATE` can test it on the host.
 
+## Imported files (trunking CSVs)
+
+The C core only opens real filesystem paths (`src/runtime/path_policy.c` requires
+a regular file, `O_NOFOLLOW`), so SAF content URIs are always materialized into a
+copy first. There are two copy paths, with different lifetimes:
+
+- `AppSupport.copyContentUriToCache` → `cacheDir`, for one-shot opens (the
+  wizard's audio/capture "File" source). Android may evict it.
+- `AppSupport.importDocumentToFiles` → `files/imports/`, for the CSV library
+  (channel maps, talkgroup lists, key files). These must survive restarts —
+  saved systems reference the path, and the engine appends learned talkgroup
+  rows to the group list in place. Display-name collisions are unique-ified
+  (`chan.csv` → `chan (2).csv`); updates stage a temp file and rename over the
+  target so a half-copied CSV is never observable.
+
+Both are reached through `DecoderHost` virtuals (`importContentUri` /
+`importDocument`); the desktop default of `importDocument` implements the same
+semantics under `QStandardPaths::AppDataLocation`, which is what
+`UI_QT_IMPORTED_FILES` tests on the host. The library itself (one JSON-persisted
+row per stored file, with dry-run validation counts from
+`<dsd-neo/core/csv_validate.h>`) is `src/ui/qt/imported_files_model.{h,cpp}`,
+surfaced as Settings → Imported files and the wizard's Trunking data pickers.
+No storage permissions are involved; SAF needs none.
+
 ## Build
 
 Prerequisites:

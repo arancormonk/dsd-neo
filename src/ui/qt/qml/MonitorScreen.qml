@@ -12,6 +12,11 @@ Item {
     // Raised by the header's spectrum button; Main.qml owns the layer.
     signal openSpectrum()
 
+    // Raised by a long-press on the header title, the same gesture that edits a
+    // card on Home. Main.qml opens the wizard on the running system — the only
+    // way to change its imported CSVs while the session is live.
+    signal editSystem()
+
     // The saved-system map the session was started from (may be null for a
     // network/file quick start).
     property var system: null
@@ -115,6 +120,10 @@ Item {
                 font.letterSpacing: 0.8
                 color: Theme.textSubdued
                 elide: Text.ElideRight
+            }
+
+            TapHandler {
+                onLongPressed: screen.editSystem()
             }
         }
 

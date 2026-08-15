@@ -1593,3 +1593,39 @@ dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state) {
     free(imported);
     return 0;
 }
+
+int
+dsd_tg_policy_clear(dsd_state* state) {
+    const dsd_tg_policy_context* current_ctx = NULL;
+    dsd_tg_policy_context* empty_ctx = NULL;
+    unsigned int next_table_generation = 1u;
+    unsigned int next_active_generation = 1u;
+
+    if (!state) {
+        return -1;
+    }
+
+    current_ctx = tg_policy_ctx_get_const(state);
+    if (!current_ctx) {
+        return 0; // nothing loaded; already the state the caller asked for
+    }
+    next_table_generation = current_ctx->table.generation + 1u;
+    next_active_generation = current_ctx->active.generation + 1u;
+
+    /* An empty context rather than no context: readers that hold a generation
+     * need to see it move, and dropping the extension slot outright would leave
+     * them comparing against a context id that never existed. This is the same
+     * swap dsd_tg_policy_reload_group_file() performs, with nothing imported. */
+    empty_ctx = tg_policy_context_alloc();
+    if (!empty_ctx) {
+        return -1;
+    }
+    empty_ctx->table.generation = next_table_generation;
+    empty_ctx->active.generation = next_active_generation;
+
+    if (dsd_state_ext_set(state, DSD_STATE_EXT_CORE_TG_POLICY, empty_ctx, tg_policy_context_free) != 0) {
+        tg_policy_context_free(empty_ctx);
+        return -1;
+    }
+    return 0;
+}

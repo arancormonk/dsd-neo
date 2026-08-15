@@ -78,6 +78,10 @@ SavedSystemsModel::tuningRoleValue(const Row& row, int role) {
         case BiasTeeRole: return row.biasTee;
         case ExtraArgsRole: return row.extraArgs;
         case LastHeardRole: return row.lastHeard;
+        case ChanCsvPathRole: return row.chanCsvPath;
+        case GroupCsvPathRole: return row.groupCsvPath;
+        case KeyCsvPathRole: return row.keyCsvPath;
+        case KeyCsvHexRole: return row.keyCsvHex;
         default: return QVariant();
     }
 }
@@ -109,54 +113,69 @@ SavedSystemsModel::roleNames() const {
     roles.insert(ExtraArgsRole, QByteArrayLiteral("extraArgs"));
     roles.insert(FilePathRole, QByteArrayLiteral("filePath"));
     roles.insert(LastHeardRole, QByteArrayLiteral("lastHeard"));
+    roles.insert(ChanCsvPathRole, QByteArrayLiteral("chanCsvPath"));
+    roles.insert(GroupCsvPathRole, QByteArrayLiteral("groupCsvPath"));
+    roles.insert(KeyCsvPathRole, QByteArrayLiteral("keyCsvPath"));
+    roles.insert(KeyCsvHexRole, QByteArrayLiteral("keyCsvHex"));
     return roles;
 }
+
+namespace {
+
+/**
+ * @brief Overwrite @p target only when @p key is present; absent keys keep the base value.
+ *
+ * @p key is a QString so callers can pass QStringLiteral: building one from a
+ * `const char*` here would heap-allocate on every field of every stored row.
+ */
+void
+map_take_string(const QVariantMap& map, const QString& key, QString* target) {
+    if (map.contains(key)) {
+        *target = map.value(key).toString();
+    }
+}
+
+void
+map_take_int(const QVariantMap& map, const QString& key, int* target) {
+    if (map.contains(key)) {
+        *target = map.value(key).toInt();
+    }
+}
+
+void
+map_take_bool(const QVariantMap& map, const QString& key, bool* target) {
+    if (map.contains(key)) {
+        *target = map.value(key).toBool();
+    }
+}
+
+} // namespace
 
 SavedSystemsModel::Row
 SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     Row row = base;
-    if (map.contains(QStringLiteral("name"))) {
-        row.name = map.value(QStringLiteral("name")).toString();
-    }
-    if (map.contains(QStringLiteral("sourceType"))) {
-        row.sourceType = map.value(QStringLiteral("sourceType")).toString();
-    }
-    if (map.contains(QStringLiteral("host"))) {
-        row.host = map.value(QStringLiteral("host")).toString();
-    }
-    if (map.contains(QStringLiteral("port"))) {
-        row.port = map.value(QStringLiteral("port")).toInt();
-    }
-    if (map.contains(QStringLiteral("freqMhz"))) {
-        row.freqMhz = map.value(QStringLiteral("freqMhz")).toString();
-    }
-    if (map.contains(QStringLiteral("decodeFlag"))) {
-        row.decodeFlag = map.value(QStringLiteral("decodeFlag")).toString();
-    }
-    if (map.contains(QStringLiteral("trunking"))) {
-        row.trunking = map.value(QStringLiteral("trunking")).toBool();
-    }
-    if (map.contains(QStringLiteral("gainDb"))) {
-        row.gainDb = map.value(QStringLiteral("gainDb")).toInt();
-    }
-    if (map.contains(QStringLiteral("ppm"))) {
-        row.ppm = map.value(QStringLiteral("ppm")).toString();
-    }
-    if (map.contains(QStringLiteral("bandwidthKhz"))) {
-        row.bandwidthKhz = map.value(QStringLiteral("bandwidthKhz")).toInt();
-    }
+    map_take_string(map, QStringLiteral("name"), &row.name);
+    map_take_string(map, QStringLiteral("sourceType"), &row.sourceType);
+    map_take_string(map, QStringLiteral("host"), &row.host);
+    map_take_int(map, QStringLiteral("port"), &row.port);
+    map_take_string(map, QStringLiteral("freqMhz"), &row.freqMhz);
+    map_take_string(map, QStringLiteral("decodeFlag"), &row.decodeFlag);
+    map_take_bool(map, QStringLiteral("trunking"), &row.trunking);
+    map_take_int(map, QStringLiteral("gainDb"), &row.gainDb);
+    map_take_string(map, QStringLiteral("ppm"), &row.ppm);
+    map_take_int(map, QStringLiteral("bandwidthKhz"), &row.bandwidthKhz);
     if (map.contains(QStringLiteral("biasTee"))) {
         row.biasTee = bias_tee_from_stored(map.value(QStringLiteral("biasTee")));
     }
-    if (map.contains(QStringLiteral("extraArgs"))) {
-        row.extraArgs = map.value(QStringLiteral("extraArgs")).toString();
-    }
-    if (map.contains(QStringLiteral("filePath"))) {
-        row.filePath = map.value(QStringLiteral("filePath")).toString();
-    }
+    map_take_string(map, QStringLiteral("extraArgs"), &row.extraArgs);
+    map_take_string(map, QStringLiteral("filePath"), &row.filePath);
     if (map.contains(QStringLiteral("lastHeard"))) {
         row.lastHeard = map.value(QStringLiteral("lastHeard")).toLongLong();
     }
+    map_take_string(map, QStringLiteral("chanCsvPath"), &row.chanCsvPath);
+    map_take_string(map, QStringLiteral("groupCsvPath"), &row.groupCsvPath);
+    map_take_string(map, QStringLiteral("keyCsvPath"), &row.keyCsvPath);
+    map_take_bool(map, QStringLiteral("keyCsvHex"), &row.keyCsvHex);
     return row;
 }
 
@@ -177,6 +196,10 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("extraArgs"), row.extraArgs);
     map.insert(QStringLiteral("filePath"), row.filePath);
     map.insert(QStringLiteral("lastHeard"), row.lastHeard);
+    map.insert(QStringLiteral("chanCsvPath"), row.chanCsvPath);
+    map.insert(QStringLiteral("groupCsvPath"), row.groupCsvPath);
+    map.insert(QStringLiteral("keyCsvPath"), row.keyCsvPath);
+    map.insert(QStringLiteral("keyCsvHex"), row.keyCsvHex);
     return map;
 }
 
@@ -232,6 +255,52 @@ SavedSystemsModel::touch(int row) {
     Q_EMIT dataChanged(idx, idx, {LastHeardRole});
     Q_EMIT mostRecentRowChanged();
     save();
+}
+
+QStringList
+SavedSystemsModel::systemsReferencingPath(const QString& path) const {
+    QStringList names;
+    if (path.isEmpty()) {
+        return names;
+    }
+    for (const Row& row : m_rows) {
+        if (row.chanCsvPath == path || row.groupCsvPath == path || row.keyCsvPath == path) {
+            names.append(row.name);
+        }
+    }
+    return names;
+}
+
+void
+SavedSystemsModel::clearCsvPath(const QString& path) {
+    if (path.isEmpty()) {
+        return;
+    }
+    bool changed = false;
+    for (int i = 0; i < m_rows.size(); i++) {
+        Row& row = m_rows[i];
+        bool rowChanged = false;
+        if (row.chanCsvPath == path) {
+            row.chanCsvPath.clear();
+            rowChanged = true;
+        }
+        if (row.groupCsvPath == path) {
+            row.groupCsvPath.clear();
+            rowChanged = true;
+        }
+        if (row.keyCsvPath == path) {
+            row.keyCsvPath.clear();
+            rowChanged = true;
+        }
+        if (rowChanged) {
+            const QModelIndex idx = index(i);
+            Q_EMIT dataChanged(idx, idx);
+            changed = true;
+        }
+    }
+    if (changed) {
+        save();
+    }
 }
 
 int

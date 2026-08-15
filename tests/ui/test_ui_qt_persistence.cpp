@@ -191,6 +191,64 @@ test_saved_systems(void) {
 }
 
 void
+test_saved_systems_csv_fields(void) {
+    const QString groupPath = QStringLiteral("/data/imports/county.csv");
+    {
+        SavedSystemsModel model;
+        QVariantMap sys = full_system_map();
+        sys.insert(QStringLiteral("chanCsvPath"), QStringLiteral("/data/imports/chan map.csv"));
+        sys.insert(QStringLiteral("groupCsvPath"), groupPath);
+        sys.insert(QStringLiteral("keyCsvPath"), QStringLiteral("/data/imports/keys.csv"));
+        sys.insert(QStringLiteral("keyCsvHex"), true);
+        model.add(sys);
+
+        /* Legacy row: fields absent must read as no CSV, not junk. */
+        QVariantMap legacy;
+        legacy.insert(QStringLiteral("name"), QStringLiteral("Legacy"));
+        model.add(legacy);
+
+        QVariantMap second = full_system_map();
+        second.insert(QStringLiteral("name"), QStringLiteral("Butler Co DMR"));
+        second.insert(QStringLiteral("groupCsvPath"), groupPath);
+        model.add(second);
+    }
+
+    SavedSystemsModel model;
+    const QVariantMap got = model.get(0);
+    expect("csv fields round-trip",
+           got.value(QStringLiteral("chanCsvPath")).toString() == QStringLiteral("/data/imports/chan map.csv")
+               && got.value(QStringLiteral("groupCsvPath")).toString() == groupPath
+               && got.value(QStringLiteral("keyCsvPath")).toString() == QStringLiteral("/data/imports/keys.csv")
+               && got.value(QStringLiteral("keyCsvHex")).toBool());
+    expect("legacy row reads empty csv fields",
+           model.get(1).value(QStringLiteral("chanCsvPath")).toString().isEmpty()
+               && model.get(1).value(QStringLiteral("groupCsvPath")).toString().isEmpty()
+               && model.get(1).value(QStringLiteral("keyCsvPath")).toString().isEmpty()
+               && !model.get(1).value(QStringLiteral("keyCsvHex")).toBool());
+
+    /* The delete-with-in-use-warning flow: which systems reference a stored
+     * file, and clearing that reference everywhere when the file goes away. */
+    const QStringList users = model.systemsReferencingPath(groupPath);
+    expect("referencing systems are named", users.size() == 2 && users.contains(QStringLiteral("Hamilton Co P25"))
+                                                && users.contains(QStringLiteral("Butler Co DMR")));
+    expect("unreferenced path names nobody",
+           model.systemsReferencingPath(QStringLiteral("/data/imports/nope.csv")).isEmpty());
+
+    model.clearCsvPath(groupPath);
+    expect("clear blanks every matching field",
+           model.get(0).value(QStringLiteral("groupCsvPath")).toString().isEmpty()
+               && model.get(2).value(QStringLiteral("groupCsvPath")).toString().isEmpty());
+    expect("clear leaves other csv fields alone", model.get(0).value(QStringLiteral("chanCsvPath")).toString()
+                                                      == QStringLiteral("/data/imports/chan map.csv"));
+
+    SavedSystemsModel reloaded;
+    expect("clear persists", reloaded.get(0).value(QStringLiteral("groupCsvPath")).toString().isEmpty());
+    reloaded.remove(0);
+    reloaded.remove(0);
+    reloaded.remove(0);
+}
+
+void
 test_app_prefs(void) {
     {
         AppPrefs prefs;
@@ -267,6 +325,7 @@ main(int argc, char** argv) {
 
     test_json_store();
     test_saved_systems();
+    test_saved_systems_csv_fields();
     test_app_prefs();
 
     QDir(dataDir).removeRecursively();

@@ -73,8 +73,11 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
     } else if (sourceType == QLatin1String("rtltcp")) {
         // The engine parses a trailing bias token on rtltcp specs exactly as it
         // does on rtl ones; a remote dongle feeding an LNA needs it just as much.
+        // The host is spliced into the ':'-delimited spec verbatim, so stray
+        // whitespace from the soft keyboard or a paste must be trimmed here —
+        // "10.0.2.2 " resolves to nothing and the start fails opaquely.
         QString spec = QStringLiteral("rtltcp:%1:%2")
-                           .arg(system.value(QStringLiteral("host")).toString())
+                           .arg(system.value(QStringLiteral("host")).toString().trimmed())
                            .arg(system.value(QStringLiteral("port")).toInt())
                        + tail;
         if (bias) {
@@ -87,10 +90,34 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
     } else if (sourceType == QLatin1String("tcp")) {
         args << QStringLiteral("-i")
              << QStringLiteral("tcp:%1:%2")
-                    .arg(system.value(QStringLiteral("host")).toString())
+                    .arg(system.value(QStringLiteral("host")).toString().trimmed())
                     .arg(system.value(QStringLiteral("port")).toInt());
     } else {
         args << QStringLiteral("-i") << system.value(QStringLiteral("filePath")).toString();
+    }
+}
+
+/**
+ * @brief Append the per-system CSV paths as discrete argv elements.
+ *
+ * Discrete, not folded into extraArgs: the extras field is whitespace-split
+ * with no quoting, so an imported file whose display name carries a space
+ * ("chan map.csv") only survives as its own element.
+ */
+void
+append_csv_args(QStringList& args, const QVariantMap& system) {
+    const QString chan = system.value(QStringLiteral("chanCsvPath")).toString();
+    if (!chan.isEmpty()) {
+        args << QStringLiteral("-C") << chan;
+    }
+    const QString group = system.value(QStringLiteral("groupCsvPath")).toString();
+    if (!group.isEmpty()) {
+        args << QStringLiteral("-G") << group;
+    }
+    const QString key = system.value(QStringLiteral("keyCsvPath")).toString();
+    if (!key.isEmpty()) {
+        args << (system.value(QStringLiteral("keyCsvHex")).toBool() ? QStringLiteral("-K") : QStringLiteral("-k"))
+             << key;
     }
 }
 
@@ -166,6 +193,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     QStringList args{QStringLiteral("--frontend"), QStringLiteral("none")};
     append_input_args(args, system, sourceType, tail, bias);
     args << QStringLiteral("-o") << QStringLiteral("pulse");
+    append_csv_args(args, system);
     append_flag_args(args, system, prefs);
     return args;
 }

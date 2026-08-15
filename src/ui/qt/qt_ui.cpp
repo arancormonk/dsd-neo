@@ -23,6 +23,7 @@
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
+#include "imported_files_model.h"
 #include "metrics_model.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
@@ -76,6 +77,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* prefs = new AppPrefs(&engine);
     auto* sessionArgs = new SessionArgsBuilder(prefs, &engine);
     auto* systems = new SavedSystemsModel(&engine);
+    auto* importedFiles = new ImportedFilesModel(host, &engine);
     auto* history = new CallHistoryModel(&engine);
     auto* spectrum = new SpectrumModel(&engine);
     // Each view that shows the call log owns its filter state: the history tab's
@@ -85,6 +87,15 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     auto* monitorView = new CallHistoryFilterModel(&engine);
     monitorView->setSourceModel(history);
     auto* controller = new UiController(host, metrics, history, &engine);
+
+    // The library drops rows whose stored copy vanished behind the app's back;
+    // saved systems that still point at one would build a `-G <missing>` argv and
+    // fail to start with a parse error naming the input settings, not the file.
+    // Reconciled here because the library cannot: it loads in its constructor,
+    // and it has no business knowing what references it.
+    for (const QString& gone : importedFiles->takePrunedPaths()) {
+        systems->clearCsvPath(gone);
+    }
 
     // The keep-awake preference is storage; the effect is the host's (an Android
     // window flag). Re-asserted here on every process start because the platform
@@ -107,6 +118,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     context->setContextProperty(QStringLiteral("prefs"), prefs);
     context->setContextProperty(QStringLiteral("sessionArgs"), sessionArgs);
     context->setContextProperty(QStringLiteral("savedSystems"), systems);
+    context->setContextProperty(QStringLiteral("importedFiles"), importedFiles);
     context->setContextProperty(QStringLiteral("callHistory"), history);
     context->setContextProperty(QStringLiteral("historyView"), historyView);
     context->setContextProperty(QStringLiteral("monitorView"), monitorView);

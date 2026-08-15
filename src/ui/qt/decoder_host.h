@@ -186,6 +186,25 @@ class DecoderHost : public QObject {
     }
 
     /**
+     * @brief Materialize a picked document into durable app storage.
+     *
+     * Unlike importContentUri(), which serves a one-shot open (its Android copy
+     * lands in the evictable cache), this copy must outlive the session: saved
+     * systems keep the returned path. Collisions on @p fileName are unique-ified,
+     * never overwritten — two different documents may share a display name.
+     *
+     * @param reference   Platform file reference from the picker (file:// URL or
+     *                    Android SAF content URI).
+     * @param fileName    Display name to store the copy under.
+     * @param replacePath Existing stored file to update in place, or empty for a
+     *                    new copy. A path outside the app's imports directory is
+     *                    not a write target and is treated as a new copy.
+     * @return Absolute filesystem path of the stored copy, or empty on failure.
+     */
+    virtual QString importDocument(const QString& reference, const QString& fileName,
+                                   const QString& replacePath = QString());
+
+    /**
      * @brief Ask the platform for access to a directly attached SDR.
      *
      * May show a permission prompt, so the answer arrives later: watch

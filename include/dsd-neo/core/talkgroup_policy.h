@@ -143,6 +143,19 @@ int dsd_tg_policy_clear_active_call(dsd_state* state, int slot);
 
 int dsd_tg_policy_reload_group_file(const dsd_opts* opts, dsd_state* state);
 
+/**
+ * @brief Drop every loaded talkgroup entry, leaving an empty policy.
+ *
+ * The counterpart to dsd_tg_policy_reload_group_file() for a frontend that lets
+ * a running session deselect its group file: re-importing cannot express "no
+ * list", so without this the previous one keeps naming and blocking talkgroups.
+ * Generations advance as they do on a reload, so readers holding one re-read.
+ *
+ * @return 0 when the policy is empty afterwards (including when none was
+ *         loaded), -1 on a null state or allocation failure.
+ */
+int dsd_tg_policy_clear(dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

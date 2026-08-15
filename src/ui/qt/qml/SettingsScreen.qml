@@ -10,6 +10,8 @@ Item {
 
     property bool advancedOpen: false
 
+    signal openImports()
+
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
@@ -316,6 +318,74 @@ Item {
                         subtitle: qsTr("Fixes frequency drift on long runs")
                         checked: prefs.autoPpm
                         onToggled: function (state) { prefs.autoPpm = state }
+                    }
+                }
+            }
+
+            // TRUNKING DATA
+            UiPanel {
+                width: parent.width
+                height: importsColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: importsColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        text: qsTr("Trunking data")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    Item {
+                        width: parent.width
+                        height: 58
+
+                        Column {
+                            anchors.left: parent.left
+                            anchors.right: importsCaret.left
+                            anchors.leftMargin: Theme.cardPadding
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 3
+
+                            Text {
+                                width: parent.width
+                                text: qsTr("Imported files")
+                                font.family: Theme.sans
+                                font.pixelSize: 15
+                                font.weight: Font.DemiBold
+                                color: Theme.textPrimary
+                                elide: Text.ElideRight
+                            }
+
+                            Text {
+                                width: parent.width
+                                text: qsTr("Channel maps, talkgroups, and keys")
+                                font.family: Theme.sans
+                                font.pixelSize: 12
+                                color: Theme.textSubdued
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        Caret {
+                            id: importsCaret
+                            anchors.right: parent.right
+                            anchors.rightMargin: Theme.cardPadding
+                            anchors.verticalCenter: parent.verticalCenter
+                            rotation: -90
+                            color: Theme.textSubdued
+                        }
+
+                        TapHandler {
+                            onTapped: screen.openImports()
+                        }
                     }
                 }
             }

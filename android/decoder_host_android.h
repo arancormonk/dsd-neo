@@ -57,6 +57,15 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief Materialize a SAF content URI into cacheDir; returns "" on failure. */
     QString importContentUri(const QString& reference, const QString& fileName) override;
 
+    /**
+     * @brief Materialize a SAF content URI into filesDir/imports; returns "" on failure.
+     *
+     * No default argument: on a virtual it would be bound from the static type of
+     * the call, so a base-class default that ever changed would silently mean two
+     * different things depending on which pointer type the caller held.
+     */
+    QString importDocument(const QString& reference, const QString& fileName, const QString& replacePath) override;
+
   private:
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);

@@ -17,6 +17,7 @@ TestCase {
         // in as a singleton and it reads prefs itself.
         var missing = testContext.missingContextKeys(
             ["HistoryScreen.qml", "MonitorScreen.qml", "SpectrumScreen.qml", "ExploreSetupScreen.qml", "RadioSheet.qml",
+             "ImportsScreen.qml", "WizardScreen.qml", "HomeScreen.qml", "SettingsScreen.qml", "Main.qml",
              "Theme.qml"])
 
         compare(missing.length, 0,

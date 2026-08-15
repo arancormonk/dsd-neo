@@ -20,6 +20,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantMap>
 #include <Qt>
@@ -47,7 +48,11 @@ class SavedSystemsModel : public QAbstractListModel {
         BiasTeeRole,      // tri-state: -1 = follow the app-wide pref, 0 = off, 1 = on
         ExtraArgsRole,
         FilePathRole,
-        LastHeardRole // seconds since epoch; 0 = never
+        LastHeardRole,    // seconds since epoch; 0 = never
+        ChanCsvPathRole,  // imported channel map (-C); empty = none
+        GroupCsvPathRole, // imported group list (-G); empty = none
+        KeyCsvPathRole,   // imported key file (-k/-K); empty = none
+        KeyCsvHexRole     // true = hex keys (-K), false = decimal (-k)
     };
 
     explicit SavedSystemsModel(QObject* parent = nullptr);
@@ -84,6 +89,18 @@ class SavedSystemsModel : public QAbstractListModel {
      */
     int mostRecentRow() const;
 
+    /** @brief Names of systems whose CSV fields reference @p path; for delete warnings. */
+    Q_INVOKABLE QStringList systemsReferencingPath(const QString& path) const;
+
+    /**
+     * @brief Blank every CSV field matching @p path, in every system. Persists.
+     *
+     * Called when a library file is removed: a saved system pointing at a
+     * deleted file would otherwise fail its next start with an opaque
+     * "configure failed".
+     */
+    Q_INVOKABLE void clearCsvPath(const QString& path);
+
   Q_SIGNALS:
     void countChanged();
     void mostRecentRowChanged();
@@ -107,6 +124,10 @@ class SavedSystemsModel : public QAbstractListModel {
         QString extraArgs;
         QString filePath;
         qint64 lastHeard = 0;
+        QString chanCsvPath;
+        QString groupCsvPath;
+        QString keyCsvPath;
+        bool keyCsvHex = false;
     };
 
     static Row rowFromMap(const QVariantMap& map, const Row& base);

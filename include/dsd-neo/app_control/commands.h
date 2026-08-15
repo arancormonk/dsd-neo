@@ -202,6 +202,15 @@ enum dsd_app_command_id {
     DSD_APP_CMD_IMPORT_KEYS_DEC = 562,    // payload: char path[]
     DSD_APP_CMD_IMPORT_KEYS_HEX = 563,    // payload: char path[]
 
+    // Unload what those imported. A frontend that lets a system clear its CSV
+    // selection needs to express "none", and re-importing cannot: every command
+    // above takes a path, and the services reject an empty one. Without these,
+    // clearing a picker left the previous file naming talkgroups and mapping
+    // channels for the rest of the session.
+    DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR = 564, // no payload
+    DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR = 565,  // no payload
+    DSD_APP_CMD_IMPORT_KEYS_CLEAR = 566,        // no payload; dec and hex share one keyring
+
     // P25 helpers
     DSD_APP_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }
 

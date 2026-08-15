@@ -510,6 +510,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_csv_validate
+  HEADERS_PUBLIC_CORE_CSV_VALIDATE
+  dsd-neo/core/csv_validate.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_talkgroup_policy
   HEADERS_PUBLIC_CORE_TALKGROUP_POLICY
   dsd-neo/core/talkgroup_policy.h
@@ -2262,6 +2268,37 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_session_args PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_SESSION_ARGS COMMAND dsd-neo_test_ui_qt_session_args)
 
+    # The imported-files layer behind the CSV pickers: DecoderHost's desktop
+    # importDocument() copy/unique-ify/replace semantics and the library model
+    # the wizard and the imports screen share.
+    add_executable(
+        dsd-neo_test_ui_qt_imported_files_model
+        ui/test_ui_qt_imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_imported_files_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_imported_files_model
+        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_imported_files_model
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_imported_files_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_IMPORTED_FILES
+        COMMAND dsd-neo_test_ui_qt_imported_files_model
+    )
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
@@ -2364,6 +2401,19 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
+            # The home screen, the imports library, the wizard's CSV pickers and
+            # the explore setup all read these context properties; without them
+            # they raised ReferenceError and rendered nothing, so a case could
+            # not reach them. Production models rather than stand-ins because two
+            # back a ListView whose delegate declares `required property` per
+            # role -- a mirror that drifted would fail as the real thing passing.
+            # They persist under disposable test storage (see qml_test_context.h).
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
             # The decode-chip flag mapping (src/ui/qt/decode_mode_flag.h) is the
             # production one, so the preset a chip sends is really under test. It
             # needs the CLI mapping behind it, and that translation unit is
@@ -2376,9 +2426,18 @@ if(DSD_ENABLE_QT_UI)
                 ${PROJECT_SOURCE_DIR}/include
                 ${PROJECT_SOURCE_DIR}/src/ui/qt
         )
+        # dsd-neo_core carries the dry-run CSV validation ImportedFilesModel runs
+        # on an import; dsd-neo_proto_dmr comes with it (same pairing as
+        # UI_QT_IMPORTED_FILES). Still nothing from the engine or app-control.
         target_link_libraries(
             dsd-neo_test_ui_qt_qml
-            PRIVATE Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickTest
+            PRIVATE
+                Qt6::Gui
+                Qt6::Qml
+                Qt6::Quick
+                Qt6::QuickTest
+                dsd-neo_core
+                dsd-neo_proto_dmr
         )
         target_compile_definitions(
             dsd-neo_test_ui_qt_qml
@@ -3026,6 +3085,17 @@ target_link_libraries(
     PRIVATE dsd-neo_core dsd-neo_proto_dmr
 )
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
+
+add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
+target_include_directories(
+    dsd-neo_test_core_csv_validate
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_csv_validate
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr
+)
+add_test(NAME CORE_CSV_VALIDATE COMMAND dsd-neo_test_core_csv_validate)
 
 add_executable(
     dsd-neo_test_core_talkgroup_policy
