@@ -95,4 +95,79 @@ object AppSupport {
             ""
         }
     }
+
+    /** chan.csv, chan (2).csv, chan (3).csv … first name not already taken. */
+    private fun uniqueTarget(dir: File, name: String): File? {
+        var target = File(dir, name)
+        if (!target.exists()) {
+            return target
+        }
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        for (i in 2 until 1000) {
+            target = File(dir, "$base ($i)$ext")
+            if (!target.exists()) {
+                return target
+            }
+        }
+        return null
+    }
+
+    /**
+     * Copy a SAF content URI into filesDir/imports and return the real path.
+     *
+     * Unlike copyContentUriToCache, this copy must outlive the session: saved
+     * systems reference the returned path across restarts, and the engine
+     * appends learned talkgroup rows to a group list in place, neither of which
+     * survives cache eviction. Name collisions are unique-ified rather than
+     * overwritten — two different documents may share a display name. A
+     * non-empty replacePath that resolves inside the imports directory is
+     * updated atomically instead (staging file + rename), so a half-copied CSV
+     * is never observable; a replacePath outside it is not a write target and
+     * falls back to a fresh copy.
+     *
+     * @return absolute path, or an empty string on failure.
+     */
+    @JvmStatic
+    fun importDocumentToFiles(context: Context, uriText: String, fileName: String, replacePath: String): String {
+        return try {
+            val uri = Uri.parse(uriText)
+            val importsDir = File(context.filesDir, "imports")
+            importsDir.mkdirs()
+
+            var target: File? = null
+            if (replacePath.isNotEmpty()) {
+                val candidate = File(replacePath)
+                if (candidate.canonicalFile.parent == importsDir.canonicalPath) {
+                    target = candidate
+                }
+            }
+            if (target == null) {
+                target = uniqueTarget(importsDir, displayNameFor(context, uri, fileName))
+            }
+            if (target == null) {
+                return ""
+            }
+
+            val staging = File.createTempFile(".import", ".tmp", importsDir)
+            try {
+                context.contentResolver.openInputStream(uri).use { input ->
+                    if (input == null) {
+                        return ""
+                    }
+                    staging.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (!staging.renameTo(target)) {
+                    return ""
+                }
+            } finally {
+                staging.delete() // no-op once the rename has landed
+            }
+            target.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "failed to import $uriText", e)
+            ""
+        }
+    }
 }

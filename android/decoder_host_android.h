@@ -57,6 +57,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief Materialize a SAF content URI into cacheDir; returns "" on failure. */
     QString importContentUri(const QString& reference, const QString& fileName) override;
 
+    /** @brief Materialize a SAF content URI into filesDir/imports; returns "" on failure. */
+    QString importDocument(const QString& reference, const QString& fileName,
+                           const QString& replacePath = QString()) override;
+
   private:
     /** @brief Record a start that never reached the service. Always returns false. */
     bool failStart(const QString& reason);

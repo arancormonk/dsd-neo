@@ -2268,6 +2268,35 @@ if(DSD_ENABLE_QT_UI)
     set_target_properties(dsd-neo_test_ui_qt_session_args PROPERTIES AUTOMOC ON)
     add_test(NAME UI_QT_SESSION_ARGS COMMAND dsd-neo_test_ui_qt_session_args)
 
+    # The imported-files layer behind the CSV pickers: DecoderHost's desktop
+    # importDocument() copy/unique-ify/replace semantics and the library model
+    # the wizard and the imports screen share.
+    add_executable(
+        dsd-neo_test_ui_qt_imported_files_model
+        ui/test_ui_qt_imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_imported_files_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_imported_files_model
+        PRIVATE Qt6::Core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_imported_files_model
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_imported_files_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_IMPORTED_FILES
+        COMMAND dsd-neo_test_ui_qt_imported_files_model
+    )
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
