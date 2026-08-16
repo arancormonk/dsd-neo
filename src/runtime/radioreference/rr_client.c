@@ -555,7 +555,12 @@ rr_days_from_civil(long long y, unsigned m, unsigned d) {
     y -= (m <= 2U) ? 1 : 0;
     const long long era = ((y >= 0) ? y : (y - 399)) / 400;
     const unsigned yoe = (unsigned)(y - (era * 400));
-    const unsigned doy = (((153U * (m + ((m > 2U) ? -3U : 9U))) + 2U) / 5U) + d - 1U;
+    /* March is month 0 of the shifted year, so the leap day lands at the end and
+     * never has to be special-cased. Written as two additions rather than the
+     * usual `m + (m > 2 ? -3 : 9)`: negating an unsigned is well defined but MSVC
+     * rejects it under /WX (C4146), and the shift is what the value means. */
+    const unsigned shifted_month = (m > 2U) ? (m - 3U) : (m + 9U);
+    const unsigned doy = (((153U * shifted_month) + 2U) / 5U) + d - 1U;
     const unsigned doe = (yoe * 365U) + (yoe / 4U) - (yoe / 100U) + doy;
     return (era * 146097LL) + (long long)doe - 719468LL;
 }

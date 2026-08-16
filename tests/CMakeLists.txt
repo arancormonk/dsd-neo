@@ -2781,64 +2781,99 @@ target_link_libraries(
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
-add_executable(dsd-neo_test_runtime_rr_soap runtime/test_runtime_rr_soap.c)
-target_include_directories(
-    dsd-neo_test_runtime_rr_soap
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
-)
-target_compile_definitions(
-    dsd-neo_test_runtime_rr_soap
-    PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
-)
-target_link_libraries(
-    dsd-neo_test_runtime_rr_soap
-    PRIVATE dsd-neo_runtime dsd-neo_test_support
-)
-add_test(NAME RUNTIME_RR_SOAP COMMAND dsd-neo_test_runtime_rr_soap)
+# Every case in the three suites below starts by parsing a captured response, so
+# without expat they would all assert the stub's refusal rather than anything
+# about RadioReference. The android-shape job builds exactly that configuration
+# on purpose. Register them only where there is a parser, and pin the stub's
+# contract with RUNTIME_RR_NO_EXPAT in the other direction, so the degraded build
+# still fails if the parser ever starts refusing quietly.
+if(DSD_HAS_EXPAT)
+    add_executable(dsd-neo_test_runtime_rr_soap runtime/test_runtime_rr_soap.c)
+    target_include_directories(
+        dsd-neo_test_runtime_rr_soap
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_rr_soap
+        PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_soap
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_SOAP COMMAND dsd-neo_test_runtime_rr_soap)
 
-add_executable(dsd-neo_test_runtime_rr_client runtime/test_runtime_rr_client.c)
-target_include_directories(
-    dsd-neo_test_runtime_rr_client
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
-)
-target_compile_definitions(
-    dsd-neo_test_runtime_rr_client
-    PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
-)
-target_link_libraries(
-    dsd-neo_test_runtime_rr_client
-    PRIVATE dsd-neo_runtime dsd-neo_test_support
-)
-add_test(NAME RUNTIME_RR_CLIENT COMMAND dsd-neo_test_runtime_rr_client)
+    add_executable(
+        dsd-neo_test_runtime_rr_client
+        runtime/test_runtime_rr_client.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_rr_client
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_rr_client
+        PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_client
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_CLIENT COMMAND dsd-neo_test_runtime_rr_client)
 
-# The generators round-trip their output through the real validators, which live
-# in dsd-neo_core; dsd-neo_runtime alone cannot reach them. dsd-neo_proto_dmr is
-# required because dsd_import.c calls dmr_parse_static_keystream_spec. The
-# private include path is for rr_soap.h: the goldens are driven from the same
-# fixtures the parser is, rather than from hand-written structs.
-add_executable(
-    dsd-neo_test_runtime_rr_generate
-    runtime/test_runtime_rr_generate.c
-)
-target_include_directories(
-    dsd-neo_test_runtime_rr_generate
-    PRIVATE
-        ${PROJECT_SOURCE_DIR}/include
-        ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
-)
-target_compile_definitions(
-    dsd-neo_test_runtime_rr_generate
-    PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
-)
-target_link_libraries(
-    dsd-neo_test_runtime_rr_generate
-    PRIVATE dsd-neo_runtime dsd-neo_core dsd-neo_proto_dmr dsd-neo_test_support
-)
-add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
+    # The generators round-trip their output through the real validators, which live
+    # in dsd-neo_core; dsd-neo_runtime alone cannot reach them. dsd-neo_proto_dmr is
+    # required because dsd_import.c calls dmr_parse_static_keystream_spec. The
+    # private include path is for rr_soap.h: the goldens are driven from the same
+    # fixtures the parser is, rather than from hand-written structs.
+    add_executable(
+        dsd-neo_test_runtime_rr_generate
+        runtime/test_runtime_rr_generate.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_rr_generate
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_rr_generate
+        PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_generate
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
+else()
+    message(
+        STATUS
+        "RUNTIME_RR_SOAP/CLIENT/GENERATE: skipped, expat not available; RUNTIME_RR_NO_EXPAT covers the stub"
+    )
+    add_executable(
+        dsd-neo_test_runtime_rr_no_expat
+        runtime/test_runtime_rr_no_expat.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_rr_no_expat
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_no_expat
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_NO_EXPAT COMMAND dsd-neo_test_runtime_rr_no_expat)
+endif()
 
 add_executable(
     dsd-neo_test_runtime_trunk_tuning_hooks

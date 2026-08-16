@@ -709,6 +709,65 @@ test_cancel_queued_request(void) {
 /* Subscription expiry                                                        */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * @brief Seconds since the epoch for an "MM-DD-YYYY" date, counted the slow way.
+ *
+ * Deliberately not the shifted-era arithmetic rr_days_from_civil() uses: a test
+ * that reimplemented that would agree with it about any shared mistake. This
+ * just walks whole years from 1970 and sums month lengths, which is obviously
+ * right at the cost of being slow, and no caller here is anywhere near hot.
+ *
+ * @param text Date as "MM-DD-YYYY".
+ * @return Seconds since 1970-01-01T00:00:00Z, or -1 if the date is unusable.
+ */
+static long long
+naive_unix_from_mdy(const char* text) {
+    static const int k_month_days[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (text == NULL) {
+        return -1;
+    }
+    /* Fixed "MM-DD-YYYY" by hand rather than sscanf, which safe_api.h has no
+     * wrapper for and semgrep rejects tree-wide. Every caller is a literal in
+     * the table below, so a shape mismatch is a test bug, not input handling. */
+    for (int i = 0; i < 10; i++) {
+        const int want_digit = (i != 2 && i != 5);
+        if (text[i] == '\0' || (want_digit && (text[i] < '0' || text[i] > '9')) || (!want_digit && text[i] != '-')) {
+            return -1;
+        }
+    }
+    if (text[10] != '\0') {
+        return -1;
+    }
+    const int month = ((text[0] - '0') * 10) + (text[1] - '0');
+    const int day = ((text[3] - '0') * 10) + (text[4] - '0');
+    const int year = ((text[6] - '0') * 1000) + ((text[7] - '0') * 100) + ((text[8] - '0') * 10) + (text[9] - '0');
+    if (month < 1 || month > 12 || day < 1 || year < 1970) {
+        return -1;
+    }
+
+    long long days = 0;
+    for (int y = 1970; y < year; y++) {
+        const int leap = ((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0);
+        days += leap ? 366 : 365;
+    }
+    const int leap_year = ((year % 4 == 0) && (year % 100 != 0)) || (year % 400 == 0);
+    for (int m = 1; m < month; m++) {
+        days += k_month_days[m - 1];
+        if (m == 2 && leap_year) {
+            days += 1;
+        }
+    }
+    int month_length = k_month_days[month - 1];
+    if (month == 2 && leap_year) {
+        month_length += 1;
+    }
+    if (day > month_length) {
+        return -1;
+    }
+    days += day - 1;
+    return days * 86400LL;
+}
+
 static void
 test_subscription_expiry(void) {
     /* 2026-08-15T00:00:00Z, i.e. day 20680 since the epoch. */
@@ -742,6 +801,55 @@ test_subscription_expiry(void) {
         }
     }
     expect("NULL subscription is not expired", rr_subscription_expired(NULL, now) == 0);
+
+    /* The day count shifts March to month 0 so the leap day falls at the end of
+     * the shifted year. That makes the arithmetic month-dependent, and the cases
+     * above only reach four months - a shift that was wrong for, say, October
+     * would pass every one of them. Walk the boundary of each month instead:
+     * the last day of a subscription is still valid, and two days later is not.
+     *
+     * `expired` carries two days of slack, so the probe dates are the month's
+     * own last day (valid) and three days past it (expired). */
+    static const struct {
+        const char* last_day;   /* subscription runs to here */
+        const char* three_past; /* three days later, i.e. clear of the slack */
+        const char* why;
+    } months[] = {
+        {"01-31-2026", "02-03-2026", "January"},
+        {"02-28-2026", "03-03-2026", "February in a common year"},
+        {"03-31-2026", "04-03-2026", "March, the first month of the shifted year"},
+        {"04-30-2026", "05-03-2026", "April"},
+        {"05-31-2026", "06-03-2026", "May"},
+        {"06-30-2026", "07-03-2026", "June"},
+        {"07-31-2026", "08-03-2026", "July"},
+        {"08-31-2026", "09-03-2026", "August"},
+        {"09-30-2026", "10-03-2026", "September"},
+        {"10-31-2026", "11-03-2026", "October"},
+        {"11-30-2026", "12-03-2026", "November"},
+        {"12-31-2026", "01-03-2027", "December, which crosses the year"},
+        {"02-29-2024", "03-03-2024", "the leap day itself"},
+        {"02-28-2100", "03-03-2100", "2100, a century that is not a leap year"},
+        {"02-29-2000", "03-03-2000", "2000, a century that is"},
+    };
+
+    for (size_t i = 0; i < sizeof(months) / sizeof(months[0]); i++) {
+        /* A subscription expiring on that day, asked about on that day. */
+        const long long on_the_day = naive_unix_from_mdy(months[i].last_day);
+        const long long well_after = naive_unix_from_mdy(months[i].three_past);
+        if (on_the_day < 0 || well_after < 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: test could not build its own dates\n", months[i].why);
+            g_failures++;
+            continue;
+        }
+        if (rr_subscription_expired(months[i].last_day, on_the_day) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s: the last day of the subscription read as expired\n", months[i].why);
+            g_failures++;
+        }
+        if (rr_subscription_expired(months[i].last_day, well_after) != 1) {
+            DSD_FPRINTF(stderr, "FAIL: %s: three days past the end did not read as expired\n", months[i].why);
+            g_failures++;
+        }
+    }
 }
 
 static void
