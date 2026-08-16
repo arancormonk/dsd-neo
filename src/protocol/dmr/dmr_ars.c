@@ -168,7 +168,8 @@ dmr_ars_format_ack(const uint8_t* rec, uint16_t rec_len, uint8_t is_user, char* 
     } else if (value == 0U) {
         DSD_SNPRINTF(out, out_sz, "%s: OK; refresh off; ", label);
     } else {
-        // One unit is 30 minutes, range 1-63 (spec 3.4.2).
+        // One unit is 30 minutes over the 7 bit field, range 1-127: 30 minutes to ~2.5 days
+        // (spec 3.4.2).
         DSD_SNPRINTF(out, out_sz, "%s: OK; refresh %u min; ", label, (unsigned)value * 30U);
     }
 }
