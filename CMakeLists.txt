@@ -817,7 +817,75 @@ if(DSD_ENABLE_TERMINAL_UI)
             "PDCurses wide-character API: ${DSD_HAS_PDCURSES_WIDE_API}"
         )
     else()
+        # macOS ships no libncursesw, so CURSES_NEED_WIDE makes FindCurses miss
+        # the wide library, fall through to its plain-curses branch, and skip
+        # the header search there - configure then fails with a bare "Could NOT
+        # find Curses (missing: CURSES_INCLUDE_PATH)". Point it at a wide
+        # ncurses when the host has one - Homebrew keeps its keg-only, so that
+        # prefix is not on any default search path - and otherwise drop the
+        # requirement and take the SDK's unified libncurses. See
+        # cmake/macos_curses.cmake for the whole story.
+        set(_dsd_curses_saved_prefix_path "${CMAKE_PREFIX_PATH}")
+        if(APPLE AND CURSES_NEED_WIDE)
+            include(macos_curses)
+            find_library(DSD_NCURSESW_LIBRARY NAMES ncursesw)
+            mark_as_advanced(DSD_NCURSESW_LIBRARY)
+
+            set(_dsd_curses_prefixes "")
+            find_program(DSD_BREW_EXECUTABLE brew)
+            mark_as_advanced(DSD_BREW_EXECUTABLE)
+            if(DSD_BREW_EXECUTABLE)
+                # Reports the keg for a custom Homebrew prefix too, and prints
+                # the path a formula would take even when it is not installed,
+                # which the plan then rejects for having no headers.
+                execute_process(
+                    COMMAND "${DSD_BREW_EXECUTABLE}" --prefix ncurses
+                    OUTPUT_VARIABLE _dsd_brew_ncurses
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET
+                )
+                if(_dsd_brew_ncurses)
+                    list(APPEND _dsd_curses_prefixes "${_dsd_brew_ncurses}")
+                endif()
+                unset(_dsd_brew_ncurses)
+            endif()
+            # brew is not always on PATH - IDE-driven and non-login shells lose
+            # it - so the standard prefixes are probed directly as well.
+            if(DEFINED ENV{HOMEBREW_PREFIX})
+                list(
+                    APPEND _dsd_curses_prefixes
+                    "$ENV{HOMEBREW_PREFIX}/opt/ncurses"
+                )
+            endif()
+            list(
+                APPEND _dsd_curses_prefixes
+                "/opt/homebrew/opt/ncurses"
+                "/usr/local/opt/ncurses"
+            )
+            list(REMOVE_DUPLICATES _dsd_curses_prefixes)
+
+            dsd_neo_macos_curses_plan(
+                NCURSESW_LIBRARY "${DSD_NCURSESW_LIBRARY}"
+                PREFIXES ${_dsd_curses_prefixes}
+                OUT_NEED_WIDE _dsd_curses_need_wide
+                OUT_PREFIX _dsd_curses_prefix
+                OUT_REASON _dsd_curses_reason
+            )
+            set(CURSES_NEED_WIDE ${_dsd_curses_need_wide})
+            if(_dsd_curses_prefix)
+                list(PREPEND CMAKE_PREFIX_PATH "${_dsd_curses_prefix}")
+            endif()
+            message(STATUS "Curses: ${_dsd_curses_reason}")
+            unset(_dsd_curses_prefixes)
+            unset(_dsd_curses_need_wide)
+            unset(_dsd_curses_prefix)
+            unset(_dsd_curses_reason)
+        endif()
         find_package(Curses REQUIRED)
+        # A keg-only prefix is for curses alone; leaving it on CMAKE_PREFIX_PATH
+        # would offer it to every find_package below.
+        set(CMAKE_PREFIX_PATH "${_dsd_curses_saved_prefix_path}")
+        unset(_dsd_curses_saved_prefix_path)
         # Some ncurses installs do not provide a top-level curses.h shim in the
         # include root. Our code includes <curses.h>, so add the ncursesw subdir
         # when needed.

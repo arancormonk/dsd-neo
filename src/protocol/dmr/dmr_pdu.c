@@ -59,7 +59,10 @@ convert_hex_to_dec(uint16_t input) {
 static void DSD_ATTR_USED
 utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
-    dsd_event_history_transaction transaction;
+    // Only opened when wr says so, and closed under the same condition a loop
+    // later. A zeroed guard makes the close a no-op instead of a read of an
+    // indeterminate pointer if those two ever drift apart.
+    dsd_event_history_transaction transaction = {0};
     if (wr == 1) {
         dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,
@@ -119,7 +122,9 @@ utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     DSD_FPRINTF(stderr, "\n UTF8 Text: ");
 
-    dsd_event_history_transaction transaction;
+    // Zeroed for the same reason as utf16_to_text above: the open and the close
+    // sit on either side of a loop, both behind wr.
+    dsd_event_history_transaction transaction = {0};
     if (wr == 1) {
         dsd_event_history_transaction_begin(state, &transaction);
         DSD_SNPRINTF(state->event_history_s[slot].Event_History_Items[0].text_message,

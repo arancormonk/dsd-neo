@@ -760,8 +760,11 @@ ui_print_p25_sm_tags(const dsd_state* state) {
 
 static int
 ui_append_sm_path_symbol(char* path, size_t path_len, int wrote, char sym) {
-    int m = (int)strlen(path);
-    if (m + 3 >= (int)path_len) {
+    size_t m = strlen(path);
+    // Three bytes of arrow once something is already there, the symbol, and the
+    // terminator: all of it has to fit, terminator included.
+    size_t need = (wrote > 0 ? 3U : 0U) + 2U;
+    if (m + need > path_len) {
         return wrote;
     }
     if (wrote > 0) {

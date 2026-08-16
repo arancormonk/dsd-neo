@@ -538,6 +538,39 @@ run_trunk_sm_helper_cases(void) {
     assert(ui_append_sm_path_symbol(full, sizeof(full), 1, 'Z') == 1);
     assert(strcmp(full, "ABC") == 0);
 
+    // An empty buffer with room for the three-byte arrow and the symbol but not
+    // for the terminator: the append has to be refused. The guard used to count
+    // only the four payload bytes and then wrote a fifth, one past the end - a
+    // stack overflow the 64-byte production buffer escapes only because the tag
+    // count is capped. The canary catches the write; ASan would not, the buffer
+    // being a member rather than a whole object.
+    struct {
+        char buf[4];
+        char canary[4];
+    } tight;
+
+    DSD_MEMSET(&tight, 0, sizeof(tight));
+    DSD_MEMSET(tight.canary, '#', sizeof(tight.canary));
+    assert(ui_append_sm_path_symbol(tight.buf, sizeof(tight.buf), 1, 'Z') == 1);
+    assert(tight.buf[0] == '\0');
+    for (size_t i = 0; i < sizeof(tight.canary); i++) {
+        assert(tight.canary[i] == '#');
+    }
+
+    // One more byte is all it takes, and then the append goes through.
+    struct {
+        char buf[5];
+        char canary[4];
+    } room;
+
+    DSD_MEMSET(&room, 0, sizeof(room));
+    DSD_MEMSET(room.canary, '#', sizeof(room.canary));
+    assert(ui_append_sm_path_symbol(room.buf, sizeof(room.buf), 1, 'Z') == 2);
+    assert(strcmp(room.buf, "\xE2\x86\x92Z") == 0);
+    for (size_t i = 0; i < sizeof(room.canary); i++) {
+        assert(room.canary[i] == '#');
+    }
+
     return 0;
 }
 

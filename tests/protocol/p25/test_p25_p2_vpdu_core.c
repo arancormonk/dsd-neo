@@ -201,7 +201,15 @@ expect_file_contains(const char* tag, const char* path, const char* needle) {
         fclose(f);
         return 1;
     }
-    (void)fread(buf, 1, (size_t)sz, f);
+    // The buffer is calloc'd one byte longer than the file and therefore
+    // already terminated; what the read owes is the count, since
+    // _FORTIFY_SOURCE declares fread __wur and a short read here means the
+    // capture never landed.
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
+        fclose(f);
+        free(buf);
+        return 1;
+    }
     fclose(f);
 
     int rc = expect_contains(tag, buf, needle);

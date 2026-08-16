@@ -9,7 +9,21 @@ set(_DSD_NEO_RR_FIXTURE_DIR
     "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
 )
 
-link_libraries(dsd-neo_warnings)
+# Release-style configurations put -DNDEBUG on the command line, and nearly
+# every test here carries its logic inside assert(). Left alone, a Release or
+# RelWithDebInfo build with BUILD_TESTING=ON - a plain `cmake ..`, or the
+# perf-bench preset - either fails to compile, where the now-unused parameters
+# trip -Werror, or builds a suite that passes while checking nothing. Test code
+# keeps its assertions in every configuration; production targets are untouched,
+# and the ban on assert() in src/ is enforced separately by semgrep.
+add_library(dsd-neo_test_assertions INTERFACE)
+if(MSVC)
+    target_compile_options(dsd-neo_test_assertions INTERFACE /UNDEBUG)
+else()
+    target_compile_options(dsd-neo_test_assertions INTERFACE -UNDEBUG)
+endif()
+
+link_libraries(dsd-neo_warnings dsd-neo_test_assertions)
 
 add_library(dsd-neo_test_support INTERFACE)
 target_include_directories(
@@ -148,6 +162,25 @@ add_test(
         ${CMAKE_COMMAND} -P
         ${PROJECT_SOURCE_DIR}/cmake/vcpkg_dependency_contract.cmake
 )
+
+# Runs everywhere: the macOS curses decision takes fabricated prefix trees, so
+# hosts that can never reach the real code path still guard it.
+add_test(
+    NAME MACOS_CURSES_PLAN
+    COMMAND
+        ${CMAKE_COMMAND}
+        "-DDSD_TEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/macos_curses_plan" -P
+        ${PROJECT_SOURCE_DIR}/tests/cmake/MacosCursesPlan.cmake
+)
+
+# Compiling this at all is most of the check; running it shows assert() still
+# evaluates what it is given.
+add_executable(dsd-neo_test_assertions_enabled build/test_assertions_enabled.c)
+target_include_directories(
+    dsd-neo_test_assertions_enabled
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME ASSERTIONS_ENABLED COMMAND dsd-neo_test_assertions_enabled)
 
 set(_DSD_PUBLIC_HEADER_TEST_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/public_header_smoke"

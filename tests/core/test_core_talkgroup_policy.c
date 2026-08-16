@@ -447,8 +447,10 @@ read_file_lines(const char* path, char* l1, size_t l1sz, char* l2, size_t l2sz, 
         fclose(fp);
         return -1;
     }
-    if (l3) {
-        (void)fgets(l3, (int)l3sz, fp);
+    if (l3 && fgets(l3, (int)l3sz, fp) == NULL) {
+        // The third line is optional, and a cast to void does not settle the
+        // warn_unused_result that _FORTIFY_SOURCE puts on fgets.
+        l3[0] = '\0';
     }
     fclose(fp);
     return 0;
