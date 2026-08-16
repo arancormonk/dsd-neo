@@ -92,11 +92,17 @@ var LEGACY_DECODE_LABELS = {
 // bottom edge, so the first screen of waterfall usually has something on it.
 // `low`/`high` also bound the sweep — it wraps inside the band it began in rather
 // than walking off into spectrum nobody asked about.
+// `trunked` marks the bands where a bare carrier is far more often a trunked
+// control channel than a conventional voice channel: 700 and 800 are where the
+// statewide and county P25 systems the decode chips are pitched at live, and
+// 851.375 — the wizard's own frequency prefill — is one. VHF and UHF stay out
+// because conventional repeater pairs are at least as common there, so neither
+// answer would be a safe suggestion. See suggestsTrunking().
 var BANDS = [
     { label: "VHF", low: 136.0e6, high: 174.0e6, start: 154.0e6 },
     { label: "UHF", low: 380.0e6, high: 470.0e6, start: 453.0e6 },
-    { label: "700", low: 763.0e6, high: 806.0e6, start: 770.0e6 },
-    { label: "800", low: 806.0e6, high: 869.0e6, start: 855.0e6 }
+    { label: "700", low: 763.0e6, high: 806.0e6, start: 770.0e6, trunked: true },
+    { label: "800", low: 806.0e6, high: 869.0e6, start: 855.0e6, trunked: true }
 ]
 
 // The tuner's usable range. R820T/R828D — the tuner in essentially every RTL
@@ -137,33 +143,60 @@ function fmtMhz(hz) {
     return mhzText(hz) + " MHz"
 }
 
-function decodeLabel(flag) {
+// The catalog entry a chip flag names, or null. One lookup for every question
+// asked of the catalog, so a flag that has to be matched some other way — the
+// importer's composite forms are already the reason LEGACY_DECODE_LABELS exists
+// — is taught here once rather than in each accessor.
+function findDecodeMode(flag) {
     for (var i = 0; i < DECODE_MODES.length; i++) {
         if (DECODE_MODES[i].flag === flag)
-            return DECODE_MODES[i].short
+            return DECODE_MODES[i]
     }
+    return null
+}
+
+function decodeLabel(flag) {
+    var mode = findDecodeMode(flag)
+    if (mode !== null)
+        return mode.short
     if (LEGACY_DECODE_LABELS[flag] !== undefined)
         return LEGACY_DECODE_LABELS[flag]
     return "Auto"
 }
 
 function decodeHint(flag) {
-    for (var i = 0; i < DECODE_MODES.length; i++) {
-        if (DECODE_MODES[i].flag === flag)
-            return DECODE_MODES[i].hint
-    }
-    return ""
+    var mode = findDecodeMode(flag)
+    return mode !== null ? mode.hint : ""
 }
 
-// Whether picking this chip should suggest turning trunking on. Flags outside
-// the catalog (the RadioReference import's composite forms) never reach this:
-// the import carries the database's own trunking answer instead.
-function decodeSuggestsTrunking(flag) {
-    for (var i = 0; i < DECODE_MODES.length; i++) {
-        if (DECODE_MODES[i].flag === flag)
-            return DECODE_MODES[i].trunked === true
-    }
-    return false
+// Whether the wizard should suggest turning call-following on, for a user who
+// has not answered "is it trunked?" themselves.
+//
+// The chip is the stronger signal and answers alone whenever it names a system
+// type. The Auto chip names none, so the frequency is all there is to go on —
+// and that case is not academic: Auto is the default selection, so a user who
+// accepts the wizard's own 851.375 prefill never taps a chip at all. Reading
+// that as "not trunked" hands the decoder a control channel with call-following
+// off, which locks on and plays nothing, with no error to explain the silence.
+//
+// @a hz may be NaN (an empty or half-typed field); bandFor() returns null for
+// it, so the answer is simply "no suggestion".
+//
+// Flags outside the catalog (the RadioReference import's composite forms) never
+// reach this: the import carries the database's own trunking answer instead.
+function suggestsTrunking(flag, hz) {
+    var mode = findDecodeMode(flag)
+    if (mode === null)
+        return false
+    if (mode.trunked === true)
+        return true
+    // An explicit system type that does not carry `trunked` has answered for
+    // itself — DMR and NXDN trunk too, but conventional use is common enough
+    // there that the band must not override the user's own pick.
+    if (mode.flag !== "")
+        return false
+    var band = bandFor(hz)
+    return band !== null && band.trunked === true
 }
 
 // The one-line mono meta under a saved system's name: "851.375 MHz · P25 trunked"

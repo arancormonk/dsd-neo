@@ -95,8 +95,10 @@ Item {
         fileField.text = ""
         freqField.text = "851.375"
         decodeFlag = ""
-        trunking = false
         trunkingAnswered = false
+        // After the field and the chip, never before: the prefill is an 800 MHz
+        // control channel, so this is what keeps the shipped defaults decoding.
+        refreshTrunkingSuggestion()
         advancedOpen = false
         gainField.text = ""
         ppmField.text = ""
@@ -130,8 +132,11 @@ Item {
         fileField.text = ""
         freqField.text = freqMhz
         decodeFlag = ""
-        trunking = false
         trunkingAnswered = false
+        // The frequency a user "found" while exploring 700/800 is most often a
+        // constant-carrier control channel — that is what stands out on a
+        // waterfall — so the same suggestion applies, and more strongly.
+        refreshTrunkingSuggestion()
         advancedOpen = false
         gainField.text = ""
         ppmField.text = ""
@@ -157,10 +162,9 @@ Item {
         fileField.text = sys.filePath
         freqField.text = sys.freqMhz
         decodeFlag = sys.decodeFlag
-        trunking = sys.trunking
         // The saved system already answered the question; a chip tap during
         // the edit must not silently flip what the card was doing yesterday.
-        trunkingAnswered = true
+        answerTrunking(sys.trunking)
         advancedOpen = false
         gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : ""
         ppmField.text = sys.ppm
@@ -194,8 +198,24 @@ Item {
      */
     function pickDecodeFlag(flag) {
         decodeFlag = flag
-        if (!trunkingAnswered)
-            trunking = Util.decodeSuggestsTrunking(flag)
+        refreshTrunkingSuggestion()
+    }
+
+    /**
+     * Re-derive the unanswered trunking switch from the chip and the frequency.
+     *
+     * Called on every chip pick and on every frequency edit, not just the pick:
+     * Auto is the default chip and carries no system type, so a user who accepts
+     * the prefills taps no chip at all and the suggestion would otherwise never
+     * run. An explicit answer — the toggle, an import, an edit's saved state —
+     * stops this for good, which is what trunkingAnswered is for.
+     */
+    function refreshTrunkingSuggestion() {
+        if (trunkingAnswered)
+            return
+        // parseFloat("") and a half-typed "8." are NaN, which suggestsTrunking()
+        // reads as "no band, no suggestion" rather than as 0 Hz.
+        trunking = Util.suggestsTrunking(decodeFlag, parseFloat(freqField.text) * 1.0e6)
     }
 
     /** The user's own toggle: an answer, which no later chip pick may undo. */
@@ -314,8 +334,7 @@ Item {
         wizard.decodeFlag = result.decodeFlag
         // The database's answer, and an answer: a chip tap after the import
         // must not second-guess what the record says the system is.
-        wizard.trunking = result.trunking
-        wizard.trunkingAnswered = true
+        wizard.answerTrunking(result.trunking)
         // Only when the wizard has no name yet: an edit already has one the user
         // chose, and RadioReference's is a database title, not their label.
         if (nameField.text.trim().length === 0 && result.name)
@@ -609,9 +628,14 @@ Item {
                 UiPanel {
                     width: parent.width
                     visible: radioReference.available
-                    height: 66
+                    // From the row rather than a copy of its height: DisclosureRow
+                    // is shared, and a card that restated its 58 would clip it the
+                    // day that number moves.
+                    height: rrEntryRow.height + 8
 
                     DisclosureRow {
+                        id: rrEntryRow
+
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "wizardRadioReferenceRow"
 
@@ -648,6 +672,14 @@ Item {
 
                             width: parent.width
                             text: "851.375"
+                            // Not editingFinished: every control on this screen
+                            // is TapHandler-based and TapHandler takes no focus,
+                            // so a user who types a frequency and taps Continue
+                            // never commits the field. The hint text under this
+                            // one already follows `trunking` live, so the switch
+                            // moving as the band is entered is visible, not a
+                            // surprise sprung at the end.
+                            onTextChanged: wizard.refreshTrunkingSuggestion()
                         }
 
                         Text {
