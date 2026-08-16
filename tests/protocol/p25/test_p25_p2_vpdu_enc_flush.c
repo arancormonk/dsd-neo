@@ -337,6 +337,35 @@ main(void) {
     rc |= expect_eq("MAC Release follow-up reopens call", released_call.phase, DSD_CALL_PHASE_ACTIVE);
     rc |= expect_eq("MAC Release follow-up starts new epoch", released_call.epoch == released_epoch + 1U, 1);
 
+    // Scenario 6: a MAC Release for a slot whose crypto classification refuses
+    // audio (encryption lockout) must not emit the slot's stale buffered tail:
+    // those samples predate the mute, and playing them would both surface
+    // refused audio and wedge extra blocks into the audible companion's output
+    // stream. The tail is dropped, the buffer blanked, and the companion keeps
+    // the carrier.
+    DSD_MEMSET(MAC, 0, sizeof MAC);
+    MAC[1] = 0x31;
+    opts.trunk_tune_enc_calls = 0;
+    st.currentslot = 0;
+    st.p25_crypto_state[0] = DSD_P25_CRYPTO_BLOCKED;
+    st.p25_crypto_state[1] = DSD_P25_CRYPTO_CLEAR;
+    st.p25_p2_audio_allowed[0] = 0;
+    st.p25_p2_audio_allowed[1] = 1;
+    st.p25_p2_last_mac_active[1] = time(NULL);
+    st.p25_p2_last_mac_active_m[1] = dsd_time_now_monotonic_s();
+    st.voice_counter[0] = 1;
+    st.s_l4[0][0] = 321;
+    g_return_to_cc_called = 0;
+    reset_audio_capture();
+
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+
+    rc |= expect_eq("lockout MAC Release emits no tail", g_audio_capture_calls, 0);
+    rc |= expect_eq("lockout MAC Release blanks stale tail", st.s_l4[0][0], 0);
+    rc |= expect_eq("lockout MAC Release resets stale counter", st.voice_counter[0], 0);
+    rc |= expect_eq("lockout MAC Release keeps companion tuned", g_return_to_cc_called, 0);
+    rc |= expect_eq("lockout MAC Release keeps companion gate", st.p25_p2_audio_allowed[1], 1);
+
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&st);
     return rc;

@@ -971,6 +971,23 @@ p25p2_vpdu_other_slot_audio_with_history(const dsd_state* state, int slot, doubl
            || recent_voice;
 }
 
+// Whether either logical slot still looks occupied: gated or buffered audio,
+// MAC activity inside the hold window, or recent voice on the carrier. A
+// Deny/Queued response heard in a voice channel's signaling answers some
+// unit's request; releasing the carrier over one while a call -- or the
+// hangtime gap the SM promises to bridge -- still occupies a slot tears down
+// audible traffic, so the voice hold is stretched to the trunking hangtime.
+static int
+p25p2_vpdu_carrier_occupied_for_response(const dsd_opts* opts, const dsd_state* state) {
+    double mac_hold = p25p2_vpdu_cfg_mac_hold_s(0.75);
+    double voice_hold = p25p2_vpdu_cfg_voice_hold_s(0.75);
+    if (opts != NULL && (double)opts->trunk_hangtime > voice_hold) {
+        voice_hold = (double)opts->trunk_hangtime;
+    }
+    return p25p2_vpdu_other_slot_audio_with_history(state, 0, mac_hold, voice_hold)
+           || p25p2_vpdu_other_slot_audio_with_history(state, 1, mac_hold, voice_hold);
+}
+
 static int
 p25p2_vpdu_force_release_after_grace(dsd_opts* opts, dsd_state* state) {
     double vc_grace = p25p2_vpdu_cfg_vc_grace_s(0.75);
@@ -4258,14 +4275,17 @@ p25p2_vpdu_iter_block_57(p25p2_vpdu_ctx* ctx) {
                                          target_addr, reason_str);
         }
 
-        // Notify the trunking state machine.
+        // Notify the trunking state machine. An occupied carrier keeps its
+        // calls; the acquisition watchdog owns cleaning up a granted-then-
+        // denied assignment that never produces voice.
         if (opts) {
             if (is_deny) {
                 state->p25_sm_deny_count++;
-                p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
             } else {
                 state->p25_sm_queued_count++;
-                p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
+            }
+            if (!p25p2_vpdu_carrier_occupied_for_response(opts, state)) {
+                p25_sm_release(p25_sm_get_ctx(), opts, state, is_deny ? "deny-rsp" : "queued-rsp");
             }
         }
     }
@@ -4762,13 +4782,15 @@ p25p2_vpdu_handle_motorola_queued_deny(p25p2_vpdu_ctx* ctx, int is_deny) {
     }
     DSD_FPRINTF(stderr, " Target [%d]", target_addr);
 
+    // Same occupancy rule as the standard Deny/Queued handler above.
     if (opts) {
         if (is_deny) {
             state->p25_sm_deny_count++;
-            p25_sm_release(p25_sm_get_ctx(), opts, state, "deny-rsp");
         } else {
             state->p25_sm_queued_count++;
-            p25_sm_release(p25_sm_get_ctx(), opts, state, "queued-rsp");
+        }
+        if (!p25p2_vpdu_carrier_occupied_for_response(opts, state)) {
+            p25_sm_release(p25_sm_get_ctx(), opts, state, is_deny ? "deny-rsp" : "queued-rsp");
         }
     }
 }
