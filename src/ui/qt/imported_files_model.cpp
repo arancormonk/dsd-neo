@@ -54,11 +54,19 @@ ImportedFilesModel::data(const QModelIndex& index, int role) const {
         case ImportedAtRole: return row.importedAt;
         case AcceptedRole: return row.accepted;
         case SkippedRole: return row.skipped;
+        default: return provenanceRole(row, role);
+    }
+}
+
+QVariant
+ImportedFilesModel::provenanceRole(const Row& row, int role) {
+    switch (role) {
         case OriginRole: return row.origin;
         case RrSidRole: return row.rrSid;
         case RrSiteNumberRole: return row.rrSiteNumber;
         case RrKindRole: return row.rrKind;
         case RrSiteNumbersRole: return row.rrSiteNumbers;
+        case RrSiteIdsRole: return row.rrSiteIds;
         default: return QVariant();
     }
 }
@@ -77,6 +85,7 @@ ImportedFilesModel::roleNames() const {
     roles.insert(RrSiteNumberRole, QByteArrayLiteral("rrSiteNumber"));
     roles.insert(RrKindRole, QByteArrayLiteral("rrKind"));
     roles.insert(RrSiteNumbersRole, QByteArrayLiteral("rrSiteNumbers"));
+    roles.insert(RrSiteIdsRole, QByteArrayLiteral("rrSiteIds"));
     return roles;
 }
 
@@ -129,6 +138,7 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
     row.rrSiteNumber = origin.value(QStringLiteral("rrSiteNumber")).toInt();
     row.rrKind = origin.value(QStringLiteral("rrKind")).toString();
     row.rrSiteNumbers = origin.value(QStringLiteral("rrSiteNumbers")).toString();
+    row.rrSiteIds = origin.value(QStringLiteral("rrSiteIds")).toString();
 
     beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
     m_rows.append(row);
@@ -336,6 +346,7 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     row.rrSiteNumber = map.value(QStringLiteral("rrSiteNumber")).toInt();
     row.rrKind = map.value(QStringLiteral("rrKind")).toString();
     row.rrSiteNumbers = map.value(QStringLiteral("rrSiteNumbers")).toString();
+    row.rrSiteIds = map.value(QStringLiteral("rrSiteIds")).toString();
     return row;
 }
 
@@ -355,6 +366,7 @@ ImportedFilesModel::mapFromRow(const Row& row) {
     map.insert(QStringLiteral("rrSiteNumber"), row.rrSiteNumber);
     map.insert(QStringLiteral("rrKind"), row.rrKind);
     map.insert(QStringLiteral("rrSiteNumbers"), row.rrSiteNumbers);
+    map.insert(QStringLiteral("rrSiteIds"), row.rrSiteIds);
     return map;
 }
 

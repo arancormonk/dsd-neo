@@ -21,6 +21,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <Qt>
@@ -39,16 +40,17 @@ class ImportedFilesModel : public QAbstractListModel {
      * silently start reading a different column. */
     enum Roles {
         NameRole = Qt::UserRole + 1,
-        PathRole,         // absolute stored path; the row's identity
-        TypeRole,         // "chan" | "group" | "keysDec" | "keysHex"
-        ImportedAtRole,   // seconds since epoch
-        AcceptedRole,     // usable rows at the last validation
-        SkippedRole,      // malformed rows at the last validation
-        OriginRole,       // "" for a picked file, "radioreference" for a generated one
-        RrSidRole,        // RadioReference system id
-        RrSiteNumberRole, // TrsSite.siteNumber, the RF site - never siteId
-        RrKindRole,       // "group" | "chan"
-        RrSiteNumbersRole // every selected siteNumber, comma-joined, in selection order
+        PathRole,          // absolute stored path; the row's identity
+        TypeRole,          // "chan" | "group" | "keysDec" | "keysHex"
+        ImportedAtRole,    // seconds since epoch
+        AcceptedRole,      // usable rows at the last validation
+        SkippedRole,       // malformed rows at the last validation
+        OriginRole,        // "" for a picked file, "radioreference" for a generated one
+        RrSidRole,         // RadioReference system id
+        RrSiteNumberRole,  // TrsSite.siteNumber, the RF site - never siteId
+        RrKindRole,        // "group" | "chan"
+        RrSiteNumbersRole, // every selected siteNumber, comma-joined, in selection order
+        RrSiteIdsRole      // every selected siteId, comma-joined - what a refresh matches on
     };
 
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
@@ -92,7 +94,7 @@ class ImportedFilesModel : public QAbstractListModel {
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
      * @param type       "chan" | "group" | "keysDec" | "keysHex".
-     * @param origin     Provenance: {origin, rrSid, rrSiteNumber, rrSiteNumbers, rrKind}.
+     * @param origin     Provenance: {origin, rrSid, rrSiteNumber, rrSiteNumbers, rrSiteIds, rrKind}.
      * @return Same shape as importFile().
      */
     Q_INVOKABLE QVariantMap importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
@@ -160,10 +162,23 @@ class ImportedFilesModel : public QAbstractListModel {
          * loses the rest of a conventional repeater selection — a refresh driven
          * by it would silently shrink a scan list to one row. */
         QString rrSiteNumbers;
+        /* The same selection as TrsSite.siteId, which is what a refresh matches
+         * on. siteNumber is the RF site and is NOT unique within a system: the
+         * captured SARA network has 35 sites numbered 1,1,10,10,10,10,10,20,…,
+         * so matching by number can regenerate from the wrong tower. */
+        QString rrSiteIds;
     };
 
     static Row rowFromMap(const QVariantMap& map);
     static QVariantMap mapFromRow(const Row& row);
+
+    /**
+     * @brief The RadioReference provenance roles.
+     *
+     * Split out of data() only to keep that switch under the project's
+     * complexity ceiling; the roles have no behaviour of their own.
+     */
+    static QVariant provenanceRole(const Row& row, int role);
 
     /** @brief Dry-run validate @p path as @p type; false when it cannot be parsed. */
     static bool validate(const QString& path, const QString& type, int* accepted, int* skipped);

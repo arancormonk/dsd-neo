@@ -963,6 +963,43 @@ RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partia
     return true;
 }
 
+namespace {
+
+/**
+ * @brief The frequency a session built from this plan should start on.
+ *
+ * The control channel for a trunked system, the repeater output for a
+ * conventional one - but trunked does not imply a MARKED control channel.
+ * Capacity Plus has no fixed one at all (the rest channel moves) and
+ * RadioReference leaves `use` nil on every frequency of some EDACS sites too.
+ * Blocking those would make the import dead for a whole protocol family, so
+ * fall back to the site's first frequency and say so; the wizard's frequency
+ * field is right there if it needs correcting.
+ *
+ * @param protocol Classified protocol.
+ * @param site     The site the import was built from.
+ * @param warnings Receives the fallback note when one was needed.
+ * @return Frequency in Hz, or 0 when the site lists none at all.
+ */
+long long
+tune_frequency(dsd_rr_protocol protocol, const dsd_rr_site& site, QVariantList* warnings) {
+    const long long marked =
+        dsd_rr_protocol_is_trunked(protocol) ? dsd_rr_site_control_freq_hz(&site) : dsd_rr_site_first_freq_hz(&site);
+    if (marked > 0) {
+        return marked;
+    }
+
+    const long long first = dsd_rr_site_first_freq_hz(&site);
+    if (first > 0) {
+        warnings->append(RadioReferenceModel::tr(
+            "RadioReference marks no control channel for this site, so the session starts on its first listed "
+            "frequency. Check it against the system's own listing."));
+    }
+    return first;
+}
+
+} // namespace
+
 QVariantMap
 RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVariantMap& options) {
     QVariantMap plan;
@@ -999,15 +1036,23 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
     plan.insert(QStringLiteral("siteCount"), conventional() ? chosen.size() : 1);
     plan.insert(QStringLiteral("siteNumber"), chosen.first().site_number);
     /* The whole selection, so a later refresh can reproduce it. Only the first
-     * entry for a trunked import, because that is all the generator uses. */
+     * entry for a trunked import, because that is all the generator uses.
+     *
+     * Both forms are recorded: siteNumber is the RF site a user recognises, but
+     * it is NOT unique within a system - the captured SARA network numbers its
+     * 35 sites 1,1,10,10,10,10,10,20,... - so the refresh has to match on the
+     * database id instead or it can regenerate from the wrong tower. */
     QStringList numbers;
+    QStringList ids;
     for (const dsd_rr_site& site : chosen) {
         numbers.append(QString::number(site.site_number));
+        ids.append(QString::number(site.site_db_id));
         if (!conventional()) {
             break;
         }
     }
     plan.insert(QStringLiteral("siteNumbers"), numbers.join(QLatin1Char(',')));
+    plan.insert(QStringLiteral("siteIds"), ids.join(QLatin1Char(',')));
 
     if (!generateFiles(chosen, options.value(QStringLiteral("partialEncAsDe"), true).toBool(), &plan, &warnings)) {
         plan.insert(QStringLiteral("blockedReason"), tr("The channel map could not be generated."));
@@ -1024,10 +1069,7 @@ RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVar
                                           plan.value(QStringLiteral("scanList")).toBool() ? 1 : 0);
     plan.insert(QStringLiteral("decodeFlag"), flag != nullptr ? QString::fromUtf8(flag) : QString());
 
-    /* The control channel for a trunked system, the first selected repeater for
-     * a conventional one. */
-    const long long tuneHz = dsd_rr_protocol_is_trunked(m_protocol) ? dsd_rr_site_control_freq_hz(&chosen.first())
-                                                                    : dsd_rr_site_first_freq_hz(&chosen.first());
+    const long long tuneHz = tune_frequency(m_protocol, chosen.first(), &warnings);
     plan.insert(QStringLiteral("freqMhz"), hz_to_mhz_text(tuneHz));
     if (tuneHz <= 0) {
         plan.insert(QStringLiteral("blockedReason"),
@@ -1079,6 +1121,7 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
     origin.insert(QStringLiteral("rrSid"), m_sid);
     origin.insert(QStringLiteral("rrSiteNumber"), plan.value(QStringLiteral("siteNumber")).toInt());
     origin.insert(QStringLiteral("rrSiteNumbers"), plan.value(QStringLiteral("siteNumbers")).toString());
+    origin.insert(QStringLiteral("rrSiteIds"), plan.value(QStringLiteral("siteIds")).toString());
 
     static const struct {
         const char* planKey;
@@ -1128,24 +1171,40 @@ RadioReferenceModel::performImport(const QVariantMap& plan, const QString& syste
 
 namespace {
 
-/**
- * @brief The site numbers a generated row was built from.
- *
- * `rrSiteNumbers` carries the whole selection; `rrSiteNumber` is the first one
- * and is all a row written before that key existed has.
- */
+/** @brief Parse a comma-joined id list, dropping blanks and duplicates. */
 QList<int>
-site_numbers_of(const QVariantMap& entry) {
-    QList<int> numbers;
-    const QString joined = entry.value(QStringLiteral("rrSiteNumbers")).toString();
+parse_id_list(const QString& joined) {
+    QList<int> out;
     const QStringList parts = joined.split(QLatin1Char(','), Qt::SkipEmptyParts);
     for (const QString& part : parts) {
         bool ok = false;
         const int value = part.trimmed().toInt(&ok);
-        if (ok && !numbers.contains(value)) {
-            numbers.append(value);
+        if (ok && !out.contains(value)) {
+            out.append(value);
         }
     }
+    return out;
+}
+
+/**
+ * @brief The sites a generated row was built from, and how to match them.
+ *
+ * Prefers `rrSiteIds`, which is unique per system. `rrSiteNumber(s)` is the RF
+ * site number and repeats within a system, so it is only the fallback for a row
+ * written before the id list existed - a refresh of one of those can still pick
+ * the wrong tower, and re-importing is the fix.
+ */
+QList<int>
+site_ids_of(const QVariantMap& entry, bool* by_number) {
+    QList<int> ids = parse_id_list(entry.value(QStringLiteral("rrSiteIds")).toString());
+    if (!ids.isEmpty()) {
+        *by_number = false;
+        return ids;
+    }
+    *by_number = true;
+    QList<int> numbers;
+    const QString joined = entry.value(QStringLiteral("rrSiteNumbers")).toString();
+    numbers = parse_id_list(joined);
     if (numbers.isEmpty()) {
         const int single = entry.value(QStringLiteral("rrSiteNumber")).toInt();
         if (single != 0) {
@@ -1168,8 +1227,9 @@ RadioReferenceModel::refreshRow(int row) {
         return false;
     }
     const int sid = entry.value(QStringLiteral("rrSid")).toInt();
-    const QList<int> numbers = site_numbers_of(entry);
-    if (sid <= 0 || numbers.isEmpty()) {
+    bool by_number = false;
+    const QList<int> wanted = site_ids_of(entry, &by_number);
+    if (sid <= 0 || wanted.isEmpty()) {
         setError(ConfigError,
                  tr("This file does not record which system it came from. Import it again to refresh it."));
         return false;
@@ -1190,7 +1250,8 @@ RadioReferenceModel::refreshRow(int row) {
     /* After loadSystem(), because the startBatch() inside it clears this. */
     m_refreshRow = row;
     m_refreshKind = entry.value(QStringLiteral("rrKind")).toString();
-    m_refreshSiteNumbers = numbers;
+    m_refreshSites = wanted;
+    m_refreshByNumber = by_number;
     return true;
 }
 
@@ -1199,7 +1260,8 @@ RadioReferenceModel::endRefresh(const QVariantMap& result) {
     const int row = m_refreshRow;
     m_refreshRow = -1;
     m_refreshKind.clear();
-    m_refreshSiteNumbers.clear();
+    m_refreshSites.clear();
+    m_refreshByNumber = false;
     Q_EMIT refreshFinished(row, result);
 }
 
@@ -1209,13 +1271,16 @@ RadioReferenceModel::completeRefresh() {
     result.insert(QStringLiteral("ok"), false);
     result.insert(QStringLiteral("error"), QStringLiteral("open"));
 
-    /* Matched by site NUMBER, never by index: RadioReference is free to reorder
-     * getTrsSites, and an index would refresh the wrong repeater. A site that is
-     * gone is dropped rather than shifting the rest of the list. */
+    /* Matched by identity, never by index: RadioReference is free to reorder
+     * getTrsSites. The identity is siteId, which is unique; site_number is the
+     * fallback for rows written before that was recorded and can be ambiguous,
+     * because a system numbers several sites the same. A site that is gone is
+     * dropped rather than shifting the rest of the list. */
     QList<dsd_rr_site> chosen;
-    for (const int number : m_refreshSiteNumbers) {
+    for (const int wanted : m_refreshSites) {
         for (size_t i = 0; i < m_siteData.count; i++) {
-            if (m_siteData.items[i].site_number == number) {
+            const int have = m_refreshByNumber ? m_siteData.items[i].site_number : m_siteData.items[i].site_db_id;
+            if (have == wanted) {
                 chosen.append(m_siteData.items[i]);
                 break;
             }

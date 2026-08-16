@@ -371,7 +371,10 @@ class RadioReferenceModel : public QObject {
      * so any other action the user takes retires a refresh still in flight. */
     int m_refreshRow = -1;
     QString m_refreshKind;
-    QList<int> m_refreshSiteNumbers;
+    /* The sites to regenerate from: siteIds normally, siteNumbers for a row
+     * written before those were recorded (see m_refreshByNumber). */
+    QList<int> m_refreshSites;
+    bool m_refreshByNumber = false;
 };
 
 } // namespace dsd_qt

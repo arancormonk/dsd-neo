@@ -26,6 +26,7 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -643,6 +644,10 @@ test_refresh_replaces_a_row_in_place(void) {
     const QString path = before.value(QStringLiteral("path")).toString();
     expect_str("provenance records the whole selection", before.value(QStringLiteral("rrSiteNumbers")).toString(),
                QStringLiteral("1,2"));
+    /* siteId, not siteNumber: the numbers are what a user recognises but they
+     * repeat within a system, so only these identify a site. */
+    expect_str("provenance records the site ids", before.value(QStringLiteral("rrSiteIds")).toString(),
+               QStringLiteral("42099,42100"));
     const QByteArray original = read_stored(path);
     expect("the stored map carries the second repeater", original.contains("464525000"));
 
@@ -693,6 +698,73 @@ test_refresh_replaces_a_row_in_place(void) {
     const int groupRow = row_of_type(h.library, QStringLiteral("group"));
     expect("a talkgroup row exists", groupRow >= 0);
     expect("a row outside the library cannot be refreshed", !h.model.refreshRow(99));
+}
+
+/**
+ * @brief siteNumber is not unique within a system, so a refresh cannot use it.
+ *
+ * The captured SARA network numbers its 35 sites 1, 1, 10, 10, 10, 10, 10, 20,
+ * ... - picking "the site numbered 1" would be a coin flip between two towers on
+ * different frequencies. This is what the live emulator pass surfaced.
+ */
+void
+test_site_numbers_are_ambiguous(void) {
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+
+    const QVariantList sites = h.model.sites();
+    expect("the P25 capture has many sites", sites.size() > 2);
+
+    QSet<int> numbers;
+    int duplicate_numbers = 0;
+    for (const QVariant& row : sites) {
+        const int number = row.toMap().value(QStringLiteral("siteNumber")).toInt();
+        if (numbers.contains(number)) {
+            duplicate_numbers++;
+        }
+        numbers.insert(number);
+    }
+    expect("site numbers repeat within this system", duplicate_numbers > 0);
+
+    /* Two sites that share a number must still be told apart by what the
+     * provenance records, or a refresh regenerates from the wrong tower. */
+    QVariantMap first = h.model.buildImportPlan(QVariantList{0}, QVariantMap());
+    QVariantMap second = h.model.buildImportPlan(QVariantList{1}, QVariantMap());
+    expect("the two sites share a number",
+           first.value(QStringLiteral("siteNumber")).toInt() == second.value(QStringLiteral("siteNumber")).toInt());
+    expect("but their recorded ids differ",
+           first.value(QStringLiteral("siteIds")).toString() != second.value(QStringLiteral("siteIds")).toString());
+    expect("and so do the channel maps they generate", first.value(QStringLiteral("chanCsvText")).toString()
+                                                           != second.value(QStringLiteral("chanCsvText")).toString());
+}
+
+/**
+ * @brief A trunked site with no marked control channel is still importable.
+ *
+ * Capacity Plus has no fixed control channel and RadioReference leaves `use` nil
+ * on every one of its frequencies, so the control-channel lookup returns 0.
+ * Blocking on that made the import dead for the whole Capacity Plus family,
+ * which the live emulator pass caught.
+ */
+void
+test_site_without_a_marked_control_channel(void) {
+    Harness h;
+    h.model.loadSystem(12574);
+    pump(h.model);
+
+    const QVariantList sites = h.model.sites();
+    expect("the Capacity Plus capture has a site", !sites.isEmpty());
+    expect_str("the site marks no control channel",
+               sites.first().toMap().value(QStringLiteral("controlFreqMhz")).toString(), QString());
+
+    const QVariantMap plan = h.model.buildImportPlan(QVariantList{0}, QVariantMap());
+    expect("the plan is importable anyway", plan.value(QStringLiteral("ok")).toBool());
+    expect("it starts on the site's first frequency", !plan.value(QStringLiteral("freqMhz")).toString().isEmpty());
+    expect("and says the frequency is a fallback", warned(plan, QStringLiteral("no control channel")));
+    /* Capacity Plus expands each RadioReference LCN into the LSN pair 2n-1, 2n. */
+    expect_int("four frequencies become eight LSN rows",
+               row_count(plan.value(QStringLiteral("chanCsvText")).toString()), 9 /* header + 8 */);
 }
 
 void
@@ -764,6 +836,8 @@ main(int argc, char** argv) {
     test_conventional_system();
     test_import_lands_in_the_library();
     test_refresh_replaces_a_row_in_place();
+    test_site_numbers_are_ambiguous();
+    test_site_without_a_marked_control_channel();
     test_error_and_cancel();
     test_destroy_with_requests_in_flight();
 

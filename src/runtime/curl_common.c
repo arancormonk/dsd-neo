@@ -7,12 +7,14 @@
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
-#include <dsd-neo/platform/file_compat.h>  // IWYU pragma: keep (dsd_stat_t under __ANDROID__)
+#include <dsd-neo/platform/file_compat.h> // IWYU pragma: keep (dsd_stat_t, dsd_fopen_existing_regular_file under __ANDROID__)
 #include <dsd-neo/platform/posix_compat.h> // IWYU pragma: keep (S_ISDIR fallback under __ANDROID__)
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/log.h>
 #include <stdint.h>
+#include <stdio.h> // IWYU pragma: keep (FILE, fread, fclose under __ANDROID__)
 #include <stdlib.h>
+#include <string.h> // IWYU pragma: keep (strstr under __ANDROID__)
 
 #ifdef USE_CURL
 #include <curl/curlver.h>
@@ -60,6 +62,8 @@ dsd_curl_global_ready(void) {
 }
 
 #ifdef __ANDROID__
+#include <dirent.h>
+
 /*
  * OpenSSL compiles in /etc/ssl/certs as its default trust store, and Android has
  * no such directory: every https:// request would fail certificate verification
@@ -83,6 +87,195 @@ dsd_curl_android_ca_path(void) {
     }
     return NULL;
 }
+
+/*
+ * CURLOPT_CAPATH alone does not work here, which cost a device debugging session
+ * to establish: the path is set, the directory exists and is readable, no SELinux
+ * denial is logged, and the very same store verifies the same chain on a desktop
+ * with the same OpenSSL 3.6.3 the APK links - yet in the app process the hashed
+ * directory lookup resolves nothing and every https:// request fails with
+ * CURLE_PEER_FAILED_VERIFICATION. Not a RadioReference problem: rdio-scanner
+ * uploads use this same helper and had the same defect.
+ *
+ * So the roots are handed to libcurl directly instead. The store is read once
+ * into one PEM blob and kept for the life of the process; CURL_BLOB_NOCOPY means
+ * libcurl borrows it rather than copying it per handle. CAPATH is still set below
+ * as a fallback for the case where this assembly fails.
+ *
+ * Android's files are a PEM certificate followed by a human-readable text dump,
+ * so only the BEGIN..END block of each is taken - a straight concatenation would
+ * hand libcurl a bundle padded with fingerprint listings.
+ */
+#if LIBCURL_VERSION_NUM >= 0x074D00 /* CURLOPT_CAINFO_BLOB landed in 7.77.0 */
+
+#define DSD_CA_FILE_MAX (128U * 1024U)
+#define DSD_CA_BLOB_MAX (4U * 1024U * 1024U)
+
+static const char k_pem_begin[] = "-----BEGIN CERTIFICATE-----";
+static const char k_pem_end[] = "-----END CERTIFICATE-----";
+
+/** Growable byte buffer for the assembled bundle. */
+typedef struct {
+    char* data;
+    size_t len;
+    size_t cap;
+} dsd_ca_buf;
+
+/**
+ * @brief Append bytes, growing by doubling.
+ *
+ * @param buf  Destination.
+ * @param text Bytes to append.
+ * @param n    Length in bytes.
+ * @return 0 on success, -1 on allocation failure or when the cap would be passed.
+ */
+static int
+dsd_ca_buf_append(dsd_ca_buf* buf, const char* text, size_t n) {
+    if (n == 0U) {
+        return 0;
+    }
+    if (buf->len > DSD_CA_BLOB_MAX - n) {
+        return -1;
+    }
+
+    const size_t needed = buf->len + n;
+    if (needed > buf->cap) {
+        size_t next = (buf->cap == 0U) ? 65536U : buf->cap;
+        while (next < needed) {
+            next *= 2U;
+        }
+        char* grown = (char*)realloc(buf->data, next);
+        if (grown == NULL) {
+            return -1;
+        }
+        buf->data = grown;
+        buf->cap = next;
+    }
+
+    DSD_MEMCPY(buf->data + buf->len, text, n);
+    buf->len += n;
+    return 0;
+}
+
+/**
+ * @brief Append one store file's PEM block, ignoring anything that is not one.
+ *
+ * @param buf  Destination bundle.
+ * @param path Absolute path of the candidate certificate file.
+ * @return 0 when a certificate was appended, -1 otherwise. A miss is not fatal:
+ *         one unreadable root must not cost the whole trust store.
+ */
+static int
+dsd_ca_append_file(dsd_ca_buf* buf, const char* path) {
+    FILE* fp = dsd_fopen_existing_regular_file(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    char* text = (char*)malloc(DSD_CA_FILE_MAX + 1U);
+    if (text == NULL) {
+        (void)fclose(fp);
+        return -1;
+    }
+    const size_t got = fread(text, 1U, DSD_CA_FILE_MAX, fp);
+    (void)fclose(fp);
+    text[got] = '\0';
+
+    int rc = -1;
+    const char* begin = strstr(text, k_pem_begin);
+    const char* end = (begin != NULL) ? strstr(begin, k_pem_end) : NULL;
+    if (end != NULL) {
+        const size_t span = (size_t)(end - begin) + sizeof(k_pem_end) - 1U;
+        rc = dsd_ca_buf_append(buf, begin, span);
+        if (rc == 0) {
+            rc = dsd_ca_buf_append(buf, "\n", 1U);
+        }
+    }
+
+    free(text);
+    return rc;
+}
+
+/**
+ * @brief Read every certificate in the system trust store into @p buf.
+ *
+ * @param buf Destination bundle.
+ * @return How many certificates were appended.
+ */
+static int
+dsd_ca_scan_store(dsd_ca_buf* buf) {
+    const char* dir_path = dsd_curl_android_ca_path();
+    if (dir_path == NULL) {
+        return 0;
+    }
+    DIR* dir = opendir(dir_path);
+    if (dir == NULL) {
+        return 0;
+    }
+
+    int count = 0;
+    const struct dirent* entry = readdir(dir);
+    while (entry != NULL) {
+        char path[512];
+        if (entry->d_name[0] != '.' && DSD_SNPRINTF(path, sizeof(path), "%s/%s", dir_path, entry->d_name) > 0
+            && dsd_ca_append_file(buf, path) == 0) {
+            count++;
+        }
+        entry = readdir(dir);
+    }
+    (void)closedir(dir);
+    return count;
+}
+
+static atomic_int g_ca_blob_state = 0; /* 0=unbuilt 1=building 2=ready 3=failed */
+static char* g_ca_blob = NULL;
+static size_t g_ca_blob_len = 0;
+
+/**
+ * @brief The system roots as one PEM blob, assembled once.
+ *
+ * Same atomic tri-state as dsd_curl_global_ready(): two worker threads (rdio's
+ * and RadioReference's) can reach this concurrently.
+ *
+ * @param out_len Receives the blob length.
+ * @return Borrowed blob, or NULL when the store could not be read.
+ */
+static const char*
+dsd_curl_android_ca_blob(size_t* out_len) {
+    for (;;) {
+        const int state = atomic_load(&g_ca_blob_state);
+        if (state == 2) {
+            *out_len = g_ca_blob_len;
+            return g_ca_blob;
+        }
+        if (state == 3) {
+            return NULL;
+        }
+        if (state == 0) {
+            int expected = 0;
+            if (atomic_compare_exchange_strong(&g_ca_blob_state, &expected, 1)) {
+                break;
+            }
+        }
+        dsd_sleep_ms(1U);
+    }
+
+    dsd_ca_buf buf = {NULL, 0U, 0U};
+    const int count = dsd_ca_scan_store(&buf);
+    if (count <= 0 || buf.len == 0U) {
+        free(buf.data);
+        LOG_ERROR("Android trust store yielded no certificates; https will fail\n");
+        atomic_store(&g_ca_blob_state, 3);
+        return NULL;
+    }
+
+    g_ca_blob = buf.data;
+    g_ca_blob_len = buf.len;
+    atomic_store(&g_ca_blob_state, 2);
+    *out_len = g_ca_blob_len;
+    return g_ca_blob;
+}
+#endif /* LIBCURL_VERSION_NUM >= 0x074D00 */
 #else
 const char*
 dsd_curl_android_ca_path(void) {
@@ -109,6 +302,18 @@ dsd_curl_apply_hardening(CURL* curl, int connect_timeout_ms, int total_timeout_m
         curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent);
     }
 
+#if defined(__ANDROID__) && LIBCURL_VERSION_NUM >= 0x074D00
+    size_t ca_blob_len = 0U;
+    const char* ca_blob = dsd_curl_android_ca_blob(&ca_blob_len);
+    if (ca_blob != NULL && ca_blob_len > 0U) {
+        /* NOCOPY: the blob outlives every handle, so libcurl borrows it rather
+         * than copying a few hundred kilobytes per request. */
+        struct curl_blob blob = {(void*)ca_blob, ca_blob_len, CURL_BLOB_NOCOPY};
+        curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, &blob);
+    }
+#endif
+    /* Still set, as the fallback for a build or a device where the blob above
+     * could not be assembled. libcurl prefers the blob when both are present. */
     const char* ca_path = dsd_curl_android_ca_path();
     // cppcheck-suppress knownConditionTrueFalse -- off Android the helper is
     // defined to return NULL, which is what lets callers skip an #ifdef.
