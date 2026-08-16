@@ -56,6 +56,7 @@ Item {
         // loaded would hand the next one a screen it never set up.
         function init() {
             testContext.setRadioReference("hasAppKey", false)
+            testContext.setRadioReference("buildHasAppKey", false)
             testContext.setRadioReference("credentialsReady", false)
             testContext.setRadioReference("conventional", false)
             testContext.setRadioReference("busy", false)
@@ -295,6 +296,129 @@ Item {
             verify(county !== null, "the county sheet is missing")
             compare(county.rowCount, 0, "an unfetched level did not read as empty")
         }
+
+        // A build that bakes the application key in never asks for one: the
+        // field would sit under the password box looking like a second secret,
+        // and anything typed there becomes a stored override that breaks the
+        // working key.
+        function test_08_a_keyed_build_never_asks_for_an_application_key() {
+            testContext.setRadioReference("buildHasAppKey", true)
+
+            var credentials = findChild(tc.screen, "radioReferenceCredentials")
+            tryVerify(function () { return credentials.visible },
+                      2000, "the credentials gate is missing for a keyed build")
+
+            var appKey = findChild(tc.screen, "radioReferenceAppKeyField")
+            verify(!appKey.visible, "a build with a baked key still asked for one")
+
+            var username = findChild(tc.screen, "radioReferenceUsernameField")
+            verify(username.visible, "the username field went missing with the key hidden")
+            var password = findChild(tc.screen, "radioReferencePasswordField")
+            verify(password.visible, "the password field went missing with the key hidden")
+        }
+
+        // The screen is a drill-down: find/results, or the loaded system —
+        // never both. A loaded system swaps the search controls for a back row,
+        // and closing it (simulated here by the model answering closeSystem()
+        // with cleared readings) puts the results list back.
+        function test_09_a_loaded_system_swaps_the_find_stage_for_a_back_row() {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systems", [
+                                              { "sid": 6673, "name": "SARA Network", "city": "" },
+                                              { "sid": 8734, "name": "ISICS", "city": "" }
+                                          ])
+
+            var sourcePanel = findChild(tc.screen, "radioReferenceSourcePanel")
+            var systemList = findChild(tc.screen, "radioReferenceSystemList")
+            var backRow = findChild(tc.screen, "radioReferenceBackToResults")
+            verify(backRow !== null, "the back row is missing")
+            tryVerify(function () { return systemList.visible },
+                      2000, "the results list did not appear")
+            verify(sourcePanel.visible, "the find panel went missing on the results stage")
+            verify(!backRow.visible, "the back row appeared with nothing to go back from")
+
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 6673,
+                                              "name": "SARA Network",
+                                              "typeDescr": "Project 25",
+                                              "flavorDescr": "Phase II"
+                                          })
+            tryVerify(function () { return !sourcePanel.visible },
+                      2000, "the find panel stayed up over a loaded system")
+            verify(!systemList.visible, "the results list stayed up over a loaded system")
+            verify(backRow.visible, "a loaded system offered no way back")
+
+            // The model keeps the results list across closeSystem(); with the
+            // system gone the screen must land back on it.
+            testContext.setRadioReference("systemDetails", {})
+            testContext.setRadioReference("sites", [])
+            tryVerify(function () { return systemList.visible },
+                      2000, "closing the system did not bring the results back")
+            verify(sourcePanel.visible, "closing the system did not bring the find panel back")
+            verify(!backRow.visible, "the back row outlived the system it went back from")
+        }
+
+        // One trunked site is not a choice: the screen answers it, so the
+        // preview and the Import button light up without a tap on the only row.
+        // A conventional single repeater stays a question — "which repeaters
+        // can I hear" has a real no-selection answer.
+        function test_10_a_single_trunked_site_selects_itself() {
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("systemDetails", {
+                                              "sid": 6673,
+                                              "name": "Test System",
+                                              "typeDescr": "Project 25",
+                                              "flavorDescr": "Phase II"
+                                          })
+            testContext.setRadioReference("sites", [
+                                              { "siteNumber": 1, "descr": "Alpha", "freqCount": 11,
+                                                "controlFreqMhz": "851.0125", "simulcast": true,
+                                                "freqMhz": "851.0125", "colorCode": "" }
+                                          ])
+            tryVerify(function () { return tc.screen.selectedSites.length === 1 },
+                      2000, "the only site of a trunked system was not selected")
+            compare(tc.screen.selectedSites[0], 0, "the wrong site index was selected")
+
+            // Two sites are a real choice, so nothing is answered for the user.
+            testContext.setRadioReference("sites", [
+                                              { "siteNumber": 1, "descr": "Alpha", "freqCount": 11,
+                                                "controlFreqMhz": "851.0125", "simulcast": true,
+                                                "freqMhz": "851.0125", "colorCode": "" },
+                                              { "siteNumber": 2, "descr": "Bravo", "freqCount": 13,
+                                                "controlFreqMhz": "852.5", "simulcast": false,
+                                                "freqMhz": "852.5", "colorCode": "" }
+                                          ])
+            tryVerify(function () { return tc.screen.selectedSites.length === 0 },
+                      2000, "a two-site system had a site answered for the user")
+
+            testContext.setRadioReference("conventional", true)
+            testContext.setRadioReference("sites", [
+                                              { "siteNumber": 310011, "descr": "Zeta", "freqCount": 1,
+                                                "controlFreqMhz": "", "simulcast": false,
+                                                "freqMhz": "444.525", "colorCode": "1" }
+                                          ])
+            tryVerify(function () { return tc.screen.selectedSites.length === 0 },
+                      2000, "a lone conventional repeater was selected uninvited")
+        }
+
+        // In a keyed build the user has no application key to fix, so an auth
+        // failure must not send them hunting for one.
+        function test_11_auth_wording_matches_what_this_build_asks_for() {
+            var notice = findChild(tc.screen, "radioReferenceNotice")
+            testContext.setRadioReference("errorText", "Invalid Username or Password")
+            testContext.setRadioReference("errorIsAuth", true)
+
+            testContext.setRadioReference("buildHasAppKey", true)
+            tryVerify(function () { return notice.visible && notice.text.indexOf("application key") < 0 },
+                      2000, "a keyed build blamed an application key the user cannot fix: " + notice.text)
+            verify(notice.text.indexOf("username or password") >= 0,
+                   "a keyed build's auth failure did not name the two real culprits: " + notice.text)
+
+            testContext.setRadioReference("buildHasAppKey", false)
+            tryVerify(function () { return notice.text.indexOf("application key") >= 0 },
+                      2000, "a keyless build's auth failure stopped naming the key: " + notice.text)
+        }
+
     }
 
     // "Refresh from RadioReference" is offered on a row this app generated and on

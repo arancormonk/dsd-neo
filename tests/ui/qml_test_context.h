@@ -810,6 +810,9 @@ class Setup : public QObject {
         QVariantMap rr;
         rr[QStringLiteral("available")] = false;
         rr[QStringLiteral("hasAppKey")] = false;
+        /* Whether the binary bakes an application key in. False, like a source
+         * build with DSD_RR_APP_KEY unset, so the key field is offered. */
+        rr[QStringLiteral("buildHasAppKey")] = false;
         rr[QStringLiteral("credentialsReady")] = false;
         rr[QStringLiteral("busy")] = false;
         rr[QStringLiteral("statusText")] = QString();

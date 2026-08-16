@@ -88,6 +88,12 @@ Item {
         screen.selectedSites = []
         screen.simulcastOverride = -1
         screen.eskOverride = -1
+        // A single-site trunked system has exactly one right answer, so give
+        // it: the preview and the Import button light up without asking for a
+        // tap on the only row there is. Conventional lists stay untouched —
+        // "which repeaters can I hear" is a real question even with one entry.
+        if (!radioReference.conventional && screen.siteList.length === 1)
+            screen.selectedSites = [0]
         screen.refreshPlan()
     }
 
@@ -125,6 +131,12 @@ Item {
 
     /** Clear everything that belongs to one visit. */
     function reset() {
+        // A visit never starts mid-system: drop whatever the last visit — or a
+        // library refresh, which loads the system it re-fetches — left behind.
+        // The model keeps the results list across this on purpose, so "come
+        // back and import the next one" starts at the list, not at a search.
+        if (screen.rrLive())
+            radioReference.closeSystem()
         screen.sourceMode = 0
         zipField.text = ""
         sidField.text = ""
@@ -540,10 +552,15 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         visible: text.length > 0
+        // The auth wording names only what the user can fix here: a build that
+        // bakes the application key (with no override stored) leaves username
+        // and password as the two possible culprits.
         text: radioReference.errorIsSubscription
               ? qsTr("This account's RadioReference premium subscription has expired.")
               : radioReference.errorIsAuth
-                ? qsTr("RadioReference did not accept that username, password or application key.")
+                ? (radioReference.buildHasAppKey && prefs.rrAppKey.length === 0
+                   ? qsTr("RadioReference did not accept that username or password.")
+                   : qsTr("RadioReference did not accept that username, password or application key."))
                 : radioReference.errorText.length > 0 ? radioReference.errorText : screen.notice
         font.family: Theme.sans
         font.pixelSize: 13
@@ -585,12 +602,17 @@ Item {
             // Every user authenticates with their own RadioReference account and
             // needs their own premium subscription; nothing is pooled, and the
             // password is never written anywhere.
+            //
+            // Username and password lead, the way every sign-in form does. The
+            // application key comes last and only in a build that bakes none in
+            // (buildHasAppKey, not hasAppKey: a stored override must not hide
+            // the field that edits it).
             UiPanel {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "radioReferenceCredentials"
 
                 width: parent.width
-                visible: !radioReference.hasAppKey || !radioReference.credentialsReady
+                visible: !radioReference.credentialsReady
                 height: credentialsColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -604,45 +626,6 @@ Item {
 
                     MicroLabel {
                         text: qsTr("RadioReference account")
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: !radioReference.hasAppKey
-                        text: qsTr("Application key")
-                        font.family: Theme.sans
-                        font.pixelSize: 13
-                        color: Theme.textSecondary
-                    }
-
-                    PlexTextField {
-                        id: appKeyField
-
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceAppKeyField"
-
-                        width: parent.width
-                        visible: !radioReference.hasAppKey
-                        mono: true
-                        text: prefs.rrAppKey
-                        placeholderText: qsTr("application key")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        // Commit on Enter or focus loss, not per keystroke: every
-                        // write lands in QSettings (disk on Android).
-                        onEditingFinished: prefs.rrAppKey = text
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: !radioReference.hasAppKey
-                        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
-                        textFormat: Text.StyledText
-                        linkColor: Theme.cyan
-                        font.family: Theme.sans
-                        font.pixelSize: 12
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                        onLinkActivated: function (link) { Qt.openUrlExternally(link) }
                     }
 
                     Text {
@@ -706,6 +689,50 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
+                    Text {
+                        width: parent.width
+                        visible: !radioReference.buildHasAppKey
+                        text: qsTr("Application key")
+                        font.family: Theme.sans
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
+                    }
+
+                    PlexTextField {
+                        id: appKeyField
+
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "radioReferenceAppKeyField"
+
+                        width: parent.width
+                        visible: !radioReference.buildHasAppKey
+                        mono: true
+                        text: prefs.rrAppKey
+                        placeholderText: qsTr("application key")
+                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                        // Commit on Enter or focus loss, not per keystroke: every
+                        // write lands in QSettings (disk on Android). The account
+                        // check fires the same way the password field's does, so
+                        // whichever field is answered last completes the form.
+                        onEditingFinished: {
+                            prefs.rrAppKey = text
+                            screen.verifyAccount()
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        visible: !radioReference.buildHasAppKey
+                        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
+                        textFormat: Text.StyledText
+                        linkColor: Theme.cyan
+                        font.family: Theme.sans
+                        font.pixelSize: 12
+                        color: Theme.textSubdued
+                        wrapMode: Text.Wrap
+                        onLinkActivated: function (link) { Qt.openUrlExternally(link) }
+                    }
+
                     OutlineButton {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceCheckAccountButton"
@@ -719,12 +746,16 @@ Item {
             }
 
             // ---- Where to look ----
+            // Hidden while a system is loaded: the screen is a drill-down, and
+            // showing the search controls above a system being configured made
+            // it read as two screens at once — searching from there fetched a
+            // results list that stayed invisible behind the loaded system.
             UiPanel {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "radioReferenceSourcePanel"
 
                 width: parent.width
-                visible: radioReference.credentialsReady
+                visible: radioReference.credentialsReady && !screen.systemLoaded
                 height: sourceColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -909,6 +940,55 @@ Item {
                             tapEnabled: !radioReference.busy
                             onTapped: screen.openSystem(systemRow.modelData.sid)
                         }
+                    }
+                }
+            }
+
+            // ---- Back to the find stage ----
+            // The drill-down's way out: a loaded system replaces the find panel
+            // and the results list, and this row is what puts them back. The
+            // model keeps the results across closeSystem(), so "back, pick the
+            // next one" is one tap — the loop for importing several systems
+            // from one search.
+            Item {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "radioReferenceBackToResults"
+
+                width: parent.width
+                height: 40
+                visible: screen.systemLoaded
+                opacity: radioReference.busy ? 0.5 : 1.0
+
+                Row {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "‹"
+                        font.pixelSize: 22
+                        color: Theme.cyan
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        // Named after where it lands: the results list when one
+                        // is in hand, otherwise the find-a-system panel.
+                        text: radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
+                        font.family: Theme.sans
+                        font.pixelSize: 14
+                        font.weight: Font.DemiBold
+                        color: Theme.cyan
+                    }
+                }
+
+                TapHandler {
+                    enabled: !radioReference.busy
+                    onTapped: {
+                        screen.clearNotice()
+                        if (screen.rrLive())
+                            radioReference.closeSystem()
                     }
                 }
             }
