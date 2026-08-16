@@ -351,9 +351,19 @@ Item {
                         }
                     }
 
+                    // A build that bakes the application key in does not ask for
+                    // one: this row sat right under Username looking like a
+                    // password box, and anything typed here becomes a stored
+                    // override that outranks the working baked key. It stays
+                    // visible while an override IS stored — the field is the
+                    // only way to see and clear it, and clearing re-hides it.
                     Item {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "settingsRrAppKeyRow"
+
                         width: parent.width
                         height: 76
+                        visible: !radioReference.buildHasAppKey || prefs.rrAppKey.length > 0
 
                         Text {
                             id: rrKeyLabel
@@ -376,7 +386,11 @@ Item {
                             height: 38
                             mono: true
                             text: prefs.rrAppKey
-                            placeholderText: qsTr("leave empty to use this build's key")
+                            // "Leave empty" is only true when there is a build
+                            // key to fall back to.
+                            placeholderText: radioReference.buildHasAppKey
+                                             ? qsTr("leave empty to use this build's key")
+                                             : qsTr("application key")
                             inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
                             onEditingFinished: prefs.rrAppKey = text
                         }

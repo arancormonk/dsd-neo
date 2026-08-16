@@ -38,6 +38,16 @@ Item {
         source: uiDir + "/ImportsScreen.qml"
     }
 
+    // The stored-credentials rows live in Settings; the key row's gate is what
+    // the last case below pins.
+    Loader {
+        id: settingsLoader
+
+        anchors.fill: parent
+        active: false
+        source: uiDir + "/SettingsScreen.qml"
+    }
+
     TestCase {
         id: tc
 
@@ -483,6 +493,58 @@ Item {
 
             sheet.visible = false
             refreshCase.screen.actionRow = -1
+        }
+    }
+
+    // The Settings application-key row exists for builds that need a key from
+    // the user. In a keyed build it hides — it sat right under Username reading
+    // as a password box, and anything typed there becomes a stored override
+    // that outranks the working baked key — except while an override IS stored:
+    // the field is the only place to see and clear one.
+    TestCase {
+        id: settingsCase
+
+        name: "SettingsRadioReferenceKeyRow"
+        when: windowShown
+
+        property var screen: null
+
+        function initTestCase() {
+            testContext.setRadioReference("available", true)
+            settingsLoader.active = true
+            settingsCase.screen = settingsLoader.item
+            verify(settingsCase.screen !== null, "SettingsScreen.qml failed to load")
+        }
+
+        function cleanupTestCase() {
+            testContext.setRadioReference("available", false)
+            testContext.setRadioReference("buildHasAppKey", false)
+            testContext.setPrefs("rrAppKey", "")
+        }
+
+        function test_01_the_key_row_follows_what_this_build_needs() {
+            var row = findChild(settingsCase.screen, "settingsRrAppKeyRow")
+            verify(row !== null, "the application-key row is missing")
+
+            // A keyless build needs the user's key, so the row is offered.
+            testContext.setRadioReference("buildHasAppKey", false)
+            testContext.setPrefs("rrAppKey", "")
+            tryVerify(function () { return row.visible },
+                      2000, "a keyless build hid the application-key row")
+
+            // A keyed build asks for nothing.
+            testContext.setRadioReference("buildHasAppKey", true)
+            tryVerify(function () { return !row.visible },
+                      2000, "a keyed build still offered the application-key row")
+
+            // ...unless an override is stored, which must stay visible to stay
+            // clearable — and clearing it re-hides the row.
+            testContext.setPrefs("rrAppKey", "OVERRIDE_KEY_1a2")
+            tryVerify(function () { return row.visible },
+                      2000, "a stored override was invisible and uneditable")
+            testContext.setPrefs("rrAppKey", "")
+            tryVerify(function () { return !row.visible },
+                      2000, "clearing the override did not re-hide the row")
         }
     }
 }

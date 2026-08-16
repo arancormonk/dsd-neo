@@ -494,6 +494,22 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Set one prefs key, for the same reason setRadioReference() exists.
+     *
+     * The fixture prefs are a plain map too, so a screen that gates on a stored
+     * preference (the Settings application-key row reads prefs.rrAppKey) could
+     * otherwise only ever be tested at the fixture's defaults. Reads only, like
+     * the rest of the map: a QML write to prefs.* still no-ops here.
+     */
+    Q_INVOKABLE void
+    setPrefs(const QString& key, const QVariant& value) {
+        m_prefs[key] = value;
+        if (m_engine != nullptr) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
+        }
+    }
+
+    /**
      * @brief Reads in @p qmlFiles that name a context-property key the fixture lacks.
      *
      * Returns "metrics.someReading" style entries, empty when the maps below cover

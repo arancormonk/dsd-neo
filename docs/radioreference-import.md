@@ -23,7 +23,11 @@ terminal UI can adopt it later; today the Qt Quick frontend is the only consumer
 ## The application key
 
 RadioReference issues one key per *application*, separately from your account. dsd-neo can carry a
-project key baked in at build time, and you can override it with your own.
+project key baked in at build time; a build that carries one never asks the user for a key — the
+key fields stay hidden, and sign-in is just the RadioReference username and password. In a build
+without a baked key, the import screen and Settings both offer the key field, and the entered key
+is stored. A stored key always takes precedence over the baked one; in a keyed build the Settings
+field only reappears while such an override is stored, so it can be seen and cleared.
 
 Baking one in:
 
