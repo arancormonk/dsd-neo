@@ -619,7 +619,7 @@ rr_collect_rows(const dsd_rr_site* site, long min_chan, long max_chan, rr_chan_r
  */
 static void
 rr_warn_skips(const rr_skip_counts* skips, const char* label, const char* range, dsd_rr_warning_list* warnings) {
-    char msg[192];
+    char msg[DSD_RR_WARNING_TEXT_MAX];
     if (skips->no_freq > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu site frequency/frequencies had no usable value and were skipped.",
                            skips->no_freq);
@@ -759,7 +759,7 @@ rr_chan_p25(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warning
         return;
     }
 
-    char msg[192];
+    char msg[DSD_RR_WARNING_TEXT_MAX];
     if (skips.unusable > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu site frequency/frequencies had no usable value and were skipped.",
                            skips.unusable);
@@ -939,7 +939,7 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
     }
 
     if (dropped > 0U) {
-        char msg[192];
+        char msg[DSD_RR_WARNING_TEXT_MAX];
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu EDACS LCN(s) above 25 were dropped; only 25 are reachable.", dropped);
         rr_warn(warnings, msg);
     }
@@ -963,7 +963,7 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
         rr_text_chan_row(text, (long)lcn, by_lcn[lcn], NULL);
     }
     if (gaps > 0U) {
-        char msg[192];
+        char msg[DSD_RR_WARNING_TEXT_MAX];
         (void)DSD_SNPRINTF(msg, sizeof(msg),
                            "%zu EDACS LCN slot(s) have no frequency and were written as placeholders; the import "
                            "reports them as skipped rows, which keeps every later LCN in position.",
@@ -1019,7 +1019,7 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
         count++;
     }
 
-    char msg[192];
+    char msg[DSD_RR_WARNING_TEXT_MAX];
     if (empty > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu selected repeater(s) list no usable frequency and were skipped.",
                            empty);
@@ -1345,7 +1345,7 @@ rr_group_emit(rr_text* text, const dsd_rr_talkgroup* talkgroup, int partial_enc_
  */
 static void
 rr_group_warn(dsd_rr_warning_list* warnings, const rr_group_counts* counts) {
-    char msg[192];
+    char msg[DSD_RR_WARNING_TEXT_MAX];
     if (counts->duplicates > 0U) {
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu duplicate talkgroup ID(s) were dropped; the first one wins.",
                            counts->duplicates);
