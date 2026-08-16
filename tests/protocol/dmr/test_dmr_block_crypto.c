@@ -178,6 +178,29 @@ test_print_info_reveals_full_aes256_key_when_first_segment_zero(void) {
 }
 
 static int
+test_print_info_starts_on_its_own_line(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    char output[256];
+    const uint8_t slot = 0;
+    const int kid = 0x23;
+    int rc = 0;
+
+    seed_window(&state, slot, 0, 28);
+    state.payload_algid = 4;
+    state.payload_keyid = kid;
+    seed_key_array(&state, kid, 0x0123456789ABCDEFULL, 0ULL, 0xDEADBEEFDEADBEEFULL, 0ULL);
+
+    dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
+    if (capture_print_info(&ctx, 1, output, sizeof output) != 0) {
+        return 1;
+    }
+    rc |= expect_int("crypto banner breaks the line before PDU ALG", output[0] == '\n', 1);
+    rc |= expect_int("crypto banner emits no literal backslash-n", strstr(output, "\\n") == NULL, 1);
+    return rc;
+}
+
+static int
 test_aes128_zero_mi_uses_reference_ecb_block_count(void) {
     static const uint8_t ciphertext[16] = {0x69, 0xC4, 0xE0, 0xD8, 0x6A, 0x7B, 0x04, 0x30,
                                            0xD8, 0xCD, 0xB7, 0x80, 0x70, 0xB4, 0xC5, 0x5A};
@@ -429,6 +452,7 @@ main(void) {
     rc |= test_aes_nonzero_mi_keeps_ofb_path();
     rc |= test_print_info_reveals_full_aes128_key();
     rc |= test_print_info_reveals_full_aes256_key_when_first_segment_zero();
+    rc |= test_print_info_starts_on_its_own_line();
     rc |= test_rc4_decrypts_window_with_key_id_lookup();
     rc |= test_des_decrypts_window_with_manual_key_fallback();
     rc |= test_basic_privacy_decrypts_window();
