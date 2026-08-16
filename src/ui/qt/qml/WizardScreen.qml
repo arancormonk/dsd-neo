@@ -29,7 +29,12 @@ Item {
     // Step 2 state
     property alias freqText: freqField.text
     property string decodeFlag: ""
-    property bool trunking: true
+    property bool trunking: false
+    // Whether the trunking question has been answered — by the user's own
+    // toggle, a RadioReference import, or a saved system being edited. Until
+    // then the decode chip pick suggests it (see pickDecodeFlag), and an
+    // explicit answer must survive every later chip change.
+    property bool trunkingAnswered: false
     property bool advancedOpen: false
     property alias gainText: gainField.text
     property alias ppmText: ppmField.text
@@ -90,7 +95,8 @@ Item {
         fileField.text = ""
         freqField.text = "851.375"
         decodeFlag = ""
-        trunking = true
+        trunking = false
+        trunkingAnswered = false
         advancedOpen = false
         gainField.text = ""
         ppmField.text = ""
@@ -124,7 +130,8 @@ Item {
         fileField.text = ""
         freqField.text = freqMhz
         decodeFlag = ""
-        trunking = true
+        trunking = false
+        trunkingAnswered = false
         advancedOpen = false
         gainField.text = ""
         ppmField.text = ""
@@ -151,6 +158,9 @@ Item {
         freqField.text = sys.freqMhz
         decodeFlag = sys.decodeFlag
         trunking = sys.trunking
+        // The saved system already answered the question; a chip tap during
+        // the edit must not silently flip what the card was doing yesterday.
+        trunkingAnswered = true
         advancedOpen = false
         gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : ""
         ppmField.text = sys.ppm
@@ -172,6 +182,26 @@ Item {
             return qsTr("None")
         var row = importedFiles.rowForPath(path)
         return row >= 0 ? importedFiles.get(row).name : path.substring(path.lastIndexOf('/') + 1)
+    }
+
+    /**
+     * Take a decode chip pick, suggesting the trunking answer with it.
+     *
+     * A new system starts with trunking off, and most users cannot answer
+     * "is it trunked?" cold — but an explicit P25 pick almost certainly means
+     * a trunked system, so the switch follows the chip until the user (or a
+     * RadioReference import, or an edit's saved state) answers it for real.
+     */
+    function pickDecodeFlag(flag) {
+        decodeFlag = flag
+        if (!trunkingAnswered)
+            trunking = Util.decodeSuggestsTrunking(flag)
+    }
+
+    /** The user's own toggle: an answer, which no later chip pick may undo. */
+    function answerTrunking(state) {
+        trunking = state
+        trunkingAnswered = true
     }
 
     // parseInt alone lets a hardware-keyboard "abc" become NaN, which QVariant
@@ -282,7 +312,10 @@ Item {
         if (result.freqMhz && result.freqMhz.length > 0)
             freqField.text = result.freqMhz
         wizard.decodeFlag = result.decodeFlag
+        // The database's answer, and an answer: a chip tap after the import
+        // must not second-guess what the record says the system is.
         wizard.trunking = result.trunking
+        wizard.trunkingAnswered = true
         // Only when the wizard has no name yet: an edit already has one the user
         // chose, and RadioReference's is a database title, not their label.
         if (nameField.text.trim().length === 0 && result.name)
@@ -619,12 +652,19 @@ Item {
 
                         Text {
                             width: parent.width
-                            // Only a build without the importer sends the user
-                            // to the website; with it, the entry above IS the
-                            // way to look the frequency up.
-                            text: radioReference.available
-                                  ? qsTr("Tune to the system's control channel.")
-                                  : qsTr("Tune to the system's control channel — find it on RadioReference.")
+                            // "Control channel" only while the trunking answer
+                            // below says there is one — a conventional system
+                            // has no control channel, and the line follows the
+                            // switch as it changes. Only a build without the
+                            // importer sends the user to the website; with it,
+                            // the entry above IS the way to look this up.
+                            text: wizard.trunking
+                                  ? (radioReference.available
+                                     ? qsTr("Tune to the system's control channel.")
+                                     : qsTr("Tune to the system's control channel — find it on RadioReference."))
+                                  : (radioReference.available
+                                     ? qsTr("Tune to the frequency you want to hear.")
+                                     : qsTr("Tune to the frequency you want to hear — find it on RadioReference."))
                             font.family: Theme.sans
                             font.pixelSize: 13
                             color: Theme.textSubdued
@@ -653,7 +693,7 @@ Item {
 
                             text: modelData.label
                             selected: wizard.decodeFlag === modelData.flag
-                            onClicked: wizard.decodeFlag = modelData.flag
+                            onClicked: wizard.pickDecodeFlag(modelData.flag)
                         }
                     }
                 }
@@ -681,7 +721,10 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: qsTr("Follow calls across channels")
+                            // The term, not a description: this audience knows
+                            // trunking by name, and the subtitle carries the
+                            // decision rule for anyone who does not.
+                            text: qsTr("Trunking")
                             font.family: Theme.sans
                             font.pixelSize: 15
                             font.weight: Font.DemiBold
@@ -691,7 +734,13 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: qsTr("Trunking — recommended for public safety")
+                            // The decision rule, not the audience: a trunked
+                            // utility system wants this on, a conventional fire
+                            // channel wants it off. "Control channel" rather
+                            // than "trunked" — the title and the card below
+                            // already carry the term, and it is the thing the
+                            // user actually tuned.
+                            text: qsTr("On when the system uses a control channel")
                             font.family: Theme.sans
                             font.pixelSize: 13
                             color: Theme.textSubdued
@@ -705,7 +754,7 @@ Item {
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
                         checked: wizard.trunking
-                        onToggled: function (state) { wizard.trunking = state }
+                        onToggled: function (state) { wizard.answerTrunking(state) }
                     }
                 }
 

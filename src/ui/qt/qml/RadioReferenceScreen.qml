@@ -801,7 +801,7 @@ Item {
 
                             width: parent.width - zipGo.width - 10
                             mono: true
-                            placeholderText: qsTr("e.g. 52401")
+                            placeholderText: qsTr("e.g. 12345")
                             inputMethodHints: Qt.ImhDigitsOnly
                             // A leading-zero zip resolves correctly as an int, so
                             // the validator is only here to stop a stray letter

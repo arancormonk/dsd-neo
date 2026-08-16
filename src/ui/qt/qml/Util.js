@@ -18,13 +18,17 @@ var DECODE_MODES = [
         // commonly Phase 2, and -f1 sets frame_p25p2=0 — every Phase 2 voice
         // grant would tune and stay permanently mute. -ft keeps the P25p1
         // control channel plus both voice phases.
-        label: "P25", short: "P25", flag: "-ft",
+        // trunked: an explicit P25 pick almost certainly means a trunked
+        // system, so the wizard suggests turning call-following on. Only these
+        // two chips carry it — DMR and NXDN trunk too, but conventional use is
+        // common enough there that neither answer is a safe suggestion.
+        label: "P25", short: "P25", flag: "-ft", trunked: true,
         hint: "Standard P25 — most statewide and county digital systems."
     },
     {
         // -mq alone, not -f1 -mq: QPSK is what LSM needs, and the engine's default
         // decode set already covers both P25 Phase 1 and Phase 2.
-        label: "P25 Simulcast", short: "P25 LSM", flag: "-mq",
+        label: "P25 Simulcast", short: "P25 LSM", flag: "-mq", trunked: true,
         hint: "Simulcast P25 (LSM) — pick this when standard P25 never locks or sounds garbled."
     },
     {
@@ -149,6 +153,17 @@ function decodeHint(flag) {
             return DECODE_MODES[i].hint
     }
     return ""
+}
+
+// Whether picking this chip should suggest turning trunking on. Flags outside
+// the catalog (the RadioReference import's composite forms) never reach this:
+// the import carries the database's own trunking answer instead.
+function decodeSuggestsTrunking(flag) {
+    for (var i = 0; i < DECODE_MODES.length; i++) {
+        if (DECODE_MODES[i].flag === flag)
+            return DECODE_MODES[i].trunked === true
+    }
+    return false
 }
 
 // The one-line mono meta under a saved system's name: "851.375 MHz · P25 trunked"
