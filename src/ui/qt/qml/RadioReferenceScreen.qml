@@ -612,7 +612,13 @@ Item {
                 objectName: "radioReferenceCredentials"
 
                 width: parent.width
-                visible: !radioReference.credentialsReady
+                // credentialsReady means the fields are FILLED, not accepted —
+                // so an account failure reopens the form, or the session-only
+                // password would have nowhere left to be retyped. Both account
+                // errors qualify: auth wants a correction, an expired
+                // subscription wants a different account.
+                visible: !radioReference.credentialsReady || radioReference.errorIsAuth
+                         || radioReference.errorIsSubscription
                 height: credentialsColumn.height + 2 * Theme.cardPadding
 
                 Column {

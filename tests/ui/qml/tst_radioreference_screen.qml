@@ -429,6 +429,33 @@ Item {
                       2000, "a keyless build's auth failure stopped naming the key: " + notice.text)
         }
 
+        // credentialsReady only says the fields are filled. When the account
+        // check comes back rejected, the form must reopen — the password lives
+        // nowhere but this screen, so a hidden form would leave no way to
+        // retype it short of restarting the app.
+        function test_12_a_rejected_account_reopens_the_credentials_form() {
+            testContext.setRadioReference("credentialsReady", true)
+
+            var credentials = findChild(tc.screen, "radioReferenceCredentials")
+            tryVerify(function () { return !credentials.visible },
+                      2000, "the form stayed up with the fields filled and no failure")
+
+            testContext.setRadioReference("errorText", "Invalid Username or Password")
+            testContext.setRadioReference("errorIsAuth", true)
+            tryVerify(function () { return credentials.visible },
+                      2000, "a rejected password left nowhere to retype it")
+
+            testContext.setRadioReference("errorIsAuth", false)
+            testContext.setRadioReference("errorIsSubscription", true)
+            tryVerify(function () { return credentials.visible },
+                      2000, "an expired subscription left nowhere to switch accounts")
+
+            testContext.setRadioReference("errorIsSubscription", false)
+            testContext.setRadioReference("errorText", "")
+            tryVerify(function () { return !credentials.visible },
+                      2000, "the form stayed up after the failure was resolved")
+        }
+
     }
 
     // "Refresh from RadioReference" is offered on a row this app generated and on
