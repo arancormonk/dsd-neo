@@ -741,6 +741,18 @@ main(void) {
         }
     }
 
+    // Case 13b: UDP/4005 ARS device registration honours the record length and reports the
+    // registered device identifier instead of dumping the record as raw text (issue #337).
+    {
+        reset_spies();
+        const uint8_t ars_reg[] = {0x00, 0x09, 0xF0, 0x20, 0x04, '1', '2', '3', '4', 0x00, 0x00};
+        size_t plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4005U, ars_reg, sizeof(ars_reg));
+        st.currentslot = 0;
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "ARS Reg: 1234;", "ars registration device id");
+    }
+
     // Case 14: UDP/4007 TMS acknowledgment and UTF-16 text take distinct state paths.
     {
         reset_spies();

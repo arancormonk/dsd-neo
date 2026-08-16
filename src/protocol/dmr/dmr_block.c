@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_ars.h"
 #include "dmr_block_crypto.h"
 #include "dmr_pdu_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -1250,7 +1251,9 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         uint8_t pdu_crc_ok = dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot);
         dmr_lrrp(ctx->opts, ctx->state, len, msrc, mdst, ctx->state->dmr_pdu_sf[ctx->slot] + 7, pdu_crc_ok);
     } else if (mnis_type == 0x33) {
-        utf8_to_text(ctx->state, 0, 15, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        // ARS records are length prefixed; a fixed dump window would run past the record
+        // into the block trailer and render it as random-looking text.
+        dmr_ars_print_message(ctx->state, ctx->state->dmr_pdu_sf[ctx->slot] + 7, len);
     } else if (mnis_type == 0x01) {
         utf8_to_text(ctx->state, 0, len - offset, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
@@ -1287,7 +1290,10 @@ static void
 dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx, int offset) {
     uint16_t byte_count = ctx->state->data_byte_ctr[ctx->slot];
     uint8_t poc = ctx->state->data_block_poc[ctx->slot];
-    uint16_t len = byte_count - poc - 4 - 7;
+    // A short PDU would wrap this subtraction to ~65k and then clamp to 150, handing the
+    // payload handlers a length far past the received bytes. Treat it as empty instead.
+    uint16_t overhead = (uint16_t)(poc + 4 + 7);
+    uint16_t len = (byte_count > overhead) ? (uint16_t)(byte_count - overhead) : 0;
     uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
     uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
     uint8_t mnis_type = ctx->state->dmr_pdu_sf[ctx->slot][4];
