@@ -374,7 +374,8 @@
       "configurePreset": "asan-ubsan-debug",
       "configuration": "Debug",
       "environment": {
-        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/tools/lsan.supp"
       }
     },
     {
@@ -382,7 +383,8 @@
       "configurePreset": "fuzz-asan-debug",
       "configuration": "Debug",
       "environment": {
-        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/tools/lsan.supp"
       }
     },
     {

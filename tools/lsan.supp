@@ -1,0 +1,12 @@
+# LeakSanitizer suppressions for third-party runtime libraries.
+# Keep dsd-neo-owned leaks unsuppressed.
+#
+# Matched by module, so only allocations whose stack passes through the named
+# library are dropped: a leak in project code that merely reaches one of these
+# is still reported.
+
+# fontconfig caches its pattern and charset objects for process lifetime and
+# frees none of them. Anything that renders text pulls this in - here it is the
+# Qt Quick tests, via Qt's font database - and it is reached before main(), so
+# no project code owns the allocation or could release it.
+leak:libfontconfig
