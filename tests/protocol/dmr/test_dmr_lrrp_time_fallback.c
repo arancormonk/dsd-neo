@@ -188,7 +188,15 @@ main(void) {
         fclose(ef);
         return 105;
     }
-    fread(ebuf, 1, pesize, ef);
+    // The buffer is calloc'd one byte longer than the file and therefore
+    // already terminated; what the read owes is the count, since
+    // _FORTIFY_SOURCE declares fread __wur and a short read here means the
+    // capture never landed.
+    if (fread(ebuf, 1, pesize, ef) != pesize) {
+        fclose(ef);
+        free(ebuf);
+        return 107;
+    }
     fclose(ef);
 
     // Ensure decoded time was NOT printed (fallback path)
@@ -212,7 +220,11 @@ main(void) {
         fclose(of);
         return 106;
     }
-    fread(obuf, 1, posize, of);
+    if (fread(obuf, 1, posize, of) != posize) {
+        fclose(of);
+        free(obuf);
+        return 108;
+    }
     fclose(of);
 
     // Ensure the file has some content and does not contain the bogus decoded year "2038/"
