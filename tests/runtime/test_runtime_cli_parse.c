@@ -62,11 +62,17 @@ close_parse_outputs(dsd_opts* opts) {
 
 static void
 test_redirect_stdout_to_null(void) {
+    // A cast to void does not settle warn_unused_result, which _FORTIFY_SOURCE
+    // puts on freopen. Losing the redirect only makes the run noisy, so say so
+    // on stderr and carry on.
 #if defined(_WIN32)
-    (void)freopen("NUL", "w", stdout);
+    FILE* redirected = freopen("NUL", "w", stdout);
 #else
-    (void)freopen("/dev/null", "w", stdout);
+    FILE* redirected = freopen("/dev/null", "w", stdout);
 #endif
+    if (redirected == NULL) {
+        DSD_FPRINTF(stderr, "note: could not redirect stdout; test output will be noisy\n");
+    }
 }
 
 static int

@@ -132,7 +132,15 @@ main(void) {
         fclose(rf);
         return 103;
     }
-    (void)fread(buf, 1, alloc - 1, rf);
+    // The buffer is calloc'd one byte longer than the file and therefore
+    // already terminated; what the read owes is the count, since
+    // _FORTIFY_SOURCE declares fread __wur and a short read here means the
+    // capture never landed.
+    if (fread(buf, 1, alloc - 1, rf) != alloc - 1) {
+        fclose(rf);
+        free(buf);
+        return 105;
+    }
     fclose(rf);
 
     // Order check: first occurrence indices must be increasing

@@ -180,7 +180,15 @@ main(void) {
         fclose(ef);
         return 105;
     }
-    fread(ebuf, 1, pesz, ef);
+    // The buffer is calloc'd one byte longer than the file and therefore
+    // already terminated; what the read owes is the count, since
+    // _FORTIFY_SOURCE declares fread __wur and a short read here means the
+    // capture never landed.
+    if (fread(ebuf, 1, pesz, ef) != pesz) {
+        fclose(ef);
+        free(ebuf);
+        return 107;
+    }
     fclose(ef);
     rc |= expect_has_substr(ebuf, " Time: 2024.12.01 23:59:58", "stderr has decoded Time");
     free(ebuf);
@@ -202,7 +210,11 @@ main(void) {
         fclose(of);
         return 106;
     }
-    fread(obuf, 1, posz, of);
+    if (fread(obuf, 1, posz, of) != posz) {
+        fclose(of);
+        free(obuf);
+        return 108;
+    }
     fclose(of);
     rc |= expect_has_substr(obuf, "1999/01/02\t11:22:33\t", "LRRP uses system timestamp");
     rc |= expect_no_substr(obuf, "2024/12/01\t23:59:58\t", "LRRP not using decoded timestamp in file");

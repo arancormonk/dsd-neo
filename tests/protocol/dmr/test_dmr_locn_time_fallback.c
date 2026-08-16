@@ -196,7 +196,16 @@ main(void) {
         remove(outtmpl);
         return 102;
     }
-    fread(buf, 1, psz, f);
+    // The buffer is calloc'd one byte longer than the file and therefore
+    // already terminated; what the read owes is the count, since
+    // _FORTIFY_SOURCE declares fread __wur and a short read here means the
+    // capture never landed.
+    if (fread(buf, 1, psz, f) != psz) {
+        fclose(f);
+        free(buf);
+        remove(outtmpl);
+        return 103;
+    }
     fclose(f);
 
     rc |= expect_nonempty(buf, "LOCN LRRP file non-empty");
