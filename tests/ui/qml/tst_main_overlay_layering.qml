@@ -40,6 +40,7 @@ Item {
         property var monitor: null
         property var imports: null
         property var radioReference: null
+        property var wizard: null
 
         function initTestCase() {
             tc.app = appLoader.item
@@ -50,6 +51,8 @@ Item {
             verify(tc.imports !== null, "the imports screen is missing")
             tc.radioReference = findChild(tc.app, "radioReferenceScreen")
             verify(tc.radioReference !== null, "the RadioReference screen is missing")
+            tc.wizard = findChild(tc.app, "wizardScreen")
+            verify(tc.wizard !== null, "the wizard screen is missing")
         }
 
         function init() {
@@ -111,24 +114,53 @@ Item {
                       2000, "the monitor stayed inert after the imports library closed")
         }
 
-        // The RadioReference import screen is reached the same way the library
-        // is — from Settings, or from the library itself — so it stands down for
-        // the monitor too. Its bottom "Import this system" button sits at the
-        // same rect as "Stop listening".
-        function test_06_the_radioreference_screen_stands_down_for_the_monitor() {
+        // The RadioReference import screen goes the wizard's way, not the
+        // library's: the wizard opens over a running session ("Save as a
+        // system") and pushes this screen from its tune step, so it has to stay
+        // lit over the monitor and take the taps itself. Its bottom "Import this
+        // system" button sits at the same rect as "Stop listening", so the
+        // monitor is what stands down.
+        function test_06_the_radioreference_screen_takes_taps_over_the_monitor() {
             tc.app.radioReferenceOpen = true
             // Waited out rather than tryVerify'd, for the reason test_05 gives:
-            // `enabled` follows a 150ms animated opacity, so "it is inert" is
-            // true on the fade's first frame regardless of the binding.
+            // `enabled` follows a 150ms animated opacity, so a reading taken on
+            // the fade's first frame says nothing about what the binding settles
+            // on either way.
             wait(400)
-            verify(!tc.radioReference.enabled,
+            verify(tc.radioReference.enabled,
+                   "the RadioReference screen stood down and cannot be operated")
+            verify(!tc.monitor.enabled,
                    "a tap on the RadioReference screen also reaches the monitor underneath")
-            verify(tc.monitor.enabled,
-                   "the monitor gave up its taps to a layer that is standing down")
 
             tc.app.radioReferenceOpen = false
             tryVerify(function () { return tc.monitor.enabled },
                       2000, "the monitor stayed inert after the RadioReference screen closed")
+        }
+
+        // The deadlock this layering exists to prevent. "Save as a system" from
+        // a live session opens the wizard over the monitor (openForFound sets
+        // step = 1), and the tune step leads with the RadioReference row — so
+        // all three layers are up at once over an active session. Each one is
+        // disabled by the layer above it, and there is no Keys.onBackPressed or
+        // Shortcut anywhere in the QML tree, so if the top layer also stands
+        // down nothing on screen takes a tap and the app cannot be recovered
+        // short of killing the process.
+        function test_07_the_wizard_pushing_radioreference_leaves_a_live_layer() {
+            tc.app.wizardOpen = true
+            tc.app.radioReferenceOpen = true
+            wait(400)
+
+            verify(tc.monitor.enabled || tc.wizard.enabled || tc.radioReference.enabled,
+                   "monitor, wizard and RadioReference screen are all inert at once: "
+                   + "the session is unrecoverable with no back key to escape it")
+            // And specifically the top layer is the live one — anything else
+            // means taps are landing on a screen the user cannot see.
+            verify(tc.radioReference.enabled,
+                   "the top layer is not the one taking taps")
+
+            tc.app.radioReferenceOpen = false
+            tryVerify(function () { return tc.wizard.enabled },
+                      2000, "the wizard stayed inert after the RadioReference screen closed")
         }
 
         // The wizard opens over the spectrum ("Save as a system"), so both are up

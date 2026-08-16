@@ -400,13 +400,17 @@ Window {
         system: mainRoot.sessionSystem
         opacity: mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
-        // The wizard ("Save as a system") and the spectrum both open over a
-        // running session, and TapHandlers never take exclusive grabs, so without
-        // this a tap on the layer above also lands on "Stop listening", which sits
-        // at exactly the same rect underneath both of them and ends the session.
+        // The wizard ("Save as a system"), the spectrum, and the RadioReference
+        // screen the wizard pushes from its tune step all open over a running
+        // session, and TapHandlers never take exclusive grabs, so without this a
+        // tap on the layer above also lands on "Stop listening", which sits at
+        // exactly the same rect underneath all three and ends the session.
         // That is what "Explore from here" — the one way out of view-only — did
-        // instead of offering to hand the tuner over.
+        // instead of offering to hand the tuner over. The RadioReference term is
+        // what lets that screen stay lit over the monitor rather than standing
+        // down into a three-layer deadlock.
         enabled: opacity > 0.9 && !mainRoot.wizardOpen && !mainRoot.spectrumOpen
+                 && !mainRoot.radioReferenceOpen
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
@@ -503,6 +507,8 @@ Window {
     WizardScreen {
         id: wizard
 
+        objectName: "wizardScreen"
+
         anchors.fill: safeArea
         opacity: mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
@@ -595,16 +601,23 @@ Window {
     // ---- RadioReference import (pushed from Settings, the library, or the
     // wizard) ----
     // Declared after the imports library because declaration order is z-order
-    // among siblings and this opens over it. It stands down for the monitor for
-    // the same reason the library does: two lit, enabled full-screen layers
-    // means one tap lands on both.
+    // among siblings and this opens over it.
+    //
+    // Unlike the library, this does NOT stand down for the monitor. The wizard
+    // opens over a running session ("Save as a system") and pushes this screen
+    // from its tune step, so a !monitorMode term here left all three layers
+    // inert at once — this one unlit and disabled, the wizard disabled by its
+    // own !radioReferenceOpen term, the monitor disabled by !wizardOpen — with
+    // no back key anywhere in the tree to escape it. It owns a full-bleed
+    // opaque Theme.bg backdrop, so it covers the session exactly as the wizard
+    // does; the monitor gives up its taps below instead.
     RadioReferenceScreen {
         id: radioReferenceScreen
 
         objectName: "radioReferenceScreen"
 
         anchors.fill: safeArea
-        opacity: mainRoot.radioReferenceOpen && !mainRoot.monitorMode ? 1.0 : 0.0
+        opacity: mainRoot.radioReferenceOpen ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
