@@ -592,6 +592,32 @@ async_cb(void* user, dsd_rr_status status, const dsd_rr_error* err, void* result
 }
 
 /**
+ * @brief A callback context the request can safely outlive.
+ *
+ * Heap-owned rather than a local, because that is the contract the async API
+ * actually has: the client stores this pointer in the queued job and the worker
+ * thread dereferences it, so it has to outlive the frame that started the
+ * request. Every case below does wait for completion, which would make a local
+ * work - but only by coincidence, and a test that models the contract loosely
+ * stops being evidence that the contract holds. The real caller allocates its
+ * context for exactly this reason.
+ *
+ * @return Zeroed context with the "no answer yet" sentinels set, or NULL.
+ */
+static async_result*
+async_result_new(void) {
+    async_result* out = (async_result*)calloc(1, sizeof(*out));
+    if (out == NULL) {
+        return NULL;
+    }
+    atomic_store(&out->done, 0);
+    atomic_store(&out->status, -1);
+    atomic_store(&out->count, -1);
+    atomic_store(&out->leaked_credential, 0);
+    return out;
+}
+
+/**
  * @brief Wait for an async callback, bounded.
  *
  * @return 1 when it fired, 0 on timeout.
@@ -626,21 +652,24 @@ test_async_fetch(void) {
     dsd_rr_auth auth;
     fill_auth(&auth, "user");
 
-    async_result out;
-    DSD_MEMSET(&out, 0, sizeof(out));
-    atomic_store(&out.done, 0);
-    atomic_store(&out.status, -1);
-    atomic_store(&out.count, -1);
-    atomic_store(&out.leaked_credential, 0);
+    async_result* out = async_result_new();
+    expect("callback context allocated", out != NULL);
+    if (out == NULL) {
+        dsd_rr_client_destroy(client);
+        free(body);
+        return;
+    }
 
-    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, &out);
+    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, out);
     expect("fetch returns a request id", id != 0U);
-    expect("async callback fires", wait_done(&out, 5000U));
-    expect_ll("async status", (long long)atomic_load(&out.status), (long long)DSD_RR_OK);
-    expect_ll("async result decoded", atomic_load(&out.count), 1);
-    expect_ll("no credential in async error text", atomic_load(&out.leaked_credential), 0);
+    expect("async callback fires", wait_done(out, 5000U));
+    expect_ll("async status", (long long)atomic_load(&out->status), (long long)DSD_RR_OK);
+    expect_ll("async result decoded", atomic_load(&out->count), 1);
+    expect_ll("no credential in async error text", atomic_load(&out->leaked_credential), 0);
 
+    /* After the join, so the worker cannot still be holding it. */
     dsd_rr_client_destroy(client);
+    free(out);
     free(body);
 }
 
@@ -663,15 +692,21 @@ test_destroy_with_pending(void) {
     dsd_rr_auth auth;
     fill_auth(&auth, "user");
 
-    async_result out;
-    DSD_MEMSET(&out, 0, sizeof(out));
+    async_result* out = async_result_new();
+    expect("callback context allocated", out != NULL);
+    if (out == NULL) {
+        dsd_rr_client_destroy(client);
+        free(body);
+        return;
+    }
     for (int i = 0; i < 8; i++) {
-        (void)dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, &out);
+        (void)dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, out);
     }
 
     /* Must return rather than deadlock or leak the queued jobs. */
     dsd_rr_client_destroy(client);
     expect("destroy with pending jobs returns", 1);
+    free(out);
     free(body);
 }
 
@@ -694,14 +729,20 @@ test_cancel_queued_request(void) {
     dsd_rr_auth auth;
     fill_auth(&auth, "user");
 
-    async_result out;
-    DSD_MEMSET(&out, 0, sizeof(out));
-    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, &out);
-    expect("cancel finds a live request", dsd_rr_cancel(client, id) == 0 || atomic_load(&out.done) != 0);
+    async_result* out = async_result_new();
+    expect("callback context allocated", out != NULL);
+    if (out == NULL) {
+        dsd_rr_client_destroy(client);
+        free(body);
+        return;
+    }
+    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, out);
+    expect("cancel finds a live request", dsd_rr_cancel(client, id) == 0 || atomic_load(&out->done) != 0);
     expect("cancel of an unknown id fails", dsd_rr_cancel(client, id + 1000U) != 0);
 
-    (void)wait_done(&out, 5000U);
+    (void)wait_done(out, 5000U);
     dsd_rr_client_destroy(client);
+    free(out);
     free(body);
 }
 
@@ -950,12 +991,6 @@ rr_test_server_start(rr_test_server* server, char* out_url, size_t out_url_sz, c
     server->stall_ms = stall_ms;
 
     if (body != NULL) {
-        /* Bounded before the allocation below is derived from it: the caller's
-         * length comes from a file read, and the fixture cap is what says how
-         * large that can be. */
-        if (body_len > RR_FIXTURE_CAP_BYTES) {
-            return 1;
-        }
         char headers[256];
         const int hn = DSD_SNPRINTF(headers, sizeof(headers),
                                     "%s\r\nContent-Type: text/xml; charset=utf-8\r\n"
@@ -964,9 +999,19 @@ rr_test_server_start(rr_test_server* server, char* out_url, size_t out_url_sz, c
         if (hn <= 0 || (size_t)hn >= sizeof(headers)) {
             return 1;
         }
-        /* Bounded on the value the allocation uses, and kept in a local: read
-         * back out of the struct after the copies below, the bound no longer
-         * travels with it. */
+        /* One bound, on the value the allocation is actually given, and placed
+         * where nothing has constrained that value yet - the caller's length
+         * comes straight from a file read. Bounding body_len earlier instead
+         * would leave this comparison unreachable, which is a check that reads
+         * as protection without being any.
+         *
+         * The overflow guard comes first because the sum is what gets compared:
+         * a body_len near SIZE_MAX would wrap it back under the ceiling and slip
+         * through. Kept in a local because the bound stops travelling with the
+         * value once it is read back out of the struct after the copies. */
+        if (body_len > SIZE_MAX - (size_t)hn - 1U) {
+            return 1;
+        }
         const size_t total = (size_t)hn + body_len;
         if (total > sizeof(headers) + RR_FIXTURE_CAP_BYTES) {
             return 1;
@@ -1190,9 +1235,14 @@ test_loopback_cancel_mid_transfer(void) {
     dsd_rr_auth auth;
     fill_auth(&auth, "user");
 
-    async_result out;
-    DSD_MEMSET(&out, 0, sizeof(out));
-    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, &out);
+    async_result* out = async_result_new();
+    expect("callback context allocated", out != NULL);
+    if (out == NULL) {
+        dsd_rr_client_destroy(client);
+        rr_test_server_stop(&server);
+        return;
+    }
+    const uint64_t id = dsd_rr_fetch_trs_sites(client, &auth, 12918, async_cb, out);
     expect("stalled fetch queued", id != 0U);
 
     /* Let the request reach the server, then cancel it. */
@@ -1200,15 +1250,16 @@ test_loopback_cancel_mid_transfer(void) {
     (void)dsd_rr_cancel(client, id);
 
     const long long started = (long long)time(NULL);
-    const int fired = wait_done(&out, 5000U);
+    const int fired = wait_done(out, 5000U);
     const long long elapsed = (long long)time(NULL) - started;
 
     expect("cancelled transfer completes", fired);
-    expect_ll("cancelled transfer reports CANCELLED", (long long)atomic_load(&out.status),
+    expect_ll("cancelled transfer reports CANCELLED", (long long)atomic_load(&out->status),
               (long long)DSD_RR_ERR_CANCELLED);
     expect("cancellation lands within a few seconds", elapsed <= 4);
 
     dsd_rr_client_destroy(client);
+    free(out);
     rr_test_server_stop(&server);
 }
 

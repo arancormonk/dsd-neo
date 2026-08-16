@@ -537,6 +537,15 @@ static const rr_shape_desc k_shapes[] = {
 _Static_assert(RR_COUNTOF(k_shapes) == (size_t)RR_SHAPE_COUNT, "every rr_shape needs a descriptor row");
 
 /*
+ * rr_soap_parse() holds one of these on its frame, so the scratch records are
+ * the whole cost. ~8.5 KB today against the smallest stack this runs on - the
+ * client's worker thread - and the ceiling is here so that adding a scratch
+ * record for a new shape is a compile error rather than a stack overflow on the
+ * one platform with the least room.
+ */
+_Static_assert(sizeof(rr_parse_ctx) <= 32768U, "the parse context is held on the stack; keep it small");
+
+/*
  * The one pairing the table cannot check for itself: rr_commit_record() copies
  * `record_size` bytes out of the scratch member at `scratch_offset`, so a row
  * naming one shape's scratch and another's element type reads past the scratch
@@ -1172,19 +1181,22 @@ rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_e
         return -1;
     }
 
-    rr_parse_ctx* ctx = (rr_parse_ctx*)calloc(1, sizeof(*ctx));
-    if (ctx == NULL) {
-        err->status = DSD_RR_ERR_NOMEM;
-        rr_copy_field(err->detail, sizeof(err->detail), "out of memory");
-        return -1;
-    }
-    ctx->shape = shape;
-    ctx->sink = sink;
-    ctx->return_depth = -1;
-    ctx->record_depth = -1;
-    ctx->sub_depth = -1;
-    ctx->fault_depth = -1;
-    ctx->body_depth = -1;
+    /*
+     * The context lives on this frame, and deliberately so. It never outlives the
+     * call - the parser that holds it is freed below - and holding it here means
+     * `sink`, which is usually a caller's local, is never written into heap
+     * memory. It also removes the out-of-memory path this function used to have
+     * before it had parsed anything.
+     */
+    rr_parse_ctx ctx;
+    DSD_MEMSET(&ctx, 0, sizeof(ctx));
+    ctx.shape = shape;
+    ctx.sink = sink;
+    ctx.return_depth = -1;
+    ctx.record_depth = -1;
+    ctx.sub_depth = -1;
+    ctx.fault_depth = -1;
+    ctx.body_depth = -1;
 
     /*
      * NULL, never an explicit encoding: RR declares utf-8 on successful responses
@@ -1193,23 +1205,21 @@ rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_e
      */
     XML_Parser parser = XML_ParserCreate(NULL);
     if (parser == NULL) {
-        free(ctx);
         err->status = DSD_RR_ERR_NOMEM;
         rr_copy_field(err->detail, sizeof(err->detail), "out of memory");
         return -1;
     }
-    ctx->parser = parser;
-    rr_install_handlers(parser, ctx);
+    ctx.parser = parser;
+    rr_install_handlers(parser, &ctx);
 
     const int ok = XML_Parse(parser, body, (int)len, XML_TRUE);
-    const int rc = rr_parse_finish(ctx, ok, shape, err, outcome);
+    const int rc = rr_parse_finish(&ctx, ok, shape, err, outcome);
 
     XML_ParserFree(parser);
     /* A body truncated or rejected mid-<Site> leaves the scratch record owning
      * the frequency array rr_commit_sub() grew; only committed sites are reached
      * by dsd_rr_site_list_free(). */
-    rr_release_scratch_site(ctx);
-    free(ctx);
+    rr_release_scratch_site(&ctx);
     return rc;
 }
 
