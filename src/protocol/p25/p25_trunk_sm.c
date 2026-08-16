@@ -5831,6 +5831,13 @@ p25_sm_tick_tuned_wait_voice(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state
     if (timeout_start_m <= 0.0) {
         return;
     }
+    // Deliberately no companion hold here: the carrier's stay is the shorter
+    // of the companion's hangtime bridge and a pending assignment's own
+    // acquisition window. When that window closes with nothing followed, the
+    // visit ends even inside the companion's gap -- pinned by the
+    // pending-companion and lockout-reprobe grant-timeout tests. The
+    // crypto-classification tick differs: classification is evidence a call
+    // may still resolve clear, so its timeout defers to the companion.
     if ((now_m - timeout_start_m) >= grant_timeout) {
         do_release(ctx, opts, state, "grant-timeout", 0);
     }
@@ -5900,13 +5907,23 @@ p25_sm_block_expired_crypto_slot(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* s
     return 0;
 }
 
+// The companion holds the carrier while it is active *or* while its own
+// conversation gap is still inside the hangtime window -- the same bridge the
+// enc-lockout release honors. The expired slot's classification is dismantled
+// either way; only the whole-carrier release is deferred to the hangtime tick.
 static int
-p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_state* state, const int expired[2]) {
+p25_sm_expired_slot_has_active_companion(const p25_sm_ctx_t* ctx, const dsd_state* state, const int expired[2],
+                                         double now_m) {
     if (!ctx->vc_is_tdma) {
         return 0;
     }
     for (int slot = 0; slot < 2; slot++) {
-        if (expired[slot] && p25_voice_other_slot_active(ctx, state, slot ^ 1)) {
+        if (!expired[slot]) {
+            continue;
+        }
+        const int other = slot ^ 1;
+        if (p25_voice_other_slot_active(ctx, state, other)
+            || p25_voice_companion_gap_within_hangtime(ctx, state, other, now_m)) {
             return 1;
         }
     }
@@ -5972,7 +5989,9 @@ p25_sm_tick_crypto_classification(p25_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     if (!expired_any) {
         return 0;
     }
-    if (p25_sm_expired_slot_has_active_companion(ctx, state, expired)) {
+    if (p25_sm_expired_slot_has_active_companion(ctx, state, expired, now_m)) {
+        p25_sm_diagf(opts, state, ctx, "crypto_timeout_companion_hold", "expired=%d/%d", expired[0], expired[1]);
+        sm_log(opts, state, "crypto-timeout-companion-hold");
         return 0;
     }
 
