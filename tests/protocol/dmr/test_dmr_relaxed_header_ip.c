@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_ars.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -813,6 +814,372 @@ test_type1_mnis_classifies_decoded_service(void) {
     }
 }
 
+// Drives a two-block MNIS PDU through the assembler with stderr captured. The first block is
+// seeded directly so the second one completes the PDU; aggressive_framesync stays off so the
+// captured trailer does not gate the payload path.
+static int
+run_type1_mnis_pdu_captured(const uint8_t pdu[24], uint8_t poc, const char* cap_tag, char* output, size_t output_sz) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    dsd_test_capture_stderr cap;
+    uint8_t block[12];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+
+    opts.aggressive_framesync = 0;
+    state.event_history_s = history;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 2;
+    state.data_block_counter[0] = 2;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 1;
+    state.data_block_poc[0] = poc;
+
+    DSD_MEMCPY(state.dmr_pdu_sf[0], pdu, 12);
+    state.data_byte_ctr[0] = 12;
+    DSD_MEMCPY(block, pdu + 12, sizeof(block));
+
+    reset_datacall_spy();
+
+    if (dsd_test_capture_stderr_begin(&cap, cap_tag) != 0) {
+        return 1;
+    }
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, output, output_sz) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+    return 0;
+}
+
+// Off-air MNIS ARS device registration (issue #337), device identifier replaced with "1234".
+// The ARS record is length prefixed: 00 09 covers F0 20 04 "1234" 00 00, and the bytes after it
+// belong to the block trailer. The old fixed 15-byte window ran into that trailer and printed
+// the whole thing as a "UTF8 Text" line that looked like a corrupted text message.
+static int
+test_type1_mnis_ars_registration_prints_device_id(void) {
+    static const uint8_t pdu[24] = {0x1F, 0x10, 0x02, 0x01, 0x33, 0x84, 0xD4, 0x00, 0x09, 0xF0, 0x20, 0x04,
+                                    0x31, 0x32, 0x33, 0x34, 0x00, 0x00, 0x5E, 0x6C, 0xA7, 0x5C, 0x00, 0x00};
+    char output[2048];
+    int rc = 0;
+
+    if (run_type1_mnis_pdu_captured(pdu, 0U, "dmr_mnis_ars_reg", output, sizeof(output)) != 0) {
+        return 1;
+    }
+
+    rc |= expect_contains("ars-device-id", output, "ARS Reg: 1234;");
+    // The decoded identifier has to reach the emitted notice too, not just the live slot pane:
+    // the history row is what survives past the next PDU.
+    rc |= expect_contains("ars-device-id-notice", g_datacall_last_text, "ARS Reg: 1234;");
+    if (g_utf8_calls != 0U) {
+        DSD_FPRINTF(stderr, "ars-device-id: ARS registration still rendered as text (%u utf8 calls, len %u)\n",
+                    g_utf8_calls, g_utf8_last_len);
+        rc = 1;
+    }
+    return rc;
+}
+
+// An ARS record that does not match a known PDU shape still gets the raw text dump, but bounded
+// by the record length instead of the old fixed 15-byte window.
+static int
+test_type1_mnis_ars_fallback_dump_is_bounded(void) {
+    static const uint8_t pdu[24] = {0x1F, 0x10, 0x02, 0x01, 0x33, 0x84, 0xD4, 0x00, 0x05, 0x33, 0x41, 0x42,
+                                    0x43, 0x44, 0x00, 0x00, 0x5E, 0x6C, 0xA7, 0x5C, 0x00, 0x00, 0x00, 0x00};
+    char output[2048];
+    int rc = 0;
+
+    if (run_type1_mnis_pdu_captured(pdu, 0U, "dmr_mnis_ars_fallback", output, sizeof(output)) != 0) {
+        return 1;
+    }
+
+    if (g_utf8_calls != 1U || g_utf8_last_len != 5U || g_utf8_first_byte != 0x33U) {
+        DSD_FPRINTF(stderr,
+                    "ars-fallback-bound: expected one 5-byte dump of the record, got %u calls len %u first %02X\n",
+                    g_utf8_calls, g_utf8_last_len, g_utf8_first_byte);
+        rc = 1;
+    }
+    return rc;
+}
+
+// The other ARS PDU types are label-only or carry the same length-value identifier fields as a
+// device registration. Each must print its own label instead of a "UTF8 Text" dump.
+static int
+run_ars_message_captured(const uint8_t* msg, uint16_t len, const char* cap_tag, char* output, size_t output_sz,
+                         char* gps, size_t gps_sz) {
+    static dsd_state state;
+    dsd_test_capture_stderr cap;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    reset_datacall_spy();
+
+    if (dsd_test_capture_stderr_begin(&cap, cap_tag) != 0) {
+        return 1;
+    }
+    dmr_ars_print_message(&state, msg, len);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, output, output_sz) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+    // Hand back the slot string too: appending the summary there is the only persistent effect
+    // this function has, and it is what the UI renders and what the IP path emits as the notice.
+    DSD_SNPRINTF(gps, gps_sz, "%s", state.dmr_lrrp_gps[0]);
+    return 0;
+}
+
+// The helper resets the spy on every message, so the "no text dump" check has to be made per
+// message; asserting once at the end would only ever cover the last one.
+static int
+expect_no_text_dump(const char* tag) {
+    if (g_utf8_calls != 0U) {
+        DSD_FPRINTF(stderr, "%s: known ARS type still fell back to a text dump (%u calls, len %u)\n", tag, g_utf8_calls,
+                    g_utf8_last_len);
+        return 1;
+    }
+    return 0;
+}
+
+// Asserts one ARS record renders `expect` on stderr, appends the same text to the slot string,
+// and does not fall back to the raw text dump.
+static int
+expect_ars_label(const uint8_t* msg, uint16_t len, const char* tag, const char* expect) {
+    char output[512];
+    char gps[512];
+    int rc = 0;
+
+    if (run_ars_message_captured(msg, len, tag, output, sizeof(output), gps, sizeof(gps)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains(tag, output, expect);
+    rc |= expect_contains(tag, gps, expect);
+    rc |= expect_no_text_dump(tag);
+    return rc;
+}
+
+static int
+test_ars_message_type_labels(void) {
+    // Header octets carry Pri|Cntl on every real ARS message; these values are the ones seen in
+    // MOTOTRBO captures (dereg 0x31, query 0x74, query/registration ack 0x3F or 0xBF).
+    static const uint8_t dereg[] = {0x00, 0x01, 0x31};
+    static const uint8_t query[] = {0x00, 0x01, 0x74};
+    static const uint8_t user_dereg[] = {0x00, 0x01, 0x76};
+    // 0xBF: Ext set, Ack clear, so a successful registration; 0x02 is two 30 minute refresh units.
+    static const uint8_t ack_ok[] = {0x00, 0x02, 0xBF, 0x02};
+    // 0xFF: Ext set with Ack set, so the same PDU type refusing the registration. Reason 0x00 is
+    // "device not authorized"; it must not render like the success above.
+    static const uint8_t ack_fail[] = {0x00, 0x02, 0xFF, 0x00};
+    // A bare acknowledgement with no extension header: the spec pins the refresh timer to zero.
+    static const uint8_t ack_bare[] = {0x00, 0x01, 0x3F};
+    // 0x07 is the user registration acknowledgement; 0x01 is "user validation failed".
+    static const uint8_t user_ack_fail[] = {0x00, 0x02, 0xC7, 0x01};
+    // 0x000B: hdr F5, ext 20, device id 04 "1234", user id 02 "jp", password 00 is 11 octets. The
+    // prefix has to match or the record is silently clamped and the fixture stops being well formed.
+    static const uint8_t user_reg[] = {0x00, 0x0B, 0xF5, 0x20, 0x04, 0x31, 0x32, 0x33, 0x34, 0x02, 0x6A, 0x70, 0x00};
+    // Device registration as a radio sends it: 0xF0 with Event 0x20 (initial), device id only.
+    static const uint8_t dev_reg[] = {0x00, 0x09, 0xF0, 0x20, 0x04, 0x31, 0x32, 0x33, 0x34, 0x00, 0x00};
+    static const uint8_t empty[] = {0x00, 0x00};
+    char output[512];
+    char gps[512];
+    int rc = 0;
+
+    rc |= expect_ars_label(dereg, (uint16_t)sizeof(dereg), "ars-dereg", "ARS Dereg;");
+    rc |= expect_ars_label(query, (uint16_t)sizeof(query), "ars-query", "ARS Query;");
+    rc |= expect_ars_label(user_dereg, (uint16_t)sizeof(user_dereg), "ars-user-dereg", "ARS User Dereg;");
+    rc |= expect_ars_label(ack_ok, (uint16_t)sizeof(ack_ok), "ars-ack-ok", "ARS Ack: OK; refresh 60 min;");
+    rc |= expect_ars_label(ack_fail, (uint16_t)sizeof(ack_fail), "ars-ack-fail",
+                           "ARS Ack: FAIL - device not authorized;");
+    rc |= expect_ars_label(ack_bare, (uint16_t)sizeof(ack_bare), "ars-ack-bare", "ARS Ack: OK; refresh off;");
+    rc |= expect_ars_label(user_ack_fail, (uint16_t)sizeof(user_ack_fail), "ars-user-ack-fail",
+                           "ARS User Ack: FAIL - user validation failed;");
+    rc |= expect_ars_label(dev_reg, (uint16_t)sizeof(dev_reg), "ars-dev-reg", "ARS Reg: 1234;");
+    // A user registration is about the user that signed in, so the user identifier leads and the
+    // device it signed in from follows. Reporting the device under a "User Reg" label loses the
+    // only identity the message exists to carry.
+    rc |= expect_ars_label(user_reg, (uint16_t)sizeof(user_reg), "ars-user-reg", "ARS User Reg: jp; DEV: 1234;");
+
+    if (run_ars_message_captured(empty, (uint16_t)sizeof(empty), "ars_empty", output, sizeof(output), gps, sizeof(gps))
+        != 0) {
+        return 1;
+    }
+    if (output[0] != '\0' || gps[0] != '\0' || g_utf8_calls != 0U) {
+        DSD_FPRINTF(stderr, "ars-empty: truncated message still printed something: '%s'\n", output);
+        rc = 1;
+    }
+    return rc;
+}
+
+// A short PDU used to wrap `byte_count - poc - 4 - 7` in uint16_t to ~65k, clamp to 150, and hand
+// the payload handlers a length far past the received bytes. Whatever length the MNIS branch
+// settles on, it can never exceed the octets that actually arrived after the +7 payload offset.
+static int
+test_type1_mnis_short_pdu_length_underflow_guard(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t block[12] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x84, 0xD4, 0x00, 0x00, 0x00, 0x00, 0x00};
+    dsd_test_capture_stderr cap;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+
+    opts.aggressive_framesync = 0;
+    state.event_history_s = history;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 1;
+    state.data_block_counter[0] = 1;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 1;
+    state.data_block_poc[0] = 4; // 12 received bytes < poc + CRC32 + MNIS header
+    // Real MNIS always arrives behind a Motorola proprietary header, so keep data_p_head set: it
+    // is the state every MNIS PDU decodes under.
+    state.data_p_head[0] = 1;
+
+    reset_datacall_spy();
+
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_mnis_short_pdu") != 0) {
+        return 1;
+    }
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    // 12 octets arrived and the payload starts at +7, so 5 is the most that can ever be readable.
+    const uint16_t max_readable = (uint16_t)(sizeof(block) - 7U);
+    if (g_utf8_calls == 0U || g_utf8_last_len > max_readable) {
+        DSD_FPRINTF(stderr, "mnis-short-pdu: payload handler got len %u, more than the %u octets received\n",
+                    g_utf8_last_len, max_readable);
+        rc = 1;
+    }
+    return rc;
+}
+
+// The LOCN branch used to subtract the CRC32 bit-reordering walk's `offset` - 12 whenever a
+// proprietary header is present, which is every real MNIS PDU - from a length that already
+// counted only the payload octets, silently truncating the tail of every location report. The
+// dmr_locn() call beside it always passed the same pointer with the unadjusted length.
+static int
+test_type1_mnis_locn_length_is_not_offset_adjusted(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const uint8_t pdu[24] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x84, 0xD4, 0x41, 0x42, 0x43, 0x44, 0x45,
+                                    0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x5E, 0x6C, 0xA7, 0x5C};
+    uint8_t block[12];
+    dsd_test_capture_stderr cap;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+
+    opts.aggressive_framesync = 0;
+    state.event_history_s = history;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 2;
+    state.data_block_counter[0] = 2;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 1;
+    state.data_block_poc[0] = 0;
+    state.data_p_head[0] = 1;
+
+    DSD_MEMCPY(state.dmr_pdu_sf[0], pdu, 12);
+    state.data_byte_ctr[0] = 12;
+    DSD_MEMCPY(block, pdu + 12, sizeof(block));
+
+    reset_datacall_spy();
+
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_mnis_locn_len") != 0) {
+        return 1;
+    }
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    // 24 octets assembled, the payload starts at +7, the CRC32 trailer is 4 and there are no pad
+    // octets, so all 13 remaining octets are readable. The old code handed over 1.
+    if (g_utf8_calls != 1U || g_utf8_last_len != 13U) {
+        DSD_FPRINTF(stderr, "mnis-locn-len: expected one 13 octet text call, got %u calls len %u\n", g_utf8_calls,
+                    g_utf8_last_len);
+        rc = 1;
+    }
+    if (g_utf8_first_byte != 0x41U) {
+        DSD_FPRINTF(stderr, "mnis-locn-len: text started at %02X, not at the +7 payload offset\n", g_utf8_first_byte);
+        rc = 1;
+    }
+    return rc;
+}
+
+// The MNIS notice used to label the two radio IDs backwards - "MNIS TGT:" was fed the source and
+// "SRC:" the target - while the observation attached to the same event had them the right way
+// round, so the rendered text and the machine readable IDs disagreed about who registered.
+static int
+test_type1_mnis_notice_labels_match_observation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const uint8_t pdu[24] = {0x1F, 0x10, 0x02, 0x01, 0x88, 0x84, 0xD4, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5E, 0x6C, 0xA7, 0x5C};
+    uint8_t block[12];
+    dsd_test_capture_stderr cap;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+
+    opts.aggressive_framesync = 0;
+    state.event_history_s = history;
+    state.currentslot = 0;
+    state.data_header_valid[0] = 1;
+    state.data_header_blocks[0] = 2;
+    state.data_block_counter[0] = 2;
+    state.data_header_format[0] = 2;
+    state.data_header_sap[0] = 1;
+    state.data_p_head[0] = 1;
+    state.dmr_lrrp_source[0] = 1234567;
+    state.dmr_lrrp_target[0] = 7654321;
+
+    DSD_MEMCPY(state.dmr_pdu_sf[0], pdu, 12);
+    state.data_byte_ctr[0] = 12;
+    DSD_MEMCPY(block, pdu + 12, sizeof(block));
+
+    reset_datacall_spy();
+
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_mnis_labels") != 0) {
+        return 1;
+    }
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    rc |= expect_contains("mnis-labels", g_datacall_last_text, "MNIS TGT: 7654321; SRC: 1234567;");
+    if (g_datacall_last_src != 1234567U || g_datacall_last_dst != 7654321U) {
+        DSD_FPRINTF(stderr, "mnis-labels: observation carried src %u dst %u\n", (unsigned)g_datacall_last_src,
+                    (unsigned)g_datacall_last_dst);
+        rc = 1;
+    }
+    return rc;
+}
+
 static void
 test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
     uint8_t block[12] = {0x83, 0x10, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0, 0, 0, 0};
@@ -1278,6 +1645,12 @@ main(int argc, char** argv) {
     test_type1_encrypted_notice_reports_missing_key();
     test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
+    rc |= test_type1_mnis_ars_registration_prints_device_id();
+    rc |= test_type1_mnis_ars_fallback_dump_is_bounded();
+    rc |= test_ars_message_type_labels();
+    rc |= test_type1_mnis_short_pdu_length_underflow_guard();
+    rc |= test_type1_mnis_locn_length_is_not_offset_adjusted();
+    rc |= test_type1_mnis_notice_labels_match_observation();
     test_irrecoverable_header_resets_data_state();
     rc |= test_response_headers_emit_control_events();
     test_response_header_event_acceptance_gates();

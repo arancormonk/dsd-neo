@@ -480,12 +480,11 @@ jobs:
     # during LTO linking the full executable has to link, not just compile. Arch is used
     # because it tracks the GCC release the reports come from.
     #
-    # Deliberately non-required: -Wstringop-overflow is version- and vectorizer-sensitive,
-    # and the container is a rolling tag, so a GCC point release must not block unrelated
-    # PRs. Promote to required once it has been stable across a few releases.
+    # Required status check. -Wstringop-overflow is version- and vectorizer-sensitive and the
+    # container is a rolling tag, so a GCC point release can break this job on an unrelated PR;
+    # pin the image digest to the last good release when that happens rather than merging around it.
     name: gcc lto link (x86-64-v4)
     runs-on: ubuntu-latest
-    continue-on-error: true
     container:
       image: archlinux:base-devel@sha256:25074821d28e54a0bbbd87a88d392f1489be9bd815ee5c60744be6e57fd500d8
     defaults:

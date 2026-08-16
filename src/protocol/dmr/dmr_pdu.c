@@ -29,6 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_ars.h"
 #include "dmr_pdu_internal.h"
 #include "dmr_text.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -674,8 +675,7 @@ decode_ip_pdu_handle_udp_service_core(dsd_opts* opts, dsd_state* state, uint8_t 
             DSD_FPRINTF(stderr, "ARS;");
             DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]), "ARS SRC: %d; DST: %d; ", src24,
                          dst24);
-            uint16_t ars_len = (payload_len < 10) ? payload_len : 10;
-            utf8_to_text(state, 0, ars_len, payload);
+            dmr_ars_print_message(state, payload, payload_len);
             return 1;
         }
         case 4007: decode_ip_pdu_handle_udp_tms(opts, state, slot, src24, dst24, payload_len, payload); return 1;
