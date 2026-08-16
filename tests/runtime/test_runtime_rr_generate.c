@@ -752,6 +752,9 @@ test_chan_p25_fixture(void) {
                           "1,851050000\n", 12U)
                       == 0);
     expect("p25 fixture placeholder warned", warned(&warnings, "placeholder"));
+    /* The whole sentence must reach the screen: a 192-byte warning slot used to
+     * cut this, the longest generator message, off mid-word at "...half is u". */
+    expect("p25 fixture placeholder warning not truncated", warned(&warnings, "broadcasts its band plan."));
     expect("p25 fixture control freq", dsd_rr_site_control_freq_hz(&sites.items[0]) == 851050000LL);
 
     dsd_csv_validation counts;

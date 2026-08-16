@@ -247,9 +247,12 @@ typedef struct {
     char sub_expire[64];
 } dsd_rr_user_info;
 
-/** Warnings surfaced in the import preview. One shape for every generator. */
+/** Warnings surfaced in the import preview. One shape for every generator.
+ *  Sized for the longest message a generator emits — the 241-byte P25
+ *  no-channel-identifiers explanation — since a bound that trims a real
+ *  sentence mid-word reads as a rendering bug, not a bound. */
 typedef struct {
-    char text[192];
+    char text[256];
 } dsd_rr_warning;
 
 typedef struct {
