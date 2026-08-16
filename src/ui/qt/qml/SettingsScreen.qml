@@ -314,7 +314,12 @@ Item {
 
                     DisclosureRow {
                         title: qsTr("Import a system")
-                        subtitle: qsTr("Talkgroups and channel maps from the online database")
+                        // Not "talkgroups and channel maps": that framing reads
+                        // as trunked-only, and the import serves conventional
+                        // systems just as well. Same line as the wizard's entry
+                        // row on purpose — one action, one description — and
+                        // anything longer elides on a phone-width row.
+                        subtitle: qsTr("Fills in the frequency, decode mode and talkgroups")
                         showDivider: true
                         onTapped: screen.openRadioReference()
                     }

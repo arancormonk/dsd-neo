@@ -566,6 +566,29 @@ Item {
                 visible: wizard.step === 1
                 spacing: Theme.gap
 
+                // The database can answer this whole step — frequency, decode
+                // mode, trunking, files — and it covers conventional systems as
+                // much as trunked ones. So the entry leads the step instead of
+                // trailing the file pickers, where it read as a trunked-only
+                // CSV utility discovered only after answering everything by
+                // hand. A Column collapses an invisible child, so nothing
+                // moves where the feature is absent.
+                UiPanel {
+                    width: parent.width
+                    visible: radioReference.available
+                    height: 66
+
+                    DisclosureRow {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "wizardRadioReferenceRow"
+
+                        anchors.verticalCenter: parent.verticalCenter
+                        title: qsTr("Import from RadioReference…")
+                        subtitle: qsTr("Fills in the frequency, decode mode and talkgroups")
+                        onTapped: wizard.openRadioReference()
+                    }
+                }
+
                 UiPanel {
                     width: parent.width
                     visible: wizard.radioSource
@@ -596,7 +619,12 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: qsTr("Tune to the system's control channel — find it on RadioReference.")
+                            // Only a build without the importer sends the user
+                            // to the website; with it, the entry above IS the
+                            // way to look the frequency up.
+                            text: radioReference.available
+                                  ? qsTr("Tune to the system's control channel.")
+                                  : qsTr("Tune to the system's control channel — find it on RadioReference.")
                             font.family: Theme.sans
                             font.pixelSize: 13
                             color: Theme.textSubdued
@@ -720,22 +748,6 @@ Item {
                             title: qsTr("Encryption keys")
                             target: "keys"
                             path: wizard.keyCsvPath
-                            showDivider: radioReference.available
-                        }
-
-                        // A DisclosureRow rather than a CsvPickerRow: that wrapper
-                        // always opens the file-picker sheet. A Column collapses
-                        // an invisible child, so nothing moves where the feature
-                        // is absent.
-                        DisclosureRow {
-                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                            objectName: "wizardRadioReferenceRow"
-
-                            visible: radioReference.available
-                            title: qsTr("Import from RadioReference…")
-                            subtitle: qsTr("Generates both files from the online database")
-                            showDivider: true
-                            onTapped: wizard.openRadioReference()
                         }
 
                         Text {
