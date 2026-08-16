@@ -494,6 +494,22 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Set one prefs key, for the same reason setRadioReference() exists.
+     *
+     * The fixture prefs are a plain map too, so a screen that gates on a stored
+     * preference (the Settings application-key row reads prefs.rrAppKey) could
+     * otherwise only ever be tested at the fixture's defaults. Reads only, like
+     * the rest of the map: a QML write to prefs.* still no-ops here.
+     */
+    Q_INVOKABLE void
+    setPrefs(const QString& key, const QVariant& value) {
+        m_prefs[key] = value;
+        if (m_engine != nullptr) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("prefs"), m_prefs);
+        }
+    }
+
+    /**
      * @brief Reads in @p qmlFiles that name a context-property key the fixture lacks.
      *
      * Returns "metrics.someReading" style entries, empty when the maps below cover
@@ -810,6 +826,9 @@ class Setup : public QObject {
         QVariantMap rr;
         rr[QStringLiteral("available")] = false;
         rr[QStringLiteral("hasAppKey")] = false;
+        /* Whether the binary bakes an application key in. False, like a source
+         * build with DSD_RR_APP_KEY unset, so the key field is offered. */
+        rr[QStringLiteral("buildHasAppKey")] = false;
         rr[QStringLiteral("credentialsReady")] = false;
         rr[QStringLiteral("busy")] = false;
         rr[QStringLiteral("statusText")] = QString();
@@ -817,7 +836,11 @@ class Setup : public QObject {
         rr[QStringLiteral("errorKind")] = 0;
         rr[QStringLiteral("errorIsAuth")] = false;
         rr[QStringLiteral("errorIsSubscription")] = false;
+        /* Both, and independently: the real model answers false to both for a
+         * system type it cannot import, so a fixture that derived one from the
+         * other could not express the case that mis-selects. */
         rr[QStringLiteral("conventional")] = false;
+        rr[QStringLiteral("trunked")] = true;
         rr[QStringLiteral("countries")] = QVariantList();
         rr[QStringLiteral("states")] = QVariantList();
         rr[QStringLiteral("counties")] = QVariantList();

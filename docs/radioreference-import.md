@@ -2,8 +2,9 @@
 
 The Android app can build a system's trunking data straight from the
 [RadioReference.com](https://www.radioreference.com/) database instead of asking you to hand-write
-CSVs: browse to a system by zip code, by country/state/county, or by its system ID, pick the site,
-and the app generates the talkgroup list and — where the protocol needs one — the channel map, in
+CSVs: browse to a system by zip code, by country/state/county, or by its system ID, pick the site
+(a trunked system with only one is picked for you), and the app generates the talkgroup list and —
+where the protocol needs one — the channel map, in
 the same formats `docs/csv-formats.md` describes. The generated files land in the imported-files
 library like any other import, and the add-system wizard opens with the frequency, the decode flag
 and both files already filled in.
@@ -23,7 +24,21 @@ terminal UI can adopt it later; today the Qt Quick frontend is the only consumer
 ## The application key
 
 RadioReference issues one key per *application*, separately from your account. dsd-neo can carry a
-project key baked in at build time, and you can override it with your own.
+project key baked in at build time, and **the baked key is authoritative**: a build that carries one
+never asks the user for a key and never lets one be substituted. The key fields stay hidden in both
+the import screen and Settings, sign-in is just the RadioReference username and password, and an
+auth failure names only those two as possible culprits.
+
+In a build without a baked key the import screen and Settings both offer the key field, and the
+entered key is stored in the app's settings.
+
+The two do not mix. A key stored under a keyless build is *ignored*, not merged, once a keyed build
+is installed over it — the app's settings are shared between builds, and a leftover override that
+outranked the working baked key would fail every request with no in-app way to reach it. It is left
+in place rather than erased, so a keyless build run later still finds it.
+
+The trade-off is deliberate: in a keyed build there is no in-app recovery if the project key is
+revoked or exhausts its quota. Recovering means shipping a build with a new key.
 
 Baking one in:
 
@@ -52,13 +67,25 @@ with their own premium credentials, is squarely the sanctioned case.
 
 ## Credentials
 
-- The **username** and an optional **application-key override** persist in the app's settings
-  (`Settings → RadioReference account`).
+- The **username** and, in a build without a baked key, the **application key** persist in the app's
+  settings (`Settings → RadioReference account`). The key row is offered only where the user is the
+  one who has to supply a key — see [The application key](#the-application-key).
 - The **password is held in memory only** and is asked for once per app session. It is never
   written to disk, never logged, and never reaches a status line or an error message.
 
 After the password is entered the app verifies the account once (`getUserData`) and reports an
 expired premium subscription as such, rather than letting it surface later as an opaque failure.
+
+## Finding a system
+
+The import screen is a drill-down with two stages, and shows one or the other, never both:
+
+- **Find** — the credentials form, the search controls (zip / browse / system ID) and the results
+  list. Searching again from here replaces the results.
+- **The system** — its sites, talkgroup summary, import options and preview. Loading a system
+  replaces the find stage; a `‹ All systems` row (`‹ Search` when no list was fetched) is the way
+  back to it. The results list survives that, so importing several systems from one search is a
+  tap each.
 
 ## What gets generated
 

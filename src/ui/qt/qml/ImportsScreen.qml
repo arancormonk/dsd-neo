@@ -330,6 +330,10 @@ Item {
         anchors.margins: Theme.screenPadding
         anchors.bottomMargin: Theme.gap
         visible: radioReference.available
+        // Same gate as the refresh action below: both drive the one model and
+        // one system at a time, and opening the import screen resets it out
+        // from under a refresh this screen started.
+        enabled: !radioReference.busy
         text: qsTr("Import from RadioReference")
         onClicked: {
             screen.notice = ""

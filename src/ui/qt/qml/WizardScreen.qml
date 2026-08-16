@@ -29,7 +29,12 @@ Item {
     // Step 2 state
     property alias freqText: freqField.text
     property string decodeFlag: ""
-    property bool trunking: true
+    property bool trunking: false
+    // Whether the trunking question has been answered — by the user's own
+    // toggle, a RadioReference import, or a saved system being edited. Until
+    // then the decode chip pick suggests it (see pickDecodeFlag), and an
+    // explicit answer must survive every later chip change.
+    property bool trunkingAnswered: false
     property bool advancedOpen: false
     property alias gainText: gainField.text
     property alias ppmText: ppmField.text
@@ -90,7 +95,10 @@ Item {
         fileField.text = ""
         freqField.text = "851.375"
         decodeFlag = ""
-        trunking = true
+        trunkingAnswered = false
+        // After the field and the chip, never before: the prefill is an 800 MHz
+        // control channel, so this is what keeps the shipped defaults decoding.
+        refreshTrunkingSuggestion()
         advancedOpen = false
         gainField.text = ""
         ppmField.text = ""
@@ -124,7 +132,11 @@ Item {
         fileField.text = ""
         freqField.text = freqMhz
         decodeFlag = ""
-        trunking = true
+        trunkingAnswered = false
+        // The frequency a user "found" while exploring 700/800 is most often a
+        // constant-carrier control channel — that is what stands out on a
+        // waterfall — so the same suggestion applies, and more strongly.
+        refreshTrunkingSuggestion()
         advancedOpen = false
         gainField.text = ""
         ppmField.text = ""
@@ -150,7 +162,9 @@ Item {
         fileField.text = sys.filePath
         freqField.text = sys.freqMhz
         decodeFlag = sys.decodeFlag
-        trunking = sys.trunking
+        // The saved system already answered the question; a chip tap during
+        // the edit must not silently flip what the card was doing yesterday.
+        answerTrunking(sys.trunking)
         advancedOpen = false
         gainField.text = sys.gainDb >= 0 ? String(sys.gainDb) : ""
         ppmField.text = sys.ppm
@@ -172,6 +186,42 @@ Item {
             return qsTr("None")
         var row = importedFiles.rowForPath(path)
         return row >= 0 ? importedFiles.get(row).name : path.substring(path.lastIndexOf('/') + 1)
+    }
+
+    /**
+     * Take a decode chip pick, suggesting the trunking answer with it.
+     *
+     * A new system starts with trunking off, and most users cannot answer
+     * "is it trunked?" cold — but an explicit P25 pick almost certainly means
+     * a trunked system, so the switch follows the chip until the user (or a
+     * RadioReference import, or an edit's saved state) answers it for real.
+     */
+    function pickDecodeFlag(flag) {
+        decodeFlag = flag
+        refreshTrunkingSuggestion()
+    }
+
+    /**
+     * Re-derive the unanswered trunking switch from the chip and the frequency.
+     *
+     * Called on every chip pick and on every frequency edit, not just the pick:
+     * Auto is the default chip and carries no system type, so a user who accepts
+     * the prefills taps no chip at all and the suggestion would otherwise never
+     * run. An explicit answer — the toggle, an import, an edit's saved state —
+     * stops this for good, which is what trunkingAnswered is for.
+     */
+    function refreshTrunkingSuggestion() {
+        if (trunkingAnswered)
+            return
+        // parseFloat("") and a half-typed "8." are NaN, which suggestsTrunking()
+        // reads as "no band, no suggestion" rather than as 0 Hz.
+        trunking = Util.suggestsTrunking(decodeFlag, parseFloat(freqField.text) * 1.0e6)
+    }
+
+    /** The user's own toggle: an answer, which no later chip pick may undo. */
+    function answerTrunking(state) {
+        trunking = state
+        trunkingAnswered = true
     }
 
     // parseInt alone lets a hardware-keyboard "abc" become NaN, which QVariant
@@ -282,7 +332,9 @@ Item {
         if (result.freqMhz && result.freqMhz.length > 0)
             freqField.text = result.freqMhz
         wizard.decodeFlag = result.decodeFlag
-        wizard.trunking = result.trunking
+        // The database's answer, and an answer: a chip tap after the import
+        // must not second-guess what the record says the system is.
+        wizard.answerTrunking(result.trunking)
         // Only when the wizard has no name yet: an edit already has one the user
         // chose, and RadioReference's is a database title, not their label.
         if (nameField.text.trim().length === 0 && result.name)
@@ -566,6 +618,34 @@ Item {
                 visible: wizard.step === 1
                 spacing: Theme.gap
 
+                // The database can answer this whole step — frequency, decode
+                // mode, trunking, files — and it covers conventional systems as
+                // much as trunked ones. So the entry leads the step instead of
+                // trailing the file pickers, where it read as a trunked-only
+                // CSV utility discovered only after answering everything by
+                // hand. A Column collapses an invisible child, so nothing
+                // moves where the feature is absent.
+                UiPanel {
+                    width: parent.width
+                    visible: radioReference.available
+                    // From the row rather than a copy of its height: DisclosureRow
+                    // is shared, and a card that restated its 58 would clip it the
+                    // day that number moves.
+                    height: rrEntryRow.height + 8
+
+                    DisclosureRow {
+                        id: rrEntryRow
+
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "wizardRadioReferenceRow"
+
+                        anchors.verticalCenter: parent.verticalCenter
+                        title: qsTr("Import from RadioReference…")
+                        subtitle: qsTr("Fills in the frequency, decode mode and talkgroups")
+                        onTapped: wizard.openRadioReference()
+                    }
+                }
+
                 UiPanel {
                     width: parent.width
                     visible: wizard.radioSource
@@ -592,11 +672,31 @@ Item {
 
                             width: parent.width
                             text: "851.375"
+                            // Not editingFinished: every control on this screen
+                            // is TapHandler-based and TapHandler takes no focus,
+                            // so a user who types a frequency and taps Continue
+                            // never commits the field. The hint text under this
+                            // one already follows `trunking` live, so the switch
+                            // moving as the band is entered is visible, not a
+                            // surprise sprung at the end.
+                            onTextChanged: wizard.refreshTrunkingSuggestion()
                         }
 
                         Text {
                             width: parent.width
-                            text: qsTr("Tune to the system's control channel — find it on RadioReference.")
+                            // "Control channel" only while the trunking answer
+                            // below says there is one — a conventional system
+                            // has no control channel, and the line follows the
+                            // switch as it changes. Only a build without the
+                            // importer sends the user to the website; with it,
+                            // the entry above IS the way to look this up.
+                            text: wizard.trunking
+                                  ? (radioReference.available
+                                     ? qsTr("Tune to the system's control channel.")
+                                     : qsTr("Tune to the system's control channel — find it on RadioReference."))
+                                  : (radioReference.available
+                                     ? qsTr("Tune to the frequency you want to hear.")
+                                     : qsTr("Tune to the frequency you want to hear — find it on RadioReference."))
                             font.family: Theme.sans
                             font.pixelSize: 13
                             color: Theme.textSubdued
@@ -625,7 +725,7 @@ Item {
 
                             text: modelData.label
                             selected: wizard.decodeFlag === modelData.flag
-                            onClicked: wizard.decodeFlag = modelData.flag
+                            onClicked: wizard.pickDecodeFlag(modelData.flag)
                         }
                     }
                 }
@@ -653,7 +753,10 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: qsTr("Follow calls across channels")
+                            // The term, not a description: this audience knows
+                            // trunking by name, and the subtitle carries the
+                            // decision rule for anyone who does not.
+                            text: qsTr("Trunking")
                             font.family: Theme.sans
                             font.pixelSize: 15
                             font.weight: Font.DemiBold
@@ -663,7 +766,13 @@ Item {
 
                         Text {
                             width: parent.width
-                            text: qsTr("Trunking — recommended for public safety")
+                            // The decision rule, not the audience: a trunked
+                            // utility system wants this on, a conventional fire
+                            // channel wants it off. "Control channel" rather
+                            // than "trunked" — the title and the card below
+                            // already carry the term, and it is the thing the
+                            // user actually tuned.
+                            text: qsTr("On when the system uses a control channel")
                             font.family: Theme.sans
                             font.pixelSize: 13
                             color: Theme.textSubdued
@@ -677,7 +786,7 @@ Item {
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
                         checked: wizard.trunking
-                        onToggled: function (state) { wizard.trunking = state }
+                        onToggled: function (state) { wizard.answerTrunking(state) }
                     }
                 }
 
@@ -720,22 +829,6 @@ Item {
                             title: qsTr("Encryption keys")
                             target: "keys"
                             path: wizard.keyCsvPath
-                            showDivider: radioReference.available
-                        }
-
-                        // A DisclosureRow rather than a CsvPickerRow: that wrapper
-                        // always opens the file-picker sheet. A Column collapses
-                        // an invisible child, so nothing moves where the feature
-                        // is absent.
-                        DisclosureRow {
-                            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                            objectName: "wizardRadioReferenceRow"
-
-                            visible: radioReference.available
-                            title: qsTr("Import from RadioReference…")
-                            subtitle: qsTr("Generates both files from the online database")
-                            showDivider: true
-                            onTapped: wizard.openRadioReference()
                         }
 
                         Text {

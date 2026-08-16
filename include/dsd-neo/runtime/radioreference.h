@@ -247,9 +247,17 @@ typedef struct {
     char sub_expire[64];
 } dsd_rr_user_info;
 
+/** Bytes in a warning, terminator included. Sized for the longest message a
+ *  generator emits — the 241-byte P25 no-channel-identifiers explanation —
+ *  since a bound that trims a real sentence mid-word reads as a rendering bug,
+ *  not a bound. Generators that build a warning with a format string must stage
+ *  it in a buffer of this size, or their own local would reimpose the older,
+ *  smaller bound before the text ever reaches a slot. */
+#define DSD_RR_WARNING_TEXT_MAX 256
+
 /** Warnings surfaced in the import preview. One shape for every generator. */
 typedef struct {
-    char text[192];
+    char text[DSD_RR_WARNING_TEXT_MAX];
 } dsd_rr_warning;
 
 typedef struct {

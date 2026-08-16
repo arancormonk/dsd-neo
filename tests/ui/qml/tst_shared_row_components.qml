@@ -69,16 +69,38 @@ Item {
             verify(wizardLoader.item !== null, "WizardScreen.qml failed to load")
         }
 
-        // The wizard reaches its RadioReference entry point through a
-        // DisclosureRow now; findChild is how UI_QT_QML_CALL_LISTS addresses it,
-        // so the objectName has to survive the extraction.
+        // The wizard's RadioReference entry is a card of its own at the top of
+        // the tune step, not a row inside the trunking-data card: it answers
+        // the whole step (frequency, decode mode, talkgroups), so it must not
+        // read as a trunked-only file-picker detail. findChild is how
+        // UI_QT_QML_CALL_LISTS addresses it, so the objectName has to survive
+        // the move.
         function test_03_the_wizard_radioreference_row_is_still_addressable() {
             wizardLoader.active = true
             tryVerify(function () { return wizardLoader.item !== null }, 4000,
                       "WizardScreen.qml failed to load")
             var row = findChild(wizardLoader.item, "wizardRadioReferenceRow")
             verify(row !== null, "the wizard's RadioReference row is missing")
-            compare(row.showDivider, true, "the wizard's RadioReference row lost its divider")
+            compare(row.showDivider, false,
+                    "the row is alone in its own panel now — a divider would underline nothing")
+
+            // The entry appears only in builds that carry the feature, and only
+            // on the tune step, which is where the answers it fills in live.
+            wizardLoader.item.step = 1
+            testContext.setRadioReference("available", true)
+            tryVerify(function () { return row.visible }, 4000,
+                      "the row must appear once the feature reports available")
+            testContext.setRadioReference("available", false)
+            tryVerify(function () { return !row.visible }, 4000,
+                      "the row must hide in a build without the feature")
+            wizardLoader.item.step = 0
+
+            // The row IS the entry point: a tap must still ask Main.qml to push
+            // the RadioReference screen.
+            var opens = 0
+            wizardLoader.item.openRadioReference.connect(function () { opens++ })
+            row.tapped()
+            compare(opens, 1, "tapping the row no longer opens the RadioReference screen")
         }
 
         function test_04_disclosure_row_reports_taps_only_when_enabled() {
