@@ -759,6 +759,14 @@ p25p2_vpdu_print_svc_no_state(const dsd_opts* opts, int svc) {
     p25p2_vpdu_print_svc_payload(opts, svc);
 }
 
+// Per-slot service options feed p25p2_prepare_voice_crypto(), where an
+// encrypted service bit flips the slot to ENCRYPTED_PENDING and, under
+// encryption lockout, closes its audio gate. Only voice-channel-user MCOs,
+// which describe the decode slot's own call, may store here: a channel-grant
+// announcement heard in this carrier's MAC signaling describes a call on some
+// other channel or slot, and writing its bits onto the decode slot mutes a
+// clear call whenever an encrypted call is announced nearby. Grant service
+// options reach classification through the SM grant event's svc_bits instead.
 static void
 p25p2_vpdu_store_slot_svc(dsd_state* state, int slot, int svc) {
     if ((slot & 1) == 0) {
@@ -1010,7 +1018,6 @@ typedef struct {
     int group;
     int source;
     int set_packet_bit;
-    int store_slot_svc;
     p25_sm_grant_provenance_e provenance;
     const char* label;
 } p25p2_group_explicit_grant;
@@ -1036,9 +1043,6 @@ p25p2_vpdu_handle_group_explicit_grant(dsd_opts* opts, dsd_state* state, int slo
     freq_t = process_channel_to_freq(opts, state, grant->channelt);
     if (p25p2_vpdu_channel_is_valid(grant->channelr)) {
         (void)process_channel_to_freq(opts, state, grant->channelr);
-    }
-    if (grant->store_slot_svc) {
-        p25p2_vpdu_store_slot_svc(state, slot_idx, grant->svc);
     }
     p25p2_vpdu_set_active_group_single(state, grant->channelt, grant->group, grant->svc);
     p25p2_vpdu_print_group_label(state, (uint32_t)grant->group);
@@ -1116,7 +1120,6 @@ p25p2_vpdu_iter_block_01(p25p2_vpdu_ctx* ctx) {
 
         //add active channel to string for ncurses display
         p25_set_mfid90_active_channel_single(state, channel, sgroup, svc);
-        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
@@ -1174,7 +1177,6 @@ p25p2_vpdu_iter_block_02(p25p2_vpdu_ctx* ctx) {
 
         //add active channel to string for ncurses display
         p25_set_mfid90_active_channel_single(state, channel, sgroup, svc);
-        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
 
         p25p2_vpdu_print_group_label(state, (uint32_t)sgroup);
 
@@ -1289,7 +1291,6 @@ p25p2_vpdu_iter_block_04(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, " Group Voice Channel Grant");
         DSD_FPRINTF(stderr, "\n  SVC [%02X] CHAN [%04X] Group [%d] Source [%d]", svc, channel, group, src);
         freq = process_channel_to_freq(opts, state, channel);
-        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
         p25p2_vpdu_set_active_group_single(state, channel, group, svc);
         p25p2_vpdu_print_group_label(state, (uint32_t)group);
 
@@ -1347,7 +1348,6 @@ p25p2_vpdu_iter_block_05(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, (MAC[1 + len_a] & 0x80) ? " Explicit" : " Implicit");
         DSD_FPRINTF(stderr, "\n  CHAN: %04X; Timer: %f Seconds; Target: %d;", channel, (float)timer * 0.1f, target);
         freq = process_channel_to_freq(opts, state, channel);
-        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
 
         if (p25p2_vpdu_channel_is_valid(channel)) {
             char suffix[32];
@@ -1699,7 +1699,6 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .group = group,
             .source = 0,
             .set_packet_bit = 0,
-            .store_slot_svc = 0,
             .provenance = P25_SM_GRANT_PROVENANCE_UPDATE,
             .label = "Group Voice Channel Grant Update - Explicit",
         };
@@ -1720,7 +1719,6 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .group = group,
             .source = source,
             .set_packet_bit = 1,
-            .store_slot_svc = 1,
             .provenance = P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
             .label = "Group Voice Channel Grant - Explicit",
         };
@@ -1740,7 +1738,6 @@ p25p2_vpdu_iter_block_10(p25p2_vpdu_ctx* ctx) {
             .group = group,
             .source = 0,
             .set_packet_bit = 0,
-            .store_slot_svc = 0,
             .provenance = P25_SM_GRANT_PROVENANCE_UPDATE,
             .label = "Group Voice Channel Grant Update - Explicit",
         };
@@ -2076,7 +2073,6 @@ p25p2_vpdu_iter_block_17(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_publish_activityf(state, (uint8_t)slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)sg, 0U,
                                      (uint16_t)channel, freq, (uint16_t)svc, "MFID90 GRG VCH Upd: %04X%s SG: %d; ",
                                      channel, suf, sg);
-        p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
         DSD_FPRINTF(stderr, "\n");
         // Route through SM for tuning consideration
         if (channel != 0 && p25p2_vpdu_can_dispatch_grant(opts, state, freq)) {

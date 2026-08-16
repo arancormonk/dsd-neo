@@ -1127,6 +1127,10 @@ main(void) {
         rc |= expect_eq_long("0xA4 capture tg", ctx->slots[0].ota_tg, 0x4567);
         rc |= expect_eq_long("0xA4 capture src", ctx->vc_src, 0x0A0B0C);
         rc |= expect_eq_long("0xA4 CHAN-R cache", state.trunk_chan_map[0x100B], 851137500);
+        // Dispatched: the accepted assignment commits its service options to
+        // the granted slot through the SM identity path. Undispatchable
+        // announcements must leave per-slot service options alone (covered by
+        // P25_P2_VPDU_FOREIGN_GRANT_SVC).
         rc |= expect_eq_long("0xA4 stored service options", state.dmr_so, 0x23);
     }
 
@@ -1160,6 +1164,8 @@ main(void) {
         rc |= expect_eq_long("0x83 capture svc", ctx->slots[0].svc_bits, 0x81);
         rc |= expect_eq_long("0x83 capture tg", ctx->slots[0].ota_tg, 0x5566);
         rc |= expect_eq_long("0x83 capture src", ctx->vc_src, 0);
+        // Dispatched, same as 0xA4: the SM identity commit stores the granted
+        // slot's service options.
         rc |= expect_eq_long("0x83 stored service options", state.dmr_so, 0x81);
     }
 
