@@ -1191,7 +1191,7 @@ dmr_block_type1_handle_encrypted_notice(dmr_block_assembler_ctx* ctx) {
 
     DSD_MEMSET(enc_str, 0, sizeof(enc_str));
     DSD_SNPRINTF(enc_str, sizeof(enc_str), "DATA TGT: %lld; SRC: %lld; ENC PDU; ALG: %02X; KID: %02X;",
-                 ctx->state->dmr_lrrp_source[ctx->slot], ctx->state->dmr_lrrp_target[ctx->slot], alg, kid);
+                 ctx->state->dmr_lrrp_target[ctx->slot], ctx->state->dmr_lrrp_source[ctx->slot], alg, kid);
     DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]), "%s", enc_str);
     const dsd_call_observation observation =
         dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
@@ -1245,8 +1245,8 @@ dmr_block_type1_mnis_event_category(uint8_t mnis_type) {
 }
 
 static void
-dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, int offset,
-                                    uint32_t msrc, uint32_t mdst) {
+dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, uint32_t msrc,
+                                    uint32_t mdst) {
     if (mnis_type == 0x11) {
         uint8_t pdu_crc_ok = dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot);
         dmr_lrrp(ctx->opts, ctx->state, len, msrc, mdst, ctx->state->dmr_pdu_sf[ctx->slot] + 7, pdu_crc_ok);
@@ -1255,7 +1255,11 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         // into the block trailer and render it as random-looking text.
         dmr_ars_print_message(ctx->state, ctx->state->dmr_pdu_sf[ctx->slot] + 7, len);
     } else if (mnis_type == 0x01) {
-        utf8_to_text(ctx->state, 0, len - offset, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
+        // `len` already counts only the octets available at +7, so nothing further comes off it.
+        // Upstream subtracted the CRC32 bit-reordering loop's `offset` here, which is a constant
+        // for locating confirmed-data DBSN octets and has no bearing on a text length; the
+        // dmr_locn() call on the next line passes the same pointer with the unadjusted length.
+        utf8_to_text(ctx->state, 0, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dmr_locn(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot] + 7);
         dsd_event_history_transaction transaction;
         dsd_event_history_transaction_begin(ctx->state, &transaction);
@@ -1268,14 +1272,18 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
 
     if (mnis_type != 0x11 && mnis_type != 0x01) {
         char mnis_str[200];
-        DSD_MEMSET(mnis_str, 200, sizeof(mnis_str));
-        DSD_SNPRINTF(mnis_str, sizeof(mnis_str), "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_source[ctx->slot],
-                     ctx->state->dmr_lrrp_target[ctx->slot]);
+        DSD_MEMSET(mnis_str, 0, sizeof(mnis_str));
+        DSD_SNPRINTF(mnis_str, sizeof(mnis_str), "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_target[ctx->slot],
+                     ctx->state->dmr_lrrp_source[ctx->slot]);
         const dsd_call_observation observation = dsd_call_observation_data(
             ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
             (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
+        // ARS decodes append their summary to dmr_lrrp_gps, which already carries the same
+        // endpoints; emit that so the decoded registration reaches the history row and not just
+        // the live slot pane. Other MNIS types have nothing extra to say, so keep mnis_str.
+        const char* notice = (mnis_type == 0x33) ? ctx->state->dmr_lrrp_gps[ctx->slot] : mnis_str;
         (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
-                                                    dmr_block_type1_mnis_event_category(mnis_type), mnis_str);
+                                                    dmr_block_type1_mnis_event_category(mnis_type), notice);
     } else if (mnis_type == 0x11 || mnis_type == 0x01) {
         const dsd_call_observation observation = dsd_call_observation_data(
             ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
@@ -1287,13 +1295,18 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
 }
 
 static void
-dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx, int offset) {
+dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
     uint16_t byte_count = ctx->state->data_byte_ctr[ctx->slot];
     uint8_t poc = ctx->state->data_block_poc[ctx->slot];
-    // A short PDU would wrap this subtraction to ~65k and then clamp to 150, handing the
-    // payload handlers a length far past the received bytes. Treat it as empty instead.
-    uint16_t overhead = (uint16_t)(poc + 4 + 7);
-    uint16_t len = (byte_count > overhead) ? (uint16_t)(byte_count - overhead) : 0;
+    // The payload starts at octet 7 of the stored proprietary header and the CRC32 trailer sits
+    // at the end, so 11 octets are never payload. A short PDU would wrap this subtraction to
+    // ~65k and then clamp to 150, handing the payload handlers a length far past the received
+    // bytes; treat it as empty instead.
+    uint16_t avail = (byte_count > 11U) ? (uint16_t)(byte_count - 11U) : 0U;
+    // MNIS PDUs are accepted with a failed CRC32 (see dmr_block_type1_update_crc), so the pad
+    // octet count is unverified. Trust the octets that actually arrived over a pad count that
+    // claims more of them than exist.
+    uint16_t len = (poc <= avail) ? (uint16_t)(avail - poc) : avail;
     uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
     uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
     uint8_t mnis_type = ctx->state->dmr_pdu_sf[ctx->slot][4];
@@ -1309,7 +1322,7 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx, int offset) {
     DSD_FPRINTF(stderr, " ???: %04X", mnis_unk);
     DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]),
                  "MNIS SRC: %d; DST: %d; ", msrc, mdst);
-    dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, offset, msrc, mdst);
+    dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, msrc, mdst);
 }
 
 static void
@@ -1322,15 +1335,15 @@ dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
         source = ctx->state->dmr_lrrp_source[safe_slot];
         target = ctx->state->dmr_lrrp_target[safe_slot];
     }
-    DSD_MEMSET(unk_str, 200, sizeof(unk_str));
-    DSD_SNPRINTF(unk_str, sizeof(unk_str), "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", source, target);
+    DSD_MEMSET(unk_str, 0, sizeof(unk_str));
+    DSD_SNPRINTF(unk_str, sizeof(unk_str), "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", target, source);
     const dsd_call_observation observation =
         dsd_call_observation_data(ctx->state->lastsynctype, (uint8_t)safe_slot, source, target);
     (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, (uint8_t)safe_slot, &observation, unk_str);
 }
 
 static void
-dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx, int offset) {
+dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     if (ctx->slot > 1) {
         dmr_block_type1_handle_unknown_pdu(ctx);
         return;
@@ -1347,14 +1360,14 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx, int offset) {
     } else if (sap == 2 || sap == 3) {
         dmr_udp_comp_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
     } else if (sap == 1 && ctx->state->dmr_pdu_sf[ctx->slot][1] == 0x10) {
-        dmr_block_type1_handle_mnis(ctx, offset);
+        dmr_block_type1_handle_mnis(ctx);
     } else {
         dmr_block_type1_handle_unknown_pdu(ctx);
     }
 }
 
 static void
-dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx, int offset) {
+dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx) {
     uint8_t enc_check = dmr_block_type1_encryption_required(ctx);
     uint8_t decrypted_pdu = enc_check ? 0 : 1;
 
@@ -1364,7 +1377,7 @@ dmr_block_type1_process_payload(dmr_block_assembler_ctx* ctx, int offset) {
     if (enc_check == 1 && decrypted_pdu == 0) {
         dmr_block_type1_handle_encrypted_notice(ctx);
     } else if (ctx->crc_correct || ctx->opts->aggressive_framesync == 0 || ctx->opts->dmr_crc_relaxed_default) {
-        dmr_block_type1_handle_sap(ctx, offset);
+        dmr_block_type1_handle_sap(ctx);
     }
 }
 
@@ -1405,6 +1418,8 @@ dmr_block_type1_clear_header_state(dmr_block_assembler_ctx* ctx) {
 static void
 dmr_block_assembler_handle_type1(dmr_block_assembler_ctx* ctx) {
     uint16_t ctr = 0;
+    // Only the CRC32 bit-reordering walk needs this: it locates the confirmed-data DBSN octets
+    // past the 12 octet proprietary header.
     int offset = dmr_block_type1_offset(ctx);
 
     dmr_block_type1_append_bytes(ctx, &ctr);
@@ -1412,7 +1427,7 @@ dmr_block_assembler_handle_type1(dmr_block_assembler_ctx* ctx) {
         return;
     }
     dmr_block_type1_update_crc(ctx, ctr, offset);
-    dmr_block_type1_process_payload(ctx, offset);
+    dmr_block_type1_process_payload(ctx);
     dmr_block_type1_log_crc_and_payload(ctx);
     dmr_block_type1_clear_header_state(ctx);
 }
