@@ -13,7 +13,12 @@ Required dependencies are:
 - OpenSSL 3.x libcrypto
 - `mbe-neo` 2.x CMake package from mbelib-neo
 - libsndfile
-- curses backend: ncursesw/PDCurses
+- curses backend: ncursesw/PDCurses. macOS ships no `libncursesw` — its unified
+  `libncurses` carries the wide entry points behind `_XOPEN_SOURCE_EXTENDED` —
+  so configure prefers a wide ncurses when the host has one (including
+  Homebrew's keg-only `ncurses`, which is on no default search path) and
+  otherwise falls back to the SDK's curses, reporting which it took. Nothing in
+  the ncurses path calls the wide API, so the fallback is a complete build.
 - audio backend: PulseAudio by default on Unix-like systems, PortAudio on
   Windows
 

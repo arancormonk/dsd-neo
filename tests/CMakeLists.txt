@@ -149,6 +149,16 @@ add_test(
         ${PROJECT_SOURCE_DIR}/cmake/vcpkg_dependency_contract.cmake
 )
 
+# Runs everywhere: the macOS curses decision takes fabricated prefix trees, so
+# hosts that can never reach the real code path still guard it.
+add_test(
+    NAME MACOS_CURSES_PLAN
+    COMMAND
+        ${CMAKE_COMMAND}
+        "-DDSD_TEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/macos_curses_plan" -P
+        ${PROJECT_SOURCE_DIR}/tests/cmake/MacosCursesPlan.cmake
+)
+
 set(_DSD_PUBLIC_HEADER_TEST_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/public_header_smoke"
 )

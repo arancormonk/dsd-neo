@@ -235,12 +235,26 @@ jobs:
       - name: Configure (Release preset)
         shell: bash
         run: |
+          # No curses overrides on purpose: this is the discovery path a user
+          # gets, and pinning it here is what kept issue #339 out of CI.
           cmake --preset dev-release -G Ninja \
             -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
-            -DBUILD_TESTING=OFF \
-            -DCURSES_LIBRARY="$HB_PREFIX/opt/ncurses/lib/libncursesw.dylib" \
-            -DCURSES_INCLUDE_PATH="$HB_PREFIX/opt/ncurses/include"
+            -DBUILD_TESTING=OFF
+
+      - name: Verify curses selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Discovery is unpinned here on purpose, so assert the outcome: the
+          # portable DMG is built against Homebrew's wide ncurses, and a silent
+          # downgrade to the SDK's narrow curses must not pass unnoticed.
+          lib=$(sed -n 's/^CURSES_NCURSES_LIBRARY:[A-Z]*=//p' build/dev-release/CMakeCache.txt)
+          echo "CURSES_NCURSES_LIBRARY=$lib"
+          case "$lib" in
+            *ncursesw*) ;;
+            *) echo "ERROR: expected a wide ncurses, got '$lib'" >&2; exit 1 ;;
+          esac
 
       - name: Build
         shell: bash
@@ -484,12 +498,26 @@ jobs:
       - name: Configure (Release preset)
         shell: bash
         run: |
+          # No curses overrides on purpose: this is the discovery path a user
+          # gets, and pinning it here is what kept issue #339 out of CI.
           cmake --preset dev-release -G Ninja \
             -DDSD_ENABLE_LTO=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DDSD_REQUIRE_RTLSDR=ON -DDSD_REQUIRE_SOAPYSDR=ON \
-            -DBUILD_TESTING=OFF \
-            -DCURSES_LIBRARY="$HB_PREFIX/opt/ncurses/lib/libncursesw.dylib" \
-            -DCURSES_INCLUDE_PATH="$HB_PREFIX/opt/ncurses/include"
+            -DBUILD_TESTING=OFF
+
+      - name: Verify curses selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Discovery is unpinned here on purpose, so assert the outcome: the
+          # portable DMG is built against Homebrew's wide ncurses, and a silent
+          # downgrade to the SDK's narrow curses must not pass unnoticed.
+          lib=$(sed -n 's/^CURSES_NCURSES_LIBRARY:[A-Z]*=//p' build/dev-release/CMakeCache.txt)
+          echo "CURSES_NCURSES_LIBRARY=$lib"
+          case "$lib" in
+            *ncursesw*) ;;
+            *) echo "ERROR: expected a wide ncurses, got '$lib'" >&2; exit 1 ;;
+          esac
 
       - name: Build
         shell: bash
