@@ -478,6 +478,22 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief Set one radioReference key, so a case can flip a stubbed reading.
+     *
+     * QML cannot mutate a QVariantMap in place, so without this a case could not
+     * drive "the entry point appears once `available` turns true". Reads only:
+     * any case that has to CALL radioReference.lookupZip(...) needs a small
+     * Q_OBJECT recorder instead, the way CommandRecorder works.
+     */
+    Q_INVOKABLE void
+    setRadioReference(const QString& key, const QVariant& value) {
+        m_radio_reference[key] = value;
+        if (m_engine != nullptr) {
+            m_engine->rootContext()->setContextProperty(QStringLiteral("radioReference"), m_radio_reference);
+        }
+    }
+
+    /**
      * @brief Reads in @p qmlFiles that name a context-property key the fixture lacks.
      *
      * Returns "metrics.someReading" style entries, empty when the maps below cover
@@ -598,10 +614,11 @@ class Setup : public QObject {
     missingContextKeys(const QStringList& qmlFiles) const {
         const QHash<QString, QVariantMap> maps = {{QStringLiteral("metrics"), m_metrics},
                                                   {QStringLiteral("prefs"), m_prefs},
-                                                  {QStringLiteral("decoderHost"), m_host}};
+                                                  {QStringLiteral("decoderHost"), m_host},
+                                                  {QStringLiteral("radioReference"), m_radio_reference}};
         /* Group 3 captures the "(" that marks a call rather than a read. */
         static const QRegularExpression read(
-            QStringLiteral("\\b(metrics|prefs|decoderHost)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
+            QStringLiteral("\\b(metrics|prefs|decoderHost|radioReference)\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(\\()?"));
 
         QStringList missing;
         for (const QString& name : qmlFiles) {
@@ -702,6 +719,13 @@ class Setup : public QObject {
         prefs[QStringLiteral("exploreHost")] = QString();
         prefs[QStringLiteral("explorePort")] = 1234;
         prefs[QStringLiteral("exploreFreqMhz")] = QString();
+        /* RadioReference account: empty on purpose, so the screen's first state
+         * is the credentials gate a fresh install shows. This map answers reads
+         * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
+         * that WRITES prefs.rrUsername silently no-ops here while persisting in
+         * production. Never assert persistence through it. */
+        prefs[QStringLiteral("rrUsername")] = QString();
+        prefs[QStringLiteral("rrAppKey")] = QString();
         m_prefs = prefs;
         ctx->setContextProperty(QStringLiteral("prefs"), prefs);
 
@@ -778,6 +802,32 @@ class Setup : public QObject {
         m_host = host;
         ctx->setContextProperty(QStringLiteral("decoderHost"), host);
 
+        /* Every property key the RadioReference screen reads, at rest. `available`
+         * is false so an ungated entry point shows up as a visible row rather
+         * than passing silently: an unregistered context property would raise a
+         * ReferenceError, leave the binding at its default, and `visible`
+         * defaults to true. */
+        QVariantMap rr;
+        rr[QStringLiteral("available")] = false;
+        rr[QStringLiteral("hasAppKey")] = false;
+        rr[QStringLiteral("credentialsReady")] = false;
+        rr[QStringLiteral("busy")] = false;
+        rr[QStringLiteral("statusText")] = QString();
+        rr[QStringLiteral("errorText")] = QString();
+        rr[QStringLiteral("errorKind")] = 0;
+        rr[QStringLiteral("errorIsAuth")] = false;
+        rr[QStringLiteral("errorIsSubscription")] = false;
+        rr[QStringLiteral("conventional")] = false;
+        rr[QStringLiteral("countries")] = QVariantList();
+        rr[QStringLiteral("states")] = QVariantList();
+        rr[QStringLiteral("counties")] = QVariantList();
+        rr[QStringLiteral("systems")] = QVariantList();
+        rr[QStringLiteral("sites")] = QVariantList();
+        rr[QStringLiteral("systemDetails")] = QVariantMap();
+        rr[QStringLiteral("talkgroupSummary")] = QVariantMap();
+        m_radio_reference = rr;
+        ctx->setContextProperty(QStringLiteral("radioReference"), rr);
+
         /* The real SpectrumModel over the canned getter in qml_spectrum_stub.cpp:
          * the polling, viewport and tap-snapping under test are the production
          * ones, only the frames are synthetic. */
@@ -812,6 +862,7 @@ class Setup : public QObject {
     QVariantMap m_metrics;
     QVariantMap m_prefs;
     QVariantMap m_host;
+    QVariantMap m_radio_reference;
     QQmlEngine* m_engine = nullptr;
     dsd_qt::SpectrumModel* m_spectrum = nullptr;
     CommandRecorder* m_commands = nullptr;

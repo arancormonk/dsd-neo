@@ -101,14 +101,17 @@ jobs:
           cmake --preset android-arm64-release -G Ninja \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
-          # The presets set DSD_REQUIRE_CODEC2/DSD_REQUIRE_CURL, so configure
-          # already failed if either was missing; assert the archives too, since
-          # the static triplet means a skipped port is invisible until link time.
+          # The presets set DSD_REQUIRE_CODEC2/DSD_REQUIRE_CURL/DSD_REQUIRE_EXPAT,
+          # so configure already failed if one was missing; assert the archives
+          # too, since the static triplet means a skipped port is invisible
+          # until link time.
           grep -F "Codec2 available: ON (M17 voice)" "$log"
           grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          grep -F "expat available: ON (RadioReference import)" "$log"
           lib=build/android-arm64-release/vcpkg_installed/arm64-android-static/lib
           test -f "$lib/libcodec2.a"
           test -f "$lib/libcurl.a"
+          test -f "$lib/libexpat.a"
 
       - name: Build (android-arm64-release)
         shell: bash
@@ -165,7 +168,7 @@ jobs:
             build-essential cmake ninja-build ccache pkg-config git \
             libsndfile1-dev libpulse-dev libncurses-dev \
             libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev \
+            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev \
             libgl1-mesa-dev libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
 
       - name: Build and install mbelib-neo
@@ -294,7 +297,8 @@ jobs:
             dsd-neo_test_ui_qt_session_state \
             dsd-neo_test_ui_qt_spectrum_math \
             dsd-neo_test_ui_qt_spectrum_model \
-            dsd-neo_test_ui_qt_metrics_model
+            dsd-neo_test_ui_qt_metrics_model \
+            dsd-neo_test_ui_qt_radio_reference_model
 
       # The QML test carries its own headless environment (offscreen platform,
       # software renderer) in the CTest registration, so there is nothing to set
@@ -459,6 +463,15 @@ jobs:
 
       - name: Configure (android-app)
         shell: bash
+        env:
+          # Baked into the APK at configure time, so only this step needs it —
+          # "Build the APK" and "Build the AAB" just run cmake --build. Passed
+          # through the step environment rather than interpolated into the run
+          # body, the way the signing secrets are. An unset secret expands to
+          # the empty string, which yields an empty built-in key and the in-app
+          # prompt rather than a broken build. The env-var route also keeps the
+          # value out of build/android-app/CMakeCache.txt, unlike -D.
+          DSD_RR_APP_KEY: ${{ secrets.RADIOREFERENCE_APP_KEY }}
         run: |
           set -euxo pipefail
           log="$RUNNER_TEMP/configure-android-app.log"
@@ -475,9 +488,11 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache 2>&1 | tee "$log"
           grep -F "Codec2 available: ON (M17 voice)" "$log"
           grep -F "libcurl available: ON (rdio API uploads)" "$log"
+          grep -F "expat available: ON (RadioReference import)" "$log"
           lib=build/android-app/vcpkg_installed/arm64-android-static/lib
           test -f "$lib/libcodec2.a"
           test -f "$lib/libcurl.a"
+          test -f "$lib/libexpat.a"
 
       - name: Build the APK
         shell: bash

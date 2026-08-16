@@ -24,6 +24,11 @@ target_sources(
         rtl_stream_io_hooks.c
         rtl_stream_metrics_hooks.c
         m17_udp_hooks.c
+        curl_common.c
+        radioreference/rr_types.c
+        radioreference/rr_soap.c
+        radioreference/rr_client.c
+        radioreference/rr_generate.c
         rdio_export.c
         p25_optional_hooks.c
         p25_p2_audio_ring.c
@@ -49,6 +54,7 @@ target_sources(
         bootstrap/audio.c
         bootstrap/interactive.c
         ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
+        ${CMAKE_CURRENT_BINARY_DIR}/radioreference/rr_app_key.c
 )
 
 # Generate git version source within this target's build dir
@@ -56,6 +62,16 @@ file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/version)
 configure_file(
     ${PROJECT_SOURCE_DIR}/src/runtime/version/git_ver.c.in
     ${CMAKE_CURRENT_BINARY_DIR}/version/git_ver.c
+    @ONLY
+)
+
+# Bake in the RadioReference application key, if this build was given one. The
+# generated file lives only under build/, outside the ARCH_RULES glob root and
+# outside what tools/format.sh touches, and must never be copied into src/.
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/radioreference)
+configure_file(
+    ${PROJECT_SOURCE_DIR}/src/runtime/radioreference/rr_app_key.c.in
+    ${CMAKE_CURRENT_BINARY_DIR}/radioreference/rr_app_key.c
     @ONLY
 )
 
@@ -79,6 +95,7 @@ target_link_libraries(
         dsd-neo_feature_rtlsdr
         dsd-neo_feature_colors_logs
         dsd-neo_feature_curl
+        dsd-neo_feature_expat
 )
 target_link_libraries(dsd-neo_runtime PRIVATE dsd-neo_io_iq)
 if(WIN32)

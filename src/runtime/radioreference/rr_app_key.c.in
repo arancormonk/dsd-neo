@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * Generated file - do not edit, and never commit the generated copy.
+ *
+ * The key is substituted verbatim by configure_file, which is why the configure
+ * step validates it against ^[A-Za-z0-9._~-]+$ first. An empty value is normal
+ * and means the application prompts the user for their own key.
+ *
+ * This is not a secret: it is extractable from any shipped binary with `strings`.
+ * Keeping it out of the repository is the whole of what this buys.
+ */
+
+#include <dsd-neo/runtime/radioreference.h>
+
+const char*
+dsd_rr_builtin_app_key(void) {
+    return "@DSD_RR_APP_KEY@";
+}

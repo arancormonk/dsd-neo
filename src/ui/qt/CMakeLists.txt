@@ -22,6 +22,7 @@ target_sources(
         json_store.cpp
         metrics_model.cpp
         qt_ui.cpp
+        radio_reference_model.cpp
         saved_systems_model.cpp
         spectrum_model.cpp
         spectrum_view_item.cpp
@@ -46,6 +47,7 @@ qt_add_resources(
         qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
+        qml/DisclosureRow.qml
         qml/EncTag.qml
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
@@ -65,10 +67,12 @@ qt_add_resources(
         qml/PlayCircle.qml
         qml/PlexSwitch.qml
         qml/PlexTextField.qml
+        qml/RadioReferenceScreen.qml
         qml/RadioSheet.qml
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
+        qml/ToggleRow.qml
         qml/TunerMarker.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml

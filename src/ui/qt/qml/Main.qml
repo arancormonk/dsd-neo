@@ -44,6 +44,12 @@ Window {
     property bool wizardOpen: false
     property bool exploreSetupOpen: false
     property bool importsOpen: false
+    property bool radioReferenceOpen: false
+    // Whether the RadioReference screen was pushed from the wizard. Coming back
+    // to an open wizard fills in the answers it is already asking for; coming
+    // back to Settings or the imports library opens one instead, so the import
+    // still ends as a saved system.
+    property bool radioReferenceFromWizard: false
     // The saved-systems row the running session was started from, or -1. Lets a
     // wizard save on that same row push its CSV files into the live session.
     property int sessionRow: -1
@@ -216,6 +222,18 @@ Window {
         savedSystems.touch(row)
     }
 
+    /**
+     * Push the RadioReference import screen.
+     *
+     * @a fromWizard records where it was opened from, which is what decides
+     * whether the finished import fills in an open wizard or opens a fresh one.
+     */
+    function openRadioReference(fromWizard) {
+        mainRoot.radioReferenceFromWizard = fromWizard
+        radioReferenceScreen.reset()
+        mainRoot.radioReferenceOpen = true
+    }
+
     /** Start an explore session from the remembered source and frequency. */
     function startExploring() {
         var source = prefs.exploreSourceType
@@ -273,7 +291,8 @@ Window {
 
         anchors.fill: safeArea
         opacity: (mainRoot.monitorMode || mainRoot.wizardOpen || mainRoot.exploreSetupOpen
-                  || mainRoot.importsOpen || !prefs.onboardingDone) ? 0.0 : 1.0
+                  || mainRoot.importsOpen || mainRoot.radioReferenceOpen
+                  || !prefs.onboardingDone) ? 0.0 : 1.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
 
@@ -325,6 +344,7 @@ Window {
             visible: mainRoot.currentTab === 2
 
             onOpenImports: mainRoot.importsOpen = true
+            onOpenRadioReference: mainRoot.openRadioReference(false)
         }
 
         BottomNav {
@@ -486,7 +506,12 @@ Window {
         anchors.fill: safeArea
         opacity: mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
-        enabled: opacity > 0.9
+        // Stands down for the RadioReference screen it can push, for the same
+        // reason the library and that screen stand down for the monitor: the
+        // RadioReference screen is a plain Item with no full-bleed input
+        // handler, so a tap on its header strip or button margins would
+        // otherwise land on the wizard field underneath as well.
+        enabled: opacity > 0.9 && !mainRoot.radioReferenceOpen
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
@@ -498,6 +523,7 @@ Window {
             // returns behind the keyboard the name field was still holding.
             Qt.inputMethod.hide()
         }
+        onOpenRadioReference: mainRoot.openRadioReference(true)
         onSaved: function (row) {
             // Saving the system the running session was started from applies its
             // CSV files live — the session's argv was built at start, so without
@@ -551,6 +577,9 @@ Window {
         objectName: "importsScreen"
 
         anchors.fill: safeArea
+        // So a RadioReference refresh can tell whether the file it just replaced
+        // is one the running session is actually using.
+        sessionSystem: mainRoot.sessionSystem
         opacity: mainRoot.importsOpen && !mainRoot.monitorMode ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9
@@ -560,6 +589,48 @@ Window {
         }
 
         onClosed: mainRoot.importsOpen = false
+        onOpenRadioReference: mainRoot.openRadioReference(false)
+    }
+
+    // ---- RadioReference import (pushed from Settings, the library, or the
+    // wizard) ----
+    // Declared after the imports library because declaration order is z-order
+    // among siblings and this opens over it. It stands down for the monitor for
+    // the same reason the library does: two lit, enabled full-screen layers
+    // means one tap lands on both.
+    RadioReferenceScreen {
+        id: radioReferenceScreen
+
+        objectName: "radioReferenceScreen"
+
+        anchors.fill: safeArea
+        opacity: mainRoot.radioReferenceOpen && !mainRoot.monitorMode ? 1.0 : 0.0
+        visible: opacity > 0.0
+        enabled: opacity > 0.9
+
+        Behavior on opacity {
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
+
+        onClosed: {
+            mainRoot.radioReferenceOpen = false
+            Qt.inputMethod.hide()
+        }
+        // The wizard is the single writer of a saved system, so the generated
+        // files and the tune answers go to it rather than to savedSystems.add().
+        onImported: function (result) {
+            mainRoot.radioReferenceOpen = false
+            Qt.inputMethod.hide()
+            if (!mainRoot.radioReferenceFromWizard) {
+                // Opened from Settings or the library: the source, gain and name
+                // are still unanswered, so the wizard asks for them.
+                mainRoot.importsOpen = false
+                wizard.openForAdd(false)
+                mainRoot.wizardOpen = true
+            }
+            mainRoot.radioReferenceFromWizard = false
+            wizard.applyRadioReference(result)
+        }
     }
 
     // ---- First-run onboarding ----

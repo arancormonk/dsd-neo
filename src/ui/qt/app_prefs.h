@@ -36,6 +36,11 @@ class AppPrefs : public QObject {
     Q_PROPERTY(int bandwidthKhz READ bandwidthKhz WRITE setBandwidthKhz NOTIFY bandwidthKhzChanged)
     Q_PROPERTY(bool biasTee READ biasTee WRITE setBiasTee NOTIFY biasTeeChanged)
     Q_PROPERTY(QString extraArgs READ extraArgs WRITE setExtraArgs NOTIFY extraArgsChanged)
+    /* RadioReference account. The password is deliberately absent: it is held in
+     * memory for the session only and re-prompted next launch, so it can never
+     * reach a settings file, a backup or a log. */
+    Q_PROPERTY(QString rrUsername READ rrUsername WRITE setRrUsername NOTIFY rrUsernameChanged)
+    Q_PROPERTY(QString rrAppKey READ rrAppKey WRITE setRrAppKey NOTIFY rrAppKeyChanged)
     /* Where exploring was left off. One signal for all four: they are written
      * together as a single "how to start exploring" answer, and nothing binds to
      * one of them without the rest. */
@@ -85,6 +90,15 @@ class AppPrefs : public QObject {
     QString extraArgs() const;
     void setExtraArgs(const QString& args);
 
+    /** @brief RadioReference.com username; empty until the user signs in. */
+    QString rrUsername() const;
+    void setRrUsername(const QString& username);
+
+    /** @brief User-supplied RadioReference application key; empty means use the
+     *         key baked in at build time, if this build carries one. */
+    QString rrAppKey() const;
+    void setRrAppKey(const QString& key);
+
     /** @brief "usb" or "rtltcp"; empty until the user has chosen, which is what makes
      *         the first Explore tap open the setup sheet instead of starting blind. */
     QString exploreSourceType() const;
@@ -112,6 +126,8 @@ class AppPrefs : public QObject {
     void bandwidthKhzChanged();
     void biasTeeChanged();
     void extraArgsChanged();
+    void rrUsernameChanged();
+    void rrAppKeyChanged();
     void exploreChanged();
 
   private:

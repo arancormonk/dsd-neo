@@ -33,8 +33,13 @@ execution, or unsafe release behavior.
   local control channels. Use a trusted local network, VPN, SSH tunnel, TLS
   proxy, or equivalent transport protection when crossing trust boundaries.
 - DSD-neo does not provide secure secret storage. User-supplied radio keys,
-  keystream CSVs, and rdio API keys remain local files, command-line arguments,
-  or process memory controlled by the user.
+  keystream CSVs, rdio API keys, and RadioReference credentials remain local
+  files, command-line arguments, or process memory controlled by the user. A
+  RadioReference username and application-key override are stored in plain
+  application settings; the account password is held in process memory for one
+  app session and is never written to disk. The application key a build is
+  compiled with is extractable from the shipped binary with `strings` and is not
+  treated as a secret.
 - Floating-point DSP output is not guaranteed to be bit-identical across all
   compiler, architecture, SIMD, and optimization combinations.
 
@@ -104,6 +109,17 @@ Users should protect local config and key files with OS permissions, avoid
 passing sensitive keys through shared shell history, and prefer encrypted
 transport when using remote rdio API or network audio endpoints. Rdio API
 uploads do not follow redirects; configure the final trusted endpoint directly.
+
+The RadioReference import (`docs/radioreference-import.md`) parses untrusted XML
+from a network peer, so its parser is hardened rather than trusted: DOCTYPE and
+entity declarations abort the parse, parameter-entity parsing is off, `href` and
+`multiRef` attributes inside the SOAP body are rejected as a serializer change
+rather than followed, element matching is on local names only, `xsi:nil` is
+honoured as absent rather than as empty text, and the response body is capped at
+32 MB. Requests do not follow redirects and are restricted to http and https.
+No credential reaches a log, a status string, an error string, or a test
+fixture; assembled request bodies carry the password in cleartext and are
+overwritten before being freed.
 
 ## Secure Design Controls
 

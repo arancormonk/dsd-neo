@@ -1,5 +1,14 @@
 set(DSD_NEO_TEST_MATH_LIB $<$<NOT:$<PLATFORM_ID:Windows>>:m>)
 
+# Byte-exact captures from the live RadioReference v18 API; see NOTES.md there.
+# Defined once and reused by every RadioReference test - including the Qt model
+# test, which is registered earlier in this file than the runtime ones, so this
+# has to sit above both. CTest runs from the build tree, which is why a fixture
+# can never be resolved through the working directory.
+set(_DSD_NEO_RR_FIXTURE_DIR
+    "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
+)
+
 link_libraries(dsd-neo_warnings)
 
 add_library(dsd-neo_test_support INTERFACE)
@@ -85,6 +94,7 @@ function(dsd_neo_link_dsp_test target_name)
                 dsd-neo_feature_rtlsdr
                 dsd-neo_feature_colors_logs
                 dsd-neo_feature_curl
+                dsd-neo_feature_expat
                 ws2_32
         )
         add_dependencies(
@@ -124,6 +134,12 @@ add_test(
 add_test(
     NAME UI_NATIVE_BOUNDARY
     COMMAND ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/arch_rules.cmake
+)
+
+add_test(
+    NAME QML_RESOURCE_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/qml_resource_audit.cmake
 )
 
 add_test(
@@ -365,6 +381,33 @@ dsd_neo_add_public_header_smoke_test(
   HEADERS_PUBLIC_RUNTIME_MEM
   dsd-neo/runtime/mem.h
   C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE
+  dsd-neo/runtime/radioreference.h
+  C
+)
+# Also as C++: the Android JNI and Qt sources are the real consumers and no
+# Linux/macOS CI job compiles them, so nothing else would catch this header
+# losing its extern "C" guard.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_cxx
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_CXX
+  dsd-neo/runtime/radioreference.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_generate
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_GENERATE
+  dsd-neo/runtime/radioreference_generate.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_generate_cxx
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_GENERATE_CXX
+  dsd-neo/runtime/radioreference_generate.h
+  CXX
 )
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rdio_export
@@ -2299,6 +2342,43 @@ if(DSD_ENABLE_QT_UI)
         COMMAND dsd-neo_test_ui_qt_imported_files_model
     )
 
+    # The RadioReference model, driven end to end with the captured API
+    # responses through an injected transport: no network, no UI. dsd-neo_runtime
+    # is mandatory because it carries the dsd_rr_* objects and the curl/expat
+    # feature interfaces they link; listing those sources by hand would force
+    # this target to find CURL and EXPAT itself.
+    add_executable(
+        dsd-neo_test_ui_qt_radio_reference_model
+        ui/test_ui_qt_radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/imported_files_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PRIVATE Qt6::Core dsd-neo_core dsd-neo_proto_dmr dsd-neo_runtime
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PRIVATE
+            QT_NO_KEYWORDS
+            "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_radio_reference_model
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_RADIO_REFERENCE
+        COMMAND dsd-neo_test_ui_qt_radio_reference_model
+    )
+
     # What the spectrum model does with the frames a producer hands it, and what
     # the waterfall does with the model: the frame-identity check that keeps a
     # re-read of an unreplaced frame from scrolling a duplicate row, the history
@@ -2700,6 +2780,100 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
+
+# Every case in the three suites below starts by parsing a captured response, so
+# without expat they would all assert the stub's refusal rather than anything
+# about RadioReference. The android-shape job builds exactly that configuration
+# on purpose. Register them only where there is a parser, and pin the stub's
+# contract with RUNTIME_RR_NO_EXPAT in the other direction, so the degraded build
+# still fails if the parser ever starts refusing quietly.
+if(DSD_HAS_EXPAT)
+    add_executable(dsd-neo_test_runtime_rr_soap runtime/test_runtime_rr_soap.c)
+    target_include_directories(
+        dsd-neo_test_runtime_rr_soap
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_rr_soap
+        PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_soap
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_SOAP COMMAND dsd-neo_test_runtime_rr_soap)
+
+    add_executable(
+        dsd-neo_test_runtime_rr_client
+        runtime/test_runtime_rr_client.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_rr_client
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_rr_client
+        PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_client
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_CLIENT COMMAND dsd-neo_test_runtime_rr_client)
+
+    # The generators round-trip their output through the real validators, which live
+    # in dsd-neo_core; dsd-neo_runtime alone cannot reach them. dsd-neo_proto_dmr is
+    # required because dsd_import.c calls dmr_parse_static_keystream_spec. The
+    # private include path is for rr_soap.h: the goldens are driven from the same
+    # fixtures the parser is, rather than from hand-written structs.
+    add_executable(
+        dsd-neo_test_runtime_rr_generate
+        runtime/test_runtime_rr_generate.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_rr_generate
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_rr_generate
+        PRIVATE "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_generate
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
+else()
+    message(
+        STATUS
+        "RUNTIME_RR_SOAP/CLIENT/GENERATE: skipped, expat not available; RUNTIME_RR_NO_EXPAT covers the stub"
+    )
+    add_executable(
+        dsd-neo_test_runtime_rr_no_expat
+        runtime/test_runtime_rr_no_expat.c
+    )
+    target_include_directories(
+        dsd-neo_test_runtime_rr_no_expat
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/runtime/radioreference
+    )
+    target_link_libraries(
+        dsd-neo_test_runtime_rr_no_expat
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME RUNTIME_RR_NO_EXPAT COMMAND dsd-neo_test_runtime_rr_no_expat)
+endif()
 
 add_executable(
     dsd-neo_test_runtime_trunk_tuning_hooks

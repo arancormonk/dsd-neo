@@ -205,6 +205,24 @@ class DecoderHost : public QObject {
                                    const QString& replacePath = QString());
 
     /**
+     * @brief Store a file this process already wrote, by plain filesystem path.
+     *
+     * This is importDocument()'s body without the picker: no URL parsing and no
+     * platform brokering, because the source is ours. Deliberately NOT virtual -
+     * a generated file must take the pure-Qt copy path on every platform, and on
+     * Android the imports directory is ordinary filesDir storage, so there is
+     * nothing for a SAF override to add.
+     *
+     * @param sourcePath  Absolute path of the file to copy in.
+     * @param fileName    Display name to store the copy under.
+     * @param replacePath Existing stored file to update in place, or empty for a
+     *                    new copy. A path outside the imports directory is not a
+     *                    write target and is treated as a new copy.
+     * @return Absolute filesystem path of the stored copy, or empty on failure.
+     */
+    QString importLocalFile(const QString& sourcePath, const QString& fileName, const QString& replacePath = QString());
+
+    /**
      * @brief Ask the platform for access to a directly attached SDR.
      *
      * May show a permission prompt, so the answer arrives later: watch

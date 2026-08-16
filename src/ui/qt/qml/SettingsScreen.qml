@@ -11,72 +11,11 @@ Item {
     property bool advancedOpen: false
 
     signal openImports()
+    signal openRadioReference()
 
     Rectangle {
         anchors.fill: parent
         color: Theme.bg
-    }
-
-    // One toggle row: title, helper, switch. Used by every panel below.
-    component ToggleRow: Item {
-        id: toggleRow
-
-        property string title: ""
-        property string subtitle: ""
-        property bool checked: false
-        property bool showDivider: false
-        signal toggled(bool checked)
-
-        width: parent ? parent.width : 0
-        height: 62
-
-        Column {
-            anchors.left: parent.left
-            anchors.right: rowSwitch.left
-            anchors.leftMargin: Theme.cardPadding
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 3
-
-            Text {
-                width: parent.width
-                text: toggleRow.title
-                font.family: Theme.sans
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-                elide: Text.ElideRight
-            }
-
-            Text {
-                width: parent.width
-                visible: text.length > 0
-                text: toggleRow.subtitle
-                font.family: Theme.sans
-                font.pixelSize: 12
-                color: Theme.textSubdued
-                elide: Text.ElideRight
-            }
-        }
-
-        PlexSwitch {
-            id: rowSwitch
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.cardPadding
-            anchors.verticalCenter: parent.verticalCenter
-            checked: toggleRow.checked
-            onToggled: function (state) { toggleRow.toggled(state) }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Theme.cardPadding
-            height: 1
-            visible: toggleRow.showDivider
-            color: Theme.divider
-        }
     }
 
     // Numeric advanced row: label left, small mono field + unit right.
@@ -342,50 +281,117 @@ Item {
                         bottomPadding: 6
                     }
 
+                    DisclosureRow {
+                        title: qsTr("Imported files")
+                        subtitle: qsTr("Channel maps, talkgroups, and keys")
+                        onTapped: screen.openImports()
+                    }
+                }
+            }
+
+            // RADIOREFERENCE ACCOUNT
+            // The username and application key persist; the password never does
+            // — it is asked for once per app session on the import screen.
+            UiPanel {
+                width: parent.width
+                visible: radioReference.available
+                height: rrColumn.height + Theme.cardPadding + 4
+
+                Column {
+                    id: rrColumn
+
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
+
+                    MicroLabel {
+                        text: qsTr("RadioReference account")
+                        leftPadding: Theme.cardPadding
+                        bottomPadding: 6
+                    }
+
+                    DisclosureRow {
+                        title: qsTr("Import a system")
+                        subtitle: qsTr("Talkgroups and channel maps from the online database")
+                        showDivider: true
+                        onTapped: screen.openRadioReference()
+                    }
+
                     Item {
                         width: parent.width
-                        height: 58
+                        height: 76
 
-                        Column {
+                        Text {
+                            id: rrUserLabel
                             anchors.left: parent.left
-                            anchors.right: importsCaret.left
                             anchors.leftMargin: Theme.cardPadding
-                            anchors.rightMargin: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 3
-
-                            Text {
-                                width: parent.width
-                                text: qsTr("Imported files")
-                                font.family: Theme.sans
-                                font.pixelSize: 15
-                                font.weight: Font.DemiBold
-                                color: Theme.textPrimary
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                width: parent.width
-                                text: qsTr("Channel maps, talkgroups, and keys")
-                                font.family: Theme.sans
-                                font.pixelSize: 12
-                                color: Theme.textSubdued
-                                elide: Text.ElideRight
-                            }
+                            anchors.top: parent.top
+                            anchors.topMargin: 10
+                            text: qsTr("Username")
+                            font.family: Theme.sans
+                            font.pixelSize: 15
+                            color: Theme.textPrimary
                         }
 
-                        Caret {
-                            id: importsCaret
+                        PlexTextField {
+                            anchors.left: parent.left
                             anchors.right: parent.right
-                            anchors.rightMargin: Theme.cardPadding
-                            anchors.verticalCenter: parent.verticalCenter
-                            rotation: -90
-                            color: Theme.textSubdued
+                            anchors.top: rrUserLabel.bottom
+                            anchors.margins: Theme.cardPadding
+                            anchors.topMargin: 6
+                            height: 38
+                            text: prefs.rrUsername
+                            placeholderText: qsTr("radioreference.com username")
+                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                            // Commit on Enter/focus loss, not per keystroke: every
+                            // write lands in QSettings (disk on Android).
+                            onEditingFinished: prefs.rrUsername = text
+                        }
+                    }
+
+                    Item {
+                        width: parent.width
+                        height: 76
+
+                        Text {
+                            id: rrKeyLabel
+                            anchors.left: parent.left
+                            anchors.leftMargin: Theme.cardPadding
+                            anchors.top: parent.top
+                            anchors.topMargin: 10
+                            text: qsTr("Application key")
+                            font.family: Theme.sans
+                            font.pixelSize: 15
+                            color: Theme.textPrimary
                         }
 
-                        TapHandler {
-                            onTapped: screen.openImports()
+                        PlexTextField {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: rrKeyLabel.bottom
+                            anchors.margins: Theme.cardPadding
+                            anchors.topMargin: 6
+                            height: 38
+                            mono: true
+                            text: prefs.rrAppKey
+                            placeholderText: qsTr("leave empty to use this build's key")
+                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                            onEditingFinished: prefs.rrAppKey = text
                         }
+                    }
+
+                    Text {
+                        width: parent.width
+                        leftPadding: Theme.cardPadding
+                        rightPadding: Theme.cardPadding
+                        bottomPadding: 6
+                        text: qsTr("The password is asked for once per app session and is never saved. A RadioReference premium subscription is required.")
+                        font.family: Theme.sans
+                        font.pixelSize: 12
+                        color: Theme.textSubdued
+                        wrapMode: Text.Wrap
                     }
                 }
             }

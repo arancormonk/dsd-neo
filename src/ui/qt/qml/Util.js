@@ -53,11 +53,29 @@ var DECODE_MODES = [
     }
 ]
 
-// Flags a saved system may still carry from an older catalog. They keep their
-// saved behavior (the session-args builder splices the stored flag verbatim);
-// this map only keeps their card label honest.
+// Flags a saved system may carry that the chip catalog above does not offer:
+// one left over from an older catalog, and the composite forms the
+// RadioReference import picks on the user's behalf. They keep their saved
+// behavior (the session-args builder splices the stored flag verbatim); this map
+// only keeps their card label honest, since decodeLabel() matches DECODE_MODES
+// on the whole flag string and would otherwise read "Auto".
+//
+// EDACS deliberately stays out of DECODE_MODES: that array is the user-pickable
+// catalog, and these are flags the importer chooses. The custom-AFS forms
+// (-fh344, -fH434) still read "Auto" — they go through extraArgs.
 var LEGACY_DECODE_LABELS = {
-    "-f1": "P25"
+    "-f1": "P25",
+    "-fh": "EDACS",
+    "-fH": "EDACS",
+    "-fe": "EDACS EA",
+    "-fE": "EDACS EA",
+    "-ft -^": "P25",
+    "-mq -^": "P25 LSM",
+    "-fs -Y": "DMR Scan",
+    "-fi -Y": "NXDN48 Scan",
+    "-fn -Y": "NXDN96 Scan",
+    "-ft -Y": "P25 Scan",
+    "-mq -Y": "P25 LSM Scan"
 }
 
 // Where digital voice actually lives, for someone exploring who does not yet know

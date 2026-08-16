@@ -54,6 +54,17 @@ ImportedFilesModel::data(const QModelIndex& index, int role) const {
         case ImportedAtRole: return row.importedAt;
         case AcceptedRole: return row.accepted;
         case SkippedRole: return row.skipped;
+        default: return provenanceRole(row, role);
+    }
+}
+
+QVariant
+ImportedFilesModel::provenanceRole(const Row& row, int role) {
+    switch (role) {
+        case OriginRole: return row.origin;
+        case RrSidRole: return row.rrSid;
+        case RrKindRole: return row.rrKind;
+        case RrSiteIdsRole: return row.rrSiteIds;
         default: return QVariant();
     }
 }
@@ -67,6 +78,10 @@ ImportedFilesModel::roleNames() const {
     roles.insert(ImportedAtRole, QByteArrayLiteral("importedAt"));
     roles.insert(AcceptedRole, QByteArrayLiteral("accepted"));
     roles.insert(SkippedRole, QByteArrayLiteral("skipped"));
+    roles.insert(OriginRole, QByteArrayLiteral("origin"));
+    roles.insert(RrSidRole, QByteArrayLiteral("rrSid"));
+    roles.insert(RrKindRole, QByteArrayLiteral("rrKind"));
+    roles.insert(RrSiteIdsRole, QByteArrayLiteral("rrSiteIds"));
     return roles;
 }
 
@@ -93,18 +108,10 @@ ImportedFilesModel::validate(const QString& path, const QString& type, int* acce
 }
 
 QVariantMap
-ImportedFilesModel::importFile(const QString& reference, const QString& fileName, const QString& type) {
+ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin) {
     QVariantMap result;
     result.insert(QStringLiteral("ok"), false);
     result.insert(QStringLiteral("error"), QStringLiteral("open"));
-    if (m_host == nullptr) {
-        return result;
-    }
-
-    const QString path = m_host->importDocument(reference, fileName);
-    if (path.isEmpty()) {
-        return result;
-    }
 
     int accepted = 0;
     int skipped = 0;
@@ -122,6 +129,11 @@ ImportedFilesModel::importFile(const QString& reference, const QString& fileName
     row.importedAt = QDateTime::currentSecsSinceEpoch();
     row.accepted = accepted;
     row.skipped = skipped;
+    row.origin = origin.value(QStringLiteral("origin")).toString();
+    row.rrSid = origin.value(QStringLiteral("rrSid")).toInt();
+    row.rrKind = origin.value(QStringLiteral("rrKind")).toString();
+    row.rrSiteIds = origin.value(QStringLiteral("rrSiteIds")).toString();
+    row.rrPartialEnc = origin.value(QStringLiteral("rrPartialEnc"), true).toBool();
 
     beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
     m_rows.append(row);
@@ -140,40 +152,62 @@ ImportedFilesModel::importFile(const QString& reference, const QString& fileName
 }
 
 QVariantMap
-ImportedFilesModel::updateFile(int row, const QString& reference, const QString& fileName) {
+ImportedFilesModel::importFile(const QString& reference, const QString& fileName, const QString& type) {
     QVariantMap result;
     result.insert(QStringLiteral("ok"), false);
     result.insert(QStringLiteral("error"), QStringLiteral("open"));
-    if (m_host == nullptr || row < 0 || row >= m_rows.size()) {
+    if (m_host == nullptr) {
         return result;
     }
 
-    const QString target = m_rows.at(row).path;
-    const QString path = m_host->importDocument(reference, fileName, target);
-    if (path != target || path.isEmpty()) {
-        // The host wrote somewhere other than the row's file (its replace target
-        // was not usable), so the copy that just landed belongs to no row and
-        // nothing else would ever delete it. Same rollback importFile() does.
-        if (!path.isEmpty()) {
-            QFile::remove(path);
-        }
+    const QString path = m_host->importDocument(reference, fileName);
+    if (path.isEmpty()) {
+        return result;
+    }
+    return adoptStoredFile(path, type, QVariantMap());
+}
+
+QVariantMap
+ImportedFilesModel::importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
+                                        const QVariantMap& origin) {
+    QVariantMap result;
+    result.insert(QStringLiteral("ok"), false);
+    result.insert(QStringLiteral("error"), QStringLiteral("open"));
+    if (m_host == nullptr) {
         return result;
     }
 
+    const QString path = m_host->importLocalFile(sourcePath, fileName);
+    if (path.isEmpty()) {
+        return result;
+    }
+    return adoptStoredFile(path, type, origin);
+}
+
+/**
+ * @brief Fill the result map from a row that was just replaced in place.
+ */
+QVariantMap
+ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance) {
     Row& stored = m_rows[row];
-    int accepted = 0;
-    int skipped = 0;
-    if (!validate(path, stored.type, &accepted, &skipped)) {
-        return result;
-    }
-
     stored.importedAt = QDateTime::currentSecsSinceEpoch();
     stored.accepted = accepted;
     stored.skipped = skipped;
+    if (!keepProvenance) {
+        // The bytes are the user's own now, so the row no longer came from
+        // RadioReference. Keeping the provenance would leave "Refresh from
+        // RadioReference" on offer for a file it would silently overwrite.
+        stored.origin.clear();
+        stored.rrSid = 0;
+        stored.rrKind.clear();
+        stored.rrSiteIds.clear();
+        stored.rrPartialEnc = true;
+    }
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx);
     save();
 
+    QVariantMap result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("error"), accepted == 0 ? QStringLiteral("empty") : QString());
     result.insert(QStringLiteral("path"), stored.path);
@@ -182,6 +216,83 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
     result.insert(QStringLiteral("accepted"), accepted);
     result.insert(QStringLiteral("skipped"), skipped);
     return result;
+}
+
+QVariantMap
+ImportedFilesModel::updateFile(int row, const QString& reference, const QString& fileName) {
+    QVariantMap result;
+    result.insert(QStringLiteral("ok"), false);
+    result.insert(QStringLiteral("error"), QStringLiteral("open"));
+    if (m_host == nullptr || row < 0 || row >= m_rows.size()) {
+        return result;
+    }
+
+    const Row snapshot = m_rows.at(row);
+
+    // Stage the pick beside the library instead of straight over the row's file.
+    // Replacing first and validating afterwards has no rollback: a file that is
+    // not parseable as this row's type would clobber a working CSV, leave the row
+    // advertising stale counts, and hand every saved system pointing at that path
+    // an unusable -G/-C.
+    const QString staged = m_host->importDocument(reference, fileName);
+    if (staged.isEmpty()) {
+        return result;
+    }
+
+    int accepted = 0;
+    int skipped = 0;
+    if (!validate(staged, snapshot.type, &accepted, &skipped)) {
+        QFile::remove(staged);
+        return result;
+    }
+
+    if (staged == snapshot.path) {
+        // The staging name resolved to the row's own file, so it is already
+        // committed and validated.
+        return commitReplacedRow(row, accepted, skipped, false);
+    }
+
+    const QString path = m_host->importLocalFile(staged, snapshot.name, snapshot.path);
+    QFile::remove(staged);
+    if (path != snapshot.path || path.isEmpty()) {
+        // The host wrote somewhere other than the row's file (its replace target
+        // was not usable), so the copy that just landed belongs to no row and
+        // nothing else would ever delete it. Same rollback importFile() does.
+        if (!path.isEmpty()) {
+            QFile::remove(path);
+        }
+        return result;
+    }
+    return commitReplacedRow(row, accepted, skipped, false);
+}
+
+QVariantMap
+ImportedFilesModel::refreshGeneratedFile(int row, const QString& sourcePath) {
+    QVariantMap result;
+    result.insert(QStringLiteral("ok"), false);
+    result.insert(QStringLiteral("error"), QStringLiteral("open"));
+    if (m_host == nullptr || row < 0 || row >= m_rows.size()) {
+        return result;
+    }
+
+    const Row snapshot = m_rows.at(row);
+    int accepted = 0;
+    int skipped = 0;
+    // Validate the staging file first: a refresh that fetched a fault page or a
+    // truncated body must leave the stored copy untouched.
+    if (!validate(sourcePath, snapshot.type, &accepted, &skipped)) {
+        return result;
+    }
+
+    // The path is preserved so saved systems referencing it stay valid.
+    const QString path = m_host->importLocalFile(sourcePath, snapshot.name, snapshot.path);
+    if (path != snapshot.path || path.isEmpty()) {
+        if (!path.isEmpty()) {
+            QFile::remove(path);
+        }
+        return result;
+    }
+    return commitReplacedRow(row, accepted, skipped);
 }
 
 void
@@ -235,6 +346,11 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     row.importedAt = map.value(QStringLiteral("importedAt")).toLongLong();
     row.accepted = map.value(QStringLiteral("accepted")).toInt();
     row.skipped = map.value(QStringLiteral("skipped")).toInt();
+    row.origin = map.value(QStringLiteral("origin")).toString();
+    row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
+    row.rrKind = map.value(QStringLiteral("rrKind")).toString();
+    row.rrSiteIds = map.value(QStringLiteral("rrSiteIds")).toString();
+    row.rrPartialEnc = map.value(QStringLiteral("rrPartialEnc"), true).toBool();
     return row;
 }
 
@@ -247,6 +363,13 @@ ImportedFilesModel::mapFromRow(const Row& row) {
     map.insert(QStringLiteral("importedAt"), row.importedAt);
     map.insert(QStringLiteral("accepted"), row.accepted);
     map.insert(QStringLiteral("skipped"), row.skipped);
+    // This map feeds JSON persistence AND the QML-facing field maps get() and
+    // entriesForType() return, so provenance reaches both from one place.
+    map.insert(QStringLiteral("origin"), row.origin);
+    map.insert(QStringLiteral("rrSid"), row.rrSid);
+    map.insert(QStringLiteral("rrKind"), row.rrKind);
+    map.insert(QStringLiteral("rrSiteIds"), row.rrSiteIds);
+    map.insert(QStringLiteral("rrPartialEnc"), row.rrPartialEnc);
     return map;
 }
 

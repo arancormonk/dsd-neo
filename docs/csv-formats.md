@@ -41,6 +41,23 @@ indistinguishable — nothing stops one site's map being picked for another.
 Programmatic validation uses the same dry-run parser: `dsd_csv_validate_*` in `<dsd-neo/core/csv_validate.h>` reports
 accepted/skipped/total row counts without touching live decoder state.
 
+### Generated imports
+
+The RadioReference import (`docs/radioreference-import.md`) writes into the same library through the same validator,
+and its files are ordinary CSVs in the formats below — nothing reads them differently. Two things distinguish them:
+
+- **Their header line names its origin.** `DEC,Mode,Name (generated from RadioReference)` and
+  `ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)`. Both parsers discard
+  physical line 1 unconditionally, so the text is for humans — but deleting it eats the first data row.
+- **Their library row records provenance**, so the file can be re-fetched later. In
+  `files/imported_files.json` those rows carry five extra keys beyond the ordinary
+  `name`/`path`/`type`/`importedAt`/`accepted`/`skipped`: `origin` (`"radioreference"`), `rrSid` (the RadioReference
+  system ID), `rrSiteIds` (every selected site's RadioReference `siteId`, comma-joined in selection order — a
+  Conventional Networked import selects several repeaters, and the RF site *number* cannot be used because a system
+  numbers several sites the same), `rrKind` (`"group"` or `"chan"`), and `rrPartialEnc` (the "treat partly encrypted
+  as encrypted" answer the import was given). A picked file has none of them, and a row missing any of them loads
+  with it defaulted.
+
 ## Channel Map CSV (`-C <file>` / `[trunking] chan_csv`)
 
 Purpose: Map a trunking channel number to an RF frequency.

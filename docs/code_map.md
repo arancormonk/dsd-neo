@@ -75,8 +75,14 @@ Generated (do not edit/commit):
   - Config system (schema, expansion, user config), logging, memory helpers, rings, worker pools, RT scheduling
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`)
   - Hook interfaces that let DSP/protocol code publish state without depending on UI internals
+  - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
+    worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
+    talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in
+    `include/dsd-neo/runtime/radioreference.h` and `radioreference_generate.h`; needs `USE_CURL` and `USE_EXPAT`, and
+    reports `dsd_rr_available() == 0` without them. Shared curl setup lives in the module-private
+    `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
 - Build files: `src/runtime/CMakeLists.txt`
-- Config docs: `docs/config-system.md`
+- Config docs: `docs/config-system.md`, `docs/radioreference-import.md`
 
 ### Telemetry Hooks (DSP/Protocol → UI)
 
@@ -246,6 +252,10 @@ Qt Quick frontend (`src/ui/qt`):
   shared basis for a desktop GUI. `imported_files_model.{h,cpp}` is the library behind the CSV pickers: it copies
   picked documents into durable app storage through `DecoderHost::importDocument()` and dry-run validates them via
   `<dsd-neo/core/csv_validate.h>` (`src/core/file/dsd_import.c`) for row-count feedback.
+  `radio_reference_model.{h,cpp}` plus `qml/RadioReferenceScreen.qml` are the RadioReference import: the model drives
+  the runtime client, previews what an import would produce, and writes the generated CSVs into that same library with
+  provenance, while the add-system wizard stays the single writer of a saved system. See
+  `docs/radioreference-import.md`.
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).
@@ -326,6 +336,7 @@ Optional feature interface targets (compile definitions + include paths; stubbed
 - `dsd-neo_feature_soapy` — `USE_SOAPYSDR` + SoapySDR >= 0.8.1 imported-target link/includes when available
 - `dsd-neo_feature_codec2` — `USE_CODEC2` (require with `DSD_REQUIRE_CODEC2=ON`)
 - `dsd-neo_feature_curl` — `USE_CURL` + libcurl link when available (require with `DSD_REQUIRE_CURL=ON`)
+- `dsd-neo_feature_expat` — `USE_EXPAT` + expat link when available (require with `DSD_REQUIRE_EXPAT=ON`)
 
 External dependencies (resolved via CMake):
 
