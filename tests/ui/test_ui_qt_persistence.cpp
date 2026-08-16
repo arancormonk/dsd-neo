@@ -137,8 +137,13 @@ test_saved_systems(void) {
                sparseGot.value(QStringLiteral("gainDb")).toInt() == -1
                    && sparseGot.value(QStringLiteral("bandwidthKhz")).toInt() == -1
                    && sparseGot.value(QStringLiteral("biasTee")).toInt() == -1
-                   && sparseGot.value(QStringLiteral("trunking")).toBool()
                    && sparseGot.value(QStringLiteral("lastHeard")).toLongLong() == 0);
+        /* Absent trunking is OFF, the same reading session_args gives it - it
+         * appends -T only for a present true. The store defaulting it ON meant a
+         * map that never mentioned trunking was saved as call-following on while
+         * the args built from that same map left it off. */
+        expect("an absent trunking key reads as off, as it does everywhere else",
+               !sparseGot.value(QStringLiteral("trunking")).toBool());
 
         /* A partial update must not blank fields it does not mention. */
         QVariantMap rename;
