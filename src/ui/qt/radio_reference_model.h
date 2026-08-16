@@ -52,6 +52,10 @@ class RadioReferenceModel : public QObject {
      * this is false. */
     Q_PROPERTY(bool available READ available CONSTANT)
     Q_PROPERTY(bool hasAppKey READ hasAppKey NOTIFY credentialsChanged)
+    /* Whether THIS BUILD carries a baked-in application key, ignoring the prefs
+     * override — the predicate for "must the user supply a key at all". CONSTANT
+     * because it is decided at compile time. */
+    Q_PROPERTY(bool buildHasAppKey READ buildHasAppKey CONSTANT)
     Q_PROPERTY(bool credentialsReady READ credentialsReady NOTIFY credentialsChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
@@ -94,6 +98,7 @@ class RadioReferenceModel : public QObject {
 
     bool available() const;
     bool hasAppKey() const;
+    bool buildHasAppKey() const;
     bool credentialsReady() const;
 
     bool
@@ -192,6 +197,16 @@ class RadioReferenceModel : public QObject {
 
     /** @brief Best-effort cancel of everything in flight. */
     Q_INVOKABLE void cancel();
+
+    /**
+     * @brief Drop the loaded system, returning the screen to its results stage.
+     *
+     * The systems list survives — "back to the list, pick another" is the whole
+     * point. Any lingering error is retired with the system it described. The
+     * screen only offers this while the model is idle (the busy overlay covers
+     * it otherwise), so nothing in flight needs cancelling here.
+     */
+    Q_INVOKABLE void closeSystem();
 
     /**
      * @brief Preview an import. Pure: no network, no files.

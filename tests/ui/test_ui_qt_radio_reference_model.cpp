@@ -918,6 +918,53 @@ test_error_and_cancel(void) {
 }
 
 void
+test_results_and_loaded_system_stay_exclusive(void) {
+    Harness h;
+
+    /* buildHasAppKey reports the baked key and only the baked key: the harness
+     * stores a prefs override, which must not count. */
+    const char* builtin = dsd_rr_builtin_app_key();
+    expect("buildHasAppKey answers for the baked key alone",
+           h.model.buildHasAppKey() == (builtin != nullptr && builtin[0] != '\0'));
+
+    h.model.loadSystem(6673);
+    pump(h.model);
+    expect("a system is loaded", !h.model.systemDetails().isEmpty());
+
+    /* A fresh search must land on a visible results stage: the screen shows the
+     * list only while no system is loaded, so the reply retires the system. */
+    h.model.loadCountySystems(841);
+    pump(h.model);
+    expect_int("the county's systems arrived", h.model.systems().size(), 24);
+    expect("the results retired the loaded system", h.model.systemDetails().isEmpty());
+    expect("the results retired the site list", h.model.sites().isEmpty());
+
+    /* closeSystem() is the screen's back affordance: the system goes, the
+     * results stay, and a stale error goes with the system it described. */
+    h.model.loadSystem(6673);
+    pump(h.model);
+    int systemChanges = 0;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::systemChanged, &h.model,
+                     [&systemChanges]() { systemChanges++; });
+    h.model.closeSystem();
+    expect("closing the system clears its details", h.model.systemDetails().isEmpty());
+    expect("closing the system clears its sites", h.model.sites().isEmpty());
+    expect("closing the system clears its talkgroups", h.model.talkgroupSummary().isEmpty());
+    expect("closing the system keeps the results list", h.model.systems().size() == 24);
+    expect("closing the system announced itself", systemChanges > 0);
+
+    /* And with an error up: back means the failure is acknowledged. */
+    h.fake.serveFault = true;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    expect("the fault landed as an error", h.model.errorKind() != dsd_qt::RadioReferenceModel::NoError);
+    h.fake.serveFault = false;
+    h.model.closeSystem();
+    expect_int("closing the system retires the error", h.model.errorKind(), dsd_qt::RadioReferenceModel::NoError);
+    expect("closing the system clears the error text", h.model.errorText().isEmpty());
+}
+
+void
 test_destroy_with_requests_in_flight(void) {
     /* The client is destroyed first in ~RadioReferenceModel, which joins the
      * worker before any member it might read goes away. Under ASan this case is
@@ -958,6 +1005,7 @@ main(int argc, char** argv) {
     test_refresh_uses_the_recorded_tower();
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
+    test_results_and_loaded_system_stay_exclusive();
     test_destroy_with_requests_in_flight();
 
     QDir(dataDir).removeRecursively();

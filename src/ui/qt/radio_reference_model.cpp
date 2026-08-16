@@ -476,6 +476,13 @@ RadioReferenceModel::hasAppKey() const {
 }
 
 bool
+// cppcheck-suppress functionStatic -- a Q_PROPERTY READ accessor cannot be static
+RadioReferenceModel::buildHasAppKey() const {
+    const char* builtin = dsd_rr_builtin_app_key();
+    return builtin != nullptr && builtin[0] != '\0';
+}
+
+bool
 RadioReferenceModel::credentialsReady() const {
     const bool haveUser = (m_prefs != nullptr) && !m_prefs->rrUsername().isEmpty();
     return haveUser && !m_password.isEmpty() && hasAppKey();
@@ -648,6 +655,18 @@ RadioReferenceModel::cancel() {
      * reply, so finishSystemLoad() - and with it completeRefresh() - can never
      * run for this batch. Without this the library caller waits forever. */
     abandonRefresh();
+}
+
+void
+RadioReferenceModel::closeSystem() {
+    clearSystem();
+    /* The retired error described the system just closed; keeping it would put
+     * a stale failure over the results list the user went back to. */
+    if (m_errorKind != NoError || !m_errorText.isEmpty()) {
+        m_errorKind = NoError;
+        m_errorText.clear();
+        Q_EMIT statusChanged();
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -831,7 +850,16 @@ RadioReferenceModel::applyListReply(const Reply& reply) {
         case FetchCountries: m_countries = reply.list; break;
         case FetchStates: m_states = reply.list; break;
         case FetchCounties: m_counties = reply.list; break;
-        case FetchSystems: m_systems = reply.list; break;
+        case FetchSystems:
+            /* A fresh results list retires the loaded system: the screen shows
+             * one stage or the other, and the user who just searched asked for
+             * the list. Without this the results landed invisibly behind the
+             * stale system. */
+            if (m_sid != 0 || !m_systemDetails.isEmpty()) {
+                clearSystem();
+            }
+            m_systems = reply.list;
+            break;
         default: return false;
     }
     Q_EMIT listsChanged();
