@@ -69,6 +69,13 @@ Item {
     readonly property bool systemLoaded: radioReference.systemDetails.sid !== undefined
                                          && radioReference.systemDetails.sid > 0
 
+    // Whether the application key is the user's to supply — and so whether this
+    // screen offers a field for it and names it as a possible culprit. A build
+    // that bakes a key in answers no to both: fillAuth() ignores any stored
+    // override there, so the key is neither editable nor a credential in play.
+    // Same rule as the Settings row.
+    readonly property bool offersAppKey: !radioReference.buildHasAppKey
+
     // The resolved RadioReference type name, which is what decides whether the
     // simulcast and ESK toggles mean anything here. Matching the name rather
     // than the protocol enum keeps QML out of the business of tracking C
@@ -85,15 +92,24 @@ Item {
     readonly property var siteList: radioReference.sites
 
     onSiteListChanged: {
-        screen.selectedSites = []
         screen.simulcastOverride = -1
         screen.eskOverride = -1
+        // Belongs to the system in hand like the two overrides do, not to the
+        // screen: the back row makes "system A, back, system B" one visit, and
+        // A's answer would otherwise be written into B's import provenance.
+        screen.partialEncAsDe = true
         // A single-site trunked system has exactly one right answer, so give
         // it: the preview and the Import button light up without asking for a
         // tap on the only row there is. Conventional lists stay untouched —
         // "which repeaters can I hear" is a real question even with one entry.
-        if (!radioReference.conventional && screen.siteList.length === 1)
-            screen.selectedSites = [0]
+        //
+        // `trunked`, not `!conventional`: a system type this build cannot import
+        // is neither, and reading it as trunked selected and lit up the one row
+        // of an LTR or MPT-1327 system whose plan can never be built.
+        //
+        // Assigned once rather than cleared and then filled: every write to
+        // selectedSites runs refreshPlan(), and that builds both CSVs.
+        screen.selectedSites = (radioReference.trunked && screen.siteList.length === 1) ? [0] : []
         screen.refreshPlan()
     }
 
@@ -135,7 +151,13 @@ Item {
         // library refresh, which loads the system it re-fetches — left behind.
         // The model keeps the results list across this on purpose, so "come
         // back and import the next one" starts at the list, not at a search.
-        if (screen.rrLive())
+        //
+        // Only when there is a system to drop, or a fetch still on its way to
+        // becoming one: closeSystem() retires the model's error along with it,
+        // and a rejected sign-in is the one error that must outlive a visit —
+        // it is what holds the credentials form open for the retype, and the
+        // password lives nowhere else. An idle visit that ended on one keeps it.
+        if (screen.rrLive() && (screen.systemLoaded || radioReference.busy))
             radioReference.closeSystem()
         screen.sourceMode = 0
         zipField.text = ""
@@ -247,6 +269,27 @@ Item {
     function verifyAccount() {
         if (screen.rrLive() && radioReference.credentialsReady)
             radioReference.checkAccount()
+    }
+
+    /**
+     * The "Check account" button, which is not the same gesture as finishing a
+     * field.
+     *
+     * Nothing on this screen takes keyboard focus — every control is a
+     * TapHandler — so a text field only emits editingFinished on Enter or when
+     * another field is tapped. Tapping the button leaves the field the user
+     * just filled uncommitted, and its answer never reaches prefs or the model.
+     * Move focus off first, which commits it, then check what the form holds.
+     */
+    function checkAccountTapped() {
+        credentialsColumn.forceActiveFocus()
+        if (screen.rrLive() && !radioReference.credentialsReady) {
+            screen.notice = qsTr("Fill in every field above first.")
+            screen.noticeIsProblem = true
+            return
+        }
+        screen.clearNotice()
+        screen.verifyAccount()
     }
 
     function findByZip() {
@@ -552,15 +595,16 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         visible: text.length > 0
-        // The auth wording names only what the user can fix here: a build that
-        // bakes the application key (with no override stored) leaves username
-        // and password as the two possible culprits.
+        // The auth wording names only what the user can fix here, which is the
+        // same set the form offers: a build that bakes the application key in,
+        // with no override stored, leaves username and password as the two
+        // possible culprits.
         text: radioReference.errorIsSubscription
               ? qsTr("This account's RadioReference premium subscription has expired.")
               : radioReference.errorIsAuth
-                ? (radioReference.buildHasAppKey && prefs.rrAppKey.length === 0
-                   ? qsTr("RadioReference did not accept that username or password.")
-                   : qsTr("RadioReference did not accept that username, password or application key."))
+                ? (screen.offersAppKey
+                   ? qsTr("RadioReference did not accept that username, password or application key.")
+                   : qsTr("RadioReference did not accept that username or password."))
                 : radioReference.errorText.length > 0 ? radioReference.errorText : screen.notice
         font.family: Theme.sans
         font.pixelSize: 13
@@ -604,9 +648,8 @@ Item {
             // password is never written anywhere.
             //
             // Username and password lead, the way every sign-in form does. The
-            // application key comes last and only in a build that bakes none in
-            // (buildHasAppKey, not hasAppKey: a stored override must not hide
-            // the field that edits it).
+            // application key comes last and only where the user is the one who
+            // supplies it — see offersAppKey.
             UiPanel {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "radioReferenceCredentials"
@@ -697,7 +740,7 @@ Item {
 
                     Text {
                         width: parent.width
-                        visible: !radioReference.buildHasAppKey
+                        visible: screen.offersAppKey
                         text: qsTr("Application key")
                         font.family: Theme.sans
                         font.pixelSize: 13
@@ -711,7 +754,7 @@ Item {
                         objectName: "radioReferenceAppKeyField"
 
                         width: parent.width
-                        visible: !radioReference.buildHasAppKey
+                        visible: screen.offersAppKey
                         mono: true
                         text: prefs.rrAppKey
                         placeholderText: qsTr("application key")
@@ -744,9 +787,15 @@ Item {
                         objectName: "radioReferenceCheckAccountButton"
 
                         width: parent.width
-                        enabled: !radioReference.busy && radioReference.credentialsReady
+                        // Deliberately not gated on credentialsReady. The fields
+                        // commit on Enter or focus loss, and a TapHandler takes
+                        // no focus — so the field the user is still typing in
+                        // has not committed when they reach for this button, and
+                        // gating on the committed state greys it out exactly
+                        // when the last answer is the one still sitting in it.
+                        enabled: !radioReference.busy
                         text: qsTr("Check account")
-                        onClicked: screen.verifyAccount()
+                        onClicked: screen.checkAccountTapped()
                     }
                 }
             }

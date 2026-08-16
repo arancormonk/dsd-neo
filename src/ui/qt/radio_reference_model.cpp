@@ -467,19 +467,26 @@ RadioReferenceModel::available() const {
 }
 
 bool
-RadioReferenceModel::hasAppKey() const {
-    if (m_prefs != nullptr && !m_prefs->rrAppKey().isEmpty()) {
-        return true;
-    }
-    const char* builtin = dsd_rr_builtin_app_key();
-    return builtin != nullptr && builtin[0] != '\0';
-}
-
-bool
 // cppcheck-suppress functionStatic -- a Q_PROPERTY READ accessor cannot be static
 RadioReferenceModel::buildHasAppKey() const {
     const char* builtin = dsd_rr_builtin_app_key();
     return builtin != nullptr && builtin[0] != '\0';
+}
+
+QByteArray
+RadioReferenceModel::chooseAppKey(const char* builtin, const QString& override) {
+    if (builtin != nullptr && builtin[0] != '\0') {
+        return QByteArray(builtin);
+    }
+    return override.isEmpty() ? QByteArray() : override.toUtf8();
+}
+
+bool
+RadioReferenceModel::hasAppKey() const {
+    /* Asked through the same choice fillAuth() sends, so "is there a key" and
+     * "which key" can never answer from different rules. */
+    const QString override = (m_prefs != nullptr) ? m_prefs->rrAppKey() : QString();
+    return !chooseAppKey(dsd_rr_builtin_app_key(), override).isEmpty();
 }
 
 bool
@@ -519,8 +526,13 @@ RadioReferenceModel::fillAuth(dsd_rr_auth* auth) const {
      * it came from it can genuinely be overwritten - and it holds the password
      * in cleartext until it is. */
     QByteArray password = m_password.toUtf8();
-    const QString override = m_prefs->rrAppKey();
-    const QByteArray key = override.isEmpty() ? QByteArray(dsd_rr_builtin_app_key()) : override.toUtf8();
+    /* The baked key wins wherever there is one - see chooseAppKey(). Hiding the
+     * field alone left a stored override still outranking the key, which made a
+     * stale one - entered under a keyless build, still in the shared QSettings
+     * after a keyed one is installed over it - break every request with no way
+     * to reach it. Ignored rather than erased, so a keyless build run later
+     * still finds the user's own key where they left it. */
+    const QByteArray key = chooseAppKey(dsd_rr_builtin_app_key(), m_prefs->rrAppKey());
 
     const bool fits = static_cast<size_t>(user.size()) < sizeof(auth->username)
                       && static_cast<size_t>(password.size()) < sizeof(auth->password)
@@ -614,7 +626,13 @@ RadioReferenceModel::beginFetch(Fetch kind) {
     request->generation = m_generation;
     if (!fillAuth(&request->auth)) {
         delete request;
-        setError(ConfigError, tr("Enter your RadioReference username, password and application key first."));
+        /* Names only what can actually be missing. A key in force - baked in
+         * or stored as an override - is never the gap, and a keyed build
+         * offers no field to supply one, so naming it sends the user hunting
+         * for something they cannot enter. */
+        setError(ConfigError, hasAppKey()
+                                  ? tr("Enter your RadioReference username and password first.")
+                                  : tr("Enter your RadioReference username, password and application key first."));
         return nullptr;
     }
     return request;
@@ -659,14 +677,20 @@ RadioReferenceModel::cancel() {
 
 void
 RadioReferenceModel::closeSystem() {
+    /* A load still in flight carries the live generation, so its replies would
+     * land after this and finishSystemLoad() would republish the system with
+     * the sid clearSystem() just zeroed - a fully populated system no view can
+     * show, because the screen's stage predicate is sid > 0. cancel() is the
+     * retirement the rest of this class uses: it drops the replies, settles
+     * busy, and answers a library refresh riding on the same batch instead of
+     * leaving it waiting for a finishSystemLoad() that must not run. */
+    if (m_systemPending > 0) {
+        cancel();
+    }
     clearSystem();
     /* The retired error described the system just closed; keeping it would put
      * a stale failure over the results list the user went back to. */
-    if (m_errorKind != NoError || !m_errorText.isEmpty()) {
-        m_errorKind = NoError;
-        m_errorText.clear();
-        Q_EMIT statusChanged();
-    }
+    setError(NoError, QString());
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1346,7 +1370,13 @@ RadioReferenceModel::refreshRow(int row) {
         return false;
     }
     if (!credentialsReady()) {
-        setError(ConfigError, tr("Enter your RadioReference username, password and application key first."));
+        /* Names only what can actually be missing. A key in force - baked in
+         * or stored as an override - is never the gap, and a keyed build
+         * offers no field to supply one, so naming it sends the user hunting
+         * for something they cannot enter. */
+        setError(ConfigError, hasAppKey()
+                                  ? tr("Enter your RadioReference username and password first.")
+                                  : tr("Enter your RadioReference username, password and application key first."));
         return false;
     }
 

@@ -74,8 +74,14 @@ class RadioReferenceModel : public QObject {
     Q_PROPERTY(QVariantMap systemDetails READ systemDetails NOTIFY systemChanged)
     Q_PROPERTY(QVariantMap talkgroupSummary READ talkgroupSummary NOTIFY systemChanged)
     /* So the site list can switch between single- and multi-select without
-     * knowing the protocol enum, for the same reason errorIsAuth exists. */
+     * knowing the protocol enum, for the same reason errorIsAuth exists.
+     *
+     * Both, not one and its negation: an unresolved protocol is neither, so
+     * `!conventional` does not mean "trunked". A system type this build cannot
+     * import answers false to both, which is what keeps its site list from
+     * auto-selecting a row that could never be imported. */
     Q_PROPERTY(bool conventional READ conventional NOTIFY systemChanged)
+    Q_PROPERTY(bool trunked READ trunked NOTIFY systemChanged)
 
   public:
     /** @brief What went wrong, as QML-agnostic integers. */
@@ -100,6 +106,25 @@ class RadioReferenceModel : public QObject {
     bool hasAppKey() const;
     bool buildHasAppKey() const;
     bool credentialsReady() const;
+
+    /**
+     * @brief Which application key a request carries, given the two candidates.
+     *
+     * @param builtin  The key baked in at build time; NULL or empty for none.
+     * @param override The key stored in the app's settings; empty for none.
+     * @return The chosen key, or empty when there is none to send.
+     *
+     * The baked key wins wherever there is one: a build that ships a key is not
+     * asking the user for one, so it must not be substitutable either. Without
+     * a baked key the stored key is the only key there is.
+     *
+     * Static and public so both branches can be tested from either build. The
+     * baked value is a compile-time constant, so a test that could only reach
+     * this through fillAuth() would exercise whichever single branch the build
+     * it ran in was configured for - and the branch that matters most is the one
+     * a developer's keyless build can never take.
+     */
+    static QByteArray chooseAppKey(const char* builtin, const QString& override);
 
     bool
     busy() const {
@@ -171,6 +196,11 @@ class RadioReferenceModel : public QObject {
         return dsd_rr_protocol_is_conventional(m_protocol) != 0;
     }
 
+    bool
+    trunked() const {
+        return dsd_rr_protocol_is_trunked(m_protocol) != 0;
+    }
+
     /** @brief Hold the account password for this process only. Never persisted. */
     Q_INVOKABLE void setPassword(const QString& password);
 
@@ -202,9 +232,12 @@ class RadioReferenceModel : public QObject {
      * @brief Drop the loaded system, returning the screen to its results stage.
      *
      * The systems list survives — "back to the list, pick another" is the whole
-     * point. Any lingering error is retired with the system it described. The
-     * screen only offers this while the model is idle (the busy overlay covers
-     * it otherwise), so nothing in flight needs cancelling here.
+     * point. Any lingering error is retired with the system it described.
+     *
+     * A system load still in flight is retired too. The back row only offers
+     * this while the model is idle, but reset() calls it on every visit, and a
+     * reply that landed afterwards would rebuild the system around the sid this
+     * just zeroed — a system the screen can never show again.
      */
     Q_INVOKABLE void closeSystem();
 

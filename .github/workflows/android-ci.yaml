@@ -307,6 +307,30 @@ jobs:
         shell: bash
         run: ctest --preset dev-debug -R '^UI_QT_' --output-on-failure
 
+      # The baked RadioReference key is a compile-time constant, so the shipped
+      # configuration — a build that carries its own key and must ignore any
+      # stored override — is a branch no other job here can reach. The APK job
+      # builds it but cannot run tests; every other job is keyless.
+      #
+      # Reconfiguring the same tree costs a relink: DSD_RR_APP_KEY only feeds a
+      # generated one-line C file. The key below is a dummy that no request is
+      # ever made with — the transport in this test is faked — and it is
+      # deliberately NOT the repository secret, so this step stays meaningful on
+      # a fork with no secrets configured.
+      - name: Re-test the RadioReference model as a keyed build
+        shell: bash
+        env:
+          DSD_RR_APP_KEY: CI_DUMMY_KEY_not_a_real_credential
+        run: |
+          set -euxo pipefail
+          cmake --preset dev-debug \
+            -DDSD_ENABLE_QT_UI=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset dev-debug -j \
+            --target dsd-neo_test_ui_qt_radio_reference_model
+          ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --output-on-failure
+
       - name: Show ccache stats
         shell: bash
         run: ccache --show-stats

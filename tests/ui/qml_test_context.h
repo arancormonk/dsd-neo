@@ -836,7 +836,11 @@ class Setup : public QObject {
         rr[QStringLiteral("errorKind")] = 0;
         rr[QStringLiteral("errorIsAuth")] = false;
         rr[QStringLiteral("errorIsSubscription")] = false;
+        /* Both, and independently: the real model answers false to both for a
+         * system type it cannot import, so a fixture that derived one from the
+         * other could not express the case that mis-selects. */
         rr[QStringLiteral("conventional")] = false;
+        rr[QStringLiteral("trunked")] = true;
         rr[QStringLiteral("countries")] = QVariantList();
         rr[QStringLiteral("states")] = QVariantList();
         rr[QStringLiteral("counties")] = QVariantList();

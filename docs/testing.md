@@ -95,6 +95,37 @@ ctest --preset dev-debug -L qml --output-on-failure
 It carries its own headless environment (offscreen platform, software renderer)
 in the CTest registration, so it needs no window server and no GPU.
 
+#### Build-time constants that gate a branch
+
+`DSD_RR_APP_KEY` bakes the RadioReference application key into a generated C
+source at configure time, so `dsd_rr_builtin_app_key()` is a compile-time
+constant and a test can only ever see the configuration it was built in. A
+keyless build — every developer machine and every CI job but one — cannot reach
+the shipped behaviour where the baked key is authoritative and a stored override
+is ignored.
+
+Two things close that, and both are needed:
+
+- `RadioReferenceModel::chooseAppKey(builtin, override)` is a static, public pure
+  function taking both candidates as arguments, so every combination is asserted
+  in any build. This is what catches a regression on a developer's machine.
+- The `qt-ui-tests` job reconfigures the same tree with a dummy
+  `DSD_RR_APP_KEY` and re-runs `UI_QT_RADIO_REFERENCE`. Only the generated
+  one-line key file recompiles, so it costs a relink. This is what proves the
+  chosen key reaches the SOAP envelope and the ignored override does not.
+
+The pattern generalises: when a build-time constant selects a branch, take the
+constant as a parameter somewhere testable rather than reading it in the code
+under test, and reconfigure in CI to prove the wiring. A case that reads the
+constant directly must assert *against* it (`hasAppKey() == baked`) rather than
+assume a configuration, or it passes only in the one it was written in.
+
+```sh
+DSD_RR_APP_KEY=CI_DUMMY_KEY_not_a_real_credential cmake --preset dev-debug -DDSD_ENABLE_QT_UI=ON
+cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_radio_reference_model
+ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --output-on-failure
+```
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch
