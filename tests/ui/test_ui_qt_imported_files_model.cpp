@@ -401,11 +401,14 @@ test_generated_import_and_refresh(void) {
     QVariantMap origin;
     origin.insert(QStringLiteral("origin"), QStringLiteral("radioreference"));
     origin.insert(QStringLiteral("rrSid"), 6673);
-    origin.insert(QStringLiteral("rrSiteNumber"), 10);
-    /* The whole selection, so a refresh can reproduce it: the singular key
-     * above records only the first repeater of a conventional import. */
-    origin.insert(QStringLiteral("rrSiteNumbers"), QStringLiteral("10,11,12"));
+    /* The whole selection, so a refresh can reproduce it: a conventional import
+     * selects several repeaters, and only siteId identifies one — the RF site
+     * number repeats within a system. */
+    origin.insert(QStringLiteral("rrSiteIds"), QStringLiteral("4001,4002,4003"));
     origin.insert(QStringLiteral("rrKind"), QStringLiteral("group"));
+    /* Deliberately the non-default answer, so a refresh that substituted the UI
+     * default would be visible. */
+    origin.insert(QStringLiteral("rrPartialEnc"), false);
 
     QString storedPath;
     {
@@ -423,12 +426,11 @@ test_generated_import_and_refresh(void) {
         expect("provenance origin recorded",
                row.value(QStringLiteral("origin")).toString() == QStringLiteral("radioreference"));
         expect("provenance sid recorded", row.value(QStringLiteral("rrSid")).toInt() == 6673);
-        /* The RF site, not the database row id: two RR rows can share a
-         * siteNumber, and siteId means nothing to a user. */
-        expect("provenance site number recorded", row.value(QStringLiteral("rrSiteNumber")).toInt() == 10);
         expect("provenance kind recorded", row.value(QStringLiteral("rrKind")).toString() == QStringLiteral("group"));
-        expect("provenance site list recorded",
-               row.value(QStringLiteral("rrSiteNumbers")).toString() == QStringLiteral("10,11,12"));
+        /* The database siteId, not the RF site number: two RR rows can share a
+         * number, so only this identifies the site a refresh re-fetches. */
+        expect("provenance site ids recorded",
+               row.value(QStringLiteral("rrSiteIds")).toString() == QStringLiteral("4001,4002,4003"));
         expect("generated import keeps its type",
                row.value(QStringLiteral("type")).toString() == QStringLiteral("group"));
 
@@ -452,7 +454,7 @@ test_generated_import_and_refresh(void) {
                model.get(0).value(QStringLiteral("origin")).toString() == QStringLiteral("radioreference"));
         expect("persisted sid", model.get(0).value(QStringLiteral("rrSid")).toInt() == 6673);
         expect("persisted site list",
-               model.get(0).value(QStringLiteral("rrSiteNumbers")).toString() == QStringLiteral("10,11,12"));
+               model.get(0).value(QStringLiteral("rrSiteIds")).toString() == QStringLiteral("4001,4002,4003"));
 
         /* Refresh: same path, new content, re-validated counts. */
         const QByteArray second =
@@ -482,6 +484,28 @@ test_generated_import_and_refresh(void) {
                !model.refreshGeneratedFile(99, refreshSrc).value(QStringLiteral("ok")).toBool());
         expect("refresh rejects a negative row",
                !model.refreshGeneratedFile(-1, refreshSrc).value(QStringLiteral("ok")).toBool());
+
+        /* The partial-encryption answer the import was given is provenance too:
+         * without it a refresh regenerates with the UI default and silently
+         * re-marks every partly-encrypted talkgroup DE, which blocks tuning. */
+        expect("partial-enc answer recorded", !model.get(0).value(QStringLiteral("rrPartialEnc")).toBool());
+    }
+
+    {
+        /* A user re-picking their own file over a generated row makes the bytes
+         * theirs. Keeping the provenance would leave "Refresh from
+         * RadioReference" on offer for a file it would then overwrite. */
+        dsd_qt::ImportedFilesModel model(&host);
+        const QString ownSrc = stagingDir.filePath(QStringLiteral("mine.csv"));
+        expect("own source written", write_file(ownSrc, "DEC,Mode,Name\n501,A,Mine\n"));
+
+        const QVariantMap updated =
+            model.updateFile(0, QUrl::fromLocalFile(ownSrc).toString(), QStringLiteral("mine.csv"));
+        expect("re-pick ok", updated.value(QStringLiteral("ok")).toBool());
+        expect("re-pick drops the origin", model.get(0).value(QStringLiteral("origin")).toString().isEmpty());
+        expect("re-pick drops the sid", model.get(0).value(QStringLiteral("rrSid")).toInt() == 0);
+        expect("re-pick drops the site ids", model.get(0).value(QStringLiteral("rrSiteIds")).toString().isEmpty());
+        expect("re-pick drops the kind", model.get(0).value(QStringLiteral("rrKind")).toString().isEmpty());
     }
 }
 
@@ -519,10 +543,8 @@ test_legacy_store_without_provenance(void) {
     expect("legacy row keeps its counts", row.value(QStringLiteral("accepted")).toInt() == 1);
     expect("legacy row defaults origin to empty", row.value(QStringLiteral("origin")).toString().isEmpty());
     expect("legacy row defaults sid to zero", row.value(QStringLiteral("rrSid")).toInt() == 0);
-    expect("legacy row defaults site number to zero", row.value(QStringLiteral("rrSiteNumber")).toInt() == 0);
     expect("legacy row defaults kind to empty", row.value(QStringLiteral("rrKind")).toString().isEmpty());
-    expect("legacy row defaults the site list to empty",
-           row.value(QStringLiteral("rrSiteNumbers")).toString().isEmpty());
+    expect("legacy row defaults the site list to empty", row.value(QStringLiteral("rrSiteIds")).toString().isEmpty());
     expect("legacy row is not prunable", model.takePrunedPaths().isEmpty());
 }
 

@@ -792,6 +792,30 @@ test_hostile_and_malformed_input(void) {
         free(body);
     }
 
+    /*
+     * Cut a site list at several points rather than one. A record abandoned
+     * after its <siteFreqs> items but before its own </item> leaves the parser's
+     * scratch site owning a heap frequency array that only the closing tag would
+     * have handed to the sink - a leak the single len/2 cut above happens to
+     * miss. Sweeping the body catches every such window; the ASan preset is what
+     * turns it into a failure.
+     */
+    body = NULL;
+    len = 0;
+    if (read_fixture("trs_sites_p25.xml", &body, &len) == 0) {
+        static const size_t k_percent[] = {10U, 30U, 50U, 70U, 90U, 95U, 99U};
+        for (size_t i = 0; i < sizeof(k_percent) / sizeof(k_percent[0]); i++) {
+            dsd_rr_site_list sites;
+            DSD_MEMSET(&sites, 0, sizeof(sites));
+            DSD_MEMSET(&err, 0, sizeof(err));
+            const size_t cut = (len * k_percent[i]) / 100U;
+            expect("truncated site list rejected",
+                   rr_soap_parse(body, cut, RR_SHAPE_SITE_LIST, &sites, &err, NULL) != 0);
+            dsd_rr_site_list_free(&sites);
+        }
+        free(body);
+    }
+
     /* Empty body. */
     DSD_MEMSET(&user, 0, sizeof(user));
     DSD_MEMSET(&err, 0, sizeof(err));
@@ -835,6 +859,57 @@ test_unknown_elements_are_ignored(void) {
     expect_str("later field still decoded", user.sub_expire, "11-24-2026");
 }
 
+/*
+ * radioreference.h promises every *_list_free is NULL-safe, idempotent, and
+ * leaves the struct zeroed. Nine near-identical bodies carry that contract and
+ * nothing exercised it: no test passed NULL to any of them, and only the warning
+ * list was ever freed twice. The site list is the one that matters most - it is
+ * the only element type that owns heap memory of its own - and a free that
+ * released the array without its per-site freqs leaked silently.
+ */
+static void
+test_list_free_contract(void) {
+    /* NULL is a no-op for every one, including the two with nested owners. */
+    dsd_rr_country_list_free(NULL);
+    dsd_rr_state_list_free(NULL);
+    dsd_rr_county_list_free(NULL);
+    dsd_rr_trs_list_free(NULL);
+    dsd_rr_support_list_free(NULL);
+    dsd_rr_support_maps_free(NULL);
+    dsd_rr_site_list_free(NULL);
+    dsd_rr_talkgroup_list_free(NULL);
+    dsd_rr_talkgroup_cat_list_free(NULL);
+    dsd_rr_warning_list_free(NULL);
+    dsd_rr_trs_details_free(NULL);
+    expect("every free tolerates NULL", 1);
+
+    /* A zeroed struct is the other half of the contract: a sink that never got
+     * a response still reaches its free on the error path. */
+    dsd_rr_site_list empty;
+    DSD_MEMSET(&empty, 0, sizeof(empty));
+    dsd_rr_site_list_free(&empty);
+    expect("a zeroed list frees to nothing", empty.items == NULL && empty.count == 0);
+
+    char* body = NULL;
+    size_t len = 0;
+    if (read_fixture("trs_sites_p25.xml", &body, &len) == 0) {
+        dsd_rr_site_list sites;
+        dsd_rr_error err;
+        DSD_MEMSET(&sites, 0, sizeof(sites));
+        DSD_MEMSET(&err, 0, sizeof(err));
+        expect("sites parse", rr_soap_parse(body, len, RR_SHAPE_SITE_LIST, &sites, &err, NULL) == 0);
+        /* Without a frequency array on at least one site the leak this guards
+         * against cannot happen, so the assertion below would prove nothing. */
+        expect("the parsed sites own frequency arrays", sites.count > 0 && sites.items[0].freq_count > 0);
+        dsd_rr_site_list_free(&sites);
+        expect("site free zeroes the list", sites.items == NULL && sites.count == 0);
+        /* Idempotent: a double free here is what ASan catches if a body ever
+         * stops clearing items. */
+        dsd_rr_site_list_free(&sites);
+        free(body);
+    }
+}
+
 static void
 test_warning_list(void) {
     dsd_rr_warning_list warnings;
@@ -871,6 +946,7 @@ main(void) {
     test_fault_classification();
     test_hostile_and_malformed_input();
     test_unknown_elements_are_ignored();
+    test_list_free_contract();
     test_warning_list();
 
     if (g_failures != 0) {

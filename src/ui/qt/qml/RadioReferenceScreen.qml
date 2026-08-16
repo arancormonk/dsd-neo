@@ -338,6 +338,97 @@ Item {
         color: Theme.bg
     }
 
+    // One level of the place hierarchy — country, state, county — as a capped,
+    // scrolling list over the standard sheet. Inline because the three levels
+    // below are its only consumers and always will be: no other screen browses
+    // places.
+    //
+    // ModalSheet sizes its panel to its content and neither clips nor scrolls,
+    // so an uncapped list pushes the title off the top and everything else off
+    // the bottom with no way back to either. The cap and the Flickable are what
+    // keep the list inside the panel; written once because a level that got it
+    // wrong would be a sheet with no way out of it.
+    component BrowseSheet: ModalSheet {
+        id: browseSheet
+
+        /** Section label above the list. */
+        property string title: ""
+        /** The rows to offer: objects carrying `name` and the key named by idKey. */
+        property var rows: []
+        /** Which key on a row holds its id — "coid", "stid", "ctid". */
+        property string idKey: ""
+        /** The id chosen at this level, highlighted in the list; -1 when none is. */
+        property int selectedId: -1
+        /** Whether a row can be tapped. Off while a request is running. */
+        property bool rowsEnabled: true
+
+        /** Emitted with the tapped row. */
+        signal chosen(var row)
+
+        // A list that has not arrived yet is empty, which is what the notice
+        // below reports.
+        readonly property int rowCount: browseSheet.rows !== undefined && browseSheet.rows !== null
+                                        ? browseSheet.rows.length : 0
+
+        MicroLabel {
+            text: browseSheet.title
+        }
+
+        Flickable {
+            width: parent.width
+            height: Math.min(listColumn.height, 46 * 5)
+            visible: browseSheet.rowCount > 0
+            clip: true
+            contentHeight: listColumn.height
+            boundsBehavior: Flickable.StopAtBounds
+
+            Column {
+                id: listColumn
+
+                width: parent.width
+
+                Repeater {
+                    model: browseSheet.rows
+
+                    Item {
+                        id: sheetRow
+
+                        required property var modelData
+
+                        width: listColumn.width
+                        height: 46
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: sheetRow.modelData.name
+                            font.family: Theme.sans
+                            font.pixelSize: 15
+                            color: sheetRow.modelData[browseSheet.idKey] === browseSheet.selectedId
+                                   ? Theme.cyan : Theme.textPrimary
+                            elide: Text.ElideRight
+                        }
+
+                        TapHandler {
+                            enabled: browseSheet.rowsEnabled
+                            onTapped: browseSheet.chosen(sheetRow.modelData)
+                        }
+                    }
+                }
+            }
+        }
+
+        Text {
+            width: parent.width
+            visible: browseSheet.rowCount === 0
+            text: qsTr("Loading…")
+            font.family: Theme.sans
+            font.pixelSize: 13
+            color: Theme.textSubdued
+        }
+    }
+
     // One browse row: label left, current choice and caret right.
     component BrowseRow: Item {
         id: browseRow
@@ -391,70 +482,6 @@ Item {
 
         TapHandler {
             onTapped: browseRow.tapped()
-        }
-    }
-
-    // One option row: title, helper, switch. A local copy of the settings shape,
-    // because SettingsScreen's is an inline component private to that file.
-    component OptionRow: Item {
-        id: optionRow
-
-        property string title: ""
-        property string subtitle: ""
-        property bool checked: false
-        property bool showDivider: false
-        signal toggled(bool checked)
-
-        width: parent ? parent.width : 0
-        height: 62
-
-        Column {
-            anchors.left: parent.left
-            anchors.right: optionSwitch.left
-            anchors.leftMargin: Theme.cardPadding
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 3
-
-            Text {
-                width: parent.width
-                text: optionRow.title
-                font.family: Theme.sans
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-                elide: Text.ElideRight
-            }
-
-            Text {
-                width: parent.width
-                visible: text.length > 0
-                text: optionRow.subtitle
-                font.family: Theme.sans
-                font.pixelSize: 12
-                color: Theme.textSubdued
-                wrapMode: Text.Wrap
-            }
-        }
-
-        PlexSwitch {
-            id: optionSwitch
-
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.cardPadding
-            anchors.verticalCenter: parent.verticalCenter
-            checked: optionRow.checked
-            onToggled: function (state) { optionRow.toggled(state) }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Theme.cardPadding
-            height: 1
-            visible: optionRow.showDivider
-            color: Theme.divider
         }
     }
 
@@ -773,6 +800,7 @@ Item {
                             title: qsTr("Country")
                             value: screen.browseCountryName
                             showDivider: true
+                            enabled: !radioReference.busy
                             onTapped: screen.browseCountries()
                         }
 
@@ -781,6 +809,7 @@ Item {
                             title: qsTr("State")
                             value: screen.browseStateName.length > 0 ? screen.browseStateName : qsTr("Choose")
                             showDivider: true
+                            enabled: !radioReference.busy
                             onTapped: screen.browseStates()
                         }
 
@@ -796,6 +825,7 @@ Item {
                     OutlineButton {
                         width: parent.width
                         visible: screen.sourceMode === 1 && screen.browseStid >= 0
+                        enabled: !radioReference.busy
                         text: qsTr("Every system in %1").arg(screen.browseStateName)
                         onClicked: screen.findStatewide()
                     }
@@ -865,68 +895,19 @@ Item {
                     Repeater {
                         model: radioReference.systems
 
-                        Item {
+                        DisclosureRow {
                             id: systemRow
 
                             required property var modelData
                             required property int index
 
-                            width: systemsColumn.width
-                            height: 58
-
-                            Column {
-                                anchors.left: parent.left
-                                anchors.right: systemCaret.left
-                                anchors.leftMargin: Theme.cardPadding
-                                anchors.rightMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 3
-
-                                Text {
-                                    width: parent.width
-                                    text: systemRow.modelData.name
-                                    font.family: Theme.sans
-                                    font.pixelSize: 15
-                                    font.weight: Font.DemiBold
-                                    color: Theme.textPrimary
-                                    elide: Text.ElideRight
-                                }
-
-                                Text {
-                                    width: parent.width
-                                    text: systemRow.modelData.city.length > 0
-                                          ? systemRow.modelData.city + " · SID " + systemRow.modelData.sid
-                                          : "SID " + systemRow.modelData.sid
-                                    font.family: Theme.sans
-                                    font.pixelSize: 12
-                                    color: Theme.textSubdued
-                                    elide: Text.ElideRight
-                                }
-                            }
-
-                            Caret {
-                                id: systemCaret
-
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.cardPadding
-                                anchors.verticalCenter: parent.verticalCenter
-                                rotation: -90
-                                color: Theme.textSubdued
-                            }
-
-                            Rectangle {
-                                anchors.bottom: parent.bottom
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.leftMargin: Theme.cardPadding
-                                height: 1
-                                visible: systemRow.index < radioReference.systems.length - 1
-                                color: Theme.divider
-                            }
-
-                            TapHandler {
-                                onTapped: screen.openSystem(systemRow.modelData.sid)
-                            }
+                            title: systemRow.modelData.name
+                            subtitle: systemRow.modelData.city.length > 0
+                                      ? systemRow.modelData.city + " · SID " + systemRow.modelData.sid
+                                      : "SID " + systemRow.modelData.sid
+                            showDivider: systemRow.index < radioReference.systems.length - 1
+                            tapEnabled: !radioReference.busy
+                            onTapped: screen.openSystem(systemRow.modelData.sid)
                         }
                     }
                 }
@@ -1151,6 +1132,7 @@ Item {
                             }
 
                             TapHandler {
+                                enabled: !radioReference.busy
                                 onTapped: screen.toggleSite(siteRow.modelData.index)
                             }
                         }
@@ -1182,7 +1164,7 @@ Item {
                         bottomPadding: 6
                     }
 
-                    OptionRow {
+                    ToggleRow {
                         objectName: "radioReferencePartialEncRow"
                         title: qsTr("Treat partly encrypted as encrypted")
                         subtitle: qsTr("Blocks those talkgroups instead of playing noise")
@@ -1191,7 +1173,7 @@ Item {
                         onToggled: function (state) { screen.partialEncAsDe = state }
                     }
 
-                    OptionRow {
+                    ToggleRow {
                         objectName: "radioReferenceSimulcastRow"
                         visible: screen.isP25
                         title: qsTr("Simulcast (LSM/QPSK)")
@@ -1202,7 +1184,7 @@ Item {
                         onToggled: function (state) { screen.simulcastOverride = state ? 1 : 0 }
                     }
 
-                    OptionRow {
+                    ToggleRow {
                         objectName: "radioReferenceEskRow"
                         visible: screen.isEdacs
                         title: qsTr("ESK")
@@ -1345,188 +1327,46 @@ Item {
     }
 
     // ---- Browse sheets ----
-    // ModalSheet sizes its panel to its content and neither clips nor scrolls,
-    // so an uncapped list pushes the title off the top and everything else off
-    // the bottom with no way back to either. Cap the height and let the list
-    // scroll inside it.
 
-    ModalSheet {
+    BrowseSheet {
         id: countrySheet
 
-        MicroLabel {
-            text: qsTr("Country")
-        }
-
-        Flickable {
-            width: parent.width
-            height: Math.min(countryColumn.height, 46 * 5)
-            visible: radioReference.countries.length > 0
-            clip: true
-            contentHeight: countryColumn.height
-            boundsBehavior: Flickable.StopAtBounds
-
-            Column {
-                id: countryColumn
-
-                width: parent.width
-
-                Repeater {
-                    model: radioReference.countries
-
-                    Item {
-                        id: countryRow
-
-                        required property var modelData
-
-                        width: countryColumn.width
-                        height: 46
-
-                        Text {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: countryRow.modelData.name
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: countryRow.modelData.coid === screen.browseCoid ? Theme.cyan : Theme.textPrimary
-                            elide: Text.ElideRight
-                        }
-
-                        TapHandler {
-                            onTapped: screen.chooseCountry(countryRow.modelData)
-                        }
-                    }
-                }
-            }
-        }
-
-        Text {
-            width: parent.width
-            visible: radioReference.countries.length === 0
-            text: qsTr("Loading…")
-            font.family: Theme.sans
-            font.pixelSize: 13
-            color: Theme.textSubdued
+        objectName: "radioReferenceCountrySheet"
+        title: qsTr("Country")
+        rows: radioReference.countries
+        idKey: "coid"
+        selectedId: screen.browseCoid
+        rowsEnabled: !radioReference.busy
+        onChosen: function (row) {
+            screen.chooseCountry(row)
         }
     }
 
-    ModalSheet {
+    BrowseSheet {
         id: stateSheet
 
-        MicroLabel {
-            text: qsTr("State")
-        }
-
-        Flickable {
-            width: parent.width
-            height: Math.min(stateColumn.height, 46 * 5)
-            visible: radioReference.states.length > 0
-            clip: true
-            contentHeight: stateColumn.height
-            boundsBehavior: Flickable.StopAtBounds
-
-            Column {
-                id: stateColumn
-
-                width: parent.width
-
-                Repeater {
-                    model: radioReference.states
-
-                    Item {
-                        id: stateRow
-
-                        required property var modelData
-
-                        width: stateColumn.width
-                        height: 46
-
-                        Text {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: stateRow.modelData.name
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: stateRow.modelData.stid === screen.browseStid ? Theme.cyan : Theme.textPrimary
-                            elide: Text.ElideRight
-                        }
-
-                        TapHandler {
-                            onTapped: screen.chooseState(stateRow.modelData)
-                        }
-                    }
-                }
-            }
-        }
-
-        Text {
-            width: parent.width
-            visible: radioReference.states.length === 0
-            text: qsTr("Loading…")
-            font.family: Theme.sans
-            font.pixelSize: 13
-            color: Theme.textSubdued
+        objectName: "radioReferenceStateSheet"
+        title: qsTr("State")
+        rows: radioReference.states
+        idKey: "stid"
+        selectedId: screen.browseStid
+        rowsEnabled: !radioReference.busy
+        onChosen: function (row) {
+            screen.chooseState(row)
         }
     }
 
-    ModalSheet {
+    BrowseSheet {
         id: countySheet
 
-        MicroLabel {
-            text: qsTr("County")
-        }
-
-        Flickable {
-            width: parent.width
-            height: Math.min(countyColumn.height, 46 * 5)
-            visible: radioReference.counties.length > 0
-            clip: true
-            contentHeight: countyColumn.height
-            boundsBehavior: Flickable.StopAtBounds
-
-            Column {
-                id: countyColumn
-
-                width: parent.width
-
-                Repeater {
-                    model: radioReference.counties
-
-                    Item {
-                        id: countyRow
-
-                        required property var modelData
-
-                        width: countyColumn.width
-                        height: 46
-
-                        Text {
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: countyRow.modelData.name
-                            font.family: Theme.sans
-                            font.pixelSize: 15
-                            color: countyRow.modelData.ctid === screen.browseCtid ? Theme.cyan : Theme.textPrimary
-                            elide: Text.ElideRight
-                        }
-
-                        TapHandler {
-                            onTapped: screen.chooseCounty(countyRow.modelData)
-                        }
-                    }
-                }
-            }
-        }
-
-        Text {
-            width: parent.width
-            visible: radioReference.counties.length === 0
-            text: qsTr("Loading…")
-            font.family: Theme.sans
-            font.pixelSize: 13
-            color: Theme.textSubdued
+        objectName: "radioReferenceCountySheet"
+        title: qsTr("County")
+        rows: radioReference.counties
+        idKey: "ctid"
+        selectedId: screen.browseCtid
+        rowsEnabled: !radioReference.busy
+        onChosen: function (row) {
+            screen.chooseCounty(row)
         }
     }
 

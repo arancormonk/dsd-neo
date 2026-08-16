@@ -195,7 +195,7 @@ typedef struct {
 
 typedef struct {
     int site_db_id;  /**< TrsSite.siteId - database row id, NOT the RF site. */
-    int site_number; /**< TrsSite.siteNumber - the RF site; this is rrSiteNumber. */
+    int site_number; /**< TrsSite.siteNumber - the RF site. Display only: it repeats within a system. */
     char descr[128];
     int zone_number;
     char zone_descr[64];
@@ -436,7 +436,17 @@ uint64_t dsd_rr_fetch_trs_talkgroups(dsd_rr_client* client, const dsd_rr_auth* a
                                      void* user);
 uint64_t dsd_rr_fetch_trs_talkgroup_cats(dsd_rr_client* client, const dsd_rr_auth* auth, int sid, dsd_rr_done_cb cb,
                                          void* user);
-uint64_t dsd_rr_fetch_support_maps(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_done_cb cb, void* user);
+/**
+ * @brief Queue getTrsType.
+ *
+ * Named for the one table it fetches, not for dsd_rr_support_maps: the async
+ * machinery runs one method per job, so `result` is a heap dsd_rr_support_list.
+ * A caller that read the name as the async twin of dsd_rr_get_support_maps()
+ * and cast it to dsd_rr_support_maps* would read past the allocation and then
+ * free two wild pointers. The flavor and voice tables have no async form; the
+ * blocking getter fetches all three.
+ */
+uint64_t dsd_rr_fetch_support_types(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_done_cb cb, void* user);
 
 /**
  * @brief Best-effort cancellation of a queued or in-flight request.

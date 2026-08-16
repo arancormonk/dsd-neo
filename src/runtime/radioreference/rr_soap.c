@@ -40,30 +40,17 @@ typedef struct {
 /**
  * @brief Grow the envelope buffer to hold at least `needed` bytes.
  *
+ * Delegates to rr_array_reserve() with an element size of one: it is the same
+ * doubling loop with the same SIZE_MAX/2 overflow guard, and one copy of that
+ * reasoning is easier to keep right than two.
+ *
  * @param sb     Buffer.
  * @param needed Required capacity including the terminator.
  * @return 0 on success, -1 on allocation failure.
  */
 static int
 rr_sb_reserve(rr_strbuf* sb, size_t needed) {
-    if (needed <= sb->cap) {
-        return 0;
-    }
-    size_t next = (sb->cap == 0U) ? 1024U : sb->cap;
-    while (next < needed) {
-        if (next > SIZE_MAX / 2U) {
-            next = needed;
-            break;
-        }
-        next *= 2U;
-    }
-    char* grown = (char*)realloc(sb->data, next);
-    if (grown == NULL) {
-        return -1;
-    }
-    sb->data = grown;
-    sb->cap = next;
-    return 0;
+    return rr_array_reserve((void**)&sb->data, &sb->cap, needed, 1U);
 }
 
 /**
@@ -390,6 +377,29 @@ static const rr_field_def k_talkgroup_cat_fields[] = {
     RR_STR(dsd_rr_talkgroup_cat, name, "tgCname"),
 };
 
+/*
+ * The three support lists share one record type and differ only in what the ID
+ * member is called. getTrsType repeats sType because for a type list the pair
+ * key is (id, id); rr_apply_field applies every matching row, not just the first.
+ */
+static const rr_field_def k_support_type_fields[] = {
+    RR_INT(dsd_rr_support_entry, stype, "sType"),
+    RR_INT(dsd_rr_support_entry, id, "sType"),
+    RR_STR(dsd_rr_support_entry, descr, "sTypeDescr"),
+};
+
+static const rr_field_def k_support_flavor_fields[] = {
+    RR_INT(dsd_rr_support_entry, stype, "sType"),
+    RR_INT(dsd_rr_support_entry, id, "sFlavor"),
+    RR_STR(dsd_rr_support_entry, descr, "sFlavorDescr"),
+};
+
+static const rr_field_def k_support_voice_fields[] = {
+    RR_INT(dsd_rr_support_entry, stype, "sType"),
+    RR_INT(dsd_rr_support_entry, id, "sVoice"),
+    RR_STR(dsd_rr_support_entry, descr, "sVoiceDescr"),
+};
+
 static const rr_field_def k_user_info_fields[] = {
     RR_STR(dsd_rr_user_info, username, "username"),
     RR_STR(dsd_rr_user_info, sub_expire, "subExpireDate"),
@@ -450,6 +460,121 @@ typedef struct {
     char enclosing_state_name[64];
 } rr_parse_ctx;
 
+#define RR_COUNTOF(a) (sizeof(a) / sizeof((a)[0]))
+
+/**
+ * Everything the decoder needs to know about one response shape.
+ *
+ * The offsets are stored per row rather than assumed: every dsd_rr_*_list happens
+ * to be {items, count} today and nothing in the header enforces that.
+ */
+typedef struct {
+    const char* record_parent;         /**< Element whose <item> children open a record; NULL when none. */
+    const char* sub_parent;            /**< Element whose <item> children open a sub-record; NULL when none. */
+    const rr_field_def* root_fields;   /**< Leaves directly under <return>, applied to the sink. */
+    size_t root_field_count;           /**< Entries in root_fields. */
+    const rr_field_def* record_fields; /**< Leaves inside a record <item>. */
+    size_t record_field_count;         /**< Entries in record_fields. */
+    size_t scratch_offset;             /**< offsetof(rr_parse_ctx, <record scratch>). */
+    size_t record_size;                /**< sizeof(<record type>); 0 when the shape has no record. */
+    size_t items_offset;               /**< offsetof(<list type>, items). */
+    size_t count_offset;               /**< offsetof(<list type>, count). */
+    const rr_field_def* sub_fields;    /**< Leaves inside a sub-record <item>. */
+    size_t sub_field_count;            /**< Entries in sub_fields. */
+    size_t sub_scratch_offset;         /**< offsetof(rr_parse_ctx, <sub-record scratch>). */
+} rr_shape_desc;
+
+/** A shape whose <return> is one struct: no records, leaves land on the sink. */
+#define RR_SHAPE_ROOT(fields) {.root_fields = (fields), .root_field_count = RR_COUNTOF(fields)}
+
+/** A shape that repeats <item> under `parent` into a {items, count} list sink. */
+#define RR_SHAPE_LIST(parent, scratch, fields, list_type, elem_type)                                                   \
+    {.record_parent = (parent),                                                                                        \
+     .record_fields = (fields),                                                                                        \
+     .record_field_count = RR_COUNTOF(fields),                                                                         \
+     .scratch_offset = offsetof(rr_parse_ctx, scratch),                                                                \
+     .record_size = sizeof(elem_type),                                                                                 \
+     .items_offset = offsetof(list_type, items),                                                                       \
+     .count_offset = offsetof(list_type, count)}
+
+static const rr_shape_desc k_shapes[] = {
+    [RR_SHAPE_USER_INFO] = RR_SHAPE_ROOT(k_user_info_fields),
+    [RR_SHAPE_ZIP_INFO] = RR_SHAPE_ROOT(k_zip_info_fields),
+    [RR_SHAPE_COUNTRY_LIST] = RR_SHAPE_LIST("return", country, k_country_fields, dsd_rr_country_list, dsd_rr_country),
+    [RR_SHAPE_STATE_LIST] = RR_SHAPE_LIST("stateList", state, k_state_fields, dsd_rr_state_list, dsd_rr_state),
+    [RR_SHAPE_COUNTY_LIST] = RR_SHAPE_LIST("countyList", county, k_county_fields, dsd_rr_county_list, dsd_rr_county),
+    [RR_SHAPE_TRS_LIST] =
+        RR_SHAPE_LIST("trsList", trs_summary, k_trs_summary_fields, dsd_rr_trs_list, dsd_rr_trs_summary),
+    [RR_SHAPE_TRS_DETAILS] = {.sub_parent = "sysid",
+                              .root_fields = k_trs_details_fields,
+                              .root_field_count = RR_COUNTOF(k_trs_details_fields),
+                              .sub_fields = k_sysid_fields,
+                              .sub_field_count = RR_COUNTOF(k_sysid_fields),
+                              .sub_scratch_offset = offsetof(rr_parse_ctx, sysid)},
+    [RR_SHAPE_SITE_LIST] = {.record_parent = "return",
+                            .sub_parent = "siteFreqs",
+                            .record_fields = k_site_fields,
+                            .record_field_count = RR_COUNTOF(k_site_fields),
+                            .scratch_offset = offsetof(rr_parse_ctx, site),
+                            .record_size = sizeof(dsd_rr_site),
+                            .items_offset = offsetof(dsd_rr_site_list, items),
+                            .count_offset = offsetof(dsd_rr_site_list, count),
+                            .sub_fields = k_site_freq_fields,
+                            .sub_field_count = RR_COUNTOF(k_site_freq_fields),
+                            .sub_scratch_offset = offsetof(rr_parse_ctx, freq)},
+    [RR_SHAPE_TALKGROUP_LIST] =
+        RR_SHAPE_LIST("return", talkgroup, k_talkgroup_fields, dsd_rr_talkgroup_list, dsd_rr_talkgroup),
+    [RR_SHAPE_TALKGROUP_CAT_LIST] =
+        RR_SHAPE_LIST("return", talkgroup_cat, k_talkgroup_cat_fields, dsd_rr_talkgroup_cat_list, dsd_rr_talkgroup_cat),
+    [RR_SHAPE_SUPPORT_TYPE] =
+        RR_SHAPE_LIST("return", support, k_support_type_fields, dsd_rr_support_list, dsd_rr_support_entry),
+    [RR_SHAPE_SUPPORT_FLAVOR] =
+        RR_SHAPE_LIST("return", support, k_support_flavor_fields, dsd_rr_support_list, dsd_rr_support_entry),
+    [RR_SHAPE_SUPPORT_VOICE] =
+        RR_SHAPE_LIST("return", support, k_support_voice_fields, dsd_rr_support_list, dsd_rr_support_entry),
+};
+
+_Static_assert(RR_COUNTOF(k_shapes) == (size_t)RR_SHAPE_COUNT, "every rr_shape needs a descriptor row");
+
+/*
+ * The one pairing the table cannot check for itself: rr_commit_record() copies
+ * `record_size` bytes out of the scratch member at `scratch_offset`, so a row
+ * naming one shape's scratch and another's element type reads past the scratch
+ * and stores a record the consumer will cast to the wrong type. Neither is a
+ * compile error on its own - both are just numbers by then - so assert the pair
+ * here. One line per RR_SHAPE_LIST row; a new shape needs a new line.
+ */
+#define RR_SCRATCH_FITS(scratch, elem_type)                                                                            \
+    _Static_assert(sizeof(((rr_parse_ctx*)0)->scratch) == sizeof(elem_type),                                           \
+                   "shape scratch " #scratch " does not hold a " #elem_type)
+
+RR_SCRATCH_FITS(country, dsd_rr_country);
+RR_SCRATCH_FITS(state, dsd_rr_state);
+RR_SCRATCH_FITS(county, dsd_rr_county);
+RR_SCRATCH_FITS(trs_summary, dsd_rr_trs_summary);
+RR_SCRATCH_FITS(site, dsd_rr_site);
+RR_SCRATCH_FITS(talkgroup, dsd_rr_talkgroup);
+RR_SCRATCH_FITS(talkgroup_cat, dsd_rr_talkgroup_cat);
+RR_SCRATCH_FITS(support, dsd_rr_support_entry);
+RR_SCRATCH_FITS(freq, dsd_rr_site_freq);
+RR_SCRATCH_FITS(sysid, dsd_rr_trs_sysid);
+
+/*
+ * And the other half: the sink a shape appends into must store elements of that
+ * same size, or the list grows in the wrong stride.
+ */
+#define RR_LIST_HOLDS(list_type, elem_type)                                                                            \
+    _Static_assert(sizeof(*((list_type*)0)->items) == sizeof(elem_type), #list_type " does not hold a " #elem_type)
+
+RR_LIST_HOLDS(dsd_rr_country_list, dsd_rr_country);
+RR_LIST_HOLDS(dsd_rr_state_list, dsd_rr_state);
+RR_LIST_HOLDS(dsd_rr_county_list, dsd_rr_county);
+RR_LIST_HOLDS(dsd_rr_trs_list, dsd_rr_trs_summary);
+RR_LIST_HOLDS(dsd_rr_site_list, dsd_rr_site);
+RR_LIST_HOLDS(dsd_rr_talkgroup_list, dsd_rr_talkgroup);
+RR_LIST_HOLDS(dsd_rr_talkgroup_cat_list, dsd_rr_talkgroup_cat);
+RR_LIST_HOLDS(dsd_rr_support_list, dsd_rr_support_entry);
+
 /**
  * @brief Strip an XML qualified name down to its local part.
  *
@@ -490,6 +615,8 @@ rr_fail(rr_parse_ctx* ctx, dsd_rr_status status, const char* detail) {
  */
 static void
 rr_apply_field(void* record, const rr_field_def* table, size_t n, const char* name, const char* text) {
+    /* Every matching row is applied, not just the first: the type support list
+     * maps sType onto both halves of its (stype, id) key. */
     for (size_t i = 0; i < n; i++) {
         if (strcmp(table[i].name, name) != 0) {
             continue;
@@ -522,8 +649,24 @@ rr_apply_field(void* record, const rr_field_def* table, size_t n, const char* na
             }
             default: break;
         }
-        return;
     }
+}
+
+/**
+ * @brief Release the scratch site's frequency array.
+ *
+ * Only the record still being assembled owns one: rr_commit_record() disowns the
+ * scratch as soon as the array has been copied into the sink list, so this frees
+ * exactly the array of a record whose `</item>` never arrived.
+ *
+ * @param ctx Parse context.
+ */
+static void
+rr_release_scratch_site(rr_parse_ctx* ctx) {
+    free(ctx->site.freqs);
+    ctx->site.freqs = NULL;
+    ctx->site.freq_count = 0;
+    ctx->site_freq_cap = 0;
 }
 
 /**
@@ -533,15 +676,13 @@ rr_apply_field(void* record, const rr_field_def* table, size_t n, const char* na
  */
 static void
 rr_reset_record(rr_parse_ctx* ctx) {
-    DSD_MEMSET(&ctx->country, 0, sizeof(ctx->country));
-    DSD_MEMSET(&ctx->state, 0, sizeof(ctx->state));
-    DSD_MEMSET(&ctx->county, 0, sizeof(ctx->county));
-    DSD_MEMSET(&ctx->trs_summary, 0, sizeof(ctx->trs_summary));
-    DSD_MEMSET(&ctx->talkgroup, 0, sizeof(ctx->talkgroup));
-    DSD_MEMSET(&ctx->talkgroup_cat, 0, sizeof(ctx->talkgroup_cat));
-    DSD_MEMSET(&ctx->support, 0, sizeof(ctx->support));
-    DSD_MEMSET(&ctx->site, 0, sizeof(ctx->site));
-    ctx->site_freq_cap = 0;
+    const rr_shape_desc* desc = &k_shapes[ctx->shape];
+    /* A previous record that was committed has already disowned its array; one
+     * that was abandoned still owns it, and this is where it goes. */
+    rr_release_scratch_site(ctx);
+    if (desc->record_size != 0U) {
+        DSD_MEMSET((char*)ctx + desc->scratch_offset, 0, desc->record_size);
+    }
 }
 
 /**
@@ -579,127 +720,6 @@ rr_list_append(rr_parse_ctx* ctx, void** items, size_t* count, const void* elem,
 }
 
 /**
- * @brief Element name whose `<item>` children open a top-level record.
- *
- * @param shape Response shape.
- * @return Parent element name, or NULL when the shape has no repeated record.
- */
-static const char*
-rr_record_parent(rr_shape shape) {
-    switch (shape) {
-        case RR_SHAPE_STATE_LIST: return "stateList";
-        case RR_SHAPE_COUNTY_LIST: return "countyList";
-        case RR_SHAPE_TRS_LIST: return "trsList";
-        case RR_SHAPE_COUNTRY_LIST:
-        case RR_SHAPE_SITE_LIST:
-        case RR_SHAPE_TALKGROUP_LIST:
-        case RR_SHAPE_TALKGROUP_CAT_LIST:
-        case RR_SHAPE_SUPPORT_TYPE:
-        case RR_SHAPE_SUPPORT_FLAVOR:
-        case RR_SHAPE_SUPPORT_VOICE: return "return";
-        default: return NULL;
-    }
-}
-
-/**
- * @brief Element name whose `<item>` children open a sub-record.
- *
- * @param shape Response shape.
- * @return Parent element name, or NULL when the shape has no sub-record.
- */
-static const char*
-rr_sub_parent(rr_shape shape) {
-    if (shape == RR_SHAPE_SITE_LIST) {
-        return "siteFreqs";
-    }
-    if (shape == RR_SHAPE_TRS_DETAILS) {
-        return "sysid";
-    }
-    return NULL;
-}
-
-/**
- * @brief Scratch record and field table for the shape's repeated element.
- *
- * @param ctx    Parse context.
- * @param table  Receives the field table, or NULL when handled specially.
- * @param n      Receives the field count.
- * @return Scratch record address, or NULL when the shape has no record.
- */
-static void*
-rr_record_table(rr_parse_ctx* ctx, const rr_field_def** table, size_t* n) {
-    *table = NULL;
-    *n = 0;
-    switch (ctx->shape) {
-        case RR_SHAPE_COUNTRY_LIST:
-            *table = k_country_fields;
-            *n = sizeof(k_country_fields) / sizeof(k_country_fields[0]);
-            return &ctx->country;
-        case RR_SHAPE_STATE_LIST:
-            *table = k_state_fields;
-            *n = sizeof(k_state_fields) / sizeof(k_state_fields[0]);
-            return &ctx->state;
-        case RR_SHAPE_COUNTY_LIST:
-            *table = k_county_fields;
-            *n = sizeof(k_county_fields) / sizeof(k_county_fields[0]);
-            return &ctx->county;
-        case RR_SHAPE_TRS_LIST:
-            *table = k_trs_summary_fields;
-            *n = sizeof(k_trs_summary_fields) / sizeof(k_trs_summary_fields[0]);
-            return &ctx->trs_summary;
-        case RR_SHAPE_SITE_LIST:
-            *table = k_site_fields;
-            *n = sizeof(k_site_fields) / sizeof(k_site_fields[0]);
-            return &ctx->site;
-        case RR_SHAPE_TALKGROUP_LIST:
-            *table = k_talkgroup_fields;
-            *n = sizeof(k_talkgroup_fields) / sizeof(k_talkgroup_fields[0]);
-            return &ctx->talkgroup;
-        case RR_SHAPE_TALKGROUP_CAT_LIST:
-            *table = k_talkgroup_cat_fields;
-            *n = sizeof(k_talkgroup_cat_fields) / sizeof(k_talkgroup_cat_fields[0]);
-            return &ctx->talkgroup_cat;
-        case RR_SHAPE_SUPPORT_TYPE:
-        case RR_SHAPE_SUPPORT_FLAVOR:
-        case RR_SHAPE_SUPPORT_VOICE: return &ctx->support;
-        default: return NULL;
-    }
-}
-
-/**
- * @brief Apply a leaf inside a support-list `<item>`.
- *
- * The ID member is named differently per call (sType/sFlavor/sVoice) and the type
- * list uses sType for both key halves, so a plain field table cannot express it.
- *
- * @param ctx  Parse context.
- * @param name Local element name.
- */
-static void
-rr_apply_support_leaf(rr_parse_ctx* ctx, const char* name) {
-    long value = 0;
-    if (strcmp(name, "sType") == 0) {
-        if (rr_parse_long_strict(ctx->text, &value) == 0) {
-            ctx->support.stype = (int)value;
-            if (ctx->shape == RR_SHAPE_SUPPORT_TYPE) {
-                ctx->support.id = (int)value;
-            }
-        }
-        return;
-    }
-    if ((ctx->shape == RR_SHAPE_SUPPORT_FLAVOR && strcmp(name, "sFlavor") == 0)
-        || (ctx->shape == RR_SHAPE_SUPPORT_VOICE && strcmp(name, "sVoice") == 0)) {
-        if (rr_parse_long_strict(ctx->text, &value) == 0) {
-            ctx->support.id = (int)value;
-        }
-        return;
-    }
-    if (strcmp(name, "sTypeDescr") == 0 || strcmp(name, "sFlavorDescr") == 0 || strcmp(name, "sVoiceDescr") == 0) {
-        rr_copy_field(ctx->support.descr, sizeof(ctx->support.descr), ctx->text);
-    }
-}
-
-/**
  * @brief Apply a leaf that sits directly under `<return>`.
  *
  * @param ctx  Parse context.
@@ -707,30 +727,22 @@ rr_apply_support_leaf(rr_parse_ctx* ctx, const char* name) {
  */
 static void
 rr_apply_root_leaf(rr_parse_ctx* ctx, const char* name) {
-    switch (ctx->shape) {
-        case RR_SHAPE_USER_INFO:
-            rr_apply_field(ctx->sink, k_user_info_fields, sizeof(k_user_info_fields) / sizeof(k_user_info_fields[0]),
-                           name, ctx->text);
-            break;
-        case RR_SHAPE_ZIP_INFO:
-            rr_apply_field(ctx->sink, k_zip_info_fields, sizeof(k_zip_info_fields) / sizeof(k_zip_info_fields[0]), name,
-                           ctx->text);
-            break;
-        case RR_SHAPE_TRS_DETAILS:
-            rr_apply_field(ctx->sink, k_trs_details_fields,
-                           sizeof(k_trs_details_fields) / sizeof(k_trs_details_fields[0]), name, ctx->text);
-            break;
-        case RR_SHAPE_COUNTY_LIST: {
-            /* StateInfo carries these once, above the rows they belong to. */
-            long value = 0;
-            if (strcmp(name, "stid") == 0 && rr_parse_long_strict(ctx->text, &value) == 0) {
-                ctx->enclosing_stid = (int)value;
-            } else if (strcmp(name, "stateName") == 0) {
-                rr_copy_field(ctx->enclosing_state_name, sizeof(ctx->enclosing_state_name), ctx->text);
-            }
-            break;
-        }
-        default: break;
+    const rr_shape_desc* desc = &k_shapes[ctx->shape];
+    if (desc->root_fields != NULL) {
+        rr_apply_field(ctx->sink, desc->root_fields, desc->root_field_count, name, ctx->text);
+        return;
+    }
+    if (ctx->shape != RR_SHAPE_COUNTY_LIST) {
+        return;
+    }
+
+    /* StateInfo carries these once, above the rows they belong to, and they land
+     * on the context rather than on the sink, which is why no field table fits. */
+    long value = 0;
+    if (strcmp(name, "stid") == 0 && rr_parse_long_strict(ctx->text, &value) == 0) {
+        ctx->enclosing_stid = (int)value;
+    } else if (strcmp(name, "stateName") == 0) {
+        rr_copy_field(ctx->enclosing_state_name, sizeof(ctx->enclosing_state_name), ctx->text);
     }
 }
 
@@ -743,30 +755,21 @@ rr_apply_root_leaf(rr_parse_ctx* ctx, const char* name) {
  */
 static void
 rr_apply_leaf(rr_parse_ctx* ctx, const char* name, int depth) {
+    const rr_shape_desc* desc = &k_shapes[ctx->shape];
     const int parent_depth = depth - 1;
 
     if (ctx->sub_depth >= 0 && parent_depth == ctx->sub_depth) {
-        if (ctx->shape == RR_SHAPE_SITE_LIST) {
-            rr_apply_field(&ctx->freq, k_site_freq_fields, sizeof(k_site_freq_fields) / sizeof(k_site_freq_fields[0]),
-                           name, ctx->text);
-        } else if (ctx->shape == RR_SHAPE_TRS_DETAILS) {
-            rr_apply_field(&ctx->sysid, k_sysid_fields, sizeof(k_sysid_fields) / sizeof(k_sysid_fields[0]), name,
+        if (desc->sub_fields != NULL) {
+            rr_apply_field((char*)ctx + desc->sub_scratch_offset, desc->sub_fields, desc->sub_field_count, name,
                            ctx->text);
         }
         return;
     }
 
     if (ctx->record_depth >= 0 && parent_depth == ctx->record_depth) {
-        if (ctx->shape == RR_SHAPE_SUPPORT_TYPE || ctx->shape == RR_SHAPE_SUPPORT_FLAVOR
-            || ctx->shape == RR_SHAPE_SUPPORT_VOICE) {
-            rr_apply_support_leaf(ctx, name);
-            return;
-        }
-        const rr_field_def* table = NULL;
-        size_t n = 0;
-        void* record = rr_record_table(ctx, &table, &n);
-        if (record != NULL && table != NULL) {
-            rr_apply_field(record, table, n, name, ctx->text);
+        if (desc->record_fields != NULL) {
+            rr_apply_field((char*)ctx + desc->scratch_offset, desc->record_fields, desc->record_field_count, name,
+                           ctx->text);
         }
         return;
     }
@@ -784,44 +787,24 @@ rr_apply_leaf(rr_parse_ctx* ctx, const char* name, int depth) {
  */
 static int
 rr_commit_record(rr_parse_ctx* ctx) {
-    switch (ctx->shape) {
-        case RR_SHAPE_COUNTRY_LIST: {
-            dsd_rr_country_list* list = (dsd_rr_country_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->country, sizeof(ctx->country));
-        }
-        case RR_SHAPE_STATE_LIST: {
-            dsd_rr_state_list* list = (dsd_rr_state_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->state, sizeof(ctx->state));
-        }
-        case RR_SHAPE_COUNTY_LIST: {
-            dsd_rr_county_list* list = (dsd_rr_county_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->county, sizeof(ctx->county));
-        }
-        case RR_SHAPE_TRS_LIST: {
-            dsd_rr_trs_list* list = (dsd_rr_trs_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->trs_summary, sizeof(ctx->trs_summary));
-        }
-        case RR_SHAPE_SITE_LIST: {
-            dsd_rr_site_list* list = (dsd_rr_site_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->site, sizeof(ctx->site));
-        }
-        case RR_SHAPE_TALKGROUP_LIST: {
-            dsd_rr_talkgroup_list* list = (dsd_rr_talkgroup_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->talkgroup, sizeof(ctx->talkgroup));
-        }
-        case RR_SHAPE_TALKGROUP_CAT_LIST: {
-            dsd_rr_talkgroup_cat_list* list = (dsd_rr_talkgroup_cat_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->talkgroup_cat,
-                                  sizeof(ctx->talkgroup_cat));
-        }
-        case RR_SHAPE_SUPPORT_TYPE:
-        case RR_SHAPE_SUPPORT_FLAVOR:
-        case RR_SHAPE_SUPPORT_VOICE: {
-            dsd_rr_support_list* list = (dsd_rr_support_list*)ctx->sink;
-            return rr_list_append(ctx, (void**)&list->items, &list->count, &ctx->support, sizeof(ctx->support));
-        }
-        default: return 0;
+    const rr_shape_desc* desc = &k_shapes[ctx->shape];
+    if (desc->record_size == 0U) {
+        return 0;
     }
+
+    void** items = (void**)((char*)ctx->sink + desc->items_offset);
+    size_t* count = (size_t*)((char*)ctx->sink + desc->count_offset);
+    const int rc = rr_list_append(ctx, items, count, (const char*)ctx + desc->scratch_offset, desc->record_size);
+    if (rc == 0 && ctx->shape == RR_SHAPE_SITE_LIST) {
+        /* The append copied the freqs pointer into the list, which now owns it;
+         * drop the scratch's alias so the abandoned-record cleanup cannot free it
+         * a second time. On failure the scratch keeps ownership and that cleanup
+         * is what releases it. */
+        ctx->site.freqs = NULL;
+        ctx->site.freq_count = 0;
+        ctx->site_freq_cap = 0;
+    }
+    return rc;
 }
 
 /**
@@ -942,14 +925,14 @@ rr_open_item(rr_parse_ctx* ctx, const char* parent) {
         return;
     }
 
-    const char* sub_parent = rr_sub_parent(ctx->shape);
+    const char* sub_parent = k_shapes[ctx->shape].sub_parent;
     if (sub_parent != NULL && strcmp(parent, sub_parent) == 0) {
         ctx->sub_depth = ctx->depth;
         rr_reset_sub(ctx);
         return;
     }
 
-    const char* record_parent = rr_record_parent(ctx->shape);
+    const char* record_parent = k_shapes[ctx->shape].record_parent;
     if (record_parent != NULL && ctx->record_depth < 0 && strcmp(parent, record_parent) == 0) {
         ctx->record_depth = ctx->depth;
         rr_reset_record(ctx);
@@ -1222,6 +1205,10 @@ rr_soap_parse(const char* body, size_t len, rr_shape shape, void* sink, dsd_rr_e
     const int rc = rr_parse_finish(ctx, ok, shape, err, outcome);
 
     XML_ParserFree(parser);
+    /* A body truncated or rejected mid-<Site> leaves the scratch record owning
+     * the frequency array rr_commit_sub() grew; only committed sites are reached
+     * by dsd_rr_site_list_free(). */
+    rr_release_scratch_site(ctx);
     free(ctx);
     return rc;
 }

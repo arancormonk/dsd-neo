@@ -591,7 +591,7 @@ test_import_lands_in_the_library(void) {
         expect_str("provenance origin", entry.value(QStringLiteral("origin")).toString(),
                    QStringLiteral("radioreference"));
         expect_int("provenance sid", entry.value(QStringLiteral("rrSid")).toInt(), 6673);
-        expect_int("provenance site number", entry.value(QStringLiteral("rrSiteNumber")).toInt(), 1);
+        expect_str("provenance site ids", entry.value(QStringLiteral("rrSiteIds")).toString(), QStringLiteral("16863"));
         expect("every imported row loaded rows", entry.value(QStringLiteral("accepted")).toInt() > 0);
         expect_str("provenance kind matches the type", entry.value(QStringLiteral("rrKind")).toString(),
                    entry.value(QStringLiteral("type")).toString());
@@ -622,15 +622,15 @@ test_refresh_replaces_a_row_in_place(void) {
 
     Harness h;
 
-    /* Two repeaters, because that is the selection the singular rrSiteNumber
-     * cannot carry: a refresh driven by it alone would shrink the scan list to
-     * one row. */
+    /* Two repeaters, because a conventional selection is exactly what a
+     * single-site provenance key could not carry: a refresh driven by one would
+     * shrink the scan list to one row. */
     h.model.loadSystem(12244);
     pump(h.model);
     const QVariantMap plan = h.model.buildImportPlan(QVariantList{0, 1}, QVariantMap());
     expect("a two-repeater plan built", plan.value(QStringLiteral("ok")).toBool());
-    expect_str("the plan records the whole selection", plan.value(QStringLiteral("siteNumbers")).toString(),
-               QStringLiteral("1,2"));
+    expect_str("the plan records the whole selection", plan.value(QStringLiteral("siteIds")).toString(),
+               QStringLiteral("42099,42100"));
 
     expect("import ok",
            h.model.performImport(plan, QStringLiteral("Linn County REC"), -1).value(QStringLiteral("ok")).toBool());
@@ -642,10 +642,9 @@ test_refresh_replaces_a_row_in_place(void) {
     }
     const QVariantMap before = h.library.get(chanRow);
     const QString path = before.value(QStringLiteral("path")).toString();
-    expect_str("provenance records the whole selection", before.value(QStringLiteral("rrSiteNumbers")).toString(),
-               QStringLiteral("1,2"));
     /* siteId, not siteNumber: the numbers are what a user recognises but they
-     * repeat within a system, so only these identify a site. */
+     * repeat within a system, so only these identify a site — and the whole
+     * selection is recorded, not just the first. */
     expect_str("provenance records the site ids", before.value(QStringLiteral("rrSiteIds")).toString(),
                QStringLiteral("42099,42100"));
     const QByteArray original = read_stored(path);
@@ -674,7 +673,7 @@ test_refresh_replaces_a_row_in_place(void) {
     const QByteArray refreshed = read_stored(path);
     expect("the refreshed map follows the database", refreshed.contains("464550000"));
     expect("the moved repeater is gone from the file", !refreshed.contains("464525000"));
-    /* Both repeaters survive: matching by site number is what reproduces the
+    /* Both repeaters survive: matching by site id is what reproduces the
      * original selection, and a lost one would silently shorten the scan list. */
     expect("the refreshed map still carries the first repeater", refreshed.contains("451275000"));
     expect_int("the refreshed map has the same row count", row_count(QString::fromUtf8(refreshed)),
@@ -698,6 +697,67 @@ test_refresh_replaces_a_row_in_place(void) {
     const int groupRow = row_of_type(h.library, QStringLiteral("group"));
     expect("a talkgroup row exists", groupRow >= 0);
     expect("a row outside the library cannot be refreshed", !h.model.refreshRow(99));
+}
+
+/**
+ * @brief The library row is identified by its path, not by the index it sat at.
+ *
+ * A refresh waits on four network calls and the imports library stays
+ * interactive throughout. Removing any earlier row shifts every later index
+ * down, so completing on the index the tap recorded would rewrite a different
+ * row's stored file in place - and refreshGeneratedFile() preserves the path, so
+ * every saved system pointing at it would silently load the wrong system.
+ */
+void
+test_refresh_survives_a_row_removed_mid_flight(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    Harness h;
+    h.model.loadSystem(12244);
+    pump(h.model);
+    const QVariantMap plan = h.model.buildImportPlan(QVariantList{0, 1}, QVariantMap());
+    expect("a plan built", plan.value(QStringLiteral("ok")).toBool());
+    expect("import ok",
+           h.model.performImport(plan, QStringLiteral("Linn County REC"), -1).value(QStringLiteral("ok")).toBool());
+
+    const int chanRow = row_of_type(h.library, QStringLiteral("chan"));
+    const int groupRow = row_of_type(h.library, QStringLiteral("group"));
+    expect("both rows exist", chanRow >= 0 && groupRow >= 0 && chanRow != groupRow);
+    if (chanRow < 0 || groupRow < 0) {
+        return;
+    }
+    const QString chanPath = h.library.get(chanRow).value(QStringLiteral("path")).toString();
+
+    QVariantMap finished;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::refreshFinished, &h.model,
+                     [&finished](int, const QVariantMap& result) { finished = result; });
+
+    h.fake.replaceFrom = QByteArrayLiteral("464.525");
+    h.fake.replaceTo = QByteArrayLiteral("464.550");
+    expect("the refresh starts", h.model.refreshRow(chanRow));
+    /* The user deletes another row while the fetch is still on the wire. */
+    h.library.remove(groupRow);
+    pump(h.model);
+
+    expect("the refresh still succeeded", finished.value(QStringLiteral("ok")).toBool());
+    const int movedRow = row_of_type(h.library, QStringLiteral("chan"));
+    expect("the channel map is still in the library", movedRow >= 0);
+    if (movedRow < 0) {
+        return;
+    }
+    expect_str("the channel map kept its path", h.library.get(movedRow).value(QStringLiteral("path")).toString(),
+               chanPath);
+    expect("the refreshed content landed in the right file", read_stored(chanPath).contains("464550000"));
+
+    /* Removing the row being refreshed leaves nothing to write to, and that has
+     * to be reported rather than written over whatever now sits at that index. */
+    finished.clear();
+    h.fake.replaceFrom.clear();
+    expect("a second refresh starts", h.model.refreshRow(movedRow));
+    h.library.remove(movedRow);
+    pump(h.model);
+    expect("a refresh of a removed row reports failure", !finished.value(QStringLiteral("ok")).toBool());
+    expect_int("nothing was written back", h.library.rowCount(), 0);
 }
 
 /**
@@ -728,15 +788,72 @@ test_site_numbers_are_ambiguous(void) {
     expect("site numbers repeat within this system", duplicate_numbers > 0);
 
     /* Two sites that share a number must still be told apart by what the
-     * provenance records, or a refresh regenerates from the wrong tower. */
-    QVariantMap first = h.model.buildImportPlan(QVariantList{0}, QVariantMap());
-    QVariantMap second = h.model.buildImportPlan(QVariantList{1}, QVariantMap());
-    expect("the two sites share a number",
-           first.value(QStringLiteral("siteNumber")).toInt() == second.value(QStringLiteral("siteNumber")).toInt());
+     * provenance records, or a refresh regenerates from the wrong tower. The
+     * number itself survives only as a display field on sites(); the plan
+     * deliberately no longer carries it. */
+    expect("the first two sites share a number",
+           sites.at(0).toMap().value(QStringLiteral("siteNumber")).toInt()
+               == sites.at(1).toMap().value(QStringLiteral("siteNumber")).toInt());
+    const QVariantMap first = h.model.buildImportPlan(QVariantList{0}, QVariantMap());
+    const QVariantMap second = h.model.buildImportPlan(QVariantList{1}, QVariantMap());
     expect("but their recorded ids differ",
            first.value(QStringLiteral("siteIds")).toString() != second.value(QStringLiteral("siteIds")).toString());
     expect("and so do the channel maps they generate", first.value(QStringLiteral("chanCsvText")).toString()
                                                            != second.value(QStringLiteral("chanCsvText")).toString());
+}
+
+/**
+ * @brief A refresh regenerates from the tower the import used, not the first one
+ *        sharing its RF site number.
+ *
+ * Sites 0 and 1 of the captured SARA network are both numbered 1 but are
+ * different towers on different frequencies. Importing site 1 and refreshing it
+ * against an unchanged database must reproduce the file byte for byte; matching
+ * on the number would find site 0 first and silently rewrite it with that
+ * tower's map.
+ */
+void
+test_refresh_uses_the_recorded_tower(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    Harness h;
+    h.model.loadSystem(6673);
+    pump(h.model);
+
+    const QVariantList sites = h.model.sites();
+    expect("the capture has two sites sharing a number",
+           sites.size() > 1
+               && sites.at(0).toMap().value(QStringLiteral("siteNumber")).toInt()
+                      == sites.at(1).toMap().value(QStringLiteral("siteNumber")).toInt());
+
+    const QVariantMap plan = h.model.buildImportPlan(QVariantList{1}, QVariantMap());
+    expect("a plan for the second tower built", plan.value(QStringLiteral("ok")).toBool());
+    expect("import ok",
+           h.model.performImport(plan, QStringLiteral("SARA Network"), -1).value(QStringLiteral("ok")).toBool());
+
+    const int chanRow = row_of_type(h.library, QStringLiteral("chan"));
+    expect("a channel map row exists", chanRow >= 0);
+    if (chanRow < 0) {
+        return;
+    }
+    const QString path = h.library.get(chanRow).value(QStringLiteral("path")).toString();
+    const QByteArray before = read_stored(path);
+
+    /* The two towers must actually differ, or the assertion below proves nothing. */
+    expect(
+        "the other tower's map is different",
+        plan.value(QStringLiteral("chanCsvText")).toString()
+            != h.model.buildImportPlan(QVariantList{0}, QVariantMap()).value(QStringLiteral("chanCsvText")).toString());
+
+    QVariantMap finished;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::refreshFinished, &h.model,
+                     [&finished](int, const QVariantMap& result) { finished = result; });
+    expect("the refresh starts", h.model.refreshRow(chanRow));
+    pump(h.model);
+
+    expect("the refresh succeeded", finished.value(QStringLiteral("ok")).toBool());
+    /* Unchanged database, unchanged tower: byte-identical. */
+    expect("the refresh regenerated from the same tower", read_stored(path) == before);
 }
 
 /**
@@ -836,7 +953,9 @@ main(int argc, char** argv) {
     test_conventional_system();
     test_import_lands_in_the_library();
     test_refresh_replaces_a_row_in_place();
+    test_refresh_survives_a_row_removed_mid_flight();
     test_site_numbers_are_ambiguous();
+    test_refresh_uses_the_recorded_tower();
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
     test_destroy_with_requests_in_flight();

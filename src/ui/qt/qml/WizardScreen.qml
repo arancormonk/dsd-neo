@@ -231,71 +231,21 @@ Item {
         }
     }
 
-    // One trunking-data picker row: title, current file (or "None"), caret.
-    component CsvPickerRow: Item {
+    // One trunking-data picker row: the disclosure shape with the picker sheet
+    // behind it and the library label as its helper line. The helper reads as an
+    // answer once a file is chosen, which is what the brighter colour says.
+    component CsvPickerRow: DisclosureRow {
         id: pickerRow
 
-        property string title: ""
         property string target: ""
         property string path: ""
-        property bool showDivider: false
 
-        width: parent ? parent.width : 0
-        height: 58
-
-        Column {
-            anchors.left: parent.left
-            anchors.right: rowCaret.left
-            anchors.leftMargin: Theme.cardPadding
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 3
-
-            Text {
-                width: parent.width
-                text: pickerRow.title
-                font.family: Theme.sans
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-                elide: Text.ElideRight
-            }
-
-            Text {
-                width: parent.width
-                text: wizard.csvLabel(pickerRow.path)
-                font.family: Theme.sans
-                font.pixelSize: 12
-                color: pickerRow.path.length > 0 ? Theme.textSecondary : Theme.textSubdued
-                elide: Text.ElideRight
-            }
-        }
-
-        Caret {
-            id: rowCaret
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.cardPadding
-            anchors.verticalCenter: parent.verticalCenter
-            rotation: -90
-            color: Theme.textSubdued
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Theme.cardPadding
-            height: 1
-            visible: pickerRow.showDivider
-            color: Theme.divider
-        }
-
-        TapHandler {
-            onTapped: {
-                wizard.pickerTarget = pickerRow.target
-                wizard.pickerKeyHex = wizard.pickerTarget === "keys" ? wizard.keyCsvHex : false
-                csvSheet.visible = true
-            }
+        subtitle: wizard.csvLabel(pickerRow.path)
+        subtitleColor: pickerRow.path.length > 0 ? Theme.textSecondary : Theme.textSubdued
+        onTapped: {
+            wizard.pickerTarget = pickerRow.target
+            wizard.pickerKeyHex = wizard.pickerTarget === "keys" ? wizard.keyCsvHex : false
+            csvSheet.visible = true
         }
     }
 
@@ -320,11 +270,15 @@ Item {
      * the wizard stays the single writer of the saved system and the user's
      * source, gain and ppm answers survive. @a result is performImport()'s map;
      * chanCsvPath is absent when no channel map was generated, which is a valid
-     * outcome for a single conventional repeater.
+     * outcome for a single conventional repeater. An absent file therefore
+     * leaves whatever the user had already picked alone — clearing it would
+     * silently strip a hand-picked -C from a system they were only editing.
      */
     function applyRadioReference(result) {
-        wizard.assignCsvPath("chan", result.chanCsvPath !== undefined ? result.chanCsvPath : "", false)
-        wizard.assignCsvPath("group", result.groupCsvPath !== undefined ? result.groupCsvPath : "", false)
+        if (result.chanCsvPath !== undefined && result.chanCsvPath.length > 0)
+            wizard.assignCsvPath("chan", result.chanCsvPath, false)
+        if (result.groupCsvPath !== undefined && result.groupCsvPath.length > 0)
+            wizard.assignCsvPath("group", result.groupCsvPath, false)
         if (result.freqMhz && result.freqMhz.length > 0)
             freqField.text = result.freqMhz
         wizard.decodeFlag = result.decodeFlag
@@ -769,68 +723,19 @@ Item {
                             showDivider: radioReference.available
                         }
 
-                        // Not a CsvPickerRow: that component's TapHandler always
-                        // opens the file-picker sheet. A Column collapses an
-                        // invisible child, so nothing moves where the feature is
-                        // absent.
-                        Item {
+                        // A DisclosureRow rather than a CsvPickerRow: that wrapper
+                        // always opens the file-picker sheet. A Column collapses
+                        // an invisible child, so nothing moves where the feature
+                        // is absent.
+                        DisclosureRow {
                             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                             objectName: "wizardRadioReferenceRow"
 
-                            width: parent.width
                             visible: radioReference.available
-                            height: 58
-
-                            Column {
-                                anchors.left: parent.left
-                                anchors.right: rrCaret.left
-                                anchors.leftMargin: Theme.cardPadding
-                                anchors.rightMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                spacing: 3
-
-                                Text {
-                                    width: parent.width
-                                    text: qsTr("Import from RadioReference…")
-                                    font.family: Theme.sans
-                                    font.pixelSize: 15
-                                    font.weight: Font.DemiBold
-                                    color: Theme.textPrimary
-                                    elide: Text.ElideRight
-                                }
-
-                                Text {
-                                    width: parent.width
-                                    text: qsTr("Generates both files from the online database")
-                                    font.family: Theme.sans
-                                    font.pixelSize: 12
-                                    color: Theme.textSubdued
-                                    elide: Text.ElideRight
-                                }
-                            }
-
-                            Caret {
-                                id: rrCaret
-
-                                anchors.right: parent.right
-                                anchors.rightMargin: Theme.cardPadding
-                                anchors.verticalCenter: parent.verticalCenter
-                                rotation: -90
-                                color: Theme.textSubdued
-                            }
-
-                            Rectangle {
-                                anchors.bottom: parent.bottom
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.leftMargin: Theme.cardPadding
-                                height: 1
-                                color: Theme.divider
-                            }
-
-                            TapHandler {
-                                onTapped: wizard.openRadioReference()
-                            }
+                            title: qsTr("Import from RadioReference…")
+                            subtitle: qsTr("Generates both files from the online database")
+                            showDivider: true
+                            onTapped: wizard.openRadioReference()
                         }
 
                         Text {

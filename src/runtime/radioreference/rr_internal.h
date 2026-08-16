@@ -45,15 +45,6 @@ int rr_array_reserve(void** items, size_t* cap, size_t needed, size_t elem_size)
 int rr_parse_long_strict(const char* text, long* out);
 
 /**
- * @brief Strict base-16 parse of a whole token, for NAC/SysID/WACN hex text.
- *
- * @param text Token to parse.
- * @param out  Receives the value.
- * @return 0 on success, -1 on invalid input.
- */
-int rr_parse_hex_strict(const char* text, unsigned long long* out);
-
-/**
  * @brief Copy a NUL-terminated string into a fixed-size field, truncating safely.
  *
  * Takes the destination size explicitly: sizeof() on a pointer parameter is both

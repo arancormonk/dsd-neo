@@ -63,9 +63,7 @@ ImportedFilesModel::provenanceRole(const Row& row, int role) {
     switch (role) {
         case OriginRole: return row.origin;
         case RrSidRole: return row.rrSid;
-        case RrSiteNumberRole: return row.rrSiteNumber;
         case RrKindRole: return row.rrKind;
-        case RrSiteNumbersRole: return row.rrSiteNumbers;
         case RrSiteIdsRole: return row.rrSiteIds;
         default: return QVariant();
     }
@@ -82,9 +80,7 @@ ImportedFilesModel::roleNames() const {
     roles.insert(SkippedRole, QByteArrayLiteral("skipped"));
     roles.insert(OriginRole, QByteArrayLiteral("origin"));
     roles.insert(RrSidRole, QByteArrayLiteral("rrSid"));
-    roles.insert(RrSiteNumberRole, QByteArrayLiteral("rrSiteNumber"));
     roles.insert(RrKindRole, QByteArrayLiteral("rrKind"));
-    roles.insert(RrSiteNumbersRole, QByteArrayLiteral("rrSiteNumbers"));
     roles.insert(RrSiteIdsRole, QByteArrayLiteral("rrSiteIds"));
     return roles;
 }
@@ -135,10 +131,9 @@ ImportedFilesModel::adoptStoredFile(const QString& path, const QString& type, co
     row.skipped = skipped;
     row.origin = origin.value(QStringLiteral("origin")).toString();
     row.rrSid = origin.value(QStringLiteral("rrSid")).toInt();
-    row.rrSiteNumber = origin.value(QStringLiteral("rrSiteNumber")).toInt();
     row.rrKind = origin.value(QStringLiteral("rrKind")).toString();
-    row.rrSiteNumbers = origin.value(QStringLiteral("rrSiteNumbers")).toString();
     row.rrSiteIds = origin.value(QStringLiteral("rrSiteIds")).toString();
+    row.rrPartialEnc = origin.value(QStringLiteral("rrPartialEnc"), true).toBool();
 
     beginInsertRows(QModelIndex(), static_cast<int>(m_rows.size()), static_cast<int>(m_rows.size()));
     m_rows.append(row);
@@ -193,11 +188,21 @@ ImportedFilesModel::importGeneratedFile(const QString& sourcePath, const QString
  * @brief Fill the result map from a row that was just replaced in place.
  */
 QVariantMap
-ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped) {
+ImportedFilesModel::commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance) {
     Row& stored = m_rows[row];
     stored.importedAt = QDateTime::currentSecsSinceEpoch();
     stored.accepted = accepted;
     stored.skipped = skipped;
+    if (!keepProvenance) {
+        // The bytes are the user's own now, so the row no longer came from
+        // RadioReference. Keeping the provenance would leave "Refresh from
+        // RadioReference" on offer for a file it would silently overwrite.
+        stored.origin.clear();
+        stored.rrSid = 0;
+        stored.rrKind.clear();
+        stored.rrSiteIds.clear();
+        stored.rrPartialEnc = true;
+    }
     const QModelIndex idx = index(row);
     Q_EMIT dataChanged(idx, idx);
     save();
@@ -244,7 +249,7 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
     if (staged == snapshot.path) {
         // The staging name resolved to the row's own file, so it is already
         // committed and validated.
-        return commitReplacedRow(row, accepted, skipped);
+        return commitReplacedRow(row, accepted, skipped, false);
     }
 
     const QString path = m_host->importLocalFile(staged, snapshot.name, snapshot.path);
@@ -258,7 +263,7 @@ ImportedFilesModel::updateFile(int row, const QString& reference, const QString&
         }
         return result;
     }
-    return commitReplacedRow(row, accepted, skipped);
+    return commitReplacedRow(row, accepted, skipped, false);
 }
 
 QVariantMap
@@ -343,10 +348,9 @@ ImportedFilesModel::rowFromMap(const QVariantMap& map) {
     row.skipped = map.value(QStringLiteral("skipped")).toInt();
     row.origin = map.value(QStringLiteral("origin")).toString();
     row.rrSid = map.value(QStringLiteral("rrSid")).toInt();
-    row.rrSiteNumber = map.value(QStringLiteral("rrSiteNumber")).toInt();
     row.rrKind = map.value(QStringLiteral("rrKind")).toString();
-    row.rrSiteNumbers = map.value(QStringLiteral("rrSiteNumbers")).toString();
     row.rrSiteIds = map.value(QStringLiteral("rrSiteIds")).toString();
+    row.rrPartialEnc = map.value(QStringLiteral("rrPartialEnc"), true).toBool();
     return row;
 }
 
@@ -363,10 +367,9 @@ ImportedFilesModel::mapFromRow(const Row& row) {
     // entriesForType() return, so provenance reaches both from one place.
     map.insert(QStringLiteral("origin"), row.origin);
     map.insert(QStringLiteral("rrSid"), row.rrSid);
-    map.insert(QStringLiteral("rrSiteNumber"), row.rrSiteNumber);
     map.insert(QStringLiteral("rrKind"), row.rrKind);
-    map.insert(QStringLiteral("rrSiteNumbers"), row.rrSiteNumbers);
     map.insert(QStringLiteral("rrSiteIds"), row.rrSiteIds);
+    map.insert(QStringLiteral("rrPartialEnc"), row.rrPartialEnc);
     return map;
 }
 

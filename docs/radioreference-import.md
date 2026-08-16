@@ -124,13 +124,14 @@ valid.
 
 - The staging copy is validated **before** the stored copy is touched, so a fault page or a
   truncated response cannot destroy working local data.
-- Sites are matched by site *number*, not by position: RadioReference is free to reorder its site
-  list.
+- Sites are matched by RadioReference `siteId`, not by position and not by RF site number: the site
+  list is free to be reordered, and a system can number several sites the same.
 - A refreshed file is pushed into a running session only when that session is actually using it.
   Applying a channel map replaces the live one wholesale and discards what the decoder had learned
   on the air — see `docs/csv-formats.md`.
-- The "treat partly encrypted as encrypted" answer is not recorded with the file, so a refresh
-  regenerates the talkgroup list with that option on, its default.
+- The "treat partly encrypted as encrypted" answer is recorded with the file, so a refresh
+  regenerates the talkgroup list with the answer the original import was given rather than the
+  UI default.
 
 ## Terms of service
 

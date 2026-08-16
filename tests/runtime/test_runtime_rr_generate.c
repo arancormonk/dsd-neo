@@ -263,6 +263,15 @@ test_protocol_table(void) {
     expect_str("EDACS EA flag", dsd_rr_decode_flag(DSD_RR_PROTO_EDACS_EA, 0, 0, 0), "-fe");
     expect_str("EDACS EA ESK flag", dsd_rr_decode_flag(DSD_RR_PROTO_EDACS_EA, 0, 1, 0), "-fE");
 
+    /* The two answers must not cross families. dsd_rr_site_is_simulcast() keys
+     * off siteDescr/siteModulation and fires for any protocol, so an EDACS site
+     * described as "Simulcast" reaches this with simulcast=1; handing it the ESK
+     * form would turn on 0xA0 descrambling on a system that does not use it. */
+    expect_str("EDACS ignores simulcast", dsd_rr_decode_flag(DSD_RR_PROTO_EDACS_STD, 1, 0, 0), "-fh");
+    expect_str("EDACS EA ignores simulcast", dsd_rr_decode_flag(DSD_RR_PROTO_EDACS_EA, 1, 0, 0), "-fe");
+    expect_str("P25 ignores esk", dsd_rr_decode_flag(DSD_RR_PROTO_P25, 0, 1, 0), "-ft -^");
+    expect_str("P25 conv ignores esk", dsd_rr_decode_flag(DSD_RR_PROTO_P25_CONV, 0, 1, 1), "-ft -Y");
+
     expect_str("DMR conv flag", dsd_rr_decode_flag(DSD_RR_PROTO_DMR_CONV, 0, 0, 0), "-fs");
     expect_str("DMR conv scan flag", dsd_rr_decode_flag(DSD_RR_PROTO_DMR_CONV, 0, 0, 1), "-fs -Y");
     expect_str("NXDN48 conv flag", dsd_rr_decode_flag(DSD_RR_PROTO_NXDN48_CONV, 0, 0, 0), "-fi");

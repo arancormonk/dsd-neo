@@ -206,9 +206,13 @@ rr_contains_ci(const char* haystack, const char* needle) {
  * One row per protocol, so classification, the decode flag, the channel-map
  * requirement and the conventional predicate can never drift apart.
  *
- * `alternate` is the simulcast form for P25 and the ESK form for EDACS; `scan`
- * is the conventional multi-repeater form, which is the only place -Y appears,
- * and `scan_alternate` covers the one case that needs both (a simulcast P25
+ * `alternate` is the simulcast form for P25 and the ESK form for EDACS, and
+ * `alt_on` records WHICH of the two answers selects it. Testing both together
+ * would cross the families: dsd_rr_site_is_simulcast() keys off siteDescr and
+ * siteModulation and fires for any protocol, so an EDACS site described as
+ * "Simulcast" would otherwise be handed -fH and decode nothing. `scan` is the
+ * conventional multi-repeater form, which is the only place -Y appears, and
+ * `scan_alternate` covers the one case that needs both (a simulcast P25
  * repeater list).
  *
  * Trunked P25 always carries -^: supplying a channel map sets
@@ -219,10 +223,15 @@ rr_contains_ci(const char* haystack, const char* needle) {
  * unconditionally and ignores mod_cli_lock, so the pair only works in that exact
  * order and is not worth the fragility.
  */
+#define RR_ALT_NEVER        0U /* no alternate form */
+#define RR_ALT_ON_SIMULCAST 1U
+#define RR_ALT_ON_ESK       2U
+
 typedef struct {
     dsd_rr_protocol protocol;
     unsigned char conventional;
     unsigned char map_need; /* 0 none, 1 optional, 2 required */
+    unsigned char alt_on;   /* which answer selects `alternate`: RR_ALT_* */
     const char* base;
     const char* alternate;
     const char* scan;
@@ -230,19 +239,19 @@ typedef struct {
 } rr_protocol_entry;
 
 static const rr_protocol_entry k_protocols[] = {
-    {DSD_RR_PROTO_P25, 0U, 1U, "-ft -^", "-mq -^", NULL, NULL},
-    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_NXDN48, 0U, 1U, "-fi", NULL, NULL, NULL},
-    {DSD_RR_PROTO_NXDN96, 0U, 1U, "-fn", NULL, NULL, NULL},
-    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, "-fh", "-fH", NULL, NULL},
-    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, "-fe", "-fE", NULL, NULL},
-    {DSD_RR_PROTO_P25_CONV, 1U, 1U, "-ft", "-mq", "-ft -Y", "-mq -Y"},
-    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, "-fs", NULL, "-fs -Y", NULL},
-    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, "-fi", NULL, "-fi -Y", NULL},
-    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, "-fn", NULL, "-fn -Y", NULL},
+    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL},
+    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
+    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
+    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
+    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
+    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL},
+    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL},
+    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL},
+    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL},
+    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y"},
+    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL},
+    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL},
+    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL},
 };
 
 /**
@@ -285,7 +294,11 @@ dsd_rr_decode_flag(dsd_rr_protocol protocol, int simulcast, int esk, int scan_li
     if (row == NULL) {
         return NULL;
     }
-    const int alternate = (simulcast != 0 || esk != 0);
+    /* Each answer only selects the alternate for the family it belongs to: a
+     * simulcast-described EDACS site must not pick up the ESK form, and an ESK
+     * answer must not turn P25 into QPSK. */
+    const int alternate =
+        (row->alt_on == RR_ALT_ON_SIMULCAST && simulcast != 0) || (row->alt_on == RR_ALT_ON_ESK && esk != 0);
     if (scan_list != 0 && row->scan != NULL) {
         return (alternate && row->scan_alternate != NULL) ? row->scan_alternate : row->scan;
     }
@@ -929,6 +942,17 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
         char msg[192];
         (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu EDACS LCN(s) above 25 were dropped; only 25 are reachable.", dropped);
         rr_warn(warnings, msg);
+    }
+
+    if (highest == 0U) {
+        /* EDACS resolves a voice grant through trunk_lcn_freq[], so an empty map
+         * means the session can follow nothing. Silence here would ship a
+         * decode-dead import: dsd_rr_generate_chan_csv() reports "no file" and
+         * the preview reads as a clean success. */
+        rr_warn(warnings, "RadioReference lists no LCN for any frequency on this EDACS site, so no channel map could "
+                          "be generated and the decoder cannot follow a voice call. Add the LCNs by hand or pick "
+                          "another site.");
+        return;
     }
 
     size_t gaps = 0;

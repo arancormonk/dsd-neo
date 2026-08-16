@@ -137,6 +137,12 @@ add_test(
 )
 
 add_test(
+    NAME QML_RESOURCE_AUDIT
+    COMMAND
+        ${CMAKE_COMMAND} -P ${PROJECT_SOURCE_DIR}/cmake/qml_resource_audit.cmake
+)
+
+add_test(
     NAME VCPKG_DEPENDENCY_CONTRACT
     COMMAND
         ${CMAKE_COMMAND} -P

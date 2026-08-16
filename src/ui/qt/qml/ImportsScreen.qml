@@ -81,8 +81,18 @@ Item {
         }
 
         function onRefreshFinished(row, result) {
+            if (!result.ok) {
+                // The model knows why — the site is gone, the credentials are
+                // missing, another request retired this one. resultNotice()'s
+                // generic "Could not read that file" would name the wrong cause.
+                screen.notice = radioReference.errorText.length > 0
+                                ? radioReference.errorText
+                                : qsTr("That file could not be refreshed")
+                screen.noticeIsProblem = true
+                return
+            }
             screen.resultNotice(qsTr("Refreshed"), result)
-            if (!result.ok || result.error === "empty")
+            if (result.error === "empty")
                 return
             // Live-apply only the file the running session is actually using;
             // pushing another system's channel map would retune the session onto
@@ -428,6 +438,9 @@ Item {
             width: parent.width
             visible: radioReference.available && screen.actionRow >= 0
                      && importedFiles.get(screen.actionRow).origin === "radioreference"
+            // A second refresh retires the first, which then reports nothing
+            // useful; there is no busy indicator on this screen to explain it.
+            enabled: !radioReference.busy
             text: qsTr("Refresh from RadioReference")
             onClicked: {
                 actionSheet.visible = false

@@ -61,6 +61,9 @@ Item {
             testContext.setRadioReference("busy", false)
             testContext.setRadioReference("sites", [])
             testContext.setRadioReference("systems", [])
+            testContext.setRadioReference("countries", [])
+            testContext.setRadioReference("states", [])
+            testContext.setRadioReference("counties", [])
             testContext.setRadioReference("systemDetails", {})
             testContext.setRadioReference("talkgroupSummary", {})
             testContext.setRadioReference("errorText", "")
@@ -262,6 +265,36 @@ Item {
             tryVerify(function () { return notice.text.indexOf("premium") >= 0 },
                       2000, "an expired subscription was not named as such: " + notice.text)
         }
+
+        // The three browse levels are one component now, so a break in it breaks
+        // country, state and county at once — and the highlight is the only
+        // thing on the sheet that says which one you are already on.
+        function test_07_a_browse_sheet_lists_its_level_and_reports_the_choice() {
+            testContext.setRadioReference("hasAppKey", true)
+            testContext.setRadioReference("credentialsReady", true)
+            testContext.setRadioReference("countries", [
+                                              { "coid": 1, "name": "United States", "code": "US" },
+                                              { "coid": 2, "name": "Canada", "code": "CA" }
+                                          ])
+
+            var sheet = findChild(tc.screen, "radioReferenceCountrySheet")
+            verify(sheet !== null, "the country sheet is missing")
+            compare(sheet.rowCount, 2, "the country sheet did not take the country list")
+            // The screen defaults to the United States, so that is the row the
+            // sheet must come up pointing at.
+            compare(sheet.selectedId, 1, "the sheet did not follow the chosen country")
+
+            sheet.chosen({ "coid": 2, "name": "Canada", "code": "CA" })
+            compare(tc.screen.browseCoid, 2, "choosing a country did not move the selection")
+            compare(sheet.selectedId, 2, "the highlight did not follow the new choice")
+            verify(!sheet.visible, "the country sheet stayed up after a choice")
+
+            // Empty is the pre-arrival state, which is what the notice reports.
+            testContext.setRadioReference("counties", [])
+            var county = findChild(tc.screen, "radioReferenceCountySheet")
+            verify(county !== null, "the county sheet is missing")
+            compare(county.rowCount, 0, "an unfetched level did not read as empty")
+        }
     }
 
     // "Refresh from RadioReference" is offered on a row this app generated and on
@@ -289,8 +322,8 @@ Item {
             verify(generated.length > 0, "could not write the generated fixture")
             var adopted = importedFiles.importGeneratedFile(
                 generated, "SARA group.csv", "group",
-                { "origin": "radioreference", "rrSid": 6673, "rrSiteNumber": 1,
-                  "rrSiteNumbers": "1", "rrKind": "group" })
+                { "origin": "radioreference", "rrSid": 6673,
+                  "rrSiteIds": "16863", "rrKind": "group" })
             verify(adopted.ok, "the generated fixture did not import")
 
             var picked = testContext.writeFixtureCsv("picked.csv", "TG,Mode,Name\n2001,A,Works\n")

@@ -40,17 +40,15 @@ class ImportedFilesModel : public QAbstractListModel {
      * silently start reading a different column. */
     enum Roles {
         NameRole = Qt::UserRole + 1,
-        PathRole,          // absolute stored path; the row's identity
-        TypeRole,          // "chan" | "group" | "keysDec" | "keysHex"
-        ImportedAtRole,    // seconds since epoch
-        AcceptedRole,      // usable rows at the last validation
-        SkippedRole,       // malformed rows at the last validation
-        OriginRole,        // "" for a picked file, "radioreference" for a generated one
-        RrSidRole,         // RadioReference system id
-        RrSiteNumberRole,  // TrsSite.siteNumber, the RF site - never siteId
-        RrKindRole,        // "group" | "chan"
-        RrSiteNumbersRole, // every selected siteNumber, comma-joined, in selection order
-        RrSiteIdsRole      // every selected siteId, comma-joined - what a refresh matches on
+        PathRole,       // absolute stored path; the row's identity
+        TypeRole,       // "chan" | "group" | "keysDec" | "keysHex"
+        ImportedAtRole, // seconds since epoch
+        AcceptedRole,   // usable rows at the last validation
+        SkippedRole,    // malformed rows at the last validation
+        OriginRole,     // "" for a picked file, "radioreference" for a generated one
+        RrSidRole,      // RadioReference system id
+        RrKindRole,     // "group" | "chan"
+        RrSiteIdsRole   // every selected siteId, comma-joined - what a refresh matches on
     };
 
     explicit ImportedFilesModel(DecoderHost* host, QObject* parent = nullptr);
@@ -94,7 +92,7 @@ class ImportedFilesModel : public QAbstractListModel {
      * @param sourcePath Absolute path of the generated file.
      * @param fileName   Display name to store it under.
      * @param type       "chan" | "group" | "keysDec" | "keysHex".
-     * @param origin     Provenance: {origin, rrSid, rrSiteNumber, rrSiteNumbers, rrSiteIds, rrKind}.
+     * @param origin     Provenance: {origin, rrSid, rrSiteIds, rrKind, rrPartialEnc}.
      * @return Same shape as importFile().
      */
     Q_INVOKABLE QVariantMap importGeneratedFile(const QString& sourcePath, const QString& fileName, const QString& type,
@@ -155,18 +153,21 @@ class ImportedFilesModel : public QAbstractListModel {
          * default-constructs a missing key. */
         QString origin;
         int rrSid = 0;
-        int rrSiteNumber = 0;
         QString rrKind;
-        /* Every selected site, comma-joined in selection order. rrSiteNumber
-         * alone records only the first, which is exact for a trunked import but
-         * loses the rest of a conventional repeater selection — a refresh driven
-         * by it would silently shrink a scan list to one row. */
-        QString rrSiteNumbers;
-        /* The same selection as TrsSite.siteId, which is what a refresh matches
-         * on. siteNumber is the RF site and is NOT unique within a system: the
-         * captured SARA network has 35 sites numbered 1,1,10,10,10,10,10,20,…,
-         * so matching by number can regenerate from the wrong tower. */
+        /* Every selected site as TrsSite.siteId, comma-joined in selection order
+         * — a conventional import selects several repeaters, and a refresh driven
+         * by only the first would silently shrink the scan list to one row.
+         * siteId and never the RF site number: the number is NOT unique within a
+         * system (the captured SARA network numbers its 35 sites
+         * 1,1,10,10,10,10,10,20,…), so matching by it can regenerate from the
+         * wrong tower. */
         QString rrSiteIds;
+        /* The answer the original import was given, so a refresh reproduces it
+         * rather than substituting the UI default. Without it a user who turned
+         * this OFF gets every partly-encrypted talkgroup silently re-marked DE
+         * — blocked from tuning — the first time they refresh. Defaults to true,
+         * which is what a row written before this existed was generated with. */
+        bool rrPartialEnc = true;
     };
 
     static Row rowFromMap(const QVariantMap& map);
@@ -192,9 +193,16 @@ class ImportedFilesModel : public QAbstractListModel {
      */
     QVariantMap adoptStoredFile(const QString& path, const QString& type, const QVariantMap& origin);
 
-    /** @brief Shared tail of updateFile() and refreshGeneratedFile(): stamp the
-     *         row's new counts, notify, persist, and build the result map. */
-    QVariantMap commitReplacedRow(int row, int accepted, int skipped);
+    /**
+     * @brief Shared tail of updateFile() and refreshGeneratedFile(): stamp the
+     *        row's new counts, notify, persist, and build the result map.
+     *
+     * @param keepProvenance True for a refresh, which rewrites the row from the
+     *        same RadioReference selection. False for a user re-pick: the bytes
+     *        are theirs now, and leaving the provenance behind would keep
+     *        offering a refresh that would silently overwrite their file.
+     */
+    QVariantMap commitReplacedRow(int row, int accepted, int skipped, bool keepProvenance = true);
 
     void load();
     void save() const;

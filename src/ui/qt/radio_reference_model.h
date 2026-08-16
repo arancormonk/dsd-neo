@@ -30,6 +30,7 @@
 #include <QMap>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -224,15 +225,14 @@ class RadioReferenceModel : public QObject {
      * preserved, so every saved system referencing it stays valid, and the
      * staging file is validated before the stored copy is touched.
      *
-     * The site selection is recovered from the row's `rrSiteNumbers` provenance
-     * (falling back to the singular `rrSiteNumber` for a row written before that
-     * key existed) and matched by site NUMBER, never by index: RadioReference is
-     * free to reorder getTrsSites, and an index would refresh the wrong repeater.
+     * The site selection is recovered from the row's `rrSiteIds` provenance and
+     * matched by site id, never by index: RadioReference is free to reorder
+     * getTrsSites, and an index would refresh the wrong repeater. Never by the RF
+     * site number either - a system numbers several sites the same.
      *
-     * Two things provenance does not record and this therefore cannot restore:
-     * the "treat partly encrypted as encrypted" answer, which falls back to the
-     * UI default of on, and whatever system the RadioReference screen currently
-     * has loaded, which this replaces.
+     * One thing provenance does not record and this therefore cannot restore:
+     * whatever system the RadioReference screen currently has loaded, which this
+     * replaces.
      *
      * @param row Library row.
      * @return false when the refresh could not even be started; the reason is in
@@ -324,11 +324,31 @@ class RadioReferenceModel : public QObject {
     bool generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
                        QVariantList* warnings) const;
 
+    /**
+     * @brief Take back the library rows an import had already adopted.
+     *
+     * An import is one unit: performImport() reports failure and the caller
+     * never saves a system, so a file adopted before the failure would be a row
+     * nothing references and nothing prunes.
+     */
+    void unwindImport(const QStringList& paths);
+
     /** @brief Regenerate and commit the pending refresh. GUI thread only. */
     void completeRefresh();
 
     /** @brief Report a refresh outcome and forget the pending state. */
     void endRefresh(const QVariantMap& result);
+
+    /**
+     * @brief Retire a refresh that will never complete, without leaving its
+     *        caller waiting.
+     *
+     * refreshRow() documents that a true return means refreshFinished() follows,
+     * so every path that abandons one - a second request, a cancel - has to say
+     * so. No-op when no refresh is pending, which also makes it safe against the
+     * signal handler re-entering.
+     */
+    void abandonRefresh();
 
     AppPrefs* m_prefs = nullptr;
     ImportedFilesModel* m_importedFiles = nullptr;
@@ -370,11 +390,20 @@ class RadioReferenceModel : public QObject {
     /* The library row a refresh is fetching for, or -1. Cleared by startBatch(),
      * so any other action the user takes retires a refresh still in flight. */
     int m_refreshRow = -1;
+    /* The row's IDENTITY, which is its stored path (imported_files_model.h) - an
+     * index is only where it sat when the user tapped. The imports library stays
+     * interactive across the four fetches this waits on, so a row removed
+     * meanwhile shifts every later index down and completing on the index would
+     * overwrite a different file in place. */
+    QString m_refreshPath;
     QString m_refreshKind;
-    /* The sites to regenerate from: siteIds normally, siteNumbers for a row
-     * written before those were recorded (see m_refreshByNumber). */
-    QList<int> m_refreshSites;
-    bool m_refreshByNumber = false;
+    /* Every site to regenerate from, as TrsSite.siteId in selection order.
+     * siteId and never the RF site number: a system numbers several sites the
+     * same, so a number could name the wrong tower. */
+    QList<int> m_refreshSiteIds;
+    /* The partial-encryption answer the original import was given, so a refresh
+     * regenerates the same group CSV instead of the UI default. */
+    bool m_refreshPartialEnc = true;
 };
 
 } // namespace dsd_qt

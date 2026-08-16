@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 #ifdef USE_CURL
 #include <curl/curl.h>
@@ -51,6 +52,28 @@ dsd_rr_cancel_requested(const dsd_rr_cancel_token* cancel) {
     dsd_rr_cancel_token* token = (dsd_rr_cancel_token*)cancel;
     return atomic_load(&token->flag) != 0 ? 1 : 0;
 }
+
+#if defined(_MSC_VER)
+#define RR_TLS __declspec(thread)
+#else
+#define RR_TLS _Thread_local
+#endif
+
+/*
+ * The cancel token of the job this thread is currently running, or NULL.
+ *
+ * A completion callback runs on the worker and is allowed to re-enter the
+ * blocking getters - the Qt model's take_details() does, through
+ * dsd_rr_get_support_maps(), which is three more round trips. Those nested
+ * transfers have to answer the same cancel as the job that caused them, or
+ * dsd_rr_client_destroy() joins behind up to three uninterruptible
+ * total_timeout_ms transfers instead of the ~1 s the header promises.
+ *
+ * Thread-local rather than a client field: a blocking getter called from any
+ * other thread must keep seeing NULL, since the worker's token says nothing
+ * about that caller.
+ */
+static RR_TLS const dsd_rr_cancel_token* g_thread_cancel = NULL;
 
 /* ------------------------------------------------------------------------- */
 /* Credential hygiene                                                         */
@@ -146,7 +169,6 @@ struct dsd_rr_client {
     dsd_rr_client_config config;
 
     dsd_rr_transport transport;
-    int has_transport;
 
     dsd_mutex_t mutex;
     dsd_cond_t cond;
@@ -424,7 +446,14 @@ rr_attempt(dsd_rr_client* client, const char* body, size_t len, const dsd_rr_can
     dsd_rr_response resp;
     DSD_MEMSET(&resp, 0, sizeof(resp));
 
-    const int rc = client->transport.perform(client->transport.ctx, &req, &resp);
+    /* Taken as one unit under the same mutex that publishes it: the two words
+     * are written together by dsd_rr_client_set_transport(), and reading them
+     * unlocked could pair a new perform() with the old ctx. */
+    dsd_mutex_lock(&client->mutex);
+    const dsd_rr_transport transport = client->transport;
+    dsd_mutex_unlock(&client->mutex);
+
+    const int rc = transport.perform(transport.ctx, &req, &resp);
     if (rc != 0) {
         err->status = (resp.status != DSD_RR_OK) ? resp.status : DSD_RR_ERR_NETWORK;
         err->http_status = resp.http_status;
@@ -490,6 +519,22 @@ rr_execute(dsd_rr_client* client, const dsd_rr_auth* auth, rr_method method, lon
     /* The envelope carries the password in cleartext. */
     rr_secure_zero(body, len);
     free(body);
+
+    /*
+     * RR never answers an expired premium subscription with a fault - it answers
+     * getUserData with a past subExpireDate and then fails the real queries with
+     * something opaque. This is the one place that can tell the difference, so
+     * the account check is where DSD_RR_ERR_SUBSCRIPTION is produced; without it
+     * the whole class, and the UI text that explains it, is unreachable.
+     */
+    if (rc == 0 && method == RR_M_USER_DATA) {
+        const dsd_rr_user_info* info = (const dsd_rr_user_info*)sink;
+        if (rr_subscription_expired(info->sub_expire, (long long)time(NULL))) {
+            err->status = DSD_RR_ERR_SUBSCRIPTION;
+            rr_copy_field(err->detail, sizeof(err->detail), info->sub_expire);
+            rc = -1;
+        }
+    }
     return rc;
 }
 
@@ -628,6 +673,16 @@ rr_free_sink(rr_method method, void* sink) {
         case RR_SHAPE_SUPPORT_TYPE:
         case RR_SHAPE_SUPPORT_FLAVOR:
         case RR_SHAPE_SUPPORT_VOICE: dsd_rr_support_list_free((dsd_rr_support_list*)sink); break;
+        /* USER_INFO and ZIP_INFO own nothing beyond the sink itself.
+         *
+         * Listing them - and RR_SHAPE_COUNT - instead of this `default:` would
+         * make -Wswitch reject a new shape that forgot its free, which is the
+         * failure this function can have. It does not fit: the three extra
+         * labels take the function to CCN 16 against the project ceiling of 15
+         * (tools/lizard.sh), and trimming back to exactly 15 only moves the wall
+         * onto whoever adds the next shape. The guarantee lives in rr_soap.c
+         * instead, where k_shapes is asserted to carry a row per shape - a new
+         * shape cannot compile without being looked at there. */
         default: break;
     }
     free(sink);
@@ -638,13 +693,24 @@ rr_free_sink(rr_method method, void* sink) {
  *
  * The callback runs on this worker thread; a GUI consumer must marshal.
  *
+ * Deliberately does NOT free the job: `client->running` still points at it and
+ * is only cleared under the mutex by the caller. Freeing here would leave a
+ * window in which dsd_rr_cancel() or dsd_rr_client_destroy(), both of which
+ * dereference `client->running` under that same mutex, read and write memory
+ * that has already been returned to the allocator.
+ *
  * @param client Client.
- * @param job    Job to run; freed here.
+ * @param job    Job to run; still owned by the caller when this returns.
  */
 static void
 rr_run_job(dsd_rr_client* client, rr_job* job) {
     dsd_rr_error err;
     DSD_MEMSET(&err, 0, sizeof(err));
+
+    /* Published for the whole job, callback included: a blocking getter the
+     * callback re-enters cancels with this job's token. */
+    const dsd_rr_cancel_token* const outer_cancel = g_thread_cancel;
+    g_thread_cancel = &job->cancel;
 
     void* sink = rr_alloc_sink(job->method);
     int rc = -1;
@@ -662,8 +728,7 @@ rr_run_job(dsd_rr_client* client, rr_job* job) {
         rr_free_sink(job->method, sink);
     }
 
-    rr_secure_zero(&job->auth, sizeof(job->auth));
-    free(job);
+    g_thread_cancel = outer_cancel;
 }
 
 static DSD_THREAD_RETURN_TYPE
@@ -696,9 +761,15 @@ static DSD_THREAD_RETURN_TYPE
 
         rr_run_job(client, job);
 
+        /* Retire the pointer before the memory: a canceller holding the mutex
+         * dereferences client->running, so the job must stay allocated until
+         * that pointer is gone. */
         dsd_mutex_lock(&client->mutex);
         client->running = NULL;
         dsd_mutex_unlock(&client->mutex);
+
+        rr_secure_zero(&job->auth, sizeof(job->auth));
+        free(job);
     }
 
     DSD_THREAD_RETURN;
@@ -832,11 +903,9 @@ dsd_rr_client_set_transport(dsd_rr_client* client, const dsd_rr_transport* trans
     dsd_mutex_lock(&client->mutex);
     if (transport != NULL && transport->perform != NULL) {
         client->transport = *transport;
-        client->has_transport = 1;
     } else {
         client->transport.perform = rr_builtin_perform;
         client->transport.ctx = NULL;
-        client->has_transport = 0;
     }
     dsd_mutex_unlock(&client->mutex);
 }
@@ -870,7 +939,9 @@ rr_call(dsd_rr_client* client, const dsd_rr_auth* auth, rr_method method, long i
     }
 
     DSD_MEMSET(out, 0, k_methods[method].sink_size);
-    return rr_execute(client, auth, method, iarg, out, target, NULL);
+    /* NULL on any thread but the worker's; on the worker it is the token of the
+     * job whose callback re-entered here, so a nested fetch cancels with it. */
+    return rr_execute(client, auth, method, iarg, out, target, g_thread_cancel);
 }
 
 int
@@ -956,11 +1027,18 @@ dsd_rr_get_support_maps(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_s
         }
         return -1;
     }
-    if (client->support_cached) {
+    dsd_mutex_lock(&client->mutex);
+    const int cached = client->support_cached;
+    if (cached) {
         *out = client->support;
+    }
+    dsd_mutex_unlock(&client->mutex);
+    if (cached) {
         return 0;
     }
 
+    /* Unlocked for the three round trips: holding the client mutex across a
+     * network transfer would block every cancel and the shutdown join. */
     dsd_rr_support_maps maps;
     DSD_MEMSET(&maps, 0, sizeof(maps));
     if (rr_call(client, auth, RR_M_SUPPORT_TYPE, 0, &maps.types, err) != 0
@@ -971,10 +1049,23 @@ dsd_rr_get_support_maps(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_s
     }
 
     /* Cached per client instance: RR adds rows over time, so never bake a table,
-     * but re-fetching three lists on every classification would be wasteful. */
-    client->support = maps;
-    client->support_cached = 1;
-    *out = maps;
+     * but re-fetching three lists on every classification would be wasteful.
+     *
+     * A second caller may have filled the cache while this one was on the wire.
+     * The winner's copy is the one every borrowed view points at, so the loser
+     * frees its own rather than overwriting - overwriting would leak three lists
+     * and dangle the items[] arrays an earlier *out is still holding. */
+    dsd_mutex_lock(&client->mutex);
+    const int raced = client->support_cached;
+    if (!raced) {
+        client->support = maps;
+        client->support_cached = 1;
+    }
+    *out = client->support;
+    dsd_mutex_unlock(&client->mutex);
+    if (raced) {
+        dsd_rr_support_maps_free(&maps);
+    }
     return 0;
 }
 
@@ -1125,10 +1216,10 @@ dsd_rr_fetch_trs_talkgroup_cats(dsd_rr_client* client, const dsd_rr_auth* auth, 
 }
 
 uint64_t
-dsd_rr_fetch_support_maps(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_done_cb cb, void* user) {
-    /* The three support lists are fetched individually; the type list is the one
-     * the UI blocks on, and the Qt model asks for the rest through the blocking
-     * getter once it has a worker-free moment. */
+dsd_rr_fetch_support_types(dsd_rr_client* client, const dsd_rr_auth* auth, dsd_rr_done_cb cb, void* user) {
+    /* One method per job, so this delivers a dsd_rr_support_list - the type
+     * table only. dsd_rr_get_support_maps() is what fetches all three, and it
+     * is not this function's async twin however alike the old name read. */
     return rr_submit(client, auth, RR_M_SUPPORT_TYPE, 0, cb, user);
 }
 

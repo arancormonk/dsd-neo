@@ -506,7 +506,12 @@ Window {
         anchors.fill: safeArea
         opacity: mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
-        enabled: opacity > 0.9
+        // Stands down for the RadioReference screen it can push, for the same
+        // reason the library and that screen stand down for the monitor: the
+        // RadioReference screen is a plain Item with no full-bleed input
+        // handler, so a tap on its header strip or button margins would
+        // otherwise land on the wizard field underneath as well.
+        enabled: opacity > 0.9 && !mainRoot.radioReferenceOpen
 
         Behavior on opacity {
             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }

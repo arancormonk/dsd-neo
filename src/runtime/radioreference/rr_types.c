@@ -97,31 +97,6 @@ rr_parse_long_strict(const char* text, long* out) {
     return 0;
 }
 
-int
-rr_parse_hex_strict(const char* text, unsigned long long* out) {
-    if (text == NULL || out == NULL) {
-        return -1;
-    }
-
-    const char* start = rr_skip_ws(text);
-    if (*start == '\0' || *start == '-' || *start == '+') {
-        return -1;
-    }
-
-    char* end = NULL;
-    errno = 0;
-    const unsigned long long value = strtoull(start, &end, 16);
-    if (errno != 0 || end == start) {
-        return -1;
-    }
-    if (*rr_skip_ws(end) != '\0') {
-        return -1;
-    }
-
-    *out = value;
-    return 0;
-}
-
 void
 rr_copy_field(char* dst, size_t dst_sz, const char* src) {
     if (dst == NULL || dst_sz == 0U) {

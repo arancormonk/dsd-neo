@@ -487,12 +487,22 @@ M17 voice or has lost the RadioReference import. The triplet links statically,
 so they end up inside `libdsd-neo-app_arm64-v8a.so` — there is no extra `.so` to
 package and no `System.loadLibrary` change.
 
-libcurl backs the rdio-scanner upload path. `android.permission.INTERNET` is
-already declared, and because OpenSSL's compiled-in `/etc/ssl/certs` does not
-exist on Android, `rdio_export.c` points libcurl at the system trust store
-(`/apex/com.android.conscrypt/cacerts`, falling back to
-`/system/etc/security/cacerts`) so `https://` endpoints verify normally. The
-RadioReference client shares that hardening through `src/runtime/curl_common.c`.
+libcurl backs the rdio-scanner upload path and the RadioReference client, both
+through `src/runtime/curl_common.c`. `android.permission.INTERNET` is already
+declared, and because OpenSSL's compiled-in `/etc/ssl/certs` does not exist on
+Android, that helper supplies the trust store itself.
+
+`CURLOPT_CAPATH` alone does not work here, which cost a device debugging session
+to establish: the path is set, the directory exists and is readable, no SELinux
+denial is logged, and the same store verifies the same chain on a desktop with
+the same OpenSSL — yet in the app process the hashed-directory lookup resolves
+nothing and every `https://` request fails with `CURLE_PEER_FAILED_VERIFICATION`.
+So the system roots (`/apex/com.android.conscrypt/cacerts`, falling back to
+`/system/etc/security/cacerts`) are read once into a single PEM blob and handed
+to libcurl through `CURLOPT_CAINFO_BLOB`; only the `BEGIN..END` block of each
+file is taken, because Android's are a certificate followed by a text dump.
+`CURLOPT_CAPATH` is still set, but only reaches a build older than libcurl
+7.77.0 — anywhere `CAINFO_BLOB` exists, the blob is what makes TLS work.
 
 expat parses the RadioReference SOAP responses. It is a pure-C port with no Qt
 module behind it, so androiddeployqt has nothing extra to package.

@@ -47,6 +47,7 @@ qt_add_resources(
         qml/CsvTypeBadge.qml
         qml/DashedActionButton.qml
         qml/DecodeChip.qml
+        qml/DisclosureRow.qml
         qml/EncTag.qml
         qml/ExploreSetupScreen.qml
         qml/FilterPill.qml
@@ -71,6 +72,7 @@ qt_add_resources(
         qml/SegmentedControl.qml
         qml/SettingsScreen.qml
         qml/SpectrumScreen.qml
+        qml/ToggleRow.qml
         qml/TunerMarker.qml
         qml/UiPanel.qml
         qml/WizardScreen.qml

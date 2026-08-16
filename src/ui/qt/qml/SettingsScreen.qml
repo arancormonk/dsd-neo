@@ -18,68 +18,6 @@ Item {
         color: Theme.bg
     }
 
-    // One toggle row: title, helper, switch. Used by every panel below.
-    component ToggleRow: Item {
-        id: toggleRow
-
-        property string title: ""
-        property string subtitle: ""
-        property bool checked: false
-        property bool showDivider: false
-        signal toggled(bool checked)
-
-        width: parent ? parent.width : 0
-        height: 62
-
-        Column {
-            anchors.left: parent.left
-            anchors.right: rowSwitch.left
-            anchors.leftMargin: Theme.cardPadding
-            anchors.rightMargin: 12
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 3
-
-            Text {
-                width: parent.width
-                text: toggleRow.title
-                font.family: Theme.sans
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-                color: Theme.textPrimary
-                elide: Text.ElideRight
-            }
-
-            Text {
-                width: parent.width
-                visible: text.length > 0
-                text: toggleRow.subtitle
-                font.family: Theme.sans
-                font.pixelSize: 12
-                color: Theme.textSubdued
-                elide: Text.ElideRight
-            }
-        }
-
-        PlexSwitch {
-            id: rowSwitch
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.cardPadding
-            anchors.verticalCenter: parent.verticalCenter
-            checked: toggleRow.checked
-            onToggled: function (state) { toggleRow.toggled(state) }
-        }
-
-        Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Theme.cardPadding
-            height: 1
-            visible: toggleRow.showDivider
-            color: Theme.divider
-        }
-    }
-
     // Numeric advanced row: label left, small mono field + unit right.
     component ValueRow: Item {
         id: valueRow
@@ -343,50 +281,10 @@ Item {
                         bottomPadding: 6
                     }
 
-                    Item {
-                        width: parent.width
-                        height: 58
-
-                        Column {
-                            anchors.left: parent.left
-                            anchors.right: importsCaret.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.rightMargin: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 3
-
-                            Text {
-                                width: parent.width
-                                text: qsTr("Imported files")
-                                font.family: Theme.sans
-                                font.pixelSize: 15
-                                font.weight: Font.DemiBold
-                                color: Theme.textPrimary
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                width: parent.width
-                                text: qsTr("Channel maps, talkgroups, and keys")
-                                font.family: Theme.sans
-                                font.pixelSize: 12
-                                color: Theme.textSubdued
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        Caret {
-                            id: importsCaret
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.cardPadding
-                            anchors.verticalCenter: parent.verticalCenter
-                            rotation: -90
-                            color: Theme.textSubdued
-                        }
-
-                        TapHandler {
-                            onTapped: screen.openImports()
-                        }
+                    DisclosureRow {
+                        title: qsTr("Imported files")
+                        subtitle: qsTr("Channel maps, talkgroups, and keys")
+                        onTapped: screen.openImports()
                     }
                 }
             }
@@ -414,60 +312,11 @@ Item {
                         bottomPadding: 6
                     }
 
-                    Item {
-                        width: parent.width
-                        height: 58
-
-                        Column {
-                            anchors.left: parent.left
-                            anchors.right: rrCaret.left
-                            anchors.leftMargin: Theme.cardPadding
-                            anchors.rightMargin: 12
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 3
-
-                            Text {
-                                width: parent.width
-                                text: qsTr("Import a system")
-                                font.family: Theme.sans
-                                font.pixelSize: 15
-                                font.weight: Font.DemiBold
-                                color: Theme.textPrimary
-                                elide: Text.ElideRight
-                            }
-
-                            Text {
-                                width: parent.width
-                                text: qsTr("Talkgroups and channel maps from the online database")
-                                font.family: Theme.sans
-                                font.pixelSize: 12
-                                color: Theme.textSubdued
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        Caret {
-                            id: rrCaret
-
-                            anchors.right: parent.right
-                            anchors.rightMargin: Theme.cardPadding
-                            anchors.verticalCenter: parent.verticalCenter
-                            rotation: -90
-                            color: Theme.textSubdued
-                        }
-
-                        Rectangle {
-                            anchors.bottom: parent.bottom
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.leftMargin: Theme.cardPadding
-                            height: 1
-                            color: Theme.divider
-                        }
-
-                        TapHandler {
-                            onTapped: screen.openRadioReference()
-                        }
+                    DisclosureRow {
+                        title: qsTr("Import a system")
+                        subtitle: qsTr("Talkgroups and channel maps from the online database")
+                        showDivider: true
+                        onTapped: screen.openRadioReference()
                     }
 
                     Item {

@@ -45,7 +45,8 @@ typedef enum {
     RR_SHAPE_TALKGROUP_CAT_LIST, /**< sink: dsd_rr_talkgroup_cat_list */
     RR_SHAPE_SUPPORT_TYPE,       /**< sink: dsd_rr_support_list */
     RR_SHAPE_SUPPORT_FLAVOR,     /**< sink: dsd_rr_support_list */
-    RR_SHAPE_SUPPORT_VOICE       /**< sink: dsd_rr_support_list */
+    RR_SHAPE_SUPPORT_VOICE,      /**< sink: dsd_rr_support_list */
+    RR_SHAPE_COUNT               /**< Number of shapes; keep last. */
 } rr_shape;
 
 /**
