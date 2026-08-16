@@ -113,7 +113,14 @@ class SavedSystemsModel : public QAbstractListModel {
         int port = 0;
         QString freqMhz;
         QString decodeFlag;
-        bool trunking = true;
+        /* False, like every other layer reads an absent key: session_args'
+         * `system.value("trunking").toBool()` appends -T only for a present
+         * true, and the wizard starts a new system with it off. A default of
+         * true here meant a map that never mentioned trunking - a hand-edited
+         * or partially restored systems.json row, or a future caller that
+         * simply forgot the key - was stored as call-following ON while every
+         * reader of that same map said OFF. */
+        bool trunking = false;
         int gainDb = -1;
         QString ppm;
         int bandwidthKhz = -1;

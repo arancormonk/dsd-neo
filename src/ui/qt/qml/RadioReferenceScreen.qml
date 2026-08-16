@@ -69,6 +69,13 @@ Item {
     readonly property bool systemLoaded: radioReference.systemDetails.sid !== undefined
                                          && radioReference.systemDetails.sid > 0
 
+    // Whether the application key is the user's to supply — and so whether this
+    // screen offers a field for it and names it as a possible culprit. A build
+    // that bakes a key in answers no to both: fillAuth() ignores any stored
+    // override there, so the key is neither editable nor a credential in play.
+    // Same rule as the Settings row.
+    readonly property bool offersAppKey: !radioReference.buildHasAppKey
+
     // The resolved RadioReference type name, which is what decides whether the
     // simulcast and ESK toggles mean anything here. Matching the name rather
     // than the protocol enum keeps QML out of the business of tracking C
@@ -85,9 +92,24 @@ Item {
     readonly property var siteList: radioReference.sites
 
     onSiteListChanged: {
-        screen.selectedSites = []
         screen.simulcastOverride = -1
         screen.eskOverride = -1
+        // Belongs to the system in hand like the two overrides do, not to the
+        // screen: the back row makes "system A, back, system B" one visit, and
+        // A's answer would otherwise be written into B's import provenance.
+        screen.partialEncAsDe = true
+        // A single-site trunked system has exactly one right answer, so give
+        // it: the preview and the Import button light up without asking for a
+        // tap on the only row there is. Conventional lists stay untouched —
+        // "which repeaters can I hear" is a real question even with one entry.
+        //
+        // `trunked`, not `!conventional`: a system type this build cannot import
+        // is neither, and reading it as trunked selected and lit up the one row
+        // of an LTR or MPT-1327 system whose plan can never be built.
+        //
+        // Assigned once rather than cleared and then filled: every write to
+        // selectedSites runs refreshPlan(), and that builds both CSVs.
+        screen.selectedSites = (radioReference.trunked && screen.siteList.length === 1) ? [0] : []
         screen.refreshPlan()
     }
 
@@ -125,6 +147,18 @@ Item {
 
     /** Clear everything that belongs to one visit. */
     function reset() {
+        // A visit never starts mid-system: drop whatever the last visit — or a
+        // library refresh, which loads the system it re-fetches — left behind.
+        // The model keeps the results list across this on purpose, so "come
+        // back and import the next one" starts at the list, not at a search.
+        //
+        // Only when there is a system to drop, or a fetch still on its way to
+        // becoming one: closeSystem() retires the model's error along with it,
+        // and a rejected sign-in is the one error that must outlive a visit —
+        // it is what holds the credentials form open for the retype, and the
+        // password lives nowhere else. An idle visit that ended on one keeps it.
+        if (screen.rrLive() && (screen.systemLoaded || radioReference.busy))
+            radioReference.closeSystem()
         screen.sourceMode = 0
         zipField.text = ""
         sidField.text = ""
@@ -235,6 +269,27 @@ Item {
     function verifyAccount() {
         if (screen.rrLive() && radioReference.credentialsReady)
             radioReference.checkAccount()
+    }
+
+    /**
+     * The "Check account" button, which is not the same gesture as finishing a
+     * field.
+     *
+     * Nothing on this screen takes keyboard focus — every control is a
+     * TapHandler — so a text field only emits editingFinished on Enter or when
+     * another field is tapped. Tapping the button leaves the field the user
+     * just filled uncommitted, and its answer never reaches prefs or the model.
+     * Move focus off first, which commits it, then check what the form holds.
+     */
+    function checkAccountTapped() {
+        credentialsColumn.forceActiveFocus()
+        if (screen.rrLive() && !radioReference.credentialsReady) {
+            screen.notice = qsTr("Fill in every field above first.")
+            screen.noticeIsProblem = true
+            return
+        }
+        screen.clearNotice()
+        screen.verifyAccount()
     }
 
     function findByZip() {
@@ -540,10 +595,16 @@ Item {
         anchors.leftMargin: Theme.screenPadding
         anchors.rightMargin: Theme.screenPadding
         visible: text.length > 0
+        // The auth wording names only what the user can fix here, which is the
+        // same set the form offers: a build that bakes the application key in,
+        // with no override stored, leaves username and password as the two
+        // possible culprits.
         text: radioReference.errorIsSubscription
               ? qsTr("This account's RadioReference premium subscription has expired.")
               : radioReference.errorIsAuth
-                ? qsTr("RadioReference did not accept that username, password or application key.")
+                ? (screen.offersAppKey
+                   ? qsTr("RadioReference did not accept that username, password or application key.")
+                   : qsTr("RadioReference did not accept that username or password."))
                 : radioReference.errorText.length > 0 ? radioReference.errorText : screen.notice
         font.family: Theme.sans
         font.pixelSize: 13
@@ -585,12 +646,22 @@ Item {
             // Every user authenticates with their own RadioReference account and
             // needs their own premium subscription; nothing is pooled, and the
             // password is never written anywhere.
+            //
+            // Username and password lead, the way every sign-in form does. The
+            // application key comes last and only where the user is the one who
+            // supplies it — see offersAppKey.
             UiPanel {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "radioReferenceCredentials"
 
                 width: parent.width
-                visible: !radioReference.hasAppKey || !radioReference.credentialsReady
+                // credentialsReady means the fields are FILLED, not accepted —
+                // so an account failure reopens the form, or the session-only
+                // password would have nowhere left to be retyped. Both account
+                // errors qualify: auth wants a correction, an expired
+                // subscription wants a different account.
+                visible: !radioReference.credentialsReady || radioReference.errorIsAuth
+                         || radioReference.errorIsSubscription
                 height: credentialsColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -604,45 +675,6 @@ Item {
 
                     MicroLabel {
                         text: qsTr("RadioReference account")
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: !radioReference.hasAppKey
-                        text: qsTr("Application key")
-                        font.family: Theme.sans
-                        font.pixelSize: 13
-                        color: Theme.textSecondary
-                    }
-
-                    PlexTextField {
-                        id: appKeyField
-
-                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
-                        objectName: "radioReferenceAppKeyField"
-
-                        width: parent.width
-                        visible: !radioReference.hasAppKey
-                        mono: true
-                        text: prefs.rrAppKey
-                        placeholderText: qsTr("application key")
-                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
-                        // Commit on Enter or focus loss, not per keystroke: every
-                        // write lands in QSettings (disk on Android).
-                        onEditingFinished: prefs.rrAppKey = text
-                    }
-
-                    Text {
-                        width: parent.width
-                        visible: !radioReference.hasAppKey
-                        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
-                        textFormat: Text.StyledText
-                        linkColor: Theme.cyan
-                        font.family: Theme.sans
-                        font.pixelSize: 12
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
-                        onLinkActivated: function (link) { Qt.openUrlExternally(link) }
                     }
 
                     Text {
@@ -706,25 +738,79 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
+                    Text {
+                        width: parent.width
+                        visible: screen.offersAppKey
+                        text: qsTr("Application key")
+                        font.family: Theme.sans
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
+                    }
+
+                    PlexTextField {
+                        id: appKeyField
+
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "radioReferenceAppKeyField"
+
+                        width: parent.width
+                        visible: screen.offersAppKey
+                        mono: true
+                        text: prefs.rrAppKey
+                        placeholderText: qsTr("application key")
+                        inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                        // Commit on Enter or focus loss, not per keystroke: every
+                        // write lands in QSettings (disk on Android). The account
+                        // check fires the same way the password field's does, so
+                        // whichever field is answered last completes the form.
+                        onEditingFinished: {
+                            prefs.rrAppKey = text
+                            screen.verifyAccount()
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        visible: !radioReference.buildHasAppKey
+                        text: qsTr("This build carries no application key. Request one at <a href=\"https://www.radioreference.com/account/api/apply\">radioreference.com/account/api/apply</a>.")
+                        textFormat: Text.StyledText
+                        linkColor: Theme.cyan
+                        font.family: Theme.sans
+                        font.pixelSize: 12
+                        color: Theme.textSubdued
+                        wrapMode: Text.Wrap
+                        onLinkActivated: function (link) { Qt.openUrlExternally(link) }
+                    }
+
                     OutlineButton {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceCheckAccountButton"
 
                         width: parent.width
-                        enabled: !radioReference.busy && radioReference.credentialsReady
+                        // Deliberately not gated on credentialsReady. The fields
+                        // commit on Enter or focus loss, and a TapHandler takes
+                        // no focus — so the field the user is still typing in
+                        // has not committed when they reach for this button, and
+                        // gating on the committed state greys it out exactly
+                        // when the last answer is the one still sitting in it.
+                        enabled: !radioReference.busy
                         text: qsTr("Check account")
-                        onClicked: screen.verifyAccount()
+                        onClicked: screen.checkAccountTapped()
                     }
                 }
             }
 
             // ---- Where to look ----
+            // Hidden while a system is loaded: the screen is a drill-down, and
+            // showing the search controls above a system being configured made
+            // it read as two screens at once — searching from there fetched a
+            // results list that stayed invisible behind the loaded system.
             UiPanel {
                 // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                 objectName: "radioReferenceSourcePanel"
 
                 width: parent.width
-                visible: radioReference.credentialsReady
+                visible: radioReference.credentialsReady && !screen.systemLoaded
                 height: sourceColumn.height + 2 * Theme.cardPadding
 
                 Column {
@@ -764,7 +850,7 @@ Item {
 
                             width: parent.width - zipGo.width - 10
                             mono: true
-                            placeholderText: qsTr("e.g. 52401")
+                            placeholderText: qsTr("e.g. 12345")
                             inputMethodHints: Qt.ImhDigitsOnly
                             // A leading-zero zip resolves correctly as an int, so
                             // the validator is only here to stop a stray letter
@@ -909,6 +995,55 @@ Item {
                             tapEnabled: !radioReference.busy
                             onTapped: screen.openSystem(systemRow.modelData.sid)
                         }
+                    }
+                }
+            }
+
+            // ---- Back to the find stage ----
+            // The drill-down's way out: a loaded system replaces the find panel
+            // and the results list, and this row is what puts them back. The
+            // model keeps the results across closeSystem(), so "back, pick the
+            // next one" is one tap — the loop for importing several systems
+            // from one search.
+            Item {
+                // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                objectName: "radioReferenceBackToResults"
+
+                width: parent.width
+                height: 40
+                visible: screen.systemLoaded
+                opacity: radioReference.busy ? 0.5 : 1.0
+
+                Row {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 8
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "‹"
+                        font.pixelSize: 22
+                        color: Theme.cyan
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        // Named after where it lands: the results list when one
+                        // is in hand, otherwise the find-a-system panel.
+                        text: radioReference.systems.length > 0 ? qsTr("All systems") : qsTr("Search")
+                        font.family: Theme.sans
+                        font.pixelSize: 14
+                        font.weight: Font.DemiBold
+                        color: Theme.cyan
+                    }
+                }
+
+                TapHandler {
+                    enabled: !radioReference.busy
+                    onTapped: {
+                        screen.clearNotice()
+                        if (screen.rrLive())
+                            radioReference.closeSystem()
                     }
                 }
             }

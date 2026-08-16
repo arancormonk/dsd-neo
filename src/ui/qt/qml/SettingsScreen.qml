@@ -314,7 +314,12 @@ Item {
 
                     DisclosureRow {
                         title: qsTr("Import a system")
-                        subtitle: qsTr("Talkgroups and channel maps from the online database")
+                        // Not "talkgroups and channel maps": that framing reads
+                        // as trunked-only, and the import serves conventional
+                        // systems just as well. Same line as the wizard's entry
+                        // row on purpose — one action, one description — and
+                        // anything longer elides on a phone-width row.
+                        subtitle: qsTr("Fills in the frequency, decode mode and talkgroups")
                         showDivider: true
                         onTapped: screen.openRadioReference()
                     }
@@ -351,9 +356,19 @@ Item {
                         }
                     }
 
+                    // A build that bakes the application key in does not ask for
+                    // one: this row sat right under Username looking like a
+                    // password box. Nor does it show a stored override left over
+                    // from a keyless build — fillAuth() ignores it there, so it
+                    // is not a credential in play and a field for it would only
+                    // invite editing a key this build does not use.
                     Item {
+                        // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+                        objectName: "settingsRrAppKeyRow"
+
                         width: parent.width
                         height: 76
+                        visible: !radioReference.buildHasAppKey
 
                         Text {
                             id: rrKeyLabel
@@ -376,7 +391,10 @@ Item {
                             height: 38
                             mono: true
                             text: prefs.rrAppKey
-                            placeholderText: qsTr("leave empty to use this build's key")
+                            // No "leave empty to use this build's key" branch:
+                            // the row is shown only where this build has no key
+                            // to fall back to.
+                            placeholderText: qsTr("application key")
                             inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
                             onEditingFinished: prefs.rrAppKey = text
                         }

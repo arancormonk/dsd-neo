@@ -367,12 +367,18 @@ test_credentials_gate(void) {
     dsd_qt::ImportedFilesModel library(&host);
     dsd_qt::RadioReferenceModel model(&prefs, &library, &host);
 
-    /* This build bakes no application key, so a fresh install has neither. */
-    expect("no app key on a fresh install", !model.hasAppKey());
-    expect("credentials are not ready without a key", !model.credentialsReady());
+    /* Whether a fresh install already has a key is this build's answer, not a
+     * constant: a keyed build ships one, a keyless build waits for the user to
+     * supply it. Asserted against the build rather than assuming keyless, or
+     * this case reads as a pass only in the configuration it happened to be
+     * written in. */
+    const char* builtin = dsd_rr_builtin_app_key();
+    const bool baked = builtin != nullptr && builtin[0] != '\0';
+    expect("a fresh install has a key only where one is baked in", model.hasAppKey() == baked);
+    expect("credentials are never ready on a fresh install", !model.credentialsReady());
 
     prefs.setRrAppKey(kAppKey);
-    expect("a user-supplied key counts", model.hasAppKey());
+    expect("a key is in hand once one is stored", model.hasAppKey());
     expect("credentials still need a username", !model.credentialsReady());
 
     prefs.setRrUsername(kUsername);
@@ -918,6 +924,108 @@ test_error_and_cancel(void) {
 }
 
 void
+test_results_and_loaded_system_stay_exclusive(void) {
+    Harness h;
+
+    /* buildHasAppKey reports the baked key and only the baked key: the harness
+     * stores a prefs override, which must not count. */
+    const char* builtin = dsd_rr_builtin_app_key();
+    const bool baked = builtin != nullptr && builtin[0] != '\0';
+    expect("buildHasAppKey answers for the baked key alone", h.model.buildHasAppKey() == baked);
+
+    /* Which key a request carries. Asserted through chooseAppKey() rather than
+     * only through the model, because the baked value is a compile-time
+     * constant: a test that could reach this only via hasAppKey()/fillAuth()
+     * would exercise whichever single branch this build was configured for, and
+     * the branch that matters most - a shipped key refusing to be displaced by
+     * a stale override - is the one a keyless developer build can never take. */
+    const QByteArray bakedKey("BAKED_KEY_9f4");
+    const QString stored = QStringLiteral("OVERRIDE_KEY_1a2");
+    expect("a baked key is authoritative",
+           dsd_qt::RadioReferenceModel::chooseAppKey(bakedKey.constData(), stored) == bakedKey);
+    expect("a baked key stands alone when nothing is stored",
+           dsd_qt::RadioReferenceModel::chooseAppKey(bakedKey.constData(), QString()) == bakedKey);
+    expect("without a baked key the stored key is the key",
+           dsd_qt::RadioReferenceModel::chooseAppKey("", stored) == stored.toUtf8());
+    expect("a NULL builtin counts as no baked key",
+           dsd_qt::RadioReferenceModel::chooseAppKey(nullptr, stored) == stored.toUtf8());
+    expect("neither candidate leaves no key to send",
+           dsd_qt::RadioReferenceModel::chooseAppKey("", QString()).isEmpty());
+
+    /* And that the model asks the same question the same way. */
+    h.prefs.setRrAppKey(QString());
+    expect("a keyed build needs no stored key; a keyless one has none yet", h.model.hasAppKey() == baked);
+    h.prefs.setRrAppKey(stored);
+    expect("a stored key completes a keyless build", h.model.hasAppKey());
+
+    h.model.loadSystem(6673);
+    pump(h.model);
+    expect("a system is loaded", !h.model.systemDetails().isEmpty());
+
+    /* The choice is not merely reported but sent. This assertion is meaningful
+     * in both configurations, which is what makes the CI step that reconfigures
+     * this build with a baked key worth its seconds: there it flips to proving
+     * the shipped key goes on the wire and the stale override does not. */
+    expect("the envelope carries the chosen application key",
+           h.fake.lastRequest.contains(dsd_qt::RadioReferenceModel::chooseAppKey(builtin, stored)));
+    if (baked) {
+        expect("the envelope does not carry the ignored override", !h.fake.lastRequest.contains(stored.toUtf8()));
+    }
+
+    /* A fresh search must land on a visible results stage: the screen shows the
+     * list only while no system is loaded, so the reply retires the system. */
+    h.model.loadCountySystems(841);
+    pump(h.model);
+    expect_int("the county's systems arrived", h.model.systems().size(), 24);
+    expect("the results retired the loaded system", h.model.systemDetails().isEmpty());
+    expect("the results retired the site list", h.model.sites().isEmpty());
+
+    /* closeSystem() is the screen's back affordance: the system goes, the
+     * results stay, and a stale error goes with the system it described. */
+    h.model.loadSystem(6673);
+    pump(h.model);
+    int systemChanges = 0;
+    QObject::connect(&h.model, &dsd_qt::RadioReferenceModel::systemChanged, &h.model,
+                     [&systemChanges]() { systemChanges++; });
+    h.model.closeSystem();
+    expect("closing the system clears its details", h.model.systemDetails().isEmpty());
+    expect("closing the system clears its sites", h.model.sites().isEmpty());
+    expect("closing the system clears its talkgroups", h.model.talkgroupSummary().isEmpty());
+    expect("closing the system keeps the results list", h.model.systems().size() == 24);
+    expect("closing the system announced itself", systemChanges > 0);
+
+    /* And with an error up: back means the failure is acknowledged. */
+    h.fake.serveFault = true;
+    h.model.loadSystem(6673);
+    pump(h.model);
+    expect("the fault landed as an error", h.model.errorKind() != dsd_qt::RadioReferenceModel::NoError);
+    h.fake.serveFault = false;
+    h.model.closeSystem();
+    expect_int("closing the system retires the error", h.model.errorKind(), dsd_qt::RadioReferenceModel::NoError);
+    expect("closing the system clears the error text", h.model.errorText().isEmpty());
+
+    /* And mid-load, which is what reset() does when the screen is reopened over
+     * a fetch that is still running. The replies carry the live generation, so
+     * without retiring the batch they land afterwards and finishSystemLoad()
+     * rebuilds the system around the sid clearSystem() just zeroed - details and
+     * sites fully populated with sid 0, which the screen's stage predicate
+     * (sid > 0) can never show. */
+    h.model.closeSystem();
+    h.model.loadSystem(6673);
+    h.model.closeSystem();
+    pump(h.model);
+    expect("a system closed mid-load stays closed", h.model.systemDetails().isEmpty());
+    expect("a system closed mid-load leaves no sites", h.model.sites().isEmpty());
+    expect("a system closed mid-load leaves no talkgroups", h.model.talkgroupSummary().isEmpty());
+    expect("a system closed mid-load leaves the model idle", !h.model.busy());
+    /* And the screen can still open it again afterwards. */
+    h.model.loadSystem(6673);
+    pump(h.model);
+    expect_int("reopening after a mid-load close works", h.model.systemDetails().value(QStringLiteral("sid")).toInt(),
+               6673);
+}
+
+void
 test_destroy_with_requests_in_flight(void) {
     /* The client is destroyed first in ~RadioReferenceModel, which joins the
      * worker before any member it might read goes away. Under ASan this case is
@@ -958,6 +1066,7 @@ main(int argc, char** argv) {
     test_refresh_uses_the_recorded_tower();
     test_site_without_a_marked_control_channel();
     test_error_and_cancel();
+    test_results_and_loaded_system_stay_exclusive();
     test_destroy_with_requests_in_flight();
 
     QDir(dataDir).removeRecursively();
