@@ -131,7 +131,7 @@ jobs:
       - name: Upload Gitleaks SARIF
         if: always() && hashFiles('.gitleaks.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           sarif_file: .gitleaks.sarif
 
@@ -198,7 +198,7 @@ jobs:
       - name: Upload zizmor SARIF
         if: always() && hashFiles('.zizmor.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           sarif_file: .zizmor.sarif
 
@@ -247,7 +247,7 @@ jobs:
       - name: Upload OSV SARIF
         if: always() && hashFiles('.osv-scanner.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@d1ba80a13dd99fba24a470575428917156a28b43 # v4
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           sarif_file: .osv-scanner.sarif
 
