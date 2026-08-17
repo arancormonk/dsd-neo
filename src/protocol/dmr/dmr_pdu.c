@@ -419,8 +419,10 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     const char* src_port_desc = dmr_udp_comp_port_idx_desc(spid);
     const char* dst_port_desc = dmr_udp_comp_port_idx_desc(dpid);
 
-    DSD_FPRINTF(stderr, "\n Compressed IP Idx: %d; Opcode: %d; Src Idx: %d (%s); Dst Idx: %d (%s); ", ipid, opcode,
-                said, src_idx_desc, daid, dst_idx_desc);
+    // ETSI TS 102 361-3 Table 7.14: the leading 16 bits are the IPv4 Identification, carried
+    // verbatim because the decompressor cannot regenerate it - not one of the index fields.
+    DSD_FPRINTF(stderr, "\n IP ID: %04X; Opcode: %d; Src Idx: %d (%s); Dst Idx: %d (%s); ", ipid, opcode, said,
+                src_idx_desc, daid, dst_idx_desc);
     DSD_FPRINTF(stderr, "\n Src Port Idx: %d (%s); Dst Port Idx: %d (%s); ", spid, src_port_desc, dpid, dst_port_desc);
 
     const int has_gps = dmr_udp_comp_decode_payload(opts, state, spid, dpid, len, ptr, DMR_PDU);
@@ -428,7 +430,7 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     uint8_t slot = (state->currentslot == 1) ? 1 : 0;
     char comp_string[500];
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
-    DSD_SNPRINTF(comp_string, sizeof(comp_string), "IPC: %d; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
+    DSD_SNPRINTF(comp_string, sizeof(comp_string), "IP ID: %04X; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
                  ipid, opcode, said, spid, src_idx_desc, src_port_desc, daid, dpid, dst_idx_desc, dst_port_desc);
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, said, daid);
     const dsd_event_category category = dmr_udp_event_category(spid, dpid);
