@@ -625,6 +625,9 @@ main(void) {
         }
         rc |= expect_has_substr(g_datacall_text, "SRC: 1:1", "compressed source summary");
         rc |= expect_has_substr(g_datacall_text, "DST: 2:63", "compressed destination summary");
+        // ETSI TS 102 361-3 Table 7.14 names the leading 16 bits "IPv4 Identification"; the
+        // notice used to call them "IPC", which read like one of the compression index fields.
+        rc |= expect_has_substr(g_datacall_text, "IP ID: 1234;", "compressed IPv4 identification label");
         rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "compressed text category");
     }
 
