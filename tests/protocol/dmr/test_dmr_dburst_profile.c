@@ -21,6 +21,7 @@
 #include "dmr_dburst_profile.h"
 #include "dmr_r34_internal.h"
 #include "dsd-neo/core/safe_api.h"
+#include "test_support.h"
 
 static int g_pi_calls;
 static int g_flco_calls;
@@ -81,14 +82,6 @@ reset_handler_counters(void) {
     DSD_MEMSET(g_r34_soft_bytes, 0, sizeof(g_r34_soft_bytes));
     DSD_MEMSET(g_r34_hard_bytes, 0, sizeof(g_r34_hard_bytes));
     DSD_MEMSET(g_r34_candidates, 0, sizeof(g_r34_candidates));
-}
-
-FILE*
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_fopen_private(const char* path, const char* mode) {
-    (void)path;
-    (void)mode;
-    return NULL;
 }
 
 uint16_t
@@ -309,6 +302,15 @@ static int
 expect_u32(const char* tag, uint32_t got, uint32_t want) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: got 0x%08X want 0x%08X\n", tag, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_true(const char* tag, int got) {
+    if (!got) {
+        DSD_FPRINTF(stderr, "%s: expected true\n", tag);
         return 1;
     }
     return 0;
@@ -666,6 +668,124 @@ test_trellis_candidate_and_fallback_paths(void) {
     return rc;
 }
 
+static int
+slurp_file(const char* path, char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return 1;
+    }
+    out[0] = '\0';
+
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return 1;
+    }
+    const size_t nread = fread(out, 1U, out_size - 1U, fp);
+    out[nread] = '\0';
+    (void)fclose(fp);
+    return 0;
+}
+
+static int
+capture_handler_stderr(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint8_t databurst, char* out,
+                       size_t out_size) {
+    dsd_test_capture_stderr cap;
+
+    if (out == NULL || out_size == 0U) {
+        return 1;
+    }
+    out[0] = '\0';
+    if (dsd_test_capture_stderr_begin(&cap, "dsdneo_dmr_dburst") != 0) {
+        return 1;
+    }
+
+    dmr_data_burst_handler(opts, state, info, databurst, NULL);
+
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+
+    const int rc = slurp_file(cap.path, out, out_size);
+    (void)remove(cap.path);
+    return rc;
+}
+
+/* Regression guard for #343: these format strings once carried an escaped backslash, so the
+   dumps emitted a literal "\n" and were glued onto the tail of the sync banner. */
+static int
+test_console_dumps_use_real_newlines(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t info[196];
+    char out[4096];
+
+    prepare_handler_state(&opts, &state, info, 0x07U, 0U, 1U, 0);
+    opts.payload = 1;
+    if (capture_handler_stderr(&opts, &state, info, 0x07U, out, sizeof(out)) != 0) {
+        DSD_FPRINTF(stderr, "payload dump capture failed\n");
+        return 1;
+    }
+    rc |= expect_true("payload-dump-emits-no-escape", strstr(out, "\\n") == NULL);
+    const char* payload = strstr(out, " DMR PDU Payload ");
+    if (payload == NULL) {
+        DSD_FPRINTF(stderr, "payload dump missing from output: '%s'\n", out);
+        return 1;
+    }
+    rc |= expect_true("payload-dump-starts-on-own-line", memchr(out, '\n', (size_t)(payload - out)) != NULL);
+
+    prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+    if (capture_handler_stderr(&opts, &state, info, 0x0BU, out, sizeof(out)) != 0) {
+        DSD_FPRINTF(stderr, "USBD banner capture failed\n");
+        return 1;
+    }
+    rc |= expect_true("usbd-banner-emits-no-escape", strstr(out, "\\n") == NULL);
+    const char* usbd = strstr(out, " USBD - Service: ");
+    if (usbd == NULL) {
+        DSD_FPRINTF(stderr, "USBD banner missing from output: '%s'\n", out);
+        return 1;
+    }
+    rc |= expect_true("usbd-banner-starts-on-own-line", memchr(out, '\n', (size_t)(usbd - out)) != NULL);
+    return rc;
+}
+
+/* Structured DSP output is line oriented; every record must begin its own line so downstream
+   parsers can split it, and so it stays consistent with the voice/SBRC writers. */
+static int
+test_dsp_structured_output_records_are_line_separated(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t info[196];
+    char out[4096];
+    char dsp_path[DSD_TEST_PATH_MAX];
+
+    const int fd = dsd_test_mkstemp(dsp_path, sizeof(dsp_path), "dsdneo_dmr_dsp_out");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "DSP output temp file creation failed\n");
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    prepare_handler_state(&opts, &state, info, 0x07U, 0U, 1U, 0);
+    opts.use_dsp_output = 1;
+    DSD_SNPRINTF(opts.dsp_out_file, sizeof(opts.dsp_out_file), "%s", dsp_path);
+
+    dmr_data_burst_handler(&opts, &state, info, 0x07U, NULL);
+
+    const int read_rc = slurp_file(dsp_path, out, sizeof(out));
+    (void)remove(dsp_path);
+    if (read_rc != 0) {
+        DSD_FPRINTF(stderr, "DSP output read back failed\n");
+        return 1;
+    }
+
+    rc |= expect_true("dsp-output-emits-no-escape", strstr(out, "\\n") == NULL);
+    rc |= expect_true("dsp-output-cach-record-on-own-line", strstr(out, "\n2 98 ") != NULL);
+    rc |= expect_true("dsp-output-burst-record-on-own-line", strstr(out, "\n2 07 ") != NULL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -675,6 +795,8 @@ main(void) {
     rc |= test_bptc_ras_and_usbd_services();
     rc |= test_confirmed_sequence_paths();
     rc |= test_trellis_candidate_and_fallback_paths();
+    rc |= test_console_dumps_use_real_newlines();
+    rc |= test_dsp_structured_output_records_are_line_separated();
     if (rc == 0) {
         printf("DMR_DBURST_PROFILE: OK\n");
     }

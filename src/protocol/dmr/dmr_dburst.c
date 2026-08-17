@@ -216,13 +216,13 @@ dmr_dburst_print_header_and_dump(dmr_data_burst_ctx* ctx) {
         FILE* pfile = dsd_fopen_private(ctx->opts->dsp_out_file, "a");
         if (pfile != NULL) {
             uint32_t i;
-            DSD_FPRINTF(pfile, "\\n%d 98 ", ctx->slot + 1);
+            DSD_FPRINTF(pfile, "\n%d 98 ", ctx->slot + 1);
             for (i = 0; i < 6; i++) {
                 int cach_byte = (ctx->state->dmr_stereo_payload[((size_t)i * 2)] << 2)
                                 | ctx->state->dmr_stereo_payload[((size_t)i * 2) + 1];
                 DSD_FPRINTF(pfile, "%X", cach_byte);
             }
-            DSD_FPRINTF(pfile, "\\n%d %02X ", ctx->slot + 1, ctx->databurst);
+            DSD_FPRINTF(pfile, "\n%d %02X ", ctx->slot + 1, ctx->databurst);
             for (i = 6; i < 72; i++) {
                 int dsp_byte = (ctx->state->dmr_stereo_payload[((size_t)i * 2)] << 2)
                                | ctx->state->dmr_stereo_payload[((size_t)i * 2) + 1];
@@ -707,7 +707,7 @@ dmr_dburst_handle_usbd(dmr_data_burst_ctx* ctx) {
     uint8_t pl_bytes[11];
 
     ctx->usbd_st = (uint8_t)convert_bits_into_output(&ctx->dmr_pdu_bits[0], 4);
-    DSD_FPRINTF(stderr, "%s\\n", KYEL);
+    DSD_FPRINTF(stderr, "%s\n", KYEL);
     DSD_FPRINTF(stderr, " USBD - Service: %s (%u)", dmr_dburst_usbd_service_name(ctx->usbd_st), ctx->usbd_st);
 
     DSD_MEMSET(pl_bytes, 0, sizeof(pl_bytes));
@@ -799,7 +799,7 @@ dmr_dburst_finalize_status(dmr_data_burst_ctx* ctx) {
     }
 
     if (ctx->opts->payload == 1 && ctx->databurst != 0x09) {
-        DSD_FPRINTF(stderr, "\\n");
+        DSD_FPRINTF(stderr, "\n");
         DSD_FPRINTF(stderr, "%s", KCYN);
         DSD_FPRINTF(stderr, " DMR PDU Payload ");
         for (uint32_t i = 0; i < ctx->pdu_len; i++) {

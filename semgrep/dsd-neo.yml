@@ -283,6 +283,39 @@ rules:
               }
           - pattern: DSD_SNPRINTF($DST, sizeof($DST), ...)
 
+  - id: dsd-neo.no-escaped-control-char-in-format-string
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Format string emits a literal backslash escape instead of the control character. "\\n" prints the two
+      characters '\' and 'n', gluing the next output onto the current line; write "\n" for a real newline
+      (likewise "\t" and "\r"). This is refactor fallout from mechanically rewriting fprintf call sites, and
+      it has silently regressed DMR console and structured-output dumps more than once. If a literal escape
+      sequence really is intended, emit it outside a format string or annotate the line with a narrow
+      nosemgrep comment explaining why.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+    patterns:
+      - pattern-either:
+          - pattern: DSD_FPRINTF($STREAM, $FMT, ...)
+          - pattern: DSD_SNPRINTF($DST, $SZ, $FMT, ...)
+          - pattern: DSD_VSNPRINTF($DST, $SZ, $FMT, $AP)
+          - pattern: LOG_ERROR($FMT, ...)
+          - pattern: LOG_WARN($FMT, ...)
+          - pattern: LOG_INFO($FMT, ...)
+          - pattern: LOG_DEBUG($FMT, ...)
+          - pattern: printf($FMT, ...)
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: '.*\\\\[ntr].*'
+
   - id: dsd-neo.no-unbounded-byte-to-bit-unpack
     languages: [c, cpp]
     severity: ERROR
