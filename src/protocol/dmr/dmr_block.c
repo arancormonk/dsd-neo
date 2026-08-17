@@ -1310,7 +1310,7 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
     uint32_t msrc = ctx->state->dmr_lrrp_source[ctx->slot];
     uint32_t mdst = ctx->state->dmr_lrrp_target[ctx->slot];
     uint8_t mnis_type = ctx->state->dmr_pdu_sf[ctx->slot][4];
-    uint16_t mnis_unk;
+    uint16_t mnis_ip_id;
 
     if (len > 150) {
         len = 150;
@@ -1318,8 +1318,13 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n SRC(MNIS): %08d; ", msrc);
     DSD_FPRINTF(stderr, "\n DST(MNIS): %08d; ", mdst);
     dmr_block_type1_print_mnis_type(mnis_type);
-    mnis_unk = (ctx->state->dmr_pdu_sf[ctx->slot][5] << 8) | ctx->state->dmr_pdu_sf[ctx->slot][6];
-    DSD_FPRINTF(stderr, " ???: %04X", mnis_unk);
+    // Octets 5-6: IPv4 Identification of the tunneled datagram. Motorola does not publish this
+    // header, but the ETSI-standard compressed UDP/IPv4 header sends exactly this field verbatim
+    // because a decompressor cannot regenerate it (TS 102 361-3 5.6/7.2.3), independent MOTOTRBO
+    // decoders rebuild valid datagrams reading these octets as the IP ID, and live captures show
+    // the per-host once-per-datagram counter an IP stack puts there, shared by LRRP and ARS.
+    mnis_ip_id = (ctx->state->dmr_pdu_sf[ctx->slot][5] << 8) | ctx->state->dmr_pdu_sf[ctx->slot][6];
+    DSD_FPRINTF(stderr, " IP ID: %04X", mnis_ip_id);
     DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]),
                  "MNIS SRC: %d; DST: %d; ", msrc, mdst);
     dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, msrc, mdst);

@@ -1180,6 +1180,30 @@ test_type1_mnis_notice_labels_match_observation(void) {
     return rc;
 }
 
+// Octets 5-6 of the MNIS proprietary header used to print as "???:". The field is the IPv4
+// Identification of the compressed UDP/IPv4 datagram (issue #342: a per-host counter shared by
+// LRRP and ARS) - the one IP header field DMR compressed-IP transport carries verbatim - so the
+// header dump has to name it instead of shrugging.
+static int
+test_type1_mnis_header_prints_ip_id(void) {
+    // LRRP-type MNIS PDU with IP ID 0x8526, a value from the issue #342 capture range.
+    static const uint8_t pdu[24] = {0x1F, 0x10, 0x02, 0x01, 0x11, 0x85, 0x26, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5E, 0x6C, 0xA7, 0x5C};
+    char output[2048];
+    int rc = 0;
+
+    if (run_type1_mnis_pdu_captured(pdu, 0U, "dmr_mnis_ip_id", output, sizeof(output)) != 0) {
+        return 1;
+    }
+
+    rc |= expect_contains("mnis-ip-id", output, "IP ID: 8526");
+    if (strstr(output, "???") != NULL) {
+        DSD_FPRINTF(stderr, "mnis-ip-id: header dump still prints the unknown-field placeholder\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 static void
 test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
     uint8_t block[12] = {0x83, 0x10, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0, 0, 0, 0};
@@ -1651,6 +1675,7 @@ main(int argc, char** argv) {
     rc |= test_type1_mnis_short_pdu_length_underflow_guard();
     rc |= test_type1_mnis_locn_length_is_not_offset_adjusted();
     rc |= test_type1_mnis_notice_labels_match_observation();
+    rc |= test_type1_mnis_header_prints_ip_id();
     test_irrecoverable_header_resets_data_state();
     rc |= test_response_headers_emit_control_events();
     test_response_header_event_acceptance_gates();
