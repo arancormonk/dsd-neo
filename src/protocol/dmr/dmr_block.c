@@ -1246,7 +1246,7 @@ dmr_block_type1_mnis_event_category(uint8_t mnis_type) {
 
 static void
 dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, uint8_t mnis_type, uint32_t msrc,
-                                    uint32_t mdst) {
+                                    uint32_t mdst, uint16_t mnis_ip_id) {
     if (mnis_type == 0x11) {
         uint8_t pdu_crc_ok = dmr_block_type1_lrrp_crc_ok(ctx->state, ctx->slot);
         dmr_lrrp(ctx->opts, ctx->state, len, msrc, mdst, ctx->state->dmr_pdu_sf[ctx->slot] + 7, pdu_crc_ok);
@@ -1270,28 +1270,32 @@ dmr_block_type1_handle_mnis_payload(dmr_block_assembler_ctx* ctx, uint16_t len, 
         dsd_event_history_transaction_end(&transaction);
     }
 
-    if (mnis_type != 0x11 && mnis_type != 0x01) {
-        char mnis_str[200];
+    // LRRP/LOCN rewrite dmr_lrrp_gps with the decoded position and ARS appends its summary to it,
+    // so emit that slot string and the decoded result reaches the history row, not just the live
+    // slot pane. The remaining MNIS types decode nothing, so emit the bare endpoints instead.
+    char mnis_str[200];
+    const char* base = ctx->state->dmr_lrrp_gps[ctx->slot];
+    if (mnis_type != 0x11 && mnis_type != 0x01 && mnis_type != 0x33) {
         DSD_MEMSET(mnis_str, 0, sizeof(mnis_str));
         DSD_SNPRINTF(mnis_str, sizeof(mnis_str), "MNIS TGT: %lld; SRC: %lld;", ctx->state->dmr_lrrp_target[ctx->slot],
                      ctx->state->dmr_lrrp_source[ctx->slot]);
-        const dsd_call_observation observation = dsd_call_observation_data(
-            ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
-            (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
-        // ARS decodes append their summary to dmr_lrrp_gps, which already carries the same
-        // endpoints; emit that so the decoded registration reaches the history row and not just
-        // the live slot pane. Other MNIS types have nothing extra to say, so keep mnis_str.
-        const char* notice = (mnis_type == 0x33) ? ctx->state->dmr_lrrp_gps[ctx->slot] : mnis_str;
-        (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
-                                                    dmr_block_type1_mnis_event_category(mnis_type), notice);
-    } else if (mnis_type == 0x11 || mnis_type == 0x01) {
-        const dsd_call_observation observation = dsd_call_observation_data(
-            ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
-            (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
-        (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
-                                                    dmr_block_type1_mnis_event_category(mnis_type),
-                                                    ctx->state->dmr_lrrp_gps[ctx->slot]);
+        base = mnis_str;
     }
+    // The service handlers overwrite or append to the slot string at will, so the IP ID is
+    // attached here, at emission time, and every MNIS notice carries it: the event log is what
+    // offline per-radio loss analysis reads (issue #342), and stderr was its only home before.
+    char notice[256];
+    DSD_SNPRINTF(notice, sizeof(notice), "%s", base);
+    size_t notice_len = strlen(notice);
+    while (notice_len > 0U && notice[notice_len - 1U] == ' ') {
+        notice[--notice_len] = '\0';
+    }
+    DSD_SNPRINTF(notice + notice_len, sizeof(notice) - notice_len, " IP ID: %04X;", mnis_ip_id);
+    const dsd_call_observation observation =
+        dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, (uint64_t)ctx->state->dmr_lrrp_source[ctx->slot],
+                                  (uint64_t)ctx->state->dmr_lrrp_target[ctx->slot]);
+    (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
+                                                dmr_block_type1_mnis_event_category(mnis_type), notice);
 }
 
 static void
@@ -1327,7 +1331,7 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
     DSD_FPRINTF(stderr, " IP ID: %04X", mnis_ip_id);
     DSD_SNPRINTF(ctx->state->dmr_lrrp_gps[ctx->slot], sizeof(ctx->state->dmr_lrrp_gps[ctx->slot]),
                  "MNIS SRC: %d; DST: %d; ", msrc, mdst);
-    dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, msrc, mdst);
+    dmr_block_type1_handle_mnis_payload(ctx, len, mnis_type, msrc, mdst, mnis_ip_id);
 }
 
 static void
