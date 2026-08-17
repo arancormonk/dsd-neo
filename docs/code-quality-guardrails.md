@@ -44,6 +44,7 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 The repository intentionally blocks or flags patterns that are easy to reintroduce during large edits:
 
 - Use the project safe API wrappers instead of raw C memory/string/formatting APIs in project-owned code.
+- Write real control characters in format strings. `"\\n"` prints a literal `\` followed by `n` rather than breaking the line; this is easy to reintroduce when rewriting `fprintf` call sites in bulk, and has silently broken DMR console and structured-output dumps more than once. If a literal escape sequence is genuinely intended, emit it outside a format string or annotate the line with a narrow `nosemgrep` comment explaining why.
 - Do not execute shells or spawn processes from project-owned C/C++ without explicit design review.
 - Do not include bundled third-party headers directly outside approved wrappers and integration points.
 - Keep workflow scripts defensive: pass untrusted context through environment variables or action inputs, not direct expression interpolation in `run:` blocks.

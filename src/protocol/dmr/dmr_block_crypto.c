@@ -163,7 +163,7 @@ dmr_block_crypto_print_info(const dmr_block_crypto_ctx* ctx, int show_keys) {
         return;
     }
 
-    DSD_FPRINTF(stderr, "\\n PDU ALG: %02X; Key ID: %02X;", ctx->alg, ctx->kid);
+    DSD_FPRINTF(stderr, "\n PDU ALG: %02X; Key ID: %02X;", ctx->alg, ctx->kid);
     if (ctx->alg != 0 && ctx->mi != 0ULL) {
         DSD_FPRINTF(stderr, " MI(32): %08llX;", ctx->mi);
     }

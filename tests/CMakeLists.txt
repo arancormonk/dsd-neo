@@ -6228,6 +6228,10 @@ target_include_directories(
     dsd-neo_test_dmr_dburst_profile
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
+target_link_libraries(
+    dsd-neo_test_dmr_dburst_profile
+    PRIVATE dsd-neo_test_support
+)
 add_test(NAME DMR_DBURST_PROFILE COMMAND dsd-neo_test_dmr_dburst_profile)
 
 add_executable(
