@@ -875,6 +875,23 @@ dsd_p25p2_flush_partial_audio_slot(dsd_opts* opts, dsd_state* state, int slot) {
         return;
     }
 
+    // The tail is only worth emitting while the slot's crypto classification
+    // still permits audio (every caller flushes before resetting it). A
+    // lockout- or classification-muted slot can hold stale pre-mute samples;
+    // emitting them would play audio the gate refused and wedge extra blocks
+    // into the audible companion's output stream. Drop the tail instead --
+    // downstream consumers treat a muted channel's buffers as blank, so the
+    // zeroing here just makes that assumption true immediately.
+    if (!p25_crypto_audio_permitted(opts, state, slot)) {
+        if (slot == 0) {
+            DSD_MEMSET(state->s_l4, 0, sizeof(state->s_l4));
+        } else {
+            DSD_MEMSET(state->s_r4, 0, sizeof(state->s_r4));
+        }
+        state->voice_counter[slot] = 0;
+        return;
+    }
+
     short saved_other[18][160];
     int saved_other_counter = state->voice_counter[other];
     int saved_other_allowed = state->p25_p2_audio_allowed[other];

@@ -1704,6 +1704,24 @@ p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, i
     }
 }
 
+// A slot still occupies the carrier when its gate is open, it holds buffered
+// audio, or its MAC signaling is fresh inside the hold window. The audio gate
+// alone cannot say "idle": an encryption-lockout-suppressed transmission
+// keeps its gate closed for its whole life while MAC_PTT/ACTIVE repeats prove
+// the site is still transmitting on the slot -- the same signals the LCCH
+// pending-release check consumes. Latching p25_sm_force_release on a slot the
+// SM is deliberately holding (classification in flight, companion bridging)
+// would bypass every guard the SM applies, because the forced-release tick
+// runs unguarded.
+static int
+p25p2_frame_slot_recently_occupied(const dsd_state* state, int slot, double mac_hold_s) {
+    if (state->p25_p2_audio_allowed[slot] || state->p25_p2_audio_ring_count[slot] > 0) {
+        return 1;
+    }
+    return (state->p25_p2_last_mac_active_m[slot] > 0.0)
+           && (dsd_time_now_monotonic_s() - state->p25_p2_last_mac_active_m[slot]) <= mac_hold_s;
+}
+
 static void DSD_ATTR_USED
 p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_enable != 1 || opts->trunk_is_tuned != 1) {
@@ -1712,7 +1730,9 @@ p25p2_duid_fallback_release(dsd_opts* opts, dsd_state* state) {
 
     time_t now2 = time(NULL);
     int no_recent_voice = (state->last_vc_sync_time != 0) && ((now2 - state->last_vc_sync_time) > opts->trunk_hangtime);
-    int both_slots_idle = (state->p25_p2_audio_allowed[0] == 0 && state->p25_p2_audio_allowed[1] == 0);
+    double mac_hold = p25p2_frame_mac_hold_s(0.75);
+    int both_slots_idle = !p25p2_frame_slot_recently_occupied(state, 0, mac_hold)
+                          && !p25p2_frame_slot_recently_occupied(state, 1, mac_hold);
     double dt_since_tune = (state->p25_last_vc_tune_time != 0) ? (double)(now2 - state->p25_last_vc_tune_time) : 1e9;
     double vc_grace = p25p2_frame_vc_grace_s(0.75);
     if (no_recent_voice && both_slots_idle && dt_since_tune >= vc_grace) {

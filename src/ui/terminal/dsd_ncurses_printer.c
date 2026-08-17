@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/protocol/p25/p25_callsign.h>
+#include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/ncurses.h>
@@ -2546,7 +2547,7 @@ ui_apply_canonical_call_slot(ui_slot_view* slot, const dsd_call_snapshot* call) 
 }
 
 static ui_slot_view
-ui_build_slot_view(const dsd_state* state, int slot_idx) {
+ui_build_slot_view(const dsd_opts* opts, const dsd_state* state, int slot_idx) {
     ui_slot_view slot;
     DSD_MEMSET(&slot, 0, sizeof(slot));
     ui_fill_slot_decoder_state(state, slot_idx, &slot);
@@ -2557,6 +2558,20 @@ ui_build_slot_view(const dsd_state* state, int slot_idx) {
         if (call->phase == DSD_CALL_PHASE_ACTIVE) {
             ui_apply_canonical_call_slot(&slot, call);
         }
+    }
+    const int p25p2_context = DSD_SYNC_IS_P25P2(state->synctype) || DSD_SYNC_IS_P25P2(state->lastsynctype);
+    const int lockout_active = opts != NULL && opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0;
+    if (p25p2_context
+        && ui_p25p2_lockout_suppressed_slot(lockout_active, slot.call.phase == DSD_CALL_PHASE_ACTIVE,
+                                            p25_crypto_companion_suppressed(state, slot_idx), slot.burst)) {
+        // The locked-out call's identity still reaches the operator through
+        // the lockout event-history row and the active-channel list; the
+        // slot row must not dress its MAC/ESS repeats up as a live keyed
+        // call with a blank identity.
+        slot.burst = 24;
+        slot.payload_algid = 0;
+        slot.payload_keyid = 0;
+        slot.payload_mi_p25 = 0;
     }
     return slot;
 }
@@ -3043,8 +3058,8 @@ ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
     ui_render_p25_dmr_header(opts, state);
     printw("\n");
 
-    ui_slot_view left = ui_build_slot_view(state, 0);
-    ui_slot_view right = ui_build_slot_view(state, 1);
+    ui_slot_view left = ui_build_slot_view(opts, state, 0);
+    ui_slot_view right = ui_build_slot_view(opts, state, 1);
     ui_render_p25_dmr_slot_block(opts, state, &left);
     ui_render_p25_dmr_slot_block(opts, state, &right);
     ui_render_p25_dmr_active_channels_line(opts, state);

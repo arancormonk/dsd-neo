@@ -1026,7 +1026,7 @@ test_patch_and_slot_helpers(void) {
     };
     assert(dsd_call_state_update_crypto(&state, 1U, &crypto) == 1);
 
-    ui_slot_view right = ui_build_slot_view(&state, 1);
+    ui_slot_view right = ui_build_slot_view(&(dsd_opts){0}, &state, 1);
     assert(right.slot_no == 2);
     assert(right.burst == 21);
     assert(right.target == 202);
@@ -1098,7 +1098,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     crypto.observed_m = 1.1;
     assert(dsd_call_state_update_crypto(state, 0U, &crypto) == 1);
 
-    ui_slot_view slot = ui_build_slot_view(state, 0);
+    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.canonical_p25 == 1);
     assert(slot.burst == 21);
     assert(slot.target == 1201);
@@ -1118,7 +1118,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     assert_capture_contains(" | VOICE");
 
     state->dmrburstR = 21;
-    ui_slot_view idle_companion = ui_build_slot_view(state, 1);
+    ui_slot_view idle_companion = ui_build_slot_view(&(dsd_opts){0}, state, 1);
     assert(idle_companion.canonical_p25 == 0);
     assert(idle_companion.call.phase == DSD_CALL_PHASE_IDLE);
     reset_printw_capture();
@@ -1151,13 +1151,13 @@ test_canonical_p25_slot_and_recent_activity(void) {
     data_observation.policy_target_id = 2202U;
     data_observation.observed_m = 1.5;
     assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    slot = ui_build_slot_view(state, 0);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.canonical_p25 == 1);
     assert(slot.burst == 6);
     assert(strcmp(slot.call_banner, " Data") == 0);
 
     assert(dsd_call_state_end(state, 0U, 2.0) == 1);
-    slot = ui_build_slot_view(state, 0);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
     reset_printw_capture();
     ui_render_p25_dmr_slot_block(&(dsd_opts){0}, state, &slot);
@@ -1168,7 +1168,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     state->payload_algid = 0x84;
     state->payload_keyid = 0x2468;
     state->payload_miP = 0x1122334455667788ULL;
-    slot = ui_build_slot_view(state, 0);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.canonical_p25 == 0);
     assert(slot.call.phase == DSD_CALL_PHASE_ENDED);
     reset_printw_capture();
@@ -1196,7 +1196,7 @@ test_canonical_p25_slot_and_recent_activity(void) {
     observation.frequency_hz = 0;
     observation.observed_m = 3.0;
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    slot = ui_build_slot_view(state, 0);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.canonical_p25 == 0);
     assert(slot.target == 4321);
     assert(slot.source == 8765);
@@ -1220,7 +1220,7 @@ capture_burst_separator_offset(void) {
 
 static void
 capture_slot_header_line(dsd_state* state, int slot_index) {
-    ui_slot_view slot = ui_build_slot_view(state, slot_index);
+    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, slot_index);
     ui_slot_render_flags flags = {0};
     reset_printw_capture();
     ui_render_slot_header_line(state, &slot, &flags);
@@ -1306,7 +1306,7 @@ test_slot_header_id_highlight_is_balanced(void) {
     assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
 
     // Voice burst: IDs are not highlighted, but the section colour is still restored.
-    ui_slot_view slot = ui_build_slot_view(state, 0);
+    ui_slot_view slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.burst == 21);
     ui_slot_render_flags flags = {0};
     reset_color_trace();
@@ -1320,7 +1320,7 @@ test_slot_header_id_highlight_is_balanced(void) {
     data_observation.policy_target_id = 2202U;
     data_observation.observed_m = 2.0;
     assert(dsd_call_state_observe(state, &data_observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    slot = ui_build_slot_view(state, 0);
+    slot = ui_build_slot_view(&(dsd_opts){0}, state, 0);
     assert(slot.burst == 6);
     reset_color_trace();
     ui_render_slot_header_line(state, &slot, &flags);
@@ -1396,6 +1396,58 @@ test_live_protocol_panels_ignore_ended_call_identity(void) {
     free(state);
 }
 
+/* An encryption-lockout-suppressed P25p2 companion (canonical call ended by
+   lockout, crypto BLOCKED, MAC repeats keeping the raw burst hint on
+   MAC_ACTIVE and ESS repeats keeping ALG/KID/MI current) renders as an idle
+   slot: no VOICE status, no crypto line, blank identity. Follow mode keeps
+   the raw rendering. */
+static void
+test_lockout_suppressed_companion_slot_renders_idle(void) {
+    static dsd_opts lockout_opts;
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    DSD_MEMSET(&lockout_opts, 0, sizeof(lockout_opts));
+    lockout_opts.trunk_enable = 1;
+    lockout_opts.trunk_tune_enc_calls = 0;
+
+    state->synctype = DSD_SYNC_P25P2_POS;
+    state->lastsynctype = DSD_SYNC_P25P2_POS;
+    state->carrier = 1;
+    state->dmrburstR = 21; /* MAC_ACTIVE repeat after lockout ended the call */
+    state->payload_algidR = 0x84;
+    state->payload_keyidR = 0x026C;
+    state->payload_miN = 0x1122334455667788ULL;
+    state->p25_crypto_state[1] = DSD_P25_CRYPTO_BLOCKED;
+
+    ui_slot_view slot = ui_build_slot_view(&lockout_opts, state, 1);
+    assert(slot.burst == 24);
+    assert(slot.payload_algid == 0);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&lockout_opts, state, &slot);
+    assert(strstr(g_printw_capture, "VOICE") == NULL);
+    assert(strstr(g_printw_capture, "ALG:") == NULL);
+    assert(strstr(g_printw_capture, "0x84") == NULL);
+    assert_capture_contains("TGT: [        ] SRC: [        ]");
+    assert_capture_contains("IDLE");
+
+    /* Follow mode (or non-trunked decode) keeps showing what the slot
+       carries. */
+    static dsd_opts follow_opts;
+    DSD_MEMSET(&follow_opts, 0, sizeof(follow_opts));
+    follow_opts.trunk_enable = 1;
+    follow_opts.trunk_tune_enc_calls = 1;
+    slot = ui_build_slot_view(&follow_opts, state, 1);
+    assert(slot.burst == 21);
+    assert(slot.payload_algid == 0x84);
+    reset_printw_capture();
+    ui_render_p25_dmr_slot_block(&follow_opts, state, &slot);
+    assert_capture_contains("VOICE");
+    assert_capture_contains("ALG: 0x84");
+
+    dsd_state_ext_free_all(state);
+    free(state);
+}
+
 int
 main(void) {
     test_input_source_helpers();
@@ -1417,6 +1469,7 @@ main(void) {
     test_slot_header_burst_column_is_fixed();
     test_slot_header_id_highlight_is_balanced();
     test_live_protocol_panels_ignore_ended_call_identity();
+    test_lockout_suppressed_companion_slot_renders_idle();
     return 0;
 }
 

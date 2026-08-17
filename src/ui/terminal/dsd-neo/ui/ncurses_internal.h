@@ -126,6 +126,21 @@ ui_burst_is_active_call(int burst) {
     return burst == 16 || ui_burst_is_active_p25_call(burst);
 }
 
+/* A lockout-suppressed P25p2 companion transmission keeps repeating
+   MAC_PTT/MAC_ACTIVE (burst hints 20/21) and ESS crypto metadata after
+   encryption lockout ended its canonical call, so the raw decoder fields
+   would render a live keyed voice call with a blank identity. Such a slot
+   must render idle: lockout active, no ACTIVE canonical call on the slot,
+   the slot's crypto classification suppressed (pending or blocked), and a
+   burst hint that would otherwise claim call/crypto context. */
+static inline int
+ui_p25p2_lockout_suppressed_slot(int lockout_active, int call_active, int crypto_suppressed, int burst) {
+    if (!lockout_active || call_active || !crypto_suppressed) {
+        return 0;
+    }
+    return ui_burst_has_p25_crypto_metadata(burst);
+}
+
 #ifdef __cplusplus
 }
 #endif

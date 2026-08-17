@@ -15,6 +15,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_vpdu.h>
+#include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -33,6 +34,21 @@ static void
 reset_test_state(void) {
     dsd_state_ext_free_all(&st);
     DSD_MEMSET(&st, 0, sizeof st);
+}
+
+static dsd_trunk_tune_result
+test_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    (void)opts;
+    (void)state;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static void
+install_trunk_tuning_hooks(void) {
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.return_to_cc_request = test_return_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
 }
 
 static const char*
@@ -570,6 +586,89 @@ test_sm_deny_counter_increments(void) {
 }
 
 /* ============================================================================
+ * Test: Deny/Queued heard on an occupied carrier must not release it
+ * ============================================================================ */
+
+static int
+test_deny_holds_occupied_carrier(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    reset_test_state();
+    opts.trunk_hangtime = 2.0f;
+    opts.trunk_is_tuned = 1;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->state = P25_SM_TUNED;
+    ctx->initialized = 1;
+
+    /* The companion slot is audibly carrying a call. */
+    st.p25_p2_audio_allowed[1] = 1;
+
+    unsigned long long MAC[24];
+    build_que_deny_mac(MAC, 1, 0x02, 0x60, 0, 424242);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+
+    int rc = 0;
+    if (st.p25_sm_deny_count != 1) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_holds_occupied_carrier: counter expected 1, got %u\n",
+                    st.p25_sm_deny_count);
+        rc = 1;
+    }
+    if (ctx->state != P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_holds_occupied_carrier: released an occupied carrier\n");
+        rc = 1;
+    }
+
+    /* Once nothing occupies either slot, the same deny releases as before. */
+    st.p25_p2_audio_allowed[1] = 0;
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+    if (st.p25_sm_deny_count != 2) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_holds_occupied_carrier: counter expected 2, got %u\n",
+                    st.p25_sm_deny_count);
+        rc = 1;
+    }
+    if (ctx->state == P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "FAIL: test_deny_holds_occupied_carrier: idle carrier did not release\n");
+        rc = 1;
+    }
+
+    return rc;
+}
+
+static int
+test_motorola_queued_holds_occupied_carrier(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    reset_test_state();
+    opts.trunk_hangtime = 2.0f;
+    opts.trunk_is_tuned = 1;
+
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    DSD_MEMSET(ctx, 0, sizeof(*ctx));
+    ctx->state = P25_SM_TUNED;
+    ctx->initialized = 1;
+
+    st.p25_p2_audio_allowed[0] = 1;
+
+    unsigned long long MAC[24];
+    build_moto_que_deny_mac(MAC, 0, 0x15, 0x42, 0, 0xABCDEF, 0);
+    process_MAC_VPDU(&opts, &st, 0, P25_MAC_PDU_ACTIVE, MAC);
+
+    int rc = 0;
+    if (st.p25_sm_queued_count != 1) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_holds_occupied_carrier: counter expected 1, got %u\n",
+                    st.p25_sm_queued_count);
+        rc = 1;
+    }
+    if (ctx->state != P25_SM_TUNED) {
+        DSD_FPRINTF(stderr, "FAIL: test_motorola_queued_holds_occupied_carrier: released an occupied carrier\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+/* ============================================================================
  * Test: Active channel display contains "QUE" and target
  * ============================================================================ */
 
@@ -710,6 +809,7 @@ int
 main(void) {
     int rc = 0;
 
+    install_trunk_tuning_hooks();
     rc |= test_que_rsp_field_extraction_known_payload();
     rc |= test_deny_rsp_field_extraction_known_payload();
     rc |= test_que_reason_code_lookup_all_known();
@@ -722,6 +822,8 @@ main(void) {
     rc |= test_sm_deny_noop_when_on_cc();
     rc |= test_sm_queued_counter_increments();
     rc |= test_sm_deny_counter_increments();
+    rc |= test_deny_holds_occupied_carrier();
+    rc |= test_motorola_queued_holds_occupied_carrier();
     rc |= test_active_channel_que_format();
     rc |= test_active_channel_deny_format();
     rc |= test_additional_info_indicator_controls_display();

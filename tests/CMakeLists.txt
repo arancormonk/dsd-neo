@@ -5086,6 +5086,48 @@ target_link_libraries(
 )
 add_test(NAME P25_P2_VPDU_ENC_FLUSH COMMAND dsd-neo_test_p25_p2_vpdu_enc_flush)
 
+# P25 P2 VPDU foreign channel-grant announcements must not rewrite the decode
+# slot's own service options (feeds the clear-call encrypted-pending mute)
+add_executable(
+    dsd-neo_test_p25_p2_vpdu_foreign_grant_svc
+    protocol/p25/test_p25_p2_vpdu_foreign_grant_svc.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_vpdu_foreign_grant_svc
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_vpdu_foreign_grant_svc
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_VPDU_FOREIGN_GRANT_SVC
+    COMMAND dsd-neo_test_p25_p2_vpdu_foreign_grant_svc
+)
+
+# P25 P2 tuned-tick timeouts must bridge the companion conversation's
+# hangtime gap instead of releasing the shared TDMA carrier mid-conversation
+add_executable(
+    dsd-neo_test_p25_p2_tick_companion_hold
+    protocol/p25/test_p25_p2_tick_companion_hold.c
+)
+target_include_directories(
+    dsd-neo_test_p25_p2_tick_companion_hold
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/tests/protocol/p25
+)
+target_link_libraries(
+    dsd-neo_test_p25_p2_tick_companion_hold
+    PRIVATE dsd-neo_proto_p25
+)
+add_test(
+    NAME P25_P2_TICK_COMPANION_HOLD
+    COMMAND dsd-neo_test_p25_p2_tick_companion_hold
+)
+
 # P25 CC cache loading (read-only behavior and identity/RFSS/SITE scoping)
 add_executable(
     dsd-neo_test_p25_cc_cache_path
