@@ -9,9 +9,10 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#define DMR_CONFIDENCE_UNKNOWN_CC     16U
-#define DMR_CONFIDENCE_LOCK_OBSERVES  2U
-#define DMR_CONFIDENCE_VOICE_OBSERVES 2U
+#define DMR_CONFIDENCE_UNKNOWN_CC      16U
+#define DMR_CONFIDENCE_LOCK_OBSERVES   2U
+#define DMR_CONFIDENCE_VOICE_OBSERVES  2U
+#define DMR_CONFIDENCE_RELOCK_OBSERVES 4U
 
 static int
 dmr_confidence_valid_cc(unsigned int color_code) {
@@ -56,10 +57,35 @@ dmr_confidence_observe_cc(dsd_state* state, unsigned int color_code, int may_loc
 
     if (state->dmr_confidence_locked) {
         if (state->dmr_confidence_color_code == color_code) {
+            // Matching evidence restarts any pending re-lock streak so sporadic
+            // co-channel interference never accumulates into a re-lock.
+            state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;
+            state->dmr_confidence_candidate_count = 0;
             return DMR_CONFIDENCE_LOCKED;
         }
         if (state->dmr_confidence_mismatch_count < 255U) {
             state->dmr_confidence_mismatch_count++;
+        }
+        // Sustained consistent evidence of a different colour code re-locks the
+        // gate (the channel identity changed without a carrier drop) instead of
+        // rejecting every burst until the next no-carrier reset. The candidate
+        // fields are unused while locked, so they carry the mismatch streak.
+        if (state->dmr_confidence_candidate_cc != color_code) {
+            state->dmr_confidence_candidate_cc = (uint8_t)color_code;
+            state->dmr_confidence_candidate_count = 1;
+        } else if (state->dmr_confidence_candidate_count < 255U) {
+            state->dmr_confidence_candidate_count++;
+        }
+        if (state->dmr_confidence_candidate_count >= DMR_CONFIDENCE_RELOCK_OBSERVES) {
+            state->dmr_confidence_color_code = (uint8_t)color_code;
+            state->dmr_color_code = color_code;
+            state->dmr_confidence_candidate_cc = DMR_CONFIDENCE_UNKNOWN_CC;
+            state->dmr_confidence_candidate_count = 0;
+            state->dmr_confidence_mismatch_count = 0;
+            // The previous system identity is gone; voice slots must
+            // re-qualify under the new colour code before audio resumes.
+            dmr_confidence_clear_voice(state);
+            return DMR_CONFIDENCE_LOCKED;
         }
         return DMR_CONFIDENCE_REJECT;
     }
@@ -122,17 +148,17 @@ dmr_confidence_note_voice_burst(dsd_state* state, unsigned int slot, unsigned in
 }
 
 dmr_confidence_result
-dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code, unsigned int burst) {
+dmr_confidence_note_data_burst(dsd_state* state, unsigned int color_code) {
+    // Any data burst with a valid slot type may contribute to the colour-code
+    // lock, not just IDLE: a dedicated TIII TSCC transmits continuous CSBK
+    // signalling and may never carry IDLE bursts or voice (issue #348).
     if (!state || !dmr_confidence_valid_cc(color_code)) {
         return DMR_CONFIDENCE_REJECT;
     }
     if (state->dmr_confidence_locked) {
         return dmr_confidence_observe_cc(state, color_code, 0);
     }
-    if (burst == 9U) {
-        return dmr_confidence_observe_cc(state, color_code, 1);
-    }
-    return DMR_CONFIDENCE_PENDING;
+    return dmr_confidence_observe_cc(state, color_code, 1);
 }
 
 int
