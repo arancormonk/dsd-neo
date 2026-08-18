@@ -240,8 +240,7 @@ dmr_data_collect_slot_type_suffix(dmr_data_sync_ctx* ctx) {
         (uint8_t)((ctx->SlotType[4] << 3) + (ctx->SlotType[5] << 2) + (ctx->SlotType[6] << 1) + ctx->SlotType[7]);
 
     if (ctx->state->dmr_ms_mode == 0) {
-        dmr_confidence_result confidence =
-            dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code, ctx->burst);
+        dmr_confidence_result confidence = dmr_confidence_note_data_burst(ctx->state, ctx->state->color_code);
         if (confidence == DMR_CONFIDENCE_REJECT) {
             ctx->confidence_reject = 1;
         } else if (confidence != DMR_CONFIDENCE_LOCKED && ctx->burst != 9U) {
