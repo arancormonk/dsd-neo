@@ -13,9 +13,13 @@ foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     endif()
 endforeach()
 
+# MODE may carry several space-separated decoder flags (e.g. "-fs -F").
+separate_arguments(_mode_args UNIX_COMMAND "${MODE}")
+
 execute_process(
     COMMAND
-        "${DSD_BIN}" --frontend none "${MODE}" --iq-replay "${FIXTURE}" -o null
+        "${DSD_BIN}" --frontend none ${_mode_args} --iq-replay "${FIXTURE}" -o
+        null
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err

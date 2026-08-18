@@ -8542,6 +8542,23 @@ if(DSD_HAS_RADIO)
         "Color Code=02"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DMR_T3_CC dmr_t3_cc -fs "Color Code=02")
+    # CSBK-only RAS TSCC (issue #348): the colour-code gate must lock from
+    # C_ALOHA traffic alone (no idle bursts, no voice on this channel) and -F
+    # must bypass the RAS-masked CSBK CRC so the TIII site identity decodes.
+    # The second case pins colour code 0, which must not be mistaken for the
+    # "unknown" sentinel.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_T3_RAS_CC
+        dmr_t3_ras_cc
+        "-fs -F"
+        "C_ALOHA_SYS_PARMS: Large; Net ID: 1; Site ID: 1"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DMR_T3_RAS_CC_COLOR_CODE
+        dmr_t3_ras_cc
+        "-fs -F"
+        "Color Code=00"
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     dsd_neo_add_iq_decode_test(DECODE_IQ_DPMR dpmr -fm "Src=1601621")

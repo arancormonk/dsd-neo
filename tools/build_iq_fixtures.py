@@ -61,6 +61,19 @@ SOURCES = {
     "m17": "https://raw.githubusercontent.com/lwvmobile/m17-fme/main/samples/m17_clear_voice_wav.wav",
 }
 
+# Sources contributed directly by users (issue attachments / file shares) with
+# no stable download URL. Place the named file in the cache directory to
+# regenerate the fixtures that depend on it; the pinned SHA-256 in SHA256SUMS
+# still applies. Missing local sources skip their fixtures with a warning so
+# the rest of the set can still be regenerated.
+LOCAL_SOURCES = {
+    # DSDPlus raw discriminator capture (96 kHz mono s16) of a Motorola Tier III
+    # RAS TSCC: a CSBK-only control channel (C_ALOHA fill, no voice, no idle
+    # bursts) using colour code 0. Contributed by the reporter of
+    # https://github.com/arancormonk/dsd-neo/issues/348 in that issue thread.
+    "dmr_t3_ras_cc": "dmr_t3_ras_cc.wav",
+}
+
 # SHA-256 of each upstream download, pinned so regeneration detects upstream
 # changes or tampering. If an upstream file is legitimately replaced, re-verify
 # the new content, update the hash here, and re-run the DECODE_IQ_* tests.
@@ -78,6 +91,7 @@ SHA256SUMS = {
     "ysf": "607b9f9789cecc9ab1c7c204f869d10879a0d69b7b4ae60a132694e88d5476e0",
     "edacs": "c043bdbf7f8dfec2063cf8c98f87b6b6fc6f97a0a516cff2d971e2c46fdfd99f",
     "m17": "e841be537491fd6a71264bf8d4c5b54667c80a0be278d6332bb49156d7f1b4f7",
+    "dmr_t3_ras_cc": "4950da56e384b939675744a70ac12ca38fe6d6e35a74870717ab56ffc8e3e23c",
 }
 
 # Members to extract from zipped sources.
@@ -95,6 +109,10 @@ FIXTURES = [
     ("p25p2_cc", "p25_sacch", "audio", 0, 2, 0.35),
     ("dmr_voice", "dmr_mototrbo", "audio", 0, 2, 0.35),
     ("dmr_t3_cc", "dmr_t3_cc", "audio", 0, 2, 0.35),
+    # CSBK-only RAS TSCC with colour code 0: locks the confidence gate from
+    # C_ALOHA traffic alone (no idle bursts, no voice) and exercises the -F RAS
+    # CRC bypass. Regression coverage for issue #348.
+    ("dmr_t3_ras_cc", "dmr_t3_ras_cc", "audio", 2, 2, 0.35),
     ("nxdn48", "nxdn48_iq", "iq", 0, 6, None),
     ("nxdn96", "nxdn96_iq", "iq", 0, 2, None),
     ("dpmr", "dpmr_iq", "iq", 0, 10, None),
@@ -198,6 +216,15 @@ def fetch(cache_dir, key, url):
         data = resp.read()
     with open(path, "wb") as handle:
         handle.write(data)
+    verify_sha256(key, path)
+    return path
+
+
+def resolve_local(cache_dir, key):
+    """Locate a user-contributed source in cache_dir, or None if absent."""
+    path = os.path.join(cache_dir, LOCAL_SOURCES[key])
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return None
     verify_sha256(key, path)
     return path
 
@@ -314,6 +341,11 @@ def main():
         action="store_true",
         help="only regenerate fixtures derived from committed ones (no network/ffmpeg)",
     )
+    parser.add_argument(
+        "--only",
+        action="append",
+        help="regenerate just the named fixture(s); other fixtures and their downloads are skipped",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -322,15 +354,39 @@ def main():
     if not args.derived_only:
         os.makedirs(args.cache, exist_ok=True)
 
+        selected = [entry for entry in FIXTURES if not args.only or entry[0] in args.only]
+        needed = {entry[1] for entry in selected}
+
         resolved = {}
         for key, url in SOURCES.items():
+            members = ZIP_MEMBERS.get(key)
+            wanted = key in needed if members is None else any(member in needed for member in members)
+            if not wanted:
+                continue
             path = fetch(args.cache, key, url)
-            if key in ZIP_MEMBERS:
+            if members:
                 resolved.update(extract_zip_members(args.cache, key, path))
             else:
                 resolved[key] = path
+        for key in LOCAL_SOURCES:
+            if key not in needed:
+                continue
+            path = resolve_local(args.cache, key)
+            if path is not None:
+                resolved[key] = path
+                continue
+            message = (
+                f"local source for {key} not found; place the contributed file at "
+                f"{os.path.join(args.cache, LOCAL_SOURCES[key])} (see LOCAL_SOURCES for provenance)"
+            )
+            if args.only:
+                raise FileNotFoundError(message)
+            print(f"WARNING: {message}; skipping dependent fixtures", file=sys.stderr)
 
-        for name, source_key, kind, start_s, duration_s, deviation in FIXTURES:
+        for name, source_key, kind, start_s, duration_s, deviation in selected:
+            if source_key not in resolved:
+                print(f"{name:28s} skipped (source {source_key} unavailable)")
+                continue
             path = resolved[source_key]
             if kind == "iq":
                 samples = load_iq(path, start_s, duration_s)
@@ -341,7 +397,12 @@ def main():
             total += written
             print(f"{name:28s} {kind:5s}   {written // 1024:6d} KiB")
 
-    total += build_derived(args.out)
+    if not args.only:
+        total += build_derived(args.out)
+    else:
+        for entry in DERIVED_SIMULCAST:
+            if entry[0] in args.only:
+                raise SystemExit(f"{entry[0]} is a derived fixture; regenerate it with --derived-only")
     print(f"total {total // 1024} KiB in {args.out}")
     return 0
 
