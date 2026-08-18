@@ -47,7 +47,9 @@ in about 7 seconds because I/Q replay defaults to `--iq-replay-rate fast`.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
-voice, DMR Tier III control, NXDN48, NXDN96, dPMR, D-STAR, YSF, EDACS, and M17.
+voice, DMR Tier III control (including a CSBK-only RAS control channel replayed
+with `-F`, colour code 0 — regression coverage for issue #348), NXDN48, NXDN96,
+dPMR, D-STAR, YSF, EDACS, and M17.
 
 The simulcast case (`DECODE_IQ_P25P1_CQPSK_SIMULCAST_CC`) is derived from the
 clean CQPSK control-channel capture by summing a delayed (62.5 µs), attenuated

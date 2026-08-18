@@ -59,6 +59,10 @@ for file-specific license/provenance details.
     clarified, update this entry.
   - The M17 fixture derives from `samples/m17_clear_voice_wav.wav` in [lwvmobile/m17-fme](https://github.com/lwvmobile/m17-fme),
     licensed GPL.
+  - The `dmr_t3_ras_cc` fixture derives from a DSDPlus raw discriminator capture of a DMR Tier III control
+    channel contributed by the reporter of [issue #348](https://github.com/arancormonk/dsd-neo/issues/348)
+    for regression testing (short excerpt of off-air control-channel signalling, no voice content; the source
+    file has no stable URL, so `tools/build_iq_fixtures.py` pins its SHA-256 under `LOCAL_SOURCES`).
 
 The project `LICENSE`, `COPYRIGHT`, and this notice file are installed with binary packages. Installed third-party
 license texts currently include the vendored ezpwd and pffft notices under `share/doc/dsd-neo/licenses/`, plus the
