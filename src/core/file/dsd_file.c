@@ -1479,6 +1479,12 @@ typedef struct {
     uint16_t key_id;
     int rc4_db;
     int rc4_mod;
+    // Raw IV bytes of the last "encryption_mi", kept so a keystream can be rebuilt from the same
+    // IV once a later token resolves a different key id (see sdrtrunk_json_apply_dmr_tg_key_map()).
+    uint8_t mi_iv[8];
+    uint8_t mi_seen;
+    // Key id ctx->ks was last built from -- not necessarily ctx->key_id, which is the signaled one.
+    uint16_t ks_key_id;
     uint8_t ks[3000];
     uint16_t ks_idx;
     uint8_t ks_i[3000];
@@ -1508,6 +1514,9 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->key_id = 0;
     ctx->rc4_db = 256;
     ctx->rc4_mod = 13;
+    DSD_MEMSET(ctx->mi_iv, 0, sizeof(ctx->mi_iv));
+    ctx->mi_seen = 0;
+    ctx->ks_key_id = 0;
     DSD_MEMSET(ctx->ks, 0, sizeof(ctx->ks));
     ctx->ks_idx = 0;
     DSD_MEMSET(ctx->ks_i, 0, sizeof(ctx->ks_i));
@@ -1573,12 +1582,17 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
         state->payload_algid = ctx->alg_id;
         ctx->rc4_db = 256;
         ctx->rc4_mod = 9;
+        // The keystream below is built from a key id, not from state->R, so the resolved id has to
+        // survive past the activation: state->R is only a fallback inside the RC4 builder and is
+        // ignored outright by the AES one.
+        uint16_t effective_kid = ctx->key_id;
         if (state->keyloader == 1) {
             int mapped = 0;
             const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
                                                           (uint8_t)ctx->key_id, &mapped);
             if (mapped) {
                 keyring_activate_slot_with_kid(state, 0, (int)kid);
+                effective_kid = kid;
             } else if (ctx->target_id != 0U && ctx->target_id < 0x1FFFFU && state->rkey_array[ctx->target_id] != 0) {
                 // Pre-existing implicit "key indexed by talkgroup" replay convention. Kept as the
                 // fallback so replay workflows that depend on it are unchanged when no row matches.
@@ -1592,34 +1606,18 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
             iv64[6] = (uint8_t)((state->payload_mi >> 8ULL) & 0xFFULL);
             iv64[7] = (uint8_t)((state->payload_mi >> 0ULL) & 0xFFULL);
             ctx->ks_available =
-                (uint8_t)sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, ctx->key_id, iv64, ctx->rc4_db,
+                (uint8_t)sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, effective_kid, iv64, ctx->rc4_db,
                                                              ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
+            // This path owns ctx->ks on every token once an MI is known, and it uses its own
+            // payload_mi-derived IV. Recording the id it used keeps the map's rebuild below from
+            // overwriting this keystream with one built from the raw "encryption_mi" bytes.
+            ctx->ks_key_id = effective_kid;
         }
         return;
     }
 
     if (state->M == 1) {
         sdrtrunk_json_apply_forced_basic_privacy(state, ctx);
-    }
-}
-
-// JSON object field order is not a contract: ctx->target_id is set only by the "to" token, so a
-// map lookup taken on the "encryption_mi" token alone sees it whenever "encryption_mi" happens
-// to precede "to" in the source. Like sdrtrunk_json_apply_forced_algid()'s own fallback, this
-// runs on every token and self-corrects once target_id is known, so the map applies regardless
-// of which field the exporter wrote first. Only the mapped case writes here -- an unmapped
-// target (map absent, or target not yet known) leaves whatever the OTA-signaled activation
-// already set alone, so repeated calls can never clobber it.
-static void
-sdrtrunk_json_apply_dmr_tg_key_map(dsd_state* state, const sdrtrunk_json_context* ctx) {
-    if (state->keyloader != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
-        return;
-    }
-    int mapped = 0;
-    const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                  (uint8_t)ctx->key_id, &mapped);
-    if (mapped) {
-        keyring_activate_slot_with_kid(state, 0, (int)kid);
     }
 }
 
@@ -1798,28 +1796,62 @@ sdrtrunk_json_extract_iv(const char* value, char iv_str[20]) {
     dsd_strncpy_s(iv_str, 20U, value, iv_len);
 }
 
+// key_id is the id that will actually decrypt, which is not always the signaled ctx->key_id: the
+// builders index rkey_array by key id and only consult state->R as a fallback, and the AES builder
+// never reads state->R at all -- so activating a mapped key without threading its id through here
+// leaves replay audio decrypting with the signaled key.
 static uint8_t
 sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdrtrunk_json_context* ctx,
-                               const char* iv_str) {
-    uint8_t iv64[8];
-    DSD_MEMSET(iv64, 0, sizeof(iv64));
-    (void)parse_raw_user_string(iv_str, iv64, sizeof(iv64));
+                               uint16_t key_id) {
     if (ctx->is_enc != 1) {
         return 0;
     }
 
+    ctx->ks_key_id = key_id;
     uint8_t ks_available = (uint8_t)sdrtrunk_build_voice_keystream_bits(
-        state, ctx->alg_id, ctx->key_id, iv64, ctx->rc4_db, ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
+        state, ctx->alg_id, key_id, ctx->mi_iv, ctx->rc4_db, ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
     if (ctx->protocol == 1 && ctx->version == 1 && ks_available) {
         uint8_t iv_prev[8];
-        DSD_MEMCPY(iv_prev, iv64, sizeof(iv_prev));
+        DSD_MEMCPY(iv_prev, ctx->mi_iv, sizeof(iv_prev));
         reverse_lfsr_64_to_len(opts, iv_prev, 64);
-        if (!sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, ctx->key_id, iv_prev, ctx->rc4_db, ctx->rc4_mod,
+        if (!sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, key_id, iv_prev, ctx->rc4_db, ctx->rc4_mod,
                                                  ctx->protocol, ctx->ks_i, sizeof(ctx->ks_i))) {
             DSD_MEMCPY(ctx->ks_i, ctx->ks, sizeof(ctx->ks_i));
         }
     }
     return ks_available;
+}
+
+// JSON object field order is not a contract: ctx->target_id is set only by the "to" token, so a
+// map lookup taken on the "encryption_mi" token alone sees it whenever "encryption_mi" happens
+// to precede "to" in the source. Like sdrtrunk_json_apply_forced_algid()'s own fallback, this
+// runs on every token and self-corrects once target_id is known, so the map applies regardless
+// of which field the exporter wrote first. Only the mapped case writes here -- an unmapped
+// target (map absent, or target not yet known) leaves whatever the OTA-signaled activation
+// already set alone, so repeated calls can never clobber it.
+static void
+sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (state->keyloader != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
+        return;
+    }
+    int mapped = 0;
+    const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                  (uint8_t)ctx->key_id, &mapped);
+    if (!mapped) {
+        return;
+    }
+    keyring_activate_slot_with_kid(state, 0, (int)kid);
+    // Activation alone decrypts nothing: the voice path XORs ctx->ks, which is built from a key id.
+    // When "encryption_mi" preceded "to", handle_mi() built ctx->ks from the signaled id before the
+    // talkgroup was known, so rebuild it from the same IV once the row resolves. The ks_key_id test
+    // makes this purely a field-order correction: it is false when handle_mi() (or the forced-ALGID
+    // build, which owns ctx->ks and its own IV on that path) already used this key id, so the common
+    // "to" before "encryption_mi" ordering never rebuilds and this never fights either of them.
+    // ctx->ks_idx is deliberately left alone -- frames already consumed are unrecoverable, and the
+    // keystream position stays continuous for the ones that follow.
+    if (ctx->mi_seen != 0U && ctx->ks_key_id != (uint16_t)kid) {
+        ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, kid);
+    }
 }
 
 static void
@@ -1871,25 +1903,31 @@ sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* toke
         DSD_FPRINTF(stderr, "\n IV: %016llX;", iv_hex);
     }
 
+    DSD_MEMSET(ctx->mi_iv, 0, sizeof(ctx->mi_iv));
+    (void)parse_raw_user_string(iv_str, ctx->mi_iv, sizeof(ctx->mi_iv));
+    ctx->mi_seen = 1;
+
     state->currentslot = 0;
     state->payload_algid = ctx->alg_id;
     state->payload_mi = iv_hex;
-    state->payload_keyid = ctx->key_id;
+    state->payload_keyid = ctx->key_id; /* OTA truth, never the override */
+    // ctx->key_id is a uint16_t and P25 signals a full 16-bit KID (this handler also serves
+    // P25 replay): keep the full width by default and narrow only inside the DMR branch,
+    // where the resolver's uint8_t key id matches DMR's byte-wide key id space. Narrowing
+    // unconditionally would activate the wrong rkey_array index for any P25 key id above
+    // 0xFF -- this file's own P25 fixtures use 4660 and 8738.
+    // keyring_dmr_effective_kid() is a no-op when the keyring is not loaded, so it is safe to
+    // resolve unconditionally and use the result for the keystream even when nothing activates.
+    uint16_t effective_kid = ctx->key_id;
+    if (DSD_SYNC_IS_DMR(state->synctype)) {
+        effective_kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                  (uint8_t)ctx->key_id, NULL);
+    }
     if (state->keyloader == 1) {
-        // ctx->key_id is a uint16_t and P25 signals a full 16-bit KID (this handler also serves
-        // P25 replay): keep the full width by default and narrow only inside the DMR branch,
-        // where the resolver's uint8_t key id matches DMR's byte-wide key id space. Narrowing
-        // unconditionally would activate the wrong rkey_array index for any P25 key id above
-        // 0xFF -- this file's own P25 fixtures use 4660 and 8738.
-        int kid = (int)ctx->key_id;
-        if (DSD_SYNC_IS_DMR(state->synctype)) {
-            kid = (int)keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                 (uint8_t)ctx->key_id, NULL);
-        }
-        keyring_activate_slot_with_kid(state, 0, kid);
+        keyring_activate_slot_with_kid(state, 0, (int)effective_kid);
     }
 
-    ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, iv_str);
+    ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, effective_kid);
     sdrtrunk_json_classify_p25_crypto(state, ctx);
     sdrtrunk_json_log_keystream_ready(opts, ctx->ks_available, ctx->alg_id);
     ctx->ks_idx = 0;
@@ -2017,7 +2055,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
     sdrtrunk_json_apply_forced_algid(state, ctx);
-    sdrtrunk_json_apply_dmr_tg_key_map(state, ctx);
+    sdrtrunk_json_apply_dmr_tg_key_map(opts, state, ctx);
     (void)sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);

@@ -666,61 +666,248 @@ test_sdrtrunk_json_encryption_metadata_updates_payload_state(void) {
 // --dmr-tg-key-csv was a complete no-op for sdrtrunk JSON replay: that path activated keys
 // directly and never reached the voice-frame prep where the map used to be applied.
 //
+// state->R is the wrong thing to assert on here, and asserting on it is what let the AES sub-case
+// stay silently inert: the replay keystream builders index rkey_array by *key id* and consult
+// state->R only as a fallback when that index is empty, and sdrtrunk_build_aes_keystream_bytes()
+// never reads state->R at all. What actually decrypts is ctx->ks, which ambe2_str_to_decode()
+// XORs into each voice frame before saveAmbe2450Data() writes it -- so these cases pin the MBE
+// records the replay produced.
+//
+// Each JSON record is replayed three times: once with the map (signaled key id 0x03, row
+// TG 123 -> 0x7B), once with 0x7B signaled directly and no map (the bytes the mapped run must
+// reproduce), and once with 0x03 signaled and no map (the bytes it must not). The third run is
+// what makes the second load-bearing: a builder that ignored the key id entirely would satisfy
+// the equality alone.
+//
 // JSON object field order is not a contract, and the neighbouring P25 fixtures in this file
 // (and the DMR late-entry fixture below) all put "encryption_mi" ahead of "to"/"from" --
-// sdrtrunk_json_handle_mi() alone would see ctx->target_id still 0 in that order and never
-// find the map row. sdrtrunk_json_apply_dmr_tg_key_map() runs on every token and self-corrects
-// once target_id is known, the same way sdrtrunk_json_apply_forced_algid()'s own fallback
-// already does, so both field orders must reach the same activated key -- that is what the two
-// cases below pin.
+// sdrtrunk_json_handle_mi() alone would see ctx->target_id still 0 in that order and build the
+// keystream from the signaled key id. sdrtrunk_json_apply_dmr_tg_key_map() runs on every token
+// and rebuilds it once target_id is known, the same way sdrtrunk_json_apply_forced_algid()'s own
+// fallback already re-activates, so both field orders must reach the same records.
+enum {
+    SDRTRUNK_MAP_SIGNALED_KID = 0x03,
+    SDRTRUNK_MAP_MAPPED_KID = 0x7B,
+    SDRTRUNK_MAP_TG = 123,
+    SDRTRUNK_MAP_RECORD_CAP = 128,
+};
+
+// Distinguishable material at both key ids, on every segment the builders read. rkey_array[kid]
+// doubles as the RC4/DES scalar and as the AES A1 segment, exactly as
+// keyring_activate_slot_with_kid() treats it; the remaining three offsets are AES-only, and
+// AES-256 is the only algorithm that reaches the last two.
+static void
+seed_sdrtrunk_dmr_replay_keys(dsd_state* state) {
+    static const unsigned long long int material[2][4] = {
+        {0xA1A2A3A4A5ULL, 0xA6A7A8A9AAABACADULL, 0xAEAFB0B1B2B3B4B5ULL, 0xB6B7B8B9BABBBCBDULL},
+        {0xC1C2C3C4C5ULL, 0xC6C7C8C9CACBCCCDULL, 0xCECFD0D1D2D3D4D5ULL, 0xD6D7D8D9DADBDCDDULL},
+    };
+    static const int segment_offset[4] = {0x000, 0x101, 0x201, 0x301};
+    static const int kids[2] = {SDRTRUNK_MAP_SIGNALED_KID, SDRTRUNK_MAP_MAPPED_KID};
+
+    state->keyloader = 1;
+    for (size_t k = 0; k < 2U; k++) {
+        for (size_t s = 0; s < 4U; s++) {
+            const int index = kids[k] + segment_offset[s];
+            state->rkey_array[index] = material[k][s];
+            state->rkey_array_loaded[index] = 1U;
+        }
+    }
+}
+
+static int
+capture_sdrtrunk_replay_records(const char* tag, const char* json, dsd_state* state, unsigned char* out, size_t out_cap,
+                                size_t* out_len) {
+    int rc = 0;
+    static dsd_opts opts;
+    static Event_History_I history[2];
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(history, 0, sizeof history);
+    DSD_MEMSET(out, 0, out_cap);
+    *out_len = 0;
+    opts.playfiles = 1;
+    opts.floating_point = 1;
+    state->event_history_s = history;
+
+    FILE* f = tmpfile();
+    if (!f) {
+        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    opts.mbe_out_f = f;
+    rc |= run_sdrtrunk_json(json, &opts, state);
+    rc |= expect_int(tag, fflush(f), 0);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        DSD_FPRINTF(stderr, "fseek(%s) failed\n", tag);
+        rc = 1;
+    }
+    clearerr(f);
+    *out_len = fread(out, 1, out_cap, f);
+    if (ferror(f)) {
+        DSD_FPRINTF(stderr, "fread(%s) failed\n", tag);
+        rc = 1;
+    }
+    fclose(f);
+    opts.mbe_out_f = NULL;
+    return rc;
+}
+
+// Three all-zero AMBE frames follow the metadata: the decoded record body is then purely a
+// function of the keystream window each frame consumed, so a wrong key changes every byte after
+// the error count. addr_before/addr_after place "to"/"from" on either side of the crypto fields
+// without changing anything else about the record.
+static void
+build_sdrtrunk_map_json(char* out, size_t cap, const char* addr_before, const char* addr_after, unsigned alg_id,
+                        unsigned key_id) {
+    DSD_SNPRINTF(out, cap,
+                 "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",%s\"encrypted\":\"true\","
+                 "\"encryption_algorithm\":\"%u\",\"encryption_key_id\":\"%u\","
+                 "\"encryption_mi\":\"001122334455667788\",%s\"time\":\"1700000000000\","
+                 "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}",
+                 addr_before, alg_id, key_id, addr_after);
+}
+
 static int
 test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid(void) {
     int rc = 0;
 
     struct {
         const char* label;
-        const char* json;
-    } cases[] = {
-        {"encryption_mi before to/from",
-         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
-         "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
-         "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\","
-         "\"time\":\"1700000000000\"}"},
-        {"to/from before encryption_mi",
-         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"to\":\"123\",\"from\":\"456\","
-         "\"encrypted\":\"true\",\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
-         "\"encryption_mi\":\"001122334455667788\",\"time\":\"1700000000000\"}"},
+        const char* addr_before;
+        const char* addr_after;
+    } orders[] = {
+        {"encryption_mi before to/from", "", "\"to\":\"123\",\"from\":\"456\","},
+        {"to/from before encryption_mi", "\"to\":\"123\",\"from\":\"456\",", ""},
     };
 
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        static dsd_opts opts;
-        static dsd_state state;
-        static Event_History_I history[2];
-        char tag[96];
+    struct {
+        const char* name;
+        unsigned alg_id;
+    } algs[] = {
+        {"rc4", 0x21U},
+        {"aes128", 0x89U},
+        {"aes256", 0x84U},
+    };
 
-        DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&state, 0, sizeof state);
-        DSD_MEMSET(history, 0, sizeof history);
-        opts.playfiles = 1;
-        state.event_history_s = history;
+    for (size_t o = 0; o < sizeof orders / sizeof orders[0]; o++) {
+        for (size_t a = 0; a < sizeof algs / sizeof algs[0]; a++) {
+            static dsd_state state;
+            unsigned char mapped[SDRTRUNK_MAP_RECORD_CAP];
+            unsigned char want[SDRTRUNK_MAP_RECORD_CAP];
+            unsigned char signaled[SDRTRUNK_MAP_RECORD_CAP];
+            size_t mapped_len = 0;
+            size_t want_len = 0;
+            size_t signaled_len = 0;
+            char json[512];
+            char tag[128];
 
-        state.keyloader = 1;
-        state.rkey_array[0x03] = 0xAAAAAULL;
-        state.rkey_array_loaded[0x03] = 1U;
-        state.rkey_array[0x7B] = 0xBBBBBULL;
-        state.rkey_array_loaded[0x7B] = 1U;
-        state.dmr_tg_key_map_tg[0] = 123U;
-        state.dmr_tg_key_map_kid[0] = 0x7B;
-        state.dmr_tg_key_map_count = 1;
+            // Mapped: the record signals 0x03, the map points TG 123 at 0x7B.
+            build_sdrtrunk_map_json(json, sizeof json, orders[o].addr_before, orders[o].addr_after, algs[a].alg_id,
+                                    (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+            DSD_MEMSET(&state, 0, sizeof state);
+            seed_sdrtrunk_dmr_replay_keys(&state);
+            state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+            state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+            state.dmr_tg_key_map_count = 1;
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map replay %s (%s)", algs[a].name, orders[o].label);
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, mapped, sizeof mapped, &mapped_len);
+            // The OTA key id stays the truth in state, as it does on every other path.
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk ota key id untouched %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_int(tag, state.payload_keyid, SDRTRUNK_MAP_SIGNALED_KID);
+            dsd_state_ext_free_all(&state);
 
-        rc |= run_sdrtrunk_json(cases[i].json, &opts, &state);
-        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map key applied (%s)", cases[i].label);
-        rc |= expect_u64(tag, state.R, 0xBBBBBULL);
-        // The OTA key id stays the truth in state, as it does on every other path.
-        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk ota key id untouched (%s)", cases[i].label);
-        rc |= expect_int(tag, state.payload_keyid, 0x03);
-        dsd_state_ext_free_all(&state);
+            // Reference: 0x7B signaled directly, no map row.
+            build_sdrtrunk_map_json(json, sizeof json, orders[o].addr_before, orders[o].addr_after, algs[a].alg_id,
+                                    (unsigned)SDRTRUNK_MAP_MAPPED_KID);
+            DSD_MEMSET(&state, 0, sizeof state);
+            seed_sdrtrunk_dmr_replay_keys(&state);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk mapped-key reference %s (%s)", algs[a].name, orders[o].label);
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, want, sizeof want, &want_len);
+            dsd_state_ext_free_all(&state);
+
+            // Decoy: 0x03 signaled, no map row -- what the map must move the output away from.
+            build_sdrtrunk_map_json(json, sizeof json, orders[o].addr_before, orders[o].addr_after, algs[a].alg_id,
+                                    (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+            DSD_MEMSET(&state, 0, sizeof state);
+            seed_sdrtrunk_dmr_replay_keys(&state);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk signaled-key decoy %s (%s)", algs[a].name, orders[o].label);
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, signaled, sizeof signaled, &signaled_len);
+            dsd_state_ext_free_all(&state);
+
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map replay wrote records %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_true(tag, mapped_len >= 24U && want_len == mapped_len && signaled_len == mapped_len);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map keyed the keystream %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_u8_bits(tag, mapped, want, mapped_len < want_len ? mapped_len : want_len);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk keys are distinguishable %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_true(tag, mapped_len != signaled_len || memcmp(mapped, signaled, mapped_len) != 0);
+        }
     }
+    return rc;
+}
+
+// sdrtrunk_json_apply_forced_algid() builds its own RC4 keystream from a payload_mi-derived IV,
+// on every token, and that build wins over the one sdrtrunk_json_handle_mi() made -- so the
+// resolved key id has to reach it too. With --dmr-force-algid set (state.M) and no
+// "encryption_algorithm" field, this is the only build that runs, which is what keeps this
+// fixture pointed at that one call site instead of at handle_mi's.
+//
+// The talkgroup is 4567 rather than 123 on purpose: 123 == 0x7B is also the mapped key id, so
+// this branch's implicit rkey_array[target_id] fallback would collide with the map's own index
+// and mask which of the two produced the keystream. rkey_array[4567] is left empty so the
+// fallback cannot fire at all here.
+static int
+test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream(void) {
+    int rc = 0;
+    static const char json_signaled_kid[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_key_id\":\"3\",\"encryption_mi\":\"001122334455667788\","
+        "\"to\":\"4567\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    static const char json_mapped_kid[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_key_id\":\"123\",\"encryption_mi\":\"001122334455667788\","
+        "\"to\":\"4567\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    static dsd_state state;
+    unsigned char mapped[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char want[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char signaled[SDRTRUNK_MAP_RECORD_CAP];
+    size_t mapped_len = 0;
+    size_t want_len = 0;
+    size_t signaled_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    state.dmr_tg_key_map_tg[0] = 4567U;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced-algid map replay", json_signaled_kid, &state, mapped,
+                                          sizeof mapped, &mapped_len);
+    rc |= expect_int("sdrtrunk forced-algid ota key id untouched", state.payload_keyid, SDRTRUNK_MAP_SIGNALED_KID);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced-algid mapped-key reference", json_mapped_kid, &state, want,
+                                          sizeof want, &want_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced-algid signaled-key decoy", json_signaled_kid, &state,
+                                          signaled, sizeof signaled, &signaled_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk forced-algid replay wrote records",
+                      mapped_len >= 24U && want_len == mapped_len && signaled_len == mapped_len);
+    rc |= expect_u8_bits("sdrtrunk forced-algid map keyed the keystream", mapped, want,
+                         mapped_len < want_len ? mapped_len : want_len);
+    rc |= expect_true("sdrtrunk forced-algid keys are distinguishable",
+                      mapped_len != signaled_len || memcmp(mapped, signaled, mapped_len) != 0);
     return rc;
 }
 
@@ -2001,6 +2188,7 @@ main(void) {
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
+    rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
