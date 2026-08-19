@@ -1914,12 +1914,79 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     dsd_state_ext_free_all(&state);
 }
 
-// A mapped talkgroup whose signaled key id has nothing imported, but whose mapped key id does,
-// must classify as decryptable. Before the effective-KID seam this classified as encrypted and
-// --enc-lockout could synthesize a P_CLEAR and retune away from a call the map decrypts fine --
-// which cannot self-heal once the channel is dropped.
+#define MAPPED_TG_TARGET       123U
+#define MAPPED_TG_SOURCE       4567U
+#define MAPPED_TG_KID          0x7B
+#define MAPPED_TG_SIGNALED_KID 0x03
+
+typedef struct {
+    uint8_t slot;         /* 0 drives payload_algid/keyid/R; 1 drives the ...R twins */
+    int install_map_row;  /* whether a --dmr-tg-key-csv row exists at all */
+    uint32_t map_tg;      /* 0 -> the row names MAPPED_TG_TARGET (a hit); else a deliberate miss */
+    int kirisun;          /* non-zero: ALG 0x36, whose verdict is the four-segment quartet */
+    int decoy_other_slot; /* seed decrypting material on the companion slot -- see below */
+} mapped_tg_fixture;
+
+// An encrypted group call on TG 123 whose signaled key id has nothing imported behind it and
+// whose mapped key id does. The slot itself carries no usable material either way -- no R/RR, no
+// quartet -- so a decryptable verdict can only come from resolving the map.
 static void
-test_mapped_tg_classifies_decryptable(void) {
+seed_mapped_tg_state(dsd_state* state, const mapped_tg_fixture* fx) {
+    static const int kAesOffsets[4] = {0x000, 0x101, 0x201, 0x301};
+
+    state->currentslot = fx->slot;
+    state->keyloader = 1;
+    if (fx->slot == 0U) {
+        state->payload_algid = fx->kirisun ? 0x36 : 0x21; /* RC4 keys off the scalar */
+        state->payload_keyid = MAPPED_TG_SIGNALED_KID;
+    } else {
+        state->payload_algidR = fx->kirisun ? 0x36 : 0x21;
+        state->payload_keyidR = MAPPED_TG_SIGNALED_KID;
+    }
+
+    if (fx->kirisun) {
+        // A complete quartet behind the mapped key id only. The slot's own aes_key_segments and
+        // A1..A4 stay zero, so dsd_dmr_kirisun_slot_key_complete() reports 0 for it until the
+        // voice path activates this key -- which is exactly the window the lockout acts in.
+        for (int i = 0; i < 4; i++) {
+            state->rkey_array[MAPPED_TG_KID + kAesOffsets[i]] = 0xC0FFEE00ULL + (unsigned long long)i;
+            state->rkey_array_loaded[MAPPED_TG_KID + kAesOffsets[i]] = 1U;
+        }
+    } else {
+        state->rkey_array[MAPPED_TG_KID] = 0xBBBBBULL;
+        state->rkey_array_loaded[MAPPED_TG_KID] = 1U;
+    }
+
+    if (fx->decoy_other_slot) {
+        // Decrypting material on the COMPANION slot, never on fx->slot. Without this the two slots
+        // hold identical (empty) material and a resolution that read the wrong one would be
+        // invisible -- which is exactly what a mutation to slot-0-only reads proved. With it, any
+        // site that reads R instead of RR, aes_key_loaded[0] instead of [1], or the wrong slot's
+        // quartet turns a deliberate map miss into a false "decryptable" and fails.
+        const int other = fx->slot == 0U ? 1 : 0;
+        if (other == 0) {
+            state->R = 0xDEC0DEULL;
+        } else {
+            state->RR = 0xDEC0DEULL;
+        }
+        state->aes_key_loaded[other] = 1;
+        state->aes_key_segments[other] = 4U;
+        state->A1[other] = 0xA1ULL;
+        state->A2[other] = 0xA2ULL;
+        state->A3[other] = 0xA3ULL;
+        state->A4[other] = 0xA4ULL;
+    }
+
+    if (fx->install_map_row) {
+        state->dmr_tg_key_map_tg[0] = fx->map_tg != 0U ? fx->map_tg : MAPPED_TG_TARGET;
+        state->dmr_tg_key_map_kid[0] = MAPPED_TG_KID;
+        state->dmr_tg_key_map_count = 1;
+    }
+}
+
+static void
+assert_mapped_tg_classification(const mapped_tg_fixture* fx, dsd_call_crypto_state want_crypto,
+                                uint8_t want_audio_permitted) {
     static dsd_opts opts;
     static dsd_state state;
     dsd_call_snapshot call;
@@ -1928,55 +1995,62 @@ test_mapped_tg_classifies_decryptable(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
-    state.keyloader = 1;
-    state.payload_algid = 0x21; /* RC4: keys off the scalar */
-    state.payload_keyid = 0x03; /* signaled id, deliberately not imported */
-    state.rkey_array[0x7B] = 0xBBBBBULL;
-    state.rkey_array_loaded[0x7B] = 1U;
-    state.dmr_tg_key_map_tg[0] = 123U;
-    state.dmr_tg_key_map_kid[0] = 0x7B;
-    state.dmr_tg_key_map_count = 1;
+    seed_mapped_tg_state(&state, fx);
 
     /* FLCO 0x00 is group voice; SO bit 0x40 is the privacy bit. */
-    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 123U, 4567U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, MAPPED_TG_TARGET, MAPPED_TG_SOURCE);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
 
     assert(irr == 0U);
-    assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
-    assert(call.audio_permitted == 1U);
+    assert(dsd_call_state_get(&state, fx->slot, &call) > 0);
+    assert(call.crypto == want_crypto);
+    assert(call.audio_permitted == want_audio_permitted);
     /* The published key id is still the OTA one, never the override. */
-    assert(call.kid == 0x03);
-    dsd_state_ext_free_all(&state);
-
-    // Only a real map hit may change the classification: the identical call with the row naming
-    // a different talkgroup still resolves from the slot's own key material and stays encrypted.
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.keyloader = 1;
-    state.payload_algid = 0x21;
-    state.payload_keyid = 0x03;
-    state.rkey_array[0x7B] = 0xBBBBBULL;
-    state.rkey_array_loaded[0x7B] = 1U;
-    state.dmr_tg_key_map_tg[0] = 456U;
-    state.dmr_tg_key_map_kid[0] = 0x7B;
-    state.dmr_tg_key_map_count = 1;
-
-    irr = 0;
-    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 123U, 4567U);
-    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
-
-    assert(irr == 0U);
-    assert(dsd_call_state_get(&state, 0U, &call) > 0);
-    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
-    assert(call.audio_permitted == 0U);
+    assert(call.kid == MAPPED_TG_SIGNALED_KID);
     dsd_state_ext_free_all(&state);
 }
 
-// Drives a corroborated encrypted group voice header on TG 123 whose signaled key id (0x03) has
-// nothing imported, with the --dmr-tg-key-csv row for that talkgroup either installed or absent,
-// and reports whether the lockout ledger armed.
+// A mapped talkgroup whose signaled key id has nothing imported, but whose mapped key id does,
+// must classify as decryptable. Before the effective-KID seam this classified as encrypted and
+// --enc-lockout could synthesize a P_CLEAR and retune away from a call the map decrypts fine --
+// which cannot self-heal once the channel is dropped.
+static void
+test_mapped_tg_classifies_decryptable(void) {
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1}, DSD_CALL_CRYPTO_DECRYPTABLE,
+                                    1U);
+    // Slot 1 drives payload_algidR / payload_keyidR / state->RR -- the branch of all three changed
+    // sites that no other test reaches, and the one that drops channels when it is wrong.
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1}, DSD_CALL_CRYPTO_DECRYPTABLE,
+                                    1U);
+    // Kirisun 0x36 decides on the four-segment quartet rather than on R/aes_loaded, and activation
+    // overwrites that quartet per slot -- so the mapped key id's quartet, not the slot's empty one,
+    // has to decide here too.
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .kirisun = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .kirisun = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+
+    // Only a real map hit may change the classification: a row naming a different talkgroup still
+    // resolves from the slot's own key material and stays encrypted. The companion slot is loaded
+    // with material that would decrypt, so these also pin that the resolution reads *this* slot.
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .map_tg = 456U, .kirisun = 1, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .map_tg = 456U, .kirisun = 1, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+}
+
+// Drives a corroborated encrypted group voice header through the real lockout gate and reports
+// whether the ledger armed.
 static int
-run_mapped_tg_lockout_probe(int install_map_row) {
+run_mapped_tg_lockout_probe(const mapped_tg_fixture* fx) {
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I history[2];
@@ -1991,43 +2065,51 @@ run_mapped_tg_lockout_probe(int install_map_row) {
     state.event_history_s = history;
     opts.trunk_enable = 1;
     opts.trunk_tune_enc_calls = 0;
-    state.currentslot = 0;
-    state.keyloader = 1;
-    state.payload_algid = 0x21;
-    state.payload_keyid = 0x03;
-    state.rkey_array[0x7B] = 0xBBBBBULL;
-    state.rkey_array_loaded[0x7B] = 1U;
-    if (install_map_row) {
-        state.dmr_tg_key_map_tg[0] = 123U;
-        state.dmr_tg_key_map_kid[0] = 0x7B;
-        state.dmr_tg_key_map_count = 1;
-    }
+    seed_mapped_tg_state(&state, fx);
 
     // The lockout is quarantined behind hysteresis: a lone corrupt LC must not arm it. Two
     // corroborating observations establish the encrypted class -- see tests/protocol/dmr/
     // test_dmr_enc_class.c:39-46 for the same sequence.
-    (void)dmr_enc_class_observe(&state, 0U, 0x40U, 0);
-    (void)dmr_enc_class_observe(&state, 0U, 0x40U, 0);
-    assert(dmr_enc_class_established_enc(&state, 0U) == 1);
+    (void)dmr_enc_class_observe(&state, fx->slot, 0x40U, 0);
+    (void)dmr_enc_class_observe(&state, fx->slot, 0x40U, 0);
+    assert(dmr_enc_class_established_enc(&state, fx->slot) == 1);
 
-    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 123U, 4567U);
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, MAPPED_TG_TARGET, MAPPED_TG_SOURCE);
     dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
     assert(irr == 0U);
 
-    const int locked = dsd_enc_lockout_entry_active(&state, 123U, 1);
+    const int locked = dsd_enc_lockout_entry_active(&state, MAPPED_TG_TARGET, 1);
     dsd_state_ext_free_all(&state);
     return locked;
 }
 
 // The same call must never reach the lockout ledger. dmr_flco_slot_can_decrypt() gates
 // dmr_flco_arm_enc_lockout(), which synthesizes a P_CLEAR and drops the channel.
+//
+// Every "not locked" assertion is preceded by its own positive control -- the identical fixture
+// with no map row, which does arm -- so a 0 can never be a lockout path the fixture failed to
+// reach.
+// Each control also carries decrypting material on the *companion* slot, so it fails both ways: 0
+// means the arm path was never reached, and a gate that read the wrong slot would see the decoy,
+// decide it can decrypt, and also fail to arm.
 static void
 test_mapped_tg_is_not_locked_out(void) {
-    // Positive control first: without the map row this exact fixture does arm the ledger, so the
-    // 0 below is the map's doing rather than a lockout path the fixture never reached.
-    assert(run_mapped_tg_lockout_probe(0) == 1);
-    // Nothing was locked out, so nothing forces a release.
-    assert(run_mapped_tg_lockout_probe(1) == 0);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1}) == 0);
+
+    // Slot 1 gates on payload_algidR / state->RR and drops the channel just as hard.
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1}) == 0);
+
+    // Kirisun 0x36: dsd_dmr_voice_kid_can_decrypt() answered this family from the slot's own
+    // quartet regardless of the key material handed to it, so a mapped talkgroup whose mapped key
+    // id holds a complete quartet the slot does not yet carry was still locked out and still had a
+    // synthesized P_CLEAR drop the channel. mbe_prepare_frame_state() activates the mapped key id
+    // for 0x36/0x37 like any other, so that quartet was always going to arrive.
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .kirisun = 1, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .kirisun = 1}) == 0);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .kirisun = 1, .decoy_other_slot = 1}) == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .kirisun = 1}) == 0);
 }
 
 static void

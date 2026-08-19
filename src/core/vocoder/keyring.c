@@ -62,6 +62,29 @@ keyring_rkey_value(const dsd_state* state, int index) {
     return keyring_rkey_index_valid(state, index) ? state->rkey_array[index] : 0ULL;
 }
 
+int
+keyring_kid_kirisun_complete(const dsd_state* state, int key_id) {
+    if (state == NULL) {
+        return 0;
+    }
+    // Deliberately built from the same two primitives keyring_activate_slot_with_kid() uses, in
+    // the same order, rather than from an independently derived rule: this predicts what
+    // dsd_dmr_kirisun_slot_key_complete() will report *after* that activation runs, and the two
+    // can only stay in agreement if they read the same functions.
+    //
+    // keyring_aes_segments_complete(state, key_id, 4) is NOT this predicate -- it accepts an index
+    // that is rkey_array_loaded but zero-valued, which activates as A_i == 0 and is incomplete.
+    if (keyring_aes_segment_count(state, key_id) != 4U) {
+        return 0;
+    }
+    for (size_t i = 0; i < 4U; i++) {
+        if (keyring_rkey_value(state, key_id + k_aes_segment_offsets[i]) == 0ULL) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 void
 keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
     if (state == NULL || slot < 0 || slot > 1) {

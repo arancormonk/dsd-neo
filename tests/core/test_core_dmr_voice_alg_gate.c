@@ -145,20 +145,39 @@ main(void) {
     state.aes_key_loaded[0] = 0;
 
     // AES-128 (0x24) keys off aes_loaded, not the scalar.
-    rc |= expect_eq("kid-aes-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 1), 1);
-    rc |= expect_eq("kid-aes-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 0), 0);
+    rc |= expect_eq("kid-aes-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 1, 0), 1);
+    rc |= expect_eq("kid-aes-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 0, 1), 0);
 
     // RC4 (0x21) keys off the scalar, not aes_loaded.
-    rc |= expect_eq("kid-rc4-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0x1234ULL, 0), 1);
-    rc |= expect_eq("kid-rc4-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0ULL, 1), 0);
+    rc |= expect_eq("kid-rc4-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0x1234ULL, 0, 0), 1);
+    rc |= expect_eq("kid-rc4-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0ULL, 1, 1), 0);
 
     // The slot wrapper still reads the slot's own activated flag.
     state.aes_key_loaded[0] = 1;
     rc |= expect_eq("slot-wrapper-aes", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x24, 0ULL), 1);
 
-    // Kirisun 0x36/0x37 completeness is per-slot state that no prospective key id can change,
-    // so both entry points agree and both ignore the supplied aes_loaded.
-    rc |= expect_eq("kid-kirisun", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, 0ULL, 1), 0);
+    // Kirisun 0x36/0x37 keys off the supplied quartet verdict, not the slot's. Activation
+    // overwrites aes_key_segments[]/A1..A4[] for these ALG IDs too, so a prospective key id does
+    // change completeness -- the slot here has no quartet at all, and the supplied verdict wins
+    // in both directions.
+    rc |= expect_eq("kid-kirisun-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, 0ULL, 1, 1), 1);
+    rc |= expect_eq("kid-kirisun-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, 0ULL, 1, 0), 0);
+    rc |= expect_eq("kid-kirisun37-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, 0ULL, 0, 1), 1);
+    // ...and the slot wrapper keeps reading the slot's own quartet, which is still absent.
+    rc |= expect_eq("slot-wrapper-kirisun", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x36, 0ULL), 0);
+
+    // The exported slot predicate is the one the wrapper uses: all four segments, all non-zero.
+    rc |= expect_eq("slot-kirisun-empty", dsd_dmr_kirisun_slot_key_complete(&state, 0), 0);
+    state.aes_key_segments[0] = 4U;
+    state.A1[0] = 1ULL;
+    state.A2[0] = 2ULL;
+    state.A3[0] = 3ULL;
+    state.A4[0] = 0ULL;
+    rc |= expect_eq("slot-kirisun-zero-segment", dsd_dmr_kirisun_slot_key_complete(&state, 0), 0);
+    state.A4[0] = 4ULL;
+    rc |= expect_eq("slot-kirisun-complete", dsd_dmr_kirisun_slot_key_complete(&state, 0), 1);
+    state.aes_key_segments[0] = 3U;
+    rc |= expect_eq("slot-kirisun-short-count", dsd_dmr_kirisun_slot_key_complete(&state, 0), 0);
 
     if (rc == 0) {
         printf("CORE_DMR_VOICE_ALG_GATE: OK\n");

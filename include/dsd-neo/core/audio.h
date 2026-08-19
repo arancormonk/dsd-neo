@@ -201,16 +201,29 @@ int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_l
 int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
 
 /**
+ * @brief Return 1 when the slot carries a complete Kirisun (ALG 0x36/0x37) key.
+ *
+ * Requires all four AES segments present and strictly non-zero. Exposed so classification can
+ * compare the slot's installed key against a prospective one -- see
+ * keyring_kid_kirisun_complete(), which predicts this for a key ID that has not been activated.
+ */
+int dsd_dmr_kirisun_slot_key_complete(const dsd_state* state, int slot);
+
+/**
  * @brief Decryptability check against key material the caller supplies.
  *
- * Same rules as dsd_dmr_voice_slot_can_decrypt(), but the AES-loaded flag is a parameter
- * rather than state->aes_key_loaded[slot], so classification can evaluate a key id that has
- * not been activated -- which is what --dmr-tg-key-csv requires at LC/PI time, before any
- * voice frame has run. Kirisun 0x36/0x37 still reads per-slot segment completeness, which no
- * prospective key id can change.
+ * Same rules as dsd_dmr_voice_slot_can_decrypt(), but every piece of key material is a parameter
+ * rather than per-slot state, so classification can evaluate a key id that has not been activated
+ * -- which is what --dmr-tg-key-csv requires at LC/PI time, before any voice frame has run.
+ *
+ * @p kirisun_complete carries the Kirisun 0x36/0x37 verdict for the same reason: activation
+ * overwrites aes_key_segments[]/A1..A4[] for those ALG IDs too, so the slot's current quartet
+ * describes the previous key, not the one this call will use. Pass
+ * dsd_dmr_kirisun_slot_key_complete() for the slot's own key, or keyring_kid_kirisun_complete()
+ * for a prospective key ID. Ignored for every other ALG ID.
  */
-int dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key,
-                                  int aes_loaded);
+int dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key, int aes_loaded,
+                                  int kirisun_complete);
 
 /**
  * @brief Slot-aware DMR/P25-style decryptability check.

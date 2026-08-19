@@ -58,6 +58,21 @@ uint8_t keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call
 int keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out_rkey, int* out_aes_loaded);
 
 /**
+ * Report whether a key ID holds a complete Kirisun (ALG 0x36/0x37) quartet.
+ *
+ * The Kirisun half of decryptability cannot be expressed as rkey/aes_loaded: it needs all four
+ * AES segments present *and* strictly non-zero. keyring_kid_material() answers the scalar half of
+ * "could this key id decrypt?"; this answers the Kirisun half, so classification and lockout can
+ * evaluate a --dmr-tg-key-csv key id before any voice frame has activated it.
+ *
+ * Predicts exactly what dsd_dmr_kirisun_slot_key_complete() reports for a slot once
+ * keyring_activate_slot_with_kid() has installed @p key_id into it.
+ *
+ * @return 1 when the key ID would activate as a complete Kirisun key.
+ */
+int keyring_kid_kirisun_complete(const dsd_state* state, int key_id);
+
+/**
  * Key ID a DMR slot should decrypt with (--dmr-tg-key-csv).
  *
  * A map row for `target` replaces the OTA-signaled key ID, but only when the mapped ID has

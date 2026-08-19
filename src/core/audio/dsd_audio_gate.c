@@ -201,8 +201,8 @@ dsd_dmr_slot_valid(int slot) {
     return slot == 0 || slot == 1;
 }
 
-static int
-dsd_dmr_kirisun_key_complete(const dsd_state* state, int slot) {
+int
+dsd_dmr_kirisun_slot_key_complete(const dsd_state* state, int slot) {
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
@@ -222,12 +222,16 @@ dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
 }
 
 int
-dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key, int aes_loaded) {
+dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key, int aes_loaded,
+                              int kirisun_complete) {
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
     if (algid == 0x36 || algid == 0x37) {
-        return dsd_dmr_kirisun_key_complete(state, slot);
+        // Supplied, not read from the slot: keyring_activate_slot_with_kid() overwrites
+        // aes_key_segments[] and A1..A4[] for these ALG IDs too, so a prospective key id does
+        // change Kirisun completeness and the caller has to say which key it means.
+        return kirisun_complete ? 1 : 0;
     }
     return dsd_dmr_voice_alg_can_decrypt(algid, r_key, aes_loaded);
 }
@@ -237,7 +241,8 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
-    return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, r_key, state->aes_key_loaded[slot]);
+    return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, r_key, state->aes_key_loaded[slot],
+                                         dsd_dmr_kirisun_slot_key_complete(state, slot));
 }
 
 int

@@ -11,6 +11,7 @@
  * payload_keyid is never rewritten (it stays the truth for logs and history).
  */
 
+#include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
@@ -534,9 +535,63 @@ test_mapped_kid_without_material_falls_back(void) {
     return rc;
 }
 
+// keyring_kid_kirisun_complete() exists to predict what dsd_dmr_kirisun_slot_key_complete() will
+// report once keyring_activate_slot_with_kid() has installed the key id -- classification runs at
+// LC/PI time, before that activation. If the two ever disagree, --enc-lockout either drops a
+// channel whose mapped key would have decrypted the call, or promises audio the voice path cannot
+// deliver.
+//
+// Exhaustive over the four AES segments x {rkey_array_loaded, value non-zero} -- 4^4 = 256
+// combinations, both slots -- because the asymmetric cases are where a plausible-looking predicate
+// breaks: keyring_aes_segment_count() returns the loaded-flag count whenever any flag is set and
+// the non-zero count otherwise, so "loaded but zero" and "unloaded but non-zero" pull the segment
+// count and the A1..A4 non-zero test in opposite directions. keyring_aes_segments_complete(.., 4)
+// accepts the loaded-but-zero case and is NOT this predicate.
+static int
+test_kirisun_kid_predicate_matches_activation(void) {
+    static dsd_state state;
+    static const int offsets[4] = {0x000, 0x101, 0x201, 0x301};
+    const int kid = 0x42;
+    int complete_seen = 0;
+    int incomplete_seen = 0;
+    int rc = 0;
+
+    for (unsigned int combo = 0; combo < 256U; combo++) {
+        for (int slot = 0; slot < 2; slot++) {
+            DSD_MEMSET(&state, 0, sizeof(state));
+            for (int seg = 0; seg < 4; seg++) {
+                const unsigned int bits = (combo >> (unsigned int)(seg * 2)) & 0x3U;
+                state.rkey_array_loaded[kid + offsets[seg]] = (unsigned char)((bits & 0x1U) != 0U ? 1U : 0U);
+                state.rkey_array[kid + offsets[seg]] =
+                    (bits & 0x2U) != 0U ? (0x1000ULL + (unsigned long long)seg) : 0ULL;
+            }
+
+            // Predict first, then activate, then read the slot back: the order the decoder runs in.
+            const int predicted = keyring_kid_kirisun_complete(&state, kid);
+            keyring_activate_slot_with_kid(&state, slot, kid);
+            const int actual = dsd_dmr_kirisun_slot_key_complete(&state, slot);
+
+            if (predicted != actual) {
+                DSD_FPRINTF(stderr, "kirisun-predicate: combo=%u slot=%d predicted %d actual %d\n", combo, slot,
+                            predicted, actual);
+                rc = 1;
+            }
+            complete_seen |= actual;
+            incomplete_seen |= !actual;
+        }
+    }
+
+    // The sweep is only proof if activation produced both verdicts; an all-zero fixture would
+    // otherwise let an always-0 predicate agree with an always-0 reading.
+    rc |= expect_eq("kirisun-predicate-saw-complete", complete_seen, 1);
+    rc |= expect_eq("kirisun-predicate-saw-incomplete", incomplete_seen, 1);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_kirisun_kid_predicate_matches_activation();
     rc |= test_lookup_hit_and_miss();
     rc |= test_mapped_tg_overrides_signaled_kid();
     rc |= test_unmapped_tg_leaves_slot_alone();

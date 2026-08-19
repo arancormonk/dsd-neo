@@ -616,6 +616,41 @@ dmr_flco_voice_protocol(const dsd_state* state) {
     return DSD_SYNC_DMR_BS_VOICE_POS;
 }
 
+typedef struct {
+    unsigned long long r_key;
+    int aes_loaded;
+    int kirisun_complete;
+} dmr_flco_key_material;
+
+// The key material that will actually decrypt this call, which is not what the slot is carrying:
+// --dmr-tg-key-csv is applied on the voice path, and that has not run yet when the LC arrives, so
+// R/aes_key_loaded/A1..A4 still describe the previous key. Only a real map hit takes the lookup,
+// so the unmapped path reports byte-for-byte the slot state it always read.
+//
+// Shared by dmr_flco_publish_crypto() (the label the operator sees) and dmr_flco_slot_can_decrypt()
+// (the gate that arms the lockout and drops the channel). Those two must never disagree -- a
+// decoder that displays "decryptable" while retuning away from the call is the bug class this
+// resolution exists to fix -- so they resolve from one place. Each caller keeps its own algid == 0
+// handling, which is the only thing that actually differed between them.
+static dmr_flco_key_material
+dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx) {
+    const uint8_t kid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
+    const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
+    int mapped = 0;
+    const uint8_t eff_kid = keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, kid, &mapped);
+
+    dmr_flco_key_material material = {
+        .r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR,
+        .aes_loaded = ctx->state->aes_key_loaded[ctx->slot],
+        .kirisun_complete = dsd_dmr_kirisun_slot_key_complete(ctx->state, (int)ctx->slot),
+    };
+    if (mapped) {
+        (void)keyring_kid_material(ctx->state, (int)eff_kid, &material.r_key, &material.aes_loaded);
+        material.kirisun_complete = keyring_kid_kirisun_complete(ctx->state, (int)eff_kid);
+    }
+    return material;
+}
+
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const int encrypted = (ctx->so & 0x40U) != 0U;
@@ -623,21 +658,12 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
     const uint64_t mi = ctx->slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
 
-    // Classify against the key id that will actually decrypt this call, not the one the slot
-    // happens to be carrying: --dmr-tg-key-csv is applied on the voice path, which has not run
-    // yet when the LC arrives. Only a real map hit takes the material lookup, so the unmapped
-    // path is byte-for-byte what it was.
-    int mapped = 0;
-    const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
-    const uint8_t eff_kid = keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, (uint8_t)kid, &mapped);
-    unsigned long long r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
-    int aes_loaded = ctx->state->aes_key_loaded[ctx->slot];
-    if (mapped) {
-        (void)keyring_kid_material(ctx->state, (int)eff_kid, &r_key, &aes_loaded);
-    }
-
+    // Slot bound: dmr_flco_publish_voice(), the sole caller, returns early on
+    // ctx->slot >= DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
+    const dmr_flco_key_material key = dmr_flco_resolve_key_material(ctx);
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
-                                    : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, r_key, aes_loaded);
+                                    : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, key.r_key,
+                                                                    key.aes_loaded, key.kirisun_complete);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -958,8 +984,9 @@ dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
  * the map can decrypt forces a P_CLEAR and drops the channel, which cannot self-heal. */
 static int
 dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
-    // dsd_dmr_voice_slot_can_decrypt() used to reject an out-of-range slot before reading
-    // aes_key_loaded[]; that read is inlined here now, so the bound has to be checked here too.
+    // Unlike dmr_flco_publish_crypto(), this runs from the lockout path, which has no slot bound
+    // upstream. dsd_dmr_voice_slot_can_decrypt() used to reject an out-of-range slot before
+    // reading aes_key_loaded[]; that read now happens in the resolver, so check the bound here.
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return 0;
     }
@@ -968,16 +995,8 @@ dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
         return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
     }
 
-    const uint8_t kid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
-    int mapped = 0;
-    const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
-    const uint8_t eff_kid = keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, kid, &mapped);
-    unsigned long long r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
-    int aes_loaded = ctx->state->aes_key_loaded[ctx->slot];
-    if (mapped) {
-        (void)keyring_kid_material(ctx->state, (int)eff_kid, &r_key, &aes_loaded);
-    }
-    return dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, r_key, aes_loaded);
+    const dmr_flco_key_material key = dmr_flco_resolve_key_material(ctx);
+    return dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, key.r_key, key.aes_loaded, key.kirisun_complete);
 }
 
 static void

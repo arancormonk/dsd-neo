@@ -237,12 +237,17 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     }
     unsigned long long r_key = slot == 0U ? state->R : state->RR;
     int aes_loaded = state->aes_key_loaded[slot];
+    // Kirisun 0x36/0x37 decides on the quartet, not on r_key/aes_loaded, and activation overwrites
+    // the slot's quartet too -- so the mapped key id has to supply its own verdict here as well.
+    int kirisun_complete = dsd_dmr_kirisun_slot_key_complete(state, (int)slot);
     if (mapped) {
         (void)keyring_kid_material(state, (int)eff_kid, &r_key, &aes_loaded);
+        kirisun_complete = keyring_kid_kirisun_complete(state, (int)eff_kid);
     }
 
-    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
-                                    : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, r_key, aes_loaded);
+    const int has_key = algid == 0U
+                            ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
+                            : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, r_key, aes_loaded, kirisun_complete);
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,
