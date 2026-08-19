@@ -282,19 +282,18 @@ rr_panel_compute_rect(int site_count, int screen_h, int screen_w, int* h, int* w
     if (screen_h < RR_PANEL_MIN_H + 2 || screen_w < RR_PANEL_MIN_W + 2) {
         return 0;
     }
+    /* The guard above is what enforces both minimums: screen_h >= RR_PANEL_MIN_H + 2 and
+       screen_w >= RR_PANEL_MIN_W + 2, so neither value can be clamped below its floor here
+       (local_h starts at RR_PANEL_CHROME_ROWS + 1 == RR_PANEL_MIN_H). A second "raise back
+       to the minimum" clamp would therefore be dead code, which CodeQL's
+       cpp/constant-comparison flags. */
     int local_h = RR_PANEL_CHROME_ROWS + ((site_count > 0) ? site_count : 1);
     if (local_h > screen_h - 2) {
         local_h = screen_h - 2;
     }
-    if (local_h < RR_PANEL_MIN_H) {
-        local_h = RR_PANEL_MIN_H;
-    }
     int local_w = RR_PANEL_MAX_W;
     if (local_w > screen_w - 2) {
         local_w = screen_w - 2;
-    }
-    if (local_w < RR_PANEL_MIN_W) {
-        local_w = RR_PANEL_MIN_W;
     }
     *h = local_h;
     *w = local_w;

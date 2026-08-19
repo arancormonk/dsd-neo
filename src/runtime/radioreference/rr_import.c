@@ -196,9 +196,15 @@ dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz) {
         (void)DSD_SNPRINTF(out, out_sz, "%s", RR_STEM_FALLBACK);
         return strlen(out);
     }
-    DSD_MEMCPY(out, scratch, len);
-    out[len] = '\0';
-    return len;
+    /* Copy through the bounded formatter rather than DSD_MEMCPY + a hand-written
+       terminator. len <= limit <= out_sz - 1 already holds (rr_utf8_prefix() cuts to
+       `limit`, rr_stem_trim() only shrinks), but under -flto GCC loses that range across
+       the two calls and rejects `out[len] = '\0'` with -Werror=stringop-overflow=, while
+       restating the bound as a clamp is dead code that cppcheck --strict rejects in turn.
+       DSD_SNPRINTF carries the bound in its own contract, so neither analyzer has to
+       rediscover it. */
+    (void)DSD_SNPRINTF(out, out_sz, "%.*s", (int)len, scratch);
+    return strlen(out);
 }
 
 int

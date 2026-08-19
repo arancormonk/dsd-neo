@@ -373,6 +373,15 @@ typedef struct {
     int reenter_cancel; /* when 1, open_string synchronously cancels */
 } wiz_harness;
 
+/*
+ * Every fixture instance below (wiz_harness, wiz_case, imp_case) has STATIC storage
+ * on purpose. rr_wizard_core_create() keeps the hook_user pointer it is handed for
+ * the life of the core, and handing it an address with automatic storage is what
+ * CodeQL's cpp/stack-address-escape reports - correctly, as a contract hazard, even
+ * though every case here destroys its core before returning. Each open helper zeroes
+ * its whole fixture, so static storage carries nothing between cases.
+ */
+
 static void
 h_open_string(void* user, const char* title, const char* prefill, size_t cap) {
     wiz_harness* h = (wiz_harness*)user;
@@ -538,7 +547,7 @@ run_creds_ladder(RrWizardCore* w, wiz_harness* h, int keyed) {
 
 static void
 test_create_destroy(void) {
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -559,7 +568,7 @@ test_create_destroy(void) {
 static void
 test_creds_ladder(void) {
     const int keyed = build_is_keyed();
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -604,7 +613,7 @@ test_creds_ladder(void) {
 
 static void
 test_empty_prompt_reasks(void) {
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -631,7 +640,7 @@ test_empty_prompt_reasks(void) {
 
 static void
 test_synchronous_cancel_from_open_hook(void) {
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -657,7 +666,7 @@ test_synchronous_cancel_from_open_hook(void) {
 static void
 test_verify_account_ok(void) {
     const int keyed = build_is_keyed();
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -695,7 +704,7 @@ test_verify_account_ok(void) {
 static void
 test_auth_fault(void) {
     const int keyed = build_is_keyed();
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -730,7 +739,7 @@ test_auth_fault(void) {
 static void
 test_cancel_drops_late_result(void) {
     const int keyed = build_is_keyed();
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -772,7 +781,7 @@ test_cancel_drops_late_result(void) {
 
 static void
 test_ring_overflow_is_an_error(void) {
-    wiz_harness h;
+    static wiz_harness h;
     DSD_MEMSET(&h, 0, sizeof(h));
     RrWizardHooks hooks;
     harness_hooks(&hooks);
@@ -855,7 +864,7 @@ drive_zip_to_results(wiz_case* c) {
 
 static void
 test_zip_to_results(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -891,7 +900,7 @@ test_zip_to_results(void) {
 
 static void
 test_system_id_search(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -936,7 +945,7 @@ drive_browse_to_county(wiz_case* c) {
 
 static void
 test_browse_to_results(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -981,7 +990,7 @@ test_browse_to_results(void) {
 
 static void
 test_browse_statewide(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1005,7 +1014,7 @@ test_browse_statewide(void) {
 
 static void
 test_system_load_call_sequence(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1080,7 +1089,7 @@ test_system_load_call_sequence(void) {
 
 static void
 test_trunked_plan_and_options(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1154,7 +1163,7 @@ test_trunked_plan_and_options(void) {
 
 static void
 test_conventional_plan(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1217,7 +1226,7 @@ test_conventional_plan(void) {
  */
 static void
 test_conventional_selection_order(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1260,7 +1269,7 @@ test_conventional_selection_order(void) {
  */
 static void
 test_restart_retires_the_loaded_system(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1287,7 +1296,7 @@ test_restart_retires_the_loaded_system(void) {
  */
 static void
 test_sid_load_forgets_the_previous_search(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1311,7 +1320,7 @@ test_sid_load_forgets_the_previous_search(void) {
 
 static void
 test_cancel_mid_system_load(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1349,7 +1358,7 @@ test_cancel_mid_system_load(void) {
 
 static void
 test_batch_fault_retires_the_load(void) {
-    wiz_case c;
+    static wiz_case c;
     if (!wiz_case_open(&c)) {
         return;
     }
@@ -1568,7 +1577,7 @@ imp_case_open(imp_case* ic) {
 
 static void
 test_import_now_happy_path(void) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
@@ -1652,7 +1661,7 @@ test_import_now_happy_path(void) {
  */
 static void
 test_import_now_same_sid_overwrites_in_place(void) {
-    imp_case first;
+    static imp_case first;
     if (!imp_case_open(&first)) {
         return;
     }
@@ -1661,7 +1670,7 @@ test_import_now_same_sid_overwrites_in_place(void) {
     (void)DSD_SNPRINTF(scratch, sizeof(scratch), "%s", first.scratch);
     imp_case_close_keep_files(&first);
 
-    imp_case again;
+    static imp_case again;
     if (!imp_case_open_in(&again, scratch)) {
         imp_case_close(&first);
         return;
@@ -1720,7 +1729,7 @@ static const char k_seed_bytes[] = "Decimal,Hex,AlphaTag,Mode\n1,1,SEED,D\n";
  */
 static void
 run_collision_case(const char* label, int foreign_sid, int seed_chan) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
@@ -1773,7 +1782,7 @@ test_import_now_stem_is_pair_atomic(void) {
  * write nothing. Never a second suffix, never an overwrite. */
 static void
 test_import_now_hard_collision(void) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
@@ -1805,7 +1814,7 @@ static const char k_trunk_scan_reason[] =
  */
 static void
 test_trunk_scan_blocks_the_preview(void) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
@@ -1843,7 +1852,7 @@ test_trunk_scan_blocks_the_preview(void) {
  */
 static void
 test_import_now_rechecks_the_session_gate(void) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
@@ -1874,7 +1883,7 @@ test_import_now_rechecks_the_session_gate(void) {
  * fault fires: the unwind has real work to do. */
 static void
 test_import_now_unwinds_a_failed_write(void) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
@@ -1898,7 +1907,7 @@ test_import_now_unwinds_a_failed_write(void) {
  * stay and the user can retry the apply. */
 static void
 test_import_now_keeps_files_when_apply_is_rejected(void) {
-    imp_case ic;
+    static imp_case ic;
     if (!imp_case_open(&ic)) {
         return;
     }
