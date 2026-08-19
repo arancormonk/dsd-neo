@@ -62,7 +62,35 @@ keyring_rkey_value(const dsd_state* state, int index) {
     return keyring_rkey_index_valid(state, index) ? state->rkey_array[index] : 0ULL;
 }
 
-static void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
+static void
+keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
+    const unsigned long long int scalar_key = keyring_rkey_value(state, key_id);
+    if (slot == 0) {
+        state->R = scalar_key;
+    } else {
+        state->RR = scalar_key;
+    }
+
+    state->A1[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[0]);
+    state->A2[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[1]);
+    state->A3[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[2]);
+    state->A4[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[3]);
+    state->aes_key_segments[slot] = keyring_aes_segment_count(state, key_id);
+    state->aes_key_loaded[slot] =
+        (state->A1[slot] != 0ULL || state->A2[slot] != 0ULL || state->A3[slot] != 0ULL || state->A4[slot] != 0ULL) ? 1
+                                                                                                                   : 0;
+}
+
+void
+keyring_dmr_tg_map_reset(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof(state->dmr_tg_key_map_tg));
+    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
+    state->dmr_tg_key_map_count = 0;
+    state->dmr_tg_key_note_epoch[0] = state->dmr_tg_key_note_epoch[1] = 0U;
+}
 
 int
 keyring_dmr_tg_map_kid(const dsd_state* state, uint32_t tg, uint8_t* out_kid) {
@@ -96,15 +124,34 @@ keyring_dmr_tg_map_slot_eligible(const dsd_state* state, int slot) {
     return algid != 0 && algid != 0x80;
 }
 
-// One notice per call epoch, not one per voice frame.
+// True when the slot's snapshot describes a live DMR group call whose talkgroup may be looked up.
+// Three of these are load-bearing, not defensive: dsd_call_state_get() reports success for any
+// non-zero epoch and dsd_call_state_end_ex() clears only the phase, so an ENDED epoch still carries
+// the previous transmission's talkgroup; a private call puts the destination RADIO ID in
+// ota_target_id, and DMR radio ids share the talkgroup's 24-bit space, so an unchecked match would
+// key a unit call off a colliding row; and the protocol check keeps a resident non-DMR call from
+// steering this DMR-only map when lastsynctype is the only thing still reading DMR.
+static int
+keyring_dmr_tg_map_call_is_mappable(const dsd_call_snapshot* call) {
+    return call->phase == DSD_CALL_PHASE_ACTIVE && call->kind == DSD_CALL_KIND_GROUP_VOICE
+           && (call->protocol == DSD_SYNC_NONE || DSD_SYNC_IS_DMR(call->protocol)) && call->ota_target_id != 0U
+           && call->ota_target_id <= UINT32_MAX;
+}
+
+// One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit for a
+// non-zero epoch, so epoch 0 is the "never announced" sentinel and needs no companion valid flag.
 static void
-keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid) {
-    if (state->dmr_tg_key_note_valid[slot] != 0U && state->dmr_tg_key_note_epoch[slot] == epoch) {
+keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid, int has_key) {
+    if (state->dmr_tg_key_note_epoch[slot] == epoch) {
         return;
     }
     state->dmr_tg_key_note_epoch[slot] = epoch;
-    state->dmr_tg_key_note_valid[slot] = 1U;
     DSD_FPRINTF(stderr, "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X;", slot + 1, tg, kid);
+    if (!has_key) {
+        // The override is explicit, so it still stands -- but without this the mapped-but-unimported
+        // key id reads as a success while it silently zeroes the slot key and shadows the signaled one.
+        DSD_FPRINTF(stderr, " no key imported for this key id;");
+    }
 }
 
 int
@@ -115,8 +162,7 @@ keyring_dmr_tg_map_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
     }
 
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.ota_target_id == 0U
-        || call.ota_target_id > UINT32_MAX) {
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || !keyring_dmr_tg_map_call_is_mappable(&call)) {
         return 0;
     }
 
@@ -126,7 +172,8 @@ keyring_dmr_tg_map_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
     }
 
     keyring_activate_slot_with_kid(state, slot, (int)kid);
-    keyring_dmr_tg_map_note(state, slot, call.epoch, (uint32_t)call.ota_target_id, kid);
+    const int has_key = ((slot == 0) ? state->R : state->RR) != 0ULL || state->aes_key_loaded[slot] != 0;
+    keyring_dmr_tg_map_note(state, slot, call.epoch, (uint32_t)call.ota_target_id, kid, has_key);
     return 1;
 }
 
@@ -137,23 +184,4 @@ keyring_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
         return;
     }
     keyring_activate_slot_with_kid(state, slot, (slot == 0) ? state->payload_keyid : state->payload_keyidR);
-}
-
-static void
-keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
-    const unsigned long long int scalar_key = keyring_rkey_value(state, key_id);
-    if (slot == 0) {
-        state->R = scalar_key;
-    } else {
-        state->RR = scalar_key;
-    }
-
-    state->A1[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[0]);
-    state->A2[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[1]);
-    state->A3[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[2]);
-    state->A4[slot] = keyring_rkey_value(state, key_id + k_aes_segment_offsets[3]);
-    state->aes_key_segments[slot] = keyring_aes_segment_count(state, key_id);
-    state->aes_key_loaded[slot] =
-        (state->A1[slot] != 0ULL || state->A2[slot] != 0ULL || state->A3[slot] != 0ULL || state->A4[slot] != 0ULL) ? 1
-                                                                                                                   : 0;
 }

@@ -6,6 +6,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/power.h>
@@ -666,11 +667,7 @@ init_state_vendor_crypto_defaults(dsd_state* state) {
     state->vertex_ks_counter[1] = 0;
     state->vertex_ks_warned[0] = 0;
     state->vertex_ks_warned[1] = 0;
-    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof(state->dmr_tg_key_map_tg));
-    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
-    state->dmr_tg_key_map_count = 0;
-    state->dmr_tg_key_note_epoch[0] = state->dmr_tg_key_note_epoch[1] = 0U;
-    state->dmr_tg_key_note_valid[0] = state->dmr_tg_key_note_valid[1] = 0U;
+    keyring_dmr_tg_map_reset(state);
 }
 
 static void

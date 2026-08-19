@@ -17,11 +17,21 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#if DSD_PLATFORM_WIN_NATIVE
+#define TG_KEY_NULL_DEVICE "NUL"
+#else
+#define TG_KEY_NULL_DEVICE "/dev/null"
+#endif
 
 static int
 expect_eq(const char* tag, long long got, long long want) {
@@ -33,14 +43,19 @@ expect_eq(const char* tag, long long got, long long want) {
 }
 
 static void
-observe_group_call(dsd_state* state, uint8_t slot, uint32_t tg) {
+observe_call(dsd_state* state, uint8_t slot, uint32_t target, dsd_call_kind kind, int protocol) {
     dsd_call_observation obs;
     DSD_MEMSET(&obs, 0, sizeof obs);
-    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.protocol = protocol;
     obs.slot = slot;
-    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
-    obs.ota_target_id = tg;
+    obs.kind = kind;
+    obs.ota_target_id = target;
     (void)dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+}
+
+static void
+observe_group_call(dsd_state* state, uint8_t slot, uint32_t tg) {
+    observe_call(state, slot, tg, DSD_CALL_KIND_GROUP_VOICE, DSD_SYNC_DMR_BS_VOICE_POS);
 }
 
 static void
@@ -93,8 +108,8 @@ test_mapped_tg_overrides_signaled_kid(void) {
 
     // The applied notice latches on the call epoch: repeated voice frames of the same
     // call keep applying the key without re-announcing it.
-    rc |= expect_eq("override-note-latched", state.dmr_tg_key_note_valid[0], 1);
     const unsigned long long first_epoch = state.dmr_tg_key_note_epoch[0];
+    rc |= expect_eq("override-note-latched", first_epoch != 0ULL, 1);
     rc |= expect_eq("override-reapplies", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 1);
     rc |= expect_eq("override-note-epoch-stable", (long long)state.dmr_tg_key_note_epoch[0], (long long)first_epoch);
 
@@ -219,6 +234,164 @@ test_gates_hold_activation_back(void) {
     return rc;
 }
 
+static int
+count_substring_in_file(const char* path, const char* needle) {
+    FILE* fp = fopen(path, "r");
+    if (!fp) {
+        return -1;
+    }
+    char line[512];
+    int hits = 0;
+    while (fgets(line, (int)sizeof line, fp) != NULL) {
+        const char* p = line;
+        while ((p = strstr(p, needle)) != NULL) {
+            hits++;
+            p++;
+        }
+    }
+    fclose(fp);
+    return hits;
+}
+
+// The notice is a stderr write, so counting it is the only way to observe the latch: its only state
+// write assigns the same epoch it compares against, which no in-memory assertion can distinguish
+// from an unlatched notice. Without this, dropping the early return would flood the console with one
+// line per voice frame -- and corrupt the ncurses display -- with nothing failing.
+//
+// Runs last, and reports on stdout: restoring stderr after the capture is not portable, so it is
+// left pointing at the null device and no later test may depend on it.
+static int
+test_notice_is_emitted_once_per_epoch(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&state, 123U, 0x7B);
+    observe_group_call(&state, 0U, 123U);
+
+    char tmpl[] = "dsd-neo-test-tg-key-note-XXXXXX";
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "mkstemp failed for notice capture\n");
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    fflush(stderr);
+    if (freopen(tmpl, "w", stderr) == NULL) {
+        (void)remove(tmpl);
+        dsd_state_ext_free_all(&state);
+        return 1;
+    }
+    for (int i = 0; i < 5; i++) {
+        (void)keyring_dmr_tg_map_activate_slot(&opts, &state, 0);
+    }
+    fflush(stderr);
+    const int restored = (freopen(TG_KEY_NULL_DEVICE, "w", stderr) != NULL);
+
+    const int hits = count_substring_in_file(tmpl, "DMR TG Key Map");
+    (void)remove(tmpl);
+    dsd_state_ext_free_all(&state);
+
+    if (!restored) {
+        printf("note-capture: could not reopen stderr\n");
+        return 1;
+    }
+    if (hits != 1) {
+        printf("note-once-per-epoch: got %d notices want 1\n", hits);
+        rc = 1;
+    }
+    return rc;
+}
+
+// A private call carries the destination RADIO ID in ota_target_id, and DMR radio ids share the
+// talkgroup's 24-bit space -- a colliding id must not pull the talkgroup's key onto a unit call.
+static int
+test_private_call_is_not_a_talkgroup(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&state, 123U, 0x7B);
+    observe_call(&state, 0U, 123U, DSD_CALL_KIND_PRIVATE_VOICE, DSD_SYNC_DMR_BS_VOICE_POS);
+
+    rc |= expect_eq("private-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
+    rc |= expect_eq("private-call-key-untouched", (long long)state.R, 0);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// dsd_call_state_get() reports a hit for any non-zero epoch, so an ENDED call keeps its talkgroup;
+// steering off it would key the next transmission on the slot with the previous call's mapping.
+static int
+test_ended_call_stops_steering_key_selection(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&state, 123U, 0x7B);
+    observe_group_call(&state, 0U, 123U);
+    rc |= expect_eq("active-call-applies", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 1);
+
+    (void)dsd_call_state_end(&state, 0U, 0.0);
+    state.R = 0ULL;
+    rc |= expect_eq("ended-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
+    rc |= expect_eq("ended-call-key-untouched", (long long)state.R, 0);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A resident non-DMR call must not drive the DMR-only map when lastsynctype is the only thing
+// still reading DMR (the window between leaving a DMR system and the next protocol's sync).
+static int
+test_non_dmr_call_snapshot_is_rejected(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    state.synctype = DSD_SYNC_P25P1_POS;
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS; // stale: the eligibility gate still passes
+    state.keyloader = 1;
+    state.payload_algid = 0x84;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&state, 123U, 0x7B);
+    observe_call(&state, 0U, 123U, DSD_CALL_KIND_GROUP_VOICE, DSD_SYNC_P25P1_POS);
+
+    rc |= expect_eq("non-dmr-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
+    rc |= expect_eq("non-dmr-call-key-untouched", (long long)state.R, 0);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -227,6 +400,11 @@ main(void) {
     rc |= test_unmapped_tg_leaves_slot_alone();
     rc |= test_aes_segments_via_mapped_kid_slot1();
     rc |= test_gates_hold_activation_back();
+    rc |= test_private_call_is_not_a_talkgroup();
+    rc |= test_ended_call_stops_steering_key_selection();
+    rc |= test_non_dmr_call_snapshot_is_rejected();
+    // Last: it redirects stderr and cannot portably restore it.
+    rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {
         printf("CORE_DMR_TG_KEY_MAP: OK\n");
     }

@@ -29,6 +29,9 @@ int keyring_aes_segments_complete(const dsd_state* state, int key_id, unsigned i
 /** Look up the DMR talkgroup -> key ID override map. Returns 1 on a hit with *out_kid set. */
 int keyring_dmr_tg_map_kid(const dsd_state* state, uint32_t tg, uint8_t* out_kid);
 
+/** Drop every DMR talkgroup -> key ID mapping and the per-slot applied-notice latch. */
+void keyring_dmr_tg_map_reset(dsd_state* state);
+
 /**
  * Activate imported key material for a DMR slot whose active call talkgroup is mapped,
  * using the mapped key id in place of the OTA-signaled one (--dmr-tg-key-csv).

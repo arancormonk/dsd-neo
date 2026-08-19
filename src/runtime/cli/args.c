@@ -2646,6 +2646,12 @@ dsd_parse_short_opts(int argc, char** argv, dsd_opts* opts, dsd_state* state, in
             }
         }
     }
+    // Checked after getopt completes: --dmr-tg-key-csv is imported in the long-option pass, before
+    // -k/-K arm the keyring here, so the ordering has to be resolved once both have run. The map
+    // only picks which key id to use, so without a keyring it is a silent no-op.
+    if (state->dmr_tg_key_map_count > 0 && state->keyloader != 1) {
+        LOG_WARN("WARNING: --dmr-tg-key-csv has no effect without an imported key CSV (-K/-k).\n");
+    }
     // Set after getopt completes so -r file ordering is independent of later options.
     if (opts->playfiles == 1) {
         state->optind = optind;

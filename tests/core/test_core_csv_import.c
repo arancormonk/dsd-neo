@@ -1014,8 +1014,14 @@ test_dmr_tg_key_import_rejects_bad_rows(void) {
             free_test_state(state);
             return 1;
         }
+        // Seed a mapping first, or "leaves the map untouched" is unfalsifiable: a fresh state
+        // already has count 0, so a rejecting import that wiped the live map would still pass.
+        state->dmr_tg_key_map_tg[0] = 999U;
+        state->dmr_tg_key_map_kid[0] = 0x11;
+        state->dmr_tg_key_map_count = 1;
         int failed = 0;
-        if (csvDmrTgKeyImport(state, tmpl) == 0 || state->dmr_tg_key_map_count != 0) {
+        if (csvDmrTgKeyImport(state, tmpl) == 0 || state->dmr_tg_key_map_count != 1
+            || state->dmr_tg_key_map_tg[0] != 999U || state->dmr_tg_key_map_kid[0] != 0x11) {
             DSD_FPRINTF(stderr, "tg-key bad row case %zu not rejected\n", i);
             failed = 1;
         }

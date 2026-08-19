@@ -422,6 +422,20 @@ struct dsd_state {
     // Multi-key array
     unsigned long long int rkey_array[0x1FFFF];
     unsigned char rkey_array_loaded[0x1FFFF];
+    // DMR talkgroup -> key ID override map (--dmr-tg-key-csv): a mapped talkgroup
+    // selects its key id in place of the OTA-signaled one at key-activation time.
+    // payload_keyid* stay the OTA truth; the map only steers the keyring lookup.
+    //
+    // Declared beside the keyring it indexes rather than beside the other DMR crypto state, for the
+    // same reason rkey_array lives here: ui_snapshot.c copies positional byte ranges of dsd_state on
+    // every telemetry publish and consume, and this write-once CLI table is not something the UI
+    // renders. This region falls between two of those ranges, so it costs the snapshot nothing.
+    uint32_t dmr_tg_key_map_tg[DSD_DMR_TG_KEY_MAP_MAX];
+    uint8_t dmr_tg_key_map_kid[DSD_DMR_TG_KEY_MAP_MAX];
+    int dmr_tg_key_map_count;
+    // Per-slot applied-notice latch: one notice per call epoch. Epoch 0 is never a live call
+    // (dsd_call_state_get only reports a hit for a non-zero epoch), so it doubles as "never noted".
+    uint64_t dmr_tg_key_note_epoch[2];
     // Temporary audio buffers
     float audio_out_temp_buf[160];
     float* audio_out_temp_buf_p;
@@ -1232,15 +1246,6 @@ struct dsd_state {
     int vertex_ks_active_idx[2];
     int vertex_ks_counter[2];
     uint8_t vertex_ks_warned[2];
-
-    // DMR talkgroup -> key ID override map (--dmr-tg-key-csv): a mapped talkgroup
-    // selects its key id in place of the OTA-signaled one at key-activation time.
-    // payload_keyid* stay the OTA truth; the map only steers the keyring lookup.
-    uint32_t dmr_tg_key_map_tg[DSD_DMR_TG_KEY_MAP_MAX];
-    uint8_t dmr_tg_key_map_kid[DSD_DMR_TG_KEY_MAP_MAX];
-    int dmr_tg_key_map_count;
-    uint64_t dmr_tg_key_note_epoch[2]; // per-slot applied-notice latch: one notice per call epoch
-    uint8_t dmr_tg_key_note_valid[2];
 
     // DMR: consecutive EMB decode failures per slot (hysteresis for robustness)
     uint8_t dmr_emb_err[2];

@@ -3,6 +3,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -1338,13 +1339,11 @@ dmr_tg_key_parse_row(const char* path, int row_count, char* line, dmr_tg_key_tmp
 
 static void
 dmr_tg_key_apply_to_state(dsd_state* state, const dmr_tg_key_tmp_t* tmp, const char* path) {
-    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof(state->dmr_tg_key_map_tg));
-    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
+    keyring_dmr_tg_map_reset(state);
     state->dmr_tg_key_map_count = tmp->count;
+    // tmp is zeroed before parsing, so the full-array copies also clear the unused tail.
     DSD_MEMCPY(state->dmr_tg_key_map_tg, tmp->tg, sizeof(state->dmr_tg_key_map_tg));
     DSD_MEMCPY(state->dmr_tg_key_map_kid, tmp->kid, sizeof(state->dmr_tg_key_map_kid));
-    state->dmr_tg_key_note_epoch[0] = state->dmr_tg_key_note_epoch[1] = 0U;
-    state->dmr_tg_key_note_valid[0] = state->dmr_tg_key_note_valid[1] = 0U;
     LOG_INFO("NOTICE: Loaded %d DMR talkgroup->key ID mappings from '%s'.\n", tmp->count, path);
 }
 

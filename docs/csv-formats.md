@@ -289,18 +289,24 @@ Notes:
 
 - Header row is ignored (required by importer convention).
 - DMR only, and it needs the CSV keyring (`-K`/`-k`) loaded plus a known ALG ID (signaled, or via
-  `--dmr-force-algid` on systems that don't signal one).
+  `--dmr-force-algid` on systems that don't signal one). Loading the map without `-K`/`-k` warns and
+  does nothing.
+- Group voice calls only. Private (unit-to-unit) calls put the destination radio ID where the
+  talkgroup would be, and DMR radio IDs share the talkgroup number space, so they are never matched
+  against this file. Encrypted data bursts also keep the signaled key ID.
 - The OTA key ID keeps being reported in logs and event history; the map only steers key selection,
-  and each applied override is announced once per call.
+  and each applied override is announced once per call. The announcement says so when the mapped key
+  ID has no imported key material — the override still stands, but nothing will decrypt.
 - Duplicate talkgroups are allowed; the last occurrence replaces earlier rows.
 - Maximum rows: `256`.
 
-Example:
+Example (the key IDs are the ones in `examples/multi_key_hex.csv`; a key ID with no imported key
+material blocks decryption for that talkgroup rather than falling back to the signaled one):
 
 ```csv
 tg (dec),keyid (hex)
-123,7B
-4567,03
+123,02
+4567,0C
 ```
 
 ## DMR Tier III LCN Calculator Input (`--calc-lcn <file>`)
