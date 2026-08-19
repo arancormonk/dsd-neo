@@ -166,69 +166,30 @@ typedef enum {
     RR_FETCH_KIND_COUNT
 } RrFetchKind;
 
-/*
- * Each trampoline below casts the ring's `void* result` back to one concrete list
- * type. The pairing is what keeps that sound: k_member_free[] is indexed by the
- * SAME `kind` that selected the request whose reply allocated the pointer
- * (rr_core_on_done sets `r->kind = ctx->kind` and `r->result = result` in one
- * critical section), and every rr_core_free_result() call site passes that paired
- * kind - either `r->kind` beside `r->result`, or the literal kind matching the
- * pend_* field, which rr_core_apply_system_slot() assigns under the same switch.
+/**
+ * @brief One completion's payload, discriminated by the RrFetchKind beside it.
+ *
+ * A union rather than a `void*` on purpose. The runtime client hands every reply
+ * back through one untyped `dsd_rr_done_cb`, so a single `void*` field would carry
+ * eleven different struct types over its lifetime and every cast back out of it
+ * would be unverifiable - by review and by static analysis alike. Here each fetch
+ * has its own completion callback, which casts the reply once, at the only place
+ * the concrete type is known for certain, and stores it in the matching member;
+ * every reader selects that same member under a `switch (kind)`. No member is ever
+ * written as one type and read as another.
  */
-static void
-rr_free_country_list(void* p) {
-    dsd_rr_country_list_free((dsd_rr_country_list*)p);
-}
-
-static void
-rr_free_state_list(void* p) {
-    dsd_rr_state_list_free((dsd_rr_state_list*)p);
-}
-
-static void
-rr_free_county_list(void* p) {
-    dsd_rr_county_list_free((dsd_rr_county_list*)p);
-}
-
-static void
-rr_free_trs_list(void* p) {
-    dsd_rr_trs_list_free((dsd_rr_trs_list*)p);
-}
-
-static void
-rr_free_site_list(void* p) {
-    dsd_rr_site_list_free((dsd_rr_site_list*)p);
-}
-
-static void
-rr_free_talkgroup_list(void* p) {
-    dsd_rr_talkgroup_list_free((dsd_rr_talkgroup_list*)p);
-}
-
-static void
-rr_free_talkgroup_cat_list(void* p) {
-    dsd_rr_talkgroup_cat_list_free((dsd_rr_talkgroup_cat_list*)p);
-}
-
-/*
- * NULL rows own nothing beyond their own allocation: the single-value structs,
- * and RR_FETCH_TRS_DETAILS - whose worker callback resolves the details into a
- * dsd_rr_system_info and frees the raw details there, so the ring never holds a
- * dsd_rr_trs_details.
- */
-static void (*const k_member_free[RR_FETCH_KIND_COUNT])(void*) = {
-    [RR_FETCH_USER_DATA] = NULL,
-    [RR_FETCH_ZIPCODE] = NULL,
-    [RR_FETCH_COUNTRIES] = rr_free_country_list,
-    [RR_FETCH_COUNTRY_STATES] = rr_free_state_list,
-    [RR_FETCH_STATE_COUNTIES] = rr_free_county_list,
-    [RR_FETCH_STATE_TRS] = rr_free_trs_list,
-    [RR_FETCH_COUNTY_TRS] = rr_free_trs_list,
-    [RR_FETCH_TRS_DETAILS] = NULL,
-    [RR_FETCH_TRS_SITES] = rr_free_site_list,
-    [RR_FETCH_TRS_TALKGROUPS] = rr_free_talkgroup_list,
-    [RR_FETCH_TRS_TALKGROUP_CATS] = rr_free_talkgroup_cat_list,
-};
+typedef union {
+    dsd_rr_user_info* user;
+    dsd_rr_zip_info* zip;
+    dsd_rr_country_list* countries;
+    dsd_rr_state_list* states;
+    dsd_rr_county_list* counties;
+    dsd_rr_trs_list* trs;
+    dsd_rr_system_info* info;
+    dsd_rr_site_list* sites;
+    dsd_rr_talkgroup_list* tgs;
+    dsd_rr_talkgroup_cat_list* cats;
+} RrWizPayload;
 
 /* ---- Core state --------------------------------------------------------- */
 
@@ -237,7 +198,7 @@ typedef struct {
     int kind;
     dsd_rr_status status;
     dsd_rr_error err;
-    void* result;
+    RrWizPayload payload;
 } RrWizResult;
 
 /** Per-request context. Carries its own auth copy; see the thread rules. */
@@ -365,27 +326,81 @@ rr_core_scrub(void* buf, size_t len) {
     }
 }
 
+/**
+ * @brief Release one completion payload.
+ *
+ * Two steps for the list kinds: the matching *_list_free() releases the members,
+ * then free() releases the sink itself - dropping the second leaks the sink, which
+ * is what this stage's ASan run pins. The single-value replies (dsd_rr_user_info,
+ * dsd_rr_zip_info) own nothing, and RR_FETCH_TRS_DETAILS never reaches the ring as
+ * raw details: its callback resolves them into a dsd_rr_system_info and frees the
+ * details there. Every *_list_free() tolerates NULL, as does free().
+ */
 static void
-rr_core_free_result(int kind, void* result) {
-    if (result == NULL) {
-        return;
+rr_core_free_result(int kind, RrWizPayload p) {
+    switch (kind) {
+        case RR_FETCH_USER_DATA: free(p.user); break;
+        case RR_FETCH_ZIPCODE: free(p.zip); break;
+        case RR_FETCH_COUNTRIES:
+            dsd_rr_country_list_free(p.countries);
+            free(p.countries);
+            break;
+        case RR_FETCH_COUNTRY_STATES:
+            dsd_rr_state_list_free(p.states);
+            free(p.states);
+            break;
+        case RR_FETCH_STATE_COUNTIES:
+            dsd_rr_county_list_free(p.counties);
+            free(p.counties);
+            break;
+        case RR_FETCH_STATE_TRS:
+        case RR_FETCH_COUNTY_TRS:
+            dsd_rr_trs_list_free(p.trs);
+            free(p.trs);
+            break;
+        case RR_FETCH_TRS_DETAILS: free(p.info); break;
+        case RR_FETCH_TRS_SITES:
+            dsd_rr_site_list_free(p.sites);
+            free(p.sites);
+            break;
+        case RR_FETCH_TRS_TALKGROUPS:
+            dsd_rr_talkgroup_list_free(p.tgs);
+            free(p.tgs);
+            break;
+        case RR_FETCH_TRS_TALKGROUP_CATS:
+            dsd_rr_talkgroup_cat_list_free(p.cats);
+            free(p.cats);
+            break;
+        default: break;
     }
-    if (kind >= 0 && kind < RR_FETCH_KIND_COUNT && k_member_free[kind] != NULL) {
-        k_member_free[kind](result);
-    }
-    free(result);
+}
+
+/** @brief The payload with every member cleared, for "ownership taken" stores. */
+static RrWizPayload
+rr_payload_none(void) {
+    RrWizPayload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    return p;
 }
 
 /** @brief Free whatever the four-fetch system load had already parked. */
 static void
 rr_core_release_pending(RrWizardCore* w) {
-    rr_core_free_result(RR_FETCH_TRS_DETAILS, w->pend_info);
+    RrWizPayload p = rr_payload_none();
+    p.info = w->pend_info;
+    rr_core_free_result(RR_FETCH_TRS_DETAILS, p);
     w->pend_info = NULL;
-    rr_core_free_result(RR_FETCH_TRS_SITES, w->pend_sites);
+    p = rr_payload_none();
+    p.sites = w->pend_sites;
+    rr_core_free_result(RR_FETCH_TRS_SITES, p);
     w->pend_sites = NULL;
-    rr_core_free_result(RR_FETCH_TRS_TALKGROUPS, w->pend_tgs);
+    p = rr_payload_none();
+    p.tgs = w->pend_tgs;
+    rr_core_free_result(RR_FETCH_TRS_TALKGROUPS, p);
     w->pend_tgs = NULL;
-    rr_core_free_result(RR_FETCH_TRS_TALKGROUP_CATS, w->pend_cats);
+    p = rr_payload_none();
+    p.cats = w->pend_cats;
+    rr_core_free_result(RR_FETCH_TRS_TALKGROUP_CATS, p);
     w->pend_cats = NULL;
     w->system_pending = 0;
 }
@@ -663,21 +678,15 @@ rr_core_resolve_details(RrFetchCtx* ctx, void* result, dsd_rr_status* status_out
     return NULL;
 }
 
-/** Runs on the RadioReference worker thread. Parks the result; touches no UI. */
+/**
+ * @brief Park one already-typed completion. Runs on the RadioReference worker
+ *        thread; touches no UI state beyond the mutex-guarded ring.
+ *
+ * Takes the payload by value, so the caller has already chosen the union member
+ * matching @p ctx->kind and this function never needs to know which one it is.
+ */
 static void
-rr_core_on_fetch_done(void* user, dsd_rr_status status, const dsd_rr_error* err, void* result) {
-    RrFetchCtx* ctx = (RrFetchCtx*)user;
-    if (ctx == NULL) {
-        return;
-    }
-    dsd_rr_error resolved_err;
-    DSD_MEMSET(&resolved_err, 0, sizeof(resolved_err));
-    if (ctx->kind == RR_FETCH_TRS_DETAILS && status == DSD_RR_OK && result != NULL) {
-        result = rr_core_resolve_details(ctx, result, &status, &resolved_err);
-        if (result == NULL) {
-            err = &resolved_err;
-        }
-    }
+rr_core_park_result(RrFetchCtx* ctx, dsd_rr_status status, const dsd_rr_error* err, RrWizPayload payload) {
     RrWizardCore* w = ctx->core;
     int dropped = 1;
     if (w != NULL) {
@@ -694,7 +703,7 @@ rr_core_on_fetch_done(void* user, dsd_rr_status status, const dsd_rr_error* err,
                 DSD_MEMSET(&r->err, 0, sizeof r->err);
                 r->err.status = status;
             }
-            r->result = result;
+            r->payload = payload;
             w->ring_count++;
             dropped = 0;
         } else {
@@ -706,9 +715,63 @@ rr_core_on_fetch_done(void* user, dsd_rr_status status, const dsd_rr_error* err,
         (void)dsd_mutex_unlock(&w->ring_mu);
     }
     if (dropped) {
-        rr_core_free_result(ctx->kind, result);
+        rr_core_free_result(ctx->kind, payload);
     }
     rr_core_free_fetch_ctx(ctx);
+}
+
+/*
+ * One completion callback per fetch. Each is installed on exactly one
+ * dsd_rr_fetch_* call, so the single cast it performs converts the reply to the
+ * type that fetch is documented to allocate - the concrete type is known here and
+ * nowhere downstream. Sharing one callback across every fetch is what would make
+ * the reply an untyped pointer that eleven different types flow through.
+ */
+#define RR_DEFINE_FETCH_CB(fn, kind_id, member, type)                                                                  \
+    static void fn(void* user, dsd_rr_status status, const dsd_rr_error* err, void* result) {                          \
+        RrFetchCtx* ctx = (RrFetchCtx*)user;                                                                           \
+        if (ctx == NULL) {                                                                                             \
+            return;                                                                                                    \
+        }                                                                                                              \
+        RrWizPayload payload = rr_payload_none();                                                                      \
+        payload.member = (type*)result;                                                                                \
+        rr_core_park_result(ctx, status, err, payload);                                                                \
+    }                                                                                                                  \
+    _Static_assert((kind_id) >= 0 && (kind_id) < RR_FETCH_KIND_COUNT, "kind must be a valid RrFetchKind")
+
+RR_DEFINE_FETCH_CB(rr_on_user_data, RR_FETCH_USER_DATA, user, dsd_rr_user_info);
+RR_DEFINE_FETCH_CB(rr_on_zipcode, RR_FETCH_ZIPCODE, zip, dsd_rr_zip_info);
+RR_DEFINE_FETCH_CB(rr_on_countries, RR_FETCH_COUNTRIES, countries, dsd_rr_country_list);
+RR_DEFINE_FETCH_CB(rr_on_states, RR_FETCH_COUNTRY_STATES, states, dsd_rr_state_list);
+RR_DEFINE_FETCH_CB(rr_on_counties, RR_FETCH_STATE_COUNTIES, counties, dsd_rr_county_list);
+RR_DEFINE_FETCH_CB(rr_on_trs_list, RR_FETCH_STATE_TRS, trs, dsd_rr_trs_list);
+RR_DEFINE_FETCH_CB(rr_on_sites, RR_FETCH_TRS_SITES, sites, dsd_rr_site_list);
+RR_DEFINE_FETCH_CB(rr_on_talkgroups, RR_FETCH_TRS_TALKGROUPS, tgs, dsd_rr_talkgroup_list);
+RR_DEFINE_FETCH_CB(rr_on_talkgroup_cats, RR_FETCH_TRS_TALKGROUP_CATS, cats, dsd_rr_talkgroup_cat_list);
+
+/**
+ * @brief getTrsDetails completion. The one kind that does not park what it was given.
+ *
+ * The resolve issues up to three more blocking calls, so it has to happen here on
+ * the worker rather than on the UI thread; what reaches the ring is the resolved
+ * dsd_rr_system_info, never the raw details.
+ */
+static void
+rr_on_trs_details(void* user, dsd_rr_status status, const dsd_rr_error* err, void* result) {
+    RrFetchCtx* ctx = (RrFetchCtx*)user;
+    if (ctx == NULL) {
+        return;
+    }
+    dsd_rr_error resolved_err;
+    DSD_MEMSET(&resolved_err, 0, sizeof(resolved_err));
+    RrWizPayload payload = rr_payload_none();
+    if (status == DSD_RR_OK && result != NULL) {
+        payload.info = rr_core_resolve_details(ctx, result, &status, &resolved_err);
+        if (payload.info == NULL) {
+            err = &resolved_err;
+        }
+    }
+    rr_core_park_result(ctx, status, err, payload);
 }
 
 /** @brief Submit getUserData to confirm the credentials are usable. */
@@ -731,7 +794,7 @@ rr_core_verify_account(RrWizardCore* w) {
     w->step = RR_STEP_VERIFY_ACCOUNT;
     rr_core_status_notify(w, k_status_checking);
 
-    const uint64_t id = dsd_rr_fetch_user_data(w->client, &ctx->auth, rr_core_on_fetch_done, ctx);
+    const uint64_t id = dsd_rr_fetch_user_data(w->client, &ctx->auth, rr_on_user_data, ctx);
     if (id == 0U) {
         /* No callback fires for a refused submission: the submitter frees. */
         rr_core_free_fetch_ctx(ctx);
@@ -1005,7 +1068,8 @@ typedef uint64_t (*RrIntFetchFn)(dsd_rr_client*, const dsd_rr_auth*, int, dsd_rr
  * @return 1 when the request is running.
  */
 static int
-rr_start_int_fetch(RrWizardCore* w, RrFetchKind kind, RrIntFetchFn fetch, int arg, const char* status) {
+rr_start_int_fetch(RrWizardCore* w, RrFetchKind kind, RrIntFetchFn fetch, int arg, dsd_rr_done_cb cb,
+                   const char* status) {
     RrFetchCtx* ctx = rr_core_new_ctx(w, kind);
     if (ctx == NULL) {
         return 0;
@@ -1013,7 +1077,7 @@ rr_start_int_fetch(RrWizardCore* w, RrFetchKind kind, RrIntFetchFn fetch, int ar
     if (status != NULL) {
         rr_core_status_notify(w, status);
     }
-    return rr_core_started(w, ctx, fetch(w->client, &ctx->auth, arg, rr_core_on_fetch_done, ctx));
+    return rr_core_started(w, ctx, fetch(w->client, &ctx->auth, arg, cb, ctx));
 }
 
 static void
@@ -1026,8 +1090,7 @@ rr_start_zip_lookup(RrWizardCore* w, const char* zip_text) {
     rr_core_status_notify(w, k_status_zip);
     /* The typed text, never a re-printed integer: a leading-zero ZIP has to
      * reach the client exactly as it was entered. */
-    (void)rr_core_started(w, ctx,
-                          dsd_rr_fetch_zipcode_info(w->client, &ctx->auth, zip_text, rr_core_on_fetch_done, ctx));
+    (void)rr_core_started(w, ctx, dsd_rr_fetch_zipcode_info(w->client, &ctx->auth, zip_text, rr_on_zipcode, ctx));
 }
 
 static void
@@ -1038,32 +1101,34 @@ rr_start_browse_countries(RrWizardCore* w) {
         return;
     }
     rr_core_status_notify(w, k_status_countries);
-    (void)rr_core_started(w, ctx, dsd_rr_fetch_countries(w->client, &ctx->auth, rr_core_on_fetch_done, ctx));
+    (void)rr_core_started(w, ctx, dsd_rr_fetch_countries(w->client, &ctx->auth, rr_on_countries, ctx));
 }
 
 static void
 rr_start_browse_states(RrWizardCore* w, int coid) {
     rr_core_start_batch(w);
-    (void)rr_start_int_fetch(w, RR_FETCH_COUNTRY_STATES, &dsd_rr_fetch_country_states, coid, k_status_states);
+    (void)rr_start_int_fetch(w, RR_FETCH_COUNTRY_STATES, &dsd_rr_fetch_country_states, coid, rr_on_states,
+                             k_status_states);
 }
 
 static void
 rr_start_browse_counties(RrWizardCore* w, int stid) {
     rr_core_start_batch(w);
-    (void)rr_start_int_fetch(w, RR_FETCH_STATE_COUNTIES, &dsd_rr_fetch_state_counties, stid, k_status_counties);
+    (void)rr_start_int_fetch(w, RR_FETCH_STATE_COUNTIES, &dsd_rr_fetch_state_counties, stid, rr_on_counties,
+                             k_status_counties);
 }
 
 /** @return 1 when the systems fetch is running. */
 static int
 rr_start_results_for_county(RrWizardCore* w, int ctid) {
     rr_core_start_batch(w);
-    return rr_start_int_fetch(w, RR_FETCH_COUNTY_TRS, &dsd_rr_fetch_county_trs, ctid, k_status_systems);
+    return rr_start_int_fetch(w, RR_FETCH_COUNTY_TRS, &dsd_rr_fetch_county_trs, ctid, rr_on_trs_list, k_status_systems);
 }
 
 static void
 rr_start_results_for_state(RrWizardCore* w, int stid) {
     rr_core_start_batch(w);
-    (void)rr_start_int_fetch(w, RR_FETCH_STATE_TRS, &dsd_rr_fetch_state_trs, stid, k_status_systems);
+    (void)rr_start_int_fetch(w, RR_FETCH_STATE_TRS, &dsd_rr_fetch_state_trs, stid, rr_on_trs_list, k_status_systems);
 }
 
 /*
@@ -1075,11 +1140,12 @@ rr_start_results_for_state(RrWizardCore* w, int stid) {
 static const struct {
     RrFetchKind kind;
     RrIntFetchFn fetch;
+    dsd_rr_done_cb cb;
 } k_system_calls[] = {
-    {RR_FETCH_TRS_DETAILS, &dsd_rr_fetch_trs_details},
-    {RR_FETCH_TRS_SITES, &dsd_rr_fetch_trs_sites},
-    {RR_FETCH_TRS_TALKGROUPS, &dsd_rr_fetch_trs_talkgroups},
-    {RR_FETCH_TRS_TALKGROUP_CATS, &dsd_rr_fetch_trs_talkgroup_cats},
+    {RR_FETCH_TRS_DETAILS, &dsd_rr_fetch_trs_details, rr_on_trs_details},
+    {RR_FETCH_TRS_SITES, &dsd_rr_fetch_trs_sites, rr_on_sites},
+    {RR_FETCH_TRS_TALKGROUPS, &dsd_rr_fetch_trs_talkgroups, rr_on_talkgroups},
+    {RR_FETCH_TRS_TALKGROUP_CATS, &dsd_rr_fetch_trs_talkgroup_cats, rr_on_talkgroup_cats},
 };
 
 static void
@@ -1090,7 +1156,7 @@ rr_load_system(RrWizardCore* w, int sid) {
     w->step = RR_STEP_LOADING_SYSTEM;
     rr_core_status_notify(w, k_status_system);
     for (size_t i = 0; i < sizeof k_system_calls / sizeof k_system_calls[0]; i++) {
-        if (!rr_start_int_fetch(w, k_system_calls[i].kind, k_system_calls[i].fetch, sid, NULL)) {
+        if (!rr_start_int_fetch(w, k_system_calls[i].kind, k_system_calls[i].fetch, sid, k_system_calls[i].cb, NULL)) {
             /* rr_core_started() already retired the batch and set the error. */
             return;
         }
@@ -1348,13 +1414,13 @@ rr_core_kind_is_system(int kind) {
 static int
 rr_core_apply_system_slot(RrWizardCore* w, RrWizResult* r) {
     switch (r->kind) {
-        case RR_FETCH_TRS_DETAILS: w->pend_info = (dsd_rr_system_info*)r->result; break;
-        case RR_FETCH_TRS_SITES: w->pend_sites = (dsd_rr_site_list*)r->result; break;
-        case RR_FETCH_TRS_TALKGROUPS: w->pend_tgs = (dsd_rr_talkgroup_list*)r->result; break;
-        case RR_FETCH_TRS_TALKGROUP_CATS: w->pend_cats = (dsd_rr_talkgroup_cat_list*)r->result; break;
+        case RR_FETCH_TRS_DETAILS: w->pend_info = r->payload.info; break;
+        case RR_FETCH_TRS_SITES: w->pend_sites = r->payload.sites; break;
+        case RR_FETCH_TRS_TALKGROUPS: w->pend_tgs = r->payload.tgs; break;
+        case RR_FETCH_TRS_TALKGROUP_CATS: w->pend_cats = r->payload.cats; break;
         default: return 0;
     }
-    r->result = NULL; /* ownership taken */
+    r->payload = rr_payload_none(); /* ownership taken */
     if (w->system_pending > 0) {
         w->system_pending--;
     }
@@ -1376,7 +1442,7 @@ rr_core_apply_search_result(RrWizardCore* w, RrWizResult* r) {
              * into the county's system list. The city is published AFTER the
              * chained fetch so it, and not the generic "Loading systems...",
              * is what the user reads while that runs. */
-            const dsd_rr_zip_info* zip = (const dsd_rr_zip_info*)r->result;
+            const dsd_rr_zip_info* zip = r->payload.zip;
             if (rr_start_results_for_county(w, zip->ctid)) {
                 rr_core_status_notify(w, zip->city);
             }
@@ -1384,27 +1450,27 @@ rr_core_apply_search_result(RrWizardCore* w, RrWizResult* r) {
         }
         case RR_FETCH_COUNTRIES:
             dsd_rr_country_list_free(&w->countries);
-            rr_core_take_list(&w->countries, r->result, sizeof w->countries);
-            r->result = NULL;
+            rr_core_take_list(&w->countries, r->payload.countries, sizeof w->countries);
+            r->payload = rr_payload_none();
             rr_core_show_countries(w);
             return 1;
         case RR_FETCH_COUNTRY_STATES:
             dsd_rr_state_list_free(&w->states);
-            rr_core_take_list(&w->states, r->result, sizeof w->states);
-            r->result = NULL;
+            rr_core_take_list(&w->states, r->payload.states, sizeof w->states);
+            r->payload = rr_payload_none();
             rr_core_show_states(w);
             return 1;
         case RR_FETCH_STATE_COUNTIES:
             dsd_rr_county_list_free(&w->counties);
-            rr_core_take_list(&w->counties, r->result, sizeof w->counties);
-            r->result = NULL;
+            rr_core_take_list(&w->counties, r->payload.counties, sizeof w->counties);
+            r->payload = rr_payload_none();
             rr_core_show_counties(w);
             return 1;
         case RR_FETCH_STATE_TRS:
         case RR_FETCH_COUNTY_TRS:
             dsd_rr_trs_list_free(&w->results);
-            rr_core_take_list(&w->results, r->result, sizeof w->results);
-            r->result = NULL;
+            rr_core_take_list(&w->results, r->payload.trs, sizeof w->results);
+            r->payload = rr_payload_none();
             rr_core_show_results(w);
             return 1;
         default: return 0;
@@ -1553,15 +1619,15 @@ static int
 rr_core_dispatch_error(RrWizardCore* w, RrWizResult* r) {
     if (r->kind == RR_FETCH_TRS_TALKGROUP_CATS && w->step == RR_STEP_LOADING_SYSTEM) {
         /* Category names are display-only; losing them must not lose the load. */
-        r->result = NULL;
+        r->payload = rr_payload_none();
         return rr_core_apply_system_slot(w, r);
     }
     /* One failure retires the whole batch, so no sibling can land on top of
      * the error message. rr_core_fail() bumps the generation, which is what
      * drops the siblings - cancellation does not suppress their callbacks. */
     rr_core_fail(w, rr_core_status_text(w, r->status, &r->err));
-    rr_core_free_result(r->kind, r->result);
-    r->result = NULL;
+    rr_core_free_result(r->kind, r->payload);
+    r->payload = rr_payload_none();
     return 1;
 }
 
@@ -1574,8 +1640,8 @@ rr_core_dispatch(RrWizardCore* w, RrWizResult* r) {
     if (r->generation != w->generation) {
         /* The user moved on; a stale reply must not overwrite fresh state. */
         rr_core_note_stale_drop(w);
-        rr_core_free_result(r->kind, r->result);
-        r->result = NULL;
+        rr_core_free_result(r->kind, r->payload);
+        r->payload = rr_payload_none();
         return 0;
     }
     if (w->outstanding > 0) {
@@ -1592,16 +1658,16 @@ rr_core_dispatch(RrWizardCore* w, RrWizResult* r) {
          * that calls dsd_rr_cancel() without that bump would strand
          * system_pending here and leave RR_STEP_LOADING_SYSTEM with nothing to
          * finish it - cancel through rr_core_start_batch(), never directly. */
-        rr_core_free_result(r->kind, r->result);
-        r->result = NULL;
+        rr_core_free_result(r->kind, r->payload);
+        r->payload = rr_payload_none();
         return 0;
     }
     if (r->status != DSD_RR_OK) {
         return rr_core_dispatch_error(w, r);
     }
     const int changed = rr_core_apply_result(w, r);
-    rr_core_free_result(r->kind, r->result);
-    r->result = NULL;
+    rr_core_free_result(r->kind, r->payload);
+    r->payload = rr_payload_none();
     return changed;
 }
 
@@ -1610,8 +1676,8 @@ static void
 rr_core_drain_ring_and_free(RrWizardCore* w) {
     while (w->ring_count > 0U) {
         RrWizResult* r = &w->ring[w->ring_head];
-        rr_core_free_result(r->kind, r->result);
-        r->result = NULL;
+        rr_core_free_result(r->kind, r->payload);
+        r->payload = rr_payload_none();
         w->ring_head = (w->ring_head + 1U) % RR_WIZ_RING_SLOTS;
         w->ring_count--;
     }
@@ -1824,7 +1890,7 @@ rr_wizard_core_pump(RrWizardCore* w) {
         RrWizResult* r = &w->ring[w->ring_head];
         batch[n] = *r;
         n++;
-        r->result = NULL; /* ownership taken */
+        r->payload = rr_payload_none(); /* ownership taken */
         w->ring_head = (w->ring_head + 1U) % RR_WIZ_RING_SLOTS;
         w->ring_count--;
     }
