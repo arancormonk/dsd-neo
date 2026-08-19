@@ -201,6 +201,18 @@ int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_l
 int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
 
 /**
+ * @brief Decryptability check against key material the caller supplies.
+ *
+ * Same rules as dsd_dmr_voice_slot_can_decrypt(), but the AES-loaded flag is a parameter
+ * rather than state->aes_key_loaded[slot], so classification can evaluate a key id that has
+ * not been activated -- which is what --dmr-tg-key-csv requires at LC/PI time, before any
+ * voice frame has run. Kirisun 0x36/0x37 still reads per-slot segment completeness, which no
+ * prospective key id can change.
+ */
+int dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key,
+                                  int aes_loaded);
+
+/**
  * @brief Slot-aware DMR/P25-style decryptability check.
  *
  * Use this when ALGID rules depend on per-slot key metadata. Kirisun 0x36/0x37

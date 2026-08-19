@@ -137,6 +137,29 @@ main(void) {
     rc |= expect_eq("force-algid-fill-alg", state.payload_algid, 0x21);
     rc |= expect_eq("force-algid-known-key-preserved", state.payload_keyid, 0x03);
 
+    // dsd_dmr_voice_kid_can_decrypt() takes aes_loaded as a parameter instead of reading
+    // state.aes_key_loaded[slot], so classification can evaluate a key id it has not activated.
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    // Slot 0 has no AES material activated; the caller supplies a prospective key id's instead.
+    state.aes_key_loaded[0] = 0;
+
+    // AES-128 (0x24) keys off aes_loaded, not the scalar.
+    rc |= expect_eq("kid-aes-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 1), 1);
+    rc |= expect_eq("kid-aes-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 0), 0);
+
+    // RC4 (0x21) keys off the scalar, not aes_loaded.
+    rc |= expect_eq("kid-rc4-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0x1234ULL, 0), 1);
+    rc |= expect_eq("kid-rc4-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0ULL, 1), 0);
+
+    // The slot wrapper still reads the slot's own activated flag.
+    state.aes_key_loaded[0] = 1;
+    rc |= expect_eq("slot-wrapper-aes", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x24, 0ULL), 1);
+
+    // Kirisun 0x36/0x37 completeness is per-slot state that no prospective key id can change,
+    // so both entry points agree and both ignore the supplied aes_loaded.
+    rc |= expect_eq("kid-kirisun", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, 0ULL, 1), 0);
+
     if (rc == 0) {
         printf("CORE_DMR_VOICE_ALG_GATE: OK\n");
     }
