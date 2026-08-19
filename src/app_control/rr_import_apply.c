@@ -7,6 +7,9 @@
 
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/runtime/radioreference_generate.h>
+#include <dsd-neo/runtime/radioreference_import.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /**

@@ -23,6 +23,10 @@
 #include <string.h>
 
 #include "../../src/app_control/commands_internal.h"
+#include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/state_fwd.h"
+#include "dsd-neo/runtime/radioreference_generate.h"
+#include "dsd-neo/runtime/radioreference_import.h"
 
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 static int g_io_control_tune_result = RTL_STREAM_TUNE_OK;

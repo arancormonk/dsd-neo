@@ -19,7 +19,6 @@
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 static int g_failures = 0;

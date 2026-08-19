@@ -18,7 +18,6 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_RR_IMPORT_APPLY_H_
 
 #include <dsd-neo/runtime/radioreference_import.h>
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
