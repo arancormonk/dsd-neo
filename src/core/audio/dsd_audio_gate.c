@@ -238,14 +238,21 @@ dsd_dmr_apply_forced_algid(dsd_state* state) {
         return 0;
     }
 
-    if (state->currentslot == 0 && (state->dmr_so & 0x40) != 0) {
+    // Fallback only: OTA identifiers from a verified PI header or LE single burst take
+    // precedence, so a slot that already carries an ALG ID is left untouched and a known
+    // KEY ID is never replaced by the 0xFF "no key id" sentinel (issue #351).
+    if (state->currentslot == 0 && (state->dmr_so & 0x40) != 0 && state->payload_algid == 0) {
         state->payload_algid = state->M & 0xFF;
-        state->payload_keyid = 0xFF;
+        if (state->payload_keyid == 0) {
+            state->payload_keyid = 0xFF;
+        }
         return 1;
     }
-    if (state->currentslot == 1 && (state->dmr_soR & 0x40) != 0) {
+    if (state->currentslot == 1 && (state->dmr_soR & 0x40) != 0 && state->payload_algidR == 0) {
         state->payload_algidR = state->M & 0xFF;
-        state->payload_keyidR = 0xFF;
+        if (state->payload_keyidR == 0) {
+            state->payload_keyidR = 0xFF;
+        }
         return 1;
     }
 
