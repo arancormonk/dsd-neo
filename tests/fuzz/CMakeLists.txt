@@ -70,6 +70,8 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+        # csvDmrTgKeyImport() clears the live map through keyring_dmr_tg_map_reset().
+        ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
 )
 
 dsd_neo_add_fuzzer(
