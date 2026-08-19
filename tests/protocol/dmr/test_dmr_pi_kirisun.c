@@ -183,6 +183,55 @@ test_pi_canonical_crypto_uses_algorithm_aware_keys(void) {
     assert(call.audio_permitted == 1U);
 }
 
+// The PI header classifies before any voice frame has applied a --dmr-tg-key-csv override, so it
+// must resolve the effective key id from the slot's own call snapshot. A mapped talkgroup whose
+// signaled key id has nothing imported still decrypts, and the published key id stays the OTA one.
+static void
+test_pi_mapped_tg_classifies_decryptable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    /* MFID 0x10 (DMRA); byte 0 low bits 0x01 normalize to ALGID 0x21 (RC4, keys off the scalar);
+     * byte 2 is the signaled key id, deliberately not imported. */
+    uint8_t rc4_pi[10] = {0x01, 0x10, 0x03, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 1001U; /* seed_active_voice_call()'s talkgroup */
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    /* The published key id is still the OTA one, never the override. */
+    assert(call.kid == 0x03);
+
+    // Only a real map hit may change the classification: the same PI header with the row naming a
+    // different talkgroup resolves from the slot's own key material and stays encrypted.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 4321U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED);
+    assert(call.audio_permitted == 0U);
+}
+
 static void
 test_pi_kirisun_slot0_sets_fields_and_le_mode(void) {
     static dsd_opts opts;
@@ -737,6 +786,7 @@ main(void) {
 
     test_pi_kirisun_slot0_sets_fields_and_le_mode();
     test_pi_canonical_crypto_uses_algorithm_aware_keys();
+    test_pi_mapped_tg_classifies_decryptable();
     test_pi_kirisun_requires_crc_ok();
     test_pi_kirisun_slot1_sets_fields_and_le_mode();
     test_pi_kirisun_generic_alg_sets_fields();

@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -225,13 +226,27 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     const uint8_t algid = (uint8_t)(slot == 0U ? state->payload_algid : state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? state->payload_keyid : state->payload_keyidR);
     const uint64_t mi = slot == 0U ? state->payload_mi : state->payload_miR;
-    const uint64_t r_key = slot == 0U ? state->R : state->RR;
+
+    // Same reason as dmr_flco_publish_crypto(): classify against the key id that will decrypt
+    // the call. One snapshot per PI header, not per voice frame.
+    dsd_call_snapshot call;
+    int mapped = 0;
+    uint8_t eff_kid = (uint8_t)kid;
+    if (dsd_call_state_get(state, slot, &call) > 0) {
+        eff_kid = keyring_dmr_kid_for_call(state, &call, (uint8_t)kid, &mapped);
+    }
+    unsigned long long r_key = slot == 0U ? state->R : state->RR;
+    int aes_loaded = state->aes_key_loaded[slot];
+    if (mapped) {
+        (void)keyring_kid_material(state, (int)eff_kid, &r_key, &aes_loaded);
+    }
+
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
-                                    : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, r_key);
+                                    : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, r_key, aes_loaded);
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,
-        .kid = kid,
+        .kid = kid, /* OTA truth, never the override */
         .mi = mi,
         .audio_permitted = (uint8_t)has_key,
     };

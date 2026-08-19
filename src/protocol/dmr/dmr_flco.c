@@ -20,6 +20,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -621,15 +622,28 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
     const uint64_t mi = ctx->slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
-    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
+
+    // Classify against the key id that will actually decrypt this call, not the one the slot
+    // happens to be carrying: --dmr-tg-key-csv is applied on the voice path, which has not run
+    // yet when the LC arrives. Only a real map hit takes the material lookup, so the unmapped
+    // path is byte-for-byte what it was.
+    int mapped = 0;
+    const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
+    const uint8_t eff_kid = keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, (uint8_t)kid, &mapped);
+    unsigned long long r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
+    int aes_loaded = ctx->state->aes_key_loaded[ctx->slot];
+    if (mapped) {
+        (void)keyring_kid_material(ctx->state, (int)eff_kid, &r_key, &aes_loaded);
+    }
+
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
-                                    : dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
+                                    : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, r_key, aes_loaded);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
                                      : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
         .algid = algid,
-        .kid = kid,
+        .kid = kid, /* OTA truth, never the override */
         .mi = mi,
         .audio_permitted = (uint8_t)(!encrypted || has_key),
     };
@@ -939,16 +953,31 @@ dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
     }
 }
 
-/* Key-aware: non-zero when the loaded key material can decrypt this slot's
- * call, so it is followed rather than locked out. */
+/* Key-aware: non-zero when the loaded key material can decrypt this slot's call, so it is
+ * followed rather than locked out. Resolves --dmr-tg-key-csv first -- locking out a talkgroup
+ * the map can decrypt forces a P_CLEAR and drops the channel, which cannot self-heal. */
 static int
 dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
+    // dsd_dmr_voice_slot_can_decrypt() used to reject an out-of-range slot before reading
+    // aes_key_loaded[]; that read is inlined here now, so the bound has to be checked here too.
+    if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return 0;
+    }
     const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
-    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
     if (algid == 0U) {
         return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
     }
-    return dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
+
+    const uint8_t kid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
+    int mapped = 0;
+    const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
+    const uint8_t eff_kid = keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, kid, &mapped);
+    unsigned long long r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
+    int aes_loaded = ctx->state->aes_key_loaded[ctx->slot];
+    if (mapped) {
+        (void)keyring_kid_material(ctx->state, (int)eff_kid, &r_key, &aes_loaded);
+    }
+    return dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, r_key, aes_loaded);
 }
 
 static void

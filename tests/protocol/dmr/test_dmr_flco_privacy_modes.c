@@ -1914,6 +1914,122 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
     dsd_state_ext_free_all(&state);
 }
 
+// A mapped talkgroup whose signaled key id has nothing imported, but whose mapped key id does,
+// must classify as decryptable. Before the effective-KID seam this classified as encrypted and
+// --enc-lockout could synthesize a P_CLEAR and retune away from a call the map decrypts fine --
+// which cannot self-heal once the channel is dropped.
+static void
+test_mapped_tg_classifies_decryptable(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    state.payload_algid = 0x21; /* RC4: keys off the scalar */
+    state.payload_keyid = 0x03; /* signaled id, deliberately not imported */
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 123U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    /* FLCO 0x00 is group voice; SO bit 0x40 is the privacy bit. */
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 123U, 4567U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    /* The published key id is still the OTA one, never the override. */
+    assert(call.kid == 0x03);
+    dsd_state_ext_free_all(&state);
+
+    // Only a real map hit may change the classification: the identical call with the row naming
+    // a different talkgroup still resolves from the slot's own key material and stays encrypted.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 456U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    irr = 0;
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 123U, 4567U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+
+    assert(irr == 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    assert(call.audio_permitted == 0U);
+    dsd_state_ext_free_all(&state);
+}
+
+// Drives a corroborated encrypted group voice header on TG 123 whose signaled key id (0x03) has
+// nothing imported, with the --dmr-tg-key-csv row for that talkgroup either installed or absent,
+// and reports whether the lockout ledger armed.
+static int
+run_mapped_tg_lockout_probe(int install_map_row) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[80];
+    uint32_t irr = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    init_event_history(&history[0], 0, 1);
+    init_event_history(&history[1], 0, 1);
+    state.event_history_s = history;
+    opts.trunk_enable = 1;
+    opts.trunk_tune_enc_calls = 0;
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    if (install_map_row) {
+        state.dmr_tg_key_map_tg[0] = 123U;
+        state.dmr_tg_key_map_kid[0] = 0x7B;
+        state.dmr_tg_key_map_count = 1;
+    }
+
+    // The lockout is quarantined behind hysteresis: a lone corrupt LC must not arm it. Two
+    // corroborating observations establish the encrypted class -- see tests/protocol/dmr/
+    // test_dmr_enc_class.c:39-46 for the same sequence.
+    (void)dmr_enc_class_observe(&state, 0U, 0x40U, 0);
+    (void)dmr_enc_class_observe(&state, 0U, 0x40U, 0);
+    assert(dmr_enc_class_established_enc(&state, 0U) == 1);
+
+    build_regular_flco(bits, 0x00U, 0x00U, 0x40U, 123U, 4567U);
+    dmr_flco(&opts, &state, bits, 1U, &irr, 1U);
+    assert(irr == 0U);
+
+    const int locked = dsd_enc_lockout_entry_active(&state, 123U, 1);
+    dsd_state_ext_free_all(&state);
+    return locked;
+}
+
+// The same call must never reach the lockout ledger. dmr_flco_slot_can_decrypt() gates
+// dmr_flco_arm_enc_lockout(), which synthesizes a P_CLEAR and drops the channel.
+static void
+test_mapped_tg_is_not_locked_out(void) {
+    // Positive control first: without the map row this exact fixture does arm the ledger, so the
+    // 0 below is the map's doing rather than a lockout path the fixture never reached.
+    assert(run_mapped_tg_lockout_probe(0) == 1);
+    // Nothing was locked out, so nothing forces a release.
+    assert(run_mapped_tg_lockout_probe(1) == 0);
+}
+
 static void
 test_completed_slco_tier3_site_parameters_update_state(void) {
     static dsd_opts opts;
@@ -2279,6 +2395,8 @@ main(void) {
     test_lone_contradicting_emb_does_not_flap_established_clear();
     test_terminator_privacy_bit_does_not_lock_out();
     test_crc_failed_header_enc_requires_repeat_for_lockout();
+    test_mapped_tg_classifies_decryptable();
+    test_mapped_tg_is_not_locked_out();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();
