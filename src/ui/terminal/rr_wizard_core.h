@@ -28,13 +28,14 @@
 
 #include <stddef.h>
 
-/* rr_import_apply.h carries the two payload types the hook table names, and it
- * pulls <dsd-neo/runtime/radioreference_import.h> in for itself. This header
- * uses nothing from that one directly, so it does not include it: IWYU strict
- * rejects the unused include. rr_wizard_core.c includes it for
- * dsd_rr_choose_app_key(). */
+/* rr_import_apply.h carries the two payload types the hook table names.
+ * radioreference.h and radioreference_import.h are named directly by the
+ * Stage 7 accessors below, so both are included outright - the "unused
+ * include" note that stood here while the header only declared the lifecycle
+ * no longer applies. */
 #include <dsd-neo/app_control/rr_import_apply.h>
-#include <dsd-neo/runtime/radioreference.h> // IWYU pragma: keep (dsd_rr_transport under DSD_NEO_TEST_HOOKS)
+#include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/radioreference_import.h>
 
 /** @brief Where the wizard is. Steps beyond RR_STEP_SEARCH_MODE arrive later. */
 typedef enum {
@@ -60,10 +61,17 @@ typedef enum {
 /**
  * @brief Everything the core asks of its presenter.
  *
- * Every member may be NULL; the core NULL-checks before each call. The core
- * never opens a widget while one it opened is still outstanding, so a hook is
- * free to complete synchronously (both curses widgets do so on their failure
- * paths).
+ * Every member may be NULL; the core NULL-checks before each call. A hook is
+ * free to complete synchronously - both curses widgets do so on their failure
+ * paths, and an empty chooser answers -1 from inside open_chooser.
+ *
+ * The core never opens a PROMPT over a widget it already opened: that one
+ * matters, because the curses prompt closes any live prompt first and the
+ * close delivers a spurious cancel. A chooser is different - it replaces
+ * rather than closing, so chooser-over-chooser is safe and the core does not
+ * defer it. The one case the core cannot cover is a restart
+ * (rr_wizard_core_begin_import()) while a widget is up; the presenter owns
+ * closing its widgets when the step changes.
  */
 typedef struct {
     void (*open_string)(void* user, const char* title, const char* prefill, size_t cap);
@@ -145,12 +153,56 @@ int rr_wizard_core_fetch_in_flight(const RrWizardCore* w);
 /** @brief Sanitized failure text; "" when there is none. Never a credential. */
 const char* rr_wizard_core_error_text(const RrWizardCore* w);
 
+/* --- Stage 7: system stage ------------------------------------------------ */
+
+/** @brief The RadioReference system ID currently loaded/loading, or 0. */
+int rr_wizard_core_sid(const RrWizardCore* w);
+
+/** @brief Classification of the loaded system. NULL until RR_STEP_SYSTEM is reached. */
+const dsd_rr_system_info* rr_wizard_core_system(const RrWizardCore* w);
+
+/** @brief Sites of the loaded system. Never NULL for a live core; may hold count == 0. */
+const dsd_rr_site_list* rr_wizard_core_sites(const RrWizardCore* w);
+
+/** @brief Talkgroups of the loaded system, with dsd_rr_talkgroup::category resolved. Display only. */
+const dsd_rr_talkgroup_list* rr_wizard_core_talkgroups(const RrWizardCore* w);
+
+/** @brief 1 when site @p index is selected, 0 otherwise (0 for an out-of-range index). */
+int rr_wizard_core_site_selected(const RrWizardCore* w, size_t index);
+
+/** @brief How many sites are selected. */
+size_t rr_wizard_core_selected_count(const RrWizardCore* w);
+
+/** @brief Radio-select for a trunked system, multi-select for a conventional one. Rebuilds the plan. */
+void rr_wizard_core_toggle_site(RrWizardCore* w, size_t index);
+
+/** @brief which: 0 partial-enc (0/1), 1 simulcast (-1/0/1), 2 esk (-1/0/1). Rebuilds the plan. */
+void rr_wizard_core_cycle_option(RrWizardCore* w, int which);
+
+/** @brief Current option answers. Never NULL for a live core. */
+const dsd_rr_import_options* rr_wizard_core_options(const RrWizardCore* w);
+
+/**
+ * @brief The live import plan.
+ *
+ * INVALIDATED by every mutator: rr_wizard_core_toggle_site(),
+ * rr_wizard_core_cycle_option(), rr_wizard_core_cancel() and any pump that
+ * reloads a system all free the previous plan first, and with it
+ * plan->group_csv_text, plan->chan_csv_text and plan->warnings.items. Re-fetch
+ * this pointer at the top of every render; never cache it, and never cache a
+ * warning string across a key event. NULL before RR_STEP_SYSTEM.
+ */
+const dsd_rr_import_plan* rr_wizard_core_plan(const RrWizardCore* w);
+
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Install a mock transport, and suppress the dsd_rr_available() gate. */
 void rr_wizard_core_set_transport_for_test(RrWizardCore* w, const dsd_rr_transport* t);
 
 /** @brief Force the "result ring is full" condition the next pump must report. */
 void rr_wizard_core_mark_ring_overflow_for_test(RrWizardCore* w);
+
+/** @brief How many worker results this core has freed as stale (cancelled or superseded). */
+int rr_wizard_core_stale_drops_for_test(const RrWizardCore* w);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_ */
