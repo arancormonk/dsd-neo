@@ -939,6 +939,118 @@ test_vertex_import_and_apply(void) {
     return 0;
 }
 
+static int
+write_tg_key_csv(char* tmpl, size_t tmpl_size, const char* rows) {
+    DSD_SNPRINTF(tmpl, tmpl_size, "%s", "dsd-neo-test-tg-key-XXXXXX");
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+    FILE* fp = dsd_fopen_private(tmpl, "w");
+    if (!fp) {
+        (void)remove(tmpl);
+        return -1;
+    }
+    DSD_FPRINTF(fp, "tg (dec),keyid (hex)\n");
+    DSD_FPRINTF(fp, "%s", rows);
+    fclose(fp);
+    return 0;
+}
+
+static int
+test_dmr_tg_key_import_and_lookup(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    // The duplicate TG row must replace the earlier mapping, not add a row.
+    char tmpl[64];
+    if (write_tg_key_csv(tmpl, sizeof tmpl, "123,7B\n4567,03\n123,1F\n") != 0) {
+        free_test_state(state);
+        return 1;
+    }
+
+    int failed = 0;
+    uint8_t kid = 0;
+    if (csvDmrTgKeyImport(state, tmpl) != 0 || state->dmr_tg_key_map_count != 2) {
+        failed = 1;
+    }
+    if (keyring_dmr_tg_map_kid(state, 123U, &kid) != 1 || kid != 0x1F) {
+        failed = 1;
+    }
+    if (keyring_dmr_tg_map_kid(state, 4567U, &kid) != 1 || kid != 0x03) {
+        failed = 1;
+    }
+    if (keyring_dmr_tg_map_kid(state, 999U, &kid) != 0) {
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_dmr_tg_key_import_rejects_bad_rows(void) {
+    // Each malformed file must fail the import and leave the map untouched.
+    static const char* bad_rows[] = {
+        "123,100\n",     // key id above the DMR 8-bit range
+        "0,7B\n",        // talkgroup zero
+        "16777216,7B\n", // talkgroup above 24 bits
+        "abc,7B\n",      // non-numeric talkgroup
+        "123\n",         // missing key id column
+        "",              // header only, no mappings
+    };
+
+    for (size_t i = 0; i < sizeof(bad_rows) / sizeof(bad_rows[0]); i++) {
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        if (!state) {
+            return 1;
+        }
+        char tmpl[64];
+        if (write_tg_key_csv(tmpl, sizeof tmpl, bad_rows[i]) != 0) {
+            free_test_state(state);
+            return 1;
+        }
+        int failed = 0;
+        if (csvDmrTgKeyImport(state, tmpl) == 0 || state->dmr_tg_key_map_count != 0) {
+            DSD_FPRINTF(stderr, "tg-key bad row case %zu not rejected\n", i);
+            failed = 1;
+        }
+        (void)remove(tmpl);
+        free_test_state(state);
+        if (failed) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+test_dmr_tg_key_import_missing_file(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    char dir[128];
+    if (pick_missing_dir(dir, sizeof dir) != 0) {
+        free_test_state(state);
+        return 1;
+    }
+
+    state->dmr_tg_key_map_count = 5;
+    int failed = 0;
+    if (csvDmrTgKeyImport(state, dir) == 0 || state->dmr_tg_key_map_count != 5) {
+        failed = 1;
+    }
+
+    free_test_state(state);
+    return failed;
+}
+
 int
 main(void) {
     if (test_group_import_missing_file() != 0) {
@@ -983,6 +1095,15 @@ main(void) {
         return 1;
     }
     if (test_vertex_import_and_apply() != 0) {
+        return 1;
+    }
+    if (test_dmr_tg_key_import_and_lookup() != 0) {
+        return 1;
+    }
+    if (test_dmr_tg_key_import_rejects_bad_rows() != 0) {
+        return 1;
+    }
+    if (test_dmr_tg_key_import_missing_file() != 0) {
         return 1;
     }
     return 0;

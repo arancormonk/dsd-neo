@@ -909,6 +909,19 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_vertex_ks_csv_cli = argv[i] + 20;                                                                      \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--dmr-tg-key-csv") == 0) {                                                                \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--dmr-tg-key-csv requires a CSV path\n");                                                   \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            dmr_tg_key_csv_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--dmr-tg-key-csv=", 17) == 0) {                                                          \
+            dmr_tg_key_csv_cli = argv[i] + 17;                                                                         \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-force-algid") == 0) {                                                               \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--dmr-force-algid requires a hex ALGID value\n");                                           \
@@ -1369,6 +1382,18 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
     }                                                                                                                  \
+    if (dmr_tg_key_csv_cli) {                                                                                          \
+        char tg_key_path[DSD_CLI_LOCAL_PATH_MAX];                                                                      \
+        if (!cli_resolve_existing_local_file_option("--dmr-tg-key-csv", dmr_tg_key_csv_cli, tg_key_path,               \
+                                                    sizeof tg_key_path, out_exit_rc)) {                                \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (csvDmrTgKeyImport(state, tg_key_path) != 0) {                                                              \
+            LOG_ERROR("Invalid --dmr-tg-key-csv value\n");                                                             \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+    }                                                                                                                  \
     if (dmr_force_algid_cli) {                                                                                         \
         char hex[3];                                                                                                   \
         size_t nhex = 0;                                                                                               \
@@ -1426,6 +1451,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_baofeng_pc5_cli = NULL;
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
+    const char* dmr_tg_key_csv_cli = NULL;
     const char* dmr_force_algid_cli = NULL;
     const char* m17_signature_public_key_cli = NULL;
     const char* iq_capture_cli = NULL;

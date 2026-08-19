@@ -4694,6 +4694,160 @@ test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv(void) {
 }
 
 static int
+test_create_temp_tg_key_csv(char* out_path, size_t out_path_size, int malformed) {
+    if (!out_path || out_path_size == 0) {
+        return -1;
+    }
+
+    char tmpl[1024];
+    DSD_SNPRINTF(tmpl, sizeof tmpl, "%s", "dsdneo_tg_key_XXXXXX");
+
+    int fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        return -1;
+    }
+    (void)dsd_close(fd);
+
+    if (DSD_SNPRINTF(out_path, out_path_size, "%s.csv", tmpl) >= (int)out_path_size) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    if (rename(tmpl, out_path) != 0) {
+        (void)remove(tmpl);
+        return -1;
+    }
+
+    FILE* fp = dsd_fopen_private(out_path, "w");
+    if (!fp) {
+        (void)remove(out_path);
+        return -1;
+    }
+
+    if (malformed) {
+        fputs("tg (dec),keyid (hex)\n"
+              "123,100\n",
+              fp);
+    } else {
+        fputs("tg (dec),keyid (hex)\n"
+              "123,7B\n",
+              fp);
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+static int
+test_dmr_tg_key_csv_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char csv_path[1024];
+    if (test_create_temp_tg_key_csv(csv_path, sizeof csv_path, 0) != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "failed to create temp tg key csv\n");
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-tg-key-csv";
+    char* argv[] = {arg0, arg1, csv_path, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->dmr_tg_key_map_count != 1 || state->dmr_tg_key_map_tg[0] != 123U
+        || state->dmr_tg_key_map_kid[0] != 0x7B) {
+        DSD_FPRINTF(stderr, "unexpected parsed tg key mapping fields (count=%d)\n", state->dmr_tg_key_map_count);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(csv_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
+test_dmr_tg_key_csv_long_option_rejects_malformed_csv(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char csv_path[1024];
+    if (test_create_temp_tg_key_csv(csv_path, sizeof csv_path, 1) != 0) {
+        freeState(state);
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "failed to create malformed temp tg key csv\n");
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--dmr-tg-key-csv";
+    char* argv[] = {arg0, arg1, csv_path, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected parse error for malformed TG key CSV, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+    if (state->dmr_tg_key_map_count != 0) {
+        DSD_FPRINTF(stderr, "expected dmr_tg_key_map_count=0 on malformed CSV, got %d\n", state->dmr_tg_key_map_count);
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    (void)remove(csv_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+static int
 test_dmr_force_algid_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -6593,6 +6747,8 @@ main(void) {
     rc |= test_dmr_csi_ee72_long_option_parse();
     rc |= test_dmr_vertex_ks_csv_long_option_parse();
     rc |= test_dmr_vertex_ks_csv_long_option_rejects_malformed_csv();
+    rc |= test_dmr_tg_key_csv_long_option_parse();
+    rc |= test_dmr_tg_key_csv_long_option_rejects_malformed_csv();
     rc |= test_dmr_force_algid_long_option_parse();
     rc |= test_dmr_force_algid_long_option_rejects_invalid_value();
     rc |= test_m17_signature_public_key_long_option_parse();

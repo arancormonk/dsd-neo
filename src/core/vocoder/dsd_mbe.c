@@ -333,12 +333,17 @@ mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame
 
     (void)dsd_dmr_apply_forced_algid(state);
 
+    // A --dmr-tg-key-csv mapping for the slot's active talkgroup selects its key id in
+    // place of the OTA-signaled one; unmapped calls fall through to the signaled KID.
+    const int tg_key_mapped = keyring_dmr_tg_map_activate_slot(opts, state, state->currentslot);
+
     //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
-    if (state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80 && state->keyloader == 1) {
+    if (!tg_key_mapped && state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80
+        && state->keyloader == 1) {
         keyring_activate_slot(opts, state, state->currentslot);
     }
 
-    if (state->currentslot == 1 && state->payload_algidR != 0 && state->payload_algidR != 0x80
+    if (!tg_key_mapped && state->currentslot == 1 && state->payload_algidR != 0 && state->payload_algidR != 0x80
         && state->keyloader == 1) {
         keyring_activate_slot(opts, state, state->currentslot);
     }

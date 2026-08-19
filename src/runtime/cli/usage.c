@@ -332,6 +332,8 @@ dsd_cli_usage_section_advanced_key_options(void) {
     printf("      --dmr-csi-ee72 <hex>     Force Connect Systems EE72 key (18 hex chars).\n");
     printf("      --dmr-vertex-ks-csv <file>  Vertex ALG 0x07 key->keystream map CSV (key_hex, "
            "bits:hex[:offset[:step]]).\n");
+    printf("      --dmr-tg-key-csv <file>  DMR talkgroup->key ID map CSV (tg_dec, keyid_hex); a mapped talkgroup\n");
+    printf("                               selects that key ID from -K/-k instead of the signaled one.\n");
     printf("\n");
     printf("  -9 <dec>      Manually Enter and Enforce Kenwood 15-bit Scrambler Key Value (DMR) (Dec Value)\n");
     printf("\n");

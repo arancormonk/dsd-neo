@@ -906,12 +906,19 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     rc |= expect_int("clear: seed key import ok", svc_import_keys_dec(&opts, &state, "keys.csv"), 0);
     state.rkey_array[7] = 0x1234ULL;
     state.rkey_array_loaded[7] = 1U;
+    state.dmr_tg_key_map_tg[0] = 123U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+    state.dmr_tg_key_note_valid[0] = 1U;
     rc |= expect_int("keys clear ok", svc_clear_keys(&opts, &state), 0);
     rc |= expect_str("keys clear forgets the path", opts.key_in_file, "");
     rc |= expect_int("keys clear empties the keyring", (int)state.rkey_array[7], 0);
     rc |= expect_int("keys clear marks the slot unloaded", (int)state.rkey_array_loaded[7], 0);
     // Disarmed, or every consumer keeps treating the zeroed array as loaded keys.
     rc |= expect_int("keys clear disarms the keyloader", state.keyloader, 0);
+    // The TG->key ID override map indexes into the keyring, so it goes with it.
+    rc |= expect_int("keys clear empties the tg key map", state.dmr_tg_key_map_count, 0);
+    rc |= expect_int("keys clear drops the tg key notice latch", state.dmr_tg_key_note_valid[0], 0);
 
     g_chan_import_result = -1;
     g_key_import_result = -1;

@@ -46,7 +46,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         return 0;
     }
 
-    switch (selector % 5U) {
+    switch (selector % 6U) {
         case 0: (void)csvGroupImportPath(path, state); break;
         case 1:
             if (set_path(opts->chan_in_file, sizeof(opts->chan_in_file), path) == 0) {
@@ -63,7 +63,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 (void)csvKeyImportHex(opts, state);
             }
             break;
-        default: (void)csvVertexKsImport(state, path); break;
+        case 4: (void)csvVertexKsImport(state, path); break;
+        default: (void)csvDmrTgKeyImport(state, path); break;
     }
 
     dsd_state_ext_free_all(state);

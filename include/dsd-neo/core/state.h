@@ -34,6 +34,7 @@ enum DSD_ATTR_PACKED {
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
+    DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
@@ -1231,6 +1232,15 @@ struct dsd_state {
     int vertex_ks_active_idx[2];
     int vertex_ks_counter[2];
     uint8_t vertex_ks_warned[2];
+
+    // DMR talkgroup -> key ID override map (--dmr-tg-key-csv): a mapped talkgroup
+    // selects its key id in place of the OTA-signaled one at key-activation time.
+    // payload_keyid* stay the OTA truth; the map only steers the keyring lookup.
+    uint32_t dmr_tg_key_map_tg[DSD_DMR_TG_KEY_MAP_MAX];
+    uint8_t dmr_tg_key_map_kid[DSD_DMR_TG_KEY_MAP_MAX];
+    int dmr_tg_key_map_count;
+    uint64_t dmr_tg_key_note_epoch[2]; // per-slot applied-notice latch: one notice per call epoch
+    uint8_t dmr_tg_key_note_valid[2];
 
     // DMR: consecutive EMB decode failures per slot (hysteresis for robustness)
     uint8_t dmr_emb_err[2];

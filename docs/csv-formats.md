@@ -273,6 +273,36 @@ key_hex,keystream_spec,notes
 0xA1B2C3D4E5,168:0123456789ABCDEF0123456789ABCDEF0123456789:0:49,frame aligned
 ```
 
+## DMR Talkgroup->Key ID Map CSV (`--dmr-tg-key-csv <file>`)
+
+Purpose: Select the decryption key by talkgroup instead of the OTA-signaled key ID. A row here is an
+explicit per-talkgroup override: the mapped key ID is used in place of the signaled one for the whole
+call, and unmapped talkgroups keep normal signaled-key-ID behavior. Keys themselves still come from
+`-K`/`-k`; this file only picks which key ID a talkgroup uses.
+
+Required columns:
+
+1. `tg` (decimal talkgroup ID, `1..16777215`)
+2. `keyid` (hex key ID, `00..FF`; indexes the `-K`/`-k` keyring)
+
+Notes:
+
+- Header row is ignored (required by importer convention).
+- DMR only, and it needs the CSV keyring (`-K`/`-k`) loaded plus a known ALG ID (signaled, or via
+  `--dmr-force-algid` on systems that don't signal one).
+- The OTA key ID keeps being reported in logs and event history; the map only steers key selection,
+  and each applied override is announced once per call.
+- Duplicate talkgroups are allowed; the last occurrence replaces earlier rows.
+- Maximum rows: `256`.
+
+Example:
+
+```csv
+tg (dec),keyid (hex)
+123,7B
+4567,03
+```
+
 ## DMR Tier III LCN Calculator Input (`--calc-lcn <file>`)
 
 The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:

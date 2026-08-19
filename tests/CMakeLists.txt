@@ -3497,6 +3497,14 @@ add_test(
     COMMAND dsd-neo_test_core_dmr_voice_alg_gate
 )
 
+add_executable(dsd-neo_test_core_dmr_tg_key_map core/test_core_dmr_tg_key_map.c)
+target_include_directories(
+    dsd-neo_test_core_dmr_tg_key_map
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_dmr_tg_key_map PRIVATE dsd-neo_core)
+add_test(NAME CORE_DMR_TG_KEY_MAP COMMAND dsd-neo_test_core_dmr_tg_key_map)
+
 add_executable(
     dsd-neo_test_core_mbe_transform_context
     core/test_core_mbe_transform_context.c

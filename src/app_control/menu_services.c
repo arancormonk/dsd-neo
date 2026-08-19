@@ -422,6 +422,12 @@ svc_clear_keys(dsd_opts* opts, dsd_state* state) {
     opts->key_in_file[0] = '\0';
     DSD_MEMSET(state->rkey_array, 0, sizeof state->rkey_array);
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof state->rkey_array_loaded);
+    // The TG->key ID override map indexes into the keyring, so it goes with it.
+    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof state->dmr_tg_key_map_tg);
+    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof state->dmr_tg_key_map_kid);
+    state->dmr_tg_key_map_count = 0;
+    state->dmr_tg_key_note_epoch[0] = state->dmr_tg_key_note_epoch[1] = 0U;
+    state->dmr_tg_key_note_valid[0] = state->dmr_tg_key_note_valid[1] = 0U;
     // Disarm the keyring the way svc_import_keys_dec() arms it. Leaving it set
     // would keep every consumer treating the now-zeroed array as loaded keys.
     state->keyloader = 0;

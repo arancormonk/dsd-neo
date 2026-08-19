@@ -1281,6 +1281,124 @@ dsd_csv_validate_key_file_hex(const char* path, dsd_csv_validation* out) {
     return csv_validate_into_throwaway(path, out, csv_validate_run_key_hex);
 }
 
+typedef struct {
+    uint32_t tg[DSD_DMR_TG_KEY_MAP_MAX];
+    uint8_t kid[DSD_DMR_TG_KEY_MAP_MAX];
+    int count;
+} dmr_tg_key_tmp_t;
+
+static int
+dmr_tg_key_parse_row(const char* path, int row_count, char* line, dmr_tg_key_tmp_t* tmp) {
+    char* saveptr = NULL;
+    char* tg_tok = dsd_strtok_r(line, ",", &saveptr);
+    char* kid_tok = dsd_strtok_r(NULL, ",", &saveptr);
+    if (tg_tok == NULL || kid_tok == NULL) {
+        LOG_ERROR("DMR TG key ID map CSV '%s' line %d: expected tg_dec,keyid_hex\n", path, row_count);
+        return -1;
+    }
+
+    tg_tok = trim_ws(tg_tok);
+    kid_tok = trim_ws(kid_tok);
+    if (tg_tok == NULL || tg_tok[0] == '\0' || kid_tok == NULL || kid_tok[0] == '\0') {
+        LOG_ERROR("DMR TG key ID map CSV '%s' line %d: empty talkgroup or key id field\n", path, row_count);
+        return -1;
+    }
+
+    unsigned long long tg = 0ULL;
+    if (!parse_dec_u64_strict(tg_tok, &tg) || tg == 0ULL || tg > 0xFFFFFFULL) {
+        LOG_ERROR("DMR TG key ID map CSV '%s' line %d: invalid talkgroup (expected decimal 1..16777215)\n", path,
+                  row_count);
+        return -1;
+    }
+
+    // DMR signals an 8-bit key id, so the mapped replacement is held to the same range.
+    unsigned long long kid = 0ULL;
+    if (parse_hex_u64_strict(kid_tok, &kid) != 1 || kid > 0xFFULL) {
+        LOG_ERROR("DMR TG key ID map CSV '%s' line %d: invalid key id (expected hex 00..FF)\n", path, row_count);
+        return -1;
+    }
+
+    for (int i = 0; i < tmp->count; i++) {
+        if (tmp->tg[i] == (uint32_t)tg) {
+            LOG_WARN("WARNING: DMR TG key ID map CSV '%s' line %d: duplicate talkgroup, replacing previous mapping.\n",
+                     path, row_count);
+            tmp->kid[i] = (uint8_t)kid;
+            return 0;
+        }
+    }
+    if (tmp->count >= DSD_DMR_TG_KEY_MAP_MAX) {
+        LOG_ERROR("DMR TG key ID map CSV '%s' exceeds capacity (%d rows max)\n", path, DSD_DMR_TG_KEY_MAP_MAX);
+        return -1;
+    }
+    tmp->tg[tmp->count] = (uint32_t)tg;
+    tmp->kid[tmp->count] = (uint8_t)kid;
+    tmp->count++;
+    return 0;
+}
+
+static void
+dmr_tg_key_apply_to_state(dsd_state* state, const dmr_tg_key_tmp_t* tmp, const char* path) {
+    DSD_MEMSET(state->dmr_tg_key_map_tg, 0, sizeof(state->dmr_tg_key_map_tg));
+    DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
+    state->dmr_tg_key_map_count = tmp->count;
+    DSD_MEMCPY(state->dmr_tg_key_map_tg, tmp->tg, sizeof(state->dmr_tg_key_map_tg));
+    DSD_MEMCPY(state->dmr_tg_key_map_kid, tmp->kid, sizeof(state->dmr_tg_key_map_kid));
+    state->dmr_tg_key_note_epoch[0] = state->dmr_tg_key_note_epoch[1] = 0U;
+    state->dmr_tg_key_note_valid[0] = state->dmr_tg_key_note_valid[1] = 0U;
+    LOG_INFO("NOTICE: Loaded %d DMR talkgroup->key ID mappings from '%s'.\n", tmp->count, path);
+}
+
+int
+csvDmrTgKeyImport(dsd_state* state, const char* path) {
+    if (state == NULL || path == NULL || path[0] == '\0') {
+        LOG_ERROR("DMR TG key ID map CSV path is missing.\n");
+        return -1;
+    }
+
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+    FILE* fp = csv_open_user_read_file("DMR TG key ID mapping file", path, filename, sizeof filename);
+    if (fp == NULL) {
+        return -1;
+    }
+
+    dmr_tg_key_tmp_t tmp;
+    DSD_MEMSET(&tmp, 0, sizeof tmp);
+
+    char buffer[BSIZE];
+    int row_count = 0;
+    int rc = 0;
+
+    while (fgets(buffer, BSIZE, fp) != NULL) {
+        row_count++;
+        if (row_count == 1) {
+            continue; //header
+        }
+
+        trim_eol(buffer);
+        char* line = trim_ws(buffer);
+        if (line == NULL || line[0] == '\0') {
+            continue;
+        }
+        if (dmr_tg_key_parse_row(filename, row_count, line, &tmp) != 0) {
+            rc = -1;
+            break;
+        }
+    }
+
+    fclose(fp);
+
+    if (rc == 0 && tmp.count == 0) {
+        LOG_ERROR("DMR TG key ID map CSV '%s' contains no mappings.\n", filename);
+        rc = -1;
+    }
+
+    if (rc == 0) {
+        dmr_tg_key_apply_to_state(state, &tmp, filename);
+    }
+
+    return rc;
+}
+
 int
 csvVertexKsImport(dsd_state* state, const char* path) {
     if (state == NULL || path == NULL || path[0] == '\0') {
