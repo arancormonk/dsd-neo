@@ -1848,8 +1848,10 @@ sdrtrunk_json_classify_p25_crypto(dsd_state* state, const sdrtrunk_json_context*
     state->p25_crypto_state[0] = ctx->ks_available ? DSD_P25_CRYPTO_DECRYPTABLE : DSD_P25_CRYPTO_BLOCKED;
 }
 
+// opts is read-only here: the key activation moved to keyring_activate_slot_with_kid(), which
+// takes no opts, leaving only the payload-verbosity read and two const-taking helpers.
 static int
-sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
                         sdrtrunk_json_context* ctx) {
     if (strncmp("encryption_mi", token, 13) != 0) {
         return 0;
