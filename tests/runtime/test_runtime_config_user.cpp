@@ -1850,10 +1850,12 @@ test_imports_dir_follows_config_dir(void) {
         return 1;
     }
 
-    char cfg_dir[DSD_TEST_PATH_MAX];
+    /* Not named *_dir: readability-suspicious-call-argument reads a "<x>_dir"
+       argument in dsd_test_path_join's `out` slot as swapped with its `dir`. */
+    char cfg_root[DSD_TEST_PATH_MAX];
     char expected[DSD_TEST_PATH_MAX];
-    int rc = dsd_test_path_join(cfg_dir, sizeof cfg_dir, scratch, "dsd-neo") != 0 ? 1 : 0;
-    rc |= dsd_test_path_join(expected, sizeof expected, cfg_dir, "imports") != 0 ? 1 : 0;
+    int rc = dsd_test_path_join(cfg_root, sizeof cfg_root, scratch, "dsd-neo") != 0 ? 1 : 0;
+    rc |= dsd_test_path_join(expected, sizeof expected, cfg_root, "imports") != 0 ? 1 : 0;
 
     const char* dir = dsd_user_imports_dir();
     if (!dir) {
@@ -1872,7 +1874,7 @@ test_imports_dir_follows_config_dir(void) {
     rc |= strcmp(dsd_user_imports_dir(), expected) == 0 ? 0 : 1;
 
     (void)DSD_TEST_RMDIR(expected);
-    (void)DSD_TEST_RMDIR(cfg_dir);
+    (void)DSD_TEST_RMDIR(cfg_root);
     (void)DSD_TEST_RMDIR(scratch);
     return rc;
 }
