@@ -192,8 +192,10 @@ int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int
  * This helper intentionally only covers known/implemented families that can be
  * checked from a scalar key-loaded flag. ALGIDs with slot-specific key
  * completeness rules, such as Kirisun 0x36/0x37, require
- * dsd_dmr_voice_slot_can_decrypt(). Unknown ALGIDs return 0 so callers keep
- * audio muted rather than falsely unmuting garble.
+ * dsd_dmr_voice_slot_can_decrypt() -- or, when the verdict is wanted for a key
+ * ID other than the slot's installed one (a --dmr-tg-key-csv override that has
+ * not been activated yet), dsd_dmr_voice_kid_can_decrypt(). Unknown ALGIDs
+ * return 0 so callers keep audio muted rather than falsely unmuting garble.
  */
 int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded);
 

@@ -192,6 +192,12 @@ keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is
 // ota_target_id, and DMR radio ids share the talkgroup's 24-bit space, so an unchecked match would
 // key a unit call off a colliding row; and the protocol check keeps a resident non-DMR call from
 // steering this DMR-only map when lastsynctype is the only thing still reading DMR.
+//
+// DSD_SYNC_NONE is admitted rather than rejected because it reads "protocol not observed yet",
+// not "some other protocol". The voice path cannot arrive here with it: dsd_mbe.c's
+// mark_vocoder_call_media_protocol_compatible() rejects DSD_SYNC_NONE before the snapshot is
+// taken. The PI path is DMR-only by construction. So on both callers an unobserved protocol is
+// a DMR call, and rejecting it would only drop the map on the first burst of one.
 static int
 keyring_dmr_tg_map_call_is_mappable(const dsd_call_snapshot* call) {
     return call->phase == DSD_CALL_PHASE_ACTIVE && call->kind == DSD_CALL_KIND_GROUP_VOICE
@@ -247,7 +253,11 @@ keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint
 
 uint8_t
 keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, uint8_t signaled_kid) {
-    if (state == NULL || slot < 0 || slot > 1) {
+    // call == NULL is a live input, not a defensive one: mbe_prepare_frame_state() passes NULL
+    // whenever dsd_call_state_get() reports no snapshot for the slot. Rejecting it here rather
+    // than mid-function is what lets both call-> dereferences below stand unguarded -- the mapped
+    // branch could rely on mapped == 1 implying non-NULL, but the unmapped branch cannot.
+    if (state == NULL || call == NULL || slot < 0 || slot > 1) {
         return signaled_kid;
     }
 
@@ -260,7 +270,7 @@ keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapsho
 
     // Distinguish "no row for this talkgroup" from "row present, nothing imported behind it".
     uint8_t row_kid = 0U;
-    if (call != NULL && keyring_dmr_tg_map_call_is_mappable(call) && state->keyloader == 1
+    if (keyring_dmr_tg_map_call_is_mappable(call) && state->keyloader == 1
         && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &row_kid)) {
         keyring_dmr_tg_map_note_skipped(state, slot, call->epoch, (uint32_t)call->ota_target_id, row_kid, signaled_kid);
     }

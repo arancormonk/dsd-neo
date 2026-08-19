@@ -1915,11 +1915,15 @@ sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* toke
     // P25 replay): keep the full width by default and narrow only inside the DMR branch,
     // where the resolver's uint8_t key id matches DMR's byte-wide key id space. Narrowing
     // unconditionally would activate the wrong rkey_array index for any P25 key id above
-    // 0xFF -- this file's own P25 fixtures use 4660 and 8738.
+    // 0xFF -- this file's own P25 fixtures use 4660 and 8738. The <= 0xFF test is the same guard
+    // dsd_mbe.c applies for the same reason: a signaled id that cannot round-trip through the
+    // resolver's uint8_t keeps its full width rather than activating rkey_array[id & 0xFF]. DMR
+    // signals a byte-wide KEY ID so only a malformed record reaches it, and this keeps such a
+    // record behaving exactly as it did before the map existed.
     // keyring_dmr_effective_kid() is a no-op when the keyring is not loaded, so it is safe to
     // resolve unconditionally and use the result for the keystream even when nothing activates.
     uint16_t effective_kid = ctx->key_id;
-    if (DSD_SYNC_IS_DMR(state->synctype)) {
+    if (DSD_SYNC_IS_DMR(state->synctype) && ctx->key_id <= 0xFFU) {
         effective_kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
                                                   (uint8_t)ctx->key_id, NULL);
     }

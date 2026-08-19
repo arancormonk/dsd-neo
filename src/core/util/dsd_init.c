@@ -793,6 +793,10 @@ init_state_protocol_defaults_b(dsd_state* state) {
     state->dmr_lrrp_source[1] = 0;
     state->dmr_lrrp_target[0] = 0;
     state->dmr_lrrp_target[1] = 0;
+    //qualifies dmr_lrrp_target, so it has to be cleared with it: a stale group flag left behind a
+    //cleared target would qualify whatever target is written next
+    state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_target_is_group[1] = 0;
 
     //initialize data header bits
     state->data_header_blocks[0] = 1; //initialize with 1, otherwise we may end up segfaulting when no/bad data header

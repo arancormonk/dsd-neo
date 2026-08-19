@@ -985,6 +985,59 @@ test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id(void) {
     return rc;
 }
 
+// The DMR branch of that same block narrows the key id to the resolver's uint8_t, so a record
+// whose "encryption_key_id" does not fit a byte has to skip the resolver rather than be truncated
+// into rkey_array[id & 0xFF]. DMR signals a byte-wide KEY ID, so only a malformed record gets
+// here -- and a malformed record the map does not cover has to behave exactly as it did before
+// the map existed. The reference run signals 52 (== 4660 & 0xFF) against the same seeded keyring:
+// under a reintroduced narrowing the two runs would decrypt identically instead of differing.
+static int
+test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width(void) {
+    int rc = 0;
+    static dsd_state state;
+    static const char json_wide[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"4660\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    static const char json_truncated[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"52\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    unsigned char wide[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char truncated[SDRTRUNK_MAP_RECORD_CAP];
+    size_t wide_len = 0;
+    size_t truncated_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xD1D2D3D4D5ULL;
+    state.rkey_array_loaded[4660] = 1U;
+    // Decoy at the 8-bit-truncated index (4660 & 0xFF == 0x34 == 52).
+    state.rkey_array[0x34] = 0xE1E2E3E4E5ULL;
+    state.rkey_array_loaded[0x34] = 1U;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk dmr oversized key id", json_wide, &state, wide, sizeof wide,
+                                          &wide_len);
+    rc |= expect_u64("sdrtrunk dmr oversized key id activates full width", state.R, 0xD1D2D3D4D5ULL);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xD1D2D3D4D5ULL;
+    state.rkey_array_loaded[4660] = 1U;
+    state.rkey_array[0x34] = 0xE1E2E3E4E5ULL;
+    state.rkey_array_loaded[0x34] = 1U;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk dmr truncated key id", json_truncated, &state, truncated,
+                                          sizeof truncated, &truncated_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk dmr oversized key id wrote records", wide_len >= 24U && truncated_len == wide_len);
+    rc |= expect_true("sdrtrunk dmr oversized key id is not the truncated one",
+                      wide_len != truncated_len || memcmp(wide, truncated, wide_len) != 0);
+    return rc;
+}
+
 static int
 test_sdrtrunk_json_p25p2_encryption_metadata_updates_event(void) {
     int rc = 0;
@@ -2191,6 +2244,7 @@ main(void) {
     rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
+    rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();

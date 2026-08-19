@@ -220,6 +220,14 @@ dmr_pi_handle_dmra(dsd_state* state, const uint8_t pi_byte[]) {
     }
 }
 
+// Asymmetric with dmr_flco_publish_crypto() on purpose, and worth knowing which way: the FLCO
+// resolves the map against the talkgroup it is itself carrying (ctx->target), so it is immune to
+// snapshot ordering, while this one has only the slot's call snapshot to look the talkgroup up in.
+// A PI header that lands before any BEGIN observation on the slot therefore finds no snapshot,
+// leaves mapped at 0, and publishes ENCRYPTED/audio_permitted = 0 even for a mapped talkgroup.
+// That is a transient label, not a gate: this field drives the UI and telemetry, DMR voice audio is
+// gated in the voice path from its own resolver call, and the next FLCO or PI header on the slot
+// republishes with the snapshot in place.
 static void
 dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
