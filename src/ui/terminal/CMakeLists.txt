@@ -24,6 +24,7 @@ target_sources(
         menu_items.c
         menu_prompts.c
         menu_render.c
+        rr_wizard_core.c
         panels/header.c
         panels/footer.c
         menus/menu_defs.c

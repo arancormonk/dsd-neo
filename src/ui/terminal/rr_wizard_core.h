@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/**
+ * @file
+ * @brief RadioReference import wizard: the curses-free state machine.
+ *
+ * This core owns the step sequence, the credentials, the RadioReference client
+ * and the worker->UI result marshaling. It draws nothing and includes no
+ * curses: the presenter supplies every widget through RrWizardHooks. Nothing
+ * enforces that seam at build time - cmake/arch_rules.cmake bans curses only
+ * OUTSIDE src/ui/terminal/ - so the headless UI_RR_WIZARD target, which
+ * compiles rr_wizard_core.c directly and links no UI library, is the only
+ * thing that will catch a curses include creeping in here.
+ *
+ * Threads: every function below runs on the UI thread. The only exception is
+ * the client's completion callback, which runs on the RadioReference worker
+ * and does nothing but park a result in a mutex-guarded ring;
+ * rr_wizard_core_pump() drains that ring back on the UI thread.
+ *
+ * rr_wizard_core_pump() has no caller yet. Stage 9 wires it through
+ * rr_panel_tick(), which ui_menu_tick() reaches on the UI thread's input loop.
+ */
+#ifndef DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_
+#define DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_
+
+#include <stddef.h>
+
+/* rr_import_apply.h carries the two payload types the hook table names, and it
+ * pulls <dsd-neo/runtime/radioreference_import.h> in for itself. This header
+ * uses nothing from that one directly, so it does not include it: IWYU strict
+ * rejects the unused include. rr_wizard_core.c includes it for
+ * dsd_rr_choose_app_key(). */
+#include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/runtime/radioreference.h> // IWYU pragma: keep (dsd_rr_transport under DSD_NEO_TEST_HOOKS)
+
+/** @brief Where the wizard is. Steps beyond RR_STEP_SEARCH_MODE arrive later. */
+typedef enum {
+    RR_STEP_IDLE = 0,
+    RR_STEP_CREDS_USERNAME,
+    RR_STEP_CREDS_PASSWORD,
+    RR_STEP_CREDS_APPKEY,
+    RR_STEP_VERIFY_ACCOUNT,
+    RR_STEP_SEARCH_MODE,
+    RR_STEP_SEARCH_ZIP,
+    RR_STEP_SEARCH_SID,
+    RR_STEP_BROWSE_COUNTRY,
+    RR_STEP_BROWSE_STATE,
+    RR_STEP_BROWSE_COUNTY,
+    RR_STEP_RESULTS,
+    RR_STEP_LOADING_SYSTEM,
+    RR_STEP_SYSTEM,
+    RR_STEP_IMPORTING,
+    RR_STEP_REFRESHING,
+    RR_STEP_ERROR
+} RrWizardStep;
+
+/**
+ * @brief Everything the core asks of its presenter.
+ *
+ * Every member may be NULL; the core NULL-checks before each call. The core
+ * never opens a widget while one it opened is still outstanding, so a hook is
+ * free to complete synchronously (both curses widgets do so on their failure
+ * paths).
+ */
+typedef struct {
+    void (*open_string)(void* user, const char* title, const char* prefill, size_t cap);
+    void (*open_secret)(void* user, const char* title, size_t cap);
+    void (*open_chooser)(void* user, const char* title, const char* const* items, int count);
+    void (*panel_changed)(void* user);
+    void (*status)(void* user, const char* text); /* NEVER credentials */
+    int (*apply)(void* user, const dsd_app_rr_apply_payload* payload);
+    int (*post_import_path)(void* user, int cmd_id, const char* path);
+    int (*account_changed)(void* user, const dsd_app_rr_account_payload* account);
+} RrWizardHooks;
+
+typedef struct RrWizardCore RrWizardCore;
+
+/**
+ * @brief Create a wizard core and its RadioReference client.
+ *
+ * The client is created eagerly rather than on first use, so a test can install
+ * a transport before any request goes out.
+ *
+ * @param hooks     Copied by value; may have NULL members.
+ * @param hook_user Opaque pointer handed back to every hook.
+ * @return New core, or NULL on allocation or client-creation failure.
+ */
+RrWizardCore* rr_wizard_core_create(const RrWizardHooks* hooks, void* hook_user);
+
+/**
+ * @brief Cancel everything pending, join the worker and free the core.
+ *
+ * Safe on NULL. Can block for as long as dsd_rr_client_destroy() takes to join
+ * its worker (documented up to ~1 s). Scrubs the credentials it held.
+ */
+void rr_wizard_core_destroy(RrWizardCore* w);
+
+/** @brief Seed the username, typically from opts->rr_username. */
+void rr_wizard_core_set_username(RrWizardCore* w, const char* username);
+
+/** @brief Seed the password. Never persisted; scrubbed on destroy. */
+void rr_wizard_core_set_password(RrWizardCore* w, const char* password);
+
+/** @brief Seed the stored app-key override, typically from opts->rr_app_key. */
+void rr_wizard_core_set_stored_app_key(RrWizardCore* w, const char* app_key);
+
+/** @brief 1 when a password is held in memory, 0 otherwise. */
+int rr_wizard_core_have_password(const RrWizardCore* w);
+
+/**
+ * @brief Start (or restart) an import, asking for whatever credential is missing.
+ */
+void rr_wizard_core_begin_import(RrWizardCore* w);
+
+/* Widget events from the presenter. text == NULL / index == -1 mean cancel.
+ * An empty string is NOT cancel (the prompt widget passes "" for Enter on an
+ * empty field). Neither pointer is retained: the prompt frees its copy as soon
+ * as the callback returns. */
+void rr_wizard_core_on_prompt_done(RrWizardCore* w, const char* text);
+void rr_wizard_core_on_chooser_done(RrWizardCore* w, int index);
+
+/**
+ * @brief Drain completed requests and advance the machine. UI thread only.
+ * @return Non-zero when anything visible changed.
+ */
+int rr_wizard_core_pump(RrWizardCore* w);
+
+/**
+ * @brief Abandon the import: cancel every pending request and return to idle.
+ *
+ * Does not scrub the password - the core outlives one import and is torn down
+ * only by rr_wizard_core_destroy().
+ */
+void rr_wizard_core_cancel(RrWizardCore* w);
+
+/** @brief The current step. RR_STEP_IDLE for a NULL core. */
+RrWizardStep rr_wizard_core_step(const RrWizardCore* w);
+
+/** @brief 1 while at least one request is outstanding. */
+int rr_wizard_core_fetch_in_flight(const RrWizardCore* w);
+
+/** @brief Sanitized failure text; "" when there is none. Never a credential. */
+const char* rr_wizard_core_error_text(const RrWizardCore* w);
+
+#ifdef DSD_NEO_TEST_HOOKS
+/** @brief Install a mock transport, and suppress the dsd_rr_available() gate. */
+void rr_wizard_core_set_transport_for_test(RrWizardCore* w, const dsd_rr_transport* t);
+
+/** @brief Force the "result ring is full" condition the next pump must report. */
+void rr_wizard_core_mark_ring_overflow_for_test(RrWizardCore* w);
+#endif
+
+#endif /* DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_ */

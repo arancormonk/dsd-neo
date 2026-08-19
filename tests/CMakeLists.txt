@@ -2953,10 +2953,38 @@ if(DSD_HAS_EXPAT)
             dsd-neo_test_support
     )
     add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
+
+    # The wizard core is curses-free by construction and is compiled straight
+    # into this executable: dsd-neo_ui_terminal links ${CURSES_LIBRARIES} PRIVATE
+    # on a static library, which CMake still propagates to consumers, and the
+    # target does not exist under -DDSD_ENABLE_TERMINAL_UI=OFF. Deliberately not
+    # inside a terminal-UI gate - running headless in that configure is the point.
+    add_executable(
+        dsd-neo_test_ui_rr_wizard
+        ui/test_ui_rr_wizard.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_wizard_core.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_wizard
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_wizard
+        PRIVATE
+            DSD_NEO_TEST_HOOKS
+            "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_rr_wizard
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME UI_RR_WIZARD COMMAND dsd-neo_test_ui_rr_wizard)
 else()
     message(
         STATUS
-        "RUNTIME_RR_SOAP/CLIENT/GENERATE: skipped, expat not available; RUNTIME_RR_NO_EXPAT covers the stub"
+        "RUNTIME_RR_SOAP/CLIENT/GENERATE and UI_RR_WIZARD: skipped, expat not available; RUNTIME_RR_NO_EXPAT covers the stub"
     )
     add_executable(
         dsd-neo_test_runtime_rr_no_expat
