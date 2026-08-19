@@ -186,3 +186,22 @@ dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, doubl
         }
     }
 }
+
+void
+dsd_trunk_cc_candidates_reset(const dsd_state* state) {
+    if (!state) {
+        return;
+    }
+
+    dsd_trunk_cc_candidates* cc =
+        DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
+    if (!cc) {
+        return;
+    }
+
+    dsd_trunk_cc_candidates_clear(cc);
+    /* The file-local clear leaves the counters alone because it is also the
+       corruption-recovery path; a deliberate reset must zero them too. */
+    cc->added = 0;
+    cc->used = 0;
+}

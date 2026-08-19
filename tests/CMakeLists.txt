@@ -552,6 +552,20 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rr_import_apply
+  HEADERS_PUBLIC_APP_CONTROL_RR_IMPORT_APPLY
+  dsd-neo/app_control/rr_import_apply.h
+  C
+)
+# Also as C++: the Qt model (Stage 12) is the only C++ consumer and no Linux/macOS CI
+# job compiles it, so nothing else would catch this header losing its extern "C" guard.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rr_import_apply_cxx
+  HEADERS_PUBLIC_APP_CONTROL_RR_IMPORT_APPLY_CXX
+  dsd-neo/app_control/rr_import_apply.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_snapshot
   HEADERS_PUBLIC_APP_CONTROL_SNAPSHOT
   dsd-neo/app_control/snapshot.h
@@ -4129,6 +4143,39 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
+
+add_executable(dsd-neo_test_app_control_rr_apply ui/test_app_control_rr_apply.c)
+target_include_directories(
+    dsd-neo_test_app_control_rr_apply
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE "LINKER:--wrap=io_control_set_freq"
+    )
+endif()
+add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures"

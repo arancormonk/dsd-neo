@@ -311,6 +311,10 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->udp_in_packets = 0ULL;
     opts->udp_in_bytes = 0ULL;
     opts->udp_in_drops = 0ULL;
+
+    // RadioReference account mirrors (see include/dsd-neo/app_control/rr_import_apply.h)
+    opts->rr_username[0] = '\0';
+    opts->rr_app_key[0] = '\0';
 }
 
 static void
