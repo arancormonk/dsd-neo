@@ -498,6 +498,9 @@ rr_panel_draw_warnings(WINDOW* win, int h, int body_w, const dsd_rr_import_plan*
     if (i < plan->warnings.count) {
         char more[40];
         (void)DSD_SNPRINTF(more, sizeof more, "! (+%zu more)", plan->warnings.count - i);
+        /* The marker replaces the last content row, so erase it first: mvwaddnstr() only
+           overwrites the columns it fills, and a wrapped warning already occupies this row. */
+        mvwhline(win, y_end - 1, 2, ' ', body_w);
         mvwaddnstr(win, y_end - 1, 2, more, body_w);
     }
 }
