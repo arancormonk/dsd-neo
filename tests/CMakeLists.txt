@@ -443,6 +443,21 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_import
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_IMPORT
+  dsd-neo/runtime/radioreference_import.h
+  C
+)
+# Also as C++: the Android JNI and Qt sources are the real consumers and no
+# Linux/macOS CI job compiles them, so nothing else would catch this header
+# losing its extern "C" guard.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_import_cxx
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_IMPORT_CXX
+  dsd-neo/runtime/radioreference_import.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rdio_export
   HEADERS_PUBLIC_RUNTIME_RDIO_EXPORT
   dsd-neo/runtime/rdio_export.h
@@ -2813,6 +2828,22 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
+
+# rr_import.c is pure policy - no transport, no parser - and compiles
+# unconditionally, so its suite is registered outside the expat gate below.
+# The android-shape job builds a configuration with no expat on purpose, and
+# RUNTIME_RR_NO_EXPAT only pins the parser stub's refusal; gating this suite
+# would leave the hoisted policy untested in exactly that build.
+add_executable(dsd-neo_test_runtime_rr_import runtime/test_runtime_rr_import.c)
+target_include_directories(
+    dsd-neo_test_runtime_rr_import
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_import
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_IMPORT COMMAND dsd-neo_test_runtime_rr_import)
 
 # Every case in the three suites below starts by parsing a captured response, so
 # without expat they would all assert the stub's refusal rather than anything

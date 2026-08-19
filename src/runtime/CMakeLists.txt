@@ -29,6 +29,7 @@ target_sources(
         radioreference/rr_soap.c
         radioreference/rr_client.c
         radioreference/rr_generate.c
+        radioreference/rr_import.c
         rdio_export.c
         p25_optional_hooks.c
         p25_p2_audio_ring.c

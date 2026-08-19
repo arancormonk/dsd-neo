@@ -1134,19 +1134,7 @@ rr_is_space(unsigned char c) {
     return (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v') ? 1 : 0;
 }
 
-/**
- * @brief Strip control bytes, replace commas and collapse whitespace runs.
- *
- * Commas become slashes because the group parser has no quoting at all; both
- * ends end up trimmed because a leading space would survive into the UI - the
- * importer trims the mode column but hands the name column through verbatim.
- *
- * @param in     Source label.
- * @param out    Destination buffer.
- * @param out_sz Destination size in bytes, passed explicitly.
- * @return Length written, excluding the terminator.
- */
-static size_t
+size_t
 rr_collapse_label(const char* in, char* out, size_t out_sz) {
     size_t len = 0;
     int pending_space = 0;
@@ -1172,19 +1160,7 @@ rr_collapse_label(const char* in, char* out, size_t out_sz) {
     return len;
 }
 
-/**
- * @brief Longest prefix of `text` that fits in `limit` bytes and ends on a
- *        UTF-8 codepoint boundary.
- *
- * A byte-oriented cut would leave a lone lead byte in the file. An invalid lead
- * byte is treated as one byte, so malformed input still makes progress.
- *
- * @param text  Text to measure.
- * @param len   Text length.
- * @param limit Byte ceiling.
- * @return Prefix length in bytes.
- */
-static size_t
+size_t
 rr_utf8_prefix(const char* text, size_t len, size_t limit) {
     size_t cut = 0;
     while (cut < len) {
