@@ -16,6 +16,7 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/radioreference.h>
 #include <stdint.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -52,6 +53,30 @@ io_rtl_active(const void* ctx) {
         return false;
     }
     return (c->opts->audio_in_type == AUDIO_IN_RTL);
+}
+
+bool
+rr_feature_available(const void* ctx) {
+    (void)ctx;
+    return dsd_rr_available() != 0;
+}
+
+bool
+rr_key_prompt_offered(const void* ctx) {
+    (void)ctx;
+    const char* key = dsd_rr_builtin_app_key();
+    if (key == NULL) {
+        return true;
+    }
+    return key[0] == '\0';
+}
+
+bool
+rr_refresh_available(const void* ctx) {
+    /* Stage 11 replaces this with "does dsd_user_imports_dir() resolve?". Until then the
+       refresh item ships disabled rather than enabled-and-inert. */
+    (void)ctx;
+    return false;
 }
 
 #ifdef USE_RADIO
@@ -414,6 +439,15 @@ lbl_input_volume(const void* vctx, char* b, size_t n) {
         m = 1;
     }
     DSD_SNPRINTF(b, n, "Input Volume: %dX", m);
+    return b;
+}
+
+const char*
+lbl_rr_account(const void* v, char* b, size_t n) {
+    UiCtx* c = (UiCtx*)v;
+    const char* user = (c && c->opts && c->opts->rr_username[0] != '\0') ? c->opts->rr_username : "(not set)";
+    int m = (n > 32) ? (int)(n - 32) : 0;
+    DSD_SNPRINTF(b, n, "Set Account Username... [%.*s]", m, user);
     return b;
 }
 

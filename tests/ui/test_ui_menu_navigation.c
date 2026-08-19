@@ -51,6 +51,10 @@ static char g_last_help[128];
 static int g_chooser_active = 0;
 static int g_chooser_key_calls = 0;
 static int g_chooser_render_calls = 0;
+static int g_rr_panel_active = 0;
+static int g_rr_panel_key_calls = 0;
+static int g_rr_panel_render_calls = 0;
+static int g_rr_panel_close_calls = 0;
 
 static void
 capture_action(const char* id) {
@@ -144,6 +148,10 @@ reset_modal_capture(void) {
     g_chooser_active = 0;
     g_chooser_key_calls = 0;
     g_chooser_render_calls = 0;
+    g_rr_panel_active = 0;
+    g_rr_panel_key_calls = 0;
+    g_rr_panel_render_calls = 0;
+    g_rr_panel_close_calls = 0;
 }
 
 static void
@@ -236,6 +244,34 @@ ui_chooser_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
 void
 ui_chooser_render(void) { // NOLINT(misc-use-internal-linkage)
     g_chooser_render_calls++;
+}
+
+int
+rr_panel_active(void) { // NOLINT(misc-use-internal-linkage)
+    return g_rr_panel_active;
+}
+
+int
+rr_panel_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
+    (void)ch;
+    g_rr_panel_key_calls++;
+    return 1;
+}
+
+void
+rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
+    g_rr_panel_render_calls++;
+}
+
+void
+rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+rr_panel_close(void) { // NOLINT(misc-use-internal-linkage)
+    g_rr_panel_close_calls++;
 }
 
 int

@@ -495,6 +495,31 @@ static const NcMenuItem TRUNK_TDMA_ITEMS[] = {
      .on_select = act_slots_on},
 };
 
+static const NcMenuItem RADIOREFERENCE_ITEMS[] = {
+    {.id = "rr_import",
+     .label = "Import from RadioReference...",
+     .help = "Build talkgroup and channel-map CSVs from the RadioReference database "
+             "(premium account required) and apply them to this session.",
+     .on_select = act_rr_import},
+    {.id = "rr_refresh",
+     .label = "Refresh imported file...",
+     .help = "Re-fetch a previously imported file from RadioReference, keeping its site "
+             "selection and encryption answer.",
+     .is_enabled = rr_refresh_available,
+     .on_select = act_rr_refresh},
+    {.id = "rr_user",
+     .label = "Set Account Username...",
+     .label_fn = lbl_rr_account,
+     .help = "RadioReference account username (stored in config; the password is asked once "
+             "per session and never stored).",
+     .on_select = act_rr_account_user},
+    {.id = "rr_key",
+     .label = "Set Application Key...",
+     .help = "RadioReference application key, for builds without a baked-in key.",
+     .is_enabled = rr_key_prompt_offered,
+     .on_select = act_rr_account_key},
+};
+
 const NcMenuItem TRUNK_MENU_ITEMS[] = {
     {.id = "trunk.modes",
      .label = "Modes...",
@@ -521,6 +546,12 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .help = "TDMA slot controls and DMR late entry.",
      .submenu = TRUNK_TDMA_ITEMS,
      .submenu_len = sizeof TRUNK_TDMA_ITEMS / sizeof TRUNK_TDMA_ITEMS[0]},
+    {.id = "trunk.radioreference",
+     .label = "RadioReference...",
+     .help = "Import trunking data from RadioReference.com.",
+     .is_enabled = rr_feature_available,
+     .submenu = RADIOREFERENCE_ITEMS,
+     .submenu_len = sizeof RADIOREFERENCE_ITEMS / sizeof RADIOREFERENCE_ITEMS[0]},
 };
 const size_t TRUNK_MENU_ITEMS_LEN = sizeof TRUNK_MENU_ITEMS / sizeof TRUNK_MENU_ITEMS[0];
 

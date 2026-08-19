@@ -32,6 +32,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
+#include "rr_panel.h"
 
 #ifdef USE_RADIO
 #endif
@@ -384,6 +385,44 @@ void
 act_hangtime(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_double_async("Hangtime seconds", c->opts->trunk_hangtime, cb_hangtime, c);
+}
+
+void
+act_rr_import(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    rr_panel_open_import(c->opts, c->state);
+}
+
+void
+act_rr_refresh(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    rr_panel_open_refresh(c->opts, c->state);
+}
+
+void
+act_rr_account_user(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    ui_prompt_open_string_async("RadioReference username", c->opts->rr_username, sizeof c->opts->rr_username,
+                                cb_rr_account_user, c);
+}
+
+void
+act_rr_account_key(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    ui_prompt_open_string_async("RadioReference application key", c->opts->rr_app_key, sizeof c->opts->rr_app_key,
+                                cb_rr_account_key, c);
 }
 
 // ---- DMR/TDMA actions ----

@@ -14,6 +14,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/radioreference.h>
 #include <sndfile.h>
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,8 @@ static dsdneoRuntimeConfig g_cfg;
 static int g_cfg_valid = 1;
 static int g_stat_path_rc = -1;
 static int g_tcp_valid = 1;
+static int g_rr_available = 1;
+static char g_rr_builtin_key[64];
 static int g_env_int_value;
 static int g_env_int_has_value;
 static double g_env_double_value;
@@ -65,6 +68,16 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
     return g_stat_path_rc;
 }
 
+int
+dsd_rr_available(void) {
+    return g_rr_available;
+}
+
+const char*
+dsd_rr_builtin_app_key(void) {
+    return g_rr_builtin_key;
+}
+
 static int
 expect_int(const char* tag, int got, int want) {
     if (got != want) {
@@ -91,6 +104,8 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     g_cfg_valid = 1;
     g_stat_path_rc = -1;
     g_tcp_valid = 1;
+    g_rr_available = 1;
+    g_rr_builtin_key[0] = '\0';
     g_env_int_value = 0;
     g_env_int_has_value = 0;
     g_env_double_value = 0.0;
@@ -372,6 +387,35 @@ test_env_config_display_and_key_labels(void) {
     return rc;
 }
 
+static int
+test_radioreference_labels_and_predicates(void) {
+    int rc = 0;
+    char b[160];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+
+    g_rr_available = 1;
+    rc |= expect_int("rr feature available", rr_feature_available(&ctx), 1);
+    g_rr_available = 0;
+    rc |= expect_int("rr feature unavailable", rr_feature_available(&ctx), 0);
+    g_rr_available = 1;
+
+    g_rr_builtin_key[0] = '\0';
+    rc |= expect_int("rr key prompt offered without baked key", rr_key_prompt_offered(&ctx), 1);
+    DSD_SNPRINTF(g_rr_builtin_key, sizeof g_rr_builtin_key, "%s", "BAKED");
+    rc |= expect_int("rr key prompt hidden with baked key", rr_key_prompt_offered(&ctx), 0);
+    g_rr_builtin_key[0] = '\0';
+
+    rc |= expect_int("rr refresh disabled until stage 11", rr_refresh_available(&ctx), 0);
+
+    rc |= expect_str("rr account unset", lbl_rr_account(&ctx, b, sizeof(b)), "Set Account Username... [(not set)]");
+    DSD_SNPRINTF(opts.rr_username, sizeof opts.rr_username, "%s", "kb1abc");
+    rc |= expect_str("rr account set", lbl_rr_account(&ctx, b, sizeof(b)), "Set Account Username... [kb1abc]");
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -379,5 +423,6 @@ main(void) {
     rc |= test_call_alert_slot_and_muting_labels();
     rc |= test_io_and_capture_labels();
     rc |= test_env_config_display_and_key_labels();
+    rc |= test_radioreference_labels_and_predicates();
     return rc ? 1 : 0;
 }

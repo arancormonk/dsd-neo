@@ -10,6 +10,7 @@
 
 #include "menu_callbacks.h"
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -80,6 +81,35 @@ cb_event_log_set(void* v, const char* path) {
         (void)dsd_app_command_set_string(DSD_APP_CMD_EVENT_LOG_SET, path);
         ui_statusf("Applying event log output...");
     }
+}
+
+static void
+rr_post_account(const UiCtx* c, const char* username, const char* app_key) {
+    dsd_app_rr_account_payload account;
+    DSD_MEMSET(&account, 0, sizeof account);
+    DSD_SNPRINTF(account.username, sizeof account.username, "%s", username ? username : "");
+    DSD_SNPRINTF(account.app_key, sizeof account.app_key, "%s", app_key ? app_key : "");
+    (void)c;
+    (void)dsd_app_command_set_rr_account(&account);
+    ui_statusf("Applying RadioReference account...");
+}
+
+void
+cb_rr_account_user(void* v, const char* text) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c || !c->opts || text == NULL) {
+        return; /* NULL is a cancel (ui_prompt_close_all delivers it); leave opts alone. */
+    }
+    rr_post_account(c, text, c->opts->rr_app_key);
+}
+
+void
+cb_rr_account_key(void* v, const char* text) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c || !c->opts || text == NULL) {
+        return;
+    }
+    rr_post_account(c, c->opts->rr_username, text);
 }
 
 void

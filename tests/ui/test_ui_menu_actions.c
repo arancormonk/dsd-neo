@@ -33,6 +33,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
+#include "rr_panel.h"
 
 typedef struct {
     int id;
@@ -531,6 +532,30 @@ void
 cb_keys_hex(void* v, const char* p) {
     (void)v;
     (void)p;
+}
+
+void
+cb_rr_account_user(void* v, const char* text) {
+    (void)v;
+    (void)text;
+}
+
+void
+cb_rr_account_key(void* v, const char* text) {
+    (void)v;
+    (void)text;
+}
+
+void
+rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+rr_panel_open_refresh(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void

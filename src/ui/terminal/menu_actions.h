@@ -48,6 +48,10 @@ void act_tune_priv(void* v);
 void act_tune_data(void* v);
 void act_tg_hold(void* v);
 void act_hangtime(void* v);
+void act_rr_import(void* v);
+void act_rr_refresh(void* v);
+void act_rr_account_user(void* v);
+void act_rr_account_key(void* v);
 
 // ---- DMR/TDMA actions ----
 void act_rev_mute(void* v);

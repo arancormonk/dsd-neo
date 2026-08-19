@@ -33,6 +33,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
+#include "rr_panel.h"
 
 static int g_overlay_open = 0;
 static UiMenuFrame g_stack[8];
@@ -152,6 +153,7 @@ ui_overlay_breadcrumb(char* buf, size_t n) {
 
 static void
 ui_overlay_close_all(void) {
+    rr_panel_close();
     for (int i = 0; i < g_depth; i++) {
         if (g_stack[i].win) {
             delwin(g_stack[i].win);
@@ -189,6 +191,9 @@ ui_menu_modal_handle_key(int ch) {
     }
     if (ui_chooser_active()) {
         return ui_chooser_handle_key(ch);
+    }
+    if (rr_panel_active()) {
+        return rr_panel_handle_key(ch);
     }
     return -1;
 }
@@ -442,6 +447,7 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     if (!g_overlay_open || g_depth <= 0) {
         return;
     }
+    rr_panel_tick(opts, state);
     // Render Prompt overlay (highest priority) - delegate to menu_prompts.c
     if (ui_prompt_active()) {
         ui_prompt_render();
@@ -455,6 +461,10 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
     // Render chooser if active - delegate to menu_prompts.c
     if (ui_chooser_active()) {
         ui_chooser_render();
+        return;
+    }
+    if (rr_panel_active()) {
+        rr_panel_render();
         return;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];
