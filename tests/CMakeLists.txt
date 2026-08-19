@@ -2954,15 +2954,21 @@ if(DSD_HAS_EXPAT)
     )
     add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
 
-    # The wizard core is curses-free by construction and is compiled straight
-    # into this executable: dsd-neo_ui_terminal links ${CURSES_LIBRARIES} PRIVATE
-    # on a static library, which CMake still propagates to consumers, and the
-    # target does not exist under -DDSD_ENABLE_TERMINAL_UI=OFF. Deliberately not
-    # inside a terminal-UI gate - running headless in that configure is the point.
+    # The wizard core is compiled directly, never linked: dsd-neo_ui_terminal
+    # links ${CURSES_LIBRARIES} PRIVATE, which a static library still propagates
+    # as $<LINK_ONLY:>, and the target does not exist at all under
+    # -DDSD_ENABLE_TERMINAL_UI=OFF. Same reasoning for
+    # src/app_control/rr_import_apply.c: dsd-neo_app_control drags dsd-neo_engine
+    # and every io backend into what is a headless unit test. dsd-neo_core +
+    # dsd-neo_proto_dmr are here because the test round-trips the written CSVs
+    # through dsd_csv_validate_*, and dsd_import.c calls
+    # dmr_parse_static_keystream_spec. Deliberately not inside a terminal-UI
+    # gate - running headless in that configure is the point.
     add_executable(
         dsd-neo_test_ui_rr_wizard
         ui/test_ui_rr_wizard.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_wizard_core.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
     )
     target_include_directories(
         dsd-neo_test_ui_rr_wizard
@@ -2978,7 +2984,11 @@ if(DSD_HAS_EXPAT)
     )
     target_link_libraries(
         dsd-neo_test_ui_rr_wizard
-        PRIVATE dsd-neo_runtime dsd-neo_test_support
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
     )
     add_test(NAME UI_RR_WIZARD COMMAND dsd-neo_test_ui_rr_wizard)
 else()

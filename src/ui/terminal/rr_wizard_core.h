@@ -194,6 +194,45 @@ const dsd_rr_import_options* rr_wizard_core_options(const RrWizardCore* w);
  */
 const dsd_rr_import_plan* rr_wizard_core_plan(const RrWizardCore* w);
 
+/* --- Stage 8: committing the import --------------------------------------- */
+
+/**
+ * @brief Commit the previewed import. UI thread only.
+ *
+ * Writes "<stem> group.csv" and/or "<stem> chan.csv" plus one ".rr" sidecar
+ * each into the imports directory, then asks the presenter to post
+ * DSD_APP_CMD_RR_APPLY_IMPORT.
+ *
+ * The stem is resolved once for the pair: a path already owned by a different
+ * system takes one " sid<sid>" suffix, and a second collision is refused
+ * outright rather than overwriting anything. A re-import of the same system
+ * overwrites its own files in place, which is what keeps a [trunking]
+ * group_in_file reference pointing at the refreshed list.
+ *
+ * A write that fails part-way unwinds the CSVs it had already written. That
+ * unwind DELETES rather than restores: if the group half had overwritten a
+ * previous import of the same system, the previous bytes are gone and the user
+ * must retry. Staging both halves before committing either would double the
+ * disk traffic to cover a case one retry already fixes.
+ *
+ * @return 0 when every file landed AND the apply was accepted, -1 otherwise;
+ *         on -1 the core is at RR_STEP_ERROR and rr_wizard_core_error_text()
+ *         explains why. A rejected apply does NOT unwind - the files stay on
+ *         disk so the apply can be retried.
+ */
+int rr_wizard_core_import_now(RrWizardCore* w);
+
+/**
+ * @brief Final paths written by the last successful rr_wizard_core_import_now().
+ *
+ * "" when that half of the pair was not written. Valid until the next import.
+ * Read by the tests and available to a presenter that wants to name the files
+ * it just wrote; the Stage 11 refresh does NOT use them - it takes the path
+ * from its own chooser.
+ */
+const char* rr_wizard_core_last_group_path(const RrWizardCore* w);
+const char* rr_wizard_core_last_chan_path(const RrWizardCore* w);
+
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Install a mock transport, and suppress the dsd_rr_available() gate. */
 void rr_wizard_core_set_transport_for_test(RrWizardCore* w, const dsd_rr_transport* t);
@@ -203,6 +242,24 @@ void rr_wizard_core_mark_ring_overflow_for_test(RrWizardCore* w);
 
 /** @brief How many worker results this core has freed as stale (cancelled or superseded). */
 int rr_wizard_core_stale_drops_for_test(const RrWizardCore* w);
+
+/**
+ * @brief Redirect the imports directory.
+ *
+ * While set, rr_wizard_core_import_now() uses @p dir verbatim and calls neither
+ * dsd_user_imports_dir() nor dsd_user_imports_dir_create(). Pass NULL or "" to
+ * clear.
+ */
+void rr_wizard_core_set_imports_dir_for_test(RrWizardCore* w, const char* dir);
+
+/**
+ * @brief Fault injection for the unwind path.
+ *
+ * -1 (the default) never fails; n >= 0 makes the (n+1)-th file write of the
+ * next import fail. Writes are counted in emission order: 0 = group.csv,
+ * 1 = group.csv.rr, 2 = chan.csv, 3 = chan.csv.rr.
+ */
+void rr_wizard_core_fail_write_after_for_test(RrWizardCore* w, int n);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_ */

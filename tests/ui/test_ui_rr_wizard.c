@@ -15,15 +15,44 @@
 #include "test_support.h"
 
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/csv_validate.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/atomic_compat.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/radioreference_import.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* dsd-neo_core reaches LFSRN through dsd_mbe.c; the definition lives in the
+ * NXDN protocol library, which nothing here needs. */
+void
+LFSRN(const char* BufferIn, char* BufferOut, dsd_state* state) {
+    (void)BufferIn;
+    (void)BufferOut;
+    (void)state;
+}
+
+/* dsd_app_get_latest_opts_snapshot() lives in src/app_control/ui_opts_snapshot.c,
+ * which this target does not compile; snapshot.h supplies the prototype
+ * -Wmissing-prototypes wants. The backing dsd_opts stays file-static: an
+ * automatic one would be 41 KB of stack and an ERROR-level
+ * dsd-neo.no-automatic-full-decoder-state hit. */
+static dsd_opts g_stub_opts;
+static int g_stub_opts_published = 0;
+
+const dsd_opts*
+dsd_app_get_latest_opts_snapshot(void) {
+    return g_stub_opts_published ? &g_stub_opts : NULL;
+}
 
 #ifndef DSD_NEO_TEST_RR_FIXTURE_DIR
 #error "DSD_NEO_TEST_RR_FIXTURE_DIR must be defined by the build"
@@ -386,6 +415,20 @@ h_status(void* user, const char* text) {
     (void)DSD_SNPRINTF(h->last_status, sizeof(h->last_status), "%s", (text != NULL) ? text : "");
 }
 
+static int g_hook_apply_count;
+static int g_hook_apply_result = 1; /* DSD_APP_COMMAND_SUBMIT_QUEUED */
+static dsd_app_rr_apply_payload g_hook_apply_payload;
+
+static int
+h_apply(void* user, const dsd_app_rr_apply_payload* payload) {
+    (void)user;
+    g_hook_apply_count++;
+    if (payload != NULL) {
+        DSD_MEMCPY(&g_hook_apply_payload, payload, sizeof(g_hook_apply_payload));
+    }
+    return g_hook_apply_result;
+}
+
 static int
 h_account_changed(void* user, const dsd_app_rr_account_payload* account) {
     wiz_harness* h = (wiz_harness*)user;
@@ -406,8 +449,9 @@ harness_hooks(RrWizardHooks* hooks) {
     hooks->panel_changed = h_panel_changed;
     hooks->status = h_status;
     hooks->account_changed = h_account_changed;
-    /* apply / post_import_path stay NULL: the core never calls them yet, and a
-     * NULL hook must be tolerated. */
+    hooks->apply = h_apply;
+    /* post_import_path stays NULL: nothing reaches it yet, and a NULL hook must
+     * be tolerated. */
 }
 
 static int
@@ -977,8 +1021,15 @@ test_system_load_call_sequence(void) {
                                         "getTrsSites",   "getTrsTalkgroups", "getTrsTalkgroupCats"};
     for (int i = 0; i < 7; i++) {
         const int at = before + i;
-        expect("load: method order",
-               at < atomic_load(&g_call_count) && at < RR_WIZ_MAX_CALLS && strcmp(g_calls[at], k_seq[i]) == 0);
+        /* The range test is a statement, not a sub-expression of the argument,
+         * and it names both ends: folded into the && chain it left `at`
+         * unconstrained for clang-analyzer's security.ArrayBound, which is a
+         * hard CI gate in both the clang-tidy and scan-build jobs. */
+        if (at < 0 || at >= RR_WIZ_MAX_CALLS || at >= atomic_load(&g_call_count)) {
+            expect("load: method order", 0);
+            continue;
+        }
+        expect("load: method order", strcmp(g_calls[at], k_seq[i]) == 0);
     }
 
     const dsd_rr_system_info* info = rr_wizard_core_system(c.core);
@@ -1329,6 +1380,537 @@ test_batch_fault_retires_the_load(void) {
     wiz_case_close(&c);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Stage 8: writing, recording and applying an import                         */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * /tests is exempt from dsd-neo.no-raw-file-open, so the fixtures the cases read
+ * back and seed are opened with plain stdio. Read into the same fixed cap
+ * read_fixture() uses rather than sizing from ftell(): the analyzer treats an
+ * ftell() length as tainted, and every file here is a generated CSV well under
+ * the cap. The buffer is NOT NUL-terminated - expect_file_matches() compares a
+ * length and bytes, and skipping the terminator keeps the write index provably
+ * in range.
+ */
+static int
+read_whole_file(const char* path, char** out, size_t* out_len) {
+    *out = NULL;
+    *out_len = 0;
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES);
+    if (buf == NULL) {
+        fclose(fp);
+        return -1;
+    }
+    const size_t got = fread(buf, 1U, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
+    fclose(fp);
+    if (hit_cap) {
+        free(buf);
+        return -1;
+    }
+    *out = buf;
+    *out_len = (got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES;
+    return 0;
+}
+
+/* safe_api.h has no compare wrapper and memcmp is not on
+ * dsd-neo.no-raw-memory-api's list, but a byte loop costs nothing here. */
+static int
+memcmp_ok(const char* a, const char* b, size_t n) {
+    if (a == NULL || b == NULL) {
+        /* Reached only when a preceding expect() already failed on a NULL
+         * generator output; without it the analyzer walks that path into the
+         * loop below. */
+        return (n == 0U) ? 1 : 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void
+expect_file_matches(const char* what, const char* path, const char* want, size_t want_len) {
+    char* got = NULL;
+    size_t got_len = 0;
+    if (read_whole_file(path, &got, &got_len) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s (cannot read %s)\n", what, path);
+        g_failures++;
+        return;
+    }
+    expect(what, got_len == want_len && memcmp_ok(got, want, want_len));
+    free(got);
+}
+
+/** @brief Credential ladder, then the "Enter a system ID" route to a system. */
+static int
+drive_sid_to_system(wiz_case* c, const char* sid_text) {
+    if (!drive_to_search_mode(c)) {
+        return 0;
+    }
+    rr_wizard_core_on_chooser_done(c->core, 2); /* Enter a system ID */
+    if (rr_wizard_core_step(c->core) != RR_STEP_SEARCH_SID) {
+        return 0;
+    }
+    rr_wizard_core_on_prompt_done(c->core, sid_text);
+    return pump_until_step(c->core, RR_STEP_SYSTEM, 5000U);
+}
+
+/*
+ * Every import case shares one setup: SARA Network (sid 6673) loaded through
+ * the system-ID route, its pre-selected simulcast site left alone, and a
+ * scratch directory standing in for the imports folder. The stem and the two
+ * unsuffixed paths are precomputed so a case can seed or assert on them before
+ * the import runs.
+ */
+typedef struct {
+    wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    char stem[192];
+    char group_path[DSD_TEST_PATH_MAX];
+    char chan_path[DSD_TEST_PATH_MAX];
+} imp_case;
+
+/** @brief "<scratch>/<stem><suffix>", e.g. suffix " sid6673 group.csv". */
+static int
+imp_leaf_path(const imp_case* ic, char* out, size_t out_sz, const char* suffix) {
+    char leaf[320];
+    (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s%s", ic->stem, suffix);
+    return dsd_test_path_join(out, out_sz, ic->scratch, leaf);
+}
+
+static void
+imp_remove_pair(const imp_case* ic, const char* suffix) {
+    char path[DSD_TEST_PATH_MAX];
+    char side[DSD_TEST_PATH_MAX + 8];
+    if (imp_leaf_path(ic, path, sizeof(path), suffix) != 0) {
+        return;
+    }
+    (void)remove(path);
+    (void)DSD_SNPRINTF(side, sizeof(side), "%s.rr", path);
+    (void)remove(side);
+}
+
+/** @brief Tear the wizard down but leave the scratch directory populated. */
+static void
+imp_case_close_keep_files(imp_case* ic) {
+    wiz_case_close(&ic->c);
+}
+
+static void
+imp_case_close(imp_case* ic) {
+    wiz_case_close(&ic->c);
+    imp_remove_pair(ic, " group.csv");
+    imp_remove_pair(ic, " chan.csv");
+    imp_remove_pair(ic, " sid6673 group.csv");
+    imp_remove_pair(ic, " sid6673 chan.csv");
+    /* remove() unlinks an empty directory on POSIX and simply fails on Windows,
+     * where the worst case is a leftover empty temp dir. */
+    (void)remove(ic->scratch);
+}
+
+/**
+ * @brief Set an import case up.
+ *
+ * @param scratch Existing directory to import into, or NULL to make a fresh
+ *                one. Re-importing a system is modelled as a SECOND wizard
+ *                session over the first one's directory, because a successful
+ *                import leaves the core at RR_STEP_IMPORTING and nothing walks
+ *                it back to RR_STEP_SYSTEM.
+ */
+static int
+imp_case_open_in(imp_case* ic, const char* scratch) {
+    DSD_MEMSET(ic, 0, sizeof(*ic));
+    g_hook_apply_count = 0;
+    g_hook_apply_result = 1;
+    DSD_MEMSET(&g_hook_apply_payload, 0, sizeof(g_hook_apply_payload));
+    /* No published snapshot: the trunk-scan gate must not fire by default. */
+    g_stub_opts_published = 0;
+    if (scratch != NULL) {
+        (void)DSD_SNPRINTF(ic->scratch, sizeof(ic->scratch), "%s", scratch);
+    } else if (dsd_test_mkdtemp(ic->scratch, sizeof(ic->scratch), "dsdneo_rr_imp") == NULL) {
+        expect("import: scratch imports dir created", 0);
+        return 0;
+    }
+    if (!wiz_case_open(&ic->c)) {
+        (void)remove(ic->scratch);
+        return 0;
+    }
+    if (!drive_sid_to_system(&ic->c, "6673")) {
+        expect("import: reached the system stage", 0);
+        imp_case_close(ic);
+        return 0;
+    }
+    rr_wizard_core_set_imports_dir_for_test(ic->c.core, ic->scratch);
+    (void)dsd_rr_sanitize_file_stem("SARA Network", ic->stem, sizeof(ic->stem));
+    if (imp_leaf_path(ic, ic->group_path, sizeof(ic->group_path), " group.csv") != 0
+        || imp_leaf_path(ic, ic->chan_path, sizeof(ic->chan_path), " chan.csv") != 0) {
+        expect("import: scratch paths built", 0);
+        imp_case_close(ic);
+        return 0;
+    }
+    return 1;
+}
+
+static int
+imp_case_open(imp_case* ic) {
+    return imp_case_open_in(ic, NULL);
+}
+
+static void
+test_import_now_happy_path(void) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    RrWizardCore* core = ic.c.core;
+
+    /* Stage 7 pre-selects the first control-channel site of a trunked system,
+     * so a toggle here would CLEAR the selection rather than make one. */
+    expect("import: the simulcast site is pre-selected", rr_wizard_core_site_selected(core, 0) == 1);
+    expect_ll("import: exactly one site", (long long)rr_wizard_core_selected_count(core), 1);
+
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(core);
+    expect("import: plan published", plan != NULL);
+    if (plan == NULL) {
+        imp_case_close(&ic);
+        return;
+    }
+    expect("import: plan ok", plan->ok == 1);
+    expect("import: group csv generated", plan->group_csv_text != NULL && plan->group_csv_len > 0U);
+    expect("import: chan csv generated", plan->chan_csv_text != NULL && plan->chan_csv_len > 0U);
+    expect("import: site ids are database ids", strcmp(plan->site_ids, "16863") == 0);
+
+    /* import_now() never rebuilds the plan, so the pointer and its two text
+     * buffers stay live for the byte comparison below. */
+    expect("import: import_now succeeded", rr_wizard_core_import_now(core) == 0);
+    expect("import: step is IMPORTING", rr_wizard_core_step(core) == RR_STEP_IMPORTING);
+    expect("import: status line", strcmp(ic.c.h.last_status, "Import written; applying to this session.") == 0);
+    expect_file_matches("import: group csv bytes are generator-exact", ic.group_path, plan->group_csv_text,
+                        plan->group_csv_len);
+    expect_file_matches("import: chan csv bytes are generator-exact", ic.chan_path, plan->chan_csv_text,
+                        plan->chan_csv_len);
+    expect("import: last group path reported", strcmp(rr_wizard_core_last_group_path(core), ic.group_path) == 0);
+    expect("import: last chan path reported", strcmp(rr_wizard_core_last_chan_path(core), ic.chan_path) == 0);
+
+    /* The written files load through the real importers, not just "parses as CSV". */
+    dsd_csv_validation counts;
+    DSD_MEMSET(&counts, 0, sizeof(counts));
+    expect("import: group file validates", dsd_csv_validate_group_file(ic.group_path, &counts) == 0);
+    expect("import: group rows all accepted", counts.skipped == 0U && counts.accepted == counts.total);
+    expect("import: group row count sane", counts.total > 1700U && counts.total <= 1793U);
+    DSD_MEMSET(&counts, 0, sizeof(counts));
+    expect("import: chan file validates", dsd_csv_validate_chan_file(ic.chan_path, &counts) == 0);
+    expect("import: chan accepts 11 rows", counts.accepted == 11U && counts.skipped == 0U);
+
+    /* Sidecars round-trip. */
+    dsd_rr_provenance prov;
+    DSD_MEMSET(&prov, 0, sizeof(prov));
+    expect("import: group sidecar read", dsd_rr_provenance_read(ic.group_path, &prov) == 0);
+    expect("import: group sidecar kind", strcmp(prov.kind, "group") == 0);
+    expect_ll("import: group sidecar sid", prov.sid, 6673);
+    expect("import: group sidecar site ids", strcmp(prov.site_ids, "16863") == 0);
+    expect_ll("import: group sidecar partial enc", prov.partial_enc_as_de, 1);
+    expect("import: group sidecar system name", strcmp(prov.system_name, "SARA Network") == 0);
+    expect("import: group sidecar stamped", prov.imported_at > 0);
+    DSD_MEMSET(&prov, 0, sizeof(prov));
+    expect("import: chan sidecar read", dsd_rr_provenance_read(ic.chan_path, &prov) == 0);
+    expect("import: chan sidecar kind", strcmp(prov.kind, "chan") == 0);
+    expect_ll("import: chan sidecar sid", prov.sid, 6673);
+
+    /* The apply hook saw one payload with the right shape. */
+    expect_ll("import: apply called once", g_hook_apply_count, 1);
+    int want_mode = 0;
+    expect("import: protocol maps to a decode mode", dsd_rr_protocol_decode_mode(plan->protocol, &want_mode) == 0);
+    expect_ll("import: payload mode", g_hook_apply_payload.decode_mode, want_mode);
+    expect("import: payload trunking", g_hook_apply_payload.trunking == 1U && g_hook_apply_payload.scanner == 0U);
+    expect("import: payload simulcast", g_hook_apply_payload.simulcast_qpsk == 1U);
+    expect("import: payload prefers candidates", g_hook_apply_payload.p25_prefer_candidates == 1U);
+    expect("import: payload has both files",
+           g_hook_apply_payload.has_group == 1U && g_hook_apply_payload.has_chan == 1U);
+    expect("import: payload group path", strcmp(g_hook_apply_payload.group_path, ic.group_path) == 0);
+    expect("import: payload chan path", strcmp(g_hook_apply_payload.chan_path, ic.chan_path) == 0);
+    expect_ll("import: payload tunes the control channel", (long long)g_hook_apply_payload.tune_hz, 851050000LL);
+
+    imp_case_close(&ic);
+}
+
+/*
+ * A re-import must reuse the same two paths: that is what keeps a
+ * [trunking] group_in_file reference in the user's config pointing at the
+ * refreshed list. Two sessions over one directory, because a successful import
+ * parks the core at RR_STEP_IMPORTING.
+ */
+static void
+test_import_now_same_sid_overwrites_in_place(void) {
+    imp_case first;
+    if (!imp_case_open(&first)) {
+        return;
+    }
+    expect("reimport: first import succeeded", rr_wizard_core_import_now(first.c.core) == 0);
+    char scratch[DSD_TEST_PATH_MAX];
+    (void)DSD_SNPRINTF(scratch, sizeof(scratch), "%s", first.scratch);
+    imp_case_close_keep_files(&first);
+
+    imp_case again;
+    if (!imp_case_open_in(&again, scratch)) {
+        imp_case_close(&first);
+        return;
+    }
+    expect("reimport: second import succeeded", rr_wizard_core_import_now(again.c.core) == 0);
+    expect("reimport: same group path reused",
+           strcmp(rr_wizard_core_last_group_path(again.c.core), again.group_path) == 0);
+    expect("reimport: same chan path reused",
+           strcmp(rr_wizard_core_last_chan_path(again.c.core), again.chan_path) == 0);
+
+    char suffixed[DSD_TEST_PATH_MAX];
+    dsd_stat_t st;
+    expect("reimport: suffixed path built",
+           imp_leaf_path(&again, suffixed, sizeof(suffixed), " sid6673 group.csv") == 0);
+    expect("reimport: no suffixed variant created", dsd_stat_path(suffixed, &st) != 0);
+    imp_case_close(&again);
+}
+
+/**
+ * @brief Drop a CSV at @p path, with a sidecar naming @p sid when sid > 0.
+ *
+ * sid == 0 writes no sidecar at all, which is how a hand-made user file looks.
+ */
+static void
+seed_foreign_csv(const char* path, int sid, const char* kind) {
+    FILE* fp = fopen(path, "wb");
+    expect("seed: csv written", fp != NULL);
+    if (fp != NULL) {
+        DSD_FPRINTF(fp, "%s", "Decimal,Hex,AlphaTag,Mode\n1,1,SEED,D\n");
+        fclose(fp);
+    }
+    if (sid > 0) {
+        dsd_rr_provenance prov;
+        DSD_MEMSET(&prov, 0, sizeof(prov));
+        DSD_STRNCPY(prov.kind, kind, sizeof(prov.kind) - 1);
+        prov.sid = sid;
+        DSD_STRNCPY(prov.system_name, "Someone Else", sizeof(prov.system_name) - 1);
+        expect("seed: sidecar written", dsd_rr_provenance_write(path, &prov) == 0);
+    }
+}
+
+static const char k_seed_bytes[] = "Decimal,Hex,AlphaTag,Mode\n1,1,SEED,D\n";
+
+/*
+ * A path that already belongs to a different system takes ONE " sid<sid>"
+ * suffix, applied to the whole PAIR so the two halves cannot drift apart.
+ *
+ * @param foreign_sid 0 seeds a sidecar-less user file, which counts as "a
+ *                    different system" precisely because nothing proves
+ *                    otherwise.
+ * @param seed_chan   1 blocks the chan half instead of the group half. That is
+ *                    what pins the pair-atomic rule: the group path is free,
+ *                    and the group half must take the suffix anyway.
+ */
+static void
+run_collision_case(const char* label, int foreign_sid, int seed_chan) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    const char* seeded = seed_chan ? ic.chan_path : ic.group_path;
+    const char* untouched_half = seed_chan ? ic.group_path : ic.chan_path;
+    seed_foreign_csv(seeded, foreign_sid, seed_chan ? "chan" : "group");
+    expect(label, rr_wizard_core_import_now(ic.c.core) == 0);
+
+    char want_group[DSD_TEST_PATH_MAX];
+    char want_chan[DSD_TEST_PATH_MAX];
+    expect("collision: suffixed group path built",
+           imp_leaf_path(&ic, want_group, sizeof(want_group), " sid6673 group.csv") == 0);
+    expect("collision: suffixed chan path built",
+           imp_leaf_path(&ic, want_chan, sizeof(want_chan), " sid6673 chan.csv") == 0);
+    expect("collision: the group half took the suffix",
+           strcmp(rr_wizard_core_last_group_path(ic.c.core), want_group) == 0);
+    expect("collision: the chan half took the same suffix",
+           strcmp(rr_wizard_core_last_chan_path(ic.c.core), want_chan) == 0);
+    /* The other half of the bare stem was free and must STILL be unused: the
+     * stem is resolved once for the pair, not once per file. */
+    dsd_stat_t st;
+    expect("collision: the free half of the bare stem is left alone", dsd_stat_path(untouched_half, &st) != 0);
+
+    expect_file_matches("collision: foreign file untouched", seeded, k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+    if (foreign_sid > 0) {
+        dsd_rr_provenance prov;
+        DSD_MEMSET(&prov, 0, sizeof(prov));
+        expect("collision: foreign sidecar untouched",
+               dsd_rr_provenance_read(seeded, &prov) == 0 && prov.sid == foreign_sid);
+    }
+    imp_case_close(&ic);
+}
+
+static void
+test_import_now_collides_with_other_system(void) {
+    run_collision_case("collision: import succeeded onto a suffixed stem", 9340, 0);
+}
+
+static void
+test_import_now_never_overwrites_a_handmade_file(void) {
+    run_collision_case("handmade: import succeeded onto a suffixed stem", 0, 0);
+}
+
+static void
+test_import_now_stem_is_pair_atomic(void) {
+    run_collision_case("pair: a blocked chan half suffixes the group half too", 9340, 1);
+}
+
+/* Both candidate stems taken by files this wizard did not write: refuse, and
+ * write nothing. Never a second suffix, never an overwrite. */
+static void
+test_import_now_hard_collision(void) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    char suffixed[DSD_TEST_PATH_MAX];
+    expect("hard: suffixed path built", imp_leaf_path(&ic, suffixed, sizeof(suffixed), " sid6673 group.csv") == 0);
+    seed_foreign_csv(ic.group_path, 0, "group");
+    seed_foreign_csv(suffixed, 0, "group");
+
+    expect("hard: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("hard: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    expect("hard: name-taken message",
+           strcmp(rr_wizard_core_error_text(ic.c.core), "A different system is already imported under this name.")
+               == 0);
+    dsd_stat_t st;
+    expect("hard: nothing written", dsd_stat_path(ic.chan_path, &st) != 0);
+    expect_ll("hard: apply never called", g_hook_apply_count, 0);
+    expect_file_matches("hard: bare stem untouched", ic.group_path, k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+    expect_file_matches("hard: suffixed stem untouched", suffixed, k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+    imp_case_close(&ic);
+}
+
+static const char k_trunk_scan_reason[] =
+    "A trunk-scan session manages its own channel maps, so an import cannot be applied to it.";
+
+/*
+ * A trunk-scan session refuses the apply on the decoder thread, and the command
+ * queue has no completion channel to carry that back - so the preview must
+ * already say no. Any mutator re-runs the rebuild, and the gate rides along.
+ */
+static void
+test_trunk_scan_blocks_the_preview(void) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    g_stub_opts.trunk_scan_enabled = 1;
+    g_stub_opts_published = 1;
+
+    rr_wizard_core_cycle_option(ic.c.core, 0); /* any mutator re-runs the rebuild and the gate */
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(ic.c.core);
+    expect("trunkscan: plan published", plan != NULL);
+    if (plan == NULL) {
+        g_stub_opts_published = 0;
+        imp_case_close(&ic);
+        return;
+    }
+    expect("trunkscan: preview refuses", plan->ok == 0);
+    expect("trunkscan: preview reason", strcmp(plan->blocked_reason, k_trunk_scan_reason) == 0);
+
+    expect("trunkscan: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("trunkscan: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    dsd_stat_t st;
+    expect("trunkscan: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
+    expect("trunkscan: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
+    expect_ll("trunkscan: apply never called", g_hook_apply_count, 0);
+
+    g_stub_opts_published = 0;
+    imp_case_close(&ic);
+}
+
+/*
+ * The second half of the gate: the snapshot is published AFTER the last plan
+ * rebuild, so the preview never saw it and plan->ok is still 1. Only the
+ * re-check inside import_now() can refuse here - no mutator runs in between,
+ * which is exactly the window the panel's Enter key sits in.
+ */
+static void
+test_import_now_rechecks_the_session_gate(void) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(ic.c.core);
+    expect("recheck: plan published", plan != NULL);
+    if (plan == NULL) {
+        imp_case_close(&ic);
+        return;
+    }
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    g_stub_opts.trunk_scan_enabled = 1;
+    g_stub_opts_published = 1;
+    expect("recheck: the stale preview still says yes", plan->ok == 1);
+
+    expect("recheck: import refused anyway", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("recheck: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    expect("recheck: trunk-scan message", strcmp(rr_wizard_core_error_text(ic.c.core), k_trunk_scan_reason) == 0);
+    dsd_stat_t st;
+    expect("recheck: no group file written", dsd_stat_path(ic.group_path, &st) != 0);
+    expect("recheck: no chan file written", dsd_stat_path(ic.chan_path, &st) != 0);
+    expect_ll("recheck: apply never called", g_hook_apply_count, 0);
+
+    g_stub_opts_published = 0;
+    imp_case_close(&ic);
+}
+
+/* Write 1 is the group sidecar, so the group CSV has already landed when the
+ * fault fires: the unwind has real work to do. */
+static void
+test_import_now_unwinds_a_failed_write(void) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    rr_wizard_core_fail_write_after_for_test(ic.c.core, 1);
+    expect("unwind: import failed", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("unwind: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    expect("unwind: write message",
+           strcmp(rr_wizard_core_error_text(ic.c.core), "The import files could not be written.") == 0);
+
+    dsd_stat_t st;
+    expect("unwind: group csv removed", dsd_stat_path(ic.group_path, &st) != 0);
+    char side[DSD_TEST_PATH_MAX + 8];
+    (void)DSD_SNPRINTF(side, sizeof(side), "%s.rr", ic.group_path);
+    expect("unwind: group sidecar removed", dsd_stat_path(side, &st) != 0);
+    expect("unwind: chan csv never written", dsd_stat_path(ic.chan_path, &st) != 0);
+    expect_ll("unwind: apply never called", g_hook_apply_count, 0);
+    imp_case_close(&ic);
+}
+
+/* The mirror image: the bytes are good, only the queue said no, so the files
+ * stay and the user can retry the apply. */
+static void
+test_import_now_keeps_files_when_apply_is_rejected(void) {
+    imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    g_hook_apply_result = -1; /* DSD_APP_COMMAND_SUBMIT_REJECTED */
+    expect("reject: import reports failure", rr_wizard_core_import_now(ic.c.core) == -1);
+    expect("reject: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
+    expect("reject: apply message", strcmp(rr_wizard_core_error_text(ic.c.core),
+                                           "The import was written but could not be applied to this session.")
+                                        == 0);
+    expect_ll("reject: apply was attempted", g_hook_apply_count, 1);
+    dsd_stat_t st;
+    expect("reject: group csv stayed on disk", dsd_stat_path(ic.group_path, &st) == 0);
+    expect("reject: chan csv stayed on disk", dsd_stat_path(ic.chan_path, &st) == 0);
+    imp_case_close(&ic);
+}
+
 int
 main(void) {
     test_create_destroy();
@@ -1351,6 +1933,16 @@ main(void) {
     test_sid_load_forgets_the_previous_search();
     test_cancel_mid_system_load();
     test_batch_fault_retires_the_load();
+    test_import_now_happy_path();
+    test_import_now_same_sid_overwrites_in_place();
+    test_import_now_collides_with_other_system();
+    test_import_now_never_overwrites_a_handmade_file();
+    test_import_now_stem_is_pair_atomic();
+    test_import_now_hard_collision();
+    test_trunk_scan_blocks_the_preview();
+    test_import_now_rechecks_the_session_gate();
+    test_import_now_unwinds_a_failed_write();
+    test_import_now_keeps_files_when_apply_is_rejected();
 
     if (g_failures == 0) {
         printf("UI_RR_WIZARD: OK\n");

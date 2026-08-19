@@ -14,16 +14,22 @@
 #include "rr_wizard_core.h"
 
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ---- Tunables ----------------------------------------------------------- */
 
@@ -53,10 +59,20 @@
 #define RR_WIZ_CAP_ZIP      6U
 #define RR_WIZ_CAP_SID      8U
 
+/* Widest path this core builds. Matches dsd_app_rr_apply_payload::chan_path and
+ * ::group_path, so a path that fits here fits the payload it is copied into. */
+#define RR_WIZ_PATH_MAX     1024U
+
+#ifdef _WIN32
+#define RR_PATH_SEP '\\'
+#else
+#define RR_PATH_SEP '/'
+#endif
+
 /* Widest chooser row this core prints. The longest format is the results row,
  * "<name> (<city>, SID <sid>)" over a 128-byte name and a 96-byte city; a
  * longer pair is truncated rather than refused. */
-#define RR_WIZ_LABEL_MAX    256U
+#define RR_WIZ_LABEL_MAX 256U
 
 /* ---- User-facing strings ------------------------------------------------ */
 /* ASCII only. None of these may pair a key/password word with an integer
@@ -109,6 +125,23 @@ static const char* const k_status_states = "Loading states...";
 static const char* const k_status_counties = "Loading counties...";
 static const char* const k_status_systems = "Loading systems...";
 static const char* const k_status_system = "Loading the system...";
+
+/* Stage 8. No Qt equivalent to port: the Android app has neither a trunk-scan
+ * session nor a shared imports folder. File-scope so the test can assert on the
+ * same storage. */
+static const char k_rr_blocked_trunk_scan[] =
+    "A trunk-scan session manages its own channel maps, so an import cannot be applied to it.";
+static const char k_rr_err_name_taken[] = "A different system is already imported under this name.";
+static const char k_rr_err_no_imports_dir[] =
+#ifdef _WIN32
+    "Set APPDATA so dsd-neo knows where to put the imported files.";
+#else
+    "Set XDG_CONFIG_HOME or HOME so dsd-neo knows where to put the imported files.";
+#endif
+static const char k_rr_err_mkdir[] = "The imports folder could not be created.";
+static const char k_rr_err_write[] = "The import files could not be written.";
+static const char k_rr_err_apply[] = "The import was written but could not be applied to this session.";
+static const char k_rr_status_imported[] = "Import written; applying to this session.";
 
 /* ---- Result kinds and their two-step frees ------------------------------ */
 
@@ -285,6 +318,18 @@ struct RrWizardCore {
 
     dsd_rr_import_plan plan;
     int plan_valid;
+
+    /* Stage 8: what the last import wrote. `written` is the unwind list - two
+     * entries because one import is at most one group CSV and one chan CSV. */
+    char last_group_path[RR_WIZ_PATH_MAX];
+    char last_chan_path[RR_WIZ_PATH_MAX];
+    char written[2][RR_WIZ_PATH_MAX];
+    size_t written_count;
+#ifdef DSD_NEO_TEST_HOOKS
+    char imports_dir_override[RR_WIZ_PATH_MAX];
+    int fail_write_after; /* -1 = never fail; rr_wizard_core_create() sets it */
+    int write_seq;
+#endif
 };
 
 /* Defined further down, where the search machinery lives. */
@@ -750,15 +795,23 @@ rr_chooser_reserve(RrWizardCore* w, int count) {
     }
     char** labels = (char**)calloc((size_t)count, sizeof(*labels));
     const char** items = (const char**)calloc((size_t)count, sizeof(*items));
+    /* Returned before the row loop rather than folded into its condition: a
+     * combined test leaves `labels` only implicitly non-NULL at the free loop
+     * below, which cppcheck --strict reads as a possible null dereference. */
+    if (labels == NULL || items == NULL) {
+        free((void*)labels);
+        free((void*)items);
+        return 0;
+    }
     int built = 0;
-    for (; labels != NULL && items != NULL && built < count; built++) {
+    for (; built < count; built++) {
         labels[built] = (char*)calloc(1U, RR_WIZ_LABEL_MAX);
         if (labels[built] == NULL) {
             break;
         }
         items[built] = labels[built];
     }
-    if (labels == NULL || items == NULL || built < count) {
+    if (built < count) {
         for (int i = 0; i < built; i++) {
             free(labels[i]);
         }
@@ -1113,6 +1166,49 @@ rr_preselect(RrWizardCore* w) {
     w->selected_count = 1U;
 }
 
+/* ---- The session gate ---------------------------------------------------- */
+
+/*
+ * A refusal that belongs to the session rather than to the plan.
+ *
+ * DSD_APP_CMD_RR_APPLY_IMPORT's handler refuses the whole apply while a
+ * trunk-scan session is running, and that refusal can never reach this core:
+ * dsd_app_drain_cmds() discards the handler's return value and the submit call
+ * only reports whether the command was QUEUED. Without a pre-check the user
+ * would finish the wizard, be told "imported", and then get a decoder-thread
+ * toast saying it was refused - with orphan files already on disk. So the same
+ * check runs twice: once at the tail of every plan rebuild, so the preview
+ * already says no, and once inside rr_wizard_core_import_now(), because the
+ * snapshot can change in between.
+ *
+ * Only the PUBLISHED snapshot is read here; the live dsd_opts belongs to the
+ * decoder thread.
+ */
+
+/** @return 1 and fills @p out when blocked, 0 otherwise. */
+static int
+rr_core_session_block_reason(char* out, size_t out_sz) {
+    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
+    if (osnap == NULL) {
+        return 0; /* nothing published yet: no evidence of a trunk-scan session */
+    }
+    if (osnap->trunk_scan_enabled == 1) {
+        (void)DSD_SNPRINTF(out, out_sz, "%s", k_rr_blocked_trunk_scan);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+rr_core_apply_session_gate(RrWizardCore* w) {
+    char reason[256];
+    reason[0] = '\0';
+    if (rr_core_session_block_reason(reason, sizeof(reason)) != 0) {
+        w->plan.ok = 0;
+        (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof(w->plan.blocked_reason), "%s", reason);
+    }
+}
+
 /* ---- Plan rebuild and the group-CSV cache -------------------------------- */
 
 /**
@@ -1179,6 +1275,9 @@ rr_plan_rebuild(RrWizardCore* w) {
                                    &w->options, &w->plan);
     rr_plan_splice_group(w);
     w->plan_valid = 1;
+    /* Before the notify, never after: the redraw it triggers must already see
+     * the blocked plan. */
+    rr_core_apply_session_gate(w);
     rr_core_panel_changed(w);
 }
 
@@ -1537,6 +1636,10 @@ rr_wizard_core_create(const RrWizardHooks* hooks, void* hook_user) {
     w->step = RR_STEP_IDLE;
     const char* builtin = dsd_rr_builtin_app_key();
     w->app_key_is_baked = (builtin != NULL && builtin[0] != '\0') ? 1 : 0;
+#ifdef DSD_NEO_TEST_HOOKS
+    /* The calloc'd zero would mean "fail the very first write". */
+    w->fail_write_after = -1;
+#endif
     return w;
 }
 
@@ -1855,6 +1958,326 @@ rr_wizard_core_plan(const RrWizardCore* w) {
     return (w != NULL && w->plan_valid) ? &w->plan : NULL;
 }
 
+/* ---- Stage 8: committing the import -------------------------------------- */
+
+/**
+ * @brief Write @p text to @p final_path through a private temp file.
+ *
+ * fopen/open/creat/mkstemp are all ERROR-level dsd-neo.no-raw-file-open hits
+ * under src/, and a bare rename() fails on Windows whenever the destination
+ * exists - which is every re-import. The helper picks the temp name itself;
+ * never construct one here.
+ */
+static int
+rr_import_write_text(const char* final_path, const char* text, size_t len) {
+    char tmp[RR_WIZ_PATH_MAX];
+    tmp[0] = '\0';
+    FILE* fp = dsd_fopen_private_temp_for_replace(final_path, tmp, sizeof(tmp), "wb");
+    if (fp == NULL) {
+        return -1;
+    }
+    int bad = (len > 0U && text != NULL && fwrite(text, 1U, len, fp) != len) ? 1 : 0;
+    if (!bad && fflush(fp) != 0) {
+        bad = 1;
+    }
+    const int fd = dsd_fileno(fp);
+    if (!bad && fd >= 0 && dsd_fsync(fd) != 0) {
+        bad = 1;
+    }
+    if (fclose(fp) != 0) {
+        bad = 1;
+    }
+    if (bad || dsd_replace_file_with_temp(tmp, final_path) != 0) {
+        (void)remove(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+/** @brief Fill the sidecar for one emitted CSV. @p kind is "group" or "chan". */
+static void
+rr_import_fill_provenance(const RrWizardCore* w, const char* kind, dsd_rr_provenance* p) {
+    DSD_MEMSET(p, 0, sizeof(*p));
+    DSD_STRNCPY(p->kind, kind, sizeof(p->kind) - 1);
+    p->sid = w->sid;
+    /* site_db_id values, joined by the plan - never site_number, which repeats
+     * within a system. */
+    DSD_STRNCPY(p->site_ids, w->plan.site_ids, sizeof(p->site_ids) - 1);
+    p->partial_enc_as_de = w->plan.partial_enc_as_de;
+    DSD_STRNCPY(p->system_name, w->info.name, sizeof(p->system_name) - 1);
+    p->imported_at = (long long)time(NULL);
+}
+
+/** @brief Write one CSV and its sidecar, recording the CSV path for the unwind. */
+static int
+rr_import_emit(RrWizardCore* w, const char* path, const char* text, size_t len, const char* kind) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (w->fail_write_after >= 0 && w->write_seq++ >= w->fail_write_after) {
+        return -1;
+    }
+#endif
+    if (rr_import_write_text(path, text, len) != 0) {
+        return -1;
+    }
+    if (w->written_count < (sizeof(w->written) / sizeof(w->written[0]))) {
+        (void)DSD_SNPRINTF(w->written[w->written_count], sizeof(w->written[0]), "%s", path);
+        w->written_count++;
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    if (w->fail_write_after >= 0 && w->write_seq++ >= w->fail_write_after) {
+        return -1;
+    }
+#endif
+    dsd_rr_provenance prov;
+    rr_import_fill_provenance(w, kind, &prov);
+    return dsd_rr_provenance_write(path, &prov);
+}
+
+/** @brief Emit whichever halves the plan produced, in group-then-chan order. */
+static int
+rr_import_emit_pair(RrWizardCore* w, const char* group_path, const char* chan_path) {
+    if (w->plan.group_csv_text != NULL) {
+        if (rr_import_emit(w, group_path, w->plan.group_csv_text, w->plan.group_csv_len, "group") != 0) {
+            return -1;
+        }
+        (void)DSD_SNPRINTF(w->last_group_path, sizeof(w->last_group_path), "%s", group_path);
+    }
+    if (w->plan.chan_csv_text != NULL) {
+        if (rr_import_emit(w, chan_path, w->plan.chan_csv_text, w->plan.chan_csv_len, "chan") != 0) {
+            return -1;
+        }
+        (void)DSD_SNPRINTF(w->last_chan_path, sizeof(w->last_chan_path), "%s", chan_path);
+    }
+    return 0;
+}
+
+/**
+ * @brief Remove whatever this import had already written.
+ *
+ * There is no Qt function to port: RadioReferenceModel::unwindImport removes
+ * rows from the Android library model and deletes nothing.
+ *
+ * DESTRUCTIVE by design. dsd_replace_file_with_temp() has already overwritten
+ * the destination, so if the group half replaced a previous import of the SAME
+ * system and the chan half then failed, the previous bytes are gone rather than
+ * restored. Staging both halves before committing either would double the disk
+ * traffic to cover a case one retry already fixes.
+ */
+static void
+rr_import_unwind(RrWizardCore* w) {
+    for (size_t i = 0; i < w->written_count; i++) {
+        char side[RR_WIZ_PATH_MAX + 8];
+        (void)remove(w->written[i]);
+        if (DSD_SNPRINTF(side, sizeof(side), "%s.rr", w->written[i]) > 0) {
+            (void)remove(side);
+        }
+    }
+    w->written_count = 0;
+}
+
+/**
+ * @brief Hand the written pair to the presenter's apply hook.
+ *
+ * Note the argument order of dsd_app_rr_fill_apply_payload(): chan first, group
+ * second. A half this import did not write is passed as NULL, which the mapper
+ * treats like "" - has_chan/has_group stay 0 and the path string stays empty.
+ * The presenter posts DSD_APP_CMD_RR_APPLY_IMPORT, so a return > 0 is QUEUED or
+ * COALESCED and -1 is REJECTED (a full queue).
+ */
+static int
+rr_import_apply(RrWizardCore* w) {
+    const char* group_path = (w->last_group_path[0] != '\0') ? w->last_group_path : NULL;
+    const char* chan_path = (w->last_chan_path[0] != '\0') ? w->last_chan_path : NULL;
+    dsd_app_rr_apply_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof(payload));
+    if (dsd_app_rr_fill_apply_payload(&w->plan, chan_path, group_path, &payload) != 0) {
+        return -1;
+    }
+    if (w->hooks.apply == NULL) {
+        return -1;
+    }
+    return (w->hooks.apply(w->hook_user, &payload) > 0) ? 0 : -1;
+}
+
+/** @brief Build both candidate paths for @p stem. @return 0, or -1 on truncation. */
+static int
+rr_import_stem_paths(const char* dir, const char* stem, char* group_out, size_t group_sz, char* chan_out,
+                     size_t chan_sz) {
+    int n = DSD_SNPRINTF(group_out, group_sz, "%s%c%s group.csv", dir, RR_PATH_SEP, stem);
+    if (n < 0 || (size_t)n >= group_sz) {
+        return -1;
+    }
+    n = DSD_SNPRINTF(chan_out, chan_sz, "%s%c%s chan.csv", dir, RR_PATH_SEP, stem);
+    return (n < 0 || (size_t)n >= chan_sz) ? -1 : 0;
+}
+
+/** @return 0 when @p path is free for @p sid, 1 when it belongs to something else. */
+static int
+rr_import_path_conflicts(const char* path, int sid) {
+    dsd_stat_t st;
+    if (dsd_stat_path(path, &st) != 0) {
+        return 0; /* nothing there; an orphan ".rr" with no CSV is not a conflict */
+    }
+    dsd_rr_provenance prov;
+    DSD_MEMSET(&prov, 0, sizeof(prov));
+    if (dsd_rr_provenance_read(path, &prov) != 0) {
+        return 1; /* no readable sidecar: a hand-made user file, never overwritten */
+    }
+    return (prov.sid == sid) ? 0 : 1; /* same system: a re-import overwrites in place */
+}
+
+/**
+ * @brief Resolve the file stem for the whole PAIR, before anything is written.
+ *
+ * An import is a pair, and dsd_rr_generate_chan_csv() legitimately produces no
+ * text for some systems, so resolving per file could split one import across
+ * two stems - or silently overwrite another system's unsuffixed half. Both
+ * candidate paths are therefore checked whichever halves this import will write.
+ *
+ * The bare stem is tried first, then the stem plus one " sid<sid>" suffix.
+ * Still colliding after that is a hard error: never a second suffix, never an
+ * overwrite.
+ *
+ * @return 0 on success, -1 when the caller should report k_rr_err_name_taken.
+ */
+static int
+rr_import_resolve_stem(const RrWizardCore* w, const char* dir, char* stem, size_t stem_sz) {
+    char base[160];
+    base[0] = '\0';
+    if (dsd_rr_sanitize_file_stem(w->info.name, base, sizeof(base)) == 0) {
+        (void)DSD_SNPRINTF(base, sizeof(base), "%s", "RadioReference");
+    }
+
+    char group_path[RR_WIZ_PATH_MAX];
+    char chan_path[RR_WIZ_PATH_MAX];
+    for (int attempt = 0; attempt < 2; attempt++) {
+        const int n = (attempt == 0) ? DSD_SNPRINTF(stem, stem_sz, "%s", base)
+                                     : DSD_SNPRINTF(stem, stem_sz, "%s sid%d", base, w->sid);
+        if (n < 0 || (size_t)n >= stem_sz) {
+            return -1;
+        }
+        if (rr_import_stem_paths(dir, stem, group_path, sizeof(group_path), chan_path, sizeof(chan_path)) != 0) {
+            return -1;
+        }
+        if (rr_import_path_conflicts(group_path, w->sid) == 0 && rr_import_path_conflicts(chan_path, w->sid) == 0) {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/** @brief Resolve and create the imports directory. Calls rr_core_fail() itself. */
+static int
+rr_import_resolve_dir(RrWizardCore* w, char* out, size_t out_sz) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (w->imports_dir_override[0] != '\0') {
+        const int nover = DSD_SNPRINTF(out, out_sz, "%s", w->imports_dir_override);
+        return (nover >= 0 && (size_t)nover < out_sz) ? 0 : -1;
+    }
+#endif
+    const char* dir = dsd_user_imports_dir();
+    if (dir == NULL || dir[0] == '\0') {
+        rr_core_fail(w, k_rr_err_no_imports_dir);
+        return -1;
+    }
+    /* Copied before the create call, not after: dsd_user_imports_dir() hands
+     * back an internal static buffer that dsd_user_imports_dir_create()
+     * recomputes when it calls the same resolver. */
+    const int n = DSD_SNPRINTF(out, out_sz, "%s", dir);
+    if (n < 0 || (size_t)n >= out_sz) {
+        rr_core_fail(w, k_rr_err_no_imports_dir);
+        return -1;
+    }
+    if (dsd_user_imports_dir_create() != 0) {
+        rr_core_fail(w, k_rr_err_mkdir);
+        return -1;
+    }
+    return 0;
+}
+
+/** @brief The two refusals that precede any path work. Calls rr_core_fail() itself. */
+static int
+rr_import_check_ready(RrWizardCore* w) {
+    char reason[256];
+    reason[0] = '\0';
+    /* Re-run rather than trust the plan: the snapshot may have changed since
+     * the last rebuild. */
+    if (rr_core_session_block_reason(reason, sizeof(reason)) != 0) {
+        rr_core_fail(w, reason);
+        return -1;
+    }
+    if (w->plan.ok == 0) {
+        rr_core_fail(w, (w->plan.blocked_reason[0] != '\0') ? w->plan.blocked_reason : k_rr_err_write);
+        return -1;
+    }
+    return 0;
+}
+
+static void
+rr_import_reset_write_state(RrWizardCore* w) {
+    w->written_count = 0;
+    w->last_group_path[0] = '\0';
+    w->last_chan_path[0] = '\0';
+#ifdef DSD_NEO_TEST_HOOKS
+    w->write_seq = 0;
+#endif
+}
+
+int
+rr_wizard_core_import_now(RrWizardCore* w) {
+    if (w == NULL || w->step != RR_STEP_SYSTEM) {
+        return -1;
+    }
+    if (rr_import_check_ready(w) != 0) {
+        return -1;
+    }
+
+    char dir[RR_WIZ_PATH_MAX];
+    if (rr_import_resolve_dir(w, dir, sizeof(dir)) != 0) {
+        return -1; /* rr_import_resolve_dir() already called rr_core_fail() */
+    }
+
+    char stem[192];
+    if (rr_import_resolve_stem(w, dir, stem, sizeof(stem)) != 0) {
+        rr_core_fail(w, k_rr_err_name_taken);
+        return -1;
+    }
+
+    char group_path[RR_WIZ_PATH_MAX];
+    char chan_path[RR_WIZ_PATH_MAX];
+    if (rr_import_stem_paths(dir, stem, group_path, sizeof(group_path), chan_path, sizeof(chan_path)) != 0) {
+        rr_core_fail(w, k_rr_err_write);
+        return -1;
+    }
+
+    rr_import_reset_write_state(w);
+    if (rr_import_emit_pair(w, group_path, chan_path) != 0) {
+        rr_import_unwind(w);
+        rr_core_fail(w, k_rr_err_write);
+        return -1;
+    }
+
+    /* A rejected apply deliberately does NOT unwind: the files are good, and
+     * the user can retry the apply from the panel. */
+    if (rr_import_apply(w) != 0) {
+        rr_core_fail(w, k_rr_err_apply);
+        return -1;
+    }
+    w->step = RR_STEP_IMPORTING;
+    rr_core_status_notify(w, k_rr_status_imported);
+    return 0;
+}
+
+const char*
+rr_wizard_core_last_group_path(const RrWizardCore* w) {
+    return (w != NULL) ? w->last_group_path : "";
+}
+
+const char*
+rr_wizard_core_last_chan_path(const RrWizardCore* w) {
+    return (w != NULL) ? w->last_chan_path : "";
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 void
 rr_wizard_core_set_transport_for_test(RrWizardCore* w, const dsd_rr_transport* t) {
@@ -1873,6 +2296,22 @@ rr_wizard_core_mark_ring_overflow_for_test(RrWizardCore* w) {
     (void)dsd_mutex_lock(&w->ring_mu);
     w->ring_overflow = 1;
     (void)dsd_mutex_unlock(&w->ring_mu);
+}
+
+void
+rr_wizard_core_set_imports_dir_for_test(RrWizardCore* w, const char* dir) {
+    if (w == NULL) {
+        return;
+    }
+    (void)DSD_SNPRINTF(w->imports_dir_override, sizeof(w->imports_dir_override), "%s", (dir != NULL) ? dir : "");
+}
+
+void
+rr_wizard_core_fail_write_after_for_test(RrWizardCore* w, int n) {
+    if (w == NULL) {
+        return;
+    }
+    w->fail_write_after = n;
 }
 
 int
