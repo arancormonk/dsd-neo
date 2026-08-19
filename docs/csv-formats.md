@@ -299,14 +299,17 @@ Notes:
   bit is recorded alongside the target so the PDU can still be classified after the header itself is
   gone.
 - The OTA key ID is never rewritten: logs, event history, and the UI keep showing the signaled key ID,
-  and the printed data-PDU header leads with it too, appending the override only when one applied. Each
-  applied override is also announced once per call.
-- A mapped key ID with no imported key material falls back to the signaled key ID instead of blocking
-  the talkgroup outright — announced once per call as well — so a typo in the key ID column is harmless
-  rather than silently killing decryption for that talkgroup.
+  and the printed data-PDU header leads with it too, appending the override only when one applied.
+- A mapped key ID with no imported key material always falls back to the signaled key ID instead of
+  blocking the talkgroup outright, so a typo in the key ID column never silently kills decryption for
+  that talkgroup.
+- Console visibility of this differs by consumer: voice announces both an applied override and a
+  fallback, once per call; data PDUs show an applied override in the PDU header line but stay silent on
+  a fallback; crypto classification, the `--enc-lockout` decision, and sdrtrunk replay apply the map
+  with no console notice either way.
 - In sdrtrunk JSON replay, a map row wins over the older implicit "key indexed by talkgroup"
   convention; with no matching row, that older behavior is unchanged. This holds regardless of the
-  order fields appear in the JSON record.
+  order in which fields appear in the JSON record.
 - Duplicate talkgroups are allowed; the last occurrence replaces earlier rows.
 - Maximum rows: `256`.
 - CLI-only: there's no TUI or Android import path to load this map, only `--dmr-tg-key-csv` at startup.
