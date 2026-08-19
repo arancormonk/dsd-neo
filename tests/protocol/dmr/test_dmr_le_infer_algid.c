@@ -168,6 +168,42 @@ test_fragment_wrapper_maps_slot2_to_slot1_and_triggers_decode(void) {
 }
 
 static void
+test_forced_algid_preserves_pi_header_keyid(void) {
+    // Issue #351: --dmr-force-algid is applied on every LE fragment. The KEY ID a
+    // CRC-verified DMRA PI header stored for the call must survive that application,
+    // or key lookup selects rkey_array[0xFF] instead of the header's key.
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsd_state encoded;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(&encoded, 0, sizeof(encoded));
+
+    const uint32_t mi = 0xA1B2C3D4U;
+    state.currentslot = 0;
+    state.M = 0x21;             // --dmr-force-algid 21
+    state.dmr_so = 0x40U;       // service options carry the privacy bit
+    state.payload_algid = 0x21; // CRC-verified PI header already decoded for this call
+    state.payload_keyid = 0x03;
+    state.payload_mi = 0x01020304ULL;
+
+    fill_le_fragments_for_mi(&encoded, 0, mi);
+    for (uint8_t vc = 1; vc <= 6; vc++) {
+        uint8_t ambe_fr[4][24];
+        uint8_t ambe_fr2[4][24];
+        uint8_t ambe_fr3[4][24];
+        write_nibble_to_ambe(ambe_fr, (uint8_t)encoded.late_entry_mi_fragment[0][vc][0]);
+        write_nibble_to_ambe(ambe_fr2, (uint8_t)encoded.late_entry_mi_fragment[0][vc][1]);
+        write_nibble_to_ambe(ambe_fr3, (uint8_t)encoded.late_entry_mi_fragment[0][vc][2]);
+        dmr_late_entry_mi_fragment(&opts, &state, vc, ambe_fr, ambe_fr2, ambe_fr3);
+    }
+
+    assert(state.payload_algid == 0x21);
+    assert(state.payload_keyid == 0x03);
+    assert((uint32_t)state.payload_mi == mi);
+}
+
+static void
 test_verified_mi_updates_existing_slot_mi(void) {
     static dsd_opts opts;
     static dsd_state state;
@@ -247,6 +283,7 @@ main(void) {
     run_case(1, 0x0123456789ABCDULL, 0x22334455U, 0x22);
 
     test_fragment_wrapper_maps_slot2_to_slot1_and_triggers_decode();
+    test_forced_algid_preserves_pi_header_keyid();
     test_verified_mi_updates_existing_slot_mi();
     test_alg_refresh_on_error_refreshes_each_encrypted_slot();
     test_alg_refresh_ignores_invalid_current_slot();

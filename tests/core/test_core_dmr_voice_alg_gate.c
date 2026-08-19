@@ -103,6 +103,40 @@ main(void) {
     state.M = 0x16;
     rc |= expect_eq("force-algid-tyt16-mode-ignored", dsd_dmr_apply_forced_algid(&state), 0);
 
+    // Issue #351: the forced ALGID is a fallback for missing PI/LE identifiers. A CRC-verified
+    // PI header's ALG ID and KEY ID must survive the per-voice-frame forced-algid application,
+    // or key lookup selects rkey_array[0xFF] instead of the header's key for the whole call.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.M = 0x21;
+    state.currentslot = 0;
+    state.dmr_so = 0x40;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    rc |= expect_eq("force-algid-ota-present-skipped", dsd_dmr_apply_forced_algid(&state), 0);
+    rc |= expect_eq("force-algid-ota-alg-preserved", state.payload_algid, 0x21);
+    rc |= expect_eq("force-algid-ota-key-preserved", state.payload_keyid, 0x03);
+
+    // OTA identifiers win even when they disagree with the forced value.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.M = 0x21;
+    state.currentslot = 1;
+    state.dmr_soR = 0x40;
+    state.payload_algidR = 0x22;
+    state.payload_keyidR = 0x02;
+    rc |= expect_eq("force-algid-slot1-ota-present-skipped", dsd_dmr_apply_forced_algid(&state), 0);
+    rc |= expect_eq("force-algid-slot1-ota-alg-preserved", state.payload_algidR, 0x22);
+    rc |= expect_eq("force-algid-slot1-ota-key-preserved", state.payload_keyidR, 0x02);
+
+    // A known KEY ID without an ALG ID keeps the key id; only the missing ALG ID is filled.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.M = 0x21;
+    state.currentslot = 0;
+    state.dmr_so = 0x40;
+    state.payload_keyid = 0x03;
+    rc |= expect_eq("force-algid-fills-missing-alg", dsd_dmr_apply_forced_algid(&state), 1);
+    rc |= expect_eq("force-algid-fill-alg", state.payload_algid, 0x21);
+    rc |= expect_eq("force-algid-known-key-preserved", state.payload_keyid, 0x03);
+
     if (rc == 0) {
         printf("CORE_DMR_VOICE_ALG_GATE: OK\n");
     }
