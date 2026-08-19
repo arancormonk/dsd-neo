@@ -2203,6 +2203,28 @@ if(DSD_ENABLE_TERMINAL_UI)
         NAME UI_PROMPT_VALIDATION
         COMMAND dsd-neo_test_ui_prompt_validation
     )
+
+    add_executable(
+        dsd-neo_test_ui_prompt_secret
+        ui/test_ui_prompt_secret.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_prompt_secret
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_prompt_secret
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_prompt_secret
+        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_PROMPT_SECRET COMMAND dsd-neo_test_ui_prompt_secret)
 endif()
 
 # The Qt Quick frontend itself only builds for Android, but the session-phase
