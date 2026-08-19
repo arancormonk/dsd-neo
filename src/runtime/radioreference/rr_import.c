@@ -188,7 +188,11 @@ dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz) {
     scratch[len] = '\0';
     len = rr_stem_trim(scratch, len);
 
-    if (len == 0U) {
+    /* Tested on the byte rather than on len: rr_stem_trim() always terminates at
+       the length it returns, so the two are equivalent, and cppcheck --strict
+       reads `len == 0` as always true (it explores only the path where the trim
+       consumes everything). */
+    if (scratch[0] == '\0') {
         (void)DSD_SNPRINTF(out, out_sz, "%s", RR_STEM_FALLBACK);
         return strlen(out);
     }
