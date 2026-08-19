@@ -1555,6 +1555,14 @@ sdrtrunk_json_apply_forced_basic_privacy(const dsd_state* state, sdrtrunk_json_c
     ctx->ks_available = 1;
 }
 
+// ctx->kind stays DSD_CALL_KIND_VOICE until a call_type token is seen, and apply_forced_algid()
+// runs on tokens that precede it. Only an explicit PRIVATE reading suppresses the map, so the
+// not-yet-known default behaves like the implicit target-keyed lookup it sits beside.
+static int
+sdrtrunk_json_target_is_group(const sdrtrunk_json_context* ctx) {
+    return ctx->kind != DSD_CALL_KIND_PRIVATE_VOICE;
+}
+
 static void
 sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
     if (state->M >= 0x21 && state->M <= 0x25) {
@@ -1565,9 +1573,17 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
         state->payload_algid = ctx->alg_id;
         ctx->rc4_db = 256;
         ctx->rc4_mod = 9;
-        if (state->keyloader == 1 && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU
-            && state->rkey_array[ctx->target_id] != 0) {
-            state->R = state->rkey_array[ctx->target_id];
+        if (state->keyloader == 1) {
+            int mapped = 0;
+            const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                          (uint8_t)ctx->key_id, &mapped);
+            if (mapped) {
+                keyring_activate_slot_with_kid(state, 0, (int)kid);
+            } else if (ctx->target_id != 0U && ctx->target_id < 0x1FFFFU && state->rkey_array[ctx->target_id] != 0) {
+                // Pre-existing implicit "key indexed by talkgroup" replay convention. Kept as the
+                // fallback so replay workflows that depend on it are unchanged when no row matches.
+                state->R = state->rkey_array[ctx->target_id];
+            }
         }
         if (ctx->alg_id == 0x21 && state->R != 0 && state->payload_mi != 0) {
             uint8_t iv64[8] = {0};
@@ -1838,7 +1854,12 @@ sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, cha
     state->payload_mi = iv_hex;
     state->payload_keyid = ctx->key_id;
     if (state->keyloader == 1) {
-        keyring_activate_slot(opts, state, state->currentslot);
+        uint8_t kid = (uint8_t)ctx->key_id;
+        // DMR-only: the map is a DMR feature and this handler also serves P25 replay.
+        if (DSD_SYNC_IS_DMR(state->synctype)) {
+            kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx), kid, NULL);
+        }
+        keyring_activate_slot_with_kid(state, 0, (int)kid);
     }
 
     ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, iv_str);

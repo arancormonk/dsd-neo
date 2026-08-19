@@ -663,6 +663,87 @@ test_sdrtrunk_json_encryption_metadata_updates_payload_state(void) {
     return rc;
 }
 
+// --dmr-tg-key-csv was a complete no-op for sdrtrunk JSON replay: that path activated keys
+// directly and never reached the voice-frame prep where the map used to be applied.
+//
+// "to"/"from" are placed ahead of the encryption_* fields so ctx->target_id is already resolved
+// by the time the encryption_mi token dispatches sdrtrunk_json_handle_mi() -- the resolver's
+// hook point (traced against sdrtrunk_json_process_token()'s per-token handler order; with the
+// field order the neighbouring P25 fixtures use, "to" comes after "encryption_mi" and
+// target_id would still be 0 when handle_mi runs). state.M is left at 0 so
+// sdrtrunk_json_apply_forced_algid()'s DMRA branch never runs, isolating this assertion to
+// handle_mi alone.
+static int
+test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"to\":\"123\",\"from\":\"456\","
+        "\"encrypted\":\"true\",\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+        "\"encryption_mi\":\"001122334455667788\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+
+    state.keyloader = 1;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    state.dmr_tg_key_map_tg[0] = 123U;
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_u64("sdrtrunk map key applied", state.R, 0xBBBBBULL);
+    // The OTA key id stays the truth in state, as it does on every other path.
+    rc |= expect_int("sdrtrunk ota key id untouched", state.payload_keyid, 0x03);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// With no matching row, the pre-existing implicit "key indexed by talkgroup" replay behavior
+// must be untouched -- replay workflows depend on it. That convention lives only in
+// sdrtrunk_json_apply_forced_algid()'s DMRA branch (state.M in 0x21..0x25): handle_mi has no
+// rkey_array[target_id] fallback of its own -- an unmapped target there activates the
+// *signaled* key id, not the target-keyed one -- so this fixture forces state.M and drops
+// encryption_mi from the token stream entirely, keeping the assertion pointed at the one path
+// that implements the behavior it names.
+static int
+test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+                               "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+                               "\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+    state.M = 0x21;
+
+    state.keyloader = 1;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    // No map row for 123; the implicit lookup keys R off the target id itself.
+    state.rkey_array[123] = 0xCCCCCULL;
+    state.rkey_array_loaded[123] = 1U;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_u64("sdrtrunk implicit lookup preserved", state.R, 0xCCCCCULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_sdrtrunk_json_p25p2_encryption_metadata_updates_event(void) {
     int rc = 0;
@@ -1865,6 +1946,8 @@ main(void) {
     rc |= test_parse_raw_user_string_guards_and_bounds();
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
+    rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
+    rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
