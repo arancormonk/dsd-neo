@@ -291,17 +291,29 @@ Notes:
 - DMR only, and it needs the CSV keyring (`-K`/`-k`) loaded plus a known ALG ID (signaled, or via
   `--dmr-force-algid` on systems that don't signal one). Loading the map without `-K`/`-k` warns and
   does nothing.
+- Applies everywhere a DMR call's effective key ID is resolved: voice, encrypted data bursts (PDUs),
+  crypto classification, the `--enc-lockout` release decision, and sdrtrunk JSON replay input.
 - Group voice calls only. Private (unit-to-unit) calls put the destination radio ID where the
-  talkgroup would be, and DMR radio IDs share the talkgroup number space, so they are never matched
-  against this file. Encrypted data bursts also keep the signaled key ID.
-- The OTA key ID keeps being reported in logs and event history; the map only steers key selection,
-  and each applied override is announced once per call. The announcement says so when the mapped key
-  ID has no imported key material — the override still stands, but nothing will decrypt.
+  talkgroup would be, and DMR radio IDs share the talkgroup's 24-bit address space, so an individually
+  addressed call or data PDU is never matched against this file. For data, the header's group/individual
+  bit is recorded alongside the target so the PDU can still be classified after the header itself is
+  gone.
+- The OTA key ID is never rewritten: logs, event history, and the UI keep showing the signaled key ID,
+  and the printed data-PDU header leads with it too, appending the override only when one applied. Each
+  applied override is also announced once per call.
+- A mapped key ID with no imported key material falls back to the signaled key ID instead of blocking
+  the talkgroup outright — announced once per call as well — so a typo in the key ID column is harmless
+  rather than silently killing decryption for that talkgroup.
+- In sdrtrunk JSON replay, a map row wins over the older implicit "key indexed by talkgroup"
+  convention; with no matching row, that older behavior is unchanged. This holds regardless of the
+  order fields appear in the JSON record.
 - Duplicate talkgroups are allowed; the last occurrence replaces earlier rows.
 - Maximum rows: `256`.
+- CLI-only: there's no TUI or Android import path to load this map, only `--dmr-tg-key-csv` at startup.
+  Clearing keys from the TUI clears the map along with them, with no runtime path to reload it.
 
-Example (the key IDs are the ones in `examples/multi_key_hex.csv`; a key ID with no imported key
-material blocks decryption for that talkgroup rather than falling back to the signaled one):
+Example (the key IDs are the ones in `examples/multi_key_hex.csv`; a mapped key ID with no imported
+key material falls back to the signaled key ID instead of blocking the talkgroup):
 
 ```csv
 tg (dec),keyid (hex)
