@@ -405,6 +405,11 @@ struct dsd_state {
     // DMR LRRP 64-bit values
     unsigned long long int dmr_lrrp_source[2];
     unsigned long long int dmr_lrrp_target[2];
+    // 1 when the slot's last data header addressed a talkgroup (G/I bit set). The header's G/I
+    // bit is gone by the time the assembled PDU decrypts, and DMR radio ids share the
+    // talkgroup's 24-bit space, so the --dmr-tg-key-csv lookup needs this recorded alongside
+    // the target it qualifies.
+    uint8_t dmr_data_target_is_group[2];
     // P25 trunking freq storage
     long int p25_vc_freq[2];
     long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies

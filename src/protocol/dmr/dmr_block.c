@@ -582,6 +582,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     if (f.dpf != 15) {
         state->dmr_lrrp_source[slot] = f.source;
         state->dmr_lrrp_target[slot] = f.target;
+        state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
     }
     if (f.dpf == 2 || f.dpf == 3) {
         state->data_block_poc[slot] = f.poc;

@@ -358,7 +358,7 @@ test_des_decrypts_window_with_manual_key_fallback(void) {
     state.payload_algidR = 2;
     state.payload_keyidR = 0x77;
     state.payload_miR = 0x11223344ULL;
-    state.R = 0x0123456789ABCDEFULL;
+    state.RR = 0x0123456789ABCDEFULL;
 
     dmr_block_crypto_load_ctx(&state, slot, 1, 24, &ctx);
     rc |= expect_int("des ctx end", ctx.end, 24);

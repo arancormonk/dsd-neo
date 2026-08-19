@@ -6518,9 +6518,26 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_dmr_block_crypto
-    PRIVATE dsd-neo_crypto dsd-neo_test_support
+    PRIVATE dsd-neo_core dsd-neo_crypto dsd-neo_test_support
 )
 add_test(NAME DMR_BLOCK_CRYPTO COMMAND dsd-neo_test_dmr_block_crypto)
+
+add_executable(
+    dsd-neo_test_dmr_block_crypto_key_map
+    protocol/dmr/test_dmr_block_crypto_key_map.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_block_crypto_key_map
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_block_crypto_key_map
+    PRIVATE dsd-neo_proto_dmr dsd-neo_core
+)
+add_test(
+    NAME DMR_BLOCK_CRYPTO_KEY_MAP
+    COMMAND dsd-neo_test_dmr_block_crypto_key_map
+)
 
 # DMR relaxed header acceptance for SAP=4 (IP-based)
 add_executable(
@@ -6547,7 +6564,7 @@ target_compile_definitions(
 # dmr_utils.c uses the shared debug hex formatter exported by dsd-neo_dsp.
 target_link_libraries(
     dsd-neo_test_dmr_relaxed_header_ip
-    PRIVATE dsd-neo_dsp dsd-neo_test_support
+    PRIVATE dsd-neo_core dsd-neo_dsp dsd-neo_test_support
 )
 add_test(NAME DMR_RELAXED_HEADER_IP COMMAND dsd-neo_test_dmr_relaxed_header_ip)
 
