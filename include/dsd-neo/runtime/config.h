@@ -587,6 +587,11 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
 
+    /* [radioreference] */
+    int has_radioreference;
+    char rr_username[128];
+    char rr_app_key[64];
+
     /* [trunk_scan] */
     int has_trunk_scan;
     int trunk_scan_enabled;

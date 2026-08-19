@@ -74,6 +74,11 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "tune_enc_calls", "Follow P25 encrypted grants without key lockout", "true", NULL, DSDCFG_TYPE_BOOL, 0,
      0},
 
+    /* [radioreference] section */
+    {"radioreference", "username", "RadioReference account username", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
+    {"radioreference", "app_key", "RadioReference application key (ignored when a key is baked into the build)", "",
+     NULL, DSDCFG_TYPE_STRING, 0, 0},
+
     /* [trunk_scan] section */
     {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},

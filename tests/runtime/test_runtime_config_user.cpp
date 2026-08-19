@@ -103,6 +103,163 @@ expect_contains(const char* label, const char* haystack, const char* needle) {
     return 0;
 }
 
+/*
+ * Like expect_contains(), but never echoes the rendered buffer: this INI carries
+ * RadioReference credentials and a failure message must not leak them.
+ */
+static int
+expect_contains_quiet(const char* label, const char* haystack, const char* needle) {
+    if (!haystack || !needle || !strstr(haystack, needle)) {
+        DSD_FPRINTF(stderr, "FAIL: %s did not render the expected line\n", label ? label : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_absent_quiet(const char* label, const char* haystack, const char* needle) {
+    if (!haystack || !needle || strstr(haystack, needle)) {
+        DSD_FPRINTF(stderr, "FAIL: %s rendered a line that should be absent\n", label ? label : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_radioreference_schema_rows(void) {
+    int rc = 0;
+    int n = 0;
+    const int count = dsdcfg_schema_count();
+    for (int i = 0; i < count; i++) {
+        const dsdcfg_schema_entry_t* e = dsdcfg_schema_get(i);
+        if (e && e->section && strcmp(e->section, "radioreference") == 0) {
+            n++;
+        }
+    }
+    if (n != 2) {
+        DSD_FPRINTF(stderr, "FAIL: expected 2 radioreference schema rows, found %d\n", n);
+        rc |= 1;
+    }
+    if (dsdcfg_schema_find("radioreference", "username") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: radioreference.username is not in the schema\n");
+        rc |= 1;
+    }
+    if (dsdcfg_schema_find("radioreference", "app_key") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: radioreference.app_key is not in the schema\n");
+        rc |= 1;
+    }
+    if (dsdcfg_schema_find("radioreference", "password") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: radioreference.password must never be a persisted setting\n");
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_radioreference_config_roundtrip(void) {
+    static const char* ini = "[radioreference]\n"
+                             "username = \"alice\"\n"
+                             "app_key = \"K-1\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    int rc = 0;
+    if (!cfg.has_radioreference) {
+        DSD_FPRINTF(stderr, "FAIL: [radioreference] did not set has_radioreference\n");
+        rc |= 1;
+    }
+    if (strcmp(cfg.rr_username, "alice") != 0 || strcmp(cfg.rr_app_key, "K-1") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [radioreference] keys did not load into dsdneoUserConfig\n");
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strcmp(opts.rr_username, "alice") != 0 || strcmp(opts.rr_app_key, "K-1") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [radioreference] keys did not reach dsd_opts\n");
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.has_radioreference || strcmp(snap.rr_username, "alice") != 0 || strcmp(snap.rr_app_key, "K-1") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the radioreference credentials\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("radioreference section header", rendered, "[radioreference]\n");
+    rc |= expect_contains_quiet("radioreference username", rendered, "username = \"alice\"\n");
+    rc |= expect_contains_quiet("radioreference app key", rendered, "app_key = \"K-1\"\n");
+
+    /* A session with no RadioReference credentials must not emit the section at all. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig empty_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &empty_snap);
+    if (empty_snap.has_radioreference) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot set has_radioreference with no credentials\n");
+        rc |= 1;
+    }
+    if (render_config_to_buffer(&empty_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_absent_quiet("empty radioreference section", rendered, "[radioreference]");
+
+    return rc;
+}
+
+static int
+test_radioreference_save_atomic_roundtrip(void) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_radioreference = 1;
+    DSD_SNPRINTF(cfg.rr_username, sizeof cfg.rr_username, "%s", "alice");
+    DSD_SNPRINTF(cfg.rr_app_key, sizeof cfg.rr_app_key, "%s", "K-1");
+
+    char save_path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(save_path, sizeof save_path, "dsdneo_config_rr_save");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for radioreference save path\n");
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    int rc = 0;
+    if (dsd_user_config_save_atomic(save_path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "save_atomic failed for the radioreference config\n");
+        rc |= 1;
+    } else {
+        dsdneoUserConfig loaded;
+        if (dsd_user_config_load(save_path, &loaded) != 0) {
+            DSD_FPRINTF(stderr, "reload of the saved radioreference config failed\n");
+            rc |= 1;
+        } else if (!loaded.has_radioreference || strcmp(loaded.rr_username, "alice") != 0
+                   || strcmp(loaded.rr_app_key, "K-1") != 0) {
+            DSD_FPRINTF(stderr, "FAIL: saved radioreference credentials did not survive a reload\n");
+            rc |= 1;
+        }
+    }
+
+    (void)remove(save_path);
+    return rc;
+}
+
 static int
 test_apply_file_input_rescales_symbol_timing(void) {
     dsdneoUserConfig cfg = {};
@@ -1909,6 +2066,9 @@ main(void) {
     rc |= test_snapshot_staged_file_rate_uses_requested_rate();
     rc |= test_snapshot_mode_inference_tdma_and_auto();
     rc |= test_snapshot_roundtrip_dmr_mono_override();
+    rc |= test_radioreference_schema_rows();
+    rc |= test_radioreference_config_roundtrip();
+    rc |= test_radioreference_save_atomic_roundtrip();
     rc |= test_dmr_mono_preset_precedes_false_override();
     return rc;
 }

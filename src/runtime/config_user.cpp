@@ -1010,6 +1010,18 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
 }
 
 static void
+render_radioreference_section(FILE* out, const dsdneoUserConfig* cfg) {
+    DSD_FPRINTF(out, "[radioreference]\n");
+    if (cfg->rr_username[0]) {
+        DSD_FPRINTF(out, "username = \"%s\"\n", cfg->rr_username);
+    }
+    if (cfg->rr_app_key[0]) {
+        DSD_FPRINTF(out, "app_key = \"%s\"\n", cfg->rr_app_key);
+    }
+    DSD_FPRINTF(out, "\n");
+}
+
+static void
 render_trunk_scan_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "[trunk_scan]\n");
     DSD_FPRINTF(out, "enabled = %s\n", ini_bool(cfg->trunk_scan_enabled));
@@ -1105,6 +1117,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     }
     if (cfg->has_trunking) {
         render_trunking_section(stream, cfg);
+    }
+    if (cfg->has_radioreference) {
+        render_radioreference_section(stream, cfg);
     }
     if (cfg->has_trunk_scan) {
         render_trunk_scan_section(stream, cfg);
@@ -1344,6 +1359,21 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 static void
+apply_radioreference_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg || !opts || !cfg->has_radioreference) {
+        return;
+    }
+    if (cfg->rr_username[0]) {
+        DSD_SNPRINTF(opts->rr_username, sizeof opts->rr_username, "%s", cfg->rr_username);
+        opts->rr_username[sizeof opts->rr_username - 1] = '\0';
+    }
+    if (cfg->rr_app_key[0]) {
+        DSD_SNPRINTF(opts->rr_app_key, sizeof opts->rr_app_key, "%s", cfg->rr_app_key);
+        opts->rr_app_key[sizeof opts->rr_app_key - 1] = '\0';
+    }
+}
+
+static void
 apply_trunk_scan_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg || !opts || !cfg->has_trunk_scan) {
         return;
@@ -1489,6 +1519,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     apply_mode_config(cfg, opts, state);
     apply_demod_config(cfg, opts, state);
     apply_trunking_config(cfg, opts);
+    apply_radioreference_config(cfg, opts);
     apply_trunk_scan_config(cfg, opts);
     apply_logging_config(cfg, opts);
     apply_alerts_config(cfg, opts);
@@ -1641,6 +1672,15 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
+snapshot_radioreference_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    cfg->has_radioreference = (opts->rr_username[0] || opts->rr_app_key[0]) ? 1 : 0;
+    DSD_SNPRINTF(cfg->rr_username, sizeof cfg->rr_username, "%s", opts->rr_username);
+    cfg->rr_username[sizeof cfg->rr_username - 1] = '\0';
+    DSD_SNPRINTF(cfg->rr_app_key, sizeof cfg->rr_app_key, "%s", opts->rr_app_key);
+    cfg->rr_app_key[sizeof cfg->rr_app_key - 1] = '\0';
+}
+
+static void
 snapshot_trunk_scan_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->has_trunk_scan = 1;
     cfg->trunk_scan_enabled = opts->trunk_scan_enabled ? 1 : 0;
@@ -1717,6 +1757,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     snapshot_mode_config(opts, cfg);
     snapshot_demod_config(opts, cfg);
     snapshot_trunking_config(opts, cfg);
+    snapshot_radioreference_config(opts, cfg);
     snapshot_trunk_scan_config(opts, cfg);
     snapshot_logging_config(opts, cfg);
     snapshot_alerts_config(opts, cfg);

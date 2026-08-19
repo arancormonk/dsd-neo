@@ -434,6 +434,15 @@ apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char
 }
 
 static void
+apply_radioreference_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "username") == 0) {
+        copy_text_value(cfg->rr_username, sizeof cfg->rr_username, val);
+    } else if (strcmp(key_lc, "app_key") == 0) {
+        copy_text_value(cfg->rr_app_key, sizeof cfg->rr_app_key, val);
+    }
+}
+
+static void
 apply_trunk_scan_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "enabled") == 0) {
         int b = 0;
@@ -603,6 +612,9 @@ apply_section_key(dsdneoUserConfig* cfg, const char* section, const char* key_lc
     } else if (strcmp(section, "trunking") == 0) {
         cfg->has_trunking = 1;
         apply_trunking_section_key(cfg, key_lc, val);
+    } else if (strcmp(section, "radioreference") == 0) {
+        cfg->has_radioreference = 1;
+        apply_radioreference_section_key(cfg, key_lc, val);
     } else if (strcmp(section, "trunk_scan") == 0) {
         cfg->has_trunk_scan = 1;
         apply_trunk_scan_section_key(cfg, key_lc, val);
