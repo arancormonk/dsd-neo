@@ -392,6 +392,79 @@ test_non_dmr_call_snapshot_is_rejected(void) {
     return rc;
 }
 
+static int
+test_effective_kid_resolution(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    int mapped = -1;
+
+    state.keyloader = 1;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&state, 123U, 0x7B);
+    map_one(&state, 456U, 0x40); // deliberately: nothing imported for key id 0x40
+
+    // A mapped group target whose key id has material takes the map's key id.
+    rc |= expect_eq("eff-mapped", keyring_dmr_effective_kid(&state, 123U, 1, 0x03, &mapped), 0x7B);
+    rc |= expect_eq("eff-mapped-flag", mapped, 1);
+
+    // A mapped key id with nothing imported falls back to the signaled id rather than zeroing
+    // the slot key and shadowing a signaled id that would have worked.
+    rc |= expect_eq("eff-no-material", keyring_dmr_effective_kid(&state, 456U, 1, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-no-material-flag", mapped, 0);
+
+    // Unmapped target, individual target, and a disarmed keyring all keep the signaled id.
+    rc |= expect_eq("eff-unmapped", keyring_dmr_effective_kid(&state, 999U, 1, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-individual", keyring_dmr_effective_kid(&state, 123U, 0, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-individual-flag", mapped, 0);
+    state.keyloader = 0;
+    rc |= expect_eq("eff-keyloader-off", keyring_dmr_effective_kid(&state, 123U, 1, 0x03, &mapped), 0x03);
+    state.keyloader = 1;
+
+    // AES-only material counts as material: segments live at key_id + 0x101/0x201/0x301.
+    state.rkey_array[0x0C + 0x101] = 0xCCCCULL;
+    map_one(&state, 789U, 0x0C);
+    rc |= expect_eq("eff-aes-only", keyring_dmr_effective_kid(&state, 789U, 1, 0x03, &mapped), 0x0C);
+    rc |= expect_eq("eff-aes-only-flag", mapped, 1);
+
+    // A zero target never matches: it is the "no talkgroup known" sentinel.
+    rc |= expect_eq("eff-zero-target", keyring_dmr_effective_kid(&state, 0U, 1, 0x03, &mapped), 0x03);
+    return rc;
+}
+
+static int
+test_kid_material_reports_without_activating(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    unsigned long long rkey = 0xDEADULL;
+    int aes_loaded = -1;
+
+    state.rkey_array[0x11] = 0x1234ULL;
+    state.rkey_array[0x22 + 0x201] = 0x5678ULL;
+
+    rc |= expect_eq("mat-scalar", keyring_kid_material(&state, 0x11, &rkey, &aes_loaded), 1);
+    rc |= expect_eq("mat-scalar-rkey", (long long)rkey, 0x1234LL);
+    // Segment 0 shares the scalar's index, so a scalar key also reads as AES-loaded. This
+    // mirrors keyring_activate_slot_with_kid() exactly: classification must agree with
+    // activation, not with a tidier definition.
+    rc |= expect_eq("mat-scalar-aes", aes_loaded, 1);
+
+    rc |= expect_eq("mat-segment-only", keyring_kid_material(&state, 0x22, &rkey, &aes_loaded), 1);
+    rc |= expect_eq("mat-segment-only-rkey", (long long)rkey, 0LL);
+    rc |= expect_eq("mat-segment-only-aes", aes_loaded, 1);
+
+    rc |= expect_eq("mat-none", keyring_kid_material(&state, 0x33, &rkey, &aes_loaded), 0);
+    rc |= expect_eq("mat-none-rkey", (long long)rkey, 0LL);
+    rc |= expect_eq("mat-none-aes", aes_loaded, 0);
+
+    // The state is untouched: this is a query, not an activation.
+    rc |= expect_eq("mat-no-activation-r", (long long)state.R, 0LL);
+    rc |= expect_eq("mat-no-activation-a1", (long long)state.A1[0], 0LL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -403,6 +476,8 @@ main(void) {
     rc |= test_private_call_is_not_a_talkgroup();
     rc |= test_ended_call_stops_steering_key_selection();
     rc |= test_non_dmr_call_snapshot_is_rejected();
+    rc |= test_effective_kid_resolution();
+    rc |= test_kid_material_reports_without_activating();
     // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {

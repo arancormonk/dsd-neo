@@ -62,8 +62,11 @@ keyring_rkey_value(const dsd_state* state, int index) {
     return keyring_rkey_index_valid(state, index) ? state->rkey_array[index] : 0ULL;
 }
 
-static void
+void
 keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id) {
+    if (state == NULL || slot < 0 || slot > 1) {
+        return;
+    }
     const unsigned long long int scalar_key = keyring_rkey_value(state, key_id);
     if (slot == 0) {
         state->R = scalar_key;
@@ -110,18 +113,53 @@ keyring_dmr_tg_map_kid(const dsd_state* state, uint32_t tg, uint8_t* out_kid) {
     return 0;
 }
 
-static int
-keyring_dmr_tg_map_slot_eligible(const dsd_state* state, int slot) {
-    if (!state || slot < 0 || slot > 1 || state->dmr_tg_key_map_count <= 0 || state->keyloader != 1) {
-        return 0;
+int
+keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out_rkey, int* out_aes_loaded) {
+    unsigned long long rkey = 0ULL;
+    int aes_loaded = 0;
+
+    if (state != NULL) {
+        rkey = keyring_rkey_value(state, key_id);
+        for (size_t i = 0; i < 4U; i++) {
+            if (keyring_rkey_value(state, key_id + k_aes_segment_offsets[i]) != 0ULL) {
+                aes_loaded = 1;
+                break;
+            }
+        }
     }
-    if (!DSD_SYNC_IS_DMR(state->synctype) && !DSD_SYNC_IS_DMR(state->lastsynctype)) {
-        return 0;
+
+    if (out_rkey != NULL) {
+        *out_rkey = rkey;
     }
-    // Same gate as the signaled-KID activation in mbe_prepare_frame_state: no ALG ID means
-    // the basic-privacy TG autoload owns the slot, and 0x80 stays with the scrambler path.
-    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-    return algid != 0 && algid != 0x80;
+    if (out_aes_loaded != NULL) {
+        *out_aes_loaded = aes_loaded;
+    }
+    return (rkey != 0ULL || aes_loaded != 0) ? 1 : 0;
+}
+
+uint8_t
+keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, uint8_t signaled_kid,
+                          int* out_mapped) {
+    if (out_mapped != NULL) {
+        *out_mapped = 0;
+    }
+    if (state == NULL || !target_is_group || state->keyloader != 1 || state->dmr_tg_key_map_count <= 0) {
+        return signaled_kid;
+    }
+
+    uint8_t kid = 0U;
+    if (!keyring_dmr_tg_map_kid(state, target, &kid)) {
+        return signaled_kid;
+    }
+    if (!keyring_kid_material(state, (int)kid, NULL, NULL)) {
+        // Explicit intent still loses to reality here: see the header comment.
+        return signaled_kid;
+    }
+
+    if (out_mapped != NULL) {
+        *out_mapped = 1;
+    }
+    return kid;
 }
 
 // True when the slot's snapshot describes a live DMR group call whose talkgroup may be looked up.
@@ -136,6 +174,31 @@ keyring_dmr_tg_map_call_is_mappable(const dsd_call_snapshot* call) {
     return call->phase == DSD_CALL_PHASE_ACTIVE && call->kind == DSD_CALL_KIND_GROUP_VOICE
            && (call->protocol == DSD_SYNC_NONE || DSD_SYNC_IS_DMR(call->protocol)) && call->ota_target_id != 0U
            && call->ota_target_id <= UINT32_MAX;
+}
+
+uint8_t
+keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, uint8_t signaled_kid, int* out_mapped) {
+    if (out_mapped != NULL) {
+        *out_mapped = 0;
+    }
+    if (call == NULL || !keyring_dmr_tg_map_call_is_mappable(call)) {
+        return signaled_kid;
+    }
+    return keyring_dmr_effective_kid(state, (uint32_t)call->ota_target_id, 1, signaled_kid, out_mapped);
+}
+
+static int
+keyring_dmr_tg_map_slot_eligible(const dsd_state* state, int slot) {
+    if (!state || slot < 0 || slot > 1 || state->dmr_tg_key_map_count <= 0 || state->keyloader != 1) {
+        return 0;
+    }
+    if (!DSD_SYNC_IS_DMR(state->synctype) && !DSD_SYNC_IS_DMR(state->lastsynctype)) {
+        return 0;
+    }
+    // Same gate as the signaled-KID activation in mbe_prepare_frame_state: no ALG ID means
+    // the basic-privacy TG autoload owns the slot, and 0x80 stays with the scrambler path.
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    return algid != 0 && algid != 0x80;
 }
 
 // One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit for a
@@ -180,7 +243,7 @@ keyring_dmr_tg_map_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
 void
 keyring_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
     (void)opts;
-    if (!state || slot < 0 || slot > 1) {
+    if (state == NULL || slot < 0 || slot > 1) {
         return;
     }
     keyring_activate_slot_with_kid(state, slot, (slot == 0) ? state->payload_keyid : state->payload_keyidR);
