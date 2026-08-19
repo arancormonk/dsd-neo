@@ -18,6 +18,7 @@
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -27,6 +28,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/runtime/radioreference.h>
+#include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1685,7 +1687,9 @@ test_import_now_same_sid_overwrites_in_place(void) {
  */
 static void
 seed_foreign_csv(const char* path, int sid, const char* kind) {
-    FILE* fp = fopen(path, "wb");
+    /* dsd_fopen_private(), not fopen(): the seed file is created 0600 rather than
+       umask-dependent 0666, which is also what the production writer does. */
+    FILE* fp = dsd_fopen_private(path, "wb");
     expect("seed: csv written", fp != NULL);
     if (fp != NULL) {
         DSD_FPRINTF(fp, "%s", "Decimal,Hex,AlphaTag,Mode\n1,1,SEED,D\n");

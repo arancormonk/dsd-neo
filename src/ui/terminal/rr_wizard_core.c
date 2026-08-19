@@ -16,6 +16,7 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
@@ -165,38 +166,56 @@ typedef enum {
     RR_FETCH_KIND_COUNT
 } RrFetchKind;
 
+/*
+ * The seven trampolines below each cast the ring's `void* result` back to one
+ * concrete list type. CodeQL's cpp/type-confusion query merges the provenance of
+ * that void* across every RrFetchKind - the completion callback is shared - and so
+ * reports each cast as a possible mismatch. It cannot be one: k_member_free[] is
+ * indexed by the SAME `kind` that selected the request whose reply allocated the
+ * pointer (rr_core_on_done sets `r->kind = ctx->kind` and `r->result = result` in
+ * one critical section), and every rr_core_free_result() call site passes that
+ * paired kind - either `r->kind` beside `r->result`, or the literal kind matching
+ * the pend_* field, which rr_core_apply_system_slot() assigns under the same switch.
+ */
 static void
 rr_free_country_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_country_list_free((dsd_rr_country_list*)p);
 }
 
 static void
 rr_free_state_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_state_list_free((dsd_rr_state_list*)p);
 }
 
 static void
 rr_free_county_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_county_list_free((dsd_rr_county_list*)p);
 }
 
 static void
 rr_free_trs_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_trs_list_free((dsd_rr_trs_list*)p);
 }
 
 static void
 rr_free_site_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_site_list_free((dsd_rr_site_list*)p);
 }
 
 static void
 rr_free_talkgroup_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_talkgroup_list_free((dsd_rr_talkgroup_list*)p);
 }
 
 static void
 rr_free_talkgroup_cat_list(void* p) {
+    // codeql[cpp/type-confusion] Dispatched only via k_member_free[kind]; see the note above.
     dsd_rr_talkgroup_cat_list_free((dsd_rr_talkgroup_cat_list*)p);
 }
 
@@ -1630,6 +1649,12 @@ rr_wizard_core_create(const RrWizardHooks* hooks, void* hook_user) {
         free(w);
         return NULL;
     }
+    /* CodeQL reads this as a caller stack address escaping into heap memory. It is a
+       by-value struct copy, and RrWizardHooks holds nothing but function pointers, so
+       no address of the caller's object is retained. hook_user is an opaque pointer
+       whose lifetime is the caller's contract (documented on rr_wizard_core_create);
+       the only production caller passes the address of a file-scope static. */
+    // codeql[cpp/stack-address-escape] By-value copy of a function-pointer-only struct.
     w->hooks = *hooks;
     w->hook_user = hook_user;
     w->generation = 1U;
