@@ -144,6 +144,11 @@ test_unmapped_tg_leaves_slot_alone(void) {
     state.payload_keyid = 0x03;
     state.rkey_array[0x03] = 0xAAAAAULL;
     state.rkey_array_loaded[0x03] = 1U;
+    // 0x7B has real material too: without it, a broken lookup that matched TG 999 to the 123 row
+    // by accident would still fall back to 0x03 for lack of material, and this test would not
+    // notice the lookup was wrong -- the exact gap the review flagged.
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
     map_one(&state, 123U, 0x7B);
     observe_group_call(&state, 0U, 999U);
 
@@ -192,8 +197,10 @@ test_aes_segments_via_mapped_kid_slot1(void) {
 // test_non_dmr_call_snapshot_is_rejected now covers correctly via the snapshot's protocol field;
 // and the ALG ID gate (algid == 0, algid == 0x80) moved to mbe_prepare_frame_state, which decides
 // whether to call the resolver at all -- keyring_dmr_slot_kid_for_call() itself never reads
-// payload_algid, so there is no gate left here to exercise. That gate's coverage now lives in
-// tests/core/test_core_mbe_transform_context.c's end-to-end processMbeFrame() cases.
+// payload_algid, so there is no gate left here to exercise. That gate's coverage lives in
+// tests/core/test_core_mbe_transform_context.c's test_process_mbe_frame_activation_gate_and_wide_kid(),
+// which drives processMbeFrame() directly with keyloader armed -- no test in that file set
+// keyloader before that case was added, so until then the gate had no coverage anywhere.
 static int
 test_gates_hold_activation_back(void) {
     static dsd_state state;
@@ -215,15 +222,20 @@ test_gates_hold_activation_back(void) {
     rc |= expect_eq("keyloader-off-loads-signaled-not-mapped-key", (long long)state.R, 0xAAAAALL);
     dsd_state_ext_free_all(&state);
 
-    // No active call on the slot: nothing to match a talkgroup against, and no snapshot to
-    // activate with either -- activate_via_map()'s own dsd_call_state_get() guard reports this
-    // with its 0xFF sentinel, mirroring processMbeFrameInternal() passing a NULL snapshot.
+    // No active call on the slot: production hits this exact call when mark_vocoder_call_media()
+    // reports no active call and mbe_prepare_frame_state() passes a NULL snapshot
+    // (processMbeFrameInternal(): have_call ? &call : NULL) -- exercise
+    // keyring_dmr_slot_kid_for_call() with call == NULL directly rather than through
+    // activate_via_map()'s own dsd_call_state_get() guard, which is test-only scaffolding: that
+    // guard's 0xFF sentinel is invariant under any change to keyring.c or dsd_mbe.c, so asserting
+    // only it left the real NULL-call contract untested.
     DSD_MEMSET(&state, 0, sizeof(state));
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.keyloader = 1;
     state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
     map_one(&state, 123U, 0x7B);
-    rc |= expect_eq("no-call-noop", activate_via_map(&state, 0), 0xFFU);
+    rc |= expect_eq("no-call-returns-signaled-kid", keyring_dmr_slot_kid_for_call(&state, 0, NULL, 0x03), 0x03);
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -248,58 +260,90 @@ count_substring_in_file(const char* path, const char* needle) {
     return hits;
 }
 
-// The notice is a stderr write, so counting it is the only way to observe the latch: its only state
-// write assigns the same epoch it compares against, which no in-memory assertion can distinguish
-// from an unlatched notice. Without this, dropping the early return would flood the console with one
-// line per voice frame -- and corrupt the ncurses display -- with nothing failing.
-//
-// Runs last, and reports on stdout: restoring stderr after the capture is not portable, so it is
-// left pointing at the null device and no later test may depend on it.
+// Redirects stderr to a fresh temp file, calls activate_via_map(state, slot) five times, and
+// returns how many times `needle` appears in what was written, or -1 if the capture itself could
+// not be set up. Leaves stderr redirected to the temp file: reopening it more than once is fine,
+// but restoring it is not portable, so the caller does that once after every capture phase is
+// done (see test_notice_is_emitted_once_per_epoch()).
 static int
-test_notice_is_emitted_once_per_epoch(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    int rc = 0;
-
-    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.keyloader = 1;
-    state.payload_algid = 0x21;
-    state.rkey_array[0x7B] = 0xBBBBBULL;
-    state.rkey_array_loaded[0x7B] = 1U;
-    map_one(&state, 123U, 0x7B);
-    observe_group_call(&state, 0U, 123U);
-
+capture_notice_hits(dsd_state* state, int slot, const char* needle) {
     char tmpl[] = "dsd-neo-test-tg-key-note-XXXXXX";
     int fd = dsd_mkstemp(tmpl);
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for notice capture\n");
-        dsd_state_ext_free_all(&state);
-        return 1;
+        return -1;
     }
     (void)dsd_close(fd);
 
     fflush(stderr);
     if (freopen(tmpl, "w", stderr) == NULL) {
         (void)remove(tmpl);
-        dsd_state_ext_free_all(&state);
-        return 1;
+        return -1;
     }
     for (int i = 0; i < 5; i++) {
-        (void)activate_via_map(&state, 0);
+        (void)activate_via_map(state, slot);
     }
     fflush(stderr);
-    const int restored = (freopen(TG_KEY_NULL_DEVICE, "w", stderr) != NULL);
 
-    const int hits = count_substring_in_file(tmpl, "DMR TG Key Map");
+    const int hits = count_substring_in_file(tmpl, needle);
     (void)remove(tmpl);
-    dsd_state_ext_free_all(&state);
+    return hits;
+}
 
-    if (!restored) {
-        printf("note-capture: could not reopen stderr\n");
-        return 1;
+// The notice is a stderr write, so counting it is the only way to observe the latch: its only state
+// write assigns the same epoch it compares against, which no in-memory assertion can distinguish
+// from an unlatched notice. Without this, dropping the early return would flood the console with one
+// line per voice frame -- and corrupt the ncurses display -- with nothing failing. Both notice
+// variants share the same latch helper (keyring_dmr_tg_map_note_should_print()), so both are
+// exercised here rather than just the applied one: the skipped notice is the CSV-typo path this
+// feature added the notice for in the first place, and losing its latch carries the identical risk.
+//
+// Runs last, and reports on stdout: restoring stderr after the capture is not portable, so it is
+// left pointing at the null device and no later test may depend on it.
+static int
+test_notice_is_emitted_once_per_epoch(void) {
+    int rc = 0;
+
+    static dsd_state applied_state;
+    DSD_MEMSET(&applied_state, 0, sizeof(applied_state));
+    applied_state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    applied_state.keyloader = 1;
+    applied_state.payload_algid = 0x21;
+    applied_state.rkey_array[0x7B] = 0xBBBBBULL;
+    applied_state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&applied_state, 123U, 0x7B);
+    observe_group_call(&applied_state, 0U, 123U);
+    const int applied_hits = capture_notice_hits(&applied_state, 0, "DMR TG Key Map");
+    dsd_state_ext_free_all(&applied_state);
+    if (applied_hits < 0) {
+        printf("note-capture: could not set up applied-notice capture\n");
+        rc = 1;
+    } else if (applied_hits != 1) {
+        printf("note-once-per-epoch: got %d notices want 1\n", applied_hits);
+        rc = 1;
     }
-    if (hits != 1) {
-        printf("note-once-per-epoch: got %d notices want 1\n", hits);
+
+    static dsd_state skipped_state;
+    DSD_MEMSET(&skipped_state, 0, sizeof(skipped_state));
+    skipped_state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    skipped_state.keyloader = 1;
+    skipped_state.payload_algid = 0x21;
+    skipped_state.payload_keyid = 0x03;
+    // 0x7B is mapped but never imported -- the skipped-notice path.
+    map_one(&skipped_state, 123U, 0x7B);
+    observe_group_call(&skipped_state, 0U, 123U);
+    const int skipped_hits = capture_notice_hits(&skipped_state, 0, "has no imported key");
+    dsd_state_ext_free_all(&skipped_state);
+    if (skipped_hits < 0) {
+        printf("note-capture: could not set up skipped-notice capture\n");
+        rc = 1;
+    } else if (skipped_hits != 1) {
+        printf("note-skipped-once-per-epoch: got %d notices want 1\n", skipped_hits);
+        rc = 1;
+    }
+
+    const int restored = (freopen(TG_KEY_NULL_DEVICE, "w", stderr) != NULL);
+    if (!restored) {
+        printf("note-capture: could not reopen stderr to null device\n");
         rc = 1;
     }
     return rc;

@@ -189,12 +189,23 @@ keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, 
 
 // One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit
 // for a non-zero epoch, so epoch 0 is the "never announced" sentinel and needs no valid flag.
-static void
-keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid) {
+// Shared by both notice variants below so the latch itself -- the thing that keeps either one
+// from flooding the console (and corrupting the ncurses display) once per voice frame -- has a
+// single implementation instead of two copies that could drift.
+static int
+keyring_dmr_tg_map_note_should_print(dsd_state* state, int slot, uint64_t epoch) {
     if (state->dmr_tg_key_note_epoch[slot] == epoch) {
-        return;
+        return 0;
     }
     state->dmr_tg_key_note_epoch[slot] = epoch;
+    return 1;
+}
+
+static void
+keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid) {
+    if (!keyring_dmr_tg_map_note_should_print(state, slot, epoch)) {
+        return;
+    }
     DSD_FPRINTF(stderr, "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X;", slot + 1, tg, kid);
 }
 
@@ -203,10 +214,9 @@ keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg,
 static void
 keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t mapped_kid,
                                 uint8_t signaled_kid) {
-    if (state->dmr_tg_key_note_epoch[slot] == epoch) {
+    if (!keyring_dmr_tg_map_note_should_print(state, slot, epoch)) {
         return;
     }
-    state->dmr_tg_key_note_epoch[slot] = epoch;
     DSD_FPRINTF(stderr,
                 "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X has no imported key; using signaled Key ID: %02X;",
                 slot + 1, tg, mapped_kid, signaled_kid);

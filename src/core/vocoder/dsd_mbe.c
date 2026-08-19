@@ -340,13 +340,20 @@ mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame
     // Unchanged gate: no ALG ID means the BP/HBP TG autoload owns the slot, and 0x80 stays with
     // the scrambler path.
     if (state->keyloader == 1 && algid != 0 && algid != 0x80) {
-        const uint8_t signaled = (uint8_t)((slot == 0) ? state->payload_keyid : state->payload_keyidR);
+        const int signaled = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
         // A --dmr-tg-key-csv row for the slot's active talkgroup selects its key id in place of
         // the signaled one. The resolver hands back `signaled` whenever the map does not apply --
         // including for every non-DMR protocol, whose snapshots are never mappable -- so there is
-        // one activation here rather than two paths to keep in sync.
-        const uint8_t kid = keyring_dmr_slot_kid_for_call(state, slot, call, signaled);
-        keyring_activate_slot_with_kid(state, slot, (int)kid);
+        // one activation here rather than two paths to keep in sync. The resolver's key id is a
+        // uint8_t (DMR key ids are byte-wide), but rkey_array indexes to 0x1FFFF and P25 signals a
+        // full 16-bit KID (p25_crypto.c activates it directly) -- narrowing a >0xFF signaled id to
+        // fit the resolver would activate the wrong index every frame, so those bypass it entirely
+        // and keep their own signaled id unchanged.
+        int kid = signaled;
+        if (signaled >= 0 && signaled <= 0xFF) {
+            kid = (int)keyring_dmr_slot_kid_for_call(state, slot, call, (uint8_t)signaled);
+        }
+        keyring_activate_slot_with_kid(state, slot, kid);
     }
 
     DSD_MEMSET(frame_ctx->imbe_d, 0, sizeof(frame_ctx->imbe_d));
@@ -1860,10 +1867,18 @@ mark_vocoder_call_media_slot(int protocol, int current_slot) {
     return 0U;
 }
 
-// Returns 1 and fills *out_call when the slot already carried a matching active call, so the
-// caller can reuse this snapshot instead of taking the lock a second time. Returns 0 after
-// observing a BEGIN: the snapshot in hand predates the new epoch and must not be reused.
-// dsd_call_state_update_media() below touches only media_active, which no reader here reads.
+// Returns 1 and fills *out_call when the slot carries a matching active call, so the caller can
+// reuse this snapshot instead of taking the lock a second time. dsd_call_state_update_media()
+// below touches only media_active, which no reader here reads.
+//
+// A BEGIN taken here can still hand back an immediately-mappable snapshot: dsd_call_state_observe()
+// specializes a provisional (identity-less) epoch rather than forking, and reacquires a
+// recoverably-ended one, seeding it with the ending epoch's kind/target/etc. -- e.g. a brief
+// sync loss mid-call, or late entry that lands between the previous epoch's end and this
+// transmission's own header. Either way the just-observed epoch may already carry real identity,
+// so the snapshot taken before the observe() is stale and this re-fetches after it rather than
+// handing back NULL for that frame. The extra lock+copy only happens on this rare BEGIN frame,
+// not the ~50 Hz steady state, which is what the reuse path above still avoids.
 static int
 mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out_call) {
     int protocol = state->synctype;
@@ -1873,8 +1888,8 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
     }
     const uint8_t slot = mark_vocoder_call_media_slot(protocol, state->currentslot);
     dsd_call_snapshot call;
-    const int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-                           && mark_vocoder_call_media_protocol_compatible(protocol, call.protocol);
+    int has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                     && mark_vocoder_call_media_protocol_compatible(protocol, call.protocol);
     if (!has_active) {
         const dsd_call_observation observation = {
             .protocol = protocol,
@@ -1883,6 +1898,8 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
         };
         if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0) {
             dsd_event_sync_slot(opts, state, slot);
+            has_active = dsd_call_state_get(state, slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                         && mark_vocoder_call_media_protocol_compatible(protocol, call.protocol);
         }
     }
     (void)dsd_call_state_update_media(state, slot, 1, 0.0);
