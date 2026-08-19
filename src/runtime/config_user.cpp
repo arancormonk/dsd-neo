@@ -742,6 +742,59 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     return config_replace_temp_file(tmp, save_path);
 }
 
+const char*
+dsd_user_imports_dir(void) {
+    // No `static int inited` latch, unlike dsd_user_config_default_path(): a latch
+    // would cache the failure case forever and would make the pair untestable.
+    static char buf[1024];
+
+    buf[0] = '\0';
+
+    const char* cfg = dsd_user_config_default_path();
+    if (!cfg || !*cfg) {
+        return NULL;
+    }
+
+    // Replace the final component rather than appending to a directory that may
+    // not have one: config_parent_dir() returns 1 only when it stripped a parent.
+    char dir[1024];
+    if (config_parent_dir(cfg, dir, sizeof dir) != 1) {
+        return NULL;
+    }
+
+#if defined(_WIN32)
+    int n = DSD_SNPRINTF(buf, sizeof buf, "%s\\imports", dir);
+#else
+    int n = DSD_SNPRINTF(buf, sizeof buf, "%s/imports", dir);
+#endif
+    if (n < 0 || (size_t)n >= sizeof buf) {
+        buf[0] = '\0';
+        return NULL;
+    }
+    return buf;
+}
+
+int
+dsd_user_imports_dir_create(void) {
+    const char* dir = dsd_user_imports_dir();
+    if (!dir || !*dir) {
+        return -1;
+    }
+
+    // ensure_dir_exists() is `static void` and discards every dsd_mkdir() result;
+    // it is shared with dsd_user_config_save_atomic(), so its signature stays as
+    // it is and the outcome is verified here instead. Its internal char buf[1024]
+    // also truncates pathological paths silently - the stat below is what catches
+    // that.
+    ensure_dir_exists(dir);
+
+    dsd_stat_t st;
+    if (dsd_stat_path(dir, &st) != 0 || dsd_stat_is_regular(&st)) {
+        return -1;
+    }
+    return 0;
+}
+
 static const char*
 ini_bool(int value) {
     return value ? "true" : "false";

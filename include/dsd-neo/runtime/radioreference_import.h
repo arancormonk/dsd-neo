@@ -217,6 +217,48 @@ int dsd_rr_protocol_edacs_ea(dsd_rr_protocol protocol);
  */
 size_t dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz);
 
+/**
+ * @brief Plain-text provenance recorded beside each generated RadioReference CSV.
+ *
+ * Written to "<csv path>.rr". Refresh reads it back to re-fetch the same system
+ * and rebuild the same file, so site_ids holds dsd_rr_site::site_db_id values -
+ * NEVER site_number, which repeats within a system.
+ */
+typedef struct {
+    char kind[8];          /**< "group" or "chan". */
+    int sid;               /**< RadioReference system id. */
+    char site_ids[512];    /**< Comma-joined dsd_rr_site::site_db_id, selection order. */
+    int partial_enc_as_de; /**< The partial-encryption answer the file was built with. */
+    char system_name[128]; /**< System name as fetched, for display only. */
+    long long imported_at; /**< Unix seconds; informational only. */
+} dsd_rr_provenance;
+
+/**
+ * @brief Write "<csv_path>.rr" atomically.
+ *
+ * Replaces any existing sidecar. When p->imported_at is 0 the current wall clock
+ * is stamped instead; a non-zero value is written verbatim. Control characters in
+ * the text fields are replaced with spaces so one field cannot forge another line.
+ *
+ * @param csv_path Path of the generated CSV the sidecar belongs to.
+ * @param p        Provenance to record.
+ * @return 0 on success, -1 on error.
+ */
+int dsd_rr_provenance_write(const char* csv_path, const dsd_rr_provenance* p);
+
+/**
+ * @brief Read "<csv_path>.rr".
+ *
+ * Unknown keys, blank lines and '#' comments are ignored so the format can grow.
+ * A known key with an unparseable value is an error. @p out is left untouched
+ * unless the whole file parsed.
+ *
+ * @param csv_path Path of the generated CSV the sidecar belongs to.
+ * @param out      [out] Parsed provenance.
+ * @return 0 on success, -1 when the sidecar is absent, unreadable or malformed.
+ */
+int dsd_rr_provenance_read(const char* csv_path, dsd_rr_provenance* out);
+
 #ifdef __cplusplus
 }
 #endif

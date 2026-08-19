@@ -27,6 +27,14 @@
 #include "dsd-neo/runtime/config_schema.h"
 #include "test_support.h"
 
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#define DSD_TEST_RMDIR _rmdir
+#else
+#include <unistd.h>
+#define DSD_TEST_RMDIR rmdir
+#endif
+
 static int
 write_temp_config(const char* contents, char* out_path, size_t out_sz) {
     char tmpl[DSD_TEST_PATH_MAX];
@@ -1817,9 +1825,62 @@ test_dmr_mono_preset_precedes_false_override(void) {
     return 0;
 }
 
+/*
+ * MUST be the first case main() runs. dsd_user_config_default_path() latches its
+ * answer in `static char buf[1024]; static int inited` (src/runtime/config_user.cpp,
+ * identifier dsd_user_config_default_path), so the environment override only takes
+ * effect if nothing in this binary has asked for a config path yet. No other case
+ * in this file touches a config-path helper today; keep it that way.
+ */
+static int
+test_imports_dir_follows_config_dir(void) {
+    char scratch[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(scratch, sizeof scratch, "dsdneo_imports_dir") == NULL) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+#if defined(_WIN32)
+    const char* cfg_env = "APPDATA";
+#else
+    const char* cfg_env = "XDG_CONFIG_HOME";
+#endif
+    if (dsd_test_setenv(cfg_env, scratch, 1) != 0) {
+        DSD_FPRINTF(stderr, "dsd_test_setenv(%s) failed\n", cfg_env);
+        return 1;
+    }
+
+    char cfg_dir[DSD_TEST_PATH_MAX];
+    char expected[DSD_TEST_PATH_MAX];
+    int rc = dsd_test_path_join(cfg_dir, sizeof cfg_dir, scratch, "dsd-neo") != 0 ? 1 : 0;
+    rc |= dsd_test_path_join(expected, sizeof expected, cfg_dir, "imports") != 0 ? 1 : 0;
+
+    const char* dir = dsd_user_imports_dir();
+    if (!dir) {
+        DSD_FPRINTF(stderr, "dsd_user_imports_dir returned NULL\n");
+        (void)DSD_TEST_RMDIR(scratch);
+        return 1;
+    }
+    rc |= strcmp(dir, expected) == 0 ? 0 : 1;
+
+    rc |= dsd_user_imports_dir_create() == 0 ? 0 : 1;
+    dsd_stat_t st;
+    rc |= dsd_stat_path(expected, &st) == 0 && !dsd_stat_is_regular(&st) ? 0 : 1;
+
+    /* Idempotent, and the answer is recomputed rather than latched. */
+    rc |= dsd_user_imports_dir_create() == 0 ? 0 : 1;
+    rc |= strcmp(dsd_user_imports_dir(), expected) == 0 ? 0 : 1;
+
+    (void)DSD_TEST_RMDIR(expected);
+    (void)DSD_TEST_RMDIR(cfg_dir);
+    (void)DSD_TEST_RMDIR(scratch);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_imports_dir_follows_config_dir();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_decode_mode_and_load_guards();
     rc |= test_persisted_v1_load_boundary();

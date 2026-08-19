@@ -318,6 +318,50 @@ dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_siz
     return fclose(fp);
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
+int
+dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
+    if (!dir || dir[0] == '\0' || !cb) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    // The C source text is "%s\\*": two backslashes here produce one at runtime,
+    // so _findfirst() receives <dir>\* .
+    char pattern[1024];
+    int n = DSD_SNPRINTF(pattern, sizeof pattern, "%s\\*", dir);
+    if (n < 0 || (size_t)n >= sizeof pattern) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    struct _finddata_t data;
+    intptr_t handle = _findfirst(pattern, &data);
+    if (handle == -1) {
+        return -1;
+    }
+
+    int list_errno = 0;
+    do {
+        // _A_SUBDIR also covers "." and "..", so no separate name test is needed.
+        if ((data.attrib & _A_SUBDIR) != 0) {
+            continue;
+        }
+        if (cb(data.name, user) != 0) {
+            break;
+        }
+    } while (_findnext(handle, &data) == 0);
+
+    if (_findclose(handle) != 0) {
+        list_errno = errno ? errno : EINVAL;
+    }
+    errno = list_errno;
+    return list_errno == 0 ? 0 : -1;
+}
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
+
 ssize_t
 dsd_read(int fd, void* buf, size_t count) {
     return (ssize_t)_read(fd, buf, (unsigned int)count);

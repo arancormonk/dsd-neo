@@ -636,6 +636,29 @@ typedef struct dsdneoUserConfig {
 const char* dsd_user_config_default_path(void);
 
 /**
+ * @brief Resolve "<config dir>/imports" (no I/O).
+ *
+ * Derived by replacing the final component of dsd_user_config_default_path()
+ * with "imports", using the platform separator. Recomputed on every call into
+ * an internal static buffer: the value is not latched, so the pointer is only
+ * valid until the next call.
+ *
+ * @return Pointer to the imports directory path, or NULL when no config path
+ *         resolves (none of XDG_CONFIG_HOME/HOME, or APPDATA on Windows, is set).
+ */
+const char* dsd_user_imports_dir(void);
+
+/**
+ * @brief Create dsd_user_imports_dir() and its parents with mode 0700.
+ *
+ * Existing directories are accepted. The result is verified with stat, because
+ * the underlying component walk reports nothing.
+ *
+ * @return 0 when the directory exists afterwards; -1 otherwise.
+ */
+int dsd_user_imports_dir_create(void);
+
+/**
  * @brief Load a user config from the given path.
  *
  * On error (missing/unreadable file or parse error), cfg is zeroed.

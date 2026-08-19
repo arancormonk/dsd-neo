@@ -4019,6 +4019,20 @@ target_link_libraries(
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
 add_executable(
+    dsd-neo_test_runtime_rr_provenance
+    runtime/test_runtime_rr_provenance.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_rr_provenance
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_provenance
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_PROVENANCE COMMAND dsd-neo_test_runtime_rr_provenance)
+
+add_executable(
     dsd-neo_test_runtime_decode_mode
     runtime/test_runtime_decode_mode.c
 )
@@ -7726,6 +7740,17 @@ target_link_libraries(
     PRIVATE dsd-neo_platform
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
+
+add_executable(dsd-neo_test_platform_dir_list platform/test_platform_dir_list.c)
+target_include_directories(
+    dsd-neo_test_platform_dir_list
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_dir_list
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(NAME PLATFORM_DIR_LIST COMMAND dsd-neo_test_platform_dir_list)
 
 add_executable(dsd-neo_test_platform_nonce platform/test_platform_nonce.c)
 target_include_directories(
