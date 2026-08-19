@@ -1603,6 +1603,26 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
     }
 }
 
+// JSON object field order is not a contract: ctx->target_id is set only by the "to" token, so a
+// map lookup taken on the "encryption_mi" token alone sees it whenever "encryption_mi" happens
+// to precede "to" in the source. Like sdrtrunk_json_apply_forced_algid()'s own fallback, this
+// runs on every token and self-corrects once target_id is known, so the map applies regardless
+// of which field the exporter wrote first. Only the mapped case writes here -- an unmapped
+// target (map absent, or target not yet known) leaves whatever the OTA-signaled activation
+// already set alone, so repeated calls can never clobber it.
+static void
+sdrtrunk_json_apply_dmr_tg_key_map(dsd_state* state, const sdrtrunk_json_context* ctx) {
+    if (state->keyloader != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
+        return;
+    }
+    int mapped = 0;
+    const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                  (uint8_t)ctx->key_id, &mapped);
+    if (mapped) {
+        keyring_activate_slot_with_kid(state, 0, (int)kid);
+    }
+}
+
 static void
 sdrtrunk_json_set_protocol(const char* value, dsd_state* state, sdrtrunk_json_context* ctx) {
     if (strncmp("APCO25-PHASE1", value, 13) == 0) {
@@ -1854,12 +1874,17 @@ sdrtrunk_json_handle_mi(dsd_opts* opts, dsd_state* state, const char* token, cha
     state->payload_mi = iv_hex;
     state->payload_keyid = ctx->key_id;
     if (state->keyloader == 1) {
-        uint8_t kid = (uint8_t)ctx->key_id;
-        // DMR-only: the map is a DMR feature and this handler also serves P25 replay.
+        // ctx->key_id is a uint16_t and P25 signals a full 16-bit KID (this handler also serves
+        // P25 replay): keep the full width by default and narrow only inside the DMR branch,
+        // where the resolver's uint8_t key id matches DMR's byte-wide key id space. Narrowing
+        // unconditionally would activate the wrong rkey_array index for any P25 key id above
+        // 0xFF -- this file's own P25 fixtures use 4660 and 8738.
+        int kid = (int)ctx->key_id;
         if (DSD_SYNC_IS_DMR(state->synctype)) {
-            kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx), kid, NULL);
+            kid = (int)keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                 (uint8_t)ctx->key_id, NULL);
         }
-        keyring_activate_slot_with_kid(state, 0, (int)kid);
+        keyring_activate_slot_with_kid(state, 0, kid);
     }
 
     ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, iv_str);
@@ -1990,6 +2015,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
     sdrtrunk_json_apply_forced_algid(state, ctx);
+    sdrtrunk_json_apply_dmr_tg_key_map(state, ctx);
     (void)sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);

@@ -666,44 +666,61 @@ test_sdrtrunk_json_encryption_metadata_updates_payload_state(void) {
 // --dmr-tg-key-csv was a complete no-op for sdrtrunk JSON replay: that path activated keys
 // directly and never reached the voice-frame prep where the map used to be applied.
 //
-// "to"/"from" are placed ahead of the encryption_* fields so ctx->target_id is already resolved
-// by the time the encryption_mi token dispatches sdrtrunk_json_handle_mi() -- the resolver's
-// hook point (traced against sdrtrunk_json_process_token()'s per-token handler order; with the
-// field order the neighbouring P25 fixtures use, "to" comes after "encryption_mi" and
-// target_id would still be 0 when handle_mi runs). state.M is left at 0 so
-// sdrtrunk_json_apply_forced_algid()'s DMRA branch never runs, isolating this assertion to
-// handle_mi alone.
+// JSON object field order is not a contract, and the neighbouring P25 fixtures in this file
+// (and the DMR late-entry fixture below) all put "encryption_mi" ahead of "to"/"from" --
+// sdrtrunk_json_handle_mi() alone would see ctx->target_id still 0 in that order and never
+// find the map row. sdrtrunk_json_apply_dmr_tg_key_map() runs on every token and self-corrects
+// once target_id is known, the same way sdrtrunk_json_apply_forced_algid()'s own fallback
+// already does, so both field orders must reach the same activated key -- that is what the two
+// cases below pin.
 static int
 test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid(void) {
     int rc = 0;
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I history[2];
-    static const char json[] =
-        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"to\":\"123\",\"from\":\"456\","
-        "\"encrypted\":\"true\",\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
-        "\"encryption_mi\":\"001122334455667788\",\"time\":\"1700000000000\"}";
 
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(history, 0, sizeof history);
-    opts.playfiles = 1;
-    state.event_history_s = history;
+    struct {
+        const char* label;
+        const char* json;
+    } cases[] = {
+        {"encryption_mi before to/from",
+         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+         "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+         "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\","
+         "\"time\":\"1700000000000\"}"},
+        {"to/from before encryption_mi",
+         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"to\":\"123\",\"from\":\"456\","
+         "\"encrypted\":\"true\",\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+         "\"encryption_mi\":\"001122334455667788\",\"time\":\"1700000000000\"}"},
+    };
 
-    state.keyloader = 1;
-    state.rkey_array[0x03] = 0xAAAAAULL;
-    state.rkey_array_loaded[0x03] = 1U;
-    state.rkey_array[0x7B] = 0xBBBBBULL;
-    state.rkey_array_loaded[0x7B] = 1U;
-    state.dmr_tg_key_map_tg[0] = 123U;
-    state.dmr_tg_key_map_kid[0] = 0x7B;
-    state.dmr_tg_key_map_count = 1;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        static Event_History_I history[2];
+        char tag[96];
 
-    rc |= run_sdrtrunk_json(json, &opts, &state);
-    rc |= expect_u64("sdrtrunk map key applied", state.R, 0xBBBBBULL);
-    // The OTA key id stays the truth in state, as it does on every other path.
-    rc |= expect_int("sdrtrunk ota key id untouched", state.payload_keyid, 0x03);
-    dsd_state_ext_free_all(&state);
+        DSD_MEMSET(&opts, 0, sizeof opts);
+        DSD_MEMSET(&state, 0, sizeof state);
+        DSD_MEMSET(history, 0, sizeof history);
+        opts.playfiles = 1;
+        state.event_history_s = history;
+
+        state.keyloader = 1;
+        state.rkey_array[0x03] = 0xAAAAAULL;
+        state.rkey_array_loaded[0x03] = 1U;
+        state.rkey_array[0x7B] = 0xBBBBBULL;
+        state.rkey_array_loaded[0x7B] = 1U;
+        state.dmr_tg_key_map_tg[0] = 123U;
+        state.dmr_tg_key_map_kid[0] = 0x7B;
+        state.dmr_tg_key_map_count = 1;
+
+        rc |= run_sdrtrunk_json(cases[i].json, &opts, &state);
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map key applied (%s)", cases[i].label);
+        rc |= expect_u64(tag, state.R, 0xBBBBBULL);
+        // The OTA key id stays the truth in state, as it does on every other path.
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk ota key id untouched (%s)", cases[i].label);
+        rc |= expect_int(tag, state.payload_keyid, 0x03);
+        dsd_state_ext_free_all(&state);
+    }
     return rc;
 }
 
@@ -740,6 +757,43 @@ test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup(void) {
 
     rc |= run_sdrtrunk_json(json, &opts, &state);
     rc |= expect_u64("sdrtrunk implicit lookup preserved", state.R, 0xCCCCCULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// sdrtrunk_json_handle_mi() also serves P25 replay, where ctx->key_id (a uint16_t; P25 signals a
+// full 16-bit KID) must reach keyring_activate_slot_with_kid() at full width, not narrowed to
+// the DMR resolver's uint8_t. Neither P25 fixture above sets state.keyloader = 1, so nothing
+// else in this file exercises this activation block on the P25 path. rkey_array is seeded at
+// both the real key id (4660) and the 8-bit-truncated one (4660 & 0xFF == 0x34) with
+// distinguishable material so a reintroduced narrowing cast lands on the wrong value instead of
+// silently matching.
+static int
+test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"APCO25-PHASE1\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"129\",\"encryption_key_id\":\"4660\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"55\",\"from\":\"66\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xDDDDDULL;
+    state.rkey_array_loaded[4660] = 1U;
+    // Decoy at the 8-bit-truncated index: a reintroduced (uint8_t) cast would land here instead.
+    state.rkey_array[0x34] = 0xEEEEEULL;
+    state.rkey_array_loaded[0x34] = 1U;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_u64("sdrtrunk p25 keyloader full-width key id", state.R, 0xDDDDDULL);
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -1948,6 +2002,7 @@ main(void) {
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
+    rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
