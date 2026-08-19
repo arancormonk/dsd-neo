@@ -13,7 +13,6 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/keyring.h>
-#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -23,7 +22,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -65,6 +63,22 @@ map_one(dsd_state* state, uint32_t tg, uint8_t kid) {
     state->dmr_tg_key_map_count++;
 }
 
+// Stands in for what mbe_prepare_frame_state() now does once its ALG ID gate has passed: fetch
+// the slot's call snapshot, resolve one key id, activate it. Returns 0xFF -- not a valid key id
+// range operators would configure, but not out of band for a uint8_t either -- when the slot has
+// no call state at all, mirroring processMbeFrameInternal() passing a NULL snapshot.
+static uint8_t
+activate_via_map(dsd_state* state, int slot) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0) {
+        return 0xFFU;
+    }
+    const uint8_t signaled = (uint8_t)((slot == 0) ? state->payload_keyid : state->payload_keyidR);
+    const uint8_t kid = keyring_dmr_slot_kid_for_call(state, slot, &call, signaled);
+    keyring_activate_slot_with_kid(state, slot, (int)kid);
+    return kid;
+}
+
 static int
 test_lookup_hit_and_miss(void) {
     static dsd_state state;
@@ -85,9 +99,7 @@ test_lookup_hit_and_miss(void) {
 
 static int
 test_mapped_tg_overrides_signaled_kid(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
@@ -102,7 +114,7 @@ test_mapped_tg_overrides_signaled_kid(void) {
     map_one(&state, 123U, 0x7B);
     observe_group_call(&state, 0U, 123U);
 
-    rc |= expect_eq("override-applies", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 1);
+    rc |= expect_eq("override-resolves-mapped-kid", activate_via_map(&state, 0), 0x7B);
     rc |= expect_eq("override-key", (long long)state.R, 0xBBBBBLL);
     rc |= expect_eq("override-ota-kid-untouched", state.payload_keyid, 0x03);
 
@@ -110,18 +122,19 @@ test_mapped_tg_overrides_signaled_kid(void) {
     // call keep applying the key without re-announcing it.
     const unsigned long long first_epoch = state.dmr_tg_key_note_epoch[0];
     rc |= expect_eq("override-note-latched", first_epoch != 0ULL, 1);
-    rc |= expect_eq("override-reapplies", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 1);
+    rc |= expect_eq("override-reapplies", activate_via_map(&state, 0), 0x7B);
     rc |= expect_eq("override-note-epoch-stable", (long long)state.dmr_tg_key_note_epoch[0], (long long)first_epoch);
 
     dsd_state_ext_free_all(&state);
     return rc;
 }
 
+// "Leaves the slot alone" now means the map does not steer the key id -- the slot still
+// activates, same as any other voice frame, but with the OTA-signaled kid and its own material
+// rather than the mapped row for a different talkgroup (123, not the call's 999).
 static int
 test_unmapped_tg_leaves_slot_alone(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
@@ -134,8 +147,8 @@ test_unmapped_tg_leaves_slot_alone(void) {
     map_one(&state, 123U, 0x7B);
     observe_group_call(&state, 0U, 999U);
 
-    rc |= expect_eq("unmapped-skipped", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    rc |= expect_eq("unmapped-key-untouched", (long long)state.R, 0);
+    rc |= expect_eq("unmapped-returns-signaled-kid", activate_via_map(&state, 0), 0x03);
+    rc |= expect_eq("unmapped-loads-signaled-key", (long long)state.R, 0xAAAAALL);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -143,9 +156,7 @@ test_unmapped_tg_leaves_slot_alone(void) {
 
 static int
 test_aes_segments_via_mapped_kid_slot1(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
@@ -164,7 +175,7 @@ test_aes_segments_via_mapped_kid_slot1(void) {
     map_one(&state, 200U, 0x05);
     observe_group_call(&state, 1U, 200U);
 
-    rc |= expect_eq("aes-applies", keyring_dmr_tg_map_activate_slot(&opts, &state, 1), 1);
+    rc |= expect_eq("aes-resolves-mapped-kid", activate_via_map(&state, 1), 0x05);
     rc |= expect_eq("aes-a1", (long long)(state.A1[1] >> 32), 0x11111111LL);
     rc |= expect_eq("aes-a4", (long long)(state.A4[1] >> 32), 0x44444444LL);
     rc |= expect_eq("aes-loaded", state.aes_key_loaded[1], 1);
@@ -175,60 +186,44 @@ test_aes_segments_via_mapped_kid_slot1(void) {
     return rc;
 }
 
+// keyring_dmr_tg_map_slot_eligible() is gone, and with it two of this function's former cases:
+// the non-DMR-sync case tested state->synctype/lastsynctype directly, a check issue #351 review
+// finding 4 called out as wrong (it ignored the call's own protocol) and which
+// test_non_dmr_call_snapshot_is_rejected now covers correctly via the snapshot's protocol field;
+// and the ALG ID gate (algid == 0, algid == 0x80) moved to mbe_prepare_frame_state, which decides
+// whether to call the resolver at all -- keyring_dmr_slot_kid_for_call() itself never reads
+// payload_algid, so there is no gate left here to exercise. That gate's coverage now lives in
+// tests/core/test_core_mbe_transform_context.c's end-to-end processMbeFrame() cases.
 static int
 test_gates_hold_activation_back(void) {
-    static dsd_opts opts;
     static dsd_state state;
     int rc = 0;
 
-    // Non-DMR sync: the map is DMR-only.
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_P25P1_POS;
-    state.lastsynctype = DSD_SYNC_P25P1_POS;
-    state.keyloader = 1;
-    state.payload_algid = 0x21;
-    map_one(&state, 123U, 0x7B);
-    observe_group_call(&state, 0U, 123U);
-    rc |= expect_eq("non-dmr-sync-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    dsd_state_ext_free_all(&state);
-
-    // Keyloader off: no CSV keyring to index into.
+    // Keyloader off: no CSV keyring to index into, so the map is never consulted -- the slot
+    // still activates, but with the signaled kid and its own material, not the mapped kid's.
     DSD_MEMSET(&state, 0, sizeof(state));
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
     map_one(&state, 123U, 0x7B);
     observe_group_call(&state, 0U, 123U);
-    rc |= expect_eq("keyloader-off-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
+    rc |= expect_eq("keyloader-off-returns-signaled-kid", activate_via_map(&state, 0), 0x03);
+    rc |= expect_eq("keyloader-off-loads-signaled-not-mapped-key", (long long)state.R, 0xAAAAALL);
     dsd_state_ext_free_all(&state);
 
-    // No ALG ID yet: same gate as the signaled-KID activation path, and it
-    // keeps the basic-privacy TG autoload (algid == 0) unshadowed.
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.keyloader = 1;
-    map_one(&state, 123U, 0x7B);
-    observe_group_call(&state, 0U, 123U);
-    rc |= expect_eq("no-alg-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    dsd_state_ext_free_all(&state);
-
-    // ALG 0x80 (scrambler family) is excluded, mirroring the signaled-KID gate.
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    state.keyloader = 1;
-    state.payload_algid = 0x80;
-    map_one(&state, 123U, 0x7B);
-    observe_group_call(&state, 0U, 123U);
-    rc |= expect_eq("alg80-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    dsd_state_ext_free_all(&state);
-
-    // No active call on the slot: nothing to match a talkgroup against.
+    // No active call on the slot: nothing to match a talkgroup against, and no snapshot to
+    // activate with either -- activate_via_map()'s own dsd_call_state_get() guard reports this
+    // with its 0xFF sentinel, mirroring processMbeFrameInternal() passing a NULL snapshot.
     DSD_MEMSET(&state, 0, sizeof(state));
     state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.keyloader = 1;
     state.payload_algid = 0x21;
     map_one(&state, 123U, 0x7B);
-    rc |= expect_eq("no-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
+    rc |= expect_eq("no-call-noop", activate_via_map(&state, 0), 0xFFU);
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -262,9 +257,7 @@ count_substring_in_file(const char* path, const char* needle) {
 // left pointing at the null device and no later test may depend on it.
 static int
 test_notice_is_emitted_once_per_epoch(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
@@ -292,7 +285,7 @@ test_notice_is_emitted_once_per_epoch(void) {
         return 1;
     }
     for (int i = 0; i < 5; i++) {
-        (void)keyring_dmr_tg_map_activate_slot(&opts, &state, 0);
+        (void)activate_via_map(&state, 0);
     }
     fflush(stderr);
     const int restored = (freopen(TG_KEY_NULL_DEVICE, "w", stderr) != NULL);
@@ -316,9 +309,7 @@ test_notice_is_emitted_once_per_epoch(void) {
 // talkgroup's 24-bit space -- a colliding id must not pull the talkgroup's key onto a unit call.
 static int
 test_private_call_is_not_a_talkgroup(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
@@ -326,13 +317,17 @@ test_private_call_is_not_a_talkgroup(void) {
     state.keyloader = 1;
     state.payload_algid = 0x21;
     state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
     state.rkey_array[0x7B] = 0xBBBBBULL;
     state.rkey_array_loaded[0x7B] = 1U;
     map_one(&state, 123U, 0x7B);
     observe_call(&state, 0U, 123U, DSD_CALL_KIND_PRIVATE_VOICE, DSD_SYNC_DMR_BS_VOICE_POS);
 
-    rc |= expect_eq("private-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    rc |= expect_eq("private-call-key-untouched", (long long)state.R, 0);
+    // The colliding radio ID 123 must not pull in TG 123's mapped key (0x7B / 0xBBBBB): the
+    // slot activates with the truly-signaled kid and its own material instead.
+    rc |= expect_eq("private-call-returns-signaled-kid", activate_via_map(&state, 0), 0x03);
+    rc |= expect_eq("private-call-loads-signaled-not-mapped-key", (long long)state.R, 0xAAAAALL);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -342,9 +337,7 @@ test_private_call_is_not_a_talkgroup(void) {
 // steering off it would key the next transmission on the slot with the previous call's mapping.
 static int
 test_ended_call_stops_steering_key_selection(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
@@ -355,12 +348,14 @@ test_ended_call_stops_steering_key_selection(void) {
     state.rkey_array_loaded[0x7B] = 1U;
     map_one(&state, 123U, 0x7B);
     observe_group_call(&state, 0U, 123U);
-    rc |= expect_eq("active-call-applies", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 1);
+    rc |= expect_eq("active-call-resolves-mapped-kid", activate_via_map(&state, 0), 0x7B);
 
     (void)dsd_call_state_end(&state, 0U, 0.0);
     state.R = 0ULL;
-    rc |= expect_eq("ended-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    rc |= expect_eq("ended-call-key-untouched", (long long)state.R, 0);
+    // payload_keyid was never set (0), and key id 0 has no material, so the ended call falling
+    // through to the signaled kid is what keeps R at zero here -- not the map staying applied.
+    rc |= expect_eq("ended-call-returns-signaled-kid", activate_via_map(&state, 0), 0);
+    rc |= expect_eq("ended-call-key-stays-zero", (long long)state.R, 0);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -370,14 +365,16 @@ test_ended_call_stops_steering_key_selection(void) {
 // still reading DMR (the window between leaving a DMR system and the next protocol's sync).
 static int
 test_non_dmr_call_snapshot_is_rejected(void) {
-    static dsd_opts opts;
     static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     int rc = 0;
 
     state.synctype = DSD_SYNC_P25P1_POS;
-    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS; // stale: the eligibility gate still passes
+    // lastsynctype no longer matters: keyring_dmr_tg_map_slot_eligible() (and the
+    // synctype/lastsynctype check it made) is gone. Only the call snapshot's own protocol field
+    // gates the map now, so this is left set to prove that a stale lastsynctype cannot resurrect
+    // the old behavior.
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.keyloader = 1;
     state.payload_algid = 0x84;
     state.rkey_array[0x7B] = 0xBBBBBULL;
@@ -385,8 +382,8 @@ test_non_dmr_call_snapshot_is_rejected(void) {
     map_one(&state, 123U, 0x7B);
     observe_call(&state, 0U, 123U, DSD_CALL_KIND_GROUP_VOICE, DSD_SYNC_P25P1_POS);
 
-    rc |= expect_eq("non-dmr-call-noop", keyring_dmr_tg_map_activate_slot(&opts, &state, 0), 0);
-    rc |= expect_eq("non-dmr-call-key-untouched", (long long)state.R, 0);
+    rc |= expect_eq("non-dmr-call-returns-signaled-kid", activate_via_map(&state, 0), 0);
+    rc |= expect_eq("non-dmr-call-key-stays-zero", (long long)state.R, 0);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -465,6 +462,34 @@ test_kid_material_reports_without_activating(void) {
     return rc;
 }
 
+// A mapped row naming a key id with nothing imported behind it (a CSV typo, or a key the
+// operator has not loaded yet) must not zero the slot: it falls back to the signaled id, which
+// would have decrypted the call had the row not existed at all.
+static int
+test_mapped_kid_without_material_falls_back(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    // 0x7B is mapped but never imported -- the shape of a CSV typo.
+    map_one(&state, 123U, 0x7B);
+    observe_group_call(&state, 0U, 123U);
+
+    rc |= expect_eq("fallback-kid", activate_via_map(&state, 0), 0x03);
+    // The signaled key is loaded, not zeroed: the slot decrypts exactly as it would have
+    // without the map, rather than going silent because of a bad row.
+    rc |= expect_eq("fallback-key", (long long)state.R, 0xAAAAALL);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -478,6 +503,7 @@ main(void) {
     rc |= test_non_dmr_call_snapshot_is_rejected();
     rc |= test_effective_kid_resolution();
     rc |= test_kid_material_reports_without_activating();
+    rc |= test_mapped_kid_without_material_falls_back();
     // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {

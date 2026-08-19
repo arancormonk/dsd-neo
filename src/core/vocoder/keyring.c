@@ -187,57 +187,51 @@ keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, 
     return keyring_dmr_effective_kid(state, (uint32_t)call->ota_target_id, 1, signaled_kid, out_mapped);
 }
 
-static int
-keyring_dmr_tg_map_slot_eligible(const dsd_state* state, int slot) {
-    if (!state || slot < 0 || slot > 1 || state->dmr_tg_key_map_count <= 0 || state->keyloader != 1) {
-        return 0;
-    }
-    if (!DSD_SYNC_IS_DMR(state->synctype) && !DSD_SYNC_IS_DMR(state->lastsynctype)) {
-        return 0;
-    }
-    // Same gate as the signaled-KID activation in mbe_prepare_frame_state: no ALG ID means
-    // the basic-privacy TG autoload owns the slot, and 0x80 stays with the scrambler path.
-    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-    return algid != 0 && algid != 0x80;
-}
-
-// One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit for a
-// non-zero epoch, so epoch 0 is the "never announced" sentinel and needs no companion valid flag.
+// One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit
+// for a non-zero epoch, so epoch 0 is the "never announced" sentinel and needs no valid flag.
 static void
-keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid, int has_key) {
+keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid) {
     if (state->dmr_tg_key_note_epoch[slot] == epoch) {
         return;
     }
     state->dmr_tg_key_note_epoch[slot] = epoch;
     DSD_FPRINTF(stderr, "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X;", slot + 1, tg, kid);
-    if (!has_key) {
-        // The override is explicit, so it still stands -- but without this the mapped-but-unimported
-        // key id reads as a success while it silently zeroes the slot key and shadows the signaled one.
-        DSD_FPRINTF(stderr, " no key imported for this key id;");
-    }
 }
 
-int
-keyring_dmr_tg_map_activate_slot(dsd_opts* opts, dsd_state* state, int slot) {
-    (void)opts;
-    if (!keyring_dmr_tg_map_slot_eligible(state, slot)) {
-        return 0;
+// Announced when a row matched but resolved to nothing, so a CSV typo is visible rather than
+// looking like the map simply did not cover the talkgroup.
+static void
+keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t mapped_kid,
+                                uint8_t signaled_kid) {
+    if (state->dmr_tg_key_note_epoch[slot] == epoch) {
+        return;
+    }
+    state->dmr_tg_key_note_epoch[slot] = epoch;
+    DSD_FPRINTF(stderr,
+                "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X has no imported key; using signaled Key ID: %02X;",
+                slot + 1, tg, mapped_kid, signaled_kid);
+}
+
+uint8_t
+keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, uint8_t signaled_kid) {
+    if (state == NULL || slot < 0 || slot > 1) {
+        return signaled_kid;
     }
 
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || !keyring_dmr_tg_map_call_is_mappable(&call)) {
-        return 0;
+    int mapped = 0;
+    const uint8_t kid = keyring_dmr_kid_for_call(state, call, signaled_kid, &mapped);
+    if (mapped) {
+        keyring_dmr_tg_map_note(state, slot, call->epoch, (uint32_t)call->ota_target_id, kid);
+        return kid;
     }
 
-    uint8_t kid = 0U;
-    if (!keyring_dmr_tg_map_kid(state, (uint32_t)call.ota_target_id, &kid)) {
-        return 0;
+    // Distinguish "no row for this talkgroup" from "row present, nothing imported behind it".
+    uint8_t row_kid = 0U;
+    if (call != NULL && keyring_dmr_tg_map_call_is_mappable(call) && state->keyloader == 1
+        && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &row_kid)) {
+        keyring_dmr_tg_map_note_skipped(state, slot, call->epoch, (uint32_t)call->ota_target_id, row_kid, signaled_kid);
     }
-
-    keyring_activate_slot_with_kid(state, slot, (int)kid);
-    const int has_key = ((slot == 0) ? state->R : state->RR) != 0ULL || state->aes_key_loaded[slot] != 0;
-    keyring_dmr_tg_map_note(state, slot, call.epoch, (uint32_t)call.ota_target_id, kid, has_key);
-    return 1;
+    return signaled_kid;
 }
 
 void

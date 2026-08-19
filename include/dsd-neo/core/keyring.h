@@ -34,13 +34,12 @@ int keyring_dmr_tg_map_kid(const dsd_state* state, uint32_t tg, uint8_t* out_kid
 void keyring_dmr_tg_map_reset(dsd_state* state);
 
 /**
- * Activate imported key material for a DMR slot whose active call talkgroup is mapped,
- * using the mapped key id in place of the OTA-signaled one (--dmr-tg-key-csv).
+ * keyring_dmr_kid_for_call() plus the once-per-call-epoch operator notice.
  *
- * Self-gated: applies only under DMR sync with the CSV keyring armed and a usable
- * slot ALG ID, and never rewrites the OTA payload_keyid. Returns 1 when applied.
+ * Use this on the voice path, where a call epoch exists to latch the notice against. Other
+ * consumers want keyring_dmr_kid_for_call(), which is silent.
  */
-int keyring_dmr_tg_map_activate_slot(dsd_opts* opts, dsd_state* state, int slot);
+uint8_t keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, uint8_t signaled_kid);
 
 /**
  * Report the imported key material behind a key ID without activating it.

@@ -326,26 +326,27 @@ typedef struct {
 
 static void
 mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame_ctx,
-                        dsd_vocoder_soft_bit imbe7100_soft_fr[7][24]) {
+                        dsd_vocoder_soft_bit imbe7100_soft_fr[7][24], const dsd_call_snapshot* call) {
+    (void)opts;
     (void)imbe7100_soft_fr;
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
 
     (void)dsd_dmr_apply_forced_algid(state);
 
-    // A --dmr-tg-key-csv mapping for the slot's active talkgroup selects its key id in
-    // place of the OTA-signaled one; unmapped calls fall through to the signaled KID.
-    const int tg_key_mapped = keyring_dmr_tg_map_activate_slot(opts, state, state->currentslot);
+    const int slot = (state->currentslot == 1) ? 1 : 0;
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
 
-    //these conditions should ensure no clashing with the BP/HBP/Scrambler key loading machanisms already coded in
-    if (!tg_key_mapped && state->currentslot == 0 && state->payload_algid != 0 && state->payload_algid != 0x80
-        && state->keyloader == 1) {
-        keyring_activate_slot(opts, state, state->currentslot);
-    }
-
-    if (!tg_key_mapped && state->currentslot == 1 && state->payload_algidR != 0 && state->payload_algidR != 0x80
-        && state->keyloader == 1) {
-        keyring_activate_slot(opts, state, state->currentslot);
+    // Unchanged gate: no ALG ID means the BP/HBP TG autoload owns the slot, and 0x80 stays with
+    // the scrambler path.
+    if (state->keyloader == 1 && algid != 0 && algid != 0x80) {
+        const uint8_t signaled = (uint8_t)((slot == 0) ? state->payload_keyid : state->payload_keyidR);
+        // A --dmr-tg-key-csv row for the slot's active talkgroup selects its key id in place of
+        // the signaled one. The resolver hands back `signaled` whenever the map does not apply --
+        // including for every non-DMR protocol, whose snapshots are never mappable -- so there is
+        // one activation here rather than two paths to keep in sync.
+        const uint8_t kid = keyring_dmr_slot_kid_for_call(state, slot, call, signaled);
+        keyring_activate_slot_with_kid(state, slot, (int)kid);
     }
 
     DSD_MEMSET(frame_ctx->imbe_d, 0, sizeof(frame_ctx->imbe_d));
@@ -1859,12 +1860,16 @@ mark_vocoder_call_media_slot(int protocol, int current_slot) {
     return 0U;
 }
 
-static void
-mark_vocoder_call_media(dsd_opts* opts, dsd_state* state) {
+// Returns 1 and fills *out_call when the slot already carried a matching active call, so the
+// caller can reuse this snapshot instead of taking the lock a second time. Returns 0 after
+// observing a BEGIN: the snapshot in hand predates the new epoch and must not be reused.
+// dsd_call_state_update_media() below touches only media_active, which no reader here reads.
+static int
+mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out_call) {
     int protocol = state->synctype;
     const int voice_sync = mark_vocoder_call_media_sync_supported(protocol);
     if (!voice_sync) {
-        return;
+        return 0;
     }
     const uint8_t slot = mark_vocoder_call_media_slot(protocol, state->currentslot);
     dsd_call_snapshot call;
@@ -1881,6 +1886,12 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state) {
         }
     }
     (void)dsd_call_state_update_media(state, slot, 1, 0.0);
+
+    if (has_active && out_call != NULL) {
+        *out_call = call;
+        return 1;
+    }
+    return 0;
 }
 
 static void
@@ -1888,9 +1899,10 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
                         char imbe7100_fr[7][24], dsd_vocoder_soft_bit imbe_soft_fr[8][23],
                         dsd_vocoder_soft_bit ambe_soft_fr[4][24], dsd_vocoder_soft_bit imbe7100_soft_fr[7][24]) {
     mbe_frame_ctx_t frame_ctx;
+    dsd_call_snapshot call;
 
-    mark_vocoder_call_media(opts, state);
-    mbe_prepare_frame_state(opts, state, &frame_ctx, imbe7100_soft_fr);
+    const int have_call = mark_vocoder_call_media(opts, state, &call);
+    mbe_prepare_frame_state(opts, state, &frame_ctx, imbe7100_soft_fr, have_call ? &call : NULL);
 
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         mbe_process_p25p1(opts, state, imbe_fr, imbe_soft_fr, &frame_ctx);
