@@ -58,6 +58,11 @@ dmr_block_load_aes_key(const dsd_state* state, int key_id, uint8_t aes_key[32]) 
         dmr_block_rkey_at(state, key_id + 0x301),
     };
 
+    // Manual-key fallback for a key id with nothing imported. Unreachable on the mapped path by
+    // construction: dmr_block_alg_key_need() only lets a row apply for alg 4 when cells
+    // kid+0x000 and kid+0x101 are non-zero, and for alg 5 when all four are -- exactly the cells
+    // read above. So an explicit --dmr-tg-key-csv row beats -2/-H without the row ever being able
+    // to silently substitute an unusable key for a working manual one.
     if (parts[0] == 0ULL && parts[1] == 0ULL && parts[2] == 0ULL && parts[3] == 0ULL) {
         parts[0] = state->K1;
         parts[1] = state->K2;
@@ -151,7 +156,9 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
     ctx->aes_key_loaded = dmr_block_bytes_any_nonzero(ctx->aes_key, sizeof(ctx->aes_key));
 
     // Slot-correct fallback: RR keys slot 2. Reading R for both slots decrypted slot 2 with
-    // slot 1's key whenever the resolved id had nothing imported.
+    // slot 1's key whenever the resolved id had nothing imported. No DMR key source is lost by
+    // this: -1 (args.c) and DSD_APP_CMD_KEY_RC4DES_SET both write R and RR. The only writers of R
+    // without RR are -R and DSD_APP_CMD_KEY_SCRAMBLER_SET, both NXDN/dPMR scrambler keys.
     const unsigned long long slot_rkey = (id_slot == 0U) ? state->R : state->RR;
     if (ctx->rkey == 0ULL && slot_rkey != 0ULL) {
         ctx->rkey = slot_rkey;

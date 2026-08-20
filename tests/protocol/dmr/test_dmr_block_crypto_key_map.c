@@ -206,6 +206,92 @@ test_data_alg_need_gates_the_map(void) {
     return rc;
 }
 
+// Precedence: an explicit --dmr-tg-key-csv row beats the global manual AES key (state->K1..K4,
+// set by -2/-H and the keys menu). Safe now in a way it was not before the alg-need gate: a row
+// can only apply for data alg 4 when cells kid+0x000 and kid+0x101 are non-zero, and those are
+// exactly the cells dmr_block_load_aes_key() reads -- so its "all four zero, substitute K1..K4"
+// fallback is unreachable whenever ctx->mapped is set, rather than being skipped because a lone
+// RC4 scalar happened to sit in parts[0].
+static int
+test_mapped_aes_row_beats_manual_key(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    state.payload_algid = 4; /* data AES-128 */
+    state.payload_keyid = 0x03;
+    state.K1 = 0xEEEEEEEEEEEEEEEEULL;
+    state.K2 = 0xDDDDDDDDDDDDDDDDULL;
+    state.K3 = 0xCCCCCCCCCCCCCCCCULL;
+    state.K4 = 0xBBBBBBBBBBBBBBBBULL;
+    // Key id 0x40: a real two-segment AES-128 import.
+    state.rkey_array[0x40] = 0x1111111111111111ULL;
+    state.rkey_array_loaded[0x40] = 1U;
+    state.rkey_array[0x141] = 0x2222222222222222ULL;
+    state.rkey_array_loaded[0x141] = 1U;
+    state.dmr_tg_key_map_tg[0] = 123U;
+    state.dmr_tg_key_map_kid[0] = 0x40;
+    state.dmr_tg_key_map_count = 1;
+    state.currentslot = 0;
+    state.dmr_lrrp_target[0] = 123ULL;
+    state.dmr_data_target_is_group[0] = 1U;
+
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("manual-key-row-mapped", ctx.mapped, 1);
+    rc |= expect_eq("manual-key-row-kid", ctx.kid, 0x40);
+    // First byte of A1 comes from the row, not from K1.
+    rc |= expect_eq("manual-key-row-wins", ctx.aes_key[0], 0x11);
+    return rc;
+}
+
+// And with no row applying, the manual key fallback still works: the key id has nothing imported,
+// so all four parts are zero and K1..K4 substitute exactly as before.
+static int
+test_manual_key_fallback_survives_without_a_row(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    state.payload_algid = 4;
+    state.payload_keyid = 0x05; /* nothing imported at 0x05 */
+    state.K1 = 0xEEEEEEEEEEEEEEEEULL;
+    state.currentslot = 0;
+    state.dmr_lrrp_target[0] = 999ULL; /* unmapped */
+    state.dmr_data_target_is_group[0] = 1U;
+
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("no-row-unmapped", ctx.mapped, 0);
+    rc |= expect_eq("no-row-manual-key-used", ctx.aes_key[0], 0xEE);
+    return rc;
+}
+
+// The scalar fallback is slot-correct: R keys slot 1, RR keys slot 2. Reading R for both decrypted
+// slot 2 with slot 1's key whenever the resolved id had nothing imported. Both directions are
+// pinned here because only the slot-2 case had a test.
+static int
+test_slot1_fallback_uses_r(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    state.payload_algid = 1;    /* data RC4 */
+    state.payload_keyid = 0x05; /* nothing imported */
+    state.R = 0x1234ULL;
+    state.RR = 0x5678ULL;
+    state.currentslot = 0;
+    state.dmr_lrrp_target[0] = 999ULL;
+
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("slot1-fallback-uses-r", (long long)ctx.rkey, 0x1234LL);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -215,5 +301,8 @@ main(void) {
     rc |= test_wide_signaled_kid_is_not_narrowed();
     rc |= test_wide_signaled_kid_bypasses_the_map();
     rc |= test_data_alg_need_gates_the_map();
+    rc |= test_mapped_aes_row_beats_manual_key();
+    rc |= test_manual_key_fallback_survives_without_a_row();
+    rc |= test_slot1_fallback_uses_r();
     return rc;
 }
