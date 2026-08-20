@@ -1920,11 +1920,13 @@ test_crc_failed_header_enc_requires_repeat_for_lockout(void) {
 #define MAPPED_TG_SIGNALED_KID 0x03
 
 typedef struct {
-    uint8_t slot;         /* 0 drives payload_algid/keyid/R; 1 drives the ...R twins */
-    int install_map_row;  /* whether a --dmr-tg-key-csv row exists at all */
-    uint32_t map_tg;      /* 0 -> the row names MAPPED_TG_TARGET (a hit); else a deliberate miss */
-    int kirisun;          /* non-zero: ALG 0x36, whose verdict is the four-segment quartet */
-    int decoy_other_slot; /* seed decrypting material on the companion slot -- see below */
+    uint8_t slot;              /* 0 drives payload_algid/keyid/R; 1 drives the ...R twins */
+    int install_map_row;       /* whether a --dmr-tg-key-csv row exists at all */
+    uint32_t map_tg;           /* 0 -> the row names MAPPED_TG_TARGET (a hit); else a deliberate miss */
+    int kirisun;               /* non-zero: ALG 0x36, whose verdict is the four-segment quartet */
+    int decoy_other_slot;      /* seed decrypting material on the companion slot -- see below */
+    int row_material_mismatch; /* mapped kid holds AES segments but no scalar, while the ALG is
+                                  RC4 and the SLOT already carries a working RC4 key */
 } mapped_tg_fixture;
 
 // An encrypted group call on TG 123 whose signaled key id has nothing imported behind it and
@@ -1944,7 +1946,22 @@ seed_mapped_tg_state(dsd_state* state, const mapped_tg_fixture* fx) {
         state->payload_keyidR = MAPPED_TG_SIGNALED_KID;
     }
 
-    if (fx->kirisun) {
+    if (fx->row_material_mismatch) {
+        // Segments 1..3 only. Segment 0 shares the scalar's cell, so leaving it zero is what makes
+        // this key id AES-shaped and scalar-empty. The call runs RC4 (0x21), which keys off the
+        // scalar, and the slot already carries a working one -- so applying this row makes the
+        // call strictly worse off. That is precisely the case "has any material at all" could not
+        // see: it looked at the AES segments and said yes.
+        for (int i = 1; i < 4; i++) {
+            state->rkey_array[MAPPED_TG_KID + kAesOffsets[i]] = 0xC0FFEE00ULL + (unsigned long long)i;
+            state->rkey_array_loaded[MAPPED_TG_KID + kAesOffsets[i]] = 1U;
+        }
+        if (fx->slot == 0U) {
+            state->R = 0xAAAAAULL;
+        } else {
+            state->RR = 0xAAAAAULL;
+        }
+    } else if (fx->kirisun) {
         // A complete quartet behind the mapped key id only. The slot's own aes_key_segments and
         // A1..A4 stay zero, so dsd_dmr_kirisun_slot_key_complete() reports 0 for it until the
         // voice path activates this key -- which is exactly the window the lockout acts in.
@@ -2110,6 +2127,29 @@ test_mapped_tg_is_not_locked_out(void) {
     assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .kirisun = 1}) == 0);
     assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .kirisun = 1, .decoy_other_slot = 1}) == 1);
     assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .kirisun = 1}) == 0);
+}
+
+// The failure this whole change exists to prevent. TG 123 runs ALG 0x21 (RC4, which keys off the
+// scalar) and the slot already carries a working RC4 key. A map row points TG 123 at key id 0x7B,
+// which holds AES segments and no scalar. Before the alg-need gate the row applied -- "has any
+// material at all" saw the AES segments -- so activation zeroed the slot scalar, the call
+// published ENCRYPTED, and dsd_enc_lockout_note() armed the session-permanent ledger, forcing a
+// P_CLEAR that dropped the channel for a call the SIGNALED key decrypts. Nothing printed either,
+// because from the resolver's view the row applied.
+static void
+test_row_with_wrong_material_is_not_applied(void) {
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .row_material_mismatch = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .row_material_mismatch = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+
+    // And the lockout must not arm. The probe returns 1 when it did.
+    assert(
+        run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .row_material_mismatch = 1})
+        == 0);
+    assert(
+        run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .row_material_mismatch = 1})
+        == 0);
 }
 
 static void
@@ -2479,6 +2519,7 @@ main(void) {
     test_crc_failed_header_enc_requires_repeat_for_lockout();
     test_mapped_tg_classifies_decryptable();
     test_mapped_tg_is_not_locked_out();
+    test_row_with_wrong_material_is_not_applied();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();

@@ -1603,8 +1603,9 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
             // keeps a 16-bit P25 KID from being compared and resolved as its low byte. The
             // target-indexed fallback below keeps its original gating either way.
             if (DSD_SYNC_IS_DMR(state->synctype) && ctx->key_id <= 0xFFU) {
-                const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                              (uint8_t)ctx->key_id, &mapped);
+                const uint8_t kid =
+                    keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                              dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, &mapped);
                 if (mapped) {
                     keyring_activate_slot_with_kid(state, 0, (int)kid);
                     effective_kid = kid;
@@ -1885,8 +1886,9 @@ sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtr
         return;
     }
     int mapped = 0;
-    const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                  (uint8_t)ctx->key_id, &mapped);
+    const uint8_t kid =
+        keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                  dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, &mapped);
     if (!mapped) {
         if (ctx->map_applied != 0U) {
             // A row applied on an earlier token no longer does. Undo it rather than leaving a key
@@ -1975,7 +1977,7 @@ sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* toke
     uint16_t effective_kid = ctx->key_id;
     if (DSD_SYNC_IS_DMR(state->synctype) && ctx->key_id <= 0xFFU) {
         effective_kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                  (uint8_t)ctx->key_id, NULL);
+                                                  dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, NULL);
     }
     if (state->keyloader == 1) {
         keyring_activate_slot_with_kid(state, 0, (int)effective_kid);

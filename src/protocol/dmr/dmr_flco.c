@@ -629,8 +629,14 @@ dmr_flco_voice_protocol(const dsd_state* state) {
 //
 // This resolves the key ID from ctx->target; keyring_dmr_slot_key_material() then owns the
 // slot-vs-mapped material rule, which dmr_pi.c publishes from as well.
+//
+// `algid` is a parameter rather than re-read here because both callers already have it, and a
+// second derivation is a second thing to keep in sync. It selects only what key material a map row
+// must hold to be worth applying, so publish's algid == 0 case resolves DSD_KEY_NEED_NONE and no
+// row applies -- which is moot, since that branch reads dsd_dmr_missing_alg_key_can_decrypt()
+// instead of this material.
 static dsd_dmr_key_material
-dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx) {
+dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx, int algid) {
     const int signaled = ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR;
     const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
     int mapped = 0;
@@ -641,7 +647,8 @@ dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx) {
     // bypasses the resolver would let the map apply to the label and the lockout gate but not to the
     // key that actually decrypts -- the two disagreeing is the bug class this resolver exists to fix.
     if (signaled >= 0 && signaled <= 0xFF) {
-        eff_kid = (int)keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, (uint8_t)signaled, &mapped);
+        eff_kid = (int)keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, dsd_dmr_alg_key_need(algid),
+                                                 (uint8_t)signaled, &mapped);
     }
     return dsd_dmr_slot_key_material(ctx->state, (int)ctx->slot, eff_kid, mapped);
 }
@@ -655,7 +662,7 @@ dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
 
     // Slot bound: dmr_flco_publish_voice(), the sole caller, returns early on
     // ctx->slot >= DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
-    const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx);
+    const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, (int)algid);
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
                                     : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, key.r_key,
                                                                     key.aes_loaded, key.kirisun_complete);
@@ -990,7 +997,7 @@ dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
         return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
     }
 
-    const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx);
+    const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, (int)algid);
     return dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, key.r_key, key.aes_loaded, key.kirisun_complete);
 }
 

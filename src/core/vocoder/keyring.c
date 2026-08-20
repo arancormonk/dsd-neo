@@ -195,8 +195,8 @@ keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_material_
 }
 
 uint8_t
-keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, uint8_t signaled_kid,
-                          int* out_mapped) {
+keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, dsd_key_material_need need,
+                          uint8_t signaled_kid, int* out_mapped) {
     if (out_mapped != NULL) {
         *out_mapped = 0;
     }
@@ -208,7 +208,7 @@ keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is
     if (!keyring_dmr_tg_map_kid(state, target, &kid)) {
         return signaled_kid;
     }
-    if (!keyring_kid_material(state, (int)kid, NULL, NULL)) {
+    if (!keyring_kid_satisfies_need(state, (int)kid, need)) {
         // Explicit intent still loses to reality here: see the header comment.
         return signaled_kid;
     }
@@ -240,14 +240,15 @@ keyring_dmr_tg_map_call_is_mappable(const dsd_call_snapshot* call) {
 }
 
 uint8_t
-keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, uint8_t signaled_kid, int* out_mapped) {
+keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, dsd_key_material_need need,
+                         uint8_t signaled_kid, int* out_mapped) {
     if (out_mapped != NULL) {
         *out_mapped = 0;
     }
     if (call == NULL || !keyring_dmr_tg_map_call_is_mappable(call)) {
         return signaled_kid;
     }
-    return keyring_dmr_effective_kid(state, (uint32_t)call->ota_target_id, 1, signaled_kid, out_mapped);
+    return keyring_dmr_effective_kid(state, (uint32_t)call->ota_target_id, 1, need, signaled_kid, out_mapped);
 }
 
 // One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit
@@ -286,7 +287,8 @@ keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint
 }
 
 uint8_t
-keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, uint8_t signaled_kid) {
+keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, dsd_key_material_need need,
+                              uint8_t signaled_kid) {
     // call == NULL is a live input, not a defensive one: mbe_prepare_frame_state() passes NULL
     // whenever dsd_call_state_get() reports no snapshot for the slot. Rejecting it here rather
     // than mid-function is what lets both call-> dereferences below stand unguarded -- the mapped
@@ -296,7 +298,7 @@ keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapsho
     }
 
     int mapped = 0;
-    const uint8_t kid = keyring_dmr_kid_for_call(state, call, signaled_kid, &mapped);
+    const uint8_t kid = keyring_dmr_kid_for_call(state, call, need, signaled_kid, &mapped);
     if (mapped) {
         keyring_dmr_tg_map_note(state, slot, call->epoch, (uint32_t)call->ota_target_id, kid);
         return kid;

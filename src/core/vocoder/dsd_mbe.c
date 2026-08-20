@@ -350,7 +350,7 @@ mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, dsd_vocode
         // and keep their own signaled id unchanged.
         int kid = signaled;
         if (signaled >= 0 && signaled <= 0xFF) {
-            kid = (int)keyring_dmr_slot_kid_for_call(state, slot, call, (uint8_t)signaled);
+            kid = (int)keyring_dmr_slot_kid_for_call(state, slot, call, dsd_dmr_alg_key_need(algid), (uint8_t)signaled);
         }
         keyring_activate_slot_with_kid(state, slot, kid);
     }

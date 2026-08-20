@@ -76,7 +76,8 @@ activate_via_map(dsd_state* state, int slot) {
         return 0xFFU;
     }
     const uint8_t signaled = (uint8_t)((slot == 0) ? state->payload_keyid : state->payload_keyidR);
-    const uint8_t kid = keyring_dmr_slot_kid_for_call(state, slot, &call, signaled);
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    const uint8_t kid = keyring_dmr_slot_kid_for_call(state, slot, &call, dsd_dmr_alg_key_need(algid), signaled);
     keyring_activate_slot_with_kid(state, slot, (int)kid);
     return kid;
 }
@@ -237,7 +238,8 @@ test_gates_hold_activation_back(void) {
     state.payload_algid = 0x21;
     state.payload_keyid = 0x03;
     map_one(&state, 123U, 0x7B);
-    rc |= expect_eq("no-call-returns-signaled-kid", keyring_dmr_slot_kid_for_call(&state, 0, NULL, 0x03), 0x03);
+    rc |= expect_eq("no-call-returns-signaled-kid",
+                    keyring_dmr_slot_kid_for_call(&state, 0, NULL, DSD_KEY_NEED_SCALAR, 0x03), 0x03);
     dsd_state_ext_free_all(&state);
 
     return rc;
@@ -423,7 +425,11 @@ test_non_dmr_call_snapshot_is_rejected(void) {
     // the old behavior.
     state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
     state.keyloader = 1;
-    state.payload_algid = 0x84;
+    // A scalar-keyed ALG over a key id that holds a scalar: the row's material is exactly what
+    // this ALG needs, so the call snapshot's protocol is the only thing left that can refuse it.
+    // An ALG whose material the row cannot supply (0x84, say, over a scalar) would let this pass
+    // on the material gate alone and stop testing the protocol gate at all.
+    state.payload_algid = 0xAA;
     state.rkey_array[0x7B] = 0xBBBBBULL;
     state.rkey_array_loaded[0x7B] = 1U;
     map_one(&state, 123U, 0x7B);
@@ -449,31 +455,53 @@ test_effective_kid_resolution(void) {
     map_one(&state, 123U, 0x7B);
     map_one(&state, 456U, 0x40); // deliberately: nothing imported for key id 0x40
 
-    // A mapped group target whose key id has material takes the map's key id.
-    rc |= expect_eq("eff-mapped", keyring_dmr_effective_kid(&state, 123U, 1, 0x03, &mapped), 0x7B);
+    // A mapped group target whose key id holds what the ALG needs takes the map's key id.
+    rc |= expect_eq("eff-mapped", keyring_dmr_effective_kid(&state, 123U, 1, DSD_KEY_NEED_SCALAR, 0x03, &mapped), 0x7B);
     rc |= expect_eq("eff-mapped-flag", mapped, 1);
 
     // A mapped key id with nothing imported falls back to the signaled id rather than zeroing
     // the slot key and shadowing a signaled id that would have worked.
-    rc |= expect_eq("eff-no-material", keyring_dmr_effective_kid(&state, 456U, 1, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-no-material", keyring_dmr_effective_kid(&state, 456U, 1, DSD_KEY_NEED_SCALAR, 0x03, &mapped),
+                    0x03);
     rc |= expect_eq("eff-no-material-flag", mapped, 0);
 
     // Unmapped target, individual target, and a disarmed keyring all keep the signaled id.
-    rc |= expect_eq("eff-unmapped", keyring_dmr_effective_kid(&state, 999U, 1, 0x03, &mapped), 0x03);
-    rc |= expect_eq("eff-individual", keyring_dmr_effective_kid(&state, 123U, 0, 0x03, &mapped), 0x03);
+    rc |=
+        expect_eq("eff-unmapped", keyring_dmr_effective_kid(&state, 999U, 1, DSD_KEY_NEED_SCALAR, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-individual", keyring_dmr_effective_kid(&state, 123U, 0, DSD_KEY_NEED_SCALAR, 0x03, &mapped),
+                    0x03);
     rc |= expect_eq("eff-individual-flag", mapped, 0);
     state.keyloader = 0;
-    rc |= expect_eq("eff-keyloader-off", keyring_dmr_effective_kid(&state, 123U, 1, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-keyloader-off", keyring_dmr_effective_kid(&state, 123U, 1, DSD_KEY_NEED_SCALAR, 0x03, &mapped),
+                    0x03);
     state.keyloader = 1;
 
-    // AES-only material counts as material: segments live at key_id + 0x101/0x201/0x301.
-    state.rkey_array[0x0C + 0x101] = 0xCCCCULL;
+    // AES material serves an AES need: segments live at key_id + 0x000/0x101/0x201/0x301, and
+    // segment 0 shares the scalar's cell, so a two-segment import populates both.
+    state.rkey_array[0x0C + 0x000] = 0xCCCCULL;
+    state.rkey_array_loaded[0x0C + 0x000] = 1U;
+    state.rkey_array[0x0C + 0x101] = 0xDDDDULL;
+    state.rkey_array_loaded[0x0C + 0x101] = 1U;
     map_one(&state, 789U, 0x0C);
-    rc |= expect_eq("eff-aes-only", keyring_dmr_effective_kid(&state, 789U, 1, 0x03, &mapped), 0x0C);
-    rc |= expect_eq("eff-aes-only-flag", mapped, 1);
+    rc |= expect_eq("eff-aes-two-segments",
+                    keyring_dmr_effective_kid(&state, 789U, 1, DSD_KEY_NEED_AES_2, 0x03, &mapped), 0x0C);
+    rc |= expect_eq("eff-aes-two-segments-flag", mapped, 1);
+
+    // The gate is the whole point of the seam: TG 123's row names a scalar-only key id, so an AES
+    // call on that talkgroup keeps the signaled id. Applying it would zero the slot's AES segments
+    // and publish ENCRYPTED for a call the signaled key decrypts.
+    rc |= expect_eq("eff-need-not-met", keyring_dmr_effective_kid(&state, 123U, 1, DSD_KEY_NEED_AES_2, 0x03, &mapped),
+                    0x03);
+    rc |= expect_eq("eff-need-not-met-flag", mapped, 0);
+
+    // An ALG that consumes no keyring material can never be helped by a row.
+    rc |=
+        expect_eq("eff-need-none", keyring_dmr_effective_kid(&state, 123U, 1, DSD_KEY_NEED_NONE, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-need-none-flag", mapped, 0);
 
     // A zero target never matches: it is the "no talkgroup known" sentinel.
-    rc |= expect_eq("eff-zero-target", keyring_dmr_effective_kid(&state, 0U, 1, 0x03, &mapped), 0x03);
+    rc |= expect_eq("eff-zero-target", keyring_dmr_effective_kid(&state, 0U, 1, DSD_KEY_NEED_SCALAR, 0x03, &mapped),
+                    0x03);
     return rc;
 }
 

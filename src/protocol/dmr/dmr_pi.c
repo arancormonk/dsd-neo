@@ -244,7 +244,7 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     int mapped = 0;
     int eff_kid = (int)kid;
     if (kid <= 0xFFU && dsd_call_state_get(state, slot, &call) > 0) {
-        eff_kid = (int)keyring_dmr_kid_for_call(state, &call, (uint8_t)kid, &mapped);
+        eff_kid = (int)keyring_dmr_kid_for_call(state, &call, dsd_dmr_alg_key_need((int)algid), (uint8_t)kid, &mapped);
     }
     // Kirisun 0x36/0x37 decides on the quartet, not on r_key/aes_loaded, and activation overwrites
     // the slot's quartet too -- so the mapped key id has to supply its own verdict here as well.

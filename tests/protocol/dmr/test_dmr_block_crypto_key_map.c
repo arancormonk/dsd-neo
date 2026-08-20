@@ -19,10 +19,13 @@ expect_eq(const char* tag, long long got, long long want) {
     return 0;
 }
 
+// payload_algid is read here in the DATA path's ALG numbering, not the voice one: this file drives
+// dmr_block_crypto_load_ctx(), and 0x21 -- voice RC4 -- is not a data ALG at all. Alg 1 is data
+// RC4, which is what consumes the scalar seeded below.
 static void
 seed_keyring_and_map(dsd_state* state) {
     state->keyloader = 1;
-    state->payload_algid = 0x21; /* RC4 */
+    state->payload_algid = 1; /* data RC4 */
     state->payload_keyid = 0x03;
     state->rkey_array[0x03] = 0xAAAAAULL;
     state->rkey_array_loaded[0x03] = 1U;
@@ -86,7 +89,7 @@ test_slot2_fallback_uses_rr(void) {
 
     state.keyloader = 1;
     state.currentslot = 1;
-    state.payload_algidR = 0x21;
+    state.payload_algidR = 1;    /* data RC4 */
     state.payload_keyidR = 0x05; /* nothing imported for 0x05 */
     state.R = 0x1111ULL;
     state.RR = 0x2222ULL;
@@ -145,6 +148,64 @@ test_wide_signaled_kid_bypasses_the_map(void) {
     return rc;
 }
 
+// The data path's ALG numbering is its own (0 BP, 1 RC4, 2 DES, 4 AES-128, 5 AES-256, 7 VTX), so
+// it translates locally rather than normalizing into the voice space -- where data-2 (DES) and
+// voice-0x02 (Hytera Enhanced) already collide. A row may only apply when the mapped key id holds
+// what THAT alg consumes.
+static int
+test_data_alg_need_gates_the_map(void) {
+    static dsd_state state;
+    dmr_block_crypto_ctx ctx;
+    int rc = 0;
+
+    // AES-128 burst, row pointing at a scalar-only key id: the row must not apply.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_keyring_and_map(&state);
+    state.payload_algid = 4; /* data AES-128 */
+    state.currentslot = 0;
+    state.dmr_lrrp_target[0] = 123ULL;
+    state.dmr_data_target_is_group[0] = 1U;
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("aes-row-scalar-only-unmapped", ctx.mapped, 0);
+    rc |= expect_eq("aes-row-scalar-only-kid", ctx.kid, 0x03);
+
+    // RC4 burst, row pointing at an AES-only key id: the row must not apply either.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.keyloader = 1;
+    state.payload_algid = 1; /* data RC4 */
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.rkey_array[0x1CC] = 0x2222ULL; /* segment 1 of key id 0xCB */
+    state.rkey_array_loaded[0x1CC] = 1U;
+    state.dmr_tg_key_map_tg[0] = 123U;
+    state.dmr_tg_key_map_kid[0] = 0xCB;
+    state.dmr_tg_key_map_count = 1;
+    state.currentslot = 0;
+    state.dmr_lrrp_target[0] = 123ULL;
+    state.dmr_data_target_is_group[0] = 1U;
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("rc4-row-aes-only-unmapped", ctx.mapped, 0);
+    rc |= expect_eq("rc4-row-aes-only-kid", ctx.kid, 0x03);
+    rc |= expect_eq("rc4-row-aes-only-rkey", (long long)ctx.rkey, 0xAAAAALL);
+
+    // Moto BP (alg 0) reads state->K and the BPK table, never the keyring: no row applies.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_keyring_and_map(&state);
+    state.payload_algid = 0;
+    state.currentslot = 0;
+    state.dmr_lrrp_target[0] = 123ULL;
+    state.dmr_data_target_is_group[0] = 1U;
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("bp-never-mapped", ctx.mapped, 0);
+
+    // VTX STD (alg 7) has no decrypt branch at all.
+    state.payload_algid = 7;
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("vtx-never-mapped", ctx.mapped, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -153,5 +214,6 @@ main(void) {
     rc |= test_slot2_fallback_uses_rr();
     rc |= test_wide_signaled_kid_is_not_narrowed();
     rc |= test_wide_signaled_kid_bypasses_the_map();
+    rc |= test_data_alg_need_gates_the_map();
     return rc;
 }

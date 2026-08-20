@@ -40,7 +40,8 @@ void keyring_dmr_tg_map_reset(dsd_state* state);
  * Use this on the voice path, where a call epoch exists to latch the notice against. Other
  * consumers want keyring_dmr_kid_for_call(), which is silent.
  */
-uint8_t keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, uint8_t signaled_kid);
+uint8_t keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call,
+                                      dsd_key_material_need need, uint8_t signaled_kid);
 
 /**
  * Report the imported key material behind a key ID without activating it.
@@ -92,10 +93,11 @@ int keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_mater
 /**
  * Key ID a DMR slot should decrypt with (--dmr-tg-key-csv).
  *
- * A map row for `target` replaces the OTA-signaled key ID, but only when the mapped ID has
- * imported material: a row naming an unimported key would otherwise zero the slot key and
- * shadow a signaled ID that would have worked, leaving the operator worse off than not
- * mapping the talkgroup at all.
+ * A map row for `target` replaces the OTA-signaled key ID, but only when the mapped ID holds the
+ * material @p need calls for: a row naming a key that cannot serve this ALG would otherwise zero
+ * the slot key and shadow a signaled ID that would have worked, arming a session-permanent
+ * lockout on a call that was decryptable. `need` comes from the caller because the ALG numbering
+ * is the caller's -- voice IDs in core/audio, DMR data IDs in protocol/dmr.
  *
  * `target_is_group` is load-bearing, not defensive -- DMR radio IDs share the talkgroup's
  * 24-bit space, so an unchecked match keys a unit call off a colliding row.
@@ -105,8 +107,8 @@ int keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_mater
  *
  * @param out_mapped set to 1 when a map row was applied, 0 otherwise (may be NULL)
  */
-uint8_t keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, uint8_t signaled_kid,
-                                  int* out_mapped);
+uint8_t keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group,
+                                  dsd_key_material_need need, uint8_t signaled_kid, int* out_mapped);
 
 /** Activate imported key material for a slot using an explicit key ID. */
 void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
@@ -117,8 +119,8 @@ void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
  * Applies only to an active DMR group-voice call with a usable talkgroup; returns
  * `signaled_kid` for anything else. Announces nothing -- see keyring_dmr_slot_kid_for_call().
  */
-uint8_t keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, uint8_t signaled_kid,
-                                 int* out_mapped);
+uint8_t keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, dsd_key_material_need need,
+                                 uint8_t signaled_kid, int* out_mapped);
 
 #ifdef __cplusplus
 }

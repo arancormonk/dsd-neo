@@ -263,6 +263,44 @@ test_pi_mapped_tg_classifies_decryptable(void) {
     assert(state.payload_algid == 0);
 }
 
+// dmr_pi_publish_crypto() publishes the same verdict as the LC for the same call, so it has to gate
+// on the same thing: a row whose key id cannot serve the call's ALG must not steer the
+// PI-published classification either.
+static void
+test_pi_row_with_wrong_material_is_not_applied(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    /* MFID 0x10 (DMRA); byte 0 low bits 0x01 normalize to ALGID 0x21 (RC4, keys off the scalar);
+     * byte 2 is the signaled key id. */
+    uint8_t rc4_pi[10] = {0x01, 0x10, 0x03, 0x11, 0x22, 0x33, 0x44, 0x00, 0x00, 0x00};
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    seed_active_voice_call(&state);
+    state.currentslot = 0;
+    state.keyloader = 1;
+    /* The slot carries a working RC4 key, as it would once the signaled id was activated. */
+    state.R = 0xAAAAAULL;
+    /* Key id 0x7B holds AES segments 1..3 and no scalar: nothing RC4 can use. */
+    state.rkey_array[0x7B + 0x101] = 0x1111ULL;
+    state.rkey_array_loaded[0x7B + 0x101] = 1U;
+    state.rkey_array[0x7B + 0x201] = 0x2222ULL;
+    state.rkey_array_loaded[0x7B + 0x201] = 1U;
+    state.rkey_array[0x7B + 0x301] = 0x3333ULL;
+    state.rkey_array_loaded[0x7B + 0x301] = 1U;
+    state.dmr_tg_key_map_tg[0] = 1001U; /* seed_active_voice_call()'s talkgroup */
+    state.dmr_tg_key_map_kid[0] = 0x7B;
+    state.dmr_tg_key_map_count = 1;
+
+    dmr_pi(&opts, &state, rc4_pi, 1U, 0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    /* The row cannot serve RC4, so the slot's own key decides -- and it decrypts. */
+    assert(call.crypto == DSD_CALL_CRYPTO_DECRYPTABLE);
+    assert(call.audio_permitted == 1U);
+    assert(call.kid == 0x03);
+}
+
 // Kirisun 0x36/0x37 decides on the four-segment quartet rather than on R/aes_loaded. Activation
 // (keyring_activate_slot_with_kid) overwrites that quartet per slot for these ALG IDs like any
 // other, so classification has to judge the mapped key id's quartet -- not the slot's, which is
@@ -855,6 +893,7 @@ main(void) {
     test_pi_kirisun_slot0_sets_fields_and_le_mode();
     test_pi_canonical_crypto_uses_algorithm_aware_keys();
     test_pi_mapped_tg_classifies_decryptable();
+    test_pi_row_with_wrong_material_is_not_applied();
     test_pi_mapped_kirisun_tg_classifies_decryptable();
     test_pi_kirisun_requires_crc_ok();
     test_pi_kirisun_slot1_sets_fields_and_le_mode();

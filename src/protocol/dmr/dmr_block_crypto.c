@@ -5,6 +5,7 @@
 
 #include "dmr_block_crypto.h"
 #include <dsd-neo/core/bp.h>
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/crypto/aes.h>
@@ -85,6 +86,22 @@ dmr_block_crypto_clamp_window(const dsd_state* state, uint8_t slot, dmr_block_cr
     }
 }
 
+// The data path's own ALG numbering, translated locally rather than normalized into the voice
+// space: data-2 (DES) and voice-0x02 (Hytera Enhanced) already collide there. Derived from what
+// dmr_block_crypto_decrypt_payload() actually consumes -- algs 1 and 2 require ctx->rkey, alg 4
+// reads parts[0..1], alg 5 reads parts[0..3], alg 0 (Moto BP) reads state->K and the BPK table
+// instead of the keyring, and alg 7 (VTX STD) has no decrypt branch at all.
+static dsd_key_material_need
+dmr_block_alg_key_need(int alg) {
+    switch (alg) {
+        case 1: /* RC4 */
+        case 2: /* DES */ return DSD_KEY_NEED_SCALAR;
+        case 4: /* AES-128 */ return DSD_KEY_NEED_AES_2;
+        case 5: /* AES-256 */ return DSD_KEY_NEED_AES_4;
+        default: return DSD_KEY_NEED_NONE;
+    }
+}
+
 void
 dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint8_t block_len,
                           dmr_block_crypto_ctx* ctx) {
@@ -124,9 +141,9 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
     // make ctx->kid index rkey_array[id & 0xFF] and decrypt the PDU with an unrelated key.
     ctx->kid = ctx->signaled_kid;
     if (ctx->signaled_kid >= 0 && ctx->signaled_kid <= 0xFF) {
-        ctx->kid = (int)keyring_dmr_effective_kid(state, (uint32_t)state->dmr_lrrp_target[id_slot],
-                                                  state->dmr_data_target_is_group[id_slot] != 0U,
-                                                  (uint8_t)ctx->signaled_kid, &ctx->mapped);
+        ctx->kid = (int)keyring_dmr_effective_kid(
+            state, (uint32_t)state->dmr_lrrp_target[id_slot], state->dmr_data_target_is_group[id_slot] != 0U,
+            dmr_block_alg_key_need(ctx->alg), (uint8_t)ctx->signaled_kid, &ctx->mapped);
     }
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
 
