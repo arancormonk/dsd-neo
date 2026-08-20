@@ -1,16 +1,18 @@
 # RadioReference Import
 
-The Android app can build a system's trunking data straight from the
+dsd-neo can build a system's trunking data straight from the
 [RadioReference.com](https://www.radioreference.com/) database instead of asking you to hand-write
 CSVs: browse to a system by zip code, by country/state/county, or by its system ID, pick the site
-(a trunked system with only one is picked for you), and the app generates the talkgroup list and —
-where the protocol needs one — the channel map, in
-the same formats `docs/csv-formats.md` describes. The generated files land in the imported-files
-library like any other import, and the add-system wizard opens with the frequency, the decode flag
-and both files already filled in.
+(a trunked system with only one is picked for you), and it generates the talkgroup list and — where
+the protocol needs one — the channel map, in the same formats `docs/csv-formats.md` describes.
 
-The runtime half is a UI-agnostic C API (`include/dsd-neo/runtime/radioreference.h`), so the
-terminal UI can adopt it later; today the Qt Quick frontend is the only consumer.
+Both frontends have it, over one shared runtime client (`include/dsd-neo/runtime/radioreference.h`)
+and one shared policy module (`include/dsd-neo/runtime/radioreference_import.h`):
+
+- **Android / Qt.** The generated files land in the imported-files library like any other import, and the
+  add-system wizard opens with the frequency, the decode flag and both files already filled in.
+- **Terminal UI.** The generated files land in the imports directory next to your config file, and the
+  import is applied to the running session immediately. See [Terminal UI](#terminal-ui).
 
 ## Requirements
 
@@ -43,6 +45,7 @@ revoked or exhausts its quota. Recovering means shipping a build with a new key.
 Baking one in:
 
 ```bash
+DSD_RR_APP_KEY=<key> cmake --preset dev-release      # or any other preset
 DSD_RR_APP_KEY=<key> cmake --preset android-app
 ```
 
@@ -51,13 +54,16 @@ environment form shown above: `-DDSD_RR_APP_KEY=<key>` writes the value in plain
 `build/<preset>/CMakeCache.txt`, while the environment route keeps it out of the build tree. The
 value is substituted into a generated C source file, so it must match `^[A-Za-z0-9._~-]+$`;
 configure fails otherwise. Leave it unset and the app prompts for a key instead.
+`DSD_RR_APP_KEY` is read at the top level of `CMakeLists.txt` with no preset and no platform guard, so it
+applies to any preset — a terminal-only build bakes a key exactly the same way the Android one does.
 
 **A baked key is not a secret.** It is extractable from any shipped binary with `strings`. Keeping
 it out of the repository protects the repository, not the artifact.
 
-CI takes the key from the GitHub repository secret `RADIOREFERENCE_APP_KEY`, passed through the
-`Configure (android-app)` step's environment. An unset secret expands to the empty string, which is
-a valid build that prompts.
+CI takes the key from the GitHub repository secret `RADIOREFERENCE_APP_KEY`. Today only the
+`Configure (android-app)` step is given it, because that is the only job that ships an artifact; any other
+job could take it the same way. An unset secret expands to the empty string, which is a valid build that
+prompts.
 
 To request a key, sign in and apply at
 <https://www.radioreference.com/account/api/apply>. An active premium subscription is required on
@@ -67,9 +73,10 @@ with their own premium credentials, is squarely the sanctioned case.
 
 ## Credentials
 
-- The **username** and, in a build without a baked key, the **application key** persist in the app's
-  settings (`Settings → RadioReference account`). The key row is offered only where the user is the
-  one who has to supply a key — see [The application key](#the-application-key).
+- The **username** and, in a build without a baked key, the **application key** persist. The Qt app keeps
+  them in its own settings store (`Settings -> RadioReference account`); the terminal UI keeps them in the
+  config file under `[radioreference]` (`docs/config-system.md`). The key row is offered only where the
+  user is the one who has to supply a key — see [The application key](#the-application-key).
 - The **password is held in memory only** and is asked for once per app session. It is never
   written to disk, never logged, and never reaches a status line or an error message.
 
@@ -86,6 +93,65 @@ The import screen is a drill-down with two stages, and shows one or the other, n
   replaces the find stage; a `‹ All systems` row (`‹ Search` when no list was fetched) is the way
   back to it. The results list survives that, so importing several systems from one search is a
   tap each.
+
+## Terminal UI
+
+Open the menu overlay with `Enter`, then **Trunking & Control -> RadioReference... -> Import from
+RadioReference...**. The wizard asks for your username, password and — in a keyless build — your
+application key, verifies the account once, and then offers the same search modes as the Qt screen.
+Selecting a system opens one modal panel with the site list, the three option toggles, and a preview of
+the plan that is recomputed on every keystroke.
+
+The whole submenu is hidden in a build without libcurl or expat.
+
+### Where the files go
+
+Generated files land in an `imports` directory beside your config file:
+
+| Platform | Directory |
+|---|---|
+| Linux / macOS, `XDG_CONFIG_HOME` set | `$XDG_CONFIG_HOME/dsd-neo/imports/` |
+| Linux / macOS, otherwise | `$HOME/.config/dsd-neo/imports/` |
+| Windows | `%APPDATA%\dsd-neo\imports\` |
+
+If none of those variables is set there is nowhere to write, and the import is blocked with a message
+naming the variable for your platform.
+
+The names are derived from the system name and are deterministic — `<system> group.csv` and
+`<system> chan.csv` — so re-importing the same system overwrites in place and any config that references
+the path stays valid. Two different systems that sanitise to the same name get the system ID appended, and
+both halves of one import always share a name. A file with no readable sidecar is treated as yours and is
+never overwritten.
+
+### What applying does, and what a save keeps
+
+A finished import is applied to the running session immediately: decode mode, trunking, the channel map and
+group list, and the starting frequency. It is **not** written to your config file. Persisting it means
+**Config -> Save Config**, and a save keeps only part of what was applied:
+
+| Setting the import applies | Kept by Config -> Save |
+|---|---|
+| Decode mode | Yes |
+| Trunking on/off | Yes |
+| Channel map (`-C`) and group list (`-G`) paths | Yes |
+| Simulcast QPSK demodulation | Yes |
+| Conventional scanning (`-Y`) | **No** |
+| P25 learned-candidate preference (`-^`) | **No** |
+| EDACS extended addressing and ESK | **No** |
+
+The three "No" rows have no INI key at all today. In practice that means a saved config for a
+multi-repeater Conventional Networked system, or for an EDACS system with ESK, will not decode it the same
+way on the next launch — re-run the import, or pass the flag on the command line. Adding the missing keys
+is tracked as a follow-up.
+
+Two more limits worth knowing:
+
+- Applying is asynchronous and its outcome is reported by a status message from the decoder, not by the
+  wizard. A session started with `--trunk-scan` manages its own channel maps: the wizard refuses the import
+  before writing anything, and the decoder-thread handler refuses the apply again if one ever reaches it.
+- `-Y` scanning needs an RTL-SDR or a rigctl-controlled radio. On a WAV, UDP or TCP source the scanner
+  never steps and the session will look stuck on the first frequency. The generator emits that warning and
+  the panel shows it.
 
 ## What gets generated
 
@@ -148,6 +214,13 @@ A generated file remembers where it came from — the system ID, the selected si
 file it is. `Imported files → (tap a row) → Refresh from RadioReference` re-fetches the system and
 replaces that file in place, keeping its stored path so every saved system referencing it stays
 valid.
+
+In the terminal UI the same thing is **Trunking & Control -> RadioReference... -> Refresh imported
+file...**, which lists what the imports directory holds. Provenance travels in a plain-text sidecar
+written next to each generated file (`<file>.rr`) recording the system ID, the selected sites and the
+partial-encryption answer. A file with no sidecar cannot be refreshed, so it is left out of the list
+rather than offered and refused; when nothing in the directory has one, the chooser reports that no
+imports were found there.
 
 - The staging copy is validated **before** the stored copy is touched, so a fault page or a
   truncated response cannot destroy working local data.

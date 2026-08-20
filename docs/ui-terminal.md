@@ -36,6 +36,23 @@ Config profiles:
   config path when no config has been loaded yet. Loading a profile applies it to the running session and disables
   autosave, matching CLI `--profile NAME` behavior.
 
+RadioReference import:
+
+- **Trunking & Control -> RadioReference... -> Import from RadioReference...** opens the import wizard: sign
+  in, find a system by ZIP code, by country/state/county, or by system ID, choose the site (or, for a
+  Conventional Networked system, the repeaters), and review the preview of what would be generated before
+  importing.
+- Inside the system panel: `Up`/`Down`/`PageUp`/`PageDown`/`Home`/`End` move, `Space` selects a site,
+  `p`/`s`/`e` cycle the partial-encryption, simulcast and ESK options, `Enter` imports, `Esc` goes back.
+- The password is asked once per program run and held in memory only. The username, and in a build without
+  a baked application key the key itself, are set from **Set Account Username...** and **Set Application
+  Key...** in the same submenu and stored in the config file under `[radioreference]`.
+- **Trunking & Control -> RadioReference... -> Refresh imported file...** re-fetches a previously
+  generated file in place.
+- The whole submenu is hidden in a build without libcurl or expat; the refresh entry is hidden until the
+  imports directory resolves, and the application-key entry is hidden in a build with a baked-in key. See
+  `docs/radioreference-import.md`.
+
 ## DSP Status
 
 The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL band-edge,
