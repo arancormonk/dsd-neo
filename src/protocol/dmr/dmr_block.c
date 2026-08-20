@@ -583,6 +583,11 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
         state->dmr_lrrp_source[slot] = f.source;
         state->dmr_lrrp_target[slot] = f.target;
         state->dmr_data_target_is_group[slot] = (uint8_t)(f.gi == 1);
+    } else {
+        // A proprietary header keeps the previous transmission's source/target on purpose, but
+        // that pair must not go on selecting a decryption key: drop the group qualifier so the
+        // --dmr-tg-key-csv lookup degrades to unmapped rather than to the wrong talkgroup.
+        state->dmr_data_target_is_group[slot] = 0;
     }
     if (f.dpf == 2 || f.dpf == 3) {
         state->data_block_poc[slot] = f.poc;
@@ -1722,6 +1727,10 @@ dmr_reset_blocks(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->data_block_crc_valid, 0, sizeof(state->data_block_crc_valid));
     DSD_MEMSET(state->dmr_lrrp_source, 0, sizeof(state->dmr_lrrp_source));
     DSD_MEMSET(state->dmr_lrrp_target, 0, sizeof(state->dmr_lrrp_target));
+    // Qualifies dmr_lrrp_target, so it clears with it -- same reason as dsd_init.c and
+    // no_carrier_reset_dmr_data_blocks(). A stale group flag left behind a cleared target would
+    // qualify whatever target is written next, including one a non-DMR protocol wrote.
+    DSD_MEMSET(state->dmr_data_target_is_group, 0, sizeof(state->dmr_data_target_is_group));
     DSD_MEMSET(state->dmr_cach_fragment, 1, sizeof(state->dmr_cach_fragment));
     DSD_MEMSET(state->cap_plus_csbk_bits, 0, sizeof(state->cap_plus_csbk_bits));
     DSD_MEMSET(state->cap_plus_block_num, 0, sizeof(state->cap_plus_block_num));

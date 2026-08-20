@@ -227,6 +227,28 @@ int dsd_dmr_kirisun_slot_key_complete(const dsd_state* state, int slot);
 int dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key, int aes_loaded,
                                   int kirisun_complete);
 
+/** The three key-material inputs dsd_dmr_voice_kid_can_decrypt() takes. */
+typedef struct {
+    unsigned long long r_key;
+    int aes_loaded;
+    int kirisun_complete;
+} dsd_dmr_key_material;
+
+/**
+ * @brief Key material a DMR slot will actually decrypt with.
+ *
+ * Reports the slot's own installed material, or -- when @p mapped says a --dmr-tg-key-csv row
+ * replaced the signaled key ID -- what @p key_id would install. The mapped case cannot be read off
+ * the slot: activation has not run yet at LC/PI time, so R/RR, aes_key_loaded[] and the Kirisun
+ * quartet still describe the previous key.
+ *
+ * One implementation because the callers must not disagree: dmr_flco.c uses it both for the label
+ * the operator sees and for the gate that arms the encryption lockout (which forces a P_CLEAR and
+ * drops the channel, and cannot self-heal), and dmr_pi.c publishes the same verdict for the same
+ * call. An out-of-range slot yields all-zero material, i.e. "cannot decrypt".
+ */
+dsd_dmr_key_material dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapped);
+
 /**
  * @brief Slot-aware DMR/P25-style decryptability check.
  *

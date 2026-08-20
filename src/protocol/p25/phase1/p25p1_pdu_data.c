@@ -968,6 +968,9 @@ p25_handle_sap48_location_data(const dsd_opts* opts, dsd_state* state, const P25
         uint8_t slot = (state->currentslot >= 2) ? 1U : (uint8_t)state->currentslot;
         state->dmr_lrrp_source[slot] = pdu->source_id;
         state->dmr_lrrp_target[slot] = pdu->target_id;
+        // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
+        // --dmr-tg-key-csv lookup treat this address as one.
+        state->dmr_data_target_is_group[slot] = 0;
         nmea_valid = nmea_sentence_checker(opts, state, payload_bits, slot, span);
         status.data_notice_emitted = nmea_valid != 0U;
     }

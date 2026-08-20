@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -234,6 +235,23 @@ dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsig
         return kirisun_complete ? 1 : 0;
     }
     return dsd_dmr_voice_alg_can_decrypt(algid, r_key, aes_loaded);
+}
+
+dsd_dmr_key_material
+dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapped) {
+    dsd_dmr_key_material material = {0ULL, 0, 0};
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return material;
+    }
+
+    material.r_key = (slot == 0) ? state->R : state->RR;
+    material.aes_loaded = state->aes_key_loaded[slot];
+    material.kirisun_complete = dsd_dmr_kirisun_slot_key_complete(state, slot);
+    if (mapped) {
+        (void)keyring_kid_material(state, key_id, &material.r_key, &material.aes_loaded);
+        material.kirisun_complete = keyring_kid_kirisun_complete(state, key_id);
+    }
+    return material;
 }
 
 int

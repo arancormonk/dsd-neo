@@ -96,11 +96,62 @@ test_slot2_fallback_uses_rr(void) {
     return rc;
 }
 
+// payload_keyid is shared across protocols and P25 writes a full 16-bit KID into it, so a
+// signaled id that cannot round-trip through the resolver's uint8_t must keep its full width.
+// Narrowing it made the burst decrypt with rkey_array[id & 0xFF] -- an unrelated key.
+static int
+test_wide_signaled_kid_is_not_narrowed(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dmr_block_crypto_ctx ctx;
+    int rc = 0;
+
+    seed_keyring_and_map(&state);
+    state.currentslot = 0;
+    state.payload_keyid = 0x103; /* low byte 0x03 has material; 0x103 does not */
+    state.rkey_array[0x103] = 0xCCCCCULL;
+    state.rkey_array_loaded[0x103] = 1U;
+    state.dmr_lrrp_target[0] = 999ULL; /* unmapped target */
+    state.dmr_data_target_is_group[0] = 1U;
+
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("wide-kid-kept", ctx.kid, 0x103);
+    rc |= expect_eq("wide-kid-rkey", (long long)ctx.rkey, 0xCCCCCLL);
+    rc |= expect_eq("wide-kid-unmapped", ctx.mapped, 0);
+    return rc;
+}
+
+// The map must not steer a wide signaled id either: the resolver cannot represent it, so the
+// burst keeps the OTA id rather than resolving a truncated one.
+static int
+test_wide_signaled_kid_bypasses_the_map(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    dmr_block_crypto_ctx ctx;
+    int rc = 0;
+
+    seed_keyring_and_map(&state);
+    state.currentslot = 0;
+    state.payload_keyid = 0x103;
+    state.rkey_array[0x103] = 0xCCCCCULL;
+    state.rkey_array_loaded[0x103] = 1U;
+    state.dmr_lrrp_target[0] = 123ULL; /* a mapped group target */
+    state.dmr_data_target_is_group[0] = 1U;
+
+    dmr_block_crypto_load_ctx(&state, 0U, 1, 12, &ctx);
+    rc |= expect_eq("wide-kid-map-bypassed", ctx.kid, 0x103);
+    rc |= expect_eq("wide-kid-map-rkey", (long long)ctx.rkey, 0xCCCCCLL);
+    rc |= expect_eq("wide-kid-map-flag", ctx.mapped, 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_group_data_target_uses_the_map();
     rc |= test_individual_data_target_ignores_the_map();
     rc |= test_slot2_fallback_uses_rr();
+    rc |= test_wide_signaled_kid_is_not_narrowed();
+    rc |= test_wide_signaled_kid_bypasses_the_map();
     return rc;
 }

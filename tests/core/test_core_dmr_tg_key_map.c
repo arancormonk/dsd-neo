@@ -263,9 +263,9 @@ count_substring_in_file(const char* path, const char* needle) {
 
 // Redirects stderr to a fresh temp file, calls activate_via_map(state, slot) five times, and
 // returns how many times `needle` appears in what was written, or -1 if the capture itself could
-// not be set up. Leaves stderr redirected to the temp file: reopening it more than once is fine,
-// but restoring it is not portable, so the caller does that once after every capture phase is
-// done (see test_notice_is_emitted_once_per_epoch()).
+// not be set up. Points stderr back at the null device before deleting the temp file: Windows
+// refuses remove() on a file that is still open, so unlinking while stderr holds it would orphan
+// one temp file per capture in the CTest working directory.
 static int
 capture_notice_hits(dsd_state* state, int slot, const char* needle) {
     char tmpl[] = "dsd-neo-test-tg-key-note-XXXXXX";
@@ -284,6 +284,7 @@ capture_notice_hits(dsd_state* state, int slot, const char* needle) {
         (void)activate_via_map(state, slot);
     }
     fflush(stderr);
+    (void)freopen(TG_KEY_NULL_DEVICE, "w", stderr);
 
     const int hits = count_substring_in_file(tmpl, needle);
     (void)remove(tmpl);

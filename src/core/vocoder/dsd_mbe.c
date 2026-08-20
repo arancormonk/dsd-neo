@@ -325,9 +325,8 @@ typedef struct {
 } mbe_frame_ctx_t;
 
 static void
-mbe_prepare_frame_state(dsd_opts* opts, dsd_state* state, mbe_frame_ctx_t* frame_ctx,
-                        dsd_vocoder_soft_bit imbe7100_soft_fr[7][24], const dsd_call_snapshot* call) {
-    (void)opts;
+mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, dsd_vocoder_soft_bit imbe7100_soft_fr[7][24],
+                        const dsd_call_snapshot* call) {
     (void)imbe7100_soft_fr;
     frame_ctx->vertex_ks_applied_l = 0;
     frame_ctx->vertex_ks_applied_r = 0;
@@ -1919,7 +1918,7 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, char imbe_fr[8][23], c
     dsd_call_snapshot call;
 
     const int have_call = mark_vocoder_call_media(opts, state, &call);
-    mbe_prepare_frame_state(opts, state, &frame_ctx, imbe7100_soft_fr, have_call ? &call : NULL);
+    mbe_prepare_frame_state(state, &frame_ctx, imbe7100_soft_fr, have_call ? &call : NULL);
 
     if (DSD_SYNC_IS_P25P1(state->synctype)) {
         mbe_process_p25p1(opts, state, imbe_fr, imbe_soft_fr, &frame_ctx);

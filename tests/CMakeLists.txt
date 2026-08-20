@@ -1460,6 +1460,8 @@ add_executable(
     dsd-neo_test_ui_menu_services
     ui/test_ui_menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
+    ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
 )
 target_include_directories(
     dsd-neo_test_ui_menu_services

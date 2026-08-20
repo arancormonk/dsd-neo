@@ -117,9 +117,17 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, int blocks, uint
 
     // Same key for the call's data as for its voice: --dmr-tg-key-csv is keyed on the data
     // header's target, whose group flag was recorded when the header was parsed.
-    ctx->kid = (int)keyring_dmr_effective_kid(state, (uint32_t)state->dmr_lrrp_target[id_slot],
-                                              state->dmr_data_target_is_group[id_slot] != 0U,
-                                              (uint8_t)ctx->signaled_kid, &ctx->mapped);
+    //
+    // Only a signaled id that round-trips through the resolver's uint8_t goes through it -- the
+    // same guard dsd_mbe.c and dsd_file.c apply. payload_keyid is shared across protocols and
+    // P25 writes a full 16-bit KID into it (p25_crypto.c), so narrowing unconditionally would
+    // make ctx->kid index rkey_array[id & 0xFF] and decrypt the PDU with an unrelated key.
+    ctx->kid = ctx->signaled_kid;
+    if (ctx->signaled_kid >= 0 && ctx->signaled_kid <= 0xFF) {
+        ctx->kid = (int)keyring_dmr_effective_kid(state, (uint32_t)state->dmr_lrrp_target[id_slot],
+                                                  state->dmr_data_target_is_group[id_slot] != 0U,
+                                                  (uint8_t)ctx->signaled_kid, &ctx->mapped);
+    }
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
 
     dmr_block_load_aes_key(state, ctx->kid, ctx->aes_key);

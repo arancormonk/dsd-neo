@@ -1484,7 +1484,13 @@ typedef struct {
     uint8_t mi_iv[8];
     uint8_t mi_seen;
     // Key id ctx->ks was last built from -- not necessarily ctx->key_id, which is the signaled one.
+    // ks_built qualifies it: 0x00 is a legal key id, so ks_key_id alone cannot say "never built".
     uint16_t ks_key_id;
+    uint8_t ks_built;
+    // Key id the --dmr-tg-key-csv map last installed, and whether one is installed at all. The
+    // map applies on partially-parsed records, so it has to be able to take itself back out.
+    uint16_t map_kid;
+    uint8_t map_applied;
     uint8_t ks[3000];
     uint16_t ks_idx;
     uint8_t ks_i[3000];
@@ -1517,6 +1523,9 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     DSD_MEMSET(ctx->mi_iv, 0, sizeof(ctx->mi_iv));
     ctx->mi_seen = 0;
     ctx->ks_key_id = 0;
+    ctx->ks_built = 0;
+    ctx->map_kid = 0;
+    ctx->map_applied = 0;
     DSD_MEMSET(ctx->ks, 0, sizeof(ctx->ks));
     ctx->ks_idx = 0;
     DSD_MEMSET(ctx->ks_i, 0, sizeof(ctx->ks_i));
@@ -1588,12 +1597,21 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
         uint16_t effective_kid = ctx->key_id;
         if (state->keyloader == 1) {
             int mapped = 0;
-            const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                          (uint8_t)ctx->key_id, &mapped);
-            if (mapped) {
-                keyring_activate_slot_with_kid(state, 0, (int)kid);
-                effective_kid = kid;
-            } else if (ctx->target_id != 0U && ctx->target_id < 0x1FFFFU && state->rkey_array[ctx->target_id] != 0) {
+            // Gated the same way the file's other two resolutions are: state->M is a
+            // --dmr-force-algid value, not a protocol, so without the DMR test a P25 replay run
+            // with that flag would let a colliding DMR map row key its audio. The <= 0xFF test
+            // keeps a 16-bit P25 KID from being compared and resolved as its low byte. The
+            // target-indexed fallback below keeps its original gating either way.
+            if (DSD_SYNC_IS_DMR(state->synctype) && ctx->key_id <= 0xFFU) {
+                const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                              (uint8_t)ctx->key_id, &mapped);
+                if (mapped) {
+                    keyring_activate_slot_with_kid(state, 0, (int)kid);
+                    effective_kid = kid;
+                }
+            }
+            if (!mapped && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU
+                && state->rkey_array[ctx->target_id] != 0) {
                 // Pre-existing implicit "key indexed by talkgroup" replay convention. Kept as the
                 // fallback so replay workflows that depend on it are unchanged when no row matches.
                 state->R = state->rkey_array[ctx->target_id];
@@ -1612,6 +1630,7 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
             // payload_mi-derived IV. Recording the id it used keeps the map's rebuild below from
             // overwriting this keystream with one built from the raw "encryption_mi" bytes.
             ctx->ks_key_id = effective_kid;
+            ctx->ks_built = 1;
         }
         return;
     }
@@ -1807,6 +1826,12 @@ sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdr
         return 0;
     }
 
+    // ks_built is the latch the map's rebuild guard reads. It is set here, not before the bail
+    // above: a record whose "encrypted"/"encryption_algorithm" token follows "encryption_mi"
+    // reaches this with is_enc still 0, and latching then would suppress the rebuild that has to
+    // happen once is_enc flips. Callers that must not re-enter on a non-encrypted record test
+    // ctx->is_enc themselves.
+    ctx->ks_built = 1;
     ctx->ks_key_id = key_id;
     uint8_t ks_available = (uint8_t)sdrtrunk_build_voice_keystream_bits(
         state, ctx->alg_id, key_id, ctx->mi_iv, ctx->rc4_db, ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
@@ -1822,13 +1847,38 @@ sdrtrunk_json_build_keystreams(const dsd_opts* opts, const dsd_state* state, sdr
     return ks_available;
 }
 
-// JSON object field order is not a contract: ctx->target_id is set only by the "to" token, so a
-// map lookup taken on the "encryption_mi" token alone sees it whenever "encryption_mi" happens
-// to precede "to" in the source. Like sdrtrunk_json_apply_forced_algid()'s own fallback, this
-// runs on every token and self-corrects once target_id is known, so the map applies regardless
-// of which field the exporter wrote first. Only the mapped case writes here -- an unmapped
-// target (map absent, or target not yet known) leaves whatever the OTA-signaled activation
-// already set alone, so repeated calls can never clobber it.
+// Install @p kid into slot 0 and, when a keystream already exists for a different key id, rebuild
+// it from the recorded MI. Activation alone decrypts nothing: the voice path XORs ctx->ks, which is
+// built from a key id. ctx->ks_idx is deliberately left alone -- frames already consumed are
+// unrecoverable, and the keystream position stays continuous for the ones that follow.
+//
+// The (ks_built, ks_key_id) test makes the rebuild purely a correction: it is false when
+// handle_mi() (or the forced-ALGID build, which owns ctx->ks and its own IV on that path) already
+// used this key id, so the common ordering never rebuilds and this never fights either of them.
+// ks_built is a separate flag because 0x00 is a legal key id and so cannot double as "never built".
+static void
+sdrtrunk_json_rekey_slot0(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, uint16_t kid) {
+    keyring_activate_slot_with_kid(state, 0, (int)kid);
+    // is_enc is tested here rather than inside the builder: the builder bails on a non-encrypted
+    // record before latching, so calling it anyway would re-enter on every remaining token and
+    // re-zero the ctx->ks_available that sdrtrunk_json_apply_forced_basic_privacy() just set.
+    if (ctx->is_enc == 1 && ctx->mi_seen != 0U && (ctx->ks_built == 0U || ctx->ks_key_id != kid)) {
+        ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, kid);
+    }
+}
+
+// JSON object field order is not a contract: ctx->target_id, ctx->kind and ctx->key_id are each set
+// by their own token, and sdrtrunk_json_context_init() runs once per FILE, so on any given token
+// they may still describe the previous record. Like sdrtrunk_json_apply_forced_algid()'s own
+// fallback, this runs on every token and self-corrects as those fields land.
+//
+// The correction runs in BOTH directions. Applying the map on a partially-parsed record can key a
+// call the map must not touch -- a private call whose destination radio id collides with a row
+// (DMR radio ids share the talkgroup's 24-bit space) before "call_type" is read, or the previous
+// record's talkgroup before this record's "to" is read. So a map application is remembered, and
+// when the map stops applying the signaled key id is put back. Only the map's own writes are ever
+// undone: with no application on record, an unmapped target leaves whatever the OTA-signaled
+// activation set alone -- in particular apply_forced_algid()'s target-indexed replay fallback.
 static void
 sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx) {
     if (state->keyloader != 1 || !DSD_SYNC_IS_DMR(state->synctype)) {
@@ -1838,20 +1888,20 @@ sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtr
     const uint8_t kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
                                                   (uint8_t)ctx->key_id, &mapped);
     if (!mapped) {
+        if (ctx->map_applied != 0U) {
+            // A row applied on an earlier token no longer does. Undo it rather than leaving a key
+            // the resolver has just refused installed for the rest of the record.
+            ctx->map_applied = 0U;
+            sdrtrunk_json_rekey_slot0(opts, state, ctx, ctx->key_id);
+        }
         return;
     }
-    keyring_activate_slot_with_kid(state, 0, (int)kid);
-    // Activation alone decrypts nothing: the voice path XORs ctx->ks, which is built from a key id.
-    // When "encryption_mi" preceded "to", handle_mi() built ctx->ks from the signaled id before the
-    // talkgroup was known, so rebuild it from the same IV once the row resolves. The ks_key_id test
-    // makes this purely a field-order correction: it is false when handle_mi() (or the forced-ALGID
-    // build, which owns ctx->ks and its own IV on that path) already used this key id, so the common
-    // "to" before "encryption_mi" ordering never rebuilds and this never fights either of them.
-    // ctx->ks_idx is deliberately left alone -- frames already consumed are unrecoverable, and the
-    // keystream position stays continuous for the ones that follow.
-    if (ctx->mi_seen != 0U && ctx->ks_key_id != (uint16_t)kid) {
-        ctx->ks_available = sdrtrunk_json_build_keystreams(opts, state, ctx, kid);
+    if (ctx->map_applied != 0U && ctx->map_kid == kid) {
+        return;
     }
+    ctx->map_applied = 1U;
+    ctx->map_kid = kid;
+    sdrtrunk_json_rekey_slot0(opts, state, ctx, kid);
 }
 
 static void

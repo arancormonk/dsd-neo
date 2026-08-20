@@ -846,6 +846,53 @@ test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid(void) {
     return rc;
 }
 
+// A private call's destination is a RADIO ID, and DMR radio ids share the talkgroup's 24-bit
+// space, so a map row must never key one. The map is resolved on every token because JSON field
+// order is not a contract, which means it can be applied on a partially-parsed record and then
+// have to be taken back out again: here "call_type" arrives after the crypto fields, so the map
+// applies against the still-default GROUP reading first and the later PRIVATE reading has to undo
+// it. The reference run signals the same key id with no map row loaded at all.
+static int
+test_sdrtrunk_json_private_call_never_keeps_a_map_row(void) {
+    int rc = 0;
+    // "call_type" last: every earlier token sees the DSD_CALL_KIND_VOICE default, which reads as
+    // group. The destination radio id equals the mapped talkgroup number on purpose.
+    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"encrypted\":\"true\","
+                               "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+                               "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\","
+                               "\"call_type\":\"PRIVATE\",\"time\":\"1700000000000\","
+                               "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\","
+                               "\"hex\":\"000000000000000000\"}";
+    static dsd_state state;
+    unsigned char with_map[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char without_map[SDRTRUNK_MAP_RECORD_CAP];
+    size_t with_map_len = 0;
+    size_t without_map_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk private call with map", json, &state, with_map, sizeof with_map,
+                                          &with_map_len);
+    // The map must leave no trace in the slot key either.
+    rc |= expect_true("sdrtrunk private call slot key is the signaled one",
+                      state.R == state.rkey_array[SDRTRUNK_MAP_SIGNALED_KID]);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk private call without map", json, &state, without_map,
+                                          sizeof without_map, &without_map_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk private call wrote records", with_map_len >= 24U);
+    rc |= expect_true("sdrtrunk private call ignores the map row",
+                      with_map_len == without_map_len && memcmp(with_map, without_map, with_map_len) == 0);
+    return rc;
+}
+
 // sdrtrunk_json_apply_forced_algid() builds its own RC4 keystream from a payload_mi-derived IV,
 // on every token, and that build wins over the one sdrtrunk_json_handle_mi() made -- so the
 // resolved key id has to reach it too. With --dmr-force-algid set (state.M) and no
@@ -2242,6 +2289,7 @@ main(void) {
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
+    rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width();
