@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>

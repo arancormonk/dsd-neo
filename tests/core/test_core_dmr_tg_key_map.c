@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -631,6 +632,17 @@ test_kid_satisfies_need(void) {
     rc |= expect_eq("need-aes3-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_3), 1);
     rc |= expect_eq("need-aes4-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4), 1);
     rc |= expect_eq("need-quartet-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 1);
+
+    // AES_4 and QUARTET diverge exactly here: four non-zero values satisfy AES_4 regardless of
+    // rkey_array_loaded, but QUARTET also requires keyring_aes_segment_count() to read 4, which
+    // needs the loaded flags too. That divergence is why key_material.h documents the two needs
+    // as distinct rather than one collapsing into the other.
+    state.rkey_array_loaded[0x40] = 0U;
+    state.rkey_array_loaded[0x241] = 0U;
+    rc |= expect_eq("need-aes4-partial-loaded-still-hits", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4),
+                    1);
+    rc |= expect_eq("need-quartet-partial-loaded-misses",
+                    keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 0);
 
     // A loaded-but-zero cell activates as A_i == 0, so it must not satisfy an AES need. This is
     // the distinction keyring_kid_kirisun_complete()'s comment already draws against
