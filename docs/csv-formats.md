@@ -300,13 +300,20 @@ Notes:
   gone.
 - The OTA key ID is never rewritten: logs, event history, and the UI keep showing the signaled key ID,
   and the printed data-PDU header leads with it too, appending the override only when one applied.
-- A mapped key ID with no imported key material always falls back to the signaled key ID instead of
-  blocking the talkgroup outright, so a typo in the key ID column never silently kills decryption for
-  that talkgroup.
+- A row applies only when the mapped key ID holds the kind of key material the call's algorithm
+  actually consumes: a scalar for RC4/DES/Hytera Enhanced, the AES segments for AES-128/AES-256 (P25
+  TDEA needs three), or a complete, non-zero quartet for Kirisun (`0x36`/`0x37`). A key ID that holds
+  material of some other kind — an AES quartet mapped to an RC4 talkgroup, a scalar mapped to an
+  AES-128 one — does not apply, for the same reason an unimported key ID doesn't.
+- A mapped key ID with no imported key material, or with material of the wrong kind for the call's
+  algorithm, always falls back to the signaled key ID instead of blocking the talkgroup outright, so a
+  typo in the key ID column — or a row that names a real but mismatched key — never silently kills
+  decryption for that talkgroup.
 - Console visibility of this differs by consumer: voice announces both an applied override and a
-  fallback, once per call; data PDUs show an applied override in the PDU header line but stay silent on
-  a fallback; crypto classification, the `--enc-lockout` decision, and sdrtrunk replay apply the map
-  with no console notice either way.
+  fallback, once per call, except for algorithms that consume no keyring material, where the row is
+  inert and silent (e.g. Vertex); data PDUs show an applied override in the PDU header line but stay
+  silent on a fallback; crypto classification, the `--enc-lockout` decision, and sdrtrunk replay apply
+  the map with no console notice either way.
 - In sdrtrunk JSON replay, a map row wins over the older implicit "key indexed by talkgroup"
   convention; with no matching row, that older behavior is unchanged. This holds regardless of the
   order in which fields appear in the JSON record.
