@@ -1895,9 +1895,18 @@ sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtr
         return;
     }
     int mapped = 0;
-    const uint8_t kid =
-        keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                  dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, &mapped);
+    uint8_t kid = 0U;
+    // Same <= 0xFF width guard as this file's other two resolutions and dmr_block_crypto.c /
+    // dmr_flco.c / dmr_pi.c: ctx->key_id is a uint16_t and DMR signals a byte-wide key id, so a
+    // wider value cannot be the resolver's signaled_kid without truncating first -- truncating
+    // would let this site resolve a match the truncation manufactured rather than one the record
+    // actually signaled. Leaving `mapped` at 0 when the guard fails takes the same "row no longer
+    // applies" branch below as an ordinary unmapped token, so the undo path still fires and rekeys
+    // from the full-width ctx->key_id, not this function's narrowed one.
+    if (ctx->key_id <= 0xFFU) {
+        kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                        dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, &mapped);
+    }
     if (!mapped) {
         if (ctx->map_applied != 0U) {
             // A row applied on an earlier token no longer does. Undo it rather than leaving a key

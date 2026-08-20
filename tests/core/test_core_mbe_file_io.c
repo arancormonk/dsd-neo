@@ -1280,6 +1280,50 @@ test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width(void) {
     return rc;
 }
 
+// sdrtrunk_json_apply_dmr_tg_key_map() keys its lookup on ctx->target_id alone --
+// keyring_dmr_effective_kid() never reads signaled_kid to decide whether a row matches, only as
+// the unmapped fallback value -- so an oversized signaled key id does not, by itself, stop a real
+// map row for the record's own talkgroup from being found. Only the <= 0xFF width guard does that,
+// by leaving `mapped` at 0 before the lookup ever runs. Without the guard, this function re-runs
+// once "to" lands (it runs on every token) and would apply the mapped key's material, overwriting
+// the full-width activation test_..._keeps_full_width() above already pins for handle_mi's own
+// path -- the exact same-file publish/gate divergence the design exists to prevent. This is that
+// test with a matching map row added: the row must still be refused, and state->R must still come
+// from the full-width signaled key, not the mapped one.
+static int
+test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row(void) {
+    int rc = 0;
+    static dsd_state state;
+    static const char json_wide[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"4660\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
+    size_t out_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xD1D2D3D4D5ULL;
+    state.rkey_array_loaded[4660] = 1U;
+    // Decoy at the 8-bit-truncated index (4660 & 0xFF == 0x34).
+    state.rkey_array[0x34] = 0xE1E2E3E4E5ULL;
+    state.rkey_array_loaded[0x34] = 1U;
+    // A real row for the talkgroup this record signals ("to":"123" == SDRTRUNK_MAP_TG). It would
+    // win if the width guard were missing, since the map lookup does not consult signaled_kid.
+    state.rkey_array[SDRTRUNK_MAP_MAPPED_KID] = 0xF1F2F3F4F5ULL;
+    state.rkey_array_loaded[SDRTRUNK_MAP_MAPPED_KID] = 1U;
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk dmr oversized key id ignores map row", json_wide, &state, out,
+                                          sizeof out, &out_len);
+    rc |= expect_u64("sdrtrunk dmr oversized key id row refused, full width kept", state.R, 0xD1D2D3D4D5ULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_sdrtrunk_json_p25p2_encryption_metadata_updates_event(void) {
     int rc = 0;
@@ -2491,6 +2535,7 @@ main(void) {
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width();
+    rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();
