@@ -160,6 +160,39 @@ keyring_kid_material(const dsd_state* state, int key_id, unsigned long long* out
     return (rkey != 0ULL || aes_loaded != 0) ? 1 : 0;
 }
 
+// All of the first `count` AES segment cells non-zero. Distinct from
+// keyring_aes_segments_complete(), which accepts a cell that is rkey_array_loaded but zero-valued:
+// such a cell activates as A_i == 0, so accepting it here would let the map install a key the
+// decryptability gate then rejects -- exactly the divergence this predicate exists to prevent.
+static int
+keyring_aes_segments_nonzero(const dsd_state* state, int key_id, unsigned int count) {
+    if (state == NULL || count > 4U) {
+        return 0;
+    }
+    for (unsigned int i = 0; i < count; i++) {
+        if (keyring_rkey_value(state, key_id + k_aes_segment_offsets[i]) == 0ULL) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int
+keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_material_need need) {
+    if (state == NULL) {
+        return 0;
+    }
+    switch (need) {
+        case DSD_KEY_NEED_SCALAR: return keyring_rkey_value(state, key_id) != 0ULL ? 1 : 0;
+        case DSD_KEY_NEED_AES_2: return keyring_aes_segments_nonzero(state, key_id, 2U);
+        case DSD_KEY_NEED_AES_3: return keyring_aes_segments_nonzero(state, key_id, 3U);
+        case DSD_KEY_NEED_AES_4: return keyring_aes_segments_nonzero(state, key_id, 4U);
+        case DSD_KEY_NEED_QUARTET: return keyring_kid_kirisun_complete(state, key_id);
+        case DSD_KEY_NEED_NONE: break;
+    }
+    return 0;
+}
+
 uint8_t
 keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, uint8_t signaled_kid,
                           int* out_mapped) {

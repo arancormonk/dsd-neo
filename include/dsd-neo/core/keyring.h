@@ -14,6 +14,7 @@
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_KEYRING_H_H
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
@@ -71,6 +72,22 @@ int keyring_kid_material(const dsd_state* state, int key_id, unsigned long long*
  * @return 1 when the key ID would activate as a complete Kirisun key.
  */
 int keyring_kid_kirisun_complete(const dsd_state* state, int key_id);
+
+/**
+ * @brief Whether an imported key ID holds the material @p need calls for.
+ *
+ * The gate `keyring_dmr_effective_kid()` applies to a --dmr-tg-key-csv row. "Has any bytes at
+ * all" is the wrong question twice over: a scalar cannot serve an AES ALG, and the flat
+ * rkey_array aliases segment N of key K onto the scalar of key K + offset, so one unrelated
+ * import can make an empty key ID look populated. Requiring the ALG's actual material answers
+ * both -- an accidental match then needs as many colliding keys as the ALG needs segments.
+ *
+ * Tests non-zero segment cells rather than rkey_array_loaded, because a loaded-but-zero cell
+ * activates as A_i == 0. Classification must predict activation.
+ *
+ * @return 1 when @p key_id satisfies @p need; 0 otherwise, including for DSD_KEY_NEED_NONE.
+ */
+int keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_material_need need);
 
 /**
  * Key ID a DMR slot should decrypt with (--dmr-tg-key-csv).

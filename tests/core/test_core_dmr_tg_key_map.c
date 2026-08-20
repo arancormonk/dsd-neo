@@ -589,6 +589,61 @@ test_kirisun_kid_predicate_matches_activation(void) {
     return rc;
 }
 
+// The gate that decides whether a --dmr-tg-key-csv row applies must ask what the call's ALG
+// actually needs. Two failures ride on this. Aliasing: AES segments live at
+// kid + {0x000, 0x101, 0x201, 0x301} in one flat rkey_array, so segment N of key K is the same
+// cell as the scalar of key K + offset -- key 0x0C "has AES material" whenever an unrelated key
+// sits at 0x10D. Kind: a scalar is not an AES key, and treating one as the other zeroes the slot
+// key and arms a session-permanent lockout on a call the signaled key would have decrypted.
+static int
+test_kid_satisfies_need(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    // A scalar-only key id.
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    rc |= expect_eq("need-scalar-hit", keyring_kid_satisfies_need(&state, 0x03, DSD_KEY_NEED_SCALAR), 1);
+    rc |= expect_eq("need-aes2-miss", keyring_kid_satisfies_need(&state, 0x03, DSD_KEY_NEED_AES_2), 0);
+    rc |= expect_eq("need-quartet-miss", keyring_kid_satisfies_need(&state, 0x03, DSD_KEY_NEED_QUARTET), 0);
+
+    // The alias: nothing imported at 0x0C, an unrelated scalar parked on its segment-1 cell.
+    state.rkey_array[0x10D] = 0xDEADULL;
+    state.rkey_array_loaded[0x10D] = 1U;
+    rc |= expect_eq("need-alias-scalar", keyring_kid_satisfies_need(&state, 0x0C, DSD_KEY_NEED_SCALAR), 0);
+    rc |= expect_eq("need-alias-aes2", keyring_kid_satisfies_need(&state, 0x0C, DSD_KEY_NEED_AES_2), 0);
+
+    // A real AES-128 import: two contiguous segments.
+    state.rkey_array[0x40] = 0x1111ULL;
+    state.rkey_array_loaded[0x40] = 1U;
+    state.rkey_array[0x141] = 0x2222ULL;
+    state.rkey_array_loaded[0x141] = 1U;
+    rc |= expect_eq("need-aes2-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 1);
+    rc |= expect_eq("need-aes3-miss", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_3), 0);
+    rc |= expect_eq("need-aes4-miss", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4), 0);
+
+    // Extended to AES-256.
+    state.rkey_array[0x241] = 0x3333ULL;
+    state.rkey_array_loaded[0x241] = 1U;
+    state.rkey_array[0x341] = 0x4444ULL;
+    state.rkey_array_loaded[0x341] = 1U;
+    rc |= expect_eq("need-aes3-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_3), 1);
+    rc |= expect_eq("need-aes4-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_4), 1);
+    rc |= expect_eq("need-quartet-hit", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_QUARTET), 1);
+
+    // A loaded-but-zero cell activates as A_i == 0, so it must not satisfy an AES need. This is
+    // the distinction keyring_kid_kirisun_complete()'s comment already draws against
+    // keyring_aes_segments_complete(): classification has to predict activation.
+    state.rkey_array[0x141] = 0ULL;
+    rc |= expect_eq("need-aes2-loaded-zero", keyring_kid_satisfies_need(&state, 0x40, DSD_KEY_NEED_AES_2), 0);
+
+    // NONE never maps, and a NULL state never maps.
+    rc |= expect_eq("need-none", keyring_kid_satisfies_need(&state, 0x03, DSD_KEY_NEED_NONE), 0);
+    rc |= expect_eq("need-null-state", keyring_kid_satisfies_need(NULL, 0x03, DSD_KEY_NEED_SCALAR), 0);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -603,6 +658,7 @@ main(void) {
     rc |= test_non_dmr_call_snapshot_is_rejected();
     rc |= test_effective_kid_resolution();
     rc |= test_kid_material_reports_without_activating();
+    rc |= test_kid_satisfies_need();
     rc |= test_mapped_kid_without_material_falls_back();
     // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
