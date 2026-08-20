@@ -2060,7 +2060,11 @@ expect_file_lacks(const char* what, const char* path, const char* needle) {
 
 static int
 write_text_file(const char* path, const char* text, size_t len) {
-    FILE* fp = fopen(path, "wb");
+    /* dsd_fopen_private(), not fopen(): a bare fopen() is umask-dependent and
+     * CodeQL flags it as cpp/world-writable-file-creation (0666). The same alert
+     * was already fixed once on this branch; dsd-neo.no-raw-file-create-in-tests
+     * in semgrep/dsd-neo.yml now catches this variant locally. */
+    FILE* fp = dsd_fopen_private(path, "wb");
     if (fp == NULL) {
         return -1;
     }

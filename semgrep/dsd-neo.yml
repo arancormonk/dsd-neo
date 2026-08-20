@@ -254,6 +254,39 @@ rules:
       - pattern: mkstemp(...)
       - pattern: mkstemps(...)
 
+  # Tests sit outside dsd-neo.no-raw-file-open above (its paths.include omits
+  # /tests/**), and mostly for good reason: they legitimately read fixtures with
+  # fopen(..., "rb") and use tmpfile()/mkstemp(), none of which can produce a
+  # world-writable file. Adding /tests/** to that rule wholesale flags 115 such
+  # benign sites across 55 files. What tests must NOT do is CREATE a file with a
+  # umask-dependent mode - CodeQL reports that as cpp/world-writable-file-creation,
+  # and it is the one variant of this rule that has actually reached a PR here
+  # (twice: a fixture seeder, then a refresh-test helper), because no local gate
+  # covered it.
+  - id: dsd-neo.no-raw-file-create-in-tests
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Create files in tests with dsd_fopen_private() (0600) or dsd_test_mkstemp(), never a raw
+      write-mode open: fopen(path, "w") honours the umask and can leave a 0666 world-writable
+      file, which CodeQL reports as cpp/world-writable-file-creation. Read-mode opens are fine.
+    paths:
+      include:
+        - /tests/**
+      exclude:
+        - /tests/**/third_party/**
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: fopen($PATH, $MODE)
+              - pattern: freopen($PATH, $MODE, $STREAM)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: '^"[wa]'
+      - pattern: creat(...)
+      - pattern: mktemp(...)
+      - pattern: tmpnam(...)
+
   - id: dsd-neo.no-sizeof-function-parameter-in-dsd-snprintf
     languages: [c, cpp]
     severity: ERROR
