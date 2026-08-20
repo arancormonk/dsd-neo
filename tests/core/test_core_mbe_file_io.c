@@ -1036,22 +1036,26 @@ test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream(void) {
 // when that guard failed, the PREVIOUS token's ctx->ks_available simply stayed in force, so the
 // decoder kept reporting a record decryptable using a keystream it no longer had grounds to trust.
 //
-// A record whose key id is genuinely unseeded self-corrects before any "hex" token can observe a
-// stale value: sdrtrunk_json_handle_mi() unconditionally activates the signaled id *and* rebuilds
-// ctx->ks_available in the same call, so state->R and ctx->ks_available always land together --
-// there is no window between them for a later token to see. The guard's failure survives to a
-// later "hex" token only when state->R stays valid (a properly imported key) while
-// state->payload_mi alone goes to zero: an all-zero "encryption_mi" is exactly that -- a real,
-// importable key with no usable IV. handle_mi()'s own build succeeds anyway (RC4 does not reject a
-// zero IV), latching ctx->ks_available=1 from a keystream built with a bogus, all-zero IV; the
-// very next token's guard check then sees payload_mi==0 and, pre-fix, left that latch alone
-// instead of reporting "no keystream." Both records below signal the SAME key id (3, imported by
-// seed_sdrtrunk_dmr_replay_keys()) so state->R is genuinely valid throughout -- the only thing the
-// second record lacks is its own IV.
+// For a genuinely unseeded key id, self-correction depends on "encryption_mi" landing before
+// "hex" -- true of every fixture in this file: sdrtrunk_json_handle_mi() unconditionally
+// activates the signaled id *and* rebuilds ctx->ks_available in the same call, so state->R and
+// ctx->ks_available land back in sync before "hex" is reached. (A "hex" token that arrives before
+// its own "encryption_mi" does not get this protection -- the guard's success branch, which this
+// fix does not touch, still falls back to whatever state->R currently holds, so a still-active
+// previous key can decode it under a signaled-but-unseeded id; that is a separate, unaddressed
+// leak.) The guard's failure survives to a later "hex" token only when state->R stays valid (a
+// properly imported key) while state->payload_mi alone goes to zero: an all-zero "encryption_mi"
+// is exactly that -- a real, importable key with no usable IV. handle_mi()'s own build succeeds
+// anyway (RC4 does not reject a zero IV), latching ctx->ks_available=1 from a keystream built with
+// a bogus, all-zero IV; the very next token's guard check then sees payload_mi==0 and, pre-fix,
+// left that latch alone instead of reporting "no keystream." Both records below signal the SAME
+// key id (3, imported by seed_sdrtrunk_dmr_replay_keys()) so state->R is genuinely valid
+// throughout -- the only thing the second record lacks is its own IV.
 //
-// Three all-zero AMBE frames make the decoded body purely a function of the keystream window each
-// frame consumed (see build_sdrtrunk_map_json()'s comment); here that means a blocked record must
-// write nothing at all rather than merely differing bytes.
+// Each record below carries a single all-zero AMBE frame (build_sdrtrunk_map_json()'s comment
+// covers the three-frame version of this same property), so the decoded body is purely a function
+// of the keystream window that one frame consumes; a blocked record must therefore write nothing
+// at all rather than merely differing bytes.
 static int
 test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv(void) {
     int rc = 0;
@@ -1105,6 +1109,47 @@ test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv(void) {
         expect_true("sdrtrunk forced rc4 record with no iv writes nothing after a keyed record", both_len == keyed_len);
     rc |= expect_u8_bits("sdrtrunk forced rc4 keyed record unaffected by the trailing no-iv record", both, keyed,
                          both_len < keyed_len ? both_len : keyed_len);
+    return rc;
+}
+
+// state->M forces ctx->alg_id to its own literal value for every state->M in 0x21..0x25
+// (sdrtrunk_json_apply_forced_algid()), but sdrtrunk_build_voice_keystream_bytes() only
+// recognizes 0xAA/0x21 (RC4), 0x81 (DES), and 0x84/0x89 (AES) -- none of which match DMR's own
+// forced-DES/AES numbering (0x22 DES, 0x24 AES-128, 0x25 AES-256) or the unused 0x23.
+// sdrtrunk_json_handle_mi() shares that same builder chain, so no path in this file can ever build
+// a keystream for a forced 0x22..0x25 replay today, regardless of whether the signaled key id and
+// MI are both valid. That is what makes the ctx->alg_id == 0x21 scope on the fix above safe rather
+// than merely convenient: an unscoped else would be a no-op for these values today, since
+// ctx->ks_available is already permanently 0 for them. This pins that today-truth, so it fails the
+// day sdrtrunk_build_voice_keystream_bytes() (or the 0x21 branches themselves) is widened to reach
+// these algids without the else being widened to match. The key id (3) and MI are the same valid,
+// imported ones the RC4 tests above use -- not an unkeyed record -- so a regression that wrongly
+// routed 0x22..0x25 through the RC4 path (rather than merely failing to build) would also be
+// caught here.
+static int
+test_sdrtrunk_forced_des_and_aes_never_report_a_keystream(void) {
+    int rc = 0;
+    static const int forced_algids[] = {0x22, 0x23, 0x24, 0x25};
+    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
+                               "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
+                               "\"encryption_mi\":\"001122334455667788\",\"to\":\"4567\","
+                               "\"from\":\"456\",\"time\":\"1700000000000\","
+                               "\"hex\":\"000000000000000000\"}";
+
+    for (size_t i = 0; i < sizeof forced_algids / sizeof forced_algids[0]; i++) {
+        static dsd_state state;
+        unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
+        size_t out_len = 0;
+        char tag[96];
+
+        DSD_MEMSET(&state, 0, sizeof state);
+        seed_sdrtrunk_dmr_replay_keys(&state);
+        state.M = forced_algids[i];
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk forced 0x%02x writes no keystream", forced_algids[i]);
+        rc |= capture_sdrtrunk_replay_records(tag, json, &state, out, sizeof out, &out_len);
+        dsd_state_ext_free_all(&state);
+        rc |= expect_true(tag, out_len == 0U);
+    }
     return rc;
 }
 
@@ -2441,6 +2486,7 @@ main(void) {
     rc |= test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
     rc |= test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv();
+    rc |= test_sdrtrunk_forced_des_and_aes_never_report_a_keystream();
     rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
