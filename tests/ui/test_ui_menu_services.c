@@ -910,6 +910,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     state.dmr_tg_key_map_kid[0] = 0x7B;
     state.dmr_tg_key_map_count = 1;
     state.dmr_tg_key_note_epoch[0] = 42U;
+    state.dmr_tg_key_skip_epoch[0] = 43U;
     rc |= expect_int("keys clear ok", svc_clear_keys(&opts, &state), 0);
     rc |= expect_str("keys clear forgets the path", opts.key_in_file, "");
     rc |= expect_int("keys clear empties the keyring", (int)state.rkey_array[7], 0);
@@ -919,6 +920,7 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     // The TG->key ID override map indexes into the keyring, so it goes with it.
     rc |= expect_int("keys clear empties the tg key map", state.dmr_tg_key_map_count, 0);
     rc |= expect_int("keys clear drops the tg key notice latch", (int)state.dmr_tg_key_note_epoch[0], 0);
+    rc |= expect_int("keys clear drops the tg key skip latch", (int)state.dmr_tg_key_skip_epoch[0], 0);
 
     g_chan_import_result = -1;
     g_key_import_result = -1;

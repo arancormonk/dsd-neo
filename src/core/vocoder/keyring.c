@@ -117,6 +117,7 @@ keyring_dmr_tg_map_reset(dsd_state* state) {
     DSD_MEMSET(state->dmr_tg_key_map_kid, 0, sizeof(state->dmr_tg_key_map_kid));
     state->dmr_tg_key_map_count = 0;
     state->dmr_tg_key_note_epoch[0] = state->dmr_tg_key_note_epoch[1] = 0U;
+    state->dmr_tg_key_skip_epoch[0] = state->dmr_tg_key_skip_epoch[1] = 0U;
 }
 
 int
@@ -251,39 +252,56 @@ keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, 
     return keyring_dmr_effective_kid(state, (uint32_t)call->ota_target_id, 1, need, signaled_kid, out_mapped);
 }
 
-// One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit
-// for a non-zero epoch, so epoch 0 is the "never announced" sentinel and needs no valid flag.
-// Shared by both notice variants below so the latch itself -- the thing that keeps either one
-// from flooding the console (and corrupting the ncurses display) once per voice frame -- has a
-// single implementation instead of two copies that could drift.
+// One notice per call epoch, not one per voice frame. dsd_call_state_get() only reports a hit for
+// a non-zero epoch, so epoch 0 is the "never announced" sentinel and needs no valid flag. The
+// caller passes which latch to stamp: the applied and skipped notices report opposite outcomes,
+// so sharing one let whichever fired first silence the other for the rest of the epoch.
 static int
-keyring_dmr_tg_map_note_should_print(dsd_state* state, int slot, uint64_t epoch) {
-    if (state->dmr_tg_key_note_epoch[slot] == epoch) {
+keyring_dmr_tg_map_note_should_print(uint64_t* latch, uint64_t epoch) {
+    if (*latch == epoch) {
         return 0;
     }
-    state->dmr_tg_key_note_epoch[slot] = epoch;
+    *latch = epoch;
     return 1;
 }
 
 static void
 keyring_dmr_tg_map_note(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t kid) {
-    if (!keyring_dmr_tg_map_note_should_print(state, slot, epoch)) {
+    if (!keyring_dmr_tg_map_note_should_print(&state->dmr_tg_key_note_epoch[slot], epoch)) {
         return;
     }
     DSD_FPRINTF(stderr, "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X;", slot + 1, tg, kid);
 }
 
+static const char*
+keyring_need_label(dsd_key_material_need need) {
+    switch (need) {
+        case DSD_KEY_NEED_SCALAR: return "scalar";
+        case DSD_KEY_NEED_AES_2: return "16-byte AES";
+        case DSD_KEY_NEED_AES_3: return "24-byte AES";
+        case DSD_KEY_NEED_AES_4: return "32-byte AES";
+        case DSD_KEY_NEED_QUARTET: return "Kirisun quartet";
+        case DSD_KEY_NEED_NONE: break;
+    }
+    return NULL;
+}
+
 // Announced when a row matched but resolved to nothing, so a CSV typo is visible rather than
-// looking like the map simply did not cover the talkgroup.
+// looking like the map simply did not cover the talkgroup. Silent for DSD_KEY_NEED_NONE: there the
+// row was never eligible because the ALG selects no keyring material at all, so reporting a
+// missing key would point the operator at the wrong thing.
 static void
 keyring_dmr_tg_map_note_skipped(dsd_state* state, int slot, uint64_t epoch, uint32_t tg, uint8_t mapped_kid,
-                                uint8_t signaled_kid) {
-    if (!keyring_dmr_tg_map_note_should_print(state, slot, epoch)) {
+                                dsd_key_material_need need, uint8_t signaled_kid) {
+    const char* label = keyring_need_label(need);
+    if (label == NULL) {
         return;
     }
-    DSD_FPRINTF(stderr,
-                "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X has no imported key; using signaled Key ID: %02X;",
-                slot + 1, tg, mapped_kid, signaled_kid);
+    if (!keyring_dmr_tg_map_note_should_print(&state->dmr_tg_key_skip_epoch[slot], epoch)) {
+        return;
+    }
+    DSD_FPRINTF(stderr, "\n Slot %d DMR TG Key Map: TG %u -> Key ID: %02X has no %s key; using signaled Key ID: %02X;",
+                slot + 1, tg, mapped_kid, label, signaled_kid);
 }
 
 uint8_t
@@ -308,7 +326,8 @@ keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapsho
     uint8_t row_kid = 0U;
     if (keyring_dmr_tg_map_call_is_mappable(call) && state->keyloader == 1
         && keyring_dmr_tg_map_kid(state, (uint32_t)call->ota_target_id, &row_kid)) {
-        keyring_dmr_tg_map_note_skipped(state, slot, call->epoch, (uint32_t)call->ota_target_id, row_kid, signaled_kid);
+        keyring_dmr_tg_map_note_skipped(state, slot, call->epoch, (uint32_t)call->ota_target_id, row_kid, need,
+                                        signaled_kid);
     }
     return signaled_kid;
 }

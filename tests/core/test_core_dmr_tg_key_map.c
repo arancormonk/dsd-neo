@@ -336,7 +336,7 @@ test_notice_is_emitted_once_per_epoch(void) {
     // 0x7B is mapped but never imported -- the skipped-notice path.
     map_one(&skipped_state, 123U, 0x7B);
     observe_group_call(&skipped_state, 0U, 123U);
-    const int skipped_hits = capture_notice_hits(&skipped_state, 0, "has no imported key");
+    const int skipped_hits = capture_notice_hits(&skipped_state, 0, "has no scalar key");
     dsd_state_ext_free_all(&skipped_state);
     if (skipped_hits < 0) {
         printf("note-capture: could not set up skipped-notice capture\n");
@@ -684,6 +684,40 @@ test_kid_satisfies_need(void) {
     return rc;
 }
 
+// The two notices report opposite outcomes and used to share one latch, stamped as a side effect
+// of the query -- so whichever situation held on an epoch's first mappable frame permanently
+// silenced the other for the rest of the call. A call that opens on a mapped TG whose key is not
+// imported prints "skipped"; if the operator then imports that key mid-call the decoder starts
+// using it, and the "applied" notice has to be able to say so.
+static int
+test_both_notices_can_print_in_one_epoch(void) {
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    map_one(&state, 123U, 0x7B); /* 0x7B has nothing imported yet */
+    observe_group_call(&state, 0U, 123U);
+
+    const int skipped_hits = capture_notice_hits(&state, 0, "has no");
+    rc |= expect_eq("skip-notice-printed-once", skipped_hits, 1);
+
+    // Operator imports the mapped key mid-call; the epoch does not change.
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+
+    const int applied_hits = capture_notice_hits(&state, 0, "-> Key ID: 7B;");
+    rc |= expect_eq("applied-notice-printed-once", applied_hits, 1);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -700,6 +734,7 @@ main(void) {
     rc |= test_kid_material_reports_without_activating();
     rc |= test_kid_satisfies_need();
     rc |= test_mapped_kid_without_material_falls_back();
+    rc |= test_both_notices_can_print_in_one_epoch();
     // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {

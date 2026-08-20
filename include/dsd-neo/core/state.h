@@ -441,6 +441,10 @@ struct dsd_state {
     // Per-slot applied-notice latch: one notice per call epoch. Epoch 0 is never a live call
     // (dsd_call_state_get only reports a hit for a non-zero epoch), so it doubles as "never noted".
     uint64_t dmr_tg_key_note_epoch[2];
+    /* Own latch, not shared with dmr_tg_key_note_epoch: the applied and skipped notices report
+       opposite outcomes, so one latch let whichever fired first silence the other for the whole
+       epoch -- even after the situation changed (a key imported mid-call, for instance). */
+    uint64_t dmr_tg_key_skip_epoch[2];
     // Temporary audio buffers
     float audio_out_temp_buf[160];
     float* audio_out_temp_buf_p;
