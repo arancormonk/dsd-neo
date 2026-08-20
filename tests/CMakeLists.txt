@@ -1462,6 +1462,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
+    ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
 )
 target_include_directories(
     dsd-neo_test_ui_menu_services
@@ -6530,7 +6531,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_block_crypto_key_map
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(
     dsd-neo_test_dmr_block_crypto_key_map

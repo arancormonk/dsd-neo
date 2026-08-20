@@ -1599,16 +1599,16 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
             int mapped = 0;
             // Gated the same way the file's other two resolutions are: state->M is a
             // --dmr-force-algid value, not a protocol, so without the DMR test a P25 replay run
-            // with that flag would let a colliding DMR map row key its audio. The <= 0xFF test
-            // keeps a 16-bit P25 KID from being compared and resolved as its low byte. The
+            // with that flag would let a colliding DMR map row key its audio. The resolver's own
+            // width guard keeps a 16-bit P25 KID from being resolved as its low byte. The
             // target-indexed fallback below keeps its original gating either way.
-            if (DSD_SYNC_IS_DMR(state->synctype) && ctx->key_id <= 0xFFU) {
-                const uint8_t kid =
+            if (DSD_SYNC_IS_DMR(state->synctype)) {
+                const int kid =
                     keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                              dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, &mapped);
+                                              dsd_dmr_alg_key_need((int)ctx->alg_id), (int)ctx->key_id, &mapped);
                 if (mapped) {
-                    keyring_activate_slot_with_kid(state, 0, (int)kid);
-                    effective_kid = kid;
+                    keyring_activate_slot_with_kid(state, 0, kid);
+                    effective_kid = (uint16_t)kid;
                 }
             }
             if (!mapped && ctx->target_id != 0U && ctx->target_id < 0x1FFFFU
@@ -1895,18 +1895,11 @@ sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtr
         return;
     }
     int mapped = 0;
-    uint8_t kid = 0U;
-    // Same <= 0xFF width guard as this file's other two resolutions and dmr_block_crypto.c /
-    // dmr_flco.c / dmr_pi.c: ctx->key_id is a uint16_t and DMR signals a byte-wide key id, so a
-    // wider value cannot be the resolver's signaled_kid without truncating first -- truncating
-    // would let this site resolve a match the truncation manufactured rather than one the record
-    // actually signaled. Leaving `mapped` at 0 when the guard fails takes the same "row no longer
-    // applies" branch below as an ordinary unmapped token, so the undo path still fires and rekeys
-    // from the full-width ctx->key_id, not this function's narrowed one.
-    if (ctx->key_id <= 0xFFU) {
-        kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                        dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, &mapped);
-    }
+    // A 16-bit ctx->key_id comes back unmapped from the resolver's width guard and takes the same
+    // "row no longer applies" branch below as an ordinary unmapped token, so the undo path still
+    // rekeys from the full-width ctx->key_id.
+    const int kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                              dsd_dmr_alg_key_need((int)ctx->alg_id), (int)ctx->key_id, &mapped);
     if (!mapped) {
         if (ctx->map_applied != 0U) {
             // A row applied on an earlier token no longer does. Undo it rather than leaving a key
@@ -1920,8 +1913,8 @@ sdrtrunk_json_apply_dmr_tg_key_map(const dsd_opts* opts, dsd_state* state, sdrtr
         return;
     }
     ctx->map_applied = 1U;
-    ctx->map_kid = kid;
-    sdrtrunk_json_rekey_slot0(opts, state, ctx, kid);
+    ctx->map_kid = (uint16_t)kid;
+    sdrtrunk_json_rekey_slot0(opts, state, ctx, (uint16_t)kid);
 }
 
 static void
@@ -1982,20 +1975,15 @@ sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* toke
     state->payload_mi = iv_hex;
     state->payload_keyid = ctx->key_id; /* OTA truth, never the override */
     // ctx->key_id is a uint16_t and P25 signals a full 16-bit KID (this handler also serves
-    // P25 replay): keep the full width by default and narrow only inside the DMR branch,
-    // where the resolver's uint8_t key id matches DMR's byte-wide key id space. Narrowing
-    // unconditionally would activate the wrong rkey_array index for any P25 key id above
-    // 0xFF -- this file's own P25 fixtures use 4660 and 8738. The <= 0xFF test is the same guard
-    // dsd_mbe.c applies for the same reason: a signaled id that cannot round-trip through the
-    // resolver's uint8_t keeps its full width rather than activating rkey_array[id & 0xFF]. DMR
-    // signals a byte-wide KEY ID so only a malformed record reaches it, and this keeps such a
-    // record behaving exactly as it did before the map existed.
-    // keyring_dmr_effective_kid() is a no-op when the keyring is not loaded, so it is safe to
-    // resolve unconditionally and use the result for the keystream even when nothing activates.
+    // P25 replay; its own fixtures use 4660 and 8738). The resolver hands such an id back at
+    // full width, so a P25 record keeps activating its real rkey_array index, and it is a no-op
+    // when the keyring is not loaded, so the result can feed the keystream even when nothing
+    // activates.
     uint16_t effective_kid = ctx->key_id;
-    if (DSD_SYNC_IS_DMR(state->synctype) && ctx->key_id <= 0xFFU) {
-        effective_kid = keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
-                                                  dsd_dmr_alg_key_need((int)ctx->alg_id), (uint8_t)ctx->key_id, NULL);
+    if (DSD_SYNC_IS_DMR(state->synctype)) {
+        effective_kid =
+            (uint16_t)keyring_dmr_effective_kid(state, ctx->target_id, sdrtrunk_json_target_is_group(ctx),
+                                                dsd_dmr_alg_key_need((int)ctx->alg_id), (int)ctx->key_id, NULL);
     }
     if (state->keyloader == 1) {
         keyring_activate_slot_with_kid(state, 0, (int)effective_kid);

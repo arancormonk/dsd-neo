@@ -6,8 +6,8 @@
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 
-#include "../../../src/protocol/dmr/dmr_block_crypto.h"
-#include "dsd-neo/core/safe_api.h"
+#include <dsd-neo/core/safe_api.h>
+#include "dmr_block_crypto.h"
 #include "dsd-neo/core/state_fwd.h"
 
 static int

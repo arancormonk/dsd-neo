@@ -1927,6 +1927,8 @@ typedef struct {
     int decoy_other_slot;      /* seed decrypting material on the companion slot -- see below */
     int row_material_mismatch; /* mapped kid holds AES segments but no scalar, while the ALG is
                                   RC4 and the SLOT already carries a working RC4 key */
+    int forced_algid;          /* non-zero: no OTA ALG ID on the slot (payload_algid stays 0, as a
+                                  trunk tune leaves it); --dmr-force-algid 0x21 supplies it */
 } mapped_tg_fixture;
 
 // An encrypted group call on TG 123 whose signaled key id has nothing imported behind it and
@@ -1938,11 +1940,15 @@ seed_mapped_tg_state(dsd_state* state, const mapped_tg_fixture* fx) {
 
     state->currentslot = fx->slot;
     state->keyloader = 1;
+    const int ota_algid = fx->forced_algid ? 0 : (fx->kirisun ? 0x36 : 0x21); /* RC4 keys off the scalar */
+    if (fx->forced_algid) {
+        state->M = 0x21;
+    }
     if (fx->slot == 0U) {
-        state->payload_algid = fx->kirisun ? 0x36 : 0x21; /* RC4 keys off the scalar */
+        state->payload_algid = ota_algid;
         state->payload_keyid = MAPPED_TG_SIGNALED_KID;
     } else {
-        state->payload_algidR = fx->kirisun ? 0x36 : 0x21;
+        state->payload_algidR = ota_algid;
         state->payload_keyidR = MAPPED_TG_SIGNALED_KID;
     }
 
@@ -2024,6 +2030,14 @@ assert_mapped_tg_classification(const mapped_tg_fixture* fx, dsd_call_crypto_sta
     assert(call.audio_permitted == want_audio_permitted);
     /* The published key id is still the OTA one, never the override. */
     assert(call.kid == MAPPED_TG_SIGNALED_KID);
+    if (fx->forced_algid) {
+        /* Classification borrowed the forced ALG without installing it: the slot and the
+         * published ALG ID are still the OTA value (none). Installing it is the voice path's job
+         * (dsd_dmr_apply_forced_algid), and only there is the 0xFF key-id sentinel ever written. */
+        assert((fx->slot == 0U ? state.payload_algid : state.payload_algidR) == 0);
+        assert((fx->slot == 0U ? state.payload_keyid : state.payload_keyidR) == MAPPED_TG_SIGNALED_KID);
+        assert(call.algid == 0U);
+    }
     dsd_state_ext_free_all(&state);
 }
 
@@ -2061,6 +2075,32 @@ test_mapped_tg_classifies_decryptable(void) {
         DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
     assert_mapped_tg_classification(
         &(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .map_tg = 456U, .kirisun = 1, .decoy_other_slot = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+}
+
+// Trunk tuning zeroes payload_algid on every voice-channel tune and the forced ALG ID is only
+// installed on the first voice frame, so on a --dmr-force-algid system every trunked call's first
+// LC arrives with no ALG ID. Classifying that LC as "ALG unknown" judged it against whatever key
+// the slot last carried -- R is 0 on a fresh session -- instead of against the key the forced ALG
+// and the map row will actually select, so the very call the map exists to decrypt published
+// ENCRYPTED and, under --enc-lockout, could be locked out before its first voice frame. The LC
+// path now classifies under dsd_dmr_classify_algid(), the read-only twin of the voice-path
+// fallback.
+static void
+test_forced_algid_lc_classifies_against_the_map(void) {
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .forced_algid = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    assert_mapped_tg_classification(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .forced_algid = 1},
+                                    DSD_CALL_CRYPTO_DECRYPTABLE, 1U);
+    // Negative control: same fixture, the row names another talkgroup, and the companion slot
+    // carries a decoy key -- the forced ALG alone must not make this decryptable.
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){
+            .slot = 0U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1, .forced_algid = 1},
+        DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
+    assert_mapped_tg_classification(
+        &(mapped_tg_fixture){
+            .slot = 1U, .install_map_row = 1, .map_tg = 456U, .decoy_other_slot = 1, .forced_algid = 1},
         DSD_CALL_CRYPTO_ENCRYPTED_PENDING, 0U);
 }
 
@@ -2127,6 +2167,16 @@ test_mapped_tg_is_not_locked_out(void) {
     assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .kirisun = 1}) == 0);
     assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .kirisun = 1, .decoy_other_slot = 1}) == 1);
     assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .kirisun = 1}) == 0);
+
+    // No OTA ALG ID yet (first LC after a trunk tune) with --dmr-force-algid: the lockout gate has
+    // to read the forced ALG and the map row the voice path is about to use. Before, this armed --
+    // and the synthesized P_CLEAR dropped the channel before the first voice frame could decrypt.
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .decoy_other_slot = 1, .forced_algid = 1})
+           == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 0U, .install_map_row = 1, .forced_algid = 1}) == 0);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .decoy_other_slot = 1, .forced_algid = 1})
+           == 1);
+    assert(run_mapped_tg_lockout_probe(&(mapped_tg_fixture){.slot = 1U, .install_map_row = 1, .forced_algid = 1}) == 0);
 }
 
 // The failure this whole change exists to prevent. TG 123 runs ALG 0x21 (RC4, which keys off the
@@ -2518,6 +2568,7 @@ main(void) {
     test_terminator_privacy_bit_does_not_lock_out();
     test_crc_failed_header_enc_requires_repeat_for_lockout();
     test_mapped_tg_classifies_decryptable();
+    test_forced_algid_lc_classifies_against_the_map();
     test_mapped_tg_is_not_locked_out();
     test_row_with_wrong_material_is_not_applied();
     test_completed_slco_tier3_site_parameters_update_state();

@@ -146,12 +146,16 @@ main(void) {
     state.aes_key_loaded[0] = 0;
 
     // AES-128 (0x24) keys off aes_loaded, not the scalar.
-    rc |= expect_eq("kid-aes-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 1, 0), 1);
-    rc |= expect_eq("kid-aes-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, 0ULL, 0, 1), 0);
+    rc |= expect_eq("kid-aes-supplied",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 1, 0}), 1);
+    rc |= expect_eq("kid-aes-absent",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x24, &(dsd_dmr_key_material){0ULL, 0, 1}), 0);
 
     // RC4 (0x21) keys off the scalar, not aes_loaded.
-    rc |= expect_eq("kid-rc4-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0x1234ULL, 0, 0), 1);
-    rc |= expect_eq("kid-rc4-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, 0ULL, 1, 1), 0);
+    rc |= expect_eq("kid-rc4-supplied",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0x1234ULL, 0, 0}), 1);
+    rc |= expect_eq("kid-rc4-absent",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x21, &(dsd_dmr_key_material){0ULL, 1, 1}), 0);
 
     // The slot wrapper still reads the slot's own activated flag.
     state.aes_key_loaded[0] = 1;
@@ -161,9 +165,12 @@ main(void) {
     // overwrites aes_key_segments[]/A1..A4[] for these ALG IDs too, so a prospective key id does
     // change completeness -- the slot here has no quartet at all, and the supplied verdict wins
     // in both directions.
-    rc |= expect_eq("kid-kirisun-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, 0ULL, 1, 1), 1);
-    rc |= expect_eq("kid-kirisun-absent", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, 0ULL, 1, 0), 0);
-    rc |= expect_eq("kid-kirisun37-supplied", dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, 0ULL, 0, 1), 1);
+    rc |= expect_eq("kid-kirisun-supplied",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 1}), 1);
+    rc |= expect_eq("kid-kirisun-absent",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x36, &(dsd_dmr_key_material){0ULL, 1, 0}), 0);
+    rc |= expect_eq("kid-kirisun37-supplied",
+                    dsd_dmr_voice_kid_can_decrypt(&state, 0, 0x37, &(dsd_dmr_key_material){0ULL, 0, 1}), 1);
     // ...and the slot wrapper keeps reading the slot's own quartet, which is still absent.
     rc |= expect_eq("slot-wrapper-kirisun", dsd_dmr_voice_slot_can_decrypt(&state, 0, 0x36, 0ULL), 0);
 
@@ -201,6 +208,34 @@ main(void) {
     rc |= expect_eq("need-vertex", (int)dsd_dmr_alg_key_need(0x07), (int)DSD_KEY_NEED_NONE);
     rc |= expect_eq("need-scrambler", (int)dsd_dmr_alg_key_need(0x80), (int)DSD_KEY_NEED_NONE);
     rc |= expect_eq("need-unknown", (int)dsd_dmr_alg_key_need(0x7E), (int)DSD_KEY_NEED_NONE);
+
+    // dsd_dmr_classify_algid() is the read-only twin of dsd_dmr_apply_forced_algid(): it reports
+    // the ALG the voice path will decrypt under without installing it, so the LC path can
+    // classify (and gate the lockout) against the same key before any voice frame has run.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    rc |= expect_eq("classify-no-alg-no-force", dsd_dmr_classify_algid(&state, 0, 0x40), 0);
+    state.M = 0x21;
+    rc |= expect_eq("classify-forced-fills-missing-alg", dsd_dmr_classify_algid(&state, 0, 0x40), 0x21);
+    rc |= expect_eq("classify-forced-slot1", dsd_dmr_classify_algid(&state, 1, 0x40), 0x21);
+    // Clear service options never borrow the forced ALG: a clear call is clear.
+    rc |= expect_eq("classify-forced-needs-privacy-bit", dsd_dmr_classify_algid(&state, 0, 0x00), 0);
+    // OTA wins, exactly as it does for the mutating twin (issue #351).
+    state.payload_algid = 0x24;
+    rc |= expect_eq("classify-ota-wins", dsd_dmr_classify_algid(&state, 0, 0x40), 0x24);
+    rc |= expect_eq("classify-ota-slot1-independent", dsd_dmr_classify_algid(&state, 1, 0x40), 0x21);
+    state.payload_algidR = 0x25;
+    rc |= expect_eq("classify-ota-slot1", dsd_dmr_classify_algid(&state, 1, 0x40), 0x25);
+    // state->M values that are not forced ALG IDs (scrambler 0/1, Hytera 0x16) yield nothing.
+    state.payload_algid = 0;
+    state.M = 1;
+    rc |= expect_eq("classify-scrambler-m-is-not-forced", dsd_dmr_classify_algid(&state, 0, 0x40), 0);
+    state.M = 0x16;
+    rc |= expect_eq("classify-hytera-m-is-not-forced", dsd_dmr_classify_algid(&state, 0, 0x40), 0);
+    // Nothing above mutated the slot: classification must never install the fallback itself.
+    rc |= expect_eq("classify-does-not-mutate", state.payload_algid, 0);
+    rc |= expect_eq("classify-does-not-mutate-kid", state.payload_keyid, 0);
+    rc |= expect_eq("classify-bad-slot", dsd_dmr_classify_algid(&state, 2, 0x40), 0);
+    rc |= expect_eq("classify-null", dsd_dmr_classify_algid(NULL, 0, 0x40), 0);
 
     if (rc == 0) {
         printf("CORE_DMR_VOICE_ALG_GATE: OK\n");

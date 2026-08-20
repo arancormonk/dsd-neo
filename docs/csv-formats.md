@@ -290,7 +290,9 @@ Notes:
 - Header row is ignored (required by importer convention).
 - DMR only, and it needs the CSV keyring (`-K`/`-k`) loaded plus a known ALG ID (signaled, or via
   `--dmr-force-algid` on systems that don't signal one). Loading the map without `-K`/`-k` warns and
-  does nothing.
+  does nothing. With `--dmr-force-algid`, the row is already consulted at the call's first voice LC —
+  before the forced ALG ID has been written to the slot — so a mapped talkgroup is never classified
+  or locked out against the key the slot happened to carry from the previous call.
 - Applies everywhere a DMR call's effective key ID is resolved: voice, encrypted data bursts (PDUs),
   crypto classification, the `--enc-lockout` release decision, and sdrtrunk JSON replay input.
 - Group voice calls only. Private (unit-to-unit) calls put the destination radio ID where the

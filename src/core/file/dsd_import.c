@@ -1068,7 +1068,8 @@ vertex_ks_find_or_add_index(vertex_map_tmp_t* tmp, unsigned long long key, const
 }
 
 static int
-vertex_ks_parse_row(const char* path, int row_count, char* line, vertex_map_tmp_t* tmp) {
+vertex_ks_parse_row(const char* path, int row_count, char* line, void* ctx) {
+    vertex_map_tmp_t* tmp = (vertex_map_tmp_t*)ctx;
     char* saveptr = NULL;
     char* key_tok = dsd_strtok_r(line, ",", &saveptr);
     char* ks_tok = dsd_strtok_r(NULL, ",", &saveptr);
@@ -1289,7 +1290,8 @@ typedef struct {
 } dmr_tg_key_tmp_t;
 
 static int
-dmr_tg_key_parse_row(const char* path, int row_count, char* line, dmr_tg_key_tmp_t* tmp) {
+dmr_tg_key_parse_row(const char* path, int row_count, char* line, void* ctx) {
+    dmr_tg_key_tmp_t* tmp = (dmr_tg_key_tmp_t*)ctx;
     char* saveptr = NULL;
     char* tg_tok = dsd_strtok_r(line, ",", &saveptr);
     char* kid_tok = dsd_strtok_r(NULL, ",", &saveptr);
@@ -1347,24 +1349,24 @@ dmr_tg_key_apply_to_state(dsd_state* state, const dmr_tg_key_tmp_t* tmp, const c
     LOG_INFO("NOTICE: Loaded %d DMR talkgroup->key ID mappings from '%s'.\n", tmp->count, path);
 }
 
-int
-csvDmrTgKeyImport(dsd_state* state, const char* path) {
-    if (state == NULL || path == NULL || path[0] == '\0') {
-        LOG_ERROR("DMR TG key ID map CSV path is missing.\n");
-        return -1;
-    }
-
-    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
-    FILE* fp = csv_open_user_read_file("DMR TG key ID mapping file", path, filename, sizeof filename);
+// Shared skeleton of the mapping-CSV importers (Vertex KS, DMR TG -> key ID): open, skip the
+// header row, trim, hand each non-empty line to parse_row, and refuse the whole file on the first
+// bad row or on an empty one -- the caller applies only after a clean return, so a malformed file
+// never half-mutates live state. `csv_label` names the file kind in diagnostics ("Vertex KS CSV");
+// `open_label` is what csv_open_user_read_file() reports when the path cannot be opened.
+// Returns 0 with at least one row parsed and `filename` set, -1 otherwise.
+static int
+csv_mapping_import_rows(const char* csv_label, const char* open_label, const char* path, char* filename,
+                        size_t filename_size, int (*parse_row)(const char* path, int row_count, char* line, void* ctx),
+                        void* ctx) {
+    FILE* fp = csv_open_user_read_file(open_label, path, filename, filename_size);
     if (fp == NULL) {
         return -1;
     }
 
-    dmr_tg_key_tmp_t tmp;
-    DSD_MEMSET(&tmp, 0, sizeof tmp);
-
     char buffer[BSIZE];
     int row_count = 0;
+    int rows = 0;
     int rc = 0;
 
     while (fgets(buffer, BSIZE, fp) != NULL) {
@@ -1378,23 +1380,38 @@ csvDmrTgKeyImport(dsd_state* state, const char* path) {
         if (line == NULL || line[0] == '\0') {
             continue;
         }
-        if (dmr_tg_key_parse_row(filename, row_count, line, &tmp) != 0) {
+        if (parse_row(filename, row_count, line, ctx) != 0) {
             rc = -1;
             break;
         }
+        rows++;
     }
 
     fclose(fp);
 
-    if (rc == 0 && tmp.count == 0) {
-        LOG_ERROR("DMR TG key ID map CSV '%s' contains no mappings.\n", filename);
+    if (rc == 0 && rows == 0) {
+        LOG_ERROR("%s '%s' contains no mappings.\n", csv_label, filename);
         rc = -1;
     }
+    return rc;
+}
 
+int
+csvDmrTgKeyImport(dsd_state* state, const char* path) {
+    if (state == NULL || path == NULL || path[0] == '\0') {
+        LOG_ERROR("DMR TG key ID map CSV path is missing.\n");
+        return -1;
+    }
+
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+    dmr_tg_key_tmp_t tmp;
+    DSD_MEMSET(&tmp, 0, sizeof tmp);
+
+    const int rc = csv_mapping_import_rows("DMR TG key ID map CSV", "DMR TG key ID mapping file", path, filename,
+                                           sizeof filename, dmr_tg_key_parse_row, &tmp);
     if (rc == 0) {
         dmr_tg_key_apply_to_state(state, &tmp, filename);
     }
-
     return rc;
 }
 
@@ -1405,47 +1422,15 @@ csvVertexKsImport(dsd_state* state, const char* path) {
         return -1;
     }
 
-    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
-    FILE* fp = csv_open_user_read_file("Vertex KS mapping file", path, filename, sizeof filename);
-    if (fp == NULL) {
-        return -1;
-    }
-
     vertex_map_tmp_t* tmp = (vertex_map_tmp_t*)calloc(1, sizeof(*tmp));
     if (tmp == NULL) {
-        fclose(fp);
         LOG_ERROR("Out of memory while importing Vertex KS map.\n");
         return -1;
     }
 
-    char buffer[BSIZE];
-    int row_count = 0;
-    int rc = 0;
-
-    while (fgets(buffer, BSIZE, fp) != NULL) {
-        row_count++;
-        if (row_count == 1) {
-            continue; //header
-        }
-
-        trim_eol(buffer);
-        char* line = trim_ws(buffer);
-        if (line == NULL || line[0] == '\0') {
-            continue;
-        }
-        if (vertex_ks_parse_row(filename, row_count, line, tmp) != 0) {
-            rc = -1;
-            break;
-        }
-    }
-
-    fclose(fp);
-
-    if (rc == 0 && tmp->count == 0) {
-        LOG_ERROR("Vertex KS CSV '%s' contains no mappings.\n", filename);
-        rc = -1;
-    }
-
+    char filename[CSV_IMPORT_PATH_MAX] = "filename.csv";
+    const int rc = csv_mapping_import_rows("Vertex KS CSV", "Vertex KS mapping file", path, filename, sizeof filename,
+                                           vertex_ks_parse_row, tmp);
     if (rc == 0) {
         vertex_ks_apply_to_state(state, tmp, filename);
     }

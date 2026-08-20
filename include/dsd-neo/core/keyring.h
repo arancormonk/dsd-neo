@@ -40,8 +40,8 @@ void keyring_dmr_tg_map_reset(dsd_state* state);
  * Use this on the voice path, where a call epoch exists to latch the notice against. Other
  * consumers want keyring_dmr_kid_for_call(), which is silent.
  */
-uint8_t keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call,
-                                      dsd_key_material_need need, uint8_t signaled_kid);
+int keyring_dmr_slot_kid_for_call(dsd_state* state, int slot, const dsd_call_snapshot* call, dsd_key_material_need need,
+                                  int signaled_kid);
 
 /**
  * Report the imported key material behind a key ID without activating it.
@@ -103,12 +103,15 @@ int keyring_kid_satisfies_need(const dsd_state* state, int key_id, dsd_key_mater
  * 24-bit space, so an unchecked match keys a unit call off a colliding row.
  *
  * Returns `signaled_kid` unchanged whenever the map does not apply, so callers activate one
- * key ID rather than maintaining a map path and a signaled path in parallel.
+ * key ID rather than maintaining a map path and a signaled path in parallel. That includes a
+ * `signaled_kid` outside 0..0xFF: DMR key IDs are byte-wide, but `payload_keyid` is shared
+ * across protocols and P25 stores a full 16-bit KID there, so the resolver owns the width guard
+ * and every caller passes the value it holds without narrowing it first.
  *
  * @param out_mapped set to 1 when a map row was applied, 0 otherwise (may be NULL)
  */
-uint8_t keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group,
-                                  dsd_key_material_need need, uint8_t signaled_kid, int* out_mapped);
+int keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is_group, dsd_key_material_need need,
+                              int signaled_kid, int* out_mapped);
 
 /** Activate imported key material for a slot using an explicit key ID. */
 void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
@@ -119,8 +122,8 @@ void keyring_activate_slot_with_kid(dsd_state* state, int slot, int key_id);
  * Applies only to an active DMR group-voice call with a usable talkgroup; returns
  * `signaled_kid` for anything else. Announces nothing -- see keyring_dmr_slot_kid_for_call().
  */
-uint8_t keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, dsd_key_material_need need,
-                                 uint8_t signaled_kid, int* out_mapped);
+int keyring_dmr_kid_for_call(const dsd_state* state, const dsd_call_snapshot* call, dsd_key_material_need need,
+                             int signaled_kid, int* out_mapped);
 
 #ifdef __cplusplus
 }

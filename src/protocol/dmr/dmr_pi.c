@@ -237,17 +237,14 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
 
     // Same reason as dmr_flco_publish_crypto(): classify against the key id that will decrypt
     // the call. One snapshot per PI header, not per voice frame.
-    // The <= 0xFF test matches the voice path's: a signaled id that cannot round-trip through the
-    // resolver's uint8_t bypasses the map here too, so this label cannot claim an override the
-    // decrypting path never applies.
     // Same bounded staleness as the voice path: a missed terminator leaves the previous
     // transmission's epoch ACTIVE, so an early PI header can publish against the old talkgroup's
     // row. See keyring_dmr_tg_map_call_is_mappable() for why no freshness signal exists.
     dsd_call_snapshot call;
     int mapped = 0;
     int eff_kid = (int)kid;
-    if (kid <= 0xFFU && dsd_call_state_get(state, slot, &call) > 0) {
-        eff_kid = (int)keyring_dmr_kid_for_call(state, &call, dsd_dmr_alg_key_need((int)algid), (uint8_t)kid, &mapped);
+    if (dsd_call_state_get(state, slot, &call) > 0) {
+        eff_kid = keyring_dmr_kid_for_call(state, &call, dsd_dmr_alg_key_need((int)algid), (int)kid, &mapped);
     }
     // Kirisun 0x36/0x37 decides on the quartet, not on r_key/aes_loaded, and activation overwrites
     // the slot's quartet too -- so the mapped key id has to supply its own verdict here as well.
@@ -256,8 +253,7 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     const dsd_dmr_key_material key = dsd_dmr_slot_key_material(state, (int)slot, eff_kid, mapped);
 
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
-                                    : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, key.r_key, key.aes_loaded,
-                                                                    key.kirisun_complete);
+                                    : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,

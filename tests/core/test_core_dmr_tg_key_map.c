@@ -15,6 +15,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -24,7 +25,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
 #if DSD_PLATFORM_WIN_NATIVE
@@ -75,11 +75,11 @@ activate_via_map(dsd_state* state, int slot) {
     if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0) {
         return 0xFFU;
     }
-    const uint8_t signaled = (uint8_t)((slot == 0) ? state->payload_keyid : state->payload_keyidR);
+    const int signaled = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
     const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
-    const uint8_t kid = keyring_dmr_slot_kid_for_call(state, slot, &call, dsd_dmr_alg_key_need(algid), signaled);
-    keyring_activate_slot_with_kid(state, slot, (int)kid);
-    return kid;
+    const int kid = keyring_dmr_slot_kid_for_call(state, slot, &call, dsd_dmr_alg_key_need(algid), signaled);
+    keyring_activate_slot_with_kid(state, slot, kid);
+    return (uint8_t)kid;
 }
 
 static int
@@ -502,6 +502,17 @@ test_effective_kid_resolution(void) {
     // A zero target never matches: it is the "no talkgroup known" sentinel.
     rc |= expect_eq("eff-zero-target", keyring_dmr_effective_kid(&state, 0U, 1, DSD_KEY_NEED_SCALAR, 0x03, &mapped),
                     0x03);
+
+    // The width guard lives in the resolver, not at its call sites: payload_keyid is shared across
+    // protocols and P25 stores a full 16-bit KID there. A wide signaled id comes back at full width
+    // and unmapped even for a talkgroup whose row would otherwise apply -- narrowing it to its low
+    // byte would have matched (and activated) rkey_array[0x34] for a P25 call on KID 0x1234.
+    rc |= expect_eq("eff-wide-kid-kept",
+                    keyring_dmr_effective_kid(&state, 123U, 1, DSD_KEY_NEED_SCALAR, 0x1234, &mapped), 0x1234);
+    rc |= expect_eq("eff-wide-kid-flag", mapped, 0);
+    rc |= expect_eq("eff-negative-kid-kept",
+                    keyring_dmr_effective_kid(&state, 123U, 1, DSD_KEY_NEED_SCALAR, -1, &mapped), -1);
+    rc |= expect_eq("eff-negative-kid-flag", mapped, 0);
     return rc;
 }
 

@@ -342,16 +342,10 @@ mbe_prepare_frame_state(dsd_state* state, mbe_frame_ctx_t* frame_ctx, dsd_vocode
         const int signaled = (slot == 0) ? state->payload_keyid : state->payload_keyidR;
         // A --dmr-tg-key-csv row for the slot's active talkgroup selects its key id in place of
         // the signaled one. The resolver hands back `signaled` whenever the map does not apply --
-        // including for every non-DMR protocol, whose snapshots are never mappable -- so there is
-        // one activation here rather than two paths to keep in sync. The resolver's key id is a
-        // uint8_t (DMR key ids are byte-wide), but rkey_array indexes to 0x1FFFF and P25 signals a
-        // full 16-bit KID (p25_crypto.c activates it directly) -- narrowing a >0xFF signaled id to
-        // fit the resolver would activate the wrong index every frame, so those bypass it entirely
-        // and keep their own signaled id unchanged.
-        int kid = signaled;
-        if (signaled >= 0 && signaled <= 0xFF) {
-            kid = (int)keyring_dmr_slot_kid_for_call(state, slot, call, dsd_dmr_alg_key_need(algid), (uint8_t)signaled);
-        }
+        // including for every non-DMR protocol, whose snapshots are never mappable, and for a
+        // 16-bit P25 KID, which it refuses by width -- so there is one activation here rather
+        // than two paths to keep in sync.
+        const int kid = keyring_dmr_slot_kid_for_call(state, slot, call, dsd_dmr_alg_key_need(algid), signaled);
         keyring_activate_slot_with_kid(state, slot, kid);
     }
 

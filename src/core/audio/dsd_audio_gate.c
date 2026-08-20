@@ -218,18 +218,17 @@ dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
 }
 
 int
-dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key, int aes_loaded,
-                              int kirisun_complete) {
-    if (!state || !dsd_dmr_slot_valid(slot)) {
+dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, const dsd_dmr_key_material* key) {
+    if (!state || !key || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
     if (algid == 0x36 || algid == 0x37) {
         // Supplied, not read from the slot: keyring_activate_slot_with_kid() overwrites
         // aes_key_segments[] and A1..A4[] for these ALG IDs too, so a prospective key id does
         // change Kirisun completeness and the caller has to say which key it means.
-        return kirisun_complete ? 1 : 0;
+        return key->kirisun_complete ? 1 : 0;
     }
-    return dsd_dmr_voice_alg_can_decrypt(algid, r_key, aes_loaded);
+    return dsd_dmr_voice_alg_can_decrypt(algid, key->r_key, key->aes_loaded);
 }
 
 dsd_dmr_key_material
@@ -254,13 +253,40 @@ dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsi
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
-    return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, r_key, state->aes_key_loaded[slot],
-                                         dsd_dmr_kirisun_slot_key_complete(state, slot));
+    const dsd_dmr_key_material key = {r_key, state->aes_key_loaded[slot],
+                                      dsd_dmr_kirisun_slot_key_complete(state, slot)};
+    return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
+}
+
+// The --dmr-force-algid value, or 0 when none is in force. state->M doubles as the scrambler
+// key for 0/1 and as the 0x16 Hytera marker, neither of which is a forced ALG ID.
+static int
+dsd_dmr_forced_algid(const dsd_state* state) {
+    if (state->M <= 1 || state->M == 0x16) {
+        return 0;
+    }
+    return state->M & 0xFF;
+}
+
+int
+dsd_dmr_classify_algid(const dsd_state* state, int slot, int so) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    if (algid != 0 || (so & 0x40) == 0) {
+        return algid;
+    }
+    return dsd_dmr_forced_algid(state);
 }
 
 int
 dsd_dmr_apply_forced_algid(dsd_state* state) {
-    if (!state || state->M <= 1 || state->M == 0x16) {
+    if (!state) {
+        return 0;
+    }
+    const int forced = dsd_dmr_forced_algid(state);
+    if (forced == 0) {
         return 0;
     }
 
@@ -268,14 +294,14 @@ dsd_dmr_apply_forced_algid(dsd_state* state) {
     // precedence, so a slot that already carries an ALG ID is left untouched and a known
     // KEY ID is never replaced by the 0xFF "no key id" sentinel (issue #351).
     if (state->currentslot == 0 && (state->dmr_so & 0x40) != 0 && state->payload_algid == 0) {
-        state->payload_algid = state->M & 0xFF;
+        state->payload_algid = forced;
         if (state->payload_keyid == 0) {
             state->payload_keyid = 0xFF;
         }
         return 1;
     }
     if (state->currentslot == 1 && (state->dmr_soR & 0x40) != 0 && state->payload_algidR == 0) {
-        state->payload_algidR = state->M & 0xFF;
+        state->payload_algidR = forced;
         if (state->payload_keyidR == 0) {
             state->payload_keyidR = 0xFF;
         }

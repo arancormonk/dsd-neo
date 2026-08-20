@@ -498,7 +498,11 @@ those values for the current CLI run only.
 - Import keys CSV (hex): `-K <file>`
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing),
   `--dmr-force-algid <hex>` (DMR ALGID when PI/LE missing; a fallback only — an ALG ID or KEY ID
-  received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo)
+  received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo).
+  The forced value is installed on the first voice frame; a voice LC that arrives before that (every
+  trunked call's first LC, since tuning clears the slot's ALG ID) is classified — for the call label and
+  the `--enc-lockout` decision — under the same forced ALG ID and key the voice path is about to use,
+  without writing it to the slot.
 - Select DMR key by talkgroup: `--dmr-tg-key-csv <file>` (per-TG override of the signaled KEY ID;
   rows are `tg_dec,keyid_hex` into the `-K`/`-k` keyring — see `docs/csv-formats.md`)
 - Disable DMR Late Entry IDs: `-3` (avoid false ENC)
