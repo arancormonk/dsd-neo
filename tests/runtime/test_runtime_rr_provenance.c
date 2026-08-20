@@ -99,6 +99,61 @@ expect_round_trip(void) {
     return rc;
 }
 
+/*
+ * A site_ids value that fills the field is the one case that couples this
+ * struct to rr_provenance_parse()'s line buffer: the writer emits
+ * "site_ids = " + the value + "\n", and a reader whose fgets() buffer is
+ * shorter silently keeps the head and drops the tail (the tail carries no
+ * '=' and is skipped as an unknown line). Sized off the field so it tracks
+ * any future widening automatically.
+ */
+static int
+expect_full_width_site_ids_round_trip(void) {
+    char scratch[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    char rr[DSD_TEST_PATH_MAX];
+    if (make_paths(scratch, sizeof scratch, csv, sizeof csv, rr, sizeof rr, "dsd_neo_rr_prov_wide") != 0) {
+        return 1;
+    }
+
+    dsd_rr_provenance p;
+    fill_sample(&p);
+
+    /* Five-digit ids, the width RadioReference actually issues, packed until
+     * one more would not fit. */
+    char ids[sizeof p.site_ids];
+    size_t len = 0;
+    int next = 10000;
+    for (;;) {
+        const int n = DSD_SNPRINTF(ids + len, sizeof ids - len, "%s%d", (len == 0U) ? "" : ",", next);
+        if (n <= 0 || (size_t)n >= sizeof ids - len) {
+            ids[len] = '\0';
+            break;
+        }
+        len += (size_t)n;
+        next++;
+    }
+    DSD_STRNCPY(p.site_ids, ids, sizeof p.site_ids - 1);
+
+    int rc = len > sizeof p.site_ids / 2 ? 0 : 1; /* the value really is near-full */
+    rc |= dsd_rr_provenance_write(csv, &p) == 0 ? 0 : 1;
+
+    dsd_rr_provenance got;
+    DSD_MEMSET(&got, 0, sizeof got);
+    rc |= dsd_rr_provenance_read(csv, &got) == 0 ? 0 : 1;
+    /* Byte for byte: a split line would truncate this and nothing else. */
+    rc |= strcmp(got.site_ids, p.site_ids) == 0 ? 0 : 1;
+    /* Keys written after site_ids must still arrive - a split line's tail
+     * being skipped would not stop the parse, it would just lose them. */
+    rc |= strcmp(got.system_name, "SARA System") == 0 ? 0 : 1;
+    rc |= got.imported_at == 1755500000LL ? 0 : 1;
+
+    remove(rr);
+    remove(csv);
+    DSD_TEST_RMDIR(scratch);
+    return rc;
+}
+
 static int
 expect_zero_timestamp_is_stamped(void) {
     char scratch[DSD_TEST_PATH_MAX];
@@ -211,6 +266,7 @@ int
 main(void) {
     int rc = 0;
     rc |= expect_round_trip();
+    rc |= expect_full_width_site_ids_round_trip();
     rc |= expect_zero_timestamp_is_stamped();
     rc |= expect_missing_sidecar_fails();
     rc |= expect_unknown_keys_are_ignored();

@@ -580,11 +580,53 @@ test_plan_blocked(void) {
 }
 
 static void
+test_plan_site_ids_large_selection(void) {
+    /* The scan list caps at 26 frequencies (RR_LCN_LIST_MAX) and says so in a
+     * warning, so a big conventional selection has always produced a usable
+     * 26-row map plus the full talkgroup list. site_ids only records the
+     * selection for a later refresh, and refusing the whole import - talkgroups
+     * included - over that bookkeeping field was disproportionate. A selection
+     * this size must build. */
+    enum { RR_TEST_LARGE = 200 };
+
+    dsd_rr_site_freq freqs[RR_TEST_LARGE];
+    dsd_rr_site sites[RR_TEST_LARGE];
+    size_t selected[RR_TEST_LARGE];
+    for (size_t i = 0; i < (size_t)RR_TEST_LARGE; i++) {
+        freq_set(&freqs[i], 1, 451275000LL + (long long)(i * 12500), "", NULL);
+        site_init(&sites[i], &freqs[i], 1U);
+        sites[i].site_db_id = 10000 + (int)i; /* five digits, as RadioReference issues */
+        selected[i] = i;
+    }
+
+    dsd_rr_system_info info;
+    info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
+    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+
+    expect("large selection builds", dsd_rr_import_plan_build(&info, sites, (size_t)RR_TEST_LARGE, selected,
+                                                              (size_t)RR_TEST_LARGE, NULL, 0U, &options, &plan)
+                                         == 0);
+    expect("large selection is not blocked", plan.ok == 1);
+    expect_str("no blocked reason", plan.blocked_reason, "");
+    expect("every selected id is recorded", plan.site_count == RR_TEST_LARGE);
+    /* First and last id both survive: a silent truncation would drop the tail. */
+    expect("id list starts at the first selection", strncmp(plan.site_ids, "10000,", 6) == 0);
+    expect("id list ends at the last selection", strstr(plan.site_ids, ",10199") != NULL);
+    expect("the scan-list cap is reported rather than the import refused",
+           warned(&plan.warnings, "174 selected repeater(s) past the 26-frequency scan limit were dropped."));
+    dsd_rr_import_plan_free(&plan);
+}
+
+static void
 test_plan_site_ids_overflow(void) {
-    /* site_ids is 512 bytes, so about 85 five-digit ids fit. A truncated join
-     * would make a later refresh regenerate from the wrong repeaters, so the
-     * import is refused instead. */
-    enum { RR_TEST_MANY = 100 };
+    /* site_ids is 2048 bytes, so 341 five-digit ids fit. A truncated join would
+     * make a later refresh regenerate from fewer - or, on a cut mid-id, the
+     * wrong - repeaters, so an absurd selection is refused instead. The guard
+     * is deliberately out of reach of any real system; see
+     * test_plan_site_ids_large_selection for the size that must still work. */
+    enum { RR_TEST_MANY = 400 };
 
     dsd_rr_site_freq freqs[RR_TEST_MANY];
     dsd_rr_site sites[RR_TEST_MANY];
@@ -651,6 +693,7 @@ main(void) {
     test_plan_conventional();
     test_plan_selection_hygiene();
     test_plan_blocked();
+    test_plan_site_ids_large_selection();
     test_plan_site_ids_overflow();
     test_plan_argument_validation();
 

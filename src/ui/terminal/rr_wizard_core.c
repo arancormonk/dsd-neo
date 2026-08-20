@@ -211,12 +211,13 @@ typedef struct {
 } RrFetchCtx;
 
 /*
- * dsd_rr_provenance::site_ids is char[512], so 128 five-digit ids plus their
- * commas is already past what a sidecar can hold. Ids beyond the cap are
- * ignored, which is harmless: the conventional generator caps at 26 distinct
- * frequencies and a trunked one uses only the first site.
+ * Matches what dsd_rr_provenance::site_ids can actually hold: 2048 bytes fits
+ * 341 five-digit ids plus their commas, which is the width RadioReference
+ * issues. Ids beyond the cap are ignored, which is harmless: the conventional
+ * generator caps at 26 distinct frequencies and a trunked one uses only the
+ * first site.
  */
-#define RR_REFRESH_MAX_SITE_IDS 128
+#define RR_REFRESH_MAX_SITE_IDS 341
 
 /** What a pending refresh remembers between its sidecar read and its assembly. */
 typedef struct {

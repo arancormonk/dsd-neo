@@ -178,10 +178,14 @@ rr_provenance_parse_line(dsd_rr_provenance* out, char* line) {
 
 static int
 rr_provenance_parse(FILE* fp, dsd_rr_provenance* out) {
-    /* site_ids is 512 bytes, so the longest line this writer can emit is
-       "site_ids = " + 511 + "\n" = 523 bytes. 768 always fits. A hand-edited
-       longer line is split by fgets; the tail carries no '=' and is skipped. */
-    char line[768];
+    /* COUPLED to dsd_rr_provenance::site_ids. That field is the longest value
+       this writer can emit, so the longest line is "site_ids = " (11) + the
+       value (at most sizeof - 1) + "\n" + NUL. Sized off the field so the two
+       cannot drift: a buffer that is one byte short does not fail loudly, it
+       lets fgets split the line and silently drop the tail, which carries no
+       '=' and is skipped as an unknown key. A hand-edited longer line still
+       splits that way, which is the intended limit. */
+    char line[sizeof(((dsd_rr_provenance*)0)->site_ids) + 32];
     while (fgets(line, (int)sizeof line, fp) != NULL) {
         if (rr_provenance_parse_line(out, line) != 0) {
             return -1;

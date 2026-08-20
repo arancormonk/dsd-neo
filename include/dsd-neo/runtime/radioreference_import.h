@@ -102,8 +102,17 @@ typedef struct {
      * that RF number repeats within a system (radioreference.h:197-198) and a
      * refresh matches on exactly these ids. A join that would not fit is a
      * blocked_reason, never a silent truncation.
+     *
+     * Sized so no real system can reach that refusal: 2048 bytes holds 341
+     * five-digit ids, and only a CONVENTIONAL import joins more than one (a
+     * trunked one records just the first site). The refusal costs the whole
+     * import - talkgroup list included - so it must stay a last-resort guard
+     * against an absurd selection, not a limit ordinary use can hit.
+     *
+     * COUPLED: rr_provenance_parse()'s line buffer must hold
+     * "site_ids = " + this - 1 + "\n". Widen both together.
      */
-    char site_ids[512];
+    char site_ids[2048];
     char* group_csv_text; /**< Heap; NULL when no talkgroups. Freed by _free(). */
     size_t group_csv_len;
     char* chan_csv_text; /**< Heap; NULL means "no -C file" (a valid outcome). */
@@ -227,7 +236,9 @@ size_t dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_
 typedef struct {
     char kind[8];          /**< "group" or "chan". */
     int sid;               /**< RadioReference system id. */
-    char site_ids[512];    /**< Comma-joined dsd_rr_site::site_db_id, selection order. */
+    char site_ids[2048];   /**< Comma-joined dsd_rr_site::site_db_id, selection order.
+                                Same width as dsd_rr_import_plan::site_ids, which is
+                                copied into it verbatim; see the note there. */
     int partial_enc_as_de; /**< The partial-encryption answer the file was built with. */
     char system_name[128]; /**< System name as fetched, for display only. */
     long long imported_at; /**< Unix seconds; informational only. */
