@@ -743,14 +743,50 @@ test_stale_active_epoch_self_heals_on_the_next_lc(void) {
     // TG 100 is mapped and its epoch is ACTIVE.
     rc |= expect_eq("stale-mapped-tg", activate_via_map(&state, 0), 0x7B);
 
-    // The transmission ends with no decodable terminator: the epoch stays ACTIVE, so an unmapped
-    // TG 200 transmission's first frames still resolve against TG 100.
+    // Nothing mutates `state` between this call and stale-mapped-tg above, so this cannot fail
+    // independently of it -- it is not a second, sharper check. What it demonstrates: a second
+    // frame arriving inside the stale window is computationally indistinguishable from the first,
+    // i.e. the staleness is a stable window rather than a one-frame fluke that self-corrects on its
+    // own. No sharper assertion exists from this harness: the only way to signal "a new
+    // transmission started" is observe_group_call(), and that itself opens a new epoch -- exactly
+    // the staleness this test is bounding, not a way to probe further inside it.
     rc |= expect_eq("stale-still-keys-old-tg", activate_via_map(&state, 0), 0x7B);
 
     // TG 200's voice LC opens its epoch, and the very next frame resolves correctly.
     observe_group_call(&state, 0U, 200U);
     rc |= expect_eq("self-heals-on-new-epoch", activate_via_map(&state, 0), 0x03);
     rc |= expect_eq("self-heals-key", (long long)state.R, 0xAAAAALL);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// DSD_KEY_NEED_NONE algorithms (Vertex 0x07, and anything unclassified) consume no keyring
+// material at all, so keyring_kid_satisfies_need() can never be satisfied for them regardless of
+// what the mapped key ID holds -- keyring_dmr_effective_kid() always returns unmapped. That alone
+// would already take the "row present, nothing eligible" skipped-notice path, which prints "has no
+// <label> key" for every other need. keyring_need_label() returns NULL for DSD_KEY_NEED_NONE
+// specifically to stop that: reporting a missing key would point the operator at the wrong thing,
+// since the row was never eligible to begin with. This pins that the suppression actually reaches
+// the console: capture_notice_hits() would catch either notice under the shared "DMR TG Key Map"
+// prefix, so zero hits across five frames proves neither the applied nor the skipped line fired.
+static int
+test_none_need_alg_produces_no_notice(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x07; /* Vertex: DSD_KEY_NEED_NONE */
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    map_one(&state, 123U, 0x7B); /* row exists, but Vertex needs no keyring material at all */
+    observe_group_call(&state, 0U, 123U);
+
+    const int hits = capture_notice_hits(&state, 0, "DMR TG Key Map");
+    rc |= expect_eq("none-need-notice-silent", hits, 0);
 
     dsd_state_ext_free_all(&state);
     return rc;
@@ -774,6 +810,7 @@ main(void) {
     rc |= test_mapped_kid_without_material_falls_back();
     rc |= test_both_notices_can_print_in_one_epoch();
     rc |= test_stale_active_epoch_self_heals_on_the_next_lc();
+    rc |= test_none_need_alg_produces_no_notice();
     // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {
