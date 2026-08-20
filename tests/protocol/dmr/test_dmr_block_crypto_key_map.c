@@ -304,5 +304,8 @@ main(void) {
     rc |= test_mapped_aes_row_beats_manual_key();
     rc |= test_manual_key_fallback_survives_without_a_row();
     rc |= test_slot1_fallback_uses_r();
+    if (rc == 0) {
+        DSD_FPRINTF(stdout, "DMR_BLOCK_CRYPTO_KEY_MAP: OK\n");
+    }
     return rc;
 }
