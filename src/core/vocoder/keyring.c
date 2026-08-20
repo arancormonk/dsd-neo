@@ -286,7 +286,7 @@ keyring_need_label(dsd_key_material_need need) {
     switch (need) {
         case DSD_KEY_NEED_SCALAR: return "scalar";
         case DSD_KEY_NEED_AES_2: return "16-byte AES";
-        case DSD_KEY_NEED_AES_3: return "24-byte AES";
+        case DSD_KEY_NEED_AES_3: return "24-byte TDEA";
         case DSD_KEY_NEED_AES_4: return "32-byte AES";
         case DSD_KEY_NEED_QUARTET: return "Kirisun quartet";
         case DSD_KEY_NEED_NONE: break;

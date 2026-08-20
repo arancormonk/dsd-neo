@@ -31,7 +31,7 @@ int keyring_aes_segments_complete(const dsd_state* state, int key_id, unsigned i
 /** Look up the DMR talkgroup -> key ID override map. Returns 1 on a hit with *out_kid set. */
 int keyring_dmr_tg_map_kid(const dsd_state* state, uint32_t tg, uint8_t* out_kid);
 
-/** Drop every DMR talkgroup -> key ID mapping and the per-slot applied-notice latch. */
+/** Drop every DMR talkgroup -> key ID mapping and the per-slot applied- and skipped-notice latches. */
 void keyring_dmr_tg_map_reset(dsd_state* state);
 
 /**
