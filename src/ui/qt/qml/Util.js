@@ -166,7 +166,53 @@ function decodeLabel(flag) {
 
 function decodeHint(flag) {
     var mode = findDecodeMode(flag)
-    return mode !== null ? mode.hint : ""
+    if (mode !== null)
+        return mode.hint
+    // A composite the catalog does not offer still gets a line: this row going
+    // blank was half of what made an imported system read as "nothing chosen".
+    if (LEGACY_DECODE_LABELS[flag] !== undefined)
+        return "Saved with this system — tap another chip to change it."
+    return ""
+}
+
+// The chip row to render for `flag`: the catalog, with the entry a composite
+// flag refines swapped for the composite itself, or the composite appended when
+// the catalog has no entry it refines (EDACS, which is kept out on purpose).
+//
+// The importer picks flags DECODE_MODES deliberately does not offer — "-mq -^",
+// "-fs -Y", the EDACS forms — and the row matches on the whole flag string, so
+// they used to select nothing at all. Pointing them at their base chip instead
+// would be worse than the blank row: the base carries the SHORT flag, so one
+// tap would silently drop the "-^" or the "-Y" the import added. The chip the
+// user sees therefore carries the WHOLE flag. Tapping it changes nothing;
+// tapping any other replaces it cleanly.
+//
+// Swapping rather than appending also keeps the row honest: "-mq -^" would
+// otherwise sit next to "P25 Simulcast" as a second, near-identical chip.
+function decodeChips(flag) {
+    if (findDecodeMode(flag) !== null)
+        return DECODE_MODES
+    var label = LEGACY_DECODE_LABELS[flag]
+    if (label === undefined)
+        return DECODE_MODES
+
+    var out = []
+    var placed = false
+    for (var i = 0; i < DECODE_MODES.length; i++) {
+        var m = DECODE_MODES[i]
+        // `m.flag + " "` and not a bare prefix: Auto's empty flag would match
+        // everything, and "-f1" must not be read as refining "-f".
+        if (!placed && m.flag !== "" && flag.indexOf(m.flag + " ") === 0) {
+            out.push({ label: label, short: label, flag: flag,
+                       trunked: m.trunked, hint: decodeHint(flag) })
+            placed = true
+        } else {
+            out.push(m)
+        }
+    }
+    if (!placed)
+        out.push({ label: label, short: label, flag: flag, hint: decodeHint(flag) })
+    return out
 }
 
 // Whether the wizard should suggest turning call-following on, for a user who
