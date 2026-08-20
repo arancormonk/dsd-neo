@@ -501,12 +501,12 @@ static const NcMenuItem RADIOREFERENCE_ITEMS[] = {
      .help = "Build talkgroup and channel-map CSVs from the RadioReference database "
              "(premium account required) and apply them to this session.",
      .on_select = act_rr_import},
-    {.id = "rr_refresh",
-     .label = "Refresh imported file...",
-     .help = "Re-fetch a previously imported file from RadioReference, keeping its site "
-             "selection and encryption answer.",
-     .is_enabled = rr_refresh_available,
-     .on_select = act_rr_refresh},
+    {.id = "rr_imported",
+     .label = "Imported Systems...",
+     .help = "Browse imported RadioReference systems: apply one to this session, refresh it, "
+             "or delete its files.",
+     .is_enabled = rr_imports_available,
+     .on_select = act_rr_library},
     {.id = "rr_user",
      .label = "Set Account Username...",
      .label_fn = lbl_rr_account,

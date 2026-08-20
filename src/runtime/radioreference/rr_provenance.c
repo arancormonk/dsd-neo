@@ -19,6 +19,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/path_policy.h>
+#include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <errno.h>
 #include <limits.h>
@@ -59,6 +60,21 @@ rr_provenance_emit(FILE* fp, const dsd_rr_provenance* p) {
     DSD_FPRINTF(fp, "partial_enc_as_de = %d\n", p->partial_enc_as_de ? 1 : 0);
     rr_emit_text(fp, "system_name", p->system_name);
     DSD_FPRINTF(fp, "imported_at = %lld\n", stamp);
+
+    /* The re-apply recipe, only when there is one. A sidecar with no recipe (an
+       older file, or one whose protocol a newer build wrote) omits these keys
+       entirely rather than emitting a half-recipe the reader would reject. */
+    if (p->recipe.present) {
+        const char* token = dsd_rr_protocol_token(p->recipe.protocol);
+        if (token != NULL) {
+            rr_emit_text(fp, "protocol", token);
+            DSD_FPRINTF(fp, "tune_hz = %lld\n", p->recipe.tune_hz);
+            DSD_FPRINTF(fp, "trunking = %d\n", p->recipe.trunking ? 1 : 0);
+            DSD_FPRINTF(fp, "scan_list = %d\n", p->recipe.scan_list ? 1 : 0);
+            DSD_FPRINTF(fp, "simulcast = %d\n", p->recipe.simulcast ? 1 : 0);
+            DSD_FPRINTF(fp, "esk = %d\n", p->recipe.esk ? 1 : 0);
+        }
+    }
 
     if (fflush(fp) != 0) {
         int saved_errno = errno;
@@ -154,6 +170,42 @@ rr_provenance_assign(dsd_rr_provenance* out, const char* key, const char* value)
         out->imported_at = (long long)secs;
         return 0;
     }
+    if (strcmp(key, "protocol") == 0) {
+        /* An unknown token is a system a newer build wrote, not a corrupt file:
+           it resolves to UNSUPPORTED, which rr_provenance_finalize_recipe() reads
+           as "no usable recipe" rather than an error. */
+        out->recipe.protocol = dsd_rr_protocol_from_token(value);
+        return 0;
+    }
+    if (strcmp(key, "tune_hz") == 0) {
+        /* Parsed at the writer's width, not an int's. rr_provenance_emit() prints
+           %lld from a long long and rr_generate.c accepts sites up to
+           RR_FREQ_MAX_HZ (6 GHz), so an int-ranged parse would make this reader
+           reject a sidecar it wrote itself - and a rejected sidecar is not
+           "no recipe", it drops the file out of the Imported Systems browser,
+           out of the CSV picker and out of refresh entirely. Same uint64 parser
+           imported_at uses, for the same "no long-long strict parser" reason.
+           0 is tolerated and folds to present == 0; a negative value is
+           rejected by the parser itself. */
+        uint64_t hz = 0;
+        if (dsd_parse_uint64_strict(value, 10, (uint64_t)INT64_MAX, &hz) != 0) {
+            return -1;
+        }
+        out->recipe.tune_hz = (long long)hz;
+        return 0;
+    }
+    if (strcmp(key, "trunking") == 0) {
+        return dsd_parse_int_strict(value, 10, 0, 1, &out->recipe.trunking);
+    }
+    if (strcmp(key, "scan_list") == 0) {
+        return dsd_parse_int_strict(value, 10, 0, 1, &out->recipe.scan_list);
+    }
+    if (strcmp(key, "simulcast") == 0) {
+        return dsd_parse_int_strict(value, 10, 0, 1, &out->recipe.simulcast);
+    }
+    if (strcmp(key, "esk") == 0) {
+        return dsd_parse_int_strict(value, 10, 0, 1, &out->recipe.esk);
+    }
     return 0; /* unknown key: ignored so the format can grow */
 }
 
@@ -186,12 +238,22 @@ rr_provenance_parse(FILE* fp, dsd_rr_provenance* out) {
        '=' and is skipped as an unknown key. A hand-edited longer line still
        splits that way, which is the intended limit. */
     char line[sizeof(((dsd_rr_provenance*)0)->site_ids) + 32];
+    /* Absent protocol key must read as "no recipe", not as enum value 0 (P25).
+       Set before the loop so a file with no protocol line finalises to
+       UNSUPPORTED / present == 0. */
+    out->recipe.protocol = DSD_RR_PROTO_UNSUPPORTED;
     while (fgets(line, (int)sizeof line, fp) != NULL) {
         if (rr_provenance_parse_line(out, line) != 0) {
             return -1;
         }
     }
-    return ferror(fp) ? -1 : 0;
+    if (ferror(fp)) {
+        return -1;
+    }
+    /* present is derived, never stored: a recipe is usable only when its
+       protocol resolved and it carries a real tuning frequency. */
+    out->recipe.present = (out->recipe.protocol != DSD_RR_PROTO_UNSUPPORTED && out->recipe.tune_hz > 0) ? 1 : 0;
+    return 0;
 }
 
 int

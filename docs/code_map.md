@@ -256,6 +256,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
     implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
     `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`)
+  - Imported RadioReference systems: `rr_library.{h,c}` is the curses-free model of the imports directory
+    (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
+    marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the
+    **Imported Systems** browser. `csv_picker.{h,c}` offers the same directory's files of one `kind` to the
+    "Import Channel Map/Group List CSV" menu items, with an "Enter a path..." row falling back to the plain
+    prompt. Both headers are terminal-private, both modules are filesystem-only (no curses, no app-control),
+    and both are tested headless against a scratch directory (`UI_RR_LIBRARY`, `UI_CSV_PICKER`)
   - Frontend-facing controls and DSP/RTL metrics normally flow through app-control commands and
     `include/dsd-neo/app_control/frontend.h`. The terminal frontend retains a small set of terminal-private backend
     integrations.

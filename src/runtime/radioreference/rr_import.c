@@ -110,6 +110,55 @@ dsd_rr_protocol_edacs_ea(dsd_rr_protocol protocol) {
     return (protocol == DSD_RR_PROTO_EDACS_EA) ? 1 : 0;
 }
 
+void
+dsd_rr_recipe_from_plan(const dsd_rr_import_plan* plan, dsd_rr_recipe* out) {
+    if (out == NULL) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (plan == NULL || plan->ok == 0) {
+        return;
+    }
+    out->present = 1;
+    out->protocol = plan->protocol;
+    out->tune_hz = plan->tune_hz;
+    out->trunking = plan->trunking ? 1 : 0;
+    out->scan_list = plan->scan_list ? 1 : 0;
+    out->simulcast = plan->simulcast ? 1 : 0;
+    out->esk = plan->esk ? 1 : 0;
+}
+
+int
+dsd_rr_recipe_to_plan(const dsd_rr_recipe* recipe, int partial_enc_as_de, dsd_rr_import_plan* out) {
+    if (out == NULL) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (recipe == NULL || recipe->present == 0) {
+        return -1;
+    }
+    const char* flag = dsd_rr_decode_flag(recipe->protocol, recipe->simulcast, recipe->esk, recipe->scan_list);
+    if (flag == NULL) {
+        return -1;
+    }
+    /* Only the fields dsd_app_rr_fill_apply_payload() reads are rebuilt; the CSVs
+       already exist and are applied by path, so no talkgroup or channel text is
+       regenerated. */
+    out->protocol = recipe->protocol;
+    out->conventional = dsd_rr_protocol_is_conventional(recipe->protocol);
+    out->trunking = recipe->trunking ? 1 : 0;
+    out->chan_need = dsd_rr_chan_map_need(recipe->protocol);
+    out->scan_list = recipe->scan_list ? 1 : 0;
+    out->simulcast = recipe->simulcast ? 1 : 0;
+    out->esk = recipe->esk ? 1 : 0;
+    out->partial_enc_as_de = partial_enc_as_de ? 1 : 0;
+    out->tune_hz = recipe->tune_hz;
+    (void)dsd_rr_hz_to_mhz_text(recipe->tune_hz, out->freq_mhz, sizeof out->freq_mhz);
+    (void)DSD_SNPRINTF(out->decode_flag, sizeof out->decode_flag, "%s", flag);
+    out->ok = 1;
+    return 0;
+}
+
 /** @brief Bytes no file name may carry on any platform this ships on. */
 static int
 rr_stem_is_illegal(char c) {

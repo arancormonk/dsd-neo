@@ -72,13 +72,13 @@ rr_key_prompt_offered(const void* ctx) {
 }
 
 bool
-rr_refresh_available(const void* ctx) {
+rr_imports_available(const void* ctx) {
     /* Reports whether an imports directory RESOLVES - whether XDG_CONFIG_HOME /
        HOME (POSIX) or APPDATA (Windows) gave a config root - deliberately not
        whether any import exists. Predicates run on every menu render (up to
        15 FPS), and listing the directory plus reading a sidecar per entry at
        that rate is filesystem traffic for no benefit; the empty case is
-       reported once, on activation, by rr_panel_open_refresh(). */
+       reported once, on activation, by rr_panel_open_library(). */
     (void)ctx;
     const char* dir = dsd_user_imports_dir();
     if (dir == NULL) {

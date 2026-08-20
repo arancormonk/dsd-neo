@@ -104,6 +104,40 @@ the plan that is recomputed on every keystroke.
 
 The whole submenu is hidden in a build without libcurl or expat.
 
+### Imported Systems browser
+
+Once you have imported one or more systems, **Trunking & Control -> RadioReference... -> Imported
+Systems...** lists them — one row per system, not one per file, with the group list and channel map an
+import wrote folded back together by system id. Each row shows the system name, its protocol, its start
+frequency (or `<freq> scan` for a conventional multi-repeater list, or `-` when the system carries no
+saved settings), and `* in use` when the running session is decoding one of its files.
+
+Selecting a system offers three actions:
+
+- **Use this system** re-applies it to the running session — decode mode, trunking, the channel map and
+  group list, and the starting frequency — exactly as the original import did, without fetching anything.
+  It works offline. A system imported before this feature landed (or one a newer build wrote) has no saved
+  settings; its row reads **Load these files**, which loads whichever CSVs exist and leaves the decode mode
+  unchanged.
+- **Refresh from RadioReference** re-fetches the system and rebuilds its files in place, refreshing both
+  halves in turn. This needs your account, like an import.
+- **Delete imported files** removes the system's CSVs and their sidecars from disk after a confirmation.
+  A running session that already loaded a deleted file keeps decoding its in-memory copy; a saved config
+  that references the deleted path will fail to load it on the next launch.
+
+"Use this system" is possible because each generated file's sidecar now records *how* the import was
+applied — the protocol, the start frequency, and the trunking, scanning, simulcast and ESK answers — next
+to the *where it came from* provenance a refresh already uses. A session started with `--trunk-scan`
+manages its own channel maps, so the decoder refuses the apply and reports it, the same as a fresh import.
+
+### Picking a CSV to import
+
+**Trunking & Control -> Lists & Filters -> Import Channel Map CSV...** and **Import Group List CSV...** now
+open a chooser of the imports directory's files of that kind — RadioReference file names carry spaces and
+are tedious to type — with a final **Enter a path...** row that falls back to typing a path. When the
+imports directory holds no matching file, the path prompt opens directly, so nothing changes for a user
+with no imports.
+
 ### Where the files go
 
 Generated files land in an `imports` directory beside your config file:
@@ -216,12 +250,12 @@ file it is. `Imported files → (tap a row) → Refresh from RadioReference` re-
 replaces that file in place, keeping its stored path so every saved system referencing it stays
 valid.
 
-In the terminal UI the same thing is **Trunking & Control -> RadioReference... -> Refresh imported
-file...**, which lists what the imports directory holds. Provenance travels in a plain-text sidecar
-written next to each generated file (`<file>.rr`) recording the system ID, the selected sites and the
-partial-encryption answer. A file with no sidecar cannot be refreshed, so it is left out of the list
-rather than offered and refused; when nothing in the directory has one, the chooser reports that no
-imports were found there.
+In the terminal UI refresh lives inside the **Imported Systems** browser (above): pick a system, then
+**Refresh from RadioReference**. Provenance travels in a plain-text sidecar written next to each generated
+file (`<file>.rr`) recording the system ID, the selected sites, the partial-encryption answer and — new
+with the Imported Systems browser — the re-apply recipe. A file with no sidecar is not a managed import, so
+it is left out of the browser rather than offered and refused; when nothing in the directory has one, the
+browser reports that no imports were found there.
 
 - The staging copy is validated **before** the stored copy is touched, so a fault page or a
   truncated response cannot destroy working local data.

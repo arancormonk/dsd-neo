@@ -1648,9 +1648,11 @@ rr_preselect(RrWizardCore* w) {
  * decoder thread.
  */
 
-/** @return 1 and fills @p out when blocked, 0 otherwise. */
-static int
-rr_core_session_block_reason(char* out, size_t out_sz) {
+/* Exported, not static: the Imported Systems browser posts the same
+ * DSD_APP_CMD_RR_APPLY_IMPORT from rr_panel.c and needs the identical pre-check
+ * and the identical wording, rather than a second copy that can drift. */
+int
+rr_wizard_core_session_block_reason(char* out, size_t out_sz) {
     const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
     if (osnap == NULL) {
         return 0; /* nothing published yet: no evidence of a trunk-scan session */
@@ -1666,7 +1668,7 @@ static void
 rr_core_apply_session_gate(RrWizardCore* w) {
     char reason[256];
     reason[0] = '\0';
-    if (rr_core_session_block_reason(reason, sizeof(reason)) != 0) {
+    if (rr_wizard_core_session_block_reason(reason, sizeof(reason)) != 0) {
         w->plan.ok = 0;
         (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof(w->plan.blocked_reason), "%s", reason);
     }
@@ -2482,6 +2484,10 @@ rr_import_fill_provenance(const RrWizardCore* w, const char* kind, dsd_rr_proven
     p->partial_enc_as_de = w->plan.partial_enc_as_de;
     DSD_STRNCPY(p->system_name, w->info.name, sizeof(p->system_name) - 1);
     p->imported_at = (long long)time(NULL);
+    /* The re-apply recipe: what this import did, so the Imported Systems browser
+     * can re-apply the system later without another fetch. Both halves of one
+     * import carry the same recipe - it describes the system, not the file. */
+    dsd_rr_recipe_from_plan(&w->plan, &p->recipe);
 }
 
 /** @brief Write one CSV and its sidecar, recording the CSV path for the unwind. */
@@ -2678,7 +2684,7 @@ rr_import_check_ready(RrWizardCore* w) {
     reason[0] = '\0';
     /* Re-run rather than trust the plan: the snapshot may have changed since
      * the last rebuild. */
-    if (rr_core_session_block_reason(reason, sizeof(reason)) != 0) {
+    if (rr_wizard_core_session_block_reason(reason, sizeof(reason)) != 0) {
         rr_core_fail(w, reason);
         return -1;
     }

@@ -1585,6 +1585,48 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
 
     add_executable(
+        dsd-neo_test_ui_rr_library
+        ui/test_ui_rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_library
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_library
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_rr_library
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME UI_RR_LIBRARY COMMAND dsd-neo_test_ui_rr_library)
+
+    add_executable(
+        dsd-neo_test_ui_csv_picker
+        ui/test_ui_csv_picker.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_csv_picker
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_csv_picker
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_csv_picker
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME UI_CSV_PICKER COMMAND dsd-neo_test_ui_csv_picker)
+
+    add_executable(
         dsd-neo_test_ui_menu_defs
         ui/test_ui_menu_defs.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c

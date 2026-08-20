@@ -278,6 +278,24 @@ const char* rr_wizard_core_last_chan_path(const RrWizardCore* w);
  */
 int rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path);
 
+/**
+ * @brief Why this session refuses an RR apply, if it does.
+ *
+ * DSD_APP_CMD_RR_APPLY_IMPORT's handler refuses the whole apply while a
+ * trunk-scan session is running, and that refusal can never reach the caller:
+ * dsd_app_drain_cmds() discards the handler's return value and the submit call
+ * only reports whether the command was QUEUED. Any path that posts an apply must
+ * pre-check with this, or the user is told it worked and is then contradicted by
+ * a decoder-thread toast. Reads only the published snapshot; the live dsd_opts
+ * belongs to the decoder thread. Core-free, so a presenter can call it before it
+ * has one.
+ *
+ * @param out    Destination for the reason text; written only when blocked.
+ * @param out_sz Destination size.
+ * @return 1 and fills @p out when blocked, 0 otherwise.
+ */
+int rr_wizard_core_session_block_reason(char* out, size_t out_sz);
+
 #ifdef DSD_NEO_TEST_HOOKS
 /** @brief Install a mock transport, and suppress the dsd_rr_available() gate. */
 void rr_wizard_core_set_transport_for_test(RrWizardCore* w, const dsd_rr_transport* t);

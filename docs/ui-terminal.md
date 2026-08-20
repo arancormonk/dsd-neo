@@ -47,11 +47,16 @@ RadioReference import:
 - The password is asked once per program run and held in memory only. The username, and in a build without
   a baked application key the key itself, are set from **Set Account Username...** and **Set Application
   Key...** in the same submenu and stored in the config file under `[radioreference]`.
-- **Trunking & Control -> RadioReference... -> Refresh imported file...** re-fetches a previously
-  generated file in place.
-- The whole submenu is hidden in a build without libcurl or expat; the refresh entry is hidden until the
-  imports directory resolves, and the application-key entry is hidden in a build with a baked-in key. See
-  `docs/radioreference-import.md`.
+- **Trunking & Control -> RadioReference... -> Imported Systems...** lists your imported systems (one row
+  per system, marked `* in use` when the running session is decoding one of its files). Selecting a system
+  offers **Use this system** (re-apply it offline, exactly as the import did), **Refresh from
+  RadioReference** (re-fetch and rebuild its files), and **Delete imported files** (after a confirmation).
+- **Trunking & Control -> Lists & Filters -> Import Channel Map CSV...** and **Import Group List CSV...**
+  open a chooser of the imports directory's files of that kind, with an **Enter a path...** row that falls
+  back to typing a path.
+- The whole submenu is hidden in a build without libcurl or expat; the Imported Systems entry is hidden
+  until the imports directory resolves, and the application-key entry is hidden in a build with a baked-in
+  key. See `docs/radioreference-import.md`.
 
 ## DSP Status
 

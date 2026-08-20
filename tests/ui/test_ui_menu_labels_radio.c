@@ -98,7 +98,7 @@ dsd_rr_available(void) {
     return 1;
 }
 
-/* menu_labels.c reaches dsd_user_imports_dir() from rr_refresh_available(); this
+/* menu_labels.c reaches dsd_user_imports_dir() from rr_imports_available(); this
  * target links no libraries at all, so the runtime definition is stubbed here. */
 static const char* g_imports_dir = "/tmp/dsd-neo-imports";
 

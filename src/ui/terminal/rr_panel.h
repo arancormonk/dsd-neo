@@ -19,8 +19,8 @@
 
 /** @brief Create-or-reuse the session wizard and start an import. Call only from an on_select. */
 void rr_panel_open_import(dsd_opts* opts, dsd_state* state);
-/** @brief Start a refresh. Unreachable until Stage 11 enables the menu item. */
-void rr_panel_open_refresh(dsd_opts* opts, dsd_state* state);
+/** @brief Open the Imported Systems browser (use / refresh / delete). Call only from an on_select. */
+void rr_panel_open_library(dsd_opts* opts, dsd_state* state);
 /** @brief Nonzero while the panel owns the overlay. */
 int rr_panel_active(void);
 /** @brief Handle one key; returns 1 when consumed. Handles ERR and KEY_RESIZE itself. */

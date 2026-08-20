@@ -108,6 +108,46 @@ int dsd_rr_protocol_is_conventional(dsd_rr_protocol protocol);
  */
 int dsd_rr_protocol_is_trunked(dsd_rr_protocol protocol);
 
+/** @brief Longest string dsd_rr_protocol_short_name() returns, for column layout. */
+#define DSD_RR_PROTO_SHORT_NAME_MAX 11
+
+/**
+ * @brief A stable machine token for a protocol, for the provenance sidecar.
+ *
+ * Never localised and never renumbered: a sidecar written by one build is read
+ * by another, so the token is the on-disk identity of the enum value. New
+ * protocols get a new token; an existing one is never renamed.
+ *
+ * @param protocol Protocol.
+ * @return A static lowercase token (e.g. "dmr_capplus"), or NULL for
+ *         DSD_RR_PROTO_UNSUPPORTED and anything unknown.
+ */
+const char* dsd_rr_protocol_token(dsd_rr_protocol protocol);
+
+/**
+ * @brief A short human label for a protocol, for a terminal list column.
+ *
+ * Display only, at most DSD_RR_PROTO_SHORT_NAME_MAX bytes. Unlike the token it
+ * may be reworded freely; nothing reads it back.
+ *
+ * @param protocol Protocol.
+ * @return A static label (e.g. "DMR Cap+"), or NULL for DSD_RR_PROTO_UNSUPPORTED.
+ */
+const char* dsd_rr_protocol_short_name(dsd_rr_protocol protocol);
+
+/**
+ * @brief Resolve a provenance token back to a protocol.
+ *
+ * The inverse of dsd_rr_protocol_token(). Matching is exact and case-sensitive:
+ * a token this build does not know is a system a newer build wrote, so it
+ * returns DSD_RR_PROTO_UNSUPPORTED rather than guessing.
+ *
+ * @param token Token text, or NULL.
+ * @return The protocol, or DSD_RR_PROTO_UNSUPPORTED for NULL, "" or an unknown
+ *         token.
+ */
+dsd_rr_protocol dsd_rr_protocol_from_token(const char* token);
+
 /**
  * @brief The decode flags a generated system should carry.
  *

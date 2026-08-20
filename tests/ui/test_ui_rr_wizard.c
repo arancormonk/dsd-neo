@@ -1651,6 +1651,18 @@ test_import_now_happy_path(void) {
     expect("import: chan sidecar kind", strcmp(prov.kind, "chan") == 0);
     expect_ll("import: chan sidecar sid", prov.sid, 6673);
 
+    /* The recipe rides in the sidecar so the system re-applies without a fetch,
+       and it rebuilds a plan the same apply mapper accepts. */
+    expect("import: chan sidecar carries a recipe", prov.recipe.present == 1);
+    expect("import: recipe protocol matches the plan", prov.recipe.protocol == plan->protocol);
+    expect_ll("import: recipe tune matches the plan", prov.recipe.tune_hz, plan->tune_hz);
+    expect("import: recipe trunking matches the plan", prov.recipe.trunking == plan->trunking);
+    dsd_rr_import_plan rebuilt;
+    expect("import: recipe rebuilds a plan",
+           dsd_rr_recipe_to_plan(&prov.recipe, prov.partial_enc_as_de, &rebuilt) == 0);
+    expect("import: rebuilt plan is applicable", rebuilt.ok == 1 && rebuilt.tune_hz == plan->tune_hz);
+    expect("import: rebuilt decode flag matches", strcmp(rebuilt.decode_flag, plan->decode_flag) == 0);
+
     /* The apply hook saw one payload with the right shape. */
     expect_ll("import: apply called once", g_hook_apply_count, 1);
     int want_mode = 0;

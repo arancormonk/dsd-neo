@@ -22,15 +22,15 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
-#include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -41,9 +41,15 @@
 #include "dsd-neo/ui/menu_core.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
+#include "rr_library.h"
 #include "rr_panel.h"
 #include "rr_panel_format.h"
 #include "rr_wizard_core.h"
+
+/* One import is at most two files (a group list and a channel map); the browser
+   refreshes both in turn from a queue the panel owns. */
+#define RR_REFRESH_QUEUE_MAX  2
+#define RR_REFRESH_PATH_MAX   1024
 
 #define RR_PANEL_CHROME_ROWS  12
 #define RR_PANEL_WARNING_ROWS 3
@@ -66,6 +72,13 @@ typedef struct {
     int top;
     int page_rows;
     int active;
+    /* Sequential refresh of a system's file halves. refresh_active is 1 while the
+       queue is driving the wizard, which lets rr_panel_tick() tell a refresh that
+       finished (advance to the next file) from a plain cancel (just deactivate). */
+    char refresh_queue[RR_REFRESH_QUEUE_MAX][RR_REFRESH_PATH_MAX];
+    int refresh_queue_n;
+    int refresh_queue_i;
+    int refresh_active;
 } RrPanel;
 
 static RrPanel g_rr_panel;
@@ -171,117 +184,265 @@ rr_panel_ensure_core(void) {
     return g_rr_panel.core;
 }
 
-/* ---- Refresh: picking a stored import ------------------------------------ */
+/* ---- Refresh queue ------------------------------------------------------- */
+
+static void
+rr_panel_refresh_queue_clear(void) {
+    g_rr_panel.refresh_queue_n = 0;
+    g_rr_panel.refresh_queue_i = 0;
+    g_rr_panel.refresh_active = 0;
+}
 
 /*
- * ui_chooser_start() copies NOTHING - it keeps the title, the item array and
- * every string in it by pointer until the chooser closes (menu_prompts.c,
- * identifier ui_chooser_start). Building these in locals would leave the chooser
- * pointing at dead stack, so the whole list is one heap allocation that the done
- * callback frees unconditionally.
+ * Pop the next queued file and start its refresh. Returns 1 when a refresh was
+ * begun (whether it entered the fetch path or failed synchronously onto the
+ * error step, both of which the panel renders), 0 when the queue is empty or the
+ * wizard could not be created.
  */
-#define RR_REFRESH_LIST_MAX 128
-#define RR_REFRESH_DIR_MAX  1024
-#define RR_REFRESH_PATH_MAX 1024
-
-typedef struct {
-    char* label; /* heap: what the chooser row shows */
-    char* path;  /* heap: absolute path of the stored CSV */
-} RrRefreshEntry;
-
-typedef struct {
-    RrRefreshEntry entries[RR_REFRESH_LIST_MAX];
-    const char* items[RR_REFRESH_LIST_MAX]; /* the borrowed view the chooser holds */
-    char dir[RR_REFRESH_DIR_MAX];
-    int count;
-} RrRefreshList;
-
-static void
-rr_refresh_list_free(RrRefreshList* list) {
-    if (list == NULL) {
-        return;
-    }
-    for (int i = 0; i < list->count; i++) {
-        free(list->entries[i].label);
-        free(list->entries[i].path);
-    }
-    free(list);
-}
-
-/** @brief dsd_dir_list callback: keep every ".csv" that has a readable sidecar. */
 static int
-rr_refresh_collect(const char* name, void* user) {
-    RrRefreshList* list = (RrRefreshList*)user;
-    dsd_rr_provenance prov;
-    char path[RR_REFRESH_PATH_MAX];
-    char label[192];
-
-    if (list->count >= RR_REFRESH_LIST_MAX) {
-        return 1; /* non-zero stops the walk */
-    }
-    const size_t len = (name != NULL) ? strlen(name) : 0U;
-    if (len < 5U || strcmp(name + (len - 4U), ".csv") != 0) {
-        return 0;
-    }
-    const int n = DSD_SNPRINTF(path, sizeof path, "%s%c%s", list->dir, RR_PATH_SEP, name);
-    if (n <= 0 || (size_t)n >= sizeof path) {
-        /* Truncation is not "shorten it and carry on": the shortened path could
-           name a different file, and the sidecar read below would be answering
-           about that one. */
-        return 0;
-    }
-    DSD_MEMSET(&prov, 0, sizeof prov);
-    if (dsd_rr_provenance_read(path, &prov) != 0) {
-        /* No sidecar means nothing records which system the file came from, so
-           it is not offered rather than offered-and-refused. */
-        return 0;
-    }
-    (void)DSD_SNPRINTF(label, sizeof label, "%s  (%s, sid %d)", name, prov.kind, prov.sid);
-    list->entries[list->count].label = dsd_strdup(label);
-    list->entries[list->count].path = dsd_strdup(path);
-    if (list->entries[list->count].label == NULL || list->entries[list->count].path == NULL) {
-        free(list->entries[list->count].label);
-        free(list->entries[list->count].path);
-        list->entries[list->count].label = NULL;
-        list->entries[list->count].path = NULL;
-        return 1;
-    }
-    list->count++;
-    return 0;
-}
-
-/* dsd_dir_list() reports entries in whatever order the platform hands back, so
-   the rows are sorted here. Label and path move together - sorting the label
-   array alone would hand the chooser a row that opens a different file. */
-static int
-rr_refresh_entry_cmp(const void* lhs, const void* rhs) {
-    const RrRefreshEntry* a = (const RrRefreshEntry*)lhs;
-    const RrRefreshEntry* b = (const RrRefreshEntry*)rhs;
-    return strcmp(a->label, b->label);
-}
-
-static void
-chooser_done_rr_refresh(void* u, int sel) {
-    RrRefreshList* list = (RrRefreshList*)u;
-    if (list == NULL) {
-        return;
-    }
-    if (sel >= 0 && sel < list->count) {
+rr_panel_refresh_queue_start_next(void) {
+    while (g_rr_panel.refresh_queue_i < g_rr_panel.refresh_queue_n) {
+        const char* path = g_rr_panel.refresh_queue[g_rr_panel.refresh_queue_i++];
         RrWizardCore* core = rr_panel_ensure_core();
         if (core == NULL) {
             ui_statusf("RadioReference wizard could not be started.");
-        } else {
-            /* Marked active before the call: begin_refresh() can reach
-               RR_STEP_ERROR synchronously, and rr_panel_render() draws nothing
-               while the panel is inactive. Not marked earlier, in
-               rr_panel_open_refresh(): a fresh core sits at RR_STEP_IDLE, and
-               rr_panel_tick() deactivates the panel on that step, so an active
-               panel would be switched back off while the chooser was still up. */
-            g_rr_panel.active = 1;
-            (void)rr_wizard_core_begin_refresh(core, list->entries[sel].path);
+            rr_panel_refresh_queue_clear();
+            return 0;
         }
+        /* Active before the call: begin_refresh() can reach the error step
+           synchronously, and the panel renders nothing while inactive. */
+        g_rr_panel.active = 1;
+        g_rr_panel.refresh_active = 1;
+        if (rr_wizard_core_begin_refresh(core, path) == 0) {
+            return 1; /* fetch in flight */
+        }
+        /* Synchronous failure parked on the error step; it renders and the user
+           dismisses it. Stop advancing so the second file is not attempted. */
+        g_rr_panel.refresh_queue_i = g_rr_panel.refresh_queue_n;
+        return 1;
     }
-    rr_refresh_list_free(list);
+    return 0;
+}
+
+/* ---- Imported Systems browser -------------------------------------------- */
+
+/*
+ * ui_chooser_start() copies NOTHING - it keeps the title, the item array and
+ * every string in it by pointer until the chooser closes (menu_prompts.c). So
+ * one heap context outlives every chooser level of this flow: the system list,
+ * the per-system action list, and the delete confirmation all borrow strings
+ * from it, and each done-callback either advances to the next level (keeping the
+ * context) or frees it exactly once.
+ */
+#define RR_BROWSE_ROW_MAX   256
+#define RR_BROWSE_TITLE_MAX 176
+
+enum { RR_ACT_USE = 0, RR_ACT_REFRESH, RR_ACT_DELETE, RR_ACT_MAX };
+
+typedef struct {
+    RrLibrary lib;
+    char rows[RR_LIBRARY_MAX][RR_BROWSE_ROW_MAX];
+    const char* items[RR_LIBRARY_MAX];
+    int sel; /* the system the action list is about */
+    char title[RR_BROWSE_TITLE_MAX];
+    char action_rows[RR_ACT_MAX][48];
+    const char* action_items[RR_ACT_MAX];
+    int action_kind[RR_ACT_MAX]; /* visible row -> RR_ACT_* */
+    int action_n;
+    const char* confirm_items[2];
+} RrBrowseCtx;
+
+static void
+rr_browse_ctx_free(RrBrowseCtx* ctx) {
+    free(ctx);
+}
+
+/* Post the stored system to the decoder, exactly as a fresh import would. */
+static void
+rr_browse_apply(const RrLibrarySystem* s) {
+    const char* chan = s->has_chan ? s->chan_path : NULL;
+    const char* group = s->has_group ? s->group_path : NULL;
+
+    if (s->recipe.present) {
+        /* The same pre-check the wizard runs before its own apply: the decoder's
+           handler refuses an RR apply outright during a trunk-scan session and
+           that refusal never comes back through the submit, so without this the
+           user would read "Applying <system>" and then be contradicted by a
+           decoder-thread toast. */
+        char blocked[256];
+        blocked[0] = '\0';
+        if (rr_wizard_core_session_block_reason(blocked, sizeof blocked) != 0) {
+            ui_statusf("%s", blocked);
+            return;
+        }
+        dsd_rr_import_plan plan;
+        if (dsd_rr_recipe_to_plan(&s->recipe, s->partial_enc_as_de, &plan) == 0) {
+            dsd_app_rr_apply_payload payload;
+            DSD_MEMSET(&payload, 0, sizeof payload);
+            if (dsd_app_rr_fill_apply_payload(&plan, chan, group, &payload) == 0) {
+                const int rc = dsd_app_command_set_rr_apply(&payload);
+                if (rc > 0) {
+                    ui_statusf("Applying %s to this session.", s->name);
+                } else {
+                    ui_statusf("Could not apply %s: the decoder is not accepting commands.", s->name);
+                }
+                return;
+            }
+        }
+        ui_statusf("Could not rebuild %s from its saved settings.", s->name);
+        return;
+    }
+
+    /* No recipe (an older sidecar, or a system a newer build wrote): load the
+       files by path and leave the decode mode alone. */
+    int loaded = 0;
+    if (chan != NULL) {
+        loaded |= (dsd_app_command_set_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, chan) > 0) ? 1 : 0;
+    }
+    if (group != NULL) {
+        loaded |= (dsd_app_command_set_string(DSD_APP_CMD_IMPORT_GROUP_LIST, group) > 0) ? 1 : 0;
+    }
+    if (loaded) {
+        ui_statusf("Loaded %s files; the decode mode was left unchanged.", s->name);
+    } else {
+        ui_statusf("Nothing to load for %s.", s->name);
+    }
+}
+
+/** @brief Remove one stored CSV and its ".rr" sidecar. @return 1 when the CSV went. */
+static int
+rr_browse_delete_one(const char* csv_path) {
+    /* Sized off the field it is built from, not a magic literal, and truncation
+       is rejected rather than shortened: a shortened path names a DIFFERENT file
+       and this hands it straight to remove(). */
+    char side[sizeof(((RrLibrarySystem*)0)->group_path) + 4];
+    const int gone = (remove(csv_path) == 0) ? 1 : 0;
+    const int n = DSD_SNPRINTF(side, sizeof side, "%s.rr", csv_path);
+    if (n > 0 && (size_t)n < sizeof side) {
+        (void)remove(side);
+    }
+    return gone;
+}
+
+/* Remove both halves of a system and their sidecars. */
+static void
+rr_browse_delete(const RrLibrarySystem* s) {
+    int removed = 0;
+    if (s->has_group) {
+        removed += rr_browse_delete_one(s->group_path);
+    }
+    if (s->has_chan) {
+        removed += rr_browse_delete_one(s->chan_path);
+    }
+    if (removed > 0) {
+        ui_statusf("Deleted %s (%d file%s).", s->name, removed, (removed == 1) ? "" : "s");
+    } else {
+        ui_statusf("Could not delete %s.", s->name);
+    }
+}
+
+/* Queue this system's files for refresh and start the first, entering the
+   wizard's fetch/render path. Both halves are refreshed in turn. */
+static void
+rr_browse_refresh(const RrLibrarySystem* s) {
+    rr_panel_refresh_queue_clear();
+    if (s->has_group) {
+        (void)DSD_SNPRINTF(g_rr_panel.refresh_queue[g_rr_panel.refresh_queue_n++], RR_REFRESH_PATH_MAX, "%s",
+                           s->group_path);
+    }
+    if (s->has_chan) {
+        (void)DSD_SNPRINTF(g_rr_panel.refresh_queue[g_rr_panel.refresh_queue_n++], RR_REFRESH_PATH_MAX, "%s",
+                           s->chan_path);
+    }
+    if (g_rr_panel.refresh_queue_n == 0) {
+        ui_statusf("%s has no files to refresh.", s->name);
+        return;
+    }
+    (void)rr_panel_refresh_queue_start_next();
+}
+
+/* Level 3: the delete confirmation. Index 0 is Cancel so a stray Enter is safe. */
+static void
+rr_browse_confirm_done(void* u, int sel) {
+    RrBrowseCtx* ctx = (RrBrowseCtx*)u;
+    if (ctx == NULL) {
+        return;
+    }
+    if (sel == 1 && ctx->sel >= 0 && ctx->sel < ctx->lib.count) {
+        rr_browse_delete(&ctx->lib.systems[ctx->sel]);
+    }
+    rr_browse_ctx_free(ctx);
+}
+
+/* Level 2: the chosen action. */
+static void
+rr_browse_action_done(void* u, int sel) {
+    RrBrowseCtx* ctx = (RrBrowseCtx*)u;
+    if (ctx == NULL) {
+        return;
+    }
+    if (sel < 0 || sel >= ctx->action_n || ctx->sel < 0 || ctx->sel >= ctx->lib.count) {
+        rr_browse_ctx_free(ctx);
+        return;
+    }
+    const RrLibrarySystem* s = &ctx->lib.systems[ctx->sel];
+    switch (ctx->action_kind[sel]) {
+        case RR_ACT_USE:
+            rr_browse_apply(s);
+            rr_browse_ctx_free(ctx);
+            return;
+        case RR_ACT_REFRESH:
+            rr_browse_refresh(s);
+            rr_browse_ctx_free(ctx);
+            return;
+        case RR_ACT_DELETE:
+            (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Delete %s from disk?", s->name);
+            ctx->confirm_items[0] = "Cancel";
+            ctx->confirm_items[1] = "Delete permanently";
+            ui_chooser_start(ctx->title, ctx->confirm_items, 2, rr_browse_confirm_done, ctx);
+            return;
+        default:
+            /* Never the destructive branch: an action kind this switch does not
+               know must do nothing, not fall through to deleting files. */
+            rr_browse_ctx_free(ctx);
+            return;
+    }
+}
+
+/* Level 1: a system was chosen; offer its actions. */
+static void
+rr_browse_system_done(void* u, int sel) {
+    RrBrowseCtx* ctx = (RrBrowseCtx*)u;
+    if (ctx == NULL) {
+        return;
+    }
+    if (sel < 0 || sel >= ctx->lib.count) {
+        rr_browse_ctx_free(ctx);
+        return;
+    }
+    ctx->sel = sel;
+    const RrLibrarySystem* s = &ctx->lib.systems[sel];
+
+    ctx->action_n = 0;
+    ctx->action_kind[ctx->action_n] = RR_ACT_USE;
+    (void)DSD_SNPRINTF(ctx->action_rows[ctx->action_n], sizeof ctx->action_rows[0], "%s",
+                       s->recipe.present ? "Use this system" : "Load these files");
+    ctx->action_items[ctx->action_n] = ctx->action_rows[ctx->action_n];
+    ctx->action_n++;
+
+    ctx->action_kind[ctx->action_n] = RR_ACT_REFRESH;
+    (void)DSD_SNPRINTF(ctx->action_rows[ctx->action_n], sizeof ctx->action_rows[0], "%s",
+                       "Refresh from RadioReference");
+    ctx->action_items[ctx->action_n] = ctx->action_rows[ctx->action_n];
+    ctx->action_n++;
+
+    ctx->action_kind[ctx->action_n] = RR_ACT_DELETE;
+    (void)DSD_SNPRINTF(ctx->action_rows[ctx->action_n], sizeof ctx->action_rows[0], "%s", "Delete imported files");
+    ctx->action_items[ctx->action_n] = ctx->action_rows[ctx->action_n];
+    ctx->action_n++;
+
+    (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "%s", s->name);
+    ui_chooser_start(ctx->title, ctx->action_items, ctx->action_n, rr_browse_action_done, ctx);
 }
 
 /* The rr_panel_open_* pair is frozen non-const to match the nc_action_fn shape the menu glue
@@ -307,43 +468,59 @@ rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-rr_panel_open_refresh(dsd_opts* opts, dsd_state* state) {
+rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    const char* dir = dsd_user_imports_dir();
-    if (dir == NULL || dir[0] == '\0') {
+    /* Copied before anything else runs, the same way rr_import_resolve_dir()
+       does: dsd_user_imports_dir() has no latch and rewrites its internal static
+       buffer on every call, so the returned pointer is only good until the next
+       one - and it is held here across a directory walk and three status
+       messages. */
+    const char* resolved = dsd_user_imports_dir();
+    char dir[RR_REFRESH_PATH_MAX];
+    const int dir_n = (resolved != NULL) ? DSD_SNPRINTF(dir, sizeof dir, "%s", resolved) : -1;
+    if (dir_n <= 0 || (size_t)dir_n >= sizeof dir) {
         ui_statusf("No config directory, so there is nowhere to look for imports.");
         return;
     }
-    RrRefreshList* list = (RrRefreshList*)calloc(1U, sizeof(*list));
-    if (list == NULL) {
+
+    RrBrowseCtx* ctx = (RrBrowseCtx*)calloc(1U, sizeof(*ctx));
+    if (ctx == NULL) {
         ui_statusf("Out of memory");
         return;
     }
-    const int n = DSD_SNPRINTF(list->dir, sizeof list->dir, "%s", dir);
-    if (n <= 0 || (size_t)n >= sizeof list->dir) {
-        rr_refresh_list_free(list);
-        ui_statusf("No config directory, so there is nowhere to look for imports.");
+    ctx->sel = -1;
+    if (rr_library_scan(&ctx->lib, dir) < 0) {
+        ui_statusf("Could not read the imports directory %s", dir);
+        rr_browse_ctx_free(ctx);
         return;
     }
-    (void)dsd_dir_list(list->dir, rr_refresh_collect, list);
-    if (list->count == 0) {
+    if (ctx->lib.count == 0) {
         /* Reported once here, on activation, rather than by the menu predicate:
-           predicates run on every menu render and listing a directory plus
-           reading a sidecar per entry at 15 FPS is filesystem traffic for
-           nothing. Status text is emitted before the free that owns the dir. */
-        ui_statusf("No RadioReference imports found in %s", list->dir);
-        rr_refresh_list_free(list);
+           listing a directory and reading a sidecar per entry at ~15 FPS would be
+           filesystem traffic for nothing. */
+        ui_statusf("No RadioReference imports found in %s", dir);
+        rr_browse_ctx_free(ctx);
         return;
     }
-    qsort(list->entries, (size_t)list->count, sizeof list->entries[0], rr_refresh_entry_cmp);
-    for (int i = 0; i < list->count; i++) {
-        list->items[i] = list->entries[i].label;
+    rr_library_sort(&ctx->lib);
+
+    /* In-use marking reads the published snapshot, never the live opts: the
+       decoder thread rewrites chan_in_file / group_in_file under no lock. A NULL
+       snapshot (no session, or one publish behind) simply marks nothing. */
+    const dsd_opts* snap = dsd_app_get_latest_opts_snapshot();
+    const char* chan_in_use = (snap != NULL) ? snap->chan_in_file : NULL;
+    const char* group_in_use = (snap != NULL) ? snap->group_in_file : NULL;
+
+    for (int idx = 0; idx < ctx->lib.count; idx++) {
+        const int in_use = rr_library_system_in_use(&ctx->lib.systems[idx], chan_in_use, group_in_use);
+        (void)rr_library_row_format(&ctx->lib.systems[idx], in_use, ctx->rows[idx], sizeof ctx->rows[0]);
+        ctx->items[idx] = ctx->rows[idx];
     }
-    /* ui_chooser_start() answers -1 synchronously when count <= 0, which the
-       early return above already rules out; chooser_done_rr_refresh() is
-       re-entrant-safe either way because it frees exactly once. */
-    ui_chooser_start("Refresh RadioReference import", list->items, list->count, chooser_done_rr_refresh, list);
+    if (ctx->lib.overflow) {
+        ui_statusf("Showing the first %d imported systems in %s.", ctx->lib.count, dir);
+    }
+    ui_chooser_start("Imported Systems", ctx->items, ctx->lib.count, rr_browse_system_done, ctx);
 }
 
 // cppcheck-suppress-end constParameterPointer
@@ -354,6 +531,7 @@ rr_panel_close(void) {
     if (g_rr_panel.core != NULL) {
         rr_wizard_core_cancel(g_rr_panel.core); /* bumps the generation; late results are dropped */
     }
+    rr_panel_refresh_queue_clear(); /* a half-done system refresh must not resume after a close */
     g_rr_panel.active = 0;
     /* The core, its client and the password deliberately survive: the password is asked
        once per app session. rr_panel_shutdown() is what destroys them. */
@@ -392,7 +570,26 @@ rr_panel_tick(dsd_opts* opts, dsd_state* state) {
        a completed refresh land. Neither has a renderer, and rr_panel_handle_key()
        consumes every key while the panel is active, so staying active on either
        would leave a modal that draws nothing and cannot be dismissed. */
-    if (step == RR_STEP_IDLE || step == RR_STEP_IMPORTING) {
+    if (step == RR_STEP_ERROR) {
+        /* A queued refresh that failed stops the queue: the error renders and the
+           user dismisses it; the remaining file is not attempted. */
+        rr_panel_refresh_queue_clear();
+        return;
+    }
+    if (step == RR_STEP_IDLE) {
+        /* A refresh that just succeeded returns the core to idle; if the system
+           had a second file, start it before deactivating. A plain cancel also
+           lands here, but with refresh_active clear, so it just deactivates. */
+        if (g_rr_panel.refresh_active && rr_panel_refresh_queue_start_next()) {
+            return;
+        }
+        rr_panel_refresh_queue_clear();
+        g_rr_panel.active = 0;
+    } else if (step == RR_STEP_IMPORTING) {
+        /* Cleared here too, so "refresh_active implies the panel is active" holds
+           on every terminal step: a queue left armed behind a deactivated panel
+           would resume against a file the next panel session never selected. */
+        rr_panel_refresh_queue_clear();
         g_rr_panel.active = 0;
     }
 }
@@ -985,6 +1182,12 @@ rr_panel_handle_key(int ch) {
     }
     if (rr_wizard_core_fetch_in_flight(g_rr_panel.core)) {
         if (rr_panel_is_cancel_key(ch)) {
+            /* Drop the queue FIRST: rr_wizard_core_cancel() parks the core on
+               RR_STEP_IDLE, which is the same step a completed refresh lands on,
+               so a still-armed queue would make rr_panel_tick() read the cancel
+               as "that half finished" and start fetching the other one. A cancel
+               ends the whole system refresh, not just the file in flight. */
+            rr_panel_refresh_queue_clear();
             rr_wizard_core_cancel(g_rr_panel.core);
         }
         return 1;

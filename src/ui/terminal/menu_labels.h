@@ -20,7 +20,7 @@ bool io_always_on(const void* ctx);
 bool io_rtl_active(const void* ctx);
 bool rr_feature_available(const void* ctx);
 bool rr_key_prompt_offered(const void* ctx);
-bool rr_refresh_available(const void* ctx);
+bool rr_imports_available(const void* ctx);
 
 #ifdef USE_RADIO
 bool is_mod_qpsk(const void* v);

@@ -24,6 +24,7 @@
 #if defined(__SSE__) || defined(__SSE2__)
 #include <xmmintrin.h>
 #endif
+#include "csv_picker.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
@@ -342,13 +343,13 @@ act_setmod_bw(void* v) {
 void
 act_import_chan(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_string_async("Channel map CSV", NULL, 1024, cb_import_chan, c);
+    ui_csv_import_picker_open("chan", "Channel map CSV", 1024, cb_import_chan, c);
 }
 
 void
 act_import_group(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_string_async("Group list CSV", NULL, 1024, cb_import_group, c);
+    ui_csv_import_picker_open("group", "Group list CSV", 1024, cb_import_group, c);
 }
 
 void
@@ -397,12 +398,12 @@ act_rr_import(void* v) {
 }
 
 void
-act_rr_refresh(void* v) {
+act_rr_library(void* v) {
     UiCtx* c = (UiCtx*)v;
     if (!c || !c->opts) {
         return;
     }
-    rr_panel_open_refresh(c->opts, c->state);
+    rr_panel_open_library(c->opts, c->state);
 }
 
 void

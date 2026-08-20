@@ -236,22 +236,32 @@ typedef struct {
     const char* alternate;
     const char* scan;
     const char* scan_alternate;
+    /* token is the on-disk identity of the enum value: a provenance sidecar
+       written by one build is read by another, so it is never localised, never
+       renamed and never renumbered. short_name is display only - a terminal list
+       column, at most DSD_RR_PROTO_SHORT_NAME_MAX bytes - and may be reworded
+       freely because nothing reads it back. Both are columns of THIS row rather
+       than a parallel table so a protocol cannot gain a decode flag without also
+       gaining an on-disk identity, which would silently write recipe-less
+       sidecars. */
+    const char* token;
+    const char* short_name;
 } rr_protocol_entry;
 
 static const rr_protocol_entry k_protocols[] = {
-    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL},
-    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL},
-    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL},
-    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL},
-    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL},
-    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL},
-    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y"},
-    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL},
-    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL},
-    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL},
+    {DSD_RR_PROTO_P25, 0U, 1U, RR_ALT_ON_SIMULCAST, "-ft -^", "-mq -^", NULL, NULL, "p25", "P25"},
+    {DSD_RR_PROTO_DMR_CONPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_conplus", "DMR Con+"},
+    {DSD_RR_PROTO_DMR_CAPPLUS, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_capplus", "DMR Cap+"},
+    {DSD_RR_PROTO_DMR_TIER3, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_tier3", "DMR TIII"},
+    {DSD_RR_PROTO_DMR_XPT, 0U, 2U, RR_ALT_NEVER, "-fs", NULL, NULL, NULL, "dmr_xpt", "DMR XPT"},
+    {DSD_RR_PROTO_NXDN48, 0U, 1U, RR_ALT_NEVER, "-fi", NULL, NULL, NULL, "nxdn48", "NXDN48"},
+    {DSD_RR_PROTO_NXDN96, 0U, 1U, RR_ALT_NEVER, "-fn", NULL, NULL, NULL, "nxdn96", "NXDN96"},
+    {DSD_RR_PROTO_EDACS_STD, 0U, 2U, RR_ALT_ON_ESK, "-fh", "-fH", NULL, NULL, "edacs_std", "EDACS"},
+    {DSD_RR_PROTO_EDACS_EA, 0U, 2U, RR_ALT_ON_ESK, "-fe", "-fE", NULL, NULL, "edacs_ea", "EDACS EA"},
+    {DSD_RR_PROTO_P25_CONV, 1U, 1U, RR_ALT_ON_SIMULCAST, "-ft", "-mq", "-ft -Y", "-mq -Y", "p25_conv", "P25 conv"},
+    {DSD_RR_PROTO_DMR_CONV, 1U, 1U, RR_ALT_NEVER, "-fs", NULL, "-fs -Y", NULL, "dmr_conv", "DMR conv"},
+    {DSD_RR_PROTO_NXDN48_CONV, 1U, 1U, RR_ALT_NEVER, "-fi", NULL, "-fi -Y", NULL, "nxdn48_conv", "NXDN48 conv"},
+    {DSD_RR_PROTO_NXDN96_CONV, 1U, 1U, RR_ALT_NEVER, "-fn", NULL, "-fn -Y", NULL, "nxdn96_conv", "NXDN96 conv"},
 };
 
 /**
@@ -286,6 +296,31 @@ int
 dsd_rr_chan_map_need(dsd_rr_protocol protocol) {
     const rr_protocol_entry* row = rr_protocol_row(protocol);
     return (row != NULL) ? (int)row->map_need : 0;
+}
+
+const char*
+dsd_rr_protocol_token(dsd_rr_protocol protocol) {
+    const rr_protocol_entry* row = rr_protocol_row(protocol);
+    return (row != NULL) ? row->token : NULL;
+}
+
+const char*
+dsd_rr_protocol_short_name(dsd_rr_protocol protocol) {
+    const rr_protocol_entry* row = rr_protocol_row(protocol);
+    return (row != NULL) ? row->short_name : NULL;
+}
+
+dsd_rr_protocol
+dsd_rr_protocol_from_token(const char* token) {
+    if (token == NULL || token[0] == '\0') {
+        return DSD_RR_PROTO_UNSUPPORTED;
+    }
+    for (size_t i = 0; i < sizeof(k_protocols) / sizeof(k_protocols[0]); i++) {
+        if (strcmp(k_protocols[i].token, token) == 0) {
+            return k_protocols[i].protocol;
+        }
+    }
+    return DSD_RR_PROTO_UNSUPPORTED;
 }
 
 const char*

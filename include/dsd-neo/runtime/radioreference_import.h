@@ -227,6 +227,29 @@ int dsd_rr_protocol_edacs_ea(dsd_rr_protocol protocol);
 size_t dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz);
 
 /**
+ * @brief How a generated system was applied, so a stored import can be re-applied.
+ *
+ * The provenance already records where a file came from; this records what the
+ * import did with it - decode mode, tuning, trunking - so the terminal's
+ * Imported Systems browser can re-apply a system without re-fetching it. Derived
+ * from the applied plan by dsd_rr_recipe_from_plan() and turned back into a
+ * minimal plan by dsd_rr_recipe_to_plan(), which the same apply path consumes.
+ *
+ * present is 0 for a sidecar written before this existed and for a token a newer
+ * build wrote; such a file still lists in the browser but re-applies nothing but
+ * its CSVs.
+ */
+typedef struct {
+    int present;              /**< 1 when the fields below carry a usable recipe. */
+    dsd_rr_protocol protocol; /**< Classified protocol; drives the decode mode. */
+    long long tune_hz;        /**< Session start frequency; > 0 when present. */
+    int trunking;             /**< Mutually exclusive with a scan list. */
+    int scan_list;            /**< Conventional multi-repeater scan (-Y). */
+    int simulcast;            /**< Resolved LSM/CQPSK answer the flag was built with. */
+    int esk;                  /**< Resolved EDACS ESK answer. */
+} dsd_rr_recipe;
+
+/**
  * @brief Plain-text provenance recorded beside each generated RadioReference CSV.
  *
  * Written to "<csv path>.rr". Refresh reads it back to re-fetch the same system
@@ -242,7 +265,33 @@ typedef struct {
     int partial_enc_as_de; /**< The partial-encryption answer the file was built with. */
     char system_name[128]; /**< System name as fetched, for display only. */
     long long imported_at; /**< Unix seconds; informational only. */
+    dsd_rr_recipe recipe;  /**< How to re-apply; recipe.present == 0 when absent. */
 } dsd_rr_provenance;
+
+/**
+ * @brief Derive the re-apply recipe from the plan an import applied.
+ *
+ * @param plan Built by dsd_rr_import_plan_build(). A plan with ok == 0 yields a
+ *             recipe with present == 0.
+ * @param out  Zeroed, then filled. Never NULL.
+ */
+void dsd_rr_recipe_from_plan(const dsd_rr_import_plan* plan, dsd_rr_recipe* out);
+
+/**
+ * @brief Rebuild the minimal plan a stored recipe re-applies.
+ *
+ * Produces exactly the fields dsd_app_rr_fill_apply_payload() reads - protocol,
+ * conventional/trunking/scan_list, chan_need, simulcast, esk, tune_hz, freq_mhz,
+ * decode_flag - and nothing on the heap. It does not regenerate CSVs; the stored
+ * files are applied by path.
+ *
+ * @param recipe            A recipe with present == 1.
+ * @param partial_enc_as_de The stored partial-encryption answer, copied through.
+ * @param out               Zeroed, then filled with plan->ok == 1. Never NULL.
+ * @return 0 on success, -1 when recipe is NULL, out is NULL, recipe->present is
+ *         0, or the protocol has no decode flag.
+ */
+int dsd_rr_recipe_to_plan(const dsd_rr_recipe* recipe, int partial_enc_as_de, dsd_rr_import_plan* out);
 
 /**
  * @brief Write "<csv_path>.rr" atomically.
