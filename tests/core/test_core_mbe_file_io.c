@@ -663,6 +663,667 @@ test_sdrtrunk_json_encryption_metadata_updates_payload_state(void) {
     return rc;
 }
 
+// --dmr-tg-key-csv was a complete no-op for sdrtrunk JSON replay: that path activated keys
+// directly and never reached the voice-frame prep where the map used to be applied.
+//
+// state->R is the wrong thing to assert on here, and asserting on it is what let the AES sub-case
+// stay silently inert: the replay keystream builders index rkey_array by *key id* and consult
+// state->R only as a fallback when that index is empty, and sdrtrunk_build_aes_keystream_bytes()
+// never reads state->R at all. What actually decrypts is ctx->ks, which ambe2_str_to_decode()
+// XORs into each voice frame before saveAmbe2450Data() writes it -- so these cases pin the MBE
+// records the replay produced.
+//
+// Each JSON record is replayed three times: once with the map (signaled key id 0x03, row
+// TG 123 -> 0x7B), once with 0x7B signaled directly and no map (the bytes the mapped run must
+// reproduce), and once with 0x03 signaled and no map (the bytes it must not). The third run is
+// what makes the second load-bearing: a builder that ignored the key id entirely would satisfy
+// the equality alone.
+//
+// JSON object field order is not a contract, and the neighbouring P25 fixtures in this file
+// (and the DMR late-entry fixture below) all put "encryption_mi" ahead of "to"/"from" --
+// sdrtrunk_json_handle_mi() alone would see ctx->target_id still 0 in that order and build the
+// keystream from the signaled key id. sdrtrunk_json_apply_dmr_tg_key_map() runs on every token
+// and rebuilds it once target_id is known, the same way sdrtrunk_json_apply_forced_algid()'s own
+// fallback already re-activates, so both field orders must reach the same records.
+enum {
+    SDRTRUNK_MAP_SIGNALED_KID = 0x03,
+    SDRTRUNK_MAP_MAPPED_KID = 0x7B,
+    SDRTRUNK_MAP_TG = 123,
+    SDRTRUNK_MAP_RECORD_CAP = 128,
+};
+
+// Distinguishable material at both key ids, on every segment the builders read. rkey_array[kid]
+// doubles as the RC4/DES scalar and as the AES A1 segment, exactly as
+// keyring_activate_slot_with_kid() treats it; the remaining three offsets are AES-only, and
+// AES-256 is the only algorithm that reaches the last two.
+static void
+seed_sdrtrunk_dmr_replay_keys(dsd_state* state) {
+    static const unsigned long long int material[2][4] = {
+        {0xA1A2A3A4A5ULL, 0xA6A7A8A9AAABACADULL, 0xAEAFB0B1B2B3B4B5ULL, 0xB6B7B8B9BABBBCBDULL},
+        {0xC1C2C3C4C5ULL, 0xC6C7C8C9CACBCCCDULL, 0xCECFD0D1D2D3D4D5ULL, 0xD6D7D8D9DADBDCDDULL},
+    };
+    static const int segment_offset[4] = {0x000, 0x101, 0x201, 0x301};
+    static const int kids[2] = {SDRTRUNK_MAP_SIGNALED_KID, SDRTRUNK_MAP_MAPPED_KID};
+
+    state->keyloader = 1;
+    for (size_t k = 0; k < 2U; k++) {
+        for (size_t s = 0; s < 4U; s++) {
+            const int index = kids[k] + segment_offset[s];
+            state->rkey_array[index] = material[k][s];
+            state->rkey_array_loaded[index] = 1U;
+        }
+    }
+}
+
+static int
+capture_sdrtrunk_replay_records(const char* tag, const char* json, dsd_state* state, unsigned char* out, size_t out_cap,
+                                size_t* out_len) {
+    int rc = 0;
+    static dsd_opts opts;
+    static Event_History_I history[2];
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(history, 0, sizeof history);
+    DSD_MEMSET(out, 0, out_cap);
+    *out_len = 0;
+    opts.playfiles = 1;
+    opts.floating_point = 1;
+    state->event_history_s = history;
+
+    FILE* f = tmpfile();
+    if (!f) {
+        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    opts.mbe_out_f = f;
+    rc |= run_sdrtrunk_json(json, &opts, state);
+    rc |= expect_int(tag, fflush(f), 0);
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        DSD_FPRINTF(stderr, "fseek(%s) failed\n", tag);
+        rc = 1;
+    }
+    clearerr(f);
+    *out_len = fread(out, 1, out_cap, f);
+    if (ferror(f)) {
+        DSD_FPRINTF(stderr, "fread(%s) failed\n", tag);
+        rc = 1;
+    }
+    fclose(f);
+    opts.mbe_out_f = NULL;
+    return rc;
+}
+
+// Three all-zero AMBE frames follow the metadata: the decoded record body is then purely a
+// function of the keystream window each frame consumed, so a wrong key changes every byte after
+// the error count. addr_before/addr_after place "to"/"from" on either side of the crypto fields
+// without changing anything else about the record.
+static void
+build_sdrtrunk_map_json(char* out, size_t cap, const char* addr_before, const char* addr_after, unsigned alg_id,
+                        unsigned key_id) {
+    DSD_SNPRINTF(out, cap,
+                 "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",%s\"encrypted\":\"true\","
+                 "\"encryption_algorithm\":\"%u\",\"encryption_key_id\":\"%u\","
+                 "\"encryption_mi\":\"001122334455667788\",%s\"time\":\"1700000000000\","
+                 "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}",
+                 addr_before, alg_id, key_id, addr_after);
+}
+
+static int
+test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid(void) {
+    int rc = 0;
+
+    struct {
+        const char* label;
+        const char* addr_before;
+        const char* addr_after;
+    } orders[] = {
+        {"encryption_mi before to/from", "", "\"to\":\"123\",\"from\":\"456\","},
+        {"to/from before encryption_mi", "\"to\":\"123\",\"from\":\"456\",", ""},
+    };
+
+    struct {
+        const char* name;
+        unsigned alg_id;
+    } algs[] = {
+        {"rc4", 0x21U},
+        {"aes128", 0x89U},
+        {"aes256", 0x84U},
+    };
+
+    for (size_t o = 0; o < sizeof orders / sizeof orders[0]; o++) {
+        for (size_t a = 0; a < sizeof algs / sizeof algs[0]; a++) {
+            static dsd_state state;
+            unsigned char mapped[SDRTRUNK_MAP_RECORD_CAP];
+            unsigned char want[SDRTRUNK_MAP_RECORD_CAP];
+            unsigned char signaled[SDRTRUNK_MAP_RECORD_CAP];
+            size_t mapped_len = 0;
+            size_t want_len = 0;
+            size_t signaled_len = 0;
+            char json[512];
+            char tag[128];
+
+            // Mapped: the record signals 0x03, the map points TG 123 at 0x7B.
+            build_sdrtrunk_map_json(json, sizeof json, orders[o].addr_before, orders[o].addr_after, algs[a].alg_id,
+                                    (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+            DSD_MEMSET(&state, 0, sizeof state);
+            seed_sdrtrunk_dmr_replay_keys(&state);
+            state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+            state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+            state.dmr_tg_key_map_count = 1;
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map replay %s (%s)", algs[a].name, orders[o].label);
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, mapped, sizeof mapped, &mapped_len);
+            // The OTA key id stays the truth in state, as it does on every other path.
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk ota key id untouched %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_int(tag, state.payload_keyid, SDRTRUNK_MAP_SIGNALED_KID);
+            dsd_state_ext_free_all(&state);
+
+            // Reference: 0x7B signaled directly, no map row.
+            build_sdrtrunk_map_json(json, sizeof json, orders[o].addr_before, orders[o].addr_after, algs[a].alg_id,
+                                    (unsigned)SDRTRUNK_MAP_MAPPED_KID);
+            DSD_MEMSET(&state, 0, sizeof state);
+            seed_sdrtrunk_dmr_replay_keys(&state);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk mapped-key reference %s (%s)", algs[a].name, orders[o].label);
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, want, sizeof want, &want_len);
+            dsd_state_ext_free_all(&state);
+
+            // Decoy: 0x03 signaled, no map row -- what the map must move the output away from.
+            build_sdrtrunk_map_json(json, sizeof json, orders[o].addr_before, orders[o].addr_after, algs[a].alg_id,
+                                    (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+            DSD_MEMSET(&state, 0, sizeof state);
+            seed_sdrtrunk_dmr_replay_keys(&state);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk signaled-key decoy %s (%s)", algs[a].name, orders[o].label);
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, signaled, sizeof signaled, &signaled_len);
+            dsd_state_ext_free_all(&state);
+
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map replay wrote records %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_true(tag, mapped_len >= 24U && want_len == mapped_len && signaled_len == mapped_len);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk map keyed the keystream %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_u8_bits(tag, mapped, want, mapped_len < want_len ? mapped_len : want_len);
+            DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk keys are distinguishable %s (%s)", algs[a].name, orders[o].label);
+            rc |= expect_true(tag, mapped_len != signaled_len || memcmp(mapped, signaled, mapped_len) != 0);
+        }
+    }
+    return rc;
+}
+
+// Task 3 (commit 17040e67) made sdrtrunk_json_apply_dmr_tg_key_map()'s gate depend on
+// dsd_dmr_alg_key_need(ctx->alg_id), so a map row now only satisfies the material check once
+// ctx->alg_id is known -- a row can now only apply once the "encryption_algorithm" token has been
+// seen. sdrtrunk_json_apply_dmr_tg_key_map() still runs on every token and self-corrects once
+// alg_id lands (see its own comment above), and sdrtrunk_json_rekey_slot0() rebuilds the keystream
+// whenever ks_built==0 or ks_key_id != kid, so both orderings are expected to settle on the same
+// mapped key by the time "hex" is reached.
+//
+// This pins that seam specifically: the "encryption_mi before/after to from" cases above move the
+// whole encrypted/algorithm/key_id/mi block as one unit, which happens to carry
+// "encryption_algorithm" along with it -- build_sdrtrunk_map_json()'s "to/from before
+// encryption_mi" order IS "encryption_algorithm after to/from", the ordering Task 3 made
+// load-bearing, so no new fixture is needed: reusing the helper's existing two orders and
+// asserting their MAPPED outputs match each other (not just each its own same-order reference)
+// is what the earlier matrix test never checked directly.
+static int
+test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order(void) {
+    int rc = 0;
+    char algorithm_first[512];
+    char addressing_first[512];
+    static dsd_state state;
+    unsigned char algorithm_first_out[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char addressing_first_out[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char signaled_out[SDRTRUNK_MAP_RECORD_CAP];
+    size_t algorithm_first_len = 0;
+    size_t addressing_first_len = 0;
+    size_t signaled_len = 0;
+
+    // "encryption_algorithm" (bundled with key_id/mi) ahead of "to"/"from".
+    build_sdrtrunk_map_json(algorithm_first, sizeof algorithm_first, "", "\"to\":\"123\",\"from\":\"456\",", 0x21U,
+                            (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+    // "to"/"from" ahead of "encryption_algorithm" -- ctx->alg_id is still 0 (dsd_dmr_alg_key_need()
+    // reads DSD_KEY_NEED_NONE) when target_id lands, so the map cannot apply on that token; it must
+    // catch up once "encryption_algorithm" itself is parsed.
+    build_sdrtrunk_map_json(addressing_first, sizeof addressing_first, "\"to\":\"123\",\"from\":\"456\",", "", 0x21U,
+                            (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk map algorithm before to/from", algorithm_first, &state,
+                                          algorithm_first_out, sizeof algorithm_first_out, &algorithm_first_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk map to/from before algorithm", addressing_first, &state,
+                                          addressing_first_out, sizeof addressing_first_out, &addressing_first_len);
+    dsd_state_ext_free_all(&state);
+
+    // No map row loaded: the signaled key alone. Proves the equality below is not vacuous -- i.e.
+    // that the map genuinely applied in both orders rather than in neither.
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk map algorithm-order signaled reference", algorithm_first, &state,
+                                          signaled_out, sizeof signaled_out, &signaled_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk map algorithm-order records wrote output",
+                      algorithm_first_len >= 24U && addressing_first_len == algorithm_first_len
+                          && signaled_len == algorithm_first_len);
+    rc |= expect_u8_bits("sdrtrunk map settles on the mapped key regardless of algorithm order", addressing_first_out,
+                         algorithm_first_out, algorithm_first_len);
+    rc |= expect_true("sdrtrunk map algorithm-order still moved the keystream off the signaled key",
+                      memcmp(algorithm_first_out, signaled_out, algorithm_first_len) != 0);
+    return rc;
+}
+
+// A private call's destination is a RADIO ID, and DMR radio ids share the talkgroup's 24-bit
+// space, so a map row must never key one. The map is resolved on every token because JSON field
+// order is not a contract, which means it can be applied on a partially-parsed record and then
+// have to be taken back out again: here "call_type" arrives after the crypto fields, so the map
+// applies against the still-default GROUP reading first and the later PRIVATE reading has to undo
+// it. The reference run signals the same key id with no map row loaded at all.
+static int
+test_sdrtrunk_json_private_call_never_keeps_a_map_row(void) {
+    int rc = 0;
+    // "call_type" last: every earlier token sees the DSD_CALL_KIND_VOICE default, which reads as
+    // group. The destination radio id equals the mapped talkgroup number on purpose.
+    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"encrypted\":\"true\","
+                               "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+                               "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\","
+                               "\"call_type\":\"PRIVATE\",\"time\":\"1700000000000\","
+                               "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\","
+                               "\"hex\":\"000000000000000000\"}";
+    static dsd_state state;
+    unsigned char with_map[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char without_map[SDRTRUNK_MAP_RECORD_CAP];
+    size_t with_map_len = 0;
+    size_t without_map_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk private call with map", json, &state, with_map, sizeof with_map,
+                                          &with_map_len);
+    // The map must leave no trace in the slot key either.
+    rc |= expect_true("sdrtrunk private call slot key is the signaled one",
+                      state.R == state.rkey_array[SDRTRUNK_MAP_SIGNALED_KID]);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk private call without map", json, &state, without_map,
+                                          sizeof without_map, &without_map_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk private call wrote records", with_map_len >= 24U);
+    rc |= expect_true("sdrtrunk private call ignores the map row",
+                      with_map_len == without_map_len && memcmp(with_map, without_map, with_map_len) == 0);
+    return rc;
+}
+
+// sdrtrunk_json_apply_forced_algid() builds its own RC4 keystream from a payload_mi-derived IV,
+// on every token, and that build wins over the one sdrtrunk_json_handle_mi() made -- so the
+// resolved key id has to reach it too. With --dmr-force-algid set (state.M) and no
+// "encryption_algorithm" field, this is the only build that runs, which is what keeps this
+// fixture pointed at that one call site instead of at handle_mi's.
+//
+// The talkgroup is 4567 rather than 123 on purpose: 123 == 0x7B is also the mapped key id, so
+// this branch's implicit rkey_array[target_id] fallback would collide with the map's own index
+// and mask which of the two produced the keystream. rkey_array[4567] is left empty so the
+// fallback cannot fire at all here.
+static int
+test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream(void) {
+    int rc = 0;
+    static const char json_signaled_kid[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_key_id\":\"3\",\"encryption_mi\":\"001122334455667788\","
+        "\"to\":\"4567\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    static const char json_mapped_kid[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_key_id\":\"123\",\"encryption_mi\":\"001122334455667788\","
+        "\"to\":\"4567\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    static dsd_state state;
+    unsigned char mapped[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char want[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char signaled[SDRTRUNK_MAP_RECORD_CAP];
+    size_t mapped_len = 0;
+    size_t want_len = 0;
+    size_t signaled_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    state.dmr_tg_key_map_tg[0] = 4567U;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced-algid map replay", json_signaled_kid, &state, mapped,
+                                          sizeof mapped, &mapped_len);
+    rc |= expect_int("sdrtrunk forced-algid ota key id untouched", state.payload_keyid, SDRTRUNK_MAP_SIGNALED_KID);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced-algid mapped-key reference", json_mapped_kid, &state, want,
+                                          sizeof want, &want_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced-algid signaled-key decoy", json_signaled_kid, &state,
+                                          signaled, sizeof signaled, &signaled_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk forced-algid replay wrote records",
+                      mapped_len >= 24U && want_len == mapped_len && signaled_len == mapped_len);
+    rc |= expect_u8_bits("sdrtrunk forced-algid map keyed the keystream", mapped, want,
+                         mapped_len < want_len ? mapped_len : want_len);
+    rc |= expect_true("sdrtrunk forced-algid keys are distinguishable",
+                      mapped_len != signaled_len || memcmp(mapped, signaled, mapped_len) != 0);
+    return rc;
+}
+
+// sdrtrunk_json_apply_forced_algid() runs on every token, and its RC4 branch only rebuilds a
+// keystream when both a key (state->R) and an IV (state->payload_mi) are known. Before this fix,
+// when that guard failed, the PREVIOUS token's ctx->ks_available simply stayed in force, so the
+// decoder kept reporting a record decryptable using a keystream it no longer had grounds to trust.
+//
+// For a genuinely unseeded key id, self-correction depends on "encryption_mi" landing before
+// "hex" -- true of every fixture in this file: sdrtrunk_json_handle_mi() unconditionally
+// activates the signaled id *and* rebuilds ctx->ks_available in the same call, so state->R and
+// ctx->ks_available land back in sync before "hex" is reached. (A "hex" token that arrives before
+// its own "encryption_mi" does not get this protection -- the guard's success branch, which this
+// fix does not touch, still falls back to whatever state->R currently holds, so a still-active
+// previous key can decode it under a signaled-but-unseeded id; that is a separate, unaddressed
+// leak.) The guard's failure survives to a later "hex" token only when state->R stays valid (a
+// properly imported key) while state->payload_mi alone goes to zero: an all-zero "encryption_mi"
+// is exactly that -- a real, importable key with no usable IV. handle_mi()'s own build succeeds
+// anyway (RC4 does not reject a zero IV), latching ctx->ks_available=1 from a keystream built with
+// a bogus, all-zero IV; the very next token's guard check then sees payload_mi==0 and, pre-fix,
+// left that latch alone instead of reporting "no keystream." Both records below signal the SAME
+// key id (3, imported by seed_sdrtrunk_dmr_replay_keys()) so state->R is genuinely valid
+// throughout -- the only thing the second record lacks is its own IV.
+//
+// Each record below carries a single all-zero AMBE frame (build_sdrtrunk_map_json()'s comment
+// covers the three-frame version of this same property), so the decoded body is purely a function
+// of the keystream window that one frame consumes; a blocked record must therefore write nothing
+// at all rather than merely differing bytes.
+static int
+test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv(void) {
+    int rc = 0;
+    /* A normal, fully decryptable forced-RC4 record: kid 3, a real MI. */
+    static const char json_keyed[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
+                                     "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
+                                     "\"encryption_mi\":\"001122334455667788\",\"to\":\"4567\","
+                                     "\"from\":\"456\",\"time\":\"1700000000000\","
+                                     "\"hex\":\"000000000000000000\"}";
+    /* SAME key id 3 (still a valid, imported key) but an all-zero MI -- no usable IV. */
+    static const char json_no_iv[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
+                                     "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
+                                     "\"encryption_mi\":\"000000000000000000\",\"to\":\"4567\","
+                                     "\"from\":\"456\",\"time\":\"1700000001000\","
+                                     "\"hex\":\"000000000000000000\"}";
+    char pair[1024];
+    static dsd_state state;
+    unsigned char keyed[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char both[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char alone[SDRTRUNK_MAP_RECORD_CAP];
+    size_t keyed_len = 0;
+    size_t both_len = 0;
+    size_t alone_len = 0;
+
+    DSD_SNPRINTF(pair, sizeof pair, "%s\n%s", json_keyed, json_no_iv);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21; /* --dmr-force-algid 21 */
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced rc4 keyed reference", json_keyed, &state, keyed,
+                                          sizeof keyed, &keyed_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced rc4 keyed then no-iv pair", pair, &state, both, sizeof both,
+                                          &both_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced rc4 no-iv alone", json_no_iv, &state, alone, sizeof alone,
+                                          &alone_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk forced rc4 keyed record wrote a record", keyed_len >= 8U);
+    rc |= expect_true("sdrtrunk forced rc4 record with no iv writes nothing alone", alone_len == 0U);
+    rc |=
+        expect_true("sdrtrunk forced rc4 record with no iv writes nothing after a keyed record", both_len == keyed_len);
+    rc |= expect_u8_bits("sdrtrunk forced rc4 keyed record unaffected by the trailing no-iv record", both, keyed,
+                         both_len < keyed_len ? both_len : keyed_len);
+    return rc;
+}
+
+// state->M forces ctx->alg_id to its own literal value for every state->M in 0x21..0x25
+// (sdrtrunk_json_apply_forced_algid()), but sdrtrunk_build_voice_keystream_bytes() only
+// recognizes 0xAA/0x21 (RC4), 0x81 (DES), and 0x84/0x89 (AES) -- none of which match DMR's own
+// forced-DES/AES numbering (0x22 DES, 0x24 AES-128, 0x25 AES-256) or the unused 0x23.
+// sdrtrunk_json_handle_mi() shares that same builder chain, so no path in this file can ever build
+// a keystream for a forced 0x22..0x25 replay today, regardless of whether the signaled key id and
+// MI are both valid. That is what makes the ctx->alg_id == 0x21 scope on the fix above safe rather
+// than merely convenient: an unscoped else would be a no-op for these values today, since
+// ctx->ks_available is already permanently 0 for them. This pins that today-truth, so it fails the
+// day sdrtrunk_build_voice_keystream_bytes() (or the 0x21 branches themselves) is widened to reach
+// these algids without the else being widened to match. The key id (3) and MI are the same valid,
+// imported ones the RC4 tests above use -- not an unkeyed record -- so a regression that wrongly
+// routed 0x22..0x25 through the RC4 path (rather than merely failing to build) would also be
+// caught here.
+static int
+test_sdrtrunk_forced_des_and_aes_never_report_a_keystream(void) {
+    int rc = 0;
+    static const int forced_algids[] = {0x22, 0x23, 0x24, 0x25};
+    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
+                               "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
+                               "\"encryption_mi\":\"001122334455667788\",\"to\":\"4567\","
+                               "\"from\":\"456\",\"time\":\"1700000000000\","
+                               "\"hex\":\"000000000000000000\"}";
+
+    for (size_t i = 0; i < sizeof forced_algids / sizeof forced_algids[0]; i++) {
+        static dsd_state state;
+        unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
+        size_t out_len = 0;
+        char tag[96];
+
+        DSD_MEMSET(&state, 0, sizeof state);
+        seed_sdrtrunk_dmr_replay_keys(&state);
+        state.M = forced_algids[i];
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk forced 0x%02x writes no keystream", forced_algids[i]);
+        rc |= capture_sdrtrunk_replay_records(tag, json, &state, out, sizeof out, &out_len);
+        dsd_state_ext_free_all(&state);
+        rc |= expect_true(tag, out_len == 0U);
+    }
+    return rc;
+}
+
+// With no matching row, the pre-existing implicit "key indexed by talkgroup" replay behavior
+// must be untouched -- replay workflows depend on it. That convention lives only in
+// sdrtrunk_json_apply_forced_algid()'s DMRA branch (state.M in 0x21..0x25): handle_mi has no
+// rkey_array[target_id] fallback of its own -- an unmapped target there activates the
+// *signaled* key id, not the target-keyed one -- so this fixture forces state.M and drops
+// encryption_mi from the token stream entirely, keeping the assertion pointed at the one path
+// that implements the behavior it names.
+static int
+test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+                               "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"3\","
+                               "\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+    state.M = 0x21;
+
+    state.keyloader = 1;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    // No map row for 123; the implicit lookup keys R off the target id itself.
+    state.rkey_array[123] = 0xCCCCCULL;
+    state.rkey_array_loaded[123] = 1U;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_u64("sdrtrunk implicit lookup preserved", state.R, 0xCCCCCULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// sdrtrunk_json_handle_mi() also serves P25 replay, where ctx->key_id (a uint16_t; P25 signals a
+// full 16-bit KID) must reach keyring_activate_slot_with_kid() at full width, not narrowed to
+// the DMR resolver's uint8_t. Neither P25 fixture above sets state.keyloader = 1, so nothing
+// else in this file exercises this activation block on the P25 path. rkey_array is seeded at
+// both the real key id (4660) and the 8-bit-truncated one (4660 & 0xFF == 0x34) with
+// distinguishable material so a reintroduced narrowing cast lands on the wrong value instead of
+// silently matching.
+static int
+test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] =
+        "{\"version\":\"2\",\"protocol\":\"APCO25-PHASE1\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"129\",\"encryption_key_id\":\"4660\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"55\",\"from\":\"66\",\"time\":\"1700000000000\"}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xDDDDDULL;
+    state.rkey_array_loaded[4660] = 1U;
+    // Decoy at the 8-bit-truncated index: a reintroduced (uint8_t) cast would land here instead.
+    state.rkey_array[0x34] = 0xEEEEEULL;
+    state.rkey_array_loaded[0x34] = 1U;
+
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_u64("sdrtrunk p25 keyloader full-width key id", state.R, 0xDDDDDULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The DMR branch of that same block narrows the key id to the resolver's uint8_t, so a record
+// whose "encryption_key_id" does not fit a byte has to skip the resolver rather than be truncated
+// into rkey_array[id & 0xFF]. DMR signals a byte-wide KEY ID, so only a malformed record gets
+// here -- and a malformed record the map does not cover has to behave exactly as it did before
+// the map existed. The reference run signals 52 (== 4660 & 0xFF) against the same seeded keyring:
+// under a reintroduced narrowing the two runs would decrypt identically instead of differing.
+static int
+test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width(void) {
+    int rc = 0;
+    static dsd_state state;
+    static const char json_wide[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"4660\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    static const char json_truncated[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"52\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    unsigned char wide[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char truncated[SDRTRUNK_MAP_RECORD_CAP];
+    size_t wide_len = 0;
+    size_t truncated_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xD1D2D3D4D5ULL;
+    state.rkey_array_loaded[4660] = 1U;
+    // Decoy at the 8-bit-truncated index (4660 & 0xFF == 0x34 == 52).
+    state.rkey_array[0x34] = 0xE1E2E3E4E5ULL;
+    state.rkey_array_loaded[0x34] = 1U;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk dmr oversized key id", json_wide, &state, wide, sizeof wide,
+                                          &wide_len);
+    rc |= expect_u64("sdrtrunk dmr oversized key id activates full width", state.R, 0xD1D2D3D4D5ULL);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xD1D2D3D4D5ULL;
+    state.rkey_array_loaded[4660] = 1U;
+    state.rkey_array[0x34] = 0xE1E2E3E4E5ULL;
+    state.rkey_array_loaded[0x34] = 1U;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk dmr truncated key id", json_truncated, &state, truncated,
+                                          sizeof truncated, &truncated_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk dmr oversized key id wrote records", wide_len >= 24U && truncated_len == wide_len);
+    rc |= expect_true("sdrtrunk dmr oversized key id is not the truncated one",
+                      wide_len != truncated_len || memcmp(wide, truncated, wide_len) != 0);
+    return rc;
+}
+
+// sdrtrunk_json_apply_dmr_tg_key_map() keys its lookup on ctx->target_id alone --
+// keyring_dmr_effective_kid() never reads signaled_kid to decide whether a row matches, only as
+// the unmapped fallback value -- so an oversized signaled key id does not, by itself, stop a real
+// map row for the record's own talkgroup from being found. Only the <= 0xFF width guard does that,
+// by leaving `mapped` at 0 before the lookup ever runs. Without the guard, this function re-runs
+// once "to" lands (it runs on every token) and would apply the mapped key's material, overwriting
+// the full-width activation test_..._keeps_full_width() above already pins for handle_mi's own
+// path -- the exact same-file publish/gate divergence the design exists to prevent. This is that
+// test with a matching map row added: the row must still be refused, and state->R must still come
+// from the full-width signaled key, not the mapped one.
+static int
+test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row(void) {
+    int rc = 0;
+    static dsd_state state;
+    static const char json_wide[] =
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"true\","
+        "\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"4660\","
+        "\"encryption_mi\":\"001122334455667788\",\"to\":\"123\",\"from\":\"456\",\"time\":\"1700000000000\","
+        "\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\",\"hex\":\"000000000000000000\"}";
+    unsigned char out[SDRTRUNK_MAP_RECORD_CAP];
+    size_t out_len = 0;
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.keyloader = 1;
+    state.rkey_array[4660] = 0xD1D2D3D4D5ULL;
+    state.rkey_array_loaded[4660] = 1U;
+    // Decoy at the 8-bit-truncated index (4660 & 0xFF == 0x34).
+    state.rkey_array[0x34] = 0xE1E2E3E4E5ULL;
+    state.rkey_array_loaded[0x34] = 1U;
+    // A real row for the talkgroup this record signals ("to":"123" == SDRTRUNK_MAP_TG). It would
+    // win if the width guard were missing, since the map lookup does not consult signaled_kid.
+    state.rkey_array[SDRTRUNK_MAP_MAPPED_KID] = 0xF1F2F3F4F5ULL;
+    state.rkey_array_loaded[SDRTRUNK_MAP_MAPPED_KID] = 1U;
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk dmr oversized key id ignores map row", json_wide, &state, out,
+                                          sizeof out, &out_len);
+    rc |= expect_u64("sdrtrunk dmr oversized key id row refused, full width kept", state.R, 0xD1D2D3D4D5ULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_sdrtrunk_json_p25p2_encryption_metadata_updates_event(void) {
     int rc = 0;
@@ -1865,6 +2526,16 @@ main(void) {
     rc |= test_parse_raw_user_string_guards_and_bounds();
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
+    rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
+    rc |= test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order();
+    rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
+    rc |= test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv();
+    rc |= test_sdrtrunk_forced_des_and_aes_never_report_a_keystream();
+    rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
+    rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
+    rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();
+    rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_keeps_full_width();
+    rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_protocol_opens_and_closes_mbe_out_file();

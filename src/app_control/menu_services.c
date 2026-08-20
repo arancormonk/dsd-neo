@@ -8,6 +8,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
@@ -422,6 +423,10 @@ svc_clear_keys(dsd_opts* opts, dsd_state* state) {
     opts->key_in_file[0] = '\0';
     DSD_MEMSET(state->rkey_array, 0, sizeof state->rkey_array);
     DSD_MEMSET(state->rkey_array_loaded, 0, sizeof state->rkey_array_loaded);
+    // The TG->key ID override map indexes into the keyring, so it goes with it. One
+    // implementation, not a copy: tests/ui/test_ui_menu_services.c compiles this TU standalone and
+    // links src/core/vocoder/keyring.c alongside it.
+    keyring_dmr_tg_map_reset(state);
     // Disarm the keyring the way svc_import_keys_dec() arms it. Leaving it set
     // would keep every consumer treating the now-zeroed array as loaded keys.
     state->keyloader = 0;

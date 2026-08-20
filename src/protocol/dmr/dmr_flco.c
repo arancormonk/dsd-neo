@@ -20,6 +20,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -615,21 +616,58 @@ dmr_flco_voice_protocol(const dsd_state* state) {
     return DSD_SYNC_DMR_BS_VOICE_POS;
 }
 
+// The key material that will actually decrypt this call, which is not what the slot is carrying:
+// --dmr-tg-key-csv is applied on the voice path, and that has not run yet when the LC arrives, so
+// R/aes_key_loaded/A1..A4 still describe the previous key. Only a real map hit takes the lookup,
+// so the unmapped path reports byte-for-byte the slot state it always read.
+//
+// Shared by dmr_flco_publish_crypto() (the label the operator sees) and dmr_flco_slot_can_decrypt()
+// (the gate that arms the lockout and drops the channel). Those two must never disagree -- a
+// decoder that displays "decryptable" while retuning away from the call is the bug class this
+// resolution exists to fix -- so they resolve from one place. Each caller keeps its own algid == 0
+// handling, which is the only thing that actually differed between them.
+//
+// This resolves the key ID from ctx->target; keyring_dmr_slot_key_material() then owns the
+// slot-vs-mapped material rule, which dmr_pi.c publishes from as well.
+//
+// `algid` is a parameter rather than re-read here because both callers already have it, and a
+// second derivation is a second thing to keep in sync. It is the classification ALG ID from
+// dsd_dmr_classify_algid() -- OTA when known, else the --dmr-force-algid fallback the voice path
+// will install -- so a trunked call's first LC, which arrives with payload_algid freshly zeroed
+// by the tune, resolves the same map row and key the voice frames will. It selects only what key
+// material a map row must hold to be worth applying; the algid == 0 case resolves
+// DSD_KEY_NEED_NONE and no row applies -- moot, since that branch reads
+// dsd_dmr_missing_alg_key_can_decrypt() instead of this material.
+static dsd_dmr_key_material
+dmr_flco_resolve_key_material(const dmr_flco_ctx* ctx, int algid) {
+    const int signaled = ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR;
+    const int is_group = (dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE);
+    int mapped = 0;
+    const int eff_kid =
+        keyring_dmr_effective_kid(ctx->state, ctx->target, is_group, dsd_dmr_alg_key_need(algid), signaled, &mapped);
+    return dsd_dmr_slot_key_material(ctx->state, (int)ctx->slot, eff_kid, mapped);
+}
+
 static void
 dmr_flco_publish_crypto(const dmr_flco_ctx* ctx) {
     const int encrypted = (ctx->so & 0x40U) != 0U;
     const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
     const uint16_t kid = (uint16_t)(ctx->slot == 0U ? ctx->state->payload_keyid : ctx->state->payload_keyidR);
     const uint64_t mi = ctx->slot == 0U ? ctx->state->payload_mi : ctx->state->payload_miR;
-    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
-    const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
-                                    : dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
+
+    // Slot bound: dmr_flco_publish_voice(), the sole caller, returns early on
+    // ctx->slot >= DSD_CALL_STATE_SLOT_COUNT, so the per-slot reads below are in range.
+    // Classify under the ALG the voice path will decrypt with; the published `.algid` stays OTA.
+    const int class_algid = dsd_dmr_classify_algid(ctx->state, (int)ctx->slot, (int)ctx->so);
+    const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, class_algid);
+    const int has_key = class_algid == 0 ? dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot)
+                                         : dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, class_algid, &key);
     const dsd_call_crypto_update crypto = {
         .classification = !encrypted ? DSD_CALL_CRYPTO_CLEAR
                           : has_key  ? DSD_CALL_CRYPTO_DECRYPTABLE
                                      : DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
         .algid = algid,
-        .kid = kid,
+        .kid = kid, /* OTA truth, never the override */
         .mi = mi,
         .audio_permitted = (uint8_t)(!encrypted || has_key),
     };
@@ -939,16 +977,25 @@ dmr_flco_emit_enc_lockout_action(dmr_flco_ctx* ctx) {
     }
 }
 
-/* Key-aware: non-zero when the loaded key material can decrypt this slot's
- * call, so it is followed rather than locked out. */
+/* Key-aware: non-zero when the loaded key material can decrypt this slot's call, so it is
+ * followed rather than locked out. Resolves --dmr-tg-key-csv first -- locking out a talkgroup
+ * the map can decrypt forces a P_CLEAR and drops the channel, which cannot self-heal. */
 static int
 dmr_flco_slot_can_decrypt(const dmr_flco_ctx* ctx) {
-    const uint8_t algid = (uint8_t)(ctx->slot == 0U ? ctx->state->payload_algid : ctx->state->payload_algidR);
-    const uint64_t r_key = ctx->slot == 0U ? ctx->state->R : ctx->state->RR;
-    if (algid == 0U) {
+    // Unlike dmr_flco_publish_crypto(), this runs from the lockout path, which has no slot bound
+    // upstream. dsd_dmr_voice_slot_can_decrypt() used to reject an out-of-range slot before
+    // reading aes_key_loaded[]; that read now happens in the resolver, so check the bound here.
+    if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return 0;
+    }
+    // Same classification ALG as dmr_flco_publish_crypto(): the two must not disagree.
+    const int algid = dsd_dmr_classify_algid(ctx->state, (int)ctx->slot, (int)ctx->so);
+    if (algid == 0) {
         return dsd_dmr_missing_alg_key_can_decrypt(ctx->state, ctx->slot);
     }
-    return dsd_dmr_voice_slot_can_decrypt(ctx->state, ctx->slot, algid, r_key);
+
+    const dsd_dmr_key_material key = dmr_flco_resolve_key_material(ctx, algid);
+    return dsd_dmr_voice_kid_can_decrypt(ctx->state, ctx->slot, algid, &key);
 }
 
 static void

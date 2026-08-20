@@ -34,6 +34,7 @@ enum DSD_ATTR_PACKED {
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
     DSD_VERTEX_KS_MAP_MAX = 64,
+    DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
 };
 
@@ -404,6 +405,11 @@ struct dsd_state {
     // DMR LRRP 64-bit values
     unsigned long long int dmr_lrrp_source[2];
     unsigned long long int dmr_lrrp_target[2];
+    // 1 when the slot's last data header addressed a talkgroup (G/I bit set). The header's G/I
+    // bit is gone by the time the assembled PDU decrypts, and DMR radio ids share the
+    // talkgroup's 24-bit space, so the --dmr-tg-key-csv lookup needs this recorded alongside
+    // the target it qualifies.
+    uint8_t dmr_data_target_is_group[2];
     // P25 trunking freq storage
     long int p25_vc_freq[2];
     long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies
@@ -421,6 +427,24 @@ struct dsd_state {
     // Multi-key array
     unsigned long long int rkey_array[0x1FFFF];
     unsigned char rkey_array_loaded[0x1FFFF];
+    // DMR talkgroup -> key ID override map (--dmr-tg-key-csv): a mapped talkgroup
+    // selects its key id in place of the OTA-signaled one at key-activation time.
+    // payload_keyid* stay the OTA truth; the map only steers the keyring lookup.
+    //
+    // Declared beside the keyring it indexes rather than beside the other DMR crypto state, for the
+    // same reason rkey_array lives here: ui_snapshot.c copies positional byte ranges of dsd_state on
+    // every telemetry publish and consume, and this write-once CLI table is not something the UI
+    // renders. This region falls between two of those ranges, so it costs the snapshot nothing.
+    uint32_t dmr_tg_key_map_tg[DSD_DMR_TG_KEY_MAP_MAX];
+    uint8_t dmr_tg_key_map_kid[DSD_DMR_TG_KEY_MAP_MAX];
+    int dmr_tg_key_map_count;
+    // Per-slot applied-notice latch: one notice per call epoch. Epoch 0 is never a live call
+    // (dsd_call_state_get only reports a hit for a non-zero epoch), so it doubles as "never noted".
+    uint64_t dmr_tg_key_note_epoch[2];
+    /* Own latch, not shared with dmr_tg_key_note_epoch: the applied and skipped notices report
+       opposite outcomes, so one latch let whichever fired first silence the other for the whole
+       epoch -- even after the situation changed (a key imported mid-call, for instance). */
+    uint64_t dmr_tg_key_skip_epoch[2];
     // Temporary audio buffers
     float audio_out_temp_buf[160];
     float* audio_out_temp_buf_p;

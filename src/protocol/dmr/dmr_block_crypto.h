@@ -11,7 +11,9 @@
 
 typedef struct {
     int alg;
-    int kid;
+    int kid;          /* effective: what actually decrypts */
+    int signaled_kid; /* OTA: what gets printed */
+    int mapped;       /* 1 when --dmr-tg-key-csv replaced the signaled id */
     int aes_key_loaded;
     int start;
     int end;

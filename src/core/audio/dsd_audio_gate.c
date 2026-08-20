@@ -13,6 +13,8 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -155,43 +157,37 @@ dsd_audio_p25_policy_target_for_group(const dsd_state* state, uint32_t ota_targe
     return ota_target;
 }
 
-static int
-dsd_alg_list_contains(const uint8_t* algs, size_t count, int algid) {
-    size_t i = 0;
-    if (!algs) {
-        return 0;
+dsd_key_material_need
+dsd_dmr_alg_key_need(int algid) {
+    switch (algid) {
+        case 0x02: /* Hytera Enhanced */
+        case 0x21: /* DMR RC4 */
+        case 0x22: /* DMR DES */
+        case 0x81: /* P25 DES */
+        case 0x9F: /* P25 DES-XL */
+        case 0xAA: /* P25 RC4 */ return DSD_KEY_NEED_SCALAR;
+        case 0x24: /* DMR AES-128 */
+        case 0x89: /* P25 AES-128 */ return DSD_KEY_NEED_AES_2;
+        case 0x83: /* P25 TDEA */ return DSD_KEY_NEED_AES_3;
+        case 0x25: /* DMR AES-256 */
+        case 0x84: /* P25 AES-256 */ return DSD_KEY_NEED_AES_4;
+        case 0x36: /* Kirisun */
+        case 0x37: /* Kirisun */ return DSD_KEY_NEED_QUARTET;
+        default: return DSD_KEY_NEED_NONE;
     }
-    for (i = 0; i < count; i++) {
-        if (algid == (int)algs[i]) {
-            return 1;
-        }
-    }
-    return 0;
 }
 
 int
 dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded) {
-    static const uint8_t kRKeyAlgs[] = {
-        0x02, // Hytera Enhanced
-        0x21, // DMR RC4
-        0x22, // DMR DES
-        0x81, // P25 DES
-        0x9F, // P25 DES-XL
-        0xAA  // P25 RC4
-    };
-    static const uint8_t kAesLoadedAlgs[] = {
-        0x24, // DMR AES-128
-        0x25, // DMR AES-256
-        0x83, // P25 TDEA
-        0x84, // P25 AES-256
-        0x89  // P25 AES-128
-    };
-
-    if (dsd_alg_list_contains(kRKeyAlgs, sizeof(kRKeyAlgs) / sizeof(kRKeyAlgs[0]), algid)) {
-        return (r_key != 0ULL) ? 1 : 0;
-    }
-    if (dsd_alg_list_contains(kAesLoadedAlgs, sizeof(kAesLoadedAlgs) / sizeof(kAesLoadedAlgs[0]), algid)) {
-        return (aes_loaded == 1) ? 1 : 0;
+    switch (dsd_dmr_alg_key_need(algid)) {
+        case DSD_KEY_NEED_SCALAR: return (r_key != 0ULL) ? 1 : 0;
+        case DSD_KEY_NEED_AES_2:
+        case DSD_KEY_NEED_AES_3:
+        case DSD_KEY_NEED_AES_4: return (aes_loaded == 1) ? 1 : 0;
+        // Kirisun decides on the quartet, which this signature cannot see: only
+        // dsd_dmr_voice_kid_can_decrypt() and dsd_dmr_voice_slot_can_decrypt() answer that family.
+        case DSD_KEY_NEED_QUARTET:
+        case DSD_KEY_NEED_NONE: break;
     }
     return 0;
 }
@@ -201,8 +197,8 @@ dsd_dmr_slot_valid(int slot) {
     return slot == 0 || slot == 1;
 }
 
-static int
-dsd_dmr_kirisun_key_complete(const dsd_state* state, int slot) {
+int
+dsd_dmr_kirisun_slot_key_complete(const dsd_state* state, int slot) {
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
@@ -222,19 +218,75 @@ dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot) {
 }
 
 int
+dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, const dsd_dmr_key_material* key) {
+    if (!state || !key || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+    if (algid == 0x36 || algid == 0x37) {
+        // Supplied, not read from the slot: keyring_activate_slot_with_kid() overwrites
+        // aes_key_segments[] and A1..A4[] for these ALG IDs too, so a prospective key id does
+        // change Kirisun completeness and the caller has to say which key it means.
+        return key->kirisun_complete ? 1 : 0;
+    }
+    return dsd_dmr_voice_alg_can_decrypt(algid, key->r_key, key->aes_loaded);
+}
+
+dsd_dmr_key_material
+dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapped) {
+    dsd_dmr_key_material material = {0ULL, 0, 0};
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return material;
+    }
+
+    material.r_key = (slot == 0) ? state->R : state->RR;
+    material.aes_loaded = state->aes_key_loaded[slot];
+    material.kirisun_complete = dsd_dmr_kirisun_slot_key_complete(state, slot);
+    if (mapped) {
+        (void)keyring_kid_material(state, key_id, &material.r_key, &material.aes_loaded);
+        material.kirisun_complete = keyring_kid_kirisun_complete(state, key_id);
+    }
+    return material;
+}
+
+int
 dsd_dmr_voice_slot_can_decrypt(const dsd_state* state, int slot, int algid, unsigned long long r_key) {
     if (!state || !dsd_dmr_slot_valid(slot)) {
         return 0;
     }
-    if (algid == 0x36 || algid == 0x37) {
-        return dsd_dmr_kirisun_key_complete(state, slot);
+    const dsd_dmr_key_material key = {r_key, state->aes_key_loaded[slot],
+                                      dsd_dmr_kirisun_slot_key_complete(state, slot)};
+    return dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
+}
+
+// The --dmr-force-algid value, or 0 when none is in force. state->M doubles as the scrambler
+// key for 0/1 and as the 0x16 Hytera marker, neither of which is a forced ALG ID.
+static int
+dsd_dmr_forced_algid(const dsd_state* state) {
+    if (state->M <= 1 || state->M == 0x16) {
+        return 0;
     }
-    return dsd_dmr_voice_alg_can_decrypt(algid, r_key, state->aes_key_loaded[slot]);
+    return state->M & 0xFF;
+}
+
+int
+dsd_dmr_classify_algid(const dsd_state* state, int slot, int so) {
+    if (!state || !dsd_dmr_slot_valid(slot)) {
+        return 0;
+    }
+    const int algid = (slot == 0) ? state->payload_algid : state->payload_algidR;
+    if (algid != 0 || (so & 0x40) == 0) {
+        return algid;
+    }
+    return dsd_dmr_forced_algid(state);
 }
 
 int
 dsd_dmr_apply_forced_algid(dsd_state* state) {
-    if (!state || state->M <= 1 || state->M == 0x16) {
+    if (!state) {
+        return 0;
+    }
+    const int forced = dsd_dmr_forced_algid(state);
+    if (forced == 0) {
         return 0;
     }
 
@@ -242,14 +294,14 @@ dsd_dmr_apply_forced_algid(dsd_state* state) {
     // precedence, so a slot that already carries an ALG ID is left untouched and a known
     // KEY ID is never replaced by the 0xFF "no key id" sentinel (issue #351).
     if (state->currentslot == 0 && (state->dmr_so & 0x40) != 0 && state->payload_algid == 0) {
-        state->payload_algid = state->M & 0xFF;
+        state->payload_algid = forced;
         if (state->payload_keyid == 0) {
             state->payload_keyid = 0xFF;
         }
         return 1;
     }
     if (state->currentslot == 1 && (state->dmr_soR & 0x40) != 0 && state->payload_algidR == 0) {
-        state->payload_algidR = state->M & 0xFF;
+        state->payload_algidR = forced;
         if (state->payload_keyidR == 0) {
             state->payload_keyidR = 0xFF;
         }

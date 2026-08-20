@@ -2169,6 +2169,101 @@ test_process_mbe_frame_dmr_aes_stream_advances_slot_state(void) {
     return rc;
 }
 
+// Issue #351 follow-up review (task 2, finding "important 2"): mbe_prepare_frame_state()'s
+// `state->keyloader == 1 && algid != 0 && algid != 0x80` gate decides whether the DMR TG key
+// map resolver runs at all, and keyring_dmr_slot_kid_for_call() has no visibility into
+// payload_algid to cover that gate itself -- no other test in the tree sets keyloader, so
+// nothing here exercised the gate before this test existed. Drives processMbeFrame() directly
+// with keyloader armed to close that gap, and folds in the regression coverage for the review's
+// "critical 1" finding: a signaled key id above 0xFF (P25's 16-bit KID space; rkey_array is
+// sized to 0x1FFFF) must activate from its own full index, not one narrowed to a uint8_t before
+// ever reaching the resolver.
+static int
+test_process_mbe_frame_activation_gate_and_wide_kid(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char imbe_fr[8][23] = {{0}};
+    char ambe_fr[4][24] = {{0}};
+    char imbe7100_fr[7][24] = {{0}};
+
+    ambe_fr[0][6] = 1;
+    ambe_fr[2][18] = 1;
+
+    // algid == 0: the BP/HBP TG autoload owns the slot, so the gate must stay shut even with
+    // keyloader armed and material imported for the signaled id -- R must survive untouched.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.R = 0x99ULL;
+    processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+    rc |= expect_eq_int("gate-algid-zero-skips-activation", (int)state.R, 0x99);
+
+    // algid == 0x80: the scrambler path owns the slot -- same non-activation as algid == 0.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.payload_algid = 0x80;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.R = 0x99ULL;
+    processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+    rc |= expect_eq_int("gate-alg80-skips-activation", (int)state.R, 0x99);
+
+    // algid == 0x21 with keyloader armed: the gate opens and the signaled id's own material
+    // activates, overwriting whatever R held before.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.R = 0x99ULL;
+    processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+    rc |= expect_eq_int("gate-alg21-activates-signaled-key", (int)state.R, (int)0xAAAAAULL);
+
+    // Critical 1 regression: 0x0101 truncates to 0x01 if the signaled id is narrowed to a
+    // uint8_t before reaching the resolver. Seed a decoy at the truncated index so a
+    // reintroduced truncation is caught by the wrong *value*, not merely a missing key.
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.floating_point = 1;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.currentslot = 0;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x0101;
+    state.rkey_array[0x0101] = 0xCCCCCULL;
+    state.rkey_array_loaded[0x0101] = 1U;
+    state.rkey_array[0x01] = 0xBADULL;
+    state.rkey_array_loaded[0x01] = 1U;
+    state.R = 0x99ULL;
+    processMbeFrame(&opts, &state, imbe_fr, ambe_fr, imbe7100_fr);
+    rc |= expect_eq_int("gate-wide-kid-activates-full-index", (int)state.R, (int)0xCCCCCULL);
+
+    return rc;
+}
+
 static int
 test_process_mbe_frame_hard_p25p2_right_stages_audio(void) {
     int rc = 0;
@@ -2733,6 +2828,7 @@ main(void) {
     rc |= test_process_mbe_frame_dmr_missing_alg_key_unmutes_slots();
     rc |= test_process_mbe_frame_dmr_post_decode_gates_override_enc_flags();
     rc |= test_process_mbe_frame_dmr_aes_stream_advances_slot_state();
+    rc |= test_process_mbe_frame_activation_gate_and_wide_kid();
     rc |= test_process_mbe_frame_hard_p25p2_right_stages_audio();
     rc |= test_play_mbe_files_processes_imbe_ambe_and_dstar_records();
     rc |= test_process_mbe_frame_p25p1_updates_error_history();

@@ -26,6 +26,7 @@ int csvChanImport(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportDec(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportHex(const dsd_opts* opts, dsd_state* state);
 int csvVertexKsImport(dsd_state* state, const char* path);
+int csvDmrTgKeyImport(dsd_state* state, const char* path);
 
 #ifdef __cplusplus
 }

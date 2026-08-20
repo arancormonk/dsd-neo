@@ -93,6 +93,10 @@ main(void) {
     state->data_header_dd_format[1] = 0x18U;
     state->data_header_bit_padding[0] = 16U;
     state->data_header_bit_padding[1] = 7U;
+    state->dmr_lrrp_target[0] = 1234U;
+    state->dmr_lrrp_target[1] = 5678U;
+    state->dmr_data_target_is_group[0] = 1U;
+    state->dmr_data_target_is_group[1] = 1U;
     state->p25_p1_soft_hamming_ok = 77U;
     state->p25_last_cc_msg_time = 1234567890;
     state->p25_last_cc_msg_time_m = 12345.5;
@@ -271,6 +275,18 @@ main(void) {
         freeState(state);
         free(state);
         return 28;
+    }
+    /*
+     * dmr_data_target_is_group[] qualifies dmr_lrrp_target[] for the --dmr-tg-key-csv lookup, so a
+     * stale group flag surviving a target reset would qualify whatever target is written next.
+     * Both slots are seeded above so a slot-0-only reset still fails here.
+     */
+    if (state->dmr_lrrp_target[0] != 0U || state->dmr_lrrp_target[1] != 0U || state->dmr_data_target_is_group[0] != 0U
+        || state->dmr_data_target_is_group[1] != 0U) {
+        DSD_FPRINTF(stderr, "initState did not clear the DMR data target and its group flag\n");
+        freeState(state);
+        free(state);
+        return 29;
     }
     if (state->p25_last_cc_msg_time != 0 || !isfinite(state->p25_last_cc_msg_time_m)
         || fabs(state->p25_last_cc_msg_time_m) > 1e-12) {

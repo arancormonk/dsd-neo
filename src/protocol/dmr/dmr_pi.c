@@ -13,6 +13,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -219,19 +220,44 @@ dmr_pi_handle_dmra(dsd_state* state, const uint8_t pi_byte[]) {
     }
 }
 
+// Asymmetric with dmr_flco_publish_crypto() on purpose, and worth knowing which way: the FLCO
+// resolves the map against the talkgroup it is itself carrying (ctx->target), so it is immune to
+// snapshot ordering, while this one has only the slot's call snapshot to look the talkgroup up in.
+// A PI header that lands before any BEGIN observation on the slot therefore finds no snapshot,
+// leaves mapped at 0, and publishes ENCRYPTED/audio_permitted = 0 even for a mapped talkgroup.
+// That is a transient label, not a gate: this field drives the UI and telemetry, DMR voice audio is
+// gated in the voice path from its own resolver call, and the next FLCO or PI header on the slot
+// republishes with the snapshot in place.
 static void
 dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     const uint8_t slot = (uint8_t)((state->currentslot == 1) ? 1 : 0);
     const uint8_t algid = (uint8_t)(slot == 0U ? state->payload_algid : state->payload_algidR);
     const uint16_t kid = (uint16_t)(slot == 0U ? state->payload_keyid : state->payload_keyidR);
     const uint64_t mi = slot == 0U ? state->payload_mi : state->payload_miR;
-    const uint64_t r_key = slot == 0U ? state->R : state->RR;
+
+    // Same reason as dmr_flco_publish_crypto(): classify against the key id that will decrypt
+    // the call. One snapshot per PI header, not per voice frame.
+    // Same bounded staleness as the voice path: a missed terminator leaves the previous
+    // transmission's epoch ACTIVE, so an early PI header can publish against the old talkgroup's
+    // row. See keyring_dmr_tg_map_call_is_mappable() for why no freshness signal exists.
+    dsd_call_snapshot call;
+    int mapped = 0;
+    int eff_kid = (int)kid;
+    if (dsd_call_state_get(state, slot, &call) > 0) {
+        eff_kid = keyring_dmr_kid_for_call(state, &call, dsd_dmr_alg_key_need((int)algid), (int)kid, &mapped);
+    }
+    // Kirisun 0x36/0x37 decides on the quartet, not on r_key/aes_loaded, and activation overwrites
+    // the slot's quartet too -- so the mapped key id has to supply its own verdict here as well.
+    // Same helper dmr_flco.c resolves from, so the LC-published and PI-published verdicts for one
+    // call cannot drift apart.
+    const dsd_dmr_key_material key = dsd_dmr_slot_key_material(state, (int)slot, eff_kid, mapped);
+
     const int has_key = algid == 0U ? dsd_dmr_missing_alg_key_can_decrypt(state, slot)
-                                    : dsd_dmr_voice_slot_can_decrypt(state, slot, algid, r_key);
+                                    : dsd_dmr_voice_kid_can_decrypt(state, slot, algid, &key);
     const dsd_call_crypto_update update = {
         .classification = has_key ? DSD_CALL_CRYPTO_DECRYPTABLE : DSD_CALL_CRYPTO_ENCRYPTED,
         .algid = algid,
-        .kid = kid,
+        .kid = kid, /* OTA truth, never the override */
         .mi = mi,
         .audio_permitted = (uint8_t)has_key,
     };

@@ -17,6 +17,7 @@ target_sources(
         audio/convert.c
         audio/dsd_upsample.c
         vocoder/keyring.c
+        vocoder/keyring_dmr_tg_map.c
         vocoder/dsd_mbe.c
         vocoder/dsd_mbe_purge.c
         frames/dsd_frame.c
