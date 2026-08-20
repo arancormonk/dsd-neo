@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/state.h>
 #include <stdio.h>
 #include "dsd-neo/core/safe_api.h"
@@ -178,6 +179,28 @@ main(void) {
     rc |= expect_eq("slot-kirisun-complete", dsd_dmr_kirisun_slot_key_complete(&state, 0), 1);
     state.aes_key_segments[0] = 3U;
     rc |= expect_eq("slot-kirisun-short-count", dsd_dmr_kirisun_slot_key_complete(&state, 0), 0);
+
+    // One table, not two. dsd_dmr_voice_alg_can_decrypt() is derived from this, so the ALG
+    // knowledge the map gate consults and the knowledge the decryptability gate consults cannot
+    // drift apart.
+    rc |= expect_eq("need-hytera", (int)dsd_dmr_alg_key_need(0x02), (int)DSD_KEY_NEED_SCALAR);
+    rc |= expect_eq("need-dmr-rc4", (int)dsd_dmr_alg_key_need(0x21), (int)DSD_KEY_NEED_SCALAR);
+    rc |= expect_eq("need-dmr-des", (int)dsd_dmr_alg_key_need(0x22), (int)DSD_KEY_NEED_SCALAR);
+    rc |= expect_eq("need-p25-des", (int)dsd_dmr_alg_key_need(0x81), (int)DSD_KEY_NEED_SCALAR);
+    rc |= expect_eq("need-p25-desxl", (int)dsd_dmr_alg_key_need(0x9F), (int)DSD_KEY_NEED_SCALAR);
+    rc |= expect_eq("need-p25-rc4", (int)dsd_dmr_alg_key_need(0xAA), (int)DSD_KEY_NEED_SCALAR);
+    rc |= expect_eq("need-dmr-aes128", (int)dsd_dmr_alg_key_need(0x24), (int)DSD_KEY_NEED_AES_2);
+    rc |= expect_eq("need-p25-aes128", (int)dsd_dmr_alg_key_need(0x89), (int)DSD_KEY_NEED_AES_2);
+    rc |= expect_eq("need-p25-tdea", (int)dsd_dmr_alg_key_need(0x83), (int)DSD_KEY_NEED_AES_3);
+    rc |= expect_eq("need-dmr-aes256", (int)dsd_dmr_alg_key_need(0x25), (int)DSD_KEY_NEED_AES_4);
+    rc |= expect_eq("need-p25-aes256", (int)dsd_dmr_alg_key_need(0x84), (int)DSD_KEY_NEED_AES_4);
+    rc |= expect_eq("need-kirisun36", (int)dsd_dmr_alg_key_need(0x36), (int)DSD_KEY_NEED_QUARTET);
+    rc |= expect_eq("need-kirisun37", (int)dsd_dmr_alg_key_need(0x37), (int)DSD_KEY_NEED_QUARTET);
+    // Unclassified ALGs cannot be decrypted, so a map row cannot help them.
+    rc |= expect_eq("need-clear", (int)dsd_dmr_alg_key_need(0x00), (int)DSD_KEY_NEED_NONE);
+    rc |= expect_eq("need-vertex", (int)dsd_dmr_alg_key_need(0x07), (int)DSD_KEY_NEED_NONE);
+    rc |= expect_eq("need-scrambler", (int)dsd_dmr_alg_key_need(0x80), (int)DSD_KEY_NEED_NONE);
+    rc |= expect_eq("need-unknown", (int)dsd_dmr_alg_key_need(0x7E), (int)DSD_KEY_NEED_NONE);
 
     if (rc == 0) {
         printf("CORE_DMR_VOICE_ALG_GATE: OK\n");

@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -156,43 +157,37 @@ dsd_audio_p25_policy_target_for_group(const dsd_state* state, uint32_t ota_targe
     return ota_target;
 }
 
-static int
-dsd_alg_list_contains(const uint8_t* algs, size_t count, int algid) {
-    size_t i = 0;
-    if (!algs) {
-        return 0;
+dsd_key_material_need
+dsd_dmr_alg_key_need(int algid) {
+    switch (algid) {
+        case 0x02: /* Hytera Enhanced */
+        case 0x21: /* DMR RC4 */
+        case 0x22: /* DMR DES */
+        case 0x81: /* P25 DES */
+        case 0x9F: /* P25 DES-XL */
+        case 0xAA: /* P25 RC4 */ return DSD_KEY_NEED_SCALAR;
+        case 0x24: /* DMR AES-128 */
+        case 0x89: /* P25 AES-128 */ return DSD_KEY_NEED_AES_2;
+        case 0x83: /* P25 TDEA */ return DSD_KEY_NEED_AES_3;
+        case 0x25: /* DMR AES-256 */
+        case 0x84: /* P25 AES-256 */ return DSD_KEY_NEED_AES_4;
+        case 0x36: /* Kirisun */
+        case 0x37: /* Kirisun */ return DSD_KEY_NEED_QUARTET;
+        default: return DSD_KEY_NEED_NONE;
     }
-    for (i = 0; i < count; i++) {
-        if (algid == (int)algs[i]) {
-            return 1;
-        }
-    }
-    return 0;
 }
 
 int
 dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded) {
-    static const uint8_t kRKeyAlgs[] = {
-        0x02, // Hytera Enhanced
-        0x21, // DMR RC4
-        0x22, // DMR DES
-        0x81, // P25 DES
-        0x9F, // P25 DES-XL
-        0xAA  // P25 RC4
-    };
-    static const uint8_t kAesLoadedAlgs[] = {
-        0x24, // DMR AES-128
-        0x25, // DMR AES-256
-        0x83, // P25 TDEA
-        0x84, // P25 AES-256
-        0x89  // P25 AES-128
-    };
-
-    if (dsd_alg_list_contains(kRKeyAlgs, sizeof(kRKeyAlgs) / sizeof(kRKeyAlgs[0]), algid)) {
-        return (r_key != 0ULL) ? 1 : 0;
-    }
-    if (dsd_alg_list_contains(kAesLoadedAlgs, sizeof(kAesLoadedAlgs) / sizeof(kAesLoadedAlgs[0]), algid)) {
-        return (aes_loaded == 1) ? 1 : 0;
+    switch (dsd_dmr_alg_key_need(algid)) {
+        case DSD_KEY_NEED_SCALAR: return (r_key != 0ULL) ? 1 : 0;
+        case DSD_KEY_NEED_AES_2:
+        case DSD_KEY_NEED_AES_3:
+        case DSD_KEY_NEED_AES_4: return (aes_loaded == 1) ? 1 : 0;
+        // Kirisun decides on the quartet, which this signature cannot see: only
+        // dsd_dmr_voice_kid_can_decrypt() and dsd_dmr_voice_slot_can_decrypt() answer that family.
+        case DSD_KEY_NEED_QUARTET:
+        case DSD_KEY_NEED_NONE: break;
     }
     return 0;
 }

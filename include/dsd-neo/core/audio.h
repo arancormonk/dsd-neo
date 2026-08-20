@@ -15,6 +15,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H
 
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
@@ -185,6 +186,18 @@ int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsi
                               int encL_in, int encR_in, int* encL_out, int* encR_out);
 /** @brief Mono per-call WAV gate combining decrypt state with TG/allow-list/TG-hold policy. */
 int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
+
+/**
+ * @brief Key material the DMR/P25 voice ALGID @p algid requires.
+ *
+ * The project's single voice ALGID table. dsd_dmr_voice_alg_can_decrypt() is derived from it, and
+ * the --dmr-tg-key-csv resolver gates on it, so the ALG knowledge behind "can this key decrypt?"
+ * and behind "may this map row apply?" is one table rather than two that can drift.
+ *
+ * Unclassified ALGIDs return DSD_KEY_NEED_NONE, which reads as "no keyring material selects this"
+ * -- consistent with dsd_dmr_voice_alg_can_decrypt() already reporting 0 for them.
+ */
+dsd_key_material_need dsd_dmr_alg_key_need(int algid);
 
 /**
  * @brief Return 1 when a DMR/P25-style voice ALGID has sufficient key material to decrypt.
