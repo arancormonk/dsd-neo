@@ -958,6 +958,83 @@ test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream(void) {
     return rc;
 }
 
+// sdrtrunk_json_apply_forced_algid() runs on every token, and its RC4 branch only rebuilds a
+// keystream when both a key (state->R) and an IV (state->payload_mi) are known. Before this fix,
+// when that guard failed, the PREVIOUS token's ctx->ks_available simply stayed in force, so the
+// decoder kept reporting a record decryptable using a keystream it no longer had grounds to trust.
+//
+// A record whose key id is genuinely unseeded self-corrects before any "hex" token can observe a
+// stale value: sdrtrunk_json_handle_mi() unconditionally activates the signaled id *and* rebuilds
+// ctx->ks_available in the same call, so state->R and ctx->ks_available always land together --
+// there is no window between them for a later token to see. The guard's failure survives to a
+// later "hex" token only when state->R stays valid (a properly imported key) while
+// state->payload_mi alone goes to zero: an all-zero "encryption_mi" is exactly that -- a real,
+// importable key with no usable IV. handle_mi()'s own build succeeds anyway (RC4 does not reject a
+// zero IV), latching ctx->ks_available=1 from a keystream built with a bogus, all-zero IV; the
+// very next token's guard check then sees payload_mi==0 and, pre-fix, left that latch alone
+// instead of reporting "no keystream." Both records below signal the SAME key id (3, imported by
+// seed_sdrtrunk_dmr_replay_keys()) so state->R is genuinely valid throughout -- the only thing the
+// second record lacks is its own IV.
+//
+// Three all-zero AMBE frames make the decoded body purely a function of the keystream window each
+// frame consumed (see build_sdrtrunk_map_json()'s comment); here that means a blocked record must
+// write nothing at all rather than merely differing bytes.
+static int
+test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv(void) {
+    int rc = 0;
+    /* A normal, fully decryptable forced-RC4 record: kid 3, a real MI. */
+    static const char json_keyed[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
+                                     "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
+                                     "\"encryption_mi\":\"001122334455667788\",\"to\":\"4567\","
+                                     "\"from\":\"456\",\"time\":\"1700000000000\","
+                                     "\"hex\":\"000000000000000000\"}";
+    /* SAME key id 3 (still a valid, imported key) but an all-zero MI -- no usable IV. */
+    static const char json_no_iv[] = "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\","
+                                     "\"encrypted\":\"true\",\"encryption_key_id\":\"3\","
+                                     "\"encryption_mi\":\"000000000000000000\",\"to\":\"4567\","
+                                     "\"from\":\"456\",\"time\":\"1700000001000\","
+                                     "\"hex\":\"000000000000000000\"}";
+    char pair[1024];
+    static dsd_state state;
+    unsigned char keyed[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char both[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char alone[SDRTRUNK_MAP_RECORD_CAP];
+    size_t keyed_len = 0;
+    size_t both_len = 0;
+    size_t alone_len = 0;
+
+    DSD_SNPRINTF(pair, sizeof pair, "%s\n%s", json_keyed, json_no_iv);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21; /* --dmr-force-algid 21 */
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced rc4 keyed reference", json_keyed, &state, keyed,
+                                          sizeof keyed, &keyed_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced rc4 keyed then no-iv pair", pair, &state, both, sizeof both,
+                                          &both_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.M = 0x21;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk forced rc4 no-iv alone", json_no_iv, &state, alone, sizeof alone,
+                                          &alone_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk forced rc4 keyed record wrote a record", keyed_len >= 8U);
+    rc |= expect_true("sdrtrunk forced rc4 record with no iv writes nothing alone", alone_len == 0U);
+    rc |=
+        expect_true("sdrtrunk forced rc4 record with no iv writes nothing after a keyed record", both_len == keyed_len);
+    rc |= expect_u8_bits("sdrtrunk forced rc4 keyed record unaffected by the trailing no-iv record", both, keyed,
+                         both_len < keyed_len ? both_len : keyed_len);
+    return rc;
+}
+
 // With no matching row, the pre-existing implicit "key indexed by talkgroup" replay behavior
 // must be untouched -- replay workflows depend on it. That convention lives only in
 // sdrtrunk_json_apply_forced_algid()'s DMRA branch (state.M in 0x21..0x25): handle_mi has no
@@ -2289,6 +2366,7 @@ main(void) {
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
+    rc |= test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv();
     rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
     rc |= test_sdrtrunk_json_without_map_row_keeps_target_keyed_lookup();
     rc |= test_sdrtrunk_json_p25_replay_keyloader_uses_full_width_key_id();

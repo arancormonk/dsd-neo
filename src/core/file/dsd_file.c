@@ -1618,20 +1618,29 @@ sdrtrunk_json_apply_forced_algid(dsd_state* state, sdrtrunk_json_context* ctx) {
                 state->R = state->rkey_array[ctx->target_id];
             }
         }
-        if (ctx->alg_id == 0x21 && state->R != 0 && state->payload_mi != 0) {
-            uint8_t iv64[8] = {0};
-            iv64[4] = (uint8_t)((state->payload_mi >> 24ULL) & 0xFFULL);
-            iv64[5] = (uint8_t)((state->payload_mi >> 16ULL) & 0xFFULL);
-            iv64[6] = (uint8_t)((state->payload_mi >> 8ULL) & 0xFFULL);
-            iv64[7] = (uint8_t)((state->payload_mi >> 0ULL) & 0xFFULL);
-            ctx->ks_available =
-                (uint8_t)sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, effective_kid, iv64, ctx->rc4_db,
-                                                             ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
-            // This path owns ctx->ks on every token once an MI is known, and it uses its own
-            // payload_mi-derived IV. Recording the id it used keeps the map's rebuild below from
-            // overwriting this keystream with one built from the raw "encryption_mi" bytes.
-            ctx->ks_key_id = effective_kid;
-            ctx->ks_built = 1;
+        if (ctx->alg_id == 0x21) {
+            if (state->R != 0 && state->payload_mi != 0) {
+                uint8_t iv64[8] = {0};
+                iv64[4] = (uint8_t)((state->payload_mi >> 24ULL) & 0xFFULL);
+                iv64[5] = (uint8_t)((state->payload_mi >> 16ULL) & 0xFFULL);
+                iv64[6] = (uint8_t)((state->payload_mi >> 8ULL) & 0xFFULL);
+                iv64[7] = (uint8_t)((state->payload_mi >> 0ULL) & 0xFFULL);
+                ctx->ks_available =
+                    (uint8_t)sdrtrunk_build_voice_keystream_bits(state, ctx->alg_id, effective_kid, iv64, ctx->rc4_db,
+                                                                 ctx->rc4_mod, ctx->protocol, ctx->ks, sizeof(ctx->ks));
+                // This path owns ctx->ks on every token once an MI is known, and it uses its own
+                // payload_mi-derived IV. Recording the id it used keeps the map's rebuild below
+                // from overwriting this keystream with one built from the raw "encryption_mi"
+                // bytes.
+                ctx->ks_key_id = effective_kid;
+                ctx->ks_built = 1;
+            } else {
+                // No key or no IV yet: we have no keystream. Leaving the previous token's in place
+                // kept the decoder XORing against an earlier key while still reporting the record
+                // decryptable. Self-corrects on the next token once the MI lands, like everything
+                // else in this file.
+                ctx->ks_available = 0;
+            }
         }
         return;
     }
