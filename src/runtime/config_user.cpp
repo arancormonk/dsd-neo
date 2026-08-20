@@ -979,6 +979,10 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->has_dmr_mono) {
         DSD_FPRINTF(out, "dmr_mono = %s\n", ini_bool(cfg->dmr_mono));
     }
+    if (cfg->has_edacs_variant) {
+        DSD_FPRINTF(out, "edacs_ea = %s\n", ini_bool(cfg->edacs_ea));
+        DSD_FPRINTF(out, "edacs_esk = %s\n", ini_bool(cfg->edacs_esk));
+    }
     if (cfg->has_demod) {
         switch (cfg->demod_path) {
             case DSDCFG_DEMOD_AUTO: DSD_FPRINTF(out, "demod = \"auto\"\n"); break;
@@ -1006,6 +1010,8 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "tune_private_calls = %s\n", ini_bool(cfg->trunk_tune_private_calls));
     DSD_FPRINTF(out, "tune_data_calls = %s\n", ini_bool(cfg->trunk_tune_data_calls));
     DSD_FPRINTF(out, "tune_enc_calls = %s\n", ini_bool(cfg->trunk_tune_enc_calls));
+    DSD_FPRINTF(out, "scanner = %s\n", ini_bool(cfg->trunk_scanner));
+    DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1304,6 +1310,14 @@ apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state)
     if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
         opts->dmr_mono = cfg->dmr_mono ? 1 : 0;
     }
+    /* Must follow dsd_apply_decode_mode_preset() above: decode_mode_apply_edacs_pv()
+       zeroes both fields unconditionally, so applying these first would silently
+       lose them. Unlike dmr_mono there is no preset that carries the variant
+       itself - one edacs_pv preset covers all four CLI forms - so no guard. */
+    if (cfg->has_edacs_variant) {
+        state->ea_mode = cfg->edacs_ea ? 1 : 0;
+        state->esk_mask = cfg->edacs_esk ? (unsigned short)0xA0 : (unsigned short)0;
+    }
 }
 
 static void
@@ -1356,6 +1370,8 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
     opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
     opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
+    opts->scanner_mode = cfg->trunk_scanner ? 1 : 0;
+    opts->p25_prefer_candidates = cfg->trunk_p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
 }
 
 static void
@@ -1632,11 +1648,17 @@ snapshot_output_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
-snapshot_mode_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->has_mode = 1;
     cfg->decode_mode = dsd_infer_decode_mode_preset(opts);
     cfg->has_dmr_mono = 1;
     cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
+    /* The only snapshotter that reads dsd_state. Recorded unconditionally, like
+       dmr_mono: "off" is a real answer here, and omitting the keys would let a
+       reload inherit whatever the previous session left behind. */
+    cfg->has_edacs_variant = 1;
+    cfg->edacs_ea = state->ea_mode ? 1 : 0;
+    cfg->edacs_esk = (state->esk_mask != 0) ? 1 : 0;
 }
 
 static void
@@ -1669,6 +1691,8 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
     cfg->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 1 : 0;
     cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
+    cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
+    cfg->trunk_p25_prefer_candidates = opts->p25_prefer_candidates ? 1 : 0;
 }
 
 static void
@@ -1754,7 +1778,7 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     user_cfg_reset(cfg);
     snapshot_input_config(opts, cfg);
     snapshot_output_config(opts, cfg);
-    snapshot_mode_config(opts, cfg);
+    snapshot_mode_config(opts, state, cfg);
     snapshot_demod_config(opts, cfg);
     snapshot_trunking_config(opts, cfg);
     snapshot_radioreference_config(opts, cfg);

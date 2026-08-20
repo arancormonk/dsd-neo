@@ -127,22 +127,23 @@ never overwritten.
 
 A finished import is applied to the running session immediately: decode mode, trunking, the channel map and
 group list, and the starting frequency. It is **not** written to your config file. Persisting it means
-**Config -> Save Config**, and a save keeps only part of what was applied:
+**Config -> Save Config**, which keeps everything the import applied:
 
-| Setting the import applies | Kept by Config -> Save |
-|---|---|
-| Decode mode | Yes |
-| Trunking on/off | Yes |
-| Channel map (`-C`) and group list (`-G`) paths | Yes |
-| Simulcast QPSK demodulation | Yes |
-| Conventional scanning (`-Y`) | **No** |
-| P25 learned-candidate preference (`-^`) | **No** |
-| EDACS extended addressing and ESK | **No** |
+| Setting the import applies | Kept by Config -> Save | Key |
+|---|---|---|
+| Decode mode | Yes | `[mode] decode` |
+| Trunking on/off | Yes | `[trunking] enabled` |
+| Channel map (`-C`) and group list (`-G`) paths | Yes | `[trunking] chan_csv` / `group_csv` |
+| Simulcast QPSK demodulation | Yes | `[mode] demod` |
+| Conventional scanning (`-Y`) | Yes | `[trunking] scanner` |
+| P25 learned-candidate preference (`-^`) | Yes | `[trunking] p25_prefer_candidates` |
+| EDACS extended addressing and ESK | Yes | `[mode] edacs_ea` / `edacs_esk` |
 
-The three "No" rows have no INI key at all today. In practice that means a saved config for a
-multi-repeater Conventional Networked system, or for an EDACS system with ESK, will not decode it the same
-way on the next launch — re-run the import, or pass the flag on the command line. Adding the missing keys
-is tracked as a follow-up.
+The last three had no INI key before this feature landed, which meant a saved config for a
+multi-repeater Conventional Networked system, or for an EDACS system with ESK, decoded differently on the
+next launch. They persist now. `edacs_ea` and `edacs_esk` refine the EDACS decode preset without changing
+it — they are applied after `[mode] decode`, which resets both — in the same way `dmr_mono` refines the DMR
+one.
 
 Two more limits worth knowing:
 

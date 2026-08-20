@@ -573,6 +573,12 @@ typedef struct dsdneoUserConfig {
     dsdneoUserDecodeMode decode_mode;
     int has_dmr_mono;
     int dmr_mono;
+    /* The EDACS EA/ESK variant. Applied AFTER the decode preset, which resets
+       both: see apply_mode_config(). esk is a boolean over the single 0xA0 mask
+       the four CLI variants and the RadioReference apply handler all use. */
+    int has_edacs_variant;
+    int edacs_ea;
+    int edacs_esk;
     int has_demod;
     dsdneoUserDemodPath demod_path;
 
@@ -586,6 +592,8 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_private_calls;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+    int trunk_scanner;
+    int trunk_p25_prefer_candidates;
 
     /* [radioreference] */
     int has_radioreference;

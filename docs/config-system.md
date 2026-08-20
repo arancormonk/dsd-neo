@@ -319,6 +319,8 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `decode` | ENUM | Decode mode preset | `auto` |
 | `dmr_mono` | BOOL | Enable the single-slot DMR decoder without changing `decode` | `false` |
+| `edacs_ea` | BOOL | Decode EDACS with extended addressing, without changing `decode` | `false` |
+| `edacs_esk` | BOOL | Apply the EDACS ESK `0xA0` scrambling mask, without changing `decode` | `false` |
 | `demod` | ENUM | Demodulator path | `auto` |
 
 **[trunking] section:**
@@ -332,6 +334,8 @@ small subset is exposed as config keys for convenience (for example
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
+| `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
+| `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
 
 **[trunk_scan] section:**
 | Key | Type | Description | Default |

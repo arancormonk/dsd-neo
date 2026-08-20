@@ -1984,6 +1984,179 @@ test_dmr_mono_preset_precedes_false_override(void) {
 }
 
 /*
+ * The three settings a RadioReference import applies that used to have no INI
+ * key at all: conventional scanning (-Y), the P25 learned-candidate preference
+ * (-^), and the EDACS EA/ESK variant. Before these keys existed, a Config->Save
+ * of an imported multi-repeater conventional system or an ESK EDACS system came
+ * back decoding differently on the next launch.
+ */
+static int
+test_persistence_gap_schema_rows(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* section;
+        const char* key;
+    } expected[] = {
+        {"trunking", "scanner"},
+        {"trunking", "p25_prefer_candidates"},
+        {"mode", "edacs_ea"},
+        {"mode", "edacs_esk"},
+    };
+
+    for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
+        if (dsdcfg_schema_find(expected[i].section, expected[i].key) == NULL) {
+            DSD_FPRINTF(stderr, "FAIL: %s.%s is not in the schema\n", expected[i].section, expected[i].key);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+static int
+test_scanner_and_candidates_roundtrip(void) {
+    static const char* ini = "[trunking]\n"
+                             "scanner = true\n"
+                             "p25_prefer_candidates = true\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "scanner/candidates config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.scanner_mode != 1) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] scanner did not reach opts.scanner_mode\n");
+        rc |= 1;
+    }
+    if (opts.p25_prefer_candidates != 1) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] p25_prefer_candidates did not reach dsd_opts\n");
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.trunk_scanner || !snap.trunk_p25_prefer_candidates) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the scanner / candidate-preference answers\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scanner", rendered, "scanner = true\n");
+    rc |= expect_contains_quiet("trunking candidate preference", rendered, "p25_prefer_candidates = true\n");
+
+    /* Off must round-trip as explicitly off, not as an omitted key: these are
+       tuner-owner answers, and a missing key would silently inherit whatever
+       the previous session left in opts. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig off_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &off_snap);
+    if (render_config_to_buffer(&off_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scanner off", rendered, "scanner = false\n");
+    rc |= expect_contains_quiet("trunking candidates off", rendered, "p25_prefer_candidates = false\n");
+    return rc;
+}
+
+/*
+ * The ordering that makes this work at all: dsd_apply_decode_mode_preset() for
+ * edacs_pv runs decode_mode_apply_edacs_pv(), which resets state->ea_mode and
+ * state->esk_mask to 0 unconditionally. Both keys must therefore be applied
+ * AFTER the preset, exactly like dmr_mono. Loading them before it would leave a
+ * config that reads correctly and decodes wrongly.
+ */
+static int
+test_edacs_variant_roundtrip(void) {
+    static const char* ini = "version = 1\n\n"
+                             "[mode]\n"
+                             "decode = \"edacs_pv\"\n"
+                             "edacs_ea = true\n"
+                             "edacs_esk = true\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "edacs variant config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (state.ea_mode != 1) {
+        DSD_FPRINTF(stderr, "FAIL: edacs_ea lost to the decode preset (ea_mode=%d)\n", state.ea_mode);
+        rc |= 1;
+    }
+    /* 0xA0 is the only non-zero mask any CLI variant or the RadioReference apply
+       handler ever sets; the key is a boolean over exactly that value. */
+    if (state.esk_mask != 0xA0) {
+        DSD_FPRINTF(stderr, "FAIL: edacs_esk did not set the 0xA0 mask (esk_mask=0x%X)\n", (unsigned)state.esk_mask);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.edacs_ea || !snap.edacs_esk) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the EDACS EA/ESK variant\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("edacs ea", rendered, "edacs_ea = true\n");
+    rc |= expect_contains_quiet("edacs esk", rendered, "edacs_esk = true\n");
+
+    /* The other half of the 2x2 the four CLI variants expose: EA on, ESK off. */
+    static const char* ini_ea_only = "version = 1\n\n"
+                                     "[mode]\n"
+                                     "decode = \"edacs_pv\"\n"
+                                     "edacs_ea = true\n"
+                                     "edacs_esk = false\n";
+    if (write_temp_config(ini_ea_only, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg2;
+    load_rc = dsd_user_config_load(path, &cfg2);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "edacs ea-only config failed to load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg2, &opts, &state);
+    if (state.ea_mode != 1 || state.esk_mask != 0) {
+        DSD_FPRINTF(stderr, "FAIL: ea-only variant wrong (ea_mode=%d esk_mask=0x%X)\n", state.ea_mode,
+                    (unsigned)state.esk_mask);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
  * MUST be the first case main() runs. dsd_user_config_default_path() latches its
  * answer in `static char buf[1024]; static int inited` (src/runtime/config_user.cpp,
  * identifier dsd_user_config_default_path), so the environment override only takes
@@ -2070,5 +2243,8 @@ main(void) {
     rc |= test_radioreference_config_roundtrip();
     rc |= test_radioreference_save_atomic_roundtrip();
     rc |= test_dmr_mono_preset_precedes_false_override();
+    rc |= test_persistence_gap_schema_rows();
+    rc |= test_scanner_and_candidates_roundtrip();
+    rc |= test_edacs_variant_roundtrip();
     return rc;
 }

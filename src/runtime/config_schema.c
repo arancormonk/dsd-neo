@@ -61,6 +61,10 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      0},
     {"mode", "dmr_mono", "Enable the DMR single-slot mono decoder without changing the decode preset", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
+    {"mode", "edacs_ea", "Decode EDACS with extended addressing, without changing the decode preset", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0},
+    {"mode", "edacs_esk", "Apply the EDACS ESK 0xA0 scrambling mask, without changing the decode preset", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "demod", "Demodulator path (auto/C4FM/GFSK/QPSK)", "auto", "auto|c4fm|gfsk|qpsk", DSDCFG_TYPE_ENUM, 0, 0},
 
     /* [trunking] section */
@@ -73,6 +77,10 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "tune_data_calls", "Tune to data channel grants", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "tune_enc_calls", "Follow P25 encrypted grants without key lockout", "true", NULL, DSDCFG_TYPE_BOOL, 0,
      0},
+    {"trunking", "scanner", "Use the channel map as a conventional scanner instead of following a control channel",
+     "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "p25_prefer_candidates", "Prefer learned P25 control-channel candidates when hunting", "false", NULL,
+     DSDCFG_TYPE_BOOL, 0, 0},
 
     /* [radioreference] section */
     {"radioreference", "username", "RadioReference account username", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
