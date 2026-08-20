@@ -846,6 +846,79 @@ test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid(void) {
     return rc;
 }
 
+// Task 3 (commit 17040e67) made sdrtrunk_json_apply_dmr_tg_key_map()'s gate depend on
+// dsd_dmr_alg_key_need(ctx->alg_id), so a map row now only satisfies the material check once
+// ctx->alg_id is known -- a row can now only apply once the "encryption_algorithm" token has been
+// seen. sdrtrunk_json_apply_dmr_tg_key_map() still runs on every token and self-corrects once
+// alg_id lands (see its own comment above), and sdrtrunk_json_rekey_slot0() rebuilds the keystream
+// whenever ks_built==0 or ks_key_id != kid, so both orderings are expected to settle on the same
+// mapped key by the time "hex" is reached.
+//
+// This pins that seam specifically: the "encryption_mi before/after to from" cases above move the
+// whole encrypted/algorithm/key_id/mi block as one unit, which happens to carry
+// "encryption_algorithm" along with it -- build_sdrtrunk_map_json()'s "to/from before
+// encryption_mi" order IS "encryption_algorithm after to/from", the ordering Task 3 made
+// load-bearing, so no new fixture is needed: reusing the helper's existing two orders and
+// asserting their MAPPED outputs match each other (not just each its own same-order reference)
+// is what the earlier matrix test never checked directly.
+static int
+test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order(void) {
+    int rc = 0;
+    char algorithm_first[512];
+    char addressing_first[512];
+    static dsd_state state;
+    unsigned char algorithm_first_out[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char addressing_first_out[SDRTRUNK_MAP_RECORD_CAP];
+    unsigned char signaled_out[SDRTRUNK_MAP_RECORD_CAP];
+    size_t algorithm_first_len = 0;
+    size_t addressing_first_len = 0;
+    size_t signaled_len = 0;
+
+    // "encryption_algorithm" (bundled with key_id/mi) ahead of "to"/"from".
+    build_sdrtrunk_map_json(algorithm_first, sizeof algorithm_first, "", "\"to\":\"123\",\"from\":\"456\",", 0x21U,
+                            (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+    // "to"/"from" ahead of "encryption_algorithm" -- ctx->alg_id is still 0 (dsd_dmr_alg_key_need()
+    // reads DSD_KEY_NEED_NONE) when target_id lands, so the map cannot apply on that token; it must
+    // catch up once "encryption_algorithm" itself is parsed.
+    build_sdrtrunk_map_json(addressing_first, sizeof addressing_first, "\"to\":\"123\",\"from\":\"456\",", "", 0x21U,
+                            (unsigned)SDRTRUNK_MAP_SIGNALED_KID);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk map algorithm before to/from", algorithm_first, &state,
+                                          algorithm_first_out, sizeof algorithm_first_out, &algorithm_first_len);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    state.dmr_tg_key_map_tg[0] = SDRTRUNK_MAP_TG;
+    state.dmr_tg_key_map_kid[0] = SDRTRUNK_MAP_MAPPED_KID;
+    state.dmr_tg_key_map_count = 1;
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk map to/from before algorithm", addressing_first, &state,
+                                          addressing_first_out, sizeof addressing_first_out, &addressing_first_len);
+    dsd_state_ext_free_all(&state);
+
+    // No map row loaded: the signaled key alone. Proves the equality below is not vacuous -- i.e.
+    // that the map genuinely applied in both orders rather than in neither.
+    DSD_MEMSET(&state, 0, sizeof state);
+    seed_sdrtrunk_dmr_replay_keys(&state);
+    rc |= capture_sdrtrunk_replay_records("sdrtrunk map algorithm-order signaled reference", algorithm_first, &state,
+                                          signaled_out, sizeof signaled_out, &signaled_len);
+    dsd_state_ext_free_all(&state);
+
+    rc |= expect_true("sdrtrunk map algorithm-order records wrote output",
+                      algorithm_first_len >= 24U && addressing_first_len == algorithm_first_len
+                          && signaled_len == algorithm_first_len);
+    rc |= expect_u8_bits("sdrtrunk map settles on the mapped key regardless of algorithm order", addressing_first_out,
+                         algorithm_first_out, algorithm_first_len);
+    rc |= expect_true("sdrtrunk map algorithm-order still moved the keystream off the signaled key",
+                      memcmp(algorithm_first_out, signaled_out, algorithm_first_len) != 0);
+    return rc;
+}
+
 // A private call's destination is a RADIO ID, and DMR radio ids share the talkgroup's 24-bit
 // space, so a map row must never key one. The map is resolved on every token because JSON field
 // order is not a contract, which means it can be applied on a partially-parsed record and then
@@ -2365,6 +2438,7 @@ main(void) {
     rc |= test_sdrtrunk_json_metadata_protocols_and_time();
     rc |= test_sdrtrunk_json_encryption_metadata_updates_payload_state();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_overrides_signaled_kid();
+    rc |= test_sdrtrunk_json_dmr_tg_key_map_settles_regardless_of_algorithm_order();
     rc |= test_sdrtrunk_json_dmr_tg_key_map_keys_forced_algid_keystream();
     rc |= test_sdrtrunk_forced_rc4_reports_no_keystream_without_an_iv();
     rc |= test_sdrtrunk_json_private_call_never_keeps_a_map_row();
