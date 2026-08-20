@@ -738,6 +738,9 @@ nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     state->payload_keyid = key_id;
     state->dmr_lrrp_source[0] = source;
     state->dmr_lrrp_target[0] = target;
+    // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
+    // --dmr-tg-key-csv lookup treat this address as one.
+    state->dmr_data_target_is_group[0] = 0;
 }
 
 struct nxdn_dcall_header_info {
@@ -874,6 +877,8 @@ nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* i
     state->payload_keyid = info->key_id;
     state->dmr_lrrp_source[0] = info->source;
     state->dmr_lrrp_target[0] = info->target;
+    // Not a DMR talkgroup -- see the sibling header handler above.
+    state->dmr_data_target_is_group[0] = 0;
 }
 
 static void

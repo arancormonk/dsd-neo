@@ -6,6 +6,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_cqpsk_dibit.h>
 #include <dsd-neo/core/power.h>
@@ -670,6 +671,7 @@ init_state_vendor_crypto_defaults(dsd_state* state) {
     state->vertex_ks_counter[1] = 0;
     state->vertex_ks_warned[0] = 0;
     state->vertex_ks_warned[1] = 0;
+    keyring_dmr_tg_map_reset(state);
 }
 
 static void
@@ -795,6 +797,10 @@ init_state_protocol_defaults_b(dsd_state* state) {
     state->dmr_lrrp_source[1] = 0;
     state->dmr_lrrp_target[0] = 0;
     state->dmr_lrrp_target[1] = 0;
+    //qualifies dmr_lrrp_target, so it has to be cleared with it: a stale group flag left behind a
+    //cleared target would qualify whatever target is written next
+    state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_target_is_group[1] = 0;
 
     //initialize data header bits
     state->data_header_blocks[0] = 1; //initialize with 1, otherwise we may end up segfaulting when no/bad data header

@@ -273,6 +273,66 @@ key_hex,keystream_spec,notes
 0xA1B2C3D4E5,168:0123456789ABCDEF0123456789ABCDEF0123456789:0:49,frame aligned
 ```
 
+## DMR Talkgroup->Key ID Map CSV (`--dmr-tg-key-csv <file>`)
+
+Purpose: Select the decryption key by talkgroup instead of the OTA-signaled key ID. A row here is an
+explicit per-talkgroup override: the mapped key ID is used in place of the signaled one for the whole
+call, and unmapped talkgroups keep normal signaled-key-ID behavior. Keys themselves still come from
+`-K`/`-k`; this file only picks which key ID a talkgroup uses.
+
+Required columns:
+
+1. `tg` (decimal talkgroup ID, `1..16777215`)
+2. `keyid` (hex key ID, `00..FF`; indexes the `-K`/`-k` keyring)
+
+Notes:
+
+- Header row is ignored (required by importer convention).
+- DMR only, and it needs the CSV keyring (`-K`/`-k`) loaded plus a known ALG ID (signaled, or via
+  `--dmr-force-algid` on systems that don't signal one). Loading the map without `-K`/`-k` warns and
+  does nothing. With `--dmr-force-algid`, the row is already consulted at the call's first voice LC —
+  before the forced ALG ID has been written to the slot — so a mapped talkgroup is never classified
+  or locked out against the key the slot happened to carry from the previous call.
+- Applies everywhere a DMR call's effective key ID is resolved: voice, encrypted data bursts (PDUs),
+  crypto classification, the `--enc-lockout` release decision, and sdrtrunk JSON replay input.
+- Group voice calls only. Private (unit-to-unit) calls put the destination radio ID where the
+  talkgroup would be, and DMR radio IDs share the talkgroup's 24-bit address space, so an individually
+  addressed call or data PDU is never matched against this file. For data, the header's group/individual
+  bit is recorded alongside the target so the PDU can still be classified after the header itself is
+  gone.
+- The OTA key ID is never rewritten: logs, event history, and the UI keep showing the signaled key ID,
+  and the printed data-PDU header leads with it too, appending the override only when one applied.
+- A row applies only when the mapped key ID holds the kind of key material the call's algorithm
+  actually consumes: a scalar for RC4/DES/Hytera Enhanced, the AES segments for AES-128/AES-256 (P25
+  TDEA needs three), or a complete, non-zero quartet for Kirisun (`0x36`/`0x37`). A key ID that holds
+  material of some other kind — an AES quartet mapped to an RC4 talkgroup, a scalar mapped to an
+  AES-128 one — does not apply, for the same reason an unimported key ID doesn't.
+- A mapped key ID with no imported key material, or with material of the wrong kind for the call's
+  algorithm, always falls back to the signaled key ID instead of blocking the talkgroup outright, so a
+  typo in the key ID column — or a row that names a real but mismatched key — never silently kills
+  decryption for that talkgroup.
+- Console visibility of this differs by consumer: voice announces both an applied override and a
+  fallback, once per call, except for algorithms that consume no keyring material, where the row is
+  inert and silent (e.g. Vertex); data PDUs show an applied override in the PDU header line but stay
+  silent on a fallback; crypto classification, the `--enc-lockout` decision, and sdrtrunk replay apply
+  the map with no console notice either way.
+- In sdrtrunk JSON replay, a map row wins over the older implicit "key indexed by talkgroup"
+  convention; with no matching row, that older behavior is unchanged. This holds regardless of the
+  order in which fields appear in the JSON record.
+- Duplicate talkgroups are allowed; the last occurrence replaces earlier rows.
+- Maximum rows: `256`.
+- CLI-only: there's no TUI or Android import path to load this map, only `--dmr-tg-key-csv` at startup.
+  Clearing keys from the TUI clears the map along with them, with no runtime path to reload it.
+
+Example (the key IDs are the ones in `examples/multi_key_hex.csv`; a mapped key ID with no imported
+key material falls back to the signaled key ID instead of blocking the talkgroup):
+
+```csv
+tg (dec),keyid (hex)
+123,02
+4567,0C
+```
+
 ## DMR Tier III LCN Calculator Input (`--calc-lcn <file>`)
 
 The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:

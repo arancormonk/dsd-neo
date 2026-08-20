@@ -336,6 +336,13 @@ main(void) {
     state->data_header_dd_format[1] = 0x18U;
     state->data_header_bit_padding[0] = 16U;
     state->data_header_bit_padding[1] = 7U;
+    // The --dmr-tg-key-csv lookup reads dmr_data_target_is_group[] to tell a data PDU's talkgroup
+    // from a colliding radio id, so a stale group flag surviving carrier loss would qualify the
+    // next target written. Both slots are seeded so a slot-0-only reset still fails.
+    state->dmr_lrrp_target[0] = 1234U;
+    state->dmr_lrrp_target[1] = 5678U;
+    state->dmr_data_target_is_group[0] = 1U;
+    state->dmr_data_target_is_group[1] = 1U;
 
     noCarrier(opts, state);
 
@@ -363,6 +370,9 @@ main(void) {
     rc |= expect_true("dmr-short-data-metadata-reset",
                       state->data_header_dd_format[0] == 0U && state->data_header_dd_format[1] == 0U
                           && state->data_header_bit_padding[0] == 0U && state->data_header_bit_padding[1] == 0U);
+    rc |= expect_true("dmr-data-target-reset", state->dmr_lrrp_target[0] == 0U && state->dmr_lrrp_target[1] == 0U);
+    rc |= expect_true("dmr-data-target-group-flag-reset",
+                      state->dmr_data_target_is_group[0] == 0U && state->dmr_data_target_is_group[1] == 0U);
 
     for (int i = 0; i < 200; i++) {
         if (state->dmr_payload_buf[i] != 0) {

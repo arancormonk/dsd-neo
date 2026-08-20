@@ -15,6 +15,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_AUDIO_H_H
 
+#include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/sndfile_fwd.h>
@@ -173,6 +174,20 @@ int dsd_p25p2_decode_audio_allowed(const dsd_opts* opts, const dsd_state* state,
  */
 int dsd_dmr_apply_forced_algid(dsd_state* state);
 
+/**
+ * @brief The ALG ID a slot's call will be decrypted under, for classification before voice runs.
+ *
+ * The slot's OTA ALG ID when it has one. Otherwise, when the service options carry the privacy
+ * bit (@p so & 0x40) and --dmr-force-algid is set, the forced value dsd_dmr_apply_forced_algid()
+ * will install on the first voice frame -- the same rule, read without mutating the slot. The
+ * LC path classifies and arms the encryption lockout before any voice frame has run, and trunk
+ * tuning zeroes payload_algid on every voice-channel tune, so without this every trunked call's
+ * first LC would be judged against "no ALG ID" -- i.e. against whatever key the slot last
+ * carried rather than the key the forced ALG (and any --dmr-tg-key-csv row) will actually
+ * select. 0 when neither source yields an ALG ID.
+ */
+int dsd_dmr_classify_algid(const dsd_state* state, int slot, int so);
+
 /** @brief Flush partially buffered P25p2 SS18 audio on call end/release. */
 void dsd_p25p2_flush_partial_audio(dsd_opts* opts, dsd_state* state);
 /** @brief Flush partially buffered P25p2 SS18 audio for one slot while preserving the other slot. */
@@ -187,18 +202,81 @@ int dsd_audio_group_gate_dual(const dsd_opts* opts, const dsd_state* state, unsi
 int dsd_audio_record_gate_mono(const dsd_opts* opts, const dsd_state* state, int* allow_out);
 
 /**
+ * @brief Key material the DMR/P25 voice ALGID @p algid requires.
+ *
+ * The project's single voice ALGID table. dsd_dmr_voice_alg_can_decrypt() is derived from it, and
+ * the --dmr-tg-key-csv resolver gates on it, so the ALG knowledge behind "can this key decrypt?"
+ * and behind "may this map row apply?" is one table rather than two that can drift.
+ *
+ * Unclassified ALGIDs return DSD_KEY_NEED_NONE, which reads as "no keyring material selects this"
+ * -- consistent with dsd_dmr_voice_alg_can_decrypt() already reporting 0 for them.
+ */
+dsd_key_material_need dsd_dmr_alg_key_need(int algid);
+
+/**
  * @brief Return 1 when a DMR/P25-style voice ALGID has sufficient key material to decrypt.
  *
  * This helper intentionally only covers known/implemented families that can be
  * checked from a scalar key-loaded flag. ALGIDs with slot-specific key
  * completeness rules, such as Kirisun 0x36/0x37, require
- * dsd_dmr_voice_slot_can_decrypt(). Unknown ALGIDs return 0 so callers keep
- * audio muted rather than falsely unmuting garble.
+ * dsd_dmr_voice_slot_can_decrypt() -- or, when the verdict is wanted for a key
+ * ID other than the slot's installed one (a --dmr-tg-key-csv override that has
+ * not been activated yet), dsd_dmr_voice_kid_can_decrypt(). Unknown ALGIDs
+ * return 0 so callers keep audio muted rather than falsely unmuting garble.
  */
 int dsd_dmr_voice_alg_can_decrypt(int algid, unsigned long long r_key, int aes_loaded);
 
 /** @brief Return 1 when missing DMR ALG ID can still be decrypted from loaded per-slot key material. */
 int dsd_dmr_missing_alg_key_can_decrypt(const dsd_state* state, int slot);
+
+/**
+ * @brief Return 1 when the slot carries a complete Kirisun (ALG 0x36/0x37) key.
+ *
+ * Requires all four AES segments present and strictly non-zero. Exposed so classification can
+ * compare the slot's installed key against a prospective one -- see
+ * keyring_kid_kirisun_complete(), which predicts this for a key ID that has not been activated.
+ */
+int dsd_dmr_kirisun_slot_key_complete(const dsd_state* state, int slot);
+
+/**
+ * The key material a decryptability verdict is taken against. Built by dsd_dmr_slot_key_material()
+ * for a slot, or by hand in tests.
+ *
+ * @p kirisun_complete carries the Kirisun 0x36/0x37 verdict separately because it cannot be
+ * expressed as r_key/aes_loaded: activation overwrites aes_key_segments[]/A1..A4[] for those ALG
+ * IDs too, so the slot's current quartet describes the previous key, not the one this call will
+ * use. dsd_dmr_kirisun_slot_key_complete() answers it for the slot's own key,
+ * keyring_kid_kirisun_complete() for a prospective key ID. Ignored for every other ALG ID.
+ */
+typedef struct {
+    unsigned long long r_key;
+    int aes_loaded;
+    int kirisun_complete;
+} dsd_dmr_key_material;
+
+/**
+ * @brief Decryptability check against key material the caller supplies.
+ *
+ * Same rules as dsd_dmr_voice_slot_can_decrypt(), but the key material is a parameter rather
+ * than per-slot state, so classification can evaluate a key id that has not been activated --
+ * which is what --dmr-tg-key-csv requires at LC/PI time, before any voice frame has run.
+ */
+int dsd_dmr_voice_kid_can_decrypt(const dsd_state* state, int slot, int algid, const dsd_dmr_key_material* key);
+
+/**
+ * @brief Key material a DMR slot will actually decrypt with.
+ *
+ * Reports the slot's own installed material, or -- when @p mapped says a --dmr-tg-key-csv row
+ * replaced the signaled key ID -- what @p key_id would install. The mapped case cannot be read off
+ * the slot: activation has not run yet at LC/PI time, so R/RR, aes_key_loaded[] and the Kirisun
+ * quartet still describe the previous key.
+ *
+ * One implementation because the callers must not disagree: dmr_flco.c uses it both for the label
+ * the operator sees and for the gate that arms the encryption lockout (which forces a P_CLEAR and
+ * drops the channel, and cannot self-heal), and dmr_pi.c publishes the same verdict for the same
+ * call. An out-of-range slot yields all-zero material, i.e. "cannot decrypt".
+ */
+dsd_dmr_key_material dsd_dmr_slot_key_material(const dsd_state* state, int slot, int key_id, int mapped);
 
 /**
  * @brief Slot-aware DMR/P25-style decryptability check.

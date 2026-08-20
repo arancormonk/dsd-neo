@@ -1959,6 +1959,11 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
     state->dmr_lrrp_source[1] = 0;
     state->dmr_lrrp_target[0] = 0;
     state->dmr_lrrp_target[1] = 0;
+    // Qualifies dmr_lrrp_target, so it clears with it. nxdn_element.c writes dmr_lrrp_target[0]
+    // without touching this flag, so "a zero target short-circuits the lookup" is not a safe
+    // substitute for clearing it here.
+    state->dmr_data_target_is_group[0] = 0;
+    state->dmr_data_target_is_group[1] = 0;
     state->data_header_blocks[0] = 1;
     state->data_header_blocks[1] = 1;
     state->data_header_padding[0] = 0;
