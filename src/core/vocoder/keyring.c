@@ -233,6 +233,14 @@ keyring_dmr_effective_kid(const dsd_state* state, uint32_t target, int target_is
 // mark_vocoder_call_media_protocol_compatible() rejects DSD_SYNC_NONE before the snapshot is
 // taken. The PI path is DMR-only by construction. So on both callers an unobserved protocol is
 // a DMR call, and rejecting it would only drop the map on the first burst of one.
+//
+// The ACTIVE test bounds staleness rather than eliminating it. A transmission that ends without a
+// decodable terminator leaves its epoch ACTIVE, so the next transmission's first voice frames
+// resolve against the previous talkgroup. Nothing can signal that until the new voice LC opens an
+// epoch -- there is no freshness signal to read, and every consumer of the canonical snapshot has
+// the same exposure. It self-heals: keyring_activate_slot_with_kid() runs every frame, so the
+// first frame after the new LC installs the right key. Pinned by
+// test_stale_active_epoch_self_heals_on_the_next_lc().
 static int
 keyring_dmr_tg_map_call_is_mappable(const dsd_call_snapshot* call) {
     return call->phase == DSD_CALL_PHASE_ACTIVE && call->kind == DSD_CALL_KIND_GROUP_VOICE

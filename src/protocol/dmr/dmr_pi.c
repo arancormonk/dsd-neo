@@ -240,6 +240,9 @@ dmr_pi_publish_crypto(dsd_opts* opts, dsd_state* state) {
     // The <= 0xFF test matches the voice path's: a signaled id that cannot round-trip through the
     // resolver's uint8_t bypasses the map here too, so this label cannot claim an override the
     // decrypting path never applies.
+    // Same bounded staleness as the voice path: a missed terminator leaves the previous
+    // transmission's epoch ACTIVE, so an early PI header can publish against the old talkgroup's
+    // row. See keyring_dmr_tg_map_call_is_mappable() for why no freshness signal exists.
     dsd_call_snapshot call;
     int mapped = 0;
     int eff_kid = (int)kid;

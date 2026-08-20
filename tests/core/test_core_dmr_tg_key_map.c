@@ -718,6 +718,44 @@ test_both_notices_can_print_in_one_epoch(void) {
     return rc;
 }
 
+// A transmission that ends without a decodable terminator leaves its epoch ACTIVE, so the next
+// transmission's first voice frames resolve the map against the PREVIOUS talkgroup. Nothing can
+// signal that staleness until the new voice LC opens an epoch -- every consumer of the canonical
+// snapshot shares the exposure. What is guaranteed is that it self-heals: activation runs every
+// frame, so the first frame after the new LC resolves correctly. This pins that guarantee.
+static int
+test_stale_active_epoch_self_heals_on_the_next_lc(void) {
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.keyloader = 1;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 0x03;
+    state.rkey_array[0x03] = 0xAAAAAULL;
+    state.rkey_array_loaded[0x03] = 1U;
+    state.rkey_array[0x7B] = 0xBBBBBULL;
+    state.rkey_array_loaded[0x7B] = 1U;
+    map_one(&state, 100U, 0x7B);
+    observe_group_call(&state, 0U, 100U);
+
+    // TG 100 is mapped and its epoch is ACTIVE.
+    rc |= expect_eq("stale-mapped-tg", activate_via_map(&state, 0), 0x7B);
+
+    // The transmission ends with no decodable terminator: the epoch stays ACTIVE, so an unmapped
+    // TG 200 transmission's first frames still resolve against TG 100.
+    rc |= expect_eq("stale-still-keys-old-tg", activate_via_map(&state, 0), 0x7B);
+
+    // TG 200's voice LC opens its epoch, and the very next frame resolves correctly.
+    observe_group_call(&state, 0U, 200U);
+    rc |= expect_eq("self-heals-on-new-epoch", activate_via_map(&state, 0), 0x03);
+    rc |= expect_eq("self-heals-key", (long long)state.R, 0xAAAAALL);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -735,6 +773,7 @@ main(void) {
     rc |= test_kid_satisfies_need();
     rc |= test_mapped_kid_without_material_falls_back();
     rc |= test_both_notices_can_print_in_one_epoch();
+    rc |= test_stale_active_epoch_self_heals_on_the_next_lc();
     // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {
