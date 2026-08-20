@@ -233,6 +233,14 @@ function decodeChips(flag) {
 function suggestsTrunking(flag, hz) {
     var mode = findDecodeMode(flag)
     if (mode === null)
+        // Unreachable for the composites: the only two writers that can put one
+        // in decodeFlag - applyRadioReference() and openForEdit() - both call
+        // answerTrunking() with it, and refreshTrunkingSuggestion() (the sole
+        // caller here) returns early once trunkingAnswered is set. Tapping the
+        // composite chip decodeChips() splices in cannot reach it either, since
+        // that chip only exists while decodeFlag already holds the composite.
+        // If either writer ever stops answering, resolve the composite the way
+        // decodeChips() does rather than widening findDecodeMode().
         return false
     if (mode.trunked === true)
         return true
