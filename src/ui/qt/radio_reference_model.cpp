@@ -13,7 +13,6 @@
 #include <QLatin1String>
 #include <QPointer>
 #include <QSaveFile>
-#include <QSet>
 #include <QStringList>
 #include <QVariant>
 #include <Qt>
@@ -22,10 +21,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <type_traits>
+#include <vector>
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
+#include <dsd-neo/runtime/radioreference_import.h>
 
 #include "app_prefs.h"
 #include "imported_files_model.h"
@@ -106,19 +107,11 @@ scrub_auth(dsd_rr_auth* auth) {
  */
 QString
 hz_to_mhz_text(long long hz) {
-    if (hz <= 0) {
+    char buf[32];
+    if (dsd_rr_hz_to_mhz_text(hz, buf, sizeof buf) != 0) {
         return QString();
     }
-    const long long whole = hz / 1000000LL;
-    const long long micro = hz % 1000000LL;
-    if (micro == 0) {
-        return QString::number(whole);
-    }
-    QString frac = QStringLiteral("%1").arg(micro, 6, 10, QLatin1Char('0'));
-    while (frac.endsWith(QLatin1Char('0'))) {
-        frac.chop(1);
-    }
-    return QString::number(whole) + QLatin1Char('.') + frac;
+    return QString::fromUtf8(buf);
 }
 
 /** @brief Copy a fixed-size C field into a QString. */
@@ -316,6 +309,9 @@ QVariantMap
 take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
     auto* details = static_cast<dsd_rr_trs_details*>(result);
     QVariantMap map;
+    /* Straight field copies, read from the record rather than from the resolved
+     * struct: they carry no policy, and this keeps them right whatever the
+     * resolver leaves behind when the support-map fetch fails. */
     map.insert(QStringLiteral("name"), field(details->name));
     map.insert(QStringLiteral("city"), field(details->city));
     map.insert(QStringLiteral("hasCustomBandplan"), details->bandplan_count > 0);
@@ -325,24 +321,21 @@ take_details(void* result, dsd_rr_client* client, const dsd_rr_auth* auth) {
         map.insert(QStringLiteral("wacn"), field(details->sysids[0].wacn));
     }
 
-    dsd_rr_support_maps maps;
-    DSD_MEMSET(&maps, 0, sizeof(maps));
+    dsd_rr_system_info info;
+    DSD_MEMSET(&info, 0, sizeof(info));
+    /* DSD_MEMSET leaves DSD_RR_PROTO_P25 here: UNSUPPORTED is the LAST
+     * enumerator of dsd_rr_protocol, not the first. */
+    info.protocol = DSD_RR_PROTO_UNSUPPORTED;
     dsd_rr_error err;
     DSD_MEMSET(&err, 0, sizeof(err));
-    dsd_rr_protocol protocol = DSD_RR_PROTO_UNSUPPORTED;
-    /* Borrowed view of the client's cache: never freed here. */
-    if (dsd_rr_get_support_maps(client, auth, &maps, &err) == 0) {
-        const char* type = dsd_rr_support_lookup(&maps.types, details->type_id, details->type_id);
-        const char* flavor = dsd_rr_support_lookup(&maps.flavors, details->type_id, details->flavor_id);
-        const char* voice = dsd_rr_support_lookup(&maps.voices, details->type_id, details->voice_id);
-        protocol = dsd_rr_protocol_classify(type, flavor, voice);
-        map.insert(QStringLiteral("typeDescr"), field(type));
-        map.insert(QStringLiteral("flavorDescr"), field(flavor));
-        map.insert(QStringLiteral("voiceDescr"), field(voice));
-        map.insert(QStringLiteral("esk"), dsd_rr_flavor_has_esk(flavor) != 0);
+    if (dsd_rr_system_info_resolve(client, auth, details, &info, &err) == 0) {
+        map.insert(QStringLiteral("typeDescr"), field(info.type_descr));
+        map.insert(QStringLiteral("flavorDescr"), field(info.flavor_descr));
+        map.insert(QStringLiteral("voiceDescr"), field(info.voice_descr));
+        map.insert(QStringLiteral("esk"), info.record_says_esk != 0);
     }
-    map.insert(QStringLiteral("protocol"), static_cast<int>(protocol));
-    map.insert(QStringLiteral("supported"), protocol != DSD_RR_PROTO_UNSUPPORTED);
+    map.insert(QStringLiteral("protocol"), static_cast<int>(info.protocol));
+    map.insert(QStringLiteral("supported"), info.protocol != DSD_RR_PROTO_UNSUPPORTED);
 
     dsd_rr_trs_details_free(details);
     free(details);
@@ -475,10 +468,10 @@ RadioReferenceModel::buildHasAppKey() const {
 
 QByteArray
 RadioReferenceModel::chooseAppKey(const char* builtin, const QString& override) {
-    if (builtin != nullptr && builtin[0] != '\0') {
-        return QByteArray(builtin);
-    }
-    return override.isEmpty() ? QByteArray() : override.toUtf8();
+    /* Named local, not a temporary: dsd_rr_choose_app_key() returns one of its
+     * two arguments, so the chosen key can point into `stored`. */
+    const QByteArray stored = override.toUtf8();
+    return QByteArray(dsd_rr_choose_app_key(builtin, stored.constData()));
 }
 
 bool
@@ -1027,28 +1020,6 @@ RadioReferenceModel::setTransportForTests(const dsd_rr_transport* transport) {
 /* Preview and import                                                         */
 /* ------------------------------------------------------------------------- */
 
-QList<dsd_rr_site>
-RadioReferenceModel::selectedSites(const QVariantList& siteIndexes, QVariantList* warnings) const {
-    QList<dsd_rr_site> chosen;
-    QSet<int> seen;
-    for (const QVariant& value : siteIndexes) {
-        bool ok = false;
-        const int index = value.toInt(&ok);
-        if (!ok || index < 0 || static_cast<size_t>(index) >= m_siteData.count) {
-            warnings->append(tr("A selected site is no longer in the list and was ignored."));
-            continue;
-        }
-        if (seen.contains(index)) {
-            continue;
-        }
-        seen.insert(index);
-        /* Shallow copies: the generators only read, and the frequency arrays
-         * stay owned by m_siteData. */
-        chosen.append(m_siteData.items[index]);
-    }
-    return chosen;
-}
-
 bool
 RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partialEncAsDe, QVariantMap* plan,
                                    QVariantList* warnings) const {
@@ -1090,129 +1061,147 @@ RadioReferenceModel::generateFiles(const QList<dsd_rr_site>& chosen, bool partia
 namespace {
 
 /**
- * @brief The frequency a session built from this plan should start on.
+ * @brief Rebuild the classified system the plan builder takes.
  *
- * The control channel for a trunked system, the repeater output for a
- * conventional one - but trunked does not imply a MARKED control channel.
- * Capacity Plus has no fixed one at all (the rest channel moves) and
- * RadioReference leaves `use` nil on every frequency of some EDACS sites too.
- * Blocking those would make the import dead for a whole protocol family, so
- * fall back to the site's first frequency and say so; the wizard's frequency
- * field is right there if it needs correcting.
- *
- * @param protocol Classified protocol.
- * @param site     The site the import was built from.
- * @param warnings Receives the fallback note when one was needed.
- * @return Frequency in Hz, or 0 when the site lists none at all.
+ * The model keeps only what take_details() put in m_systemDetails plus the two
+ * fields applySystemReply() reads back, and everything the builder consults is
+ * derivable from those - so the struct is rebuilt here rather than carried
+ * through the reply queue.
  */
-long long
-tune_frequency(dsd_rr_protocol protocol, const dsd_rr_site& site, QVariantList* warnings) {
-    const long long marked =
-        dsd_rr_protocol_is_trunked(protocol) ? dsd_rr_site_control_freq_hz(&site) : dsd_rr_site_first_freq_hz(&site);
-    if (marked > 0) {
-        return marked;
-    }
+void
+fill_system_info(dsd_rr_protocol protocol, bool recordSaysEsk, dsd_rr_system_info* info) {
+    DSD_MEMSET(info, 0, sizeof(*info));
+    /* Explicit: DSD_MEMSET leaves DSD_RR_PROTO_P25 (0) here, not UNSUPPORTED. */
+    info->protocol = protocol;
+    info->supported = (protocol != DSD_RR_PROTO_UNSUPPORTED) ? 1 : 0;
+    info->conventional = dsd_rr_protocol_is_conventional(protocol);
+    info->trunked = dsd_rr_protocol_is_trunked(protocol);
+    info->record_says_esk = recordSaysEsk ? 1 : 0;
+}
 
-    const long long first = dsd_rr_site_first_freq_hz(&site);
-    if (first > 0) {
-        warnings->append(RadioReferenceModel::tr(
-            "RadioReference marks no control channel for this site, so the session starts on its first listed "
-            "frequency. Check it against the system's own listing."));
+/**
+ * @brief Apply the screen's option map over the follow-the-record sentinels.
+ *
+ * The caller MUST pass {-1, -1, 1}: a zeroed struct means "force simulcast off,
+ * force ESK off, play partly encrypted talkgroups", which is a different import.
+ * Only a key that is actually present overrides, so an absent key keeps the
+ * record-derived answer exactly as options.value(key, default) did.
+ */
+void
+fill_import_options(const QVariantMap& options, dsd_rr_import_options* opts) {
+    if (options.contains(QStringLiteral("simulcast"))) {
+        opts->simulcast = options.value(QStringLiteral("simulcast")).toBool() ? 1 : 0;
     }
-    return first;
+    if (options.contains(QStringLiteral("esk"))) {
+        opts->esk = options.value(QStringLiteral("esk")).toBool() ? 1 : 0;
+    }
+    if (options.contains(QStringLiteral("partialEncAsDe"))) {
+        opts->partial_enc_as_de = options.value(QStringLiteral("partialEncAsDe")).toBool() ? 1 : 0;
+    }
+}
+
+/** @brief QML's selection list as builder indexes; anything unusable becomes SIZE_MAX. */
+std::vector<size_t>
+selected_indexes(const QVariantList& siteIndexes) {
+    std::vector<size_t> out;
+    out.reserve(static_cast<size_t>(siteIndexes.size()));
+    for (const QVariant& value : siteIndexes) {
+        bool ok = false;
+        const int index = value.toInt(&ok);
+        /* SIZE_MAX is out of range for any site list, so the builder reports it
+         * as "A selected site is no longer in the list and was ignored." -
+         * exactly what the old selection loop did for a non-int or negative
+         * entry. */
+        out.push_back((ok && index >= 0) ? static_cast<size_t>(index) : SIZE_MAX);
+    }
+    return out;
+}
+
+/** @brief The keys buildImportPlan() has inserted before it looks at anything. */
+QVariantMap
+plan_base_map(dsd_rr_protocol protocol, const QVariantMap& systemDetails) {
+    QVariantMap map;
+    map.insert(QStringLiteral("ok"), false);
+    map.insert(QStringLiteral("protocol"), static_cast<int>(protocol));
+    map.insert(QStringLiteral("protocolName"), systemDetails.value(QStringLiteral("flavorDescr")));
+    map.insert(QStringLiteral("conventional"), dsd_rr_protocol_is_conventional(protocol) != 0);
+    map.insert(QStringLiteral("trunking"), dsd_rr_protocol_is_trunked(protocol) != 0);
+    map.insert(QStringLiteral("chanNeed"), dsd_rr_chan_map_need(protocol));
+    map.insert(QStringLiteral("scanList"), false);
+    map.insert(QStringLiteral("groupCsvText"), QString());
+    map.insert(QStringLiteral("chanCsvText"), QString());
+    map.insert(QStringLiteral("freqMhz"), QString());
+    map.insert(QStringLiteral("blockedReason"), QString());
+    return map;
+}
+
+/**
+ * @brief Fold a built plan into the map QML reads.
+ *
+ * The early returns are the point: a key this function skips is a key the old
+ * buildImportPlan() never inserted on that path, and RadioReferenceScreen.qml
+ * reads plan fields through `screen.plan[key] !== undefined`.
+ */
+void
+plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
+    map->insert(QStringLiteral("blockedReason"), field(plan.blocked_reason));
+    map->insert(QStringLiteral("warnings"), to_warning_list(plan.warnings));
+    if (plan.protocol == DSD_RR_PROTO_UNSUPPORTED || plan.site_count <= 0) {
+        return; /* blocked before a selection resolved */
+    }
+    map->insert(QStringLiteral("siteCount"), plan.site_count);
+    map->insert(QStringLiteral("siteIds"), field(plan.site_ids));
+    map->insert(QStringLiteral("partialEncAsDe"), plan.partial_enc_as_de != 0);
+    if (plan.chan_csv_text != nullptr) {
+        map->insert(QStringLiteral("chanCsvText"),
+                    QString::fromUtf8(plan.chan_csv_text, static_cast<int>(plan.chan_csv_len)));
+        map->insert(QStringLiteral("scanList"), plan.scan_list != 0);
+    }
+    if (plan.group_csv_text != nullptr) {
+        map->insert(QStringLiteral("groupCsvText"),
+                    QString::fromUtf8(plan.group_csv_text, static_cast<int>(plan.group_csv_len)));
+    }
+    if (plan.decode_flag[0] == '\0') {
+        return; /* blocked at or before generation: decodeFlag is absent and
+                * freqMhz/ok keep the base map's empty/false, exactly as the
+                * old code left them when it returned early. */
+    }
+    map->insert(QStringLiteral("decodeFlag"), field(plan.decode_flag));
+    const long long tuneHz = plan.tune_hz;
+    map->insert(QStringLiteral("freqMhz"), hz_to_mhz_text(tuneHz));
+    map->insert(QStringLiteral("ok"), plan.ok != 0);
 }
 
 } // namespace
 
 QVariantMap
 RadioReferenceModel::buildImportPlan(const QVariantList& siteIndexes, const QVariantMap& options) {
-    QVariantMap plan;
-    QVariantList warnings;
-    plan.insert(QStringLiteral("ok"), false);
-    plan.insert(QStringLiteral("protocol"), static_cast<int>(m_protocol));
-    plan.insert(QStringLiteral("protocolName"), m_systemDetails.value(QStringLiteral("flavorDescr")));
-    plan.insert(QStringLiteral("conventional"), conventional());
-    plan.insert(QStringLiteral("trunking"), dsd_rr_protocol_is_trunked(m_protocol) != 0);
-    plan.insert(QStringLiteral("chanNeed"), dsd_rr_chan_map_need(m_protocol));
-    plan.insert(QStringLiteral("scanList"), false);
-    plan.insert(QStringLiteral("groupCsvText"), QString());
-    plan.insert(QStringLiteral("chanCsvText"), QString());
-    plan.insert(QStringLiteral("freqMhz"), QString());
-    plan.insert(QStringLiteral("blockedReason"), QString());
+    dsd_rr_system_info info;
+    fill_system_info(m_protocol, m_recordSaysEsk, &info);
 
-    if (m_protocol == DSD_RR_PROTO_UNSUPPORTED) {
-        plan.insert(QStringLiteral("blockedReason"),
-                    tr("dsd-neo cannot decode this system type yet, so there is nothing useful to import."));
-        plan.insert(QStringLiteral("warnings"), warnings);
-        return plan;
-    }
+    dsd_rr_import_options opts = {-1, -1, 1};
+    fill_import_options(options, &opts);
 
-    const QList<dsd_rr_site> chosen = selectedSites(siteIndexes, &warnings);
-    if (chosen.isEmpty()) {
-        plan.insert(QStringLiteral("blockedReason"),
-                    conventional() ? tr("Select at least one repeater.") : tr("Select a site."));
-        plan.insert(QStringLiteral("warnings"), warnings);
-        return plan;
-    }
-    /* The full selection goes to the generator even for a trunked system: it
-     * uses the first and warns about the rest, so that rule lives in one place
-     * rather than being enforced twice with two different messages. */
-    plan.insert(QStringLiteral("siteCount"), conventional() ? chosen.size() : 1);
-    /* The whole selection, so a later refresh can reproduce it. Only the first
-     * entry for a trunked import, because that is all the generator uses.
-     *
-     * TrsSite.siteId and never the RF site number: the number is what a user
-     * recognises but it is NOT unique within a system - the captured SARA
-     * network numbers its 35 sites 1,1,10,10,10,10,10,20,... - so matching on it
-     * could regenerate from the wrong tower. */
-    QStringList ids;
-    for (const dsd_rr_site& site : chosen) {
-        ids.append(QString::number(site.site_db_id));
-        if (!conventional()) {
-            break;
-        }
-    }
-    plan.insert(QStringLiteral("siteIds"), ids.join(QLatin1Char(',')));
+    const std::vector<size_t> selected = selected_indexes(siteIndexes);
 
-    const bool partialEncAsDe = options.value(QStringLiteral("partialEncAsDe"), true).toBool();
-    /* Recorded so a later refresh reproduces the answer this import was given
-     * instead of substituting the UI default. */
-    plan.insert(QStringLiteral("partialEncAsDe"), partialEncAsDe);
-    if (!generateFiles(chosen, partialEncAsDe, &plan, &warnings)) {
-        plan.insert(QStringLiteral("blockedReason"), tr("The channel map could not be generated."));
-        plan.insert(QStringLiteral("warnings"), warnings);
-        return plan;
-    }
+    dsd_rr_import_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    plan.protocol = m_protocol;
 
-    /* chanNeed == 2 means trunking cannot resolve a voice grant without the map.
-     * The generator reports "no rows" as a valid outcome, so without this the
-     * preview reads as a clean success and the import produces a system that can
-     * follow nothing. Warned rather than blocked: the talkgroup list is still
-     * worth having, and the wizard can be pointed at a hand-built map. */
-    if (dsd_rr_chan_map_need(m_protocol) == 2 && plan.value(QStringLiteral("chanCsvText")).toString().isEmpty()) {
-        warnings.append(tr("RadioReference has no usable channel numbers for this site, so no channel map was "
-                           "generated. This system needs one to follow a call - the talkgroup list still imports."));
+    QVariantMap map = plan_base_map(m_protocol, m_systemDetails);
+    if (dsd_rr_import_plan_build(&info, m_siteData.items, m_siteData.count, selected.data(), selected.size(),
+                                 m_talkgroupData.items, m_talkgroupData.count, &opts, &plan)
+        != 0) {
+        /* A hard builder failure is the same class of failure the generator
+         * already reported this way. */
+        dsd_rr_import_plan_free(&plan);
+        map.insert(QStringLiteral("blockedReason"), tr("The channel map could not be generated."));
+        map.insert(QStringLiteral("warnings"), QVariantList());
+        return map;
     }
-
-    /* Defaults come from the RadioReference record for the SITE the user picked,
-     * not from "any site on this system", and stay overridable. */
-    const bool simulcast =
-        options.value(QStringLiteral("simulcast"), dsd_rr_site_is_simulcast(&chosen.first()) != 0).toBool();
-    const bool esk = options.value(QStringLiteral("esk"), m_recordSaysEsk).toBool();
-    const char* flag = dsd_rr_decode_flag(m_protocol, simulcast ? 1 : 0, esk ? 1 : 0,
-                                          plan.value(QStringLiteral("scanList")).toBool() ? 1 : 0);
-    plan.insert(QStringLiteral("decodeFlag"), flag != nullptr ? QString::fromUtf8(flag) : QString());
-
-    const long long tuneHz = tune_frequency(m_protocol, chosen.first(), &warnings);
-    plan.insert(QStringLiteral("freqMhz"), hz_to_mhz_text(tuneHz));
-    if (tuneHz <= 0) {
-        plan.insert(QStringLiteral("blockedReason"),
-                    tr("This site lists no frequency to start on, so the session would have nothing to tune."));
-    } else {
-        plan.insert(QStringLiteral("ok"), true);
-    }
-    plan.insert(QStringLiteral("warnings"), warnings);
-    return plan;
+    plan_into_map(plan, &map);
+    dsd_rr_import_plan_free(&plan);
+    return map;
 }
 
 namespace {

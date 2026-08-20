@@ -360,9 +360,6 @@ class RadioReferenceModel : public QObject {
     void clearSystem();
     void finishSystemLoad();
 
-    /** @brief Shallow copies of the selected sites, in selection order. */
-    QList<dsd_rr_site> selectedSites(const QVariantList& siteIndexes, QVariantList* warnings) const;
-
     /**
      * @brief Run both generators for @p chosen into @p plan.
      *
