@@ -73,10 +73,18 @@ rr_key_prompt_offered(const void* ctx) {
 
 bool
 rr_refresh_available(const void* ctx) {
-    /* Stage 11 replaces this with "does dsd_user_imports_dir() resolve?". Until then the
-       refresh item ships disabled rather than enabled-and-inert. */
+    /* Reports whether an imports directory RESOLVES - whether XDG_CONFIG_HOME /
+       HOME (POSIX) or APPDATA (Windows) gave a config root - deliberately not
+       whether any import exists. Predicates run on every menu render (up to
+       15 FPS), and listing the directory plus reading a sidecar per entry at
+       that rate is filesystem traffic for no benefit; the empty case is
+       reported once, on activation, by rr_panel_open_refresh(). */
     (void)ctx;
-    return false;
+    const char* dir = dsd_user_imports_dir();
+    if (dir == NULL) {
+        return false;
+    }
+    return dir[0] != '\0';
 }
 
 #ifdef USE_RADIO

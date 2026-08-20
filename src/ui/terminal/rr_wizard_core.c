@@ -13,19 +13,23 @@
 
 #include "rr_wizard_core.h"
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,16 +68,10 @@
  * ::group_path, so a path that fits here fits the payload it is copied into. */
 #define RR_WIZ_PATH_MAX     1024U
 
-#ifdef _WIN32
-#define RR_PATH_SEP '\\'
-#else
-#define RR_PATH_SEP '/'
-#endif
-
 /* Widest chooser row this core prints. The longest format is the results row,
  * "<name> (<city>, SID <sid>)" over a 128-byte name and a 96-byte city; a
  * longer pair is truncated rather than refused. */
-#define RR_WIZ_LABEL_MAX 256U
+#define RR_WIZ_LABEL_MAX    256U
 
 /* ---- User-facing strings ------------------------------------------------ */
 /* ASCII only. None of these may pair a key/password word with an integer
@@ -93,6 +91,9 @@ static const char* const k_status_cancelled = "Cancelled.";
 
 /* New here. */
 static const char* const k_msg_request_failed = "The RadioReference request failed.";
+/* Ported verbatim from the Qt frontend (radio_reference_model.cpp:1369). */
+static const char* const k_msg_no_provenance =
+    "This file does not record which system it came from. Import it again to refresh it.";
 static const char* const k_msg_ring_overflow = "Too many RadioReference replies arrived at once; the import stopped.";
 static const char* const k_msg_out_of_memory = "Out of memory.";
 static const char* const k_title_username = "RadioReference username";
@@ -209,6 +210,25 @@ typedef struct {
     dsd_rr_auth auth;
 } RrFetchCtx;
 
+/*
+ * dsd_rr_provenance::site_ids is char[512], so 128 five-digit ids plus their
+ * commas is already past what a sidecar can hold. Ids beyond the cap are
+ * ignored, which is harmless: the conventional generator caps at 26 distinct
+ * frequencies and a trunked one uses only the first site.
+ */
+#define RR_REFRESH_MAX_SITE_IDS 128
+
+/** What a pending refresh remembers between its sidecar read and its assembly. */
+typedef struct {
+    int active;
+    char path[RR_WIZ_PATH_MAX]; /* absolute path of the stored CSV being refreshed */
+    char kind[8];               /* "group" | "chan", from the sidecar */
+    int sid;
+    int partial_enc_as_de;
+    int site_ids[RR_REFRESH_MAX_SITE_IDS];
+    size_t site_id_count;
+} RrRefreshState;
+
 struct RrWizardCore {
     RrWizardHooks hooks;
     void* hook_user;
@@ -296,6 +316,9 @@ struct RrWizardCore {
     char last_chan_path[RR_WIZ_PATH_MAX];
     char written[2][RR_WIZ_PATH_MAX];
     size_t written_count;
+
+    /* Stage 11: the refresh in flight, if any. */
+    RrRefreshState refresh;
 #ifdef DSD_NEO_TEST_HOOKS
     char imports_dir_override[RR_WIZ_PATH_MAX];
     int fail_write_after; /* -1 = never fail; rr_wizard_core_create() sets it */
@@ -436,6 +459,23 @@ rr_core_release_search(RrWizardCore* w) {
     dsd_rr_trs_list_free(&w->results);
 }
 
+/**
+ * @brief Retire a pending refresh.
+ *
+ * Ports RadioReferenceModel::abandonRefresh() (src/ui/qt/radio_reference_model.cpp:594-613):
+ * whatever the user just asked for drops a refresh still in flight, rather than
+ * letting a later assembly rewrite a file they have moved on from. Nothing to
+ * clean up on disk - the staging temp is created and removed inside
+ * rr_refresh_stage_and_replace(), which never yields.
+ */
+static void
+rr_refresh_abandon(RrWizardCore* w) {
+    if (w->refresh.active == 0) {
+        return;
+    }
+    DSD_MEMSET(&w->refresh, 0, sizeof w->refresh);
+}
+
 static void
 rr_core_free_fetch_ctx(RrFetchCtx* ctx) {
     if (ctx == NULL) {
@@ -509,6 +549,11 @@ rr_core_start_batch(RrWizardCore* w) {
     w->pending_id_count = 0;
     w->outstanding = 0;
     rr_core_release_pending(w);
+    /* Last, and here rather than at each call site: this is the one choke point
+     * every retire path goes through, and rr_wizard_core_begin_refresh() records
+     * its state AFTER the load that lands here - the same ordering, for the same
+     * reason, as Qt's startBatch() calling abandonRefresh() last. */
+    rr_refresh_abandon(w);
 }
 
 static void
@@ -1165,6 +1210,347 @@ rr_load_system(RrWizardCore* w, int sid) {
     rr_core_panel_changed(w);
 }
 
+/* ---- Stage 11: refreshing a stored import -------------------------------- */
+
+/**
+ * @brief Split a provenance site_ids field ("12,34,56") into an int array.
+ *
+ * @return Number of ids parsed; 0 when the field is empty or unparsable.
+ */
+static size_t
+rr_refresh_parse_site_ids(const char* text, int* out, size_t out_cap) {
+    char scratch[sizeof(((dsd_rr_provenance*)0)->site_ids)];
+    char* saveptr = NULL;
+    size_t n = 0;
+
+    if (text == NULL || out == NULL || out_cap == 0U) {
+        return 0;
+    }
+    if (DSD_SNPRINTF(scratch, sizeof scratch, "%s", text) <= 0) {
+        return 0;
+    }
+    for (const char* tok = dsd_strtok_r(scratch, ",", &saveptr); tok != NULL && n < out_cap;
+         tok = dsd_strtok_r(NULL, ",", &saveptr)) {
+        int value = 0;
+        if (dsd_parse_int_strict(tok, 10, 1, INT_MAX, &value) == 0) {
+            out[n] = value;
+            n++;
+        }
+    }
+    return n;
+}
+
+/**
+ * @brief Turn stored site database ids into indexes into the fetched site list.
+ *
+ * Matched by site_db_id, never by index: RadioReference is free to reorder
+ * getTrsSites, and an index would refresh the wrong repeater. Never by
+ * site_number either - a system numbers several sites the same
+ * (radioreference.h:197-198). A vanished id is dropped rather than shifting the
+ * rest of the selection, and the surviving ids keep their STORED order, which is
+ * what the conventional channel-map generator numbers its rows by.
+ *
+ * @return Number of indexes written into @p selected.
+ */
+static size_t
+rr_refresh_match_sites(const dsd_rr_site_list* sites, const int* ids, size_t id_count, size_t* selected,
+                       size_t selected_cap) {
+    size_t n = 0;
+
+    if (sites == NULL || sites->items == NULL || ids == NULL || selected == NULL) {
+        return 0;
+    }
+    for (size_t k = 0; k < id_count && n < selected_cap; k++) {
+        for (size_t i = 0; i < sites->count; i++) {
+            if (sites->items[i].site_db_id == ids[k]) {
+                selected[n] = i;
+                n++;
+                break;
+            }
+        }
+    }
+    return n;
+}
+
+/**
+ * @brief Regenerate the CSV text for the sidecar's kind.
+ *
+ * Only partial_enc_as_de changes the bytes: the channel-map generator takes
+ * sites and a protocol, the talkgroup generator takes no sites at all, and
+ * partial_enc_as_de is read in exactly one place (rr_generate.c, rr_group_mode).
+ * Simulcast and ESK select the decode flag, which a refresh never applies, so
+ * both pass the follow-record sentinel and plan.decode_flag / plan.tune_hz are
+ * ignored.
+ *
+ * The copy is not optional: dsd_rr_import_plan_free() frees group_csv_text and
+ * chan_csv_text, so the text cannot outlive the plan. Building the plan
+ * regenerates BOTH CSVs even though a refresh keeps one; the alternative is a
+ * second, near-duplicate generation path, and a refresh happens once per user
+ * action rather than once per frame.
+ *
+ * @return 0 with a heap copy in *out_text, -1 when the plan could not be built,
+ *         -2 when the kind's text is absent or empty.
+ */
+static int
+rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_count, int is_chan, char** out_text,
+                      size_t* out_len) {
+    /* The mandatory initialiser: a zeroed struct would mean "force simulcast and
+     * ESK off", not "follow the record". */
+    dsd_rr_import_options options = {-1, -1, w->refresh.partial_enc_as_de};
+    dsd_rr_import_plan plan;
+    const char* src = NULL;
+    size_t len = 0;
+    char* copy = NULL;
+
+    DSD_MEMSET(&plan, 0, sizeof plan);
+    *out_text = NULL;
+    *out_len = 0;
+    if (dsd_rr_import_plan_build(&w->info, w->sites.items, w->sites.count, selected, selected_count,
+                                 w->talkgroups.items, w->talkgroups.count, &options, &plan)
+            != 0
+        || plan.ok == 0) {
+        dsd_rr_import_plan_free(&plan);
+        return -1;
+    }
+    src = is_chan ? plan.chan_csv_text : plan.group_csv_text;
+    len = is_chan ? plan.chan_csv_len : plan.group_csv_len;
+    if (src == NULL || len == 0U) {
+        dsd_rr_import_plan_free(&plan);
+        return -2;
+    }
+    copy = (char*)malloc(len);
+    if (copy != NULL) {
+        DSD_MEMCPY(copy, src, len);
+    }
+    dsd_rr_import_plan_free(&plan);
+    if (copy == NULL) {
+        return -1;
+    }
+    *out_text = copy;
+    *out_len = len;
+    return 0;
+}
+
+/**
+ * @brief Write @p text into a private staging sibling of @p path.
+ *
+ * Split out of rr_refresh_stage_and_replace() so both stay inside
+ * tools/lizard.sh --strict's CCN 15; inlining it puts the pair at 17.
+ *
+ * The I/O sequence mirrors rr_import_write_text() exactly, including the "wb":
+ * a text-mode write turns the generator's '\n' into CRLF on Windows and a
+ * refreshed file would stop matching the imported one byte for byte. The helper
+ * picks the ".tmp.XXXXXX" name itself and refuses with ENAMETOOLONG if it does
+ * not fit, which is the same ceiling an import already lives under.
+ *
+ * @param tmp_out [out] Receives the staging path the helper picked.
+ * @return 0 on success, -1 otherwise, with the staging file removed.
+ */
+static int
+rr_refresh_write_staging(const char* path, const char* text, size_t len, char* tmp_out, size_t tmp_out_sz) {
+    FILE* fp = dsd_fopen_private_temp_for_replace(path, tmp_out, tmp_out_sz, "wb");
+    if (fp == NULL) {
+        return -1;
+    }
+    int bad = (len > 0U && fwrite(text, 1U, len, fp) != len) ? 1 : 0;
+    if (!bad && fflush(fp) != 0) {
+        bad = 1;
+    }
+    const int fd = dsd_fileno(fp);
+    if (!bad && fd >= 0 && dsd_fsync(fd) != 0) {
+        bad = 1;
+    }
+    if (fclose(fp) != 0) {
+        bad = 1;
+    }
+    if (bad) {
+        (void)remove(tmp_out);
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Stage the regenerated text, validate it, then replace the stored file.
+ *
+ * Never a bare fopen or rename: semgrep dsd-neo.no-raw-file-open bans
+ * fopen/open/mkstemp anywhere under src/, and a bare rename() fails on Windows
+ * whenever the destination exists - which is every refresh.
+ *
+ * The guard is "rc == 0 AND accepted > 0", not "rc == 0": a header-only channel
+ * map validates cleanly with zero accepted rows, because chan_import_stats()
+ * (src/core/file/dsd_import.c) skips row 1 as the label line. That differs from
+ * svc_import_channel_map()'s own check only for channel-0 rows and repeated
+ * channel numbers, neither of which a generated RR map emits.
+ *
+ * @return 0 on success, -1 when the staging file could not be written, -2 when
+ *         it was written but did not validate. The stored file is untouched in
+ *         both failure cases.
+ */
+static int
+rr_refresh_stage_and_replace(const char* path, const char* text, size_t len, int is_chan) {
+    char tmp[RR_WIZ_PATH_MAX];
+    dsd_csv_validation counts = {0U, 0U, 0U};
+
+    if (path == NULL || text == NULL) {
+        return -1;
+    }
+    tmp[0] = '\0';
+    if (rr_refresh_write_staging(path, text, len, tmp, sizeof(tmp)) != 0) {
+        return -1;
+    }
+
+    /* dsd_csv_validate_*_file() allocate a throwaway heap dsd_state internally
+     * and free its extensions before free() - never hand-roll one here, and
+     * never declare an automatic dsd_opts/dsd_state. */
+    const int rc = is_chan ? dsd_csv_validate_chan_file(tmp, &counts) : dsd_csv_validate_group_file(tmp, &counts);
+    if (rc != 0 || counts.accepted == 0U) {
+        (void)remove(tmp);
+        return -2;
+    }
+    if (dsd_replace_file_with_temp(tmp, path) != 0) {
+        (void)remove(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Bump the sidecar's timestamp after a successful replace.
+ *
+ * The stored site ids are deliberately NOT rewritten to the surviving subset: a
+ * site missing from one fetch would otherwise be dropped from provenance
+ * permanently and could never come back. Only imported_at, and the system name
+ * that RadioReference may have edited, move.
+ */
+static void
+rr_refresh_touch_provenance(const RrWizardCore* w) {
+    dsd_rr_provenance prov;
+    DSD_MEMSET(&prov, 0, sizeof prov);
+    if (dsd_rr_provenance_read(w->refresh.path, &prov) != 0) {
+        return;
+    }
+    DSD_STRNCPY(prov.system_name, w->info.name, sizeof prov.system_name - 1U);
+    prov.system_name[sizeof prov.system_name - 1U] = '\0';
+    prov.imported_at = (long long)time(NULL);
+    (void)dsd_rr_provenance_write(w->refresh.path, &prov);
+}
+
+/**
+ * @brief Ask the running session to re-read the file, but only if it is using it.
+ *
+ * Reads the published snapshot, never the live struct: the decoder thread
+ * rewrites opts->chan_in_file / group_in_file under no lock and the terminal UI
+ * runs on its own thread. The snapshot may be NULL and may lag one publish
+ * behind, so a file imported moments ago may not be visible yet - the refresh
+ * still succeeds, it just does not push.
+ *
+ * @return 1 when the command was posted, 0 otherwise.
+ */
+static int
+rr_refresh_push_live(RrWizardCore* w, const char* path, int is_chan) {
+    const dsd_opts* osnap = dsd_app_get_latest_opts_snapshot();
+    if (osnap == NULL || w->hooks.post_import_path == NULL) {
+        return 0;
+    }
+    const char* in_use = is_chan ? osnap->chan_in_file : osnap->group_in_file;
+    if (strcmp(in_use, path) != 0) {
+        return 0;
+    }
+    const int cmd = is_chan ? DSD_APP_CMD_IMPORT_CHANNEL_MAP : DSD_APP_CMD_IMPORT_GROUP_LIST;
+    return (w->hooks.post_import_path(w->hook_user, cmd, path) > 0) ? 1 : 0;
+}
+
+/** @brief Retire the refresh, drop the fetched system, and park on the error step. */
+static void
+rr_refresh_fail(RrWizardCore* w, const char* text) {
+    DSD_MEMSET(&w->refresh, 0, sizeof w->refresh);
+    /* The system was fetched only to rebuild one file; nothing renders it, and
+     * leaving it loaded would hand the error step a system with no selection
+     * arrays behind it. */
+    rr_core_release_system(w);
+    rr_core_fail(w, text);
+}
+
+/**
+ * @brief Report the replacement and hand the panel back to the menu.
+ *
+ * "was asked to reload it", never "applied": dsd_app_drain_cmds() discards the
+ * handler's return value, so the decoder thread owns the authoritative toast,
+ * and svc_import_channel_map() can still refuse outright when a trunk scan is
+ * running.
+ */
+static void
+rr_refresh_succeed(RrWizardCore* w, int pushed) {
+    char msg[256];
+    const char* slash = strrchr(w->refresh.path, RR_PATH_SEP);
+    const char* leaf = (slash != NULL) ? slash + 1 : w->refresh.path;
+
+    if (pushed) {
+        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %s; the running session was asked to reload it.", leaf);
+    } else {
+        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %s.", leaf);
+    }
+    DSD_MEMSET(&w->refresh, 0, sizeof w->refresh);
+    /* A refresh is one shot: it neither previews nor tunes, so it returns the
+     * core to idle rather than parking on the fetched system. rr_panel_tick()
+     * closes the panel on RR_STEP_IDLE, which puts the status line back in front
+     * of the user with this message on it. */
+    rr_core_release_system(w);
+    w->step = RR_STEP_IDLE;
+    rr_core_status_notify(w, msg);
+    rr_core_panel_changed(w);
+}
+
+/**
+ * @brief Assemble a refresh: match, regenerate, stage, replace, push.
+ *
+ * Ports RadioReferenceModel::completeRefresh() (radio_reference_model.cpp:1411).
+ * Two of its branches have no terminal analogue and are deliberately absent:
+ * "That file did not come from RadioReference." (the terminal list is built by
+ * reading sidecars, so a file without one is never offered) and "That file is no
+ * longer in your library." (the terminal holds the absolute path from the moment
+ * the chooser closes; nothing can shift it).
+ */
+static void
+rr_refresh_complete(RrWizardCore* w) {
+    size_t selected[RR_REFRESH_MAX_SITE_IDS];
+    char* text = NULL;
+    size_t len = 0;
+    const int is_chan = (strcmp(w->refresh.kind, "chan") == 0);
+
+    const size_t selected_count = rr_refresh_match_sites(&w->sites, w->refresh.site_ids, w->refresh.site_id_count,
+                                                         selected, RR_REFRESH_MAX_SITE_IDS);
+    if (selected_count == 0U) {
+        rr_refresh_fail(w, "RadioReference no longer lists the site this file was built from.");
+        return;
+    }
+
+    const int gen_rc = rr_refresh_regenerate(w, selected, selected_count, is_chan, &text, &len);
+    if (gen_rc == -1) {
+        rr_refresh_fail(w, "The refreshed data could not be turned into a file.");
+        return;
+    }
+    if (gen_rc == -2) {
+        rr_refresh_fail(w, "RadioReference has no data for this file any more.");
+        return;
+    }
+
+    const int stage_rc = rr_refresh_stage_and_replace(w->refresh.path, text, len, is_chan);
+    free(text);
+    if (stage_rc == -1) {
+        rr_refresh_fail(w, "The refreshed file could not be written.");
+        return;
+    }
+    if (stage_rc == -2) {
+        rr_refresh_fail(w, "The refreshed file could not be read back, so the stored copy was kept.");
+        return;
+    }
+
+    rr_refresh_touch_provenance(w);
+    rr_refresh_succeed(w, rr_refresh_push_live(w, w->refresh.path, is_chan));
+}
+
 /* ---- System assembly ----------------------------------------------------- */
 
 /**
@@ -1377,6 +1763,15 @@ rr_system_assemble(RrWizardCore* w) {
         dsd_rr_talkgroup_cat_list_free(w->pend_cats);
         free(w->pend_cats);
         w->pend_cats = NULL;
+    }
+    if (w->refresh.active) {
+        /* A refresh wants the fetched system, not a preview: it builds no
+         * selection arrays, no option answers and no plan, and it releases what
+         * it did fetch on its way out. Mirrors completeRefresh() running at the
+         * end of the Qt model's system assembly
+         * (radio_reference_model.cpp:1016-1018). */
+        rr_refresh_complete(w);
+        return;
     }
     if (!rr_selection_alloc(w)) {
         rr_core_release_system(w);
@@ -2358,6 +2753,86 @@ rr_wizard_core_last_chan_path(const RrWizardCore* w) {
     return (w != NULL) ? w->last_chan_path : "";
 }
 
+/* ---- Stage 11: starting a refresh ---------------------------------------- */
+
+/**
+ * @brief The credentials a refresh needs, in the shape refreshRow() checks them.
+ *
+ * Ports RadioReferenceModel::credentialsReady()/hasAppKey()
+ * (src/ui/qt/radio_reference_model.cpp:485-496). rr_core_effective_app_key()
+ * already folds the baked key over the stored override and normalises NULL to
+ * "", so a key in force is never the gap.
+ */
+static int
+rr_refresh_creds_ready(const RrWizardCore* w) {
+    const char* key = rr_core_effective_app_key(w);
+    return (w->username[0] != '\0' && w->password[0] != '\0' && key[0] != '\0') ? 1 : 0;
+}
+
+/** @brief Record the sidecar's answers onto the refresh state. */
+static void
+rr_refresh_record(RrWizardCore* w, const char* csv_path, const dsd_rr_provenance* prov, const int* ids,
+                  size_t id_count) {
+    DSD_MEMSET(&w->refresh, 0, sizeof w->refresh);
+    w->refresh.active = 1;
+    DSD_STRNCPY(w->refresh.kind, prov->kind, sizeof w->refresh.kind - 1U);
+    w->refresh.sid = prov->sid;
+    w->refresh.partial_enc_as_de = prov->partial_enc_as_de;
+    w->refresh.site_id_count = id_count;
+    for (size_t i = 0; i < id_count; i++) {
+        w->refresh.site_ids[i] = ids[i];
+    }
+    (void)DSD_SNPRINTF(w->refresh.path, sizeof w->refresh.path, "%s", csv_path);
+}
+
+int
+rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path) {
+    dsd_rr_provenance prov;
+    int ids[RR_REFRESH_MAX_SITE_IDS];
+
+    DSD_MEMSET(&prov, 0, sizeof prov);
+    if (w == NULL || csv_path == NULL || csv_path[0] == '\0') {
+        return -1;
+    }
+    if (strlen(csv_path) >= sizeof w->refresh.path) {
+        rr_core_fail(w, k_rr_err_write);
+        return -1;
+    }
+    if (dsd_rr_provenance_read(csv_path, &prov) != 0 || prov.sid <= 0) {
+        rr_core_fail(w, k_msg_no_provenance);
+        return -1;
+    }
+    const size_t id_count = rr_refresh_parse_site_ids(prov.site_ids, ids, RR_REFRESH_MAX_SITE_IDS);
+    if (id_count == 0U) {
+        rr_core_fail(w, k_msg_no_provenance);
+        return -1;
+    }
+    if (!rr_refresh_creds_ready(w)) {
+        /* The wording branches on the BAKED key, not the effective one: a keyed
+         * build offers no field for an application key, so naming it would send
+         * the user hunting for something they cannot enter. */
+        rr_core_fail(w, w->app_key_is_baked ? k_msg_need_creds_keyed : k_msg_need_creds_keyless);
+        return -1;
+    }
+
+    /* The batch starts FIRST: rr_core_start_batch(), which rr_load_system()
+     * calls, retires any pending refresh, so recording before it would wipe what
+     * was just set. Same ordering and same reason as refreshRow() recording
+     * after loadSystem() (radio_reference_model.cpp:1243-1253). */
+    rr_load_system(w, prov.sid);
+    if (w->system_pending == 0) {
+        /* Nothing was queued; rr_core_started() has already reported why. */
+        return -1;
+    }
+    rr_refresh_record(w, csv_path, &prov, ids, id_count);
+    /* Assigned directly rather than through rr_core_enter_step(): no widget
+     * belongs to this step, and the deferral machinery exists only for the ones
+     * that open one. */
+    w->step = RR_STEP_REFRESHING;
+    rr_core_panel_changed(w);
+    return 0;
+}
+
 #ifdef DSD_NEO_TEST_HOOKS
 void
 rr_wizard_core_set_transport_for_test(RrWizardCore* w, const dsd_rr_transport* t) {
@@ -2407,5 +2882,16 @@ rr_wizard_core_stale_drops_for_test(const RrWizardCore* w) {
     const int drops = mut->stale_drops;
     (void)dsd_mutex_unlock(&mut->ring_mu);
     return drops;
+}
+
+int
+rr_wizard_core_refresh_stage_replace_for_test(const char* path, const char* text, size_t len, int is_chan) {
+    return rr_refresh_stage_and_replace(path, text, len, is_chan);
+}
+
+size_t
+rr_wizard_core_refresh_match_sites_for_test(const dsd_rr_site_list* sites, const int* ids, size_t id_count,
+                                            size_t* selected, size_t selected_cap) {
+    return rr_refresh_match_sites(sites, ids, id_count, selected, selected_cap);
 }
 #endif

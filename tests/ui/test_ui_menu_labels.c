@@ -73,6 +73,15 @@ dsd_rr_available(void) {
     return g_rr_available;
 }
 
+/* menu_labels.c reaches dsd_user_imports_dir() from rr_refresh_available(); this
+ * target links no libraries at all, so the runtime definition is stubbed here. */
+static const char* g_imports_dir = "/tmp/dsd-neo-imports";
+
+const char*
+dsd_user_imports_dir(void) {
+    return g_imports_dir;
+}
+
 const char*
 dsd_rr_builtin_app_key(void) {
     return g_rr_builtin_key;
@@ -408,7 +417,15 @@ test_radioreference_labels_and_predicates(void) {
     rc |= expect_int("rr key prompt hidden with baked key", rr_key_prompt_offered(&ctx), 0);
     g_rr_builtin_key[0] = '\0';
 
-    rc |= expect_int("rr refresh disabled until stage 11", rr_refresh_available(&ctx), 0);
+    /* The predicate reports whether an imports directory resolves, not whether
+       any import exists there. */
+    g_imports_dir = "/tmp/dsd-neo-imports";
+    rc |= expect_int("rr refresh enabled when the imports dir resolves", rr_refresh_available(&ctx), 1);
+    g_imports_dir = NULL;
+    rc |= expect_int("rr refresh disabled without a config dir", rr_refresh_available(&ctx), 0);
+    g_imports_dir = "";
+    rc |= expect_int("rr refresh disabled on an empty imports dir", rr_refresh_available(&ctx), 0);
+    g_imports_dir = "/tmp/dsd-neo-imports";
 
     rc |= expect_str("rr account unset", lbl_rr_account(&ctx, b, sizeof(b)), "Set Account Username... [(not set)]");
     DSD_SNPRINTF(opts.rr_username, sizeof opts.rr_username, "%s", "kb1abc");

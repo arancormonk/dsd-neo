@@ -24,10 +24,14 @@
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/platform/curses_compat.h>
+#include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 #include <dsd-neo/ui/keymap.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -167,6 +171,119 @@ rr_panel_ensure_core(void) {
     return g_rr_panel.core;
 }
 
+/* ---- Refresh: picking a stored import ------------------------------------ */
+
+/*
+ * ui_chooser_start() copies NOTHING - it keeps the title, the item array and
+ * every string in it by pointer until the chooser closes (menu_prompts.c,
+ * identifier ui_chooser_start). Building these in locals would leave the chooser
+ * pointing at dead stack, so the whole list is one heap allocation that the done
+ * callback frees unconditionally.
+ */
+#define RR_REFRESH_LIST_MAX 128
+#define RR_REFRESH_DIR_MAX  1024
+#define RR_REFRESH_PATH_MAX 1024
+
+typedef struct {
+    char* label; /* heap: what the chooser row shows */
+    char* path;  /* heap: absolute path of the stored CSV */
+} RrRefreshEntry;
+
+typedef struct {
+    RrRefreshEntry entries[RR_REFRESH_LIST_MAX];
+    const char* items[RR_REFRESH_LIST_MAX]; /* the borrowed view the chooser holds */
+    char dir[RR_REFRESH_DIR_MAX];
+    int count;
+} RrRefreshList;
+
+static void
+rr_refresh_list_free(RrRefreshList* list) {
+    if (list == NULL) {
+        return;
+    }
+    for (int i = 0; i < list->count; i++) {
+        free(list->entries[i].label);
+        free(list->entries[i].path);
+    }
+    free(list);
+}
+
+/** @brief dsd_dir_list callback: keep every ".csv" that has a readable sidecar. */
+static int
+rr_refresh_collect(const char* name, void* user) {
+    RrRefreshList* list = (RrRefreshList*)user;
+    dsd_rr_provenance prov;
+    char path[RR_REFRESH_PATH_MAX];
+    char label[192];
+
+    if (list->count >= RR_REFRESH_LIST_MAX) {
+        return 1; /* non-zero stops the walk */
+    }
+    const size_t len = (name != NULL) ? strlen(name) : 0U;
+    if (len < 5U || strcmp(name + (len - 4U), ".csv") != 0) {
+        return 0;
+    }
+    const int n = DSD_SNPRINTF(path, sizeof path, "%s%c%s", list->dir, RR_PATH_SEP, name);
+    if (n <= 0 || (size_t)n >= sizeof path) {
+        /* Truncation is not "shorten it and carry on": the shortened path could
+           name a different file, and the sidecar read below would be answering
+           about that one. */
+        return 0;
+    }
+    DSD_MEMSET(&prov, 0, sizeof prov);
+    if (dsd_rr_provenance_read(path, &prov) != 0) {
+        /* No sidecar means nothing records which system the file came from, so
+           it is not offered rather than offered-and-refused. */
+        return 0;
+    }
+    (void)DSD_SNPRINTF(label, sizeof label, "%s  (%s, sid %d)", name, prov.kind, prov.sid);
+    list->entries[list->count].label = dsd_strdup(label);
+    list->entries[list->count].path = dsd_strdup(path);
+    if (list->entries[list->count].label == NULL || list->entries[list->count].path == NULL) {
+        free(list->entries[list->count].label);
+        free(list->entries[list->count].path);
+        list->entries[list->count].label = NULL;
+        list->entries[list->count].path = NULL;
+        return 1;
+    }
+    list->count++;
+    return 0;
+}
+
+/* dsd_dir_list() reports entries in whatever order the platform hands back, so
+   the rows are sorted here. Label and path move together - sorting the label
+   array alone would hand the chooser a row that opens a different file. */
+static int
+rr_refresh_entry_cmp(const void* lhs, const void* rhs) {
+    const RrRefreshEntry* a = (const RrRefreshEntry*)lhs;
+    const RrRefreshEntry* b = (const RrRefreshEntry*)rhs;
+    return strcmp(a->label, b->label);
+}
+
+static void
+chooser_done_rr_refresh(void* u, int sel) {
+    RrRefreshList* list = (RrRefreshList*)u;
+    if (list == NULL) {
+        return;
+    }
+    if (sel >= 0 && sel < list->count) {
+        RrWizardCore* core = rr_panel_ensure_core();
+        if (core == NULL) {
+            ui_statusf("RadioReference wizard could not be started.");
+        } else {
+            /* Marked active before the call: begin_refresh() can reach
+               RR_STEP_ERROR synchronously, and rr_panel_render() draws nothing
+               while the panel is inactive. Not marked earlier, in
+               rr_panel_open_refresh(): a fresh core sits at RR_STEP_IDLE, and
+               rr_panel_tick() deactivates the panel on that step, so an active
+               panel would be switched back off while the chooser was still up. */
+            g_rr_panel.active = 1;
+            (void)rr_wizard_core_begin_refresh(core, list->entries[sel].path);
+        }
+    }
+    rr_refresh_list_free(list);
+}
+
 /* The rr_panel_open_* pair is frozen non-const to match the nc_action_fn shape the menu glue
    and the Stage 10/11 bodies share; the panel only ever reads through these pointers, because
    the UI thread never mutates dsd_opts or dsd_state. */
@@ -191,10 +308,42 @@ rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
 
 void
 rr_panel_open_refresh(dsd_opts* opts, dsd_state* state) {
-    /* Reachable only once rr_refresh_available() returns true, which Stage 11 flips on.
-       Stage 11 replaces this body with rr_wizard_core_begin_refresh(). */
     (void)opts;
     (void)state;
+    const char* dir = dsd_user_imports_dir();
+    if (dir == NULL || dir[0] == '\0') {
+        ui_statusf("No config directory, so there is nowhere to look for imports.");
+        return;
+    }
+    RrRefreshList* list = (RrRefreshList*)calloc(1U, sizeof(*list));
+    if (list == NULL) {
+        ui_statusf("Out of memory");
+        return;
+    }
+    const int n = DSD_SNPRINTF(list->dir, sizeof list->dir, "%s", dir);
+    if (n <= 0 || (size_t)n >= sizeof list->dir) {
+        rr_refresh_list_free(list);
+        ui_statusf("No config directory, so there is nowhere to look for imports.");
+        return;
+    }
+    (void)dsd_dir_list(list->dir, rr_refresh_collect, list);
+    if (list->count == 0) {
+        /* Reported once here, on activation, rather than by the menu predicate:
+           predicates run on every menu render and listing a directory plus
+           reading a sidecar per entry at 15 FPS is filesystem traffic for
+           nothing. Status text is emitted before the free that owns the dir. */
+        ui_statusf("No RadioReference imports found in %s", list->dir);
+        rr_refresh_list_free(list);
+        return;
+    }
+    qsort(list->entries, (size_t)list->count, sizeof list->entries[0], rr_refresh_entry_cmp);
+    for (int i = 0; i < list->count; i++) {
+        list->items[i] = list->entries[i].label;
+    }
+    /* ui_chooser_start() answers -1 synchronously when count <= 0, which the
+       early return above already rules out; chooser_done_rr_refresh() is
+       re-entrant-safe either way because it frees exactly once. */
+    ui_chooser_start("Refresh RadioReference import", list->items, list->count, chooser_done_rr_refresh, list);
 }
 
 // cppcheck-suppress-end constParameterPointer
@@ -237,7 +386,13 @@ rr_panel_tick(dsd_opts* opts, dsd_state* state) {
     if (rr_wizard_core_pump(g_rr_panel.core) != 0) {
         dsd_app_request_redraw();
     }
-    if (rr_wizard_core_step(g_rr_panel.core) == RR_STEP_IDLE) {
+    const RrWizardStep step = rr_wizard_core_step(g_rr_panel.core);
+    /* Both steps are terminal. RR_STEP_IMPORTING is where a written-and-applied
+       import parks and nothing walks it back; RR_STEP_IDLE is where a cancel and
+       a completed refresh land. Neither has a renderer, and rr_panel_handle_key()
+       consumes every key while the panel is active, so staying active on either
+       would leave a modal that draws nothing and cannot be dismissed. */
+    if (step == RR_STEP_IDLE || step == RR_STEP_IMPORTING) {
         g_rr_panel.active = 0;
     }
 }
@@ -652,6 +807,13 @@ rr_panel_render(void) {
         return;
     }
     if (rr_wizard_core_fetch_in_flight(g_rr_panel.core)) {
+        rr_panel_render_fetching();
+        return;
+    }
+    if (rr_wizard_core_step(g_rr_panel.core) == RR_STEP_REFRESHING) {
+        /* Keeps the box up in the gap between the last reply landing and the
+           assembly finishing, which the fetch_in_flight branch above no longer
+           covers. */
         rr_panel_render_fetching();
         return;
     }

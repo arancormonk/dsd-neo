@@ -14,6 +14,7 @@
 #include "rr_wizard_core.h"
 #include "test_support.h"
 
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/csv_validate.h>
@@ -370,6 +371,9 @@ typedef struct {
     char last_status[128];
     char last_account_user[128];
     char last_account_key[64];
+    int n_post_import;
+    int last_post_cmd;
+    char last_post_path[DSD_TEST_PATH_MAX];
     int reenter_cancel; /* when 1, open_string synchronously cancels */
 } wiz_harness;
 
@@ -451,6 +455,18 @@ h_account_changed(void* user, const dsd_app_rr_account_payload* account) {
     return 0;
 }
 
+/* Stands in for rr_hook_post_import_path(), whose real body is
+ * dsd_app_command_set_string(). Returns DSD_APP_COMMAND_SUBMIT_QUEUED so the
+ * refresh reports the push as accepted. */
+static int
+h_post_import_path(void* user, int cmd_id, const char* path) {
+    wiz_harness* h = (wiz_harness*)user;
+    h->n_post_import++;
+    h->last_post_cmd = cmd_id;
+    (void)DSD_SNPRINTF(h->last_post_path, sizeof(h->last_post_path), "%s", (path != NULL) ? path : "");
+    return 1;
+}
+
 static void
 harness_hooks(RrWizardHooks* hooks) {
     DSD_MEMSET(hooks, 0, sizeof(*hooks));
@@ -461,8 +477,7 @@ harness_hooks(RrWizardHooks* hooks) {
     hooks->status = h_status;
     hooks->account_changed = h_account_changed;
     hooks->apply = h_apply;
-    /* post_import_path stays NULL: nothing reaches it yet, and a NULL hook must
-     * be tolerated. */
+    hooks->post_import_path = h_post_import_path;
 }
 
 static int
@@ -1924,6 +1939,683 @@ test_import_now_keeps_files_when_apply_is_rejected(void) {
     imp_case_close(&ic);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Stage 11: refresh                                                          */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * Two fixture systems are needed, because no single captured system carries
+ * both halves of the matrix. Only trs_talkgroups_p25.xml has partial-encryption
+ * talkgroups (16 rows with enc == 1), and P25 is trunked, so a P25 import
+ * records exactly one site id and can never exercise reorder / vanished-site /
+ * drop-to-survivor. The conventional DMR set (sid 9340, 36 single-frequency
+ * sites, no partial-encryption talkgroups) owns the site-matching half.
+ *
+ * Wire order of the first four DMR-conventional sites, read out of
+ * trs_sites_dmr_conv.xml:
+ *   0  siteId 36087  Waukee      146.755   MHz
+ *   1  siteId 32979  Storm Lake  444.525   MHz
+ *   2  siteId 36085  Creston     443.125   MHz
+ *   3  siteId 37358  Ames        441.9875  MHz
+ * The conventional channel-map generator numbers rows by SELECTION order, not
+ * by the wire order and not by RR's lcn, and emits nothing at all when fewer
+ * than two distinct frequencies survive.
+ */
+
+static const char* const k_chan_header =
+    "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n";
+
+/* Stored order "36085,36087" wins over wire order. */
+static const char* const k_b1_want =
+    "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+    "1,443125000\n"
+    "2,146755000\n";
+
+/* Stored order "999999,36087,36085": the vanished id is skipped and the
+ * survivors keep their stored order. */
+static const char* const k_b2_want =
+    "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+    "1,146755000\n"
+    "2,443125000\n";
+
+static const char* const k_msg_no_provenance =
+    "This file does not record which system it came from. Import it again to refresh it.";
+static const char* const k_msg_sites_gone = "RadioReference no longer lists the site this file was built from.";
+static const char* const k_msg_no_data = "RadioReference has no data for this file any more.";
+
+/* Byte-exact snapshot of a stored CSV, taken before a refresh that must leave
+ * it alone. Owned by the case that took it. */
+static char* g_sentinel_csv;
+static size_t g_sentinel_len;
+
+static void
+sentinel_take(const char* path) {
+    free(g_sentinel_csv);
+    g_sentinel_csv = NULL;
+    g_sentinel_len = 0;
+    if (read_whole_file(path, &g_sentinel_csv, &g_sentinel_len) != 0) {
+        expect("refresh: sentinel snapshot taken", 0);
+    }
+}
+
+static void
+sentinel_free(void) {
+    free(g_sentinel_csv);
+    g_sentinel_csv = NULL;
+    g_sentinel_len = 0;
+}
+
+/*
+ * read_whole_file() fills its buffer to the cap with no room for a terminator,
+ * so strstr() on it would run past the bytes fread() wrote. The substring
+ * helpers below get their own reader with one spare byte instead.
+ */
+static int
+read_whole_file_text(const char* path, char** out) {
+    *out = NULL;
+    FILE* fp = fopen(path, "rb");
+    if (fp == NULL) {
+        return -1;
+    }
+    char* buf = (char*)malloc(RR_FIXTURE_CAP_BYTES + 1U);
+    if (buf == NULL) {
+        fclose(fp);
+        return -1;
+    }
+    const size_t got = fread(buf, 1U, RR_FIXTURE_CAP_BYTES, fp);
+    const int hit_cap = (feof(fp) == 0);
+    fclose(fp);
+    if (hit_cap) {
+        free(buf);
+        return -1;
+    }
+    buf[(got < RR_FIXTURE_CAP_BYTES) ? got : RR_FIXTURE_CAP_BYTES] = '\0';
+    *out = buf;
+    return 0;
+}
+
+static void
+expect_file_contains(const char* what, const char* path, const char* needle) {
+    char* got = NULL;
+    if (read_whole_file_text(path, &got) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s (cannot read %s)\n", what, path);
+        g_failures++;
+        return;
+    }
+    expect(what, strstr(got, needle) != NULL);
+    free(got);
+}
+
+static void
+expect_file_lacks(const char* what, const char* path, const char* needle) {
+    char* got = NULL;
+    if (read_whole_file_text(path, &got) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s (cannot read %s)\n", what, path);
+        g_failures++;
+        return;
+    }
+    expect(what, strstr(got, needle) == NULL);
+    free(got);
+}
+
+static int
+write_text_file(const char* path, const char* text, size_t len) {
+    FILE* fp = fopen(path, "wb");
+    if (fp == NULL) {
+        return -1;
+    }
+    const size_t wrote = fwrite(text, 1U, len, fp);
+    const int closed = fclose(fp);
+    return (wrote == len && closed == 0) ? 0 : -1;
+}
+
+/* dsd_fopen_private_temp_for_replace() names its staging file
+ * "<final>.tmp.XXXXXX", so a leftover is any entry carrying ".tmp.". */
+static int
+count_temp_cb(const char* name, void* user) {
+    int* n = (int*)user;
+    if (name != NULL && strstr(name, ".tmp.") != NULL) {
+        (*n)++;
+    }
+    return 0;
+}
+
+static int
+count_temp_files(const char* dir) {
+    int n = 0;
+    (void)dsd_dir_list(dir, count_temp_cb, &n);
+    return n;
+}
+
+/*
+ * One stored CSV plus its sidecar in a scratch directory, and a core whose
+ * credentials are seeded directly: begin_refresh() refuses rather than routing
+ * into the RR_STEP_CREDS_* chain, so the ladder is not part of this stage.
+ */
+typedef struct {
+    wiz_case c;
+    char scratch[DSD_TEST_PATH_MAX];
+    char csv_path[DSD_TEST_PATH_MAX];
+    char sidecar_path[DSD_TEST_PATH_MAX + 8];
+} ref_case;
+
+static void
+ref_prov(dsd_rr_provenance* prov, const char* kind, int sid, const char* site_ids, int partial_enc_as_de) {
+    DSD_MEMSET(prov, 0, sizeof(*prov));
+    (void)DSD_SNPRINTF(prov->kind, sizeof(prov->kind), "%s", kind);
+    prov->sid = sid;
+    (void)DSD_SNPRINTF(prov->site_ids, sizeof(prov->site_ids), "%s", site_ids);
+    prov->partial_enc_as_de = partial_enc_as_de;
+    (void)DSD_SNPRINTF(prov->system_name, sizeof(prov->system_name), "%s", "seeded");
+    /* Non-zero so dsd_rr_provenance_write() stamps it verbatim and the
+     * "sidecar untouched" assertion has something stable to compare. */
+    prov->imported_at = 1700000000LL;
+}
+
+static void
+ref_case_close(ref_case* rc) {
+    wiz_case_close(&rc->c);
+    (void)remove(rc->sidecar_path);
+    (void)remove(rc->csv_path);
+    (void)remove(rc->scratch);
+}
+
+static int
+ref_case_open(ref_case* rc, const char* leaf, const char* seed, size_t seed_len, const dsd_rr_provenance* prov) {
+    DSD_MEMSET(rc, 0, sizeof(*rc));
+    /* No published snapshot by default: the live push must not fire unless a
+     * case asks for it. */
+    g_stub_opts_published = 0;
+    if (dsd_test_mkdtemp(rc->scratch, sizeof(rc->scratch), "dsdneo_rr_ref") == NULL) {
+        expect("refresh: scratch dir created", 0);
+        return 0;
+    }
+    if (dsd_test_path_join(rc->csv_path, sizeof(rc->csv_path), rc->scratch, leaf) != 0
+        || DSD_SNPRINTF(rc->sidecar_path, sizeof(rc->sidecar_path), "%s.rr", rc->csv_path) <= 0) {
+        expect("refresh: scratch paths built", 0);
+        (void)remove(rc->scratch);
+        return 0;
+    }
+    if (write_text_file(rc->csv_path, seed, seed_len) != 0) {
+        expect("refresh: seed csv written", 0);
+        (void)remove(rc->csv_path);
+        (void)remove(rc->scratch);
+        return 0;
+    }
+    if (prov != NULL && dsd_rr_provenance_write(rc->csv_path, prov) != 0) {
+        expect("refresh: seed sidecar written", 0);
+        (void)remove(rc->sidecar_path);
+        (void)remove(rc->csv_path);
+        (void)remove(rc->scratch);
+        return 0;
+    }
+    if (!wiz_case_open(&rc->c)) {
+        (void)remove(rc->sidecar_path);
+        (void)remove(rc->csv_path);
+        (void)remove(rc->scratch);
+        return 0;
+    }
+    rr_wizard_core_set_username(rc->c.core, k_username_sentinel);
+    rr_wizard_core_set_password(rc->c.core, k_password_sentinel);
+    /* Harmless on a keyed build: dsd_rr_choose_app_key() lets the baked key win. */
+    rr_wizard_core_set_stored_app_key(rc->c.core, k_appkey_sentinel);
+    return 1;
+}
+
+/** @brief Start a refresh and pump until the machine leaves RR_STEP_REFRESHING. */
+static int
+ref_drive(ref_case* rc) {
+    if (rr_wizard_core_begin_refresh(rc->c.core, rc->csv_path) != 0) {
+        return 0;
+    }
+    if (rr_wizard_core_step(rc->c.core) != RR_STEP_REFRESHING) {
+        expect("refresh: begin parks on RR_STEP_REFRESHING", 0);
+        return 0;
+    }
+    return pump_until_step_leaves(rc->c.core, RR_STEP_REFRESHING, 8000U);
+}
+
+static void
+test_refresh_needs_a_sidecar(void) {
+    static ref_case rc;
+    if (!ref_case_open(&rc, "orphan chan.csv", k_chan_header, strlen(k_chan_header), NULL)) {
+        return;
+    }
+    expect_ll("refresh: no sidecar refuses", (long long)rr_wizard_core_begin_refresh(rc.c.core, rc.csv_path), -1);
+    expect("refresh: no-sidecar message", strcmp(rr_wizard_core_error_text(rc.c.core), k_msg_no_provenance) == 0);
+    expect("refresh: no-sidecar lands on the error step", rr_wizard_core_step(rc.c.core) == RR_STEP_ERROR);
+    expect("refresh: no-sidecar starts no fetch", rr_wizard_core_fetch_in_flight(rc.c.core) == 0);
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_needs_a_parsable_site_id(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "", 1);
+    if (!ref_case_open(&rc, "empty-ids chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    expect_ll("refresh: empty site_ids refuses", (long long)rr_wizard_core_begin_refresh(rc.c.core, rc.csv_path), -1);
+    expect("refresh: empty site_ids message", strcmp(rr_wizard_core_error_text(rc.c.core), k_msg_no_provenance) == 0);
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_needs_credentials(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "nocreds chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    /* Wipe the password the harness seeded; the username stays so the message
+     * is chosen by the app-key rule rather than by which field is empty. */
+    rr_wizard_core_set_password(rc.c.core, "");
+    expect_ll("refresh: missing password refuses", (long long)rr_wizard_core_begin_refresh(rc.c.core, rc.csv_path), -1);
+    expect("refresh: credential message names only what can be supplied",
+           strcmp(rr_wizard_core_error_text(rc.c.core),
+                  build_is_keyed() ? "Enter your RadioReference username and password first."
+                                   : "Enter your RadioReference username, password and application key first.")
+               == 0);
+    expect("refresh: missing credentials start no fetch", rr_wizard_core_fetch_in_flight(rc.c.core) == 0);
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_matches_sites_by_database_id(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    if (!ref_drive(&rc)) {
+        expect("B1: refresh finished", 0);
+        ref_case_close(&rc);
+        return;
+    }
+    expect("B1: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect("B1: no error text", strcmp(rr_wizard_core_error_text(rc.c.core), "") == 0);
+    expect_file_matches("B1: stored order wins over wire order", rc.csv_path, k_b1_want, strlen(k_b1_want));
+    expect("B1: status names the file", strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv.") == 0);
+    expect_ll("B1: nothing pushed to a session that is not using it", (long long)rc.c.h.n_post_import, 0);
+    expect_ll("B1: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+
+    /* The sidecar keeps the stored ids: a site missing from one fetch must be
+     * able to come back. Only the timestamp and the system name move. */
+    dsd_rr_provenance after;
+    DSD_MEMSET(&after, 0, sizeof(after));
+    expect_ll("B1: sidecar still readable", (long long)dsd_rr_provenance_read(rc.csv_path, &after), 0);
+    expect("B1: sidecar keeps every stored id", strcmp(after.site_ids, "36085,36087") == 0);
+    expect("B1: sidecar keeps its kind", strcmp(after.kind, "chan") == 0);
+    expect_ll("B1: sidecar keeps its sid", (long long)after.sid, 9340);
+    expect("B1: sidecar timestamp bumped", after.imported_at > 1700000000LL);
+    expect("B1: sidecar takes the fetched system name", strcmp(after.system_name, "seeded") != 0);
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_skips_a_vanished_site(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "999999,36087,36085", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    if (!ref_drive(&rc)) {
+        expect("B2: refresh finished", 0);
+        ref_case_close(&rc);
+        return;
+    }
+    expect("B2: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_file_matches("B2: vanished id skipped, survivors keep stored order", rc.csv_path, k_b2_want,
+                        strlen(k_b2_want));
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_keeps_the_file_when_no_site_matches(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "999999,888888", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_b1_want, strlen(k_b1_want), &prov)) {
+        return;
+    }
+    sentinel_take(rc.csv_path);
+    if (!ref_drive(&rc)) {
+        expect("B3: refresh finished", 0);
+        sentinel_free();
+        ref_case_close(&rc);
+        return;
+    }
+    expect("B3: all-sites-gone lands on the error step", rr_wizard_core_step(rc.c.core) == RR_STEP_ERROR);
+    expect("B3: all-sites-gone message", strcmp(rr_wizard_core_error_text(rc.c.core), k_msg_sites_gone) == 0);
+    expect_file_matches("B3: stored bytes untouched", rc.csv_path, g_sentinel_csv, g_sentinel_len);
+    dsd_rr_provenance after;
+    DSD_MEMSET(&after, 0, sizeof(after));
+    expect_ll("B3: sidecar still readable", (long long)dsd_rr_provenance_read(rc.csv_path, &after), 0);
+    expect_ll("B3: sidecar timestamp untouched", after.imported_at, 1700000000LL);
+    expect_ll("B3: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+    sentinel_free();
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_keeps_the_file_when_one_site_survives(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,999999", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_b1_want, strlen(k_b1_want), &prov)) {
+        return;
+    }
+    sentinel_take(rc.csv_path);
+    if (!ref_drive(&rc)) {
+        expect("B4: refresh finished", 0);
+        sentinel_free();
+        ref_case_close(&rc);
+        return;
+    }
+    /* One repeater is not a scan list, so the conventional generator emits
+     * nothing and there is no file to write. */
+    expect("B4: no-data lands on the error step", rr_wizard_core_step(rc.c.core) == RR_STEP_ERROR);
+    expect("B4: no-data message", strcmp(rr_wizard_core_error_text(rc.c.core), k_msg_no_data) == 0);
+    expect_file_matches("B4: stored bytes untouched", rc.csv_path, g_sentinel_csv, g_sentinel_len);
+    expect_ll("B4: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+    sentinel_free();
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_honours_the_stored_partial_encryption_answer(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    /* 57991 / "Test A" is one of the 16 enc == 1 talkgroups in
+     * trs_talkgroups_p25.xml; 52007 / "RESERVOIR RANGRS" is an enc == 2 one. */
+    ref_prov(&prov, "group", 6673, "16863", 0);
+    if (!ref_case_open(&rc, "sara group.csv", "DEC,Mode,Name (generated from RadioReference)\n",
+                       strlen("DEC,Mode,Name (generated from RadioReference)\n"), &prov)) {
+        return;
+    }
+    if (!ref_drive(&rc)) {
+        expect("A1: refresh finished", 0);
+        ref_case_close(&rc);
+        return;
+    }
+    expect("A1: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_file_contains("A1: partial stays listenable", rc.csv_path, "\n57991,A,Test A\n");
+    expect_file_lacks("A1: partial not blocked", rc.csv_path, "\n57991,DE,Test A\n");
+    expect_file_contains("A1: full enc blocked", rc.csv_path, "\n52007,DE,RESERVOIR RANGRS\n");
+
+    /* A2: flip the stored answer and refresh the same file again. */
+    ref_prov(&prov, "group", 6673, "16863", 1);
+    expect_ll("A2: sidecar rewritten", (long long)dsd_rr_provenance_write(rc.csv_path, &prov), 0);
+    if (!ref_drive(&rc)) {
+        expect("A2: refresh finished", 0);
+        ref_case_close(&rc);
+        return;
+    }
+    expect("A2: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_file_contains("A2: partial now blocked", rc.csv_path, "\n57991,DE,Test A\n");
+    expect_file_contains("A2: full enc still blocked", rc.csv_path, "\n52007,DE,RESERVOIR RANGRS\n");
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_pushes_only_the_file_the_session_uses(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    (void)DSD_SNPRINTF(g_stub_opts.chan_in_file, sizeof(g_stub_opts.chan_in_file), "%s", rc.csv_path);
+    g_stub_opts_published = 1;
+    if (!ref_drive(&rc)) {
+        expect("push: refresh finished", 0);
+        g_stub_opts_published = 0;
+        ref_case_close(&rc);
+        return;
+    }
+    expect("push: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_ll("push: one reload posted", (long long)rc.c.h.n_post_import, 1);
+    expect_ll("push: posted as a channel-map import", (long long)rc.c.h.last_post_cmd,
+              (long long)DSD_APP_CMD_IMPORT_CHANNEL_MAP);
+    expect("push: posted the refreshed path", strcmp(rc.c.h.last_post_path, rc.csv_path) == 0);
+    /* "was asked to reload it", never "applied": the command queue has no
+     * completion channel, so the decoder thread owns the authoritative toast. */
+    expect("push: status says the session was asked, not told",
+           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv; the running session was asked to reload it.") == 0);
+    g_stub_opts_published = 0;
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_pushes_a_group_file_as_a_group_list(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "group", 6673, "16863", 1);
+    if (!ref_case_open(&rc, "sara group.csv", "DEC,Mode,Name (generated from RadioReference)\n",
+                       strlen("DEC,Mode,Name (generated from RadioReference)\n"), &prov)) {
+        return;
+    }
+    /* First: the same path published as the CHANNEL MAP. The push keys on the
+       sidecar's kind, not on "some opts field mentions this file", so a group
+       refresh must not post a channel-map import. */
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    (void)DSD_SNPRINTF(g_stub_opts.chan_in_file, sizeof(g_stub_opts.chan_in_file), "%s", rc.csv_path);
+    g_stub_opts_published = 1;
+    if (!ref_drive(&rc)) {
+        expect("kind: first refresh finished", 0);
+        g_stub_opts_published = 0;
+        ref_case_close(&rc);
+        return;
+    }
+    expect("kind: first refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_ll("kind: a group file is not pushed as a channel map", (long long)rc.c.h.n_post_import, 0);
+
+    /* Then the same file published as the GROUP LIST: now it is pushed, under
+       the group command id. */
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    (void)DSD_SNPRINTF(g_stub_opts.group_in_file, sizeof(g_stub_opts.group_in_file), "%s", rc.csv_path);
+    if (!ref_drive(&rc)) {
+        expect("kind: second refresh finished", 0);
+        g_stub_opts_published = 0;
+        ref_case_close(&rc);
+        return;
+    }
+    expect("kind: second refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_ll("kind: one reload posted", (long long)rc.c.h.n_post_import, 1);
+    expect_ll("kind: posted as a group-list import", (long long)rc.c.h.last_post_cmd,
+              (long long)DSD_APP_CMD_IMPORT_GROUP_LIST);
+    expect("kind: posted the refreshed path", strcmp(rc.c.h.last_post_path, rc.csv_path) == 0);
+    expect("kind: status names the file",
+           strcmp(rc.c.h.last_status, "Refreshed sara group.csv; the running session was asked to reload it.") == 0);
+    g_stub_opts_published = 0;
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_tolerates_a_null_push_hook(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    /* Rebuild the core without the hook. Every RrWizardHooks member is
+     * optional and the core NULL-checks before each call. */
+    wiz_case_close(&rc.c);
+    DSD_MEMSET(&rc.c.h, 0, sizeof(rc.c.h));
+    DSD_MEMSET(&rc.c.fake, 0, sizeof(rc.c.fake));
+    harness_hooks(&rc.c.hooks);
+    rc.c.hooks.post_import_path = NULL;
+    rc.c.core = rr_wizard_core_create(&rc.c.hooks, &rc.c.h);
+    if (rc.c.core == NULL) {
+        expect("null-hook: create returns a core", 0);
+        ref_case_close(&rc);
+        return;
+    }
+    rc.c.h.core = rc.c.core;
+    rc.c.transport.perform = wiz_perform;
+    rc.c.transport.ctx = &rc.c.fake;
+    rr_wizard_core_set_transport_for_test(rc.c.core, &rc.c.transport);
+    rr_wizard_core_set_username(rc.c.core, k_username_sentinel);
+    rr_wizard_core_set_password(rc.c.core, k_password_sentinel);
+    rr_wizard_core_set_stored_app_key(rc.c.core, k_appkey_sentinel);
+
+    DSD_MEMSET(&g_stub_opts, 0, sizeof(g_stub_opts));
+    (void)DSD_SNPRINTF(g_stub_opts.chan_in_file, sizeof(g_stub_opts.chan_in_file), "%s", rc.csv_path);
+    g_stub_opts_published = 1;
+    if (!ref_drive(&rc)) {
+        expect("null-hook: refresh finished", 0);
+        g_stub_opts_published = 0;
+        ref_case_close(&rc);
+        return;
+    }
+    expect("null-hook: refresh still succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+    expect_file_matches("null-hook: file still replaced", rc.csv_path, k_b1_want, strlen(k_b1_want));
+    expect("null-hook: status falls back to the plain wording",
+           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv.") == 0);
+    g_stub_opts_published = 0;
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_staging_rejects_an_empty_map(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_b1_want, strlen(k_b1_want), &prov)) {
+        return;
+    }
+    sentinel_take(rc.csv_path);
+    /* A header-only channel map validates cleanly with zero accepted rows -
+     * chan_import_stats() skips row 1 as the label line - which is why the
+     * staging guard is "rc == 0 && accepted > 0", not "rc == 0". */
+    expect_ll(
+        "D: staging rejects an empty map",
+        (long long)rr_wizard_core_refresh_stage_replace_for_test(rc.csv_path, k_chan_header, strlen(k_chan_header), 1),
+        -2);
+    expect_file_matches("D: stored bytes untouched", rc.csv_path, g_sentinel_csv, g_sentinel_len);
+    expect_ll("D: no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+
+    /* The same helper on a map with rows replaces the file. */
+    expect_ll("D: staging accepts a real map",
+              (long long)rr_wizard_core_refresh_stage_replace_for_test(rc.csv_path, k_b2_want, strlen(k_b2_want), 1),
+              0);
+    expect_file_matches("D: replaced with the staged bytes", rc.csv_path, k_b2_want, strlen(k_b2_want));
+    expect_ll("D: still no temp left behind", (long long)count_temp_files(rc.scratch), 0);
+    sentinel_free();
+    ref_case_close(&rc);
+}
+
+/**
+ * @brief Load a system on a core whose credentials are already seeded.
+ *
+ * drive_sid_to_system() runs the credential ladder, which only fires while the
+ * three credential fields are still empty; a ref_case seeds them up front.
+ */
+static int
+ref_load_system(ref_case* rc, const char* sid_text) {
+    rr_wizard_core_begin_import(rc->c.core);
+    if (!pump_until_step(rc->c.core, RR_STEP_SEARCH_MODE, 5000U)) {
+        return 0;
+    }
+    rr_wizard_core_on_chooser_done(rc->c.core, 2); /* Enter a system ID */
+    if (rr_wizard_core_step(rc->c.core) != RR_STEP_SEARCH_SID) {
+        return 0;
+    }
+    rr_wizard_core_on_prompt_done(rc->c.core, sid_text);
+    return pump_until_step(rc->c.core, RR_STEP_SYSTEM, 8000U);
+}
+
+static void
+test_refresh_is_abandoned_by_the_next_batch(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    sentinel_take(rc.csv_path);
+    if (rr_wizard_core_begin_refresh(rc.c.core, rc.csv_path) != 0) {
+        expect("abandon: refresh started", 0);
+        sentinel_free();
+        ref_case_close(&rc);
+        return;
+    }
+    /* The user backs out while the fetch is still in flight. Every retire path
+     * goes through rr_core_start_batch(), which is where a pending refresh is
+     * dropped - without that the replies still land and rewrite a file the user
+     * has moved on from. */
+    rr_wizard_core_cancel(rc.c.core);
+    expect("abandon: cancel returns to idle", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+
+    if (!ref_load_system(&rc, "9340")) {
+        expect("abandon: the follow-up load reached the system stage", 0);
+        sentinel_free();
+        ref_case_close(&rc);
+        return;
+    }
+    expect("abandon: the load lands on the system stage, not on a refresh",
+           rr_wizard_core_step(rc.c.core) == RR_STEP_SYSTEM);
+    expect_file_matches("abandon: the stored file was not rewritten", rc.csv_path, g_sentinel_csv, g_sentinel_len);
+    sentinel_free();
+    ref_case_close(&rc);
+}
+
+static void
+test_refresh_match_sites_helper(void) {
+    /* A plain wizard case, not a ref_case: this exercises the matcher against a
+     * fetched site list and needs no stored file, and the credential ladder that
+     * drive_sid_to_system() runs only fires on a core whose credentials are
+     * still empty. */
+    static wiz_case c;
+    if (!wiz_case_open(&c)) {
+        return;
+    }
+    if (!drive_sid_to_system(&c, "9340")) {
+        expect("match: reached the system stage", 0);
+        wiz_case_close(&c);
+        return;
+    }
+    const dsd_rr_site_list* sites = rr_wizard_core_sites(c.core);
+    expect("match: site list present", sites != NULL && sites->count > 3U);
+    if (sites == NULL || sites->count <= 3U) {
+        wiz_case_close(&c);
+        return;
+    }
+    size_t selected[4] = {0, 0, 0, 0};
+
+    /* Stored order, not wire order: 36085 is wire index 2, 37358 index 3 and
+     * 36087 index 0. */
+    const int ids_reordered[3] = {36085, 37358, 36087};
+    expect_ll("match: stored order is preserved",
+              (long long)rr_wizard_core_refresh_match_sites_for_test(sites, ids_reordered, 3U, selected, 4U), 3);
+    expect_ll("match: first index", (long long)selected[0], 2);
+    expect_ll("match: second index", (long long)selected[1], 3);
+    expect_ll("match: third index", (long long)selected[2], 0);
+
+    /* site_number is never matched: 36087 is siteNumber 310011 and 36085 is
+     * 310235, so a site_number lookup would find neither. */
+    const int ids_are_not_site_numbers[2] = {310011, 310235};
+    expect_ll("match: site_number is not a site_db_id",
+              (long long)rr_wizard_core_refresh_match_sites_for_test(sites, ids_are_not_site_numbers, 2U, selected, 4U),
+              0);
+
+    const int ids_with_gap[3] = {999999, 36087, 999998};
+    expect_ll("match: vanished ids are dropped, not shifted",
+              (long long)rr_wizard_core_refresh_match_sites_for_test(sites, ids_with_gap, 3U, selected, 4U), 1);
+    expect_ll("match: the survivor keeps its own index", (long long)selected[0], 0);
+
+    const int ids_over_cap[3] = {36087, 32979, 36085};
+    expect_ll("match: the destination cap is honoured",
+              (long long)rr_wizard_core_refresh_match_sites_for_test(sites, ids_over_cap, 3U, selected, 2U), 2);
+    wiz_case_close(&c);
+}
+
 int
 main(void) {
     test_create_destroy();
@@ -1956,6 +2648,20 @@ main(void) {
     test_import_now_rechecks_the_session_gate();
     test_import_now_unwinds_a_failed_write();
     test_import_now_keeps_files_when_apply_is_rejected();
+    test_refresh_needs_a_sidecar();
+    test_refresh_needs_a_parsable_site_id();
+    test_refresh_needs_credentials();
+    test_refresh_matches_sites_by_database_id();
+    test_refresh_skips_a_vanished_site();
+    test_refresh_keeps_the_file_when_no_site_matches();
+    test_refresh_keeps_the_file_when_one_site_survives();
+    test_refresh_honours_the_stored_partial_encryption_answer();
+    test_refresh_pushes_only_the_file_the_session_uses();
+    test_refresh_pushes_a_group_file_as_a_group_list();
+    test_refresh_tolerates_a_null_push_hook();
+    test_refresh_staging_rejects_an_empty_map();
+    test_refresh_is_abandoned_by_the_next_batch();
+    test_refresh_match_sites_helper();
 
     if (g_failures == 0) {
         printf("UI_RR_WIZARD: OK\n");
