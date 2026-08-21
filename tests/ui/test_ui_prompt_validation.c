@@ -327,6 +327,22 @@ test_chooser_edge_paths(void) {
     assert(selected == -1);
     assert(ui_chooser_active() == 0);
 
+    /* An empty list cancels through the same path a selection takes, so the
+       chooser state is torn down before the callback runs: a callback that
+       opens its own chooser from the cancel keeps it. */
+    static ChooserCapture empty_reentry;
+    empty_reentry = (ChooserCapture){0, -2, -2};
+    ui_chooser_start("Empty reentry", NULL, 0, capture_chooser_reentry, &empty_reentry);
+    assert(empty_reentry.calls == 1);
+    assert(empty_reentry.first_sel == -1);
+    assert(ui_chooser_active() == 1);
+    UiChooserTestSnapshot reentered = ui_chooser_test_snapshot();
+    assert(reentered.count == 2);
+    assert(ui_chooser_handle_key(27) == 1);
+    assert(empty_reentry.calls == 2);
+    assert(empty_reentry.second_sel == -1);
+    assert(ui_chooser_active() == 0);
+
     selected = -2;
     ui_chooser_start("Single", CHOOSER_ONE, 1, capture_chooser_selected, &selected);
     assert(ui_chooser_handle_key(KEY_RESIZE) == 1);

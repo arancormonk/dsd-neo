@@ -1170,10 +1170,18 @@ void
 ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel, ui_chooser_done_fn on_done,
                     void* user_ctx) {
     if (!items || count <= 0) {
+        // An empty list cancels straight away, but it still leaves by the one
+        // door every other chooser result uses: publish the callback into
+        // g_chooser and let ui_chooser_finish() deliver it. That keeps the
+        // reentry guard (on_done cleared before the callback runs) on this path
+        // too, and it keeps the callback's context reachable only through the
+        // chooser state that pairs it with its callback - never handed straight
+        // from one caller's argument list to whatever function pointer the
+        // caller passed in.
         ui_chooser_close();
-        if (on_done) {
-            on_done(user_ctx, -1);
-        }
+        g_chooser.on_done = on_done;
+        g_chooser.user = user_ctx;
+        ui_chooser_finish(-1);
         return;
     }
     g_chooser.active = 1;
