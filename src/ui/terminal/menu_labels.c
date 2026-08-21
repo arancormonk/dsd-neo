@@ -54,7 +54,7 @@ menu_audio_in_is_soapy(const dsd_opts* opts) {
 
 bool
 io_rtl_active(const void* ctx) {
-    UiCtx* c = (UiCtx*)ctx;
+    const UiCtx* c = (const UiCtx*)ctx;
     if (!c || !c->opts) {
         return false;
     }
@@ -137,7 +137,7 @@ rtl_fsk_symbol_output_active_for_ui(const void* v) {
 
 int
 ui_current_mod(const void* v) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     int mod = -1;
 
     // Honor an explicitly locked demod selection when present
@@ -253,7 +253,7 @@ lbl_hpf_d(const void* v, char* b, size_t n) {
 
 const char*
 lbl_crc_relax(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     int relaxed = (c->opts->aggressive_framesync == 0);
     DSD_SNPRINTF(b, n, "Relaxed CRC checks [%s]", onoff(relaxed));
     return b;
@@ -261,7 +261,7 @@ lbl_crc_relax(const void* v, char* b, size_t n) {
 
 const char*
 lbl_dmr_le(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "DMR late entry [%s]", onoff(c->opts->dmr_le));
     return b;
 }
@@ -282,7 +282,7 @@ lbl_slot2(const void* v, char* b, size_t n) {
 
 const char*
 lbl_slotpref(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     const char* now = (c->opts->slot_preference == 0) ? "1" : (c->opts->slot_preference == 1) ? "2" : "Auto";
     DSD_SNPRINTF(b, n, "Slot preference... [%s]", now);
     return b;
@@ -290,7 +290,7 @@ lbl_slotpref(const void* v, char* b, size_t n) {
 
 const char*
 lbl_slots_on(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     const char* now = (c->opts->slot1_on && c->opts->slot2_on)
                           ? "Both"
                           : (c->opts->slot1_on ? "1" : (c->opts->slot2_on ? "2" : "Off"));
@@ -314,42 +314,42 @@ lbl_provoice_mode(const void* v, char* b, size_t n) {
 
 const char*
 lbl_invert_all(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Invert signal [%s]", onoff(c->opts->inverted_dmr));
     return b;
 }
 
 const char*
 lbl_inv_x2(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Invert X2-TDMA [%s]", onoff(c->opts->inverted_x2tdma));
     return b;
 }
 
 const char*
 lbl_inv_dmr(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Invert DMR [%s]", onoff(c->opts->inverted_dmr));
     return b;
 }
 
 const char*
 lbl_inv_dpmr(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Invert dPMR [%s]", onoff(c->opts->inverted_dpmr));
     return b;
 }
 
 const char*
 lbl_inv_m17(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Invert M17 [%s]", onoff(c->opts->inverted_m17));
     return b;
 }
 
 const char*
 lbl_m17_user_data(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     const char* s = (c && c->state && c->state->m17dat[0]) ? c->state->m17dat : "<unset>";
     int m = (int)n - 28;
     if (m < 0) {
@@ -363,49 +363,49 @@ lbl_m17_user_data(const void* v, char* b, size_t n) {
 
 const char*
 lbl_trunk(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Trunking [%s]", onoff(c->opts->trunk_enable));
     return b;
 }
 
 const char*
 lbl_scan(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Conventional scanning [%s]", onoff(c->opts->scanner_mode));
     return b;
 }
 
 const char*
 lbl_lcw(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "LCW explicit retune [%s]", onoff(c->opts->p25_lcw_retune));
     return b;
 }
 
 const char*
 lbl_allow(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Allow-list mode [%s]", onoff(c->opts->trunk_use_allow_list));
     return b;
 }
 
 const char*
 lbl_tune_group(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Group calls [%s]", onoff(c->opts->trunk_tune_group_calls));
     return b;
 }
 
 const char*
 lbl_tune_priv(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Private calls [%s]", onoff(c->opts->trunk_tune_private_calls));
     return b;
 }
 
 const char*
 lbl_tune_data(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Data calls [%s]", onoff(c->opts->trunk_tune_data_calls));
     return b;
 }
@@ -432,21 +432,21 @@ lbl_hangtime(const void* v, char* b, size_t n) {
 
 const char*
 lbl_rev_mute(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Reverse mute [%s]", onoff(c->opts->reverse_mute));
     return b;
 }
 
 const char*
 lbl_pref_cc(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Prefer CC candidates [%s]", onoff(c->opts->p25_prefer_candidates));
     return b;
 }
 
 const char*
 lbl_rigctl(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     int connected = (c->opts->use_rigctl && c->opts->rigctl_sockfd != DSD_INVALID_SOCKET);
     if (c->opts->rigctlhostname[0] != '\0' && c->opts->rigctlportno > 0) {
         int m = (n > 24) ? (int)(n - 24) : 0;
@@ -459,7 +459,7 @@ lbl_rigctl(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_rr_account(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     const char* user = (c && c->opts && c->opts->rr_username[0] != '\0') ? c->opts->rr_username : "(not set)";
     int m = (n > 32) ? (int)(n - 32) : 0;
     DSD_SNPRINTF(b, n, "RadioReference username... [%.*s]", m, user);
@@ -524,7 +524,7 @@ lbl_p25_p1_err_sec(const void* v, char* b, size_t n) {
 
 const char*
 lbl_muting(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     int dmr = (c->opts->dmr_mute_encL == 1 && c->opts->dmr_mute_encR == 1);
     int p25 = (c->opts->unmute_encrypted_p25 == 0);
     DSD_SNPRINTF(b, n, "Mute encrypted audio [%s]", onoff(dmr && p25));
@@ -533,7 +533,7 @@ lbl_muting(const void* v, char* b, size_t n) {
 
 const char*
 lbl_p25_enc_lockout(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     int on = (c && c->opts) ? ((c->opts->trunk_tune_enc_calls == 0) ? 1 : 0) : 0;
     DSD_SNPRINTF(b, n, "Lock out encrypted calls [%s]", onoff(on));
     return b;
@@ -549,7 +549,7 @@ lbl_enc_lockout_clear(const void* v, char* b, size_t n) {
 
 const char*
 lbl_key_force_bp(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     const int on = (c && c->state && c->state->M == 1);
     DSD_SNPRINTF(b, n, "Force basic/scrambler key [%s]", onoff(on));
     return b;
@@ -586,7 +586,7 @@ lbl_key_hytera(const void* v, char* b, size_t n) {
 
 const char*
 lbl_current_output(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     const char* name;
     switch (c->opts->audio_out_type) {
         case 0: name = "Pulse Digital"; break;
@@ -673,7 +673,7 @@ lbl_current_input(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_input_volume(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     int m = c->opts->input_volume_multiplier;
     if (m < 1) {
         m = 1;
@@ -684,7 +684,7 @@ lbl_input_volume(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_input_warn(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     double thr = c ? c->opts->input_warn_db : env_get_double("DSD_NEO_INPUT_WARN_DB", -40.0);
     DSD_SNPRINTF(b, n, "Low-input warning... [%.1f dBFS]", thr);
     return b;
@@ -692,7 +692,7 @@ lbl_input_warn(const void* v, char* b, size_t n) {
 
 const char*
 lbl_tcp(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     int active = (c->opts->audio_in_type == AUDIO_IN_TCP && tcp_input_is_valid(c->opts->tcp_in_ctx));
     if (c->opts->tcp_hostname[0] != '\0' && c->opts->tcp_portno > 0) {
         int m = (n > 28) ? (int)(n - 28) : 0;
@@ -705,7 +705,7 @@ lbl_tcp(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_out_mute(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     DSD_SNPRINTF(b, n, "Mute [%s]", onoff(c->opts->audio_out == 0));
     return b;
 }
@@ -732,14 +732,14 @@ lbl_gain_ana(const void* v, char* b, size_t n) {
 
 const char*
 lbl_monitor(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Source audio monitor [%s]", onoff(c->opts->monitor_input_audio));
     return b;
 }
 
 const char*
 lbl_cosine(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Cosine filter [%s]", onoff(c->opts->use_cosine_filter));
     return b;
 }
@@ -776,7 +776,7 @@ lbl_audio_lpf(const void* v, char* b, size_t n) {
 
 const char*
 lbl_call_alert(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Call alert beep [%s]", onoff(c->opts->call_alert));
     return b;
 }
@@ -807,7 +807,7 @@ lbl_call_alert_events(const void* v, char* b, size_t n) {
 
 const char*
 lbl_sym_save(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     if (c->opts->symbol_out_f) {
         size_t prefix = strlen("Record symbols... []") - 2; /* exclude %s */
         int m = (n > prefix) ? (int)(n - prefix) : 0;
@@ -820,7 +820,7 @@ lbl_sym_save(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_stop_symbol_capture(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     if (c->opts->symbol_out_f) {
         if (c->opts->symbol_out_file[0] != '\0') {
             DSD_SNPRINTF(b, n, "Stop recording [%s]", c->opts->symbol_out_file);
@@ -835,7 +835,7 @@ lbl_stop_symbol_capture(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_replay_last(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     if (c->opts->audio_in_dev[0] != '\0') {
         dsd_stat_t sb;
         if (dsd_stat_path(c->opts->audio_in_dev, &sb) == 0) {
@@ -849,7 +849,7 @@ lbl_replay_last(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_stop_symbol_playback(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     if (c->opts->symbolfile != NULL && c->opts->audio_in_type == AUDIO_IN_SYMBOL_BIN) {
         if (c->opts->audio_in_dev[0] != '\0') {
             DSD_SNPRINTF(b, n, "Stop replay [%s]", c->opts->audio_in_dev);
@@ -884,14 +884,14 @@ lbl_event_log(const void* v, char* b, size_t n) {
 
 const char*
 lbl_toggle_payload(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Payload logging to console [%s]", onoff(c->opts->payload));
     return b;
 }
 
 const char*
 lbl_lrrp_current(const void* vctx, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)vctx;
+    const UiCtx* c = (const UiCtx*)vctx;
     if (c->opts->lrrp_file_output && c->opts->lrrp_out_file[0] != '\0') {
         DSD_SNPRINTF(b, n, "LRRP output: %s", c->opts->lrrp_out_file);
     } else {
@@ -904,35 +904,35 @@ lbl_lrrp_current(const void* vctx, char* b, size_t n) {
 
 const char*
 lbl_ui_compact(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Compact view [%s]", onoff(c && c->opts && c->opts->frontend_terminal_display.terminal_compact));
     return b;
 }
 
 const char*
 lbl_ui_channels(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Channels [%s]", onoff(c && c->opts && c->opts->frontend_display.show_channels));
     return b;
 }
 
 const char*
 lbl_ui_p25_metrics(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 metrics [%s]", onoff(c && c->opts && c->opts->frontend_display.show_p25_metrics));
     return b;
 }
 
 const char*
 lbl_ui_p25_affil(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 affiliations [%s]", onoff(c && c->opts && c->opts->frontend_display.show_p25_affiliations));
     return b;
 }
 
 const char*
 lbl_ui_p25_ga(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 group affiliation [%s]",
                  onoff(c && c->opts && c->opts->frontend_display.show_p25_group_affiliations));
     return b;
@@ -940,21 +940,21 @@ lbl_ui_p25_ga(const void* v, char* b, size_t n) {
 
 const char*
 lbl_ui_p25_neighbors(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 neighbors [%s]", onoff(c && c->opts && c->opts->frontend_display.show_p25_neighbors));
     return b;
 }
 
 const char*
 lbl_ui_p25_iden(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 IDEN plan [%s]", onoff(c && c->opts && c->opts->frontend_display.show_p25_iden_plan));
     return b;
 }
 
 const char*
 lbl_ui_p25_ccc(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 CC candidates [%s]",
                  onoff(c && c->opts && c->opts->frontend_display.show_p25_cc_candidates));
     return b;
@@ -962,7 +962,7 @@ lbl_ui_p25_ccc(const void* v, char* b, size_t n) {
 
 const char*
 lbl_ui_p25_callsign(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "P25 callsign decode [%s]",
                  onoff(c && c->opts && c->opts->frontend_display.show_p25_callsign_decode));
     return b;
@@ -1208,14 +1208,14 @@ lbl_rtl_vol(const void* v, char* b, size_t n) {
 
 const char*
 lbl_rtl_bias(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Bias tee [%s]", onoff(c->opts->rtl_bias_tee));
     return b;
 }
 
 const char*
 lbl_rtl_rtltcp_autotune(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "rtl_tcp adaptive buffering [%s]", onoff(c->opts->rtltcp_autotune));
     return b;
 }
@@ -1291,7 +1291,7 @@ lbl_cqpsk_timing_bias(const void* v, char* b, size_t n) {
 
 const char*
 lbl_dsp_panel(const void* v, char* b, size_t n) {
-    UiCtx* c = (UiCtx*)v;
+    const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "DSP panel [%s]", onoff(c && c->opts && c->opts->frontend_display.show_dsp_panel));
     return b;
 }
