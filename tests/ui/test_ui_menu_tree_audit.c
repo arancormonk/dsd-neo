@@ -28,13 +28,12 @@
 #include <dsd-neo/ui/menu_core.h>
 #include <dsd-neo/ui/menu_defs.h>
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "menu_actions.h"
-#include "menu_labels.h"
+#include "menu_labels.h" // IWYU pragma: keep (prototypes for the label and predicate stubs)
 #include "test_ui_menu_tree_audit_stubs.h"
 
 #define DEFINE_ACTION_STUB(name)                                                                                       \

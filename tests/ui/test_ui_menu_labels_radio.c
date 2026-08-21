@@ -18,8 +18,6 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
-#include <dsd-neo/ui/menu_core.h>
-#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
