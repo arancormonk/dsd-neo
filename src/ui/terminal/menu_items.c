@@ -14,12 +14,12 @@
  *  - Within a submenu: status row first, the primary on/off switch, the
  *    settings people change often, then one-shot actions; destructive actions
  *    last, after a separator.
- *  - No single-item submenus; nothing deeper than three levels except the
- *    RTL-SDR advanced page; no submenu longer than fourteen rows (a 24-row
- *    terminal shows fifteen).
+ *  - No single-item submenus; nothing deeper than three levels; no submenu
+ *    longer than fifteen rows (what a 24-row terminal shows).
  *  - Labels: `Noun [State]` for toggles (On/Off), `Noun... [current]` for
- *    prompts, an imperative verb only for a one-shot action. Every row that
- *    duplicates a main-screen hotkey shows it.
+ *    prompts (submenu rows get " >" from the renderer, never "..."), an
+ *    imperative verb only for a one-shot action. Every row that duplicates a
+ *    main-screen hotkey shows it.
  *
  * Top-level arrays that menus/menu_defs.c references are non-static; nested
  * submenu arrays are static.
@@ -38,7 +38,7 @@
 // Input
 // ============================================================================
 #ifdef USE_RADIO
-static const NcMenuItem RTL_ADV_ITEMS[] = {
+static const NcMenuItem RTL_TUNING_ADV_ITEMS[] = {
     {.id = "rtl.adv.ap_snr",
      .label_fn = lbl_auto_ppm_snr,
      .help = "Minimum SNR before carrier-assisted PPM tracking may adjust the correction.",
@@ -59,7 +59,7 @@ static const NcMenuItem RTL_ADV_ITEMS[] = {
      .label_fn = lbl_auto_ppm_freeze,
      .help = "Hold the current auto-PPM correction and stop tracking until turned off.",
      .on_select = act_auto_ppm_freeze},
-    {.id = "rtl.adv.sep1", .kind = NC_ITEM_SEPARATOR},
+    {.id = "rtl.adv.sep", .kind = NC_ITEM_SEPARATOR},
     {.id = "rtl.adv.tcp_prebuf",
      .label_fn = lbl_tcp_prebuf,
      .help = "Milliseconds of rtl_tcp samples buffered before decoding, to absorb network jitter.",
@@ -76,26 +76,28 @@ static const NcMenuItem RTL_ADV_ITEMS[] = {
      .label_fn = lbl_tcp_waitall,
      .help = "Ask recv() for full blocks (MSG_WAITALL) on the rtl_tcp socket.",
      .on_select = act_tcp_waitall},
-    {.id = "rtl.adv.sep2", .kind = NC_ITEM_SEPARATOR},
-    {.id = "rtl.adv.iqbal",
+};
+
+static const NcMenuItem RTL_DSP_ITEMS[] = {
+    {.id = "rtl.dsp.iqbal",
      .label_fn = lbl_onoff_iqbal,
      .help = "Compensate IQ gain/phase imbalance (not on the CQPSK path).",
      .is_enabled = is_not_qpsk,
      .on_select = act_toggle_iqbal},
-    {.id = "rtl.adv.iq_dc",
+    {.id = "rtl.dsp.iq_dc",
      .label_fn = lbl_iq_dc,
      .help = "Remove the DC offset from the complex baseband.",
      .on_select = act_toggle_iq_dc},
-    {.id = "rtl.adv.iq_dck",
+    {.id = "rtl.dsp.iq_dck",
      .label_fn = lbl_iq_dc_k,
      .help = "DC blocker time constant k in dc += (x - dc) >> k; larger is slower (6..15).",
      .on_select = act_iq_dc_k_prompt},
-    {.id = "rtl.adv.ted_gain",
+    {.id = "rtl.dsp.ted_gain",
      .label_fn = lbl_ted_gain,
      .help = "CQPSK Gardner timing loop gain, in thousandths.",
      .is_enabled = is_ted_allowed,
      .on_select = act_ted_gain_prompt},
-    {.id = "rtl.adv.ted_bias",
+    {.id = "rtl.dsp.ted_bias",
      .label_fn = lbl_cqpsk_timing_bias,
      .help = "Smoothed Gardner timing residual (read-only).",
      .is_enabled = is_ted_allowed,
@@ -147,11 +149,16 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .label = "Restart stream",
      .help = "Reopen the device so pending device settings take effect.",
      .on_select = rtl_restart},
-    {.id = "rtl.advanced",
-     .label = "Advanced...",
-     .help = "Auto-PPM thresholds, rtl_tcp socket tuning, IQ front end, CQPSK timing.",
-     .submenu = RTL_ADV_ITEMS,
-     .submenu_len = NC_LEN(RTL_ADV_ITEMS)},
+    {.id = "rtl.tuning_adv",
+     .label = "Auto-PPM & rtl_tcp",
+     .help = "Auto-PPM thresholds and rtl_tcp socket tuning.",
+     .submenu = RTL_TUNING_ADV_ITEMS,
+     .submenu_len = NC_LEN(RTL_TUNING_ADV_ITEMS)},
+    {.id = "rtl.dsp",
+     .label = "IQ & CQPSK timing",
+     .help = "IQ balance, DC blocker, CQPSK Gardner timing loop.",
+     .submenu = RTL_DSP_ITEMS,
+     .submenu_len = NC_LEN(RTL_DSP_ITEMS)},
 };
 #endif
 
@@ -189,7 +196,7 @@ static const NcMenuItem INPUT_SOURCE_ITEMS[] = {
 const NcMenuItem INPUT_MENU_ITEMS[] = {
     {.id = "input.current", .label_fn = lbl_current_input, .kind = NC_ITEM_STATUS},
     {.id = "input.switch",
-     .label = "Switch source...",
+     .label = "Switch source",
      .help = "Change the active input source.",
      .submenu = INPUT_SOURCE_ITEMS,
      .submenu_len = NC_LEN(INPUT_SOURCE_ITEMS)},
@@ -209,7 +216,7 @@ const NcMenuItem INPUT_MENU_ITEMS[] = {
      .on_select = act_toggle_invert},
 #ifdef USE_RADIO
     {.id = "input.rtl",
-     .label = "RTL-SDR...",
+     .label = "RTL-SDR",
      .help = "Frequency, gain, PPM, bandwidth, squelch, calibration, device.",
      .is_enabled = io_rtl_active,
      .submenu = RTL_MENU_ITEMS,
@@ -302,12 +309,12 @@ const NcMenuItem DECODER_MENU_ITEMS[] = {
      .on_select = act_toggle_cq},
 #endif
     {.id = "dec.filters",
-     .label = "Audio filters...",
+     .label = "Audio filters",
      .help = "Input and digital audio filters.",
      .submenu = DEC_FILTER_ITEMS,
      .submenu_len = NC_LEN(DEC_FILTER_ITEMS)},
     {.id = "dec.inversion",
-     .label = "Per-protocol inversion...",
+     .label = "Per-protocol inversion",
      .help = "Polarity per protocol; Input > Invert signal flips them all.",
      .submenu = DEC_INV_ITEMS,
      .submenu_len = NC_LEN(DEC_INV_ITEMS)},
@@ -317,7 +324,7 @@ const NcMenuItem DECODER_MENU_ITEMS[] = {
      .hotkey = "F",
      .on_select = act_crc_relax},
     {.id = "dec.tdma",
-     .label = "DMR / TDMA...",
+     .label = "DMR / TDMA",
      .help = "Slot audio, slot preference, late entry, DMR reset.",
      .submenu = DEC_TDMA_ITEMS,
      .submenu_len = NC_LEN(DEC_TDMA_ITEMS)},
@@ -472,7 +479,7 @@ static const NcMenuItem TRUNK_P25_ITEMS[] = {
      .help = "Enter WACN, system ID and NAC by hand.",
      .on_select = act_p2_params},
     {.id = "p25.timing",
-     .label = "Timing...",
+     .label = "Timing",
      .help = "Follower and control-channel timers.",
      .submenu = P25_TIMING_ITEMS,
      .submenu_len = NC_LEN(P25_TIMING_ITEMS)},
@@ -503,17 +510,17 @@ const NcMenuItem TRUNK_MENU_ITEMS[] = {
      .on_select = act_channel_cycle},
     {.id = "trunk.sep1", .kind = NC_ITEM_SEPARATOR},
     {.id = "trunk.follow",
-     .label = "Follow...",
+     .label = "Follow",
      .help = "Which calls to follow, talkgroup hold, hangtime, lockouts.",
      .submenu = TRUNK_FOLLOW_ITEMS,
      .submenu_len = NC_LEN(TRUNK_FOLLOW_ITEMS)},
     {.id = "trunk.lists",
-     .label = "Channels & groups...",
+     .label = "Channels & groups",
      .help = "Channel maps and group lists, by CSV or from RadioReference.",
      .submenu = TRUNK_LISTS_ITEMS,
      .submenu_len = NC_LEN(TRUNK_LISTS_ITEMS)},
     {.id = "trunk.p25",
-     .label = "P25...",
+     .label = "P25",
      .help = "Control-channel hunting, retune, Phase 2 parameters, timers.",
      .submenu = TRUNK_P25_ITEMS,
      .submenu_len = NC_LEN(TRUNK_P25_ITEMS)},
@@ -604,7 +611,7 @@ const NcMenuItem ENC_MENU_ITEMS[] = {
      .on_select = act_enc_lockout_clear},
     {.id = "enc.sep", .kind = NC_ITEM_SEPARATOR},
     {.id = "enc.keys",
-     .label = "Keys...",
+     .label = "Keys",
      .help = "Enter basic privacy, Hytera, scrambler, RC4/DES and AES keys.",
      .submenu = KEYS_ENTRY_ITEMS,
      .submenu_len = NC_LEN(KEYS_ENTRY_ITEMS)},
@@ -617,7 +624,7 @@ const NcMenuItem ENC_MENU_ITEMS[] = {
      .help = "Load a keys CSV with hexadecimal values.",
      .on_select = act_keys_hex},
     {.id = "enc.ks",
-     .label = "Vendor keystreams...",
+     .label = "Vendor keystreams",
      .help = "Radio-specific keystream derivations.",
      .submenu = KEYS_KS_ITEMS,
      .submenu_len = NC_LEN(KEYS_KS_ITEMS)},
@@ -650,7 +657,7 @@ const NcMenuItem AUDIO_MENU_ITEMS[] = {
      .hotkey = "x",
      .on_select = switch_out_toggle_mute},
     {.id = "audio.switch",
-     .label = "Switch output...",
+     .label = "Switch output",
      .help = "Change the audio sink.",
      .submenu = AUDIO_SINK_ITEMS,
      .submenu_len = NC_LEN(AUDIO_SINK_ITEMS)},
@@ -766,22 +773,22 @@ static const NcMenuItem LRRP_ITEMS[] = {
 
 const NcMenuItem REC_MENU_ITEMS[] = {
     {.id = "rec.symcap",
-     .label = "Symbol capture...",
+     .label = "Symbol capture",
      .help = "Record symbols to a file and replay them.",
      .submenu = REC_SYMCAP_ITEMS,
      .submenu_len = NC_LEN(REC_SYMCAP_ITEMS)},
     {.id = "rec.wav",
-     .label = "WAV files...",
+     .label = "WAV files",
      .help = "Per-call, static and raw-input WAV recording.",
      .submenu = REC_WAV_ITEMS,
      .submenu_len = NC_LEN(REC_WAV_ITEMS)},
     {.id = "rec.events",
-     .label = "Event log...",
+     .label = "Event log",
      .help = "Event log file, payload logging, history reset.",
      .submenu = REC_EVENT_ITEMS,
      .submenu_len = NC_LEN(REC_EVENT_ITEMS)},
     {.id = "rec.lrrp",
-     .label = "LRRP output...",
+     .label = "LRRP output",
      .help = "Where DMR LRRP positions are written.",
      .submenu = LRRP_ITEMS,
      .submenu_len = NC_LEN(LRRP_ITEMS)},
@@ -842,7 +849,7 @@ static const NcMenuItem DISPLAY_SECTION_ITEMS[] = {
 static const NcMenuItem DISPLAY_VIS_ITEMS[] = {
     {.id = "vis.const",
      .label_fn = lbl_vis_const,
-     .help = "Constellation view of the demodulated symbols.",
+     .help = "Constellation view of the demodulated symbols; < and > adjust the gate.",
      .hotkey = "o",
      .on_select = act_vis_const},
     {.id = "vis.const_norm",
@@ -907,18 +914,18 @@ const NcMenuItem DISPLAY_MENU_ITEMS[] = {
      .hotkey = "c",
      .on_select = act_toggle_ui_compact},
     {.id = "disp.sections",
-     .label = "Sections...",
+     .label = "Sections",
      .help = "Which on-screen sections are shown.",
      .submenu = DISPLAY_SECTION_ITEMS,
      .submenu_len = NC_LEN(DISPLAY_SECTION_ITEMS)},
     {.id = "disp.vis",
-     .label = "Visualizers...",
+     .label = "Visualizers",
      .help = "Constellation, eye diagram, FSK histogram, spectrum (RTL-SDR input).",
      .is_enabled = io_rtl_active,
      .submenu = DISPLAY_VIS_ITEMS,
      .submenu_len = NC_LEN(DISPLAY_VIS_ITEMS)},
     {.id = "disp.history",
-     .label = "Event history...",
+     .label = "Event history",
      .help = "History mode, slot, and browsing.",
      .submenu = DISPLAY_HIST_ITEMS,
      .submenu_len = NC_LEN(DISPLAY_HIST_ITEMS)},
