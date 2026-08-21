@@ -152,6 +152,18 @@ void ui_chooser_start(const char* title, const char* const* items, int count, ui
                       void* user_ctx);
 
 /**
+ * @brief Start a chooser overlay with the bar already on one item.
+ *
+ * For pickers that show a setting's current value: opening on index 0 means the
+ * next Enter picks whatever happens to be first, which for a destructive first
+ * entry turns a double-tap into a state change nobody asked for.
+ *
+ * @param initial_sel Item to open on; out-of-range values fall back to 0.
+ */
+void ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel,
+                         ui_chooser_done_fn on_done, void* user_ctx);
+
+/**
  * @brief Close the chooser overlay.
  */
 void ui_chooser_close(void);

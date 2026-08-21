@@ -33,9 +33,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef USE_RADIO
-#endif
-
 typedef struct dmr_data_sync_ctx_s {
     dsd_opts* opts;
     dsd_state* state;

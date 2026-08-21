@@ -37,9 +37,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef USE_RTLSDR
-#endif
-
 enum {
     TSBK_MAX_BLOCKS = 3,
     TSBK_DIBITS_PER_REP = 98,

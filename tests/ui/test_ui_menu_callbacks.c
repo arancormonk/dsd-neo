@@ -497,10 +497,6 @@ test_path_and_file_callbacks(void) {
     rc |= expect_cmd_string("symbol capture command", DSD_APP_CMD_SYMCAP_OPEN, "symbols.bin");
 
     reset_capture();
-    cb_io_read_symbol_bin(&ctx, "replay.bin");
-    rc |= expect_cmd_string("symbol input read command", DSD_APP_CMD_SYMBOL_IN_OPEN, "replay.bin");
-
-    reset_capture();
     cb_switch_to_wav(&ctx, "input.wav");
     rc |= expect_cmd_string("wav input command", DSD_APP_CMD_INPUT_WAV_SET, "input.wav");
 
@@ -511,6 +507,16 @@ test_path_and_file_callbacks(void) {
     reset_capture();
     cb_switch_to_symbol(&ctx, "stream.raw");
     rc |= expect_cmd_string("symbol stream route", DSD_APP_CMD_INPUT_SYM_STREAM_SET, "stream.raw");
+
+    reset_capture();
+    cb_switch_to_symbol(&ctx, "stream.sym");
+    rc |= expect_cmd_string("symbol sym stream route", DSD_APP_CMD_INPUT_SYM_STREAM_SET, "stream.sym");
+
+    /* Nothing appends ".bin" to a capture the operator named, so an unsuffixed path
+       is a capture, not a stream. */
+    reset_capture();
+    cb_switch_to_symbol(&ctx, "site-769");
+    rc |= expect_cmd_string("unsuffixed capture route", DSD_APP_CMD_SYMBOL_IN_OPEN, "site-769");
 
     return rc;
 }
@@ -625,11 +631,6 @@ test_typed_callbacks_clamp_and_cancel(void) {
     cb_slot_pref(&ctx, 1, 7);
     rc |= expect_int("slot pref command", g_cmd.id, DSD_APP_CMD_SLOT_PREF_SET);
     rc |= expect_int("slot pref clamped zero-based", cmd_i32(), 1);
-
-    reset_capture();
-    cb_slots_on(&ctx, 1, -9);
-    rc |= expect_int("slot mask command", g_cmd.id, DSD_APP_CMD_SLOTS_ONOFF_SET);
-    rc |= expect_int("slot mask clamped", cmd_i32(), 0);
 
     return rc;
 }

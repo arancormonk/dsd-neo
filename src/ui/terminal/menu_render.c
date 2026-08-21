@@ -35,12 +35,20 @@ ui_is_enabled(const NcMenuItem* it, const void* ctx) {
 }
 
 int
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    return (it && it->kind == NC_ITEM_ACTION && ui_is_enabled(it, ctx)) ? 1 : 0;
+}
+
+/* Selectable, not merely enabled: status rows and separators are always enabled,
+   so counting them here would keep a parent row on screen whose submenu has
+   nothing the highlight can rest on -- a frame you can enter but not navigate. */
+int
 ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     if (!items || n == 0) {
         return 0;
     }
     for (size_t i = 0; i < n; i++) {
-        if (ui_is_enabled(&items[i], ctx)) {
+        if (ui_is_selectable(&items[i], ctx)) {
             return 1;
         }
     }
@@ -48,14 +56,17 @@ ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
 }
 
 int
-ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     if (!items || n == 0) {
         return 0;
     }
-    int idx = from;
+    /* Normalised both ways: C's % truncates toward zero, so a single "+ n" only
+       rescues a `from` in [-n, n) and anything further out would index behind the
+       array. ui_visible_index_for_item() guards its own index the same way. */
+    int idx = ((from % (int)n) + (int)n) % (int)n;
     for (size_t k = 0; k < n; k++) {
         idx = (idx + ((dir > 0) ? 1 : -1) + (int)n) % (int)n;
-        if (ui_is_enabled(&items[idx], ctx)) {
+        if (ui_is_selectable(&items[idx], ctx)) {
             return idx;
         }
     }
@@ -158,11 +169,66 @@ ui_menu_item_label(const NcMenuItem* it, const void* ctx, char* out, size_t out_
     return lab;
 }
 
+/* One size for the buffer a dynamic label is rendered into. The width the overlay
+   is sized to and the text the row is drawn from have to be the same string, so
+   both paths measure and format through a buffer of this size. */
+enum { UI_MENU_LABEL_MAX = 140, UI_MENU_HOTKEY_GAP = 2 };
+
+/* Columns the hotkey takes on its row: the key text plus its gap from the label. */
+static int
+ui_menu_item_hotkey_cols(const NcMenuItem* it) {
+    if (!it || !it->hotkey || !*it->hotkey) {
+        return 0;
+    }
+    return (int)strlen(it->hotkey) + UI_MENU_HOTKEY_GAP;
+}
+
 static int
 ui_menu_item_label_len(const NcMenuItem* it, const void* ctx) {
-    char dyn[128];
+    if (it && it->kind == NC_ITEM_SEPARATOR) {
+        return 0;
+    }
+    char dyn[UI_MENU_LABEL_MAX];
     const char* lab = ui_menu_item_label(it, ctx, dyn, sizeof dyn);
-    return (int)strlen(lab);
+    return (int)strlen(lab) + ui_menu_item_hotkey_cols(it);
+}
+
+int
+ui_menu_format_row(const NcMenuItem* it, const void* ctx, int width, char* out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!it || it->kind == NC_ITEM_SEPARATOR || width < 1) {
+        return 0;
+    }
+    /* Never let the buffer decide what gets dropped. snprintf truncates from the
+       right, so a width the buffer cannot hold would cut the trailing hotkey --
+       the opposite of this function's contract. Narrow the column instead, and
+       the label truncation below absorbs it. */
+    if (width > (int)out_size - 1) {
+        width = (int)out_size - 1;
+        if (width < 1) {
+            return 0;
+        }
+    }
+    char labfmt[UI_MENU_LABEL_MAX];
+    const char* lab = ui_menu_item_label(it, ctx, labfmt, sizeof labfmt);
+    const int hotkey_len = (it->hotkey && *it->hotkey) ? (int)strlen(it->hotkey) : 0;
+    if (hotkey_len == 0) {
+        DSD_SNPRINTF(out, out_size, "%.*s", width, lab);
+        return (int)strlen(out);
+    }
+    int label_cols = width - (hotkey_len + UI_MENU_HOTKEY_GAP);
+    if (label_cols < 0) {
+        label_cols = 0;
+    }
+    int pad_to = width - hotkey_len;
+    if (pad_to < 0) {
+        pad_to = 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%-*.*s%s", pad_to, label_cols, lab, it->hotkey);
+    return (int)strlen(out);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -171,6 +237,36 @@ ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, si
     return ui_menu_item_label(it, ctx, out, out_size);
 }
 #endif
+
+/* One row: a dimmed rule for a separator, dimmed text for a status row, and for
+   an action row the formatted label/hotkey line -- reversed across the whole row
+   when highlighted, so the hotkey column reads as part of it. */
+static void
+ui_menu_draw_one_row(WINDOW* menu_win, const UiMenuDrawLayout* layout, const NcMenuItem* it, int y, int is_hi,
+                     const void* ctx) {
+    mvwhline(menu_win, y, 1, ' ', layout->mw - 2);
+    if (it->kind == NC_ITEM_SEPARATOR) {
+        wattron(menu_win, A_DIM);
+        mvwhline(menu_win, y, layout->x, ACS_HLINE, layout->text_w);
+        wattroff(menu_win, A_DIM);
+        return;
+    }
+    char row[UI_MENU_LABEL_MAX + 24];
+    (void)ui_menu_format_row(it, ctx, layout->text_w, row, sizeof row);
+    /* chtype, not int: PDCurses builds put A_REVERSE/A_DIM above bit 31, and an
+       int would truncate them to 0 and silently drop the highlight. */
+    const chtype attr = is_hi ? A_REVERSE : ((it->kind == NC_ITEM_STATUS) ? A_DIM : A_NORMAL);
+    if (attr != A_NORMAL) {
+        wattron(menu_win, attr);
+    }
+    if (is_hi) {
+        mvwhline(menu_win, y, layout->x, ' ', layout->text_w);
+    }
+    mvwaddnstr(menu_win, y, layout->x, row, layout->text_w);
+    if (attr != A_NORMAL) {
+        wattroff(menu_win, attr);
+    }
+}
 
 static void
 ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const NcMenuItem* items, size_t n, int hi,
@@ -190,17 +286,9 @@ ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const N
         if (drawn >= layout->items_rows) {
             break;
         }
-        int y = layout->items_top + drawn++;
-        mvwhline(menu_win, y, 1, ' ', layout->mw - 2);
-        if ((int)i == hi) {
-            wattron(menu_win, A_REVERSE);
-        }
-        char labfmt[140];
-        const char* lab = ui_menu_item_label(&items[i], ctx, labfmt, sizeof labfmt);
-        mvwaddnstr(menu_win, y, layout->x, lab, layout->text_w);
-        if ((int)i == hi) {
-            wattroff(menu_win, A_REVERSE);
-        }
+        const int y = layout->items_top + drawn++;
+        const int is_hi = ((int)i == hi) && items[i].kind == NC_ITEM_ACTION;
+        ui_menu_draw_one_row(menu_win, layout, &items[i], y, is_hi, ctx);
     }
     while (drawn < layout->items_rows) {
         mvwhline(menu_win, layout->items_top + drawn, 1, ' ', layout->mw - 2);
@@ -230,7 +318,7 @@ ui_menu_draw_footer_lines(WINDOW* menu_win, const UiMenuDrawLayout* layout, int 
     int help_y = layout->mh - 3;
     if (help_y >= layout->footer_min_y && help_y <= layout->mh - 2) {
         mvwhline(menu_win, help_y, 1, ' ', layout->mw - 2);
-        mvwaddnstr(menu_win, help_y, layout->x, "Enter/Right: select  h: help  Esc/q/Left: back", layout->text_w);
+        mvwaddnstr(menu_win, help_y, layout->x, "Enter/Right: select  h: help  Esc/Left: back", layout->text_w);
     }
 }
 
@@ -280,6 +368,10 @@ ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io
     wnoutrefresh(win);
 }
 
+/* Only the layout pass wants the widest label; the scroll and draw passes want the
+   count alone. Rendering every row's label for them meant three label_fn calls per
+   row per frame -- and in the RTL submenus each of those is a full front-end
+   metrics snapshot, taken 60+ times a second while the menu is open. */
 int
 ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, int* out_maxlab) {
     int vis = 0;
@@ -288,9 +380,11 @@ ui_visible_count_and_maxlab(const NcMenuItem* items, size_t n, const void* ctx, 
         if (!ui_is_enabled(&items[i], ctx)) {
             continue;
         }
-        int L = ui_menu_item_label_len(&items[i], ctx);
-        if (L > maxlab) {
-            maxlab = L;
+        if (out_maxlab) {
+            int L = ui_menu_item_label_len(&items[i], ctx);
+            if (L > maxlab) {
+                maxlab = L;
+            }
         }
         vis++;
     }
@@ -325,7 +419,7 @@ ui_overlay_center_axis(int outer, int inner) {
 static int
 ui_overlay_compute_width(const UiMenuFrame* f, int maxlab) {
     const char* footer_keys = "Arrows/PgUp/PgDn/Home/End  (000/000)";
-    const char* footer_help = "Enter/Right: select  h: help  Esc/q/Left: back";
+    const char* footer_help = "Enter/Right: select  h: help  Esc/Left: back";
     const int pad_x = 2;
     int width = pad_x + ((maxlab > 0) ? maxlab : 1);
     width = ui_max_int(width, pad_x + (int)strlen(footer_keys));

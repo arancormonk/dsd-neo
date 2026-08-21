@@ -1542,6 +1542,24 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
 
     add_executable(
+        dsd-neo_test_ui_menu_tree_audit
+        ui/test_ui_menu_tree_audit.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_items.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_menu_tree_audit
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_menu_tree_audit
+        PRIVATE USE_RADIO
+    )
+    add_test(NAME UI_MENU_TREE_AUDIT COMMAND dsd-neo_test_ui_menu_tree_audit)
+
+    add_executable(
         dsd-neo_test_ui_menu_render_helpers
         ui/test_ui_menu_render_helpers.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_render.c

@@ -29,7 +29,18 @@ typedef void (*nc_action_fn)(void* ctx);
 typedef const char* (*nc_label_fn)(const void* ctx, char* buf, size_t buf_len);
 
 /**
+ * @brief How a row behaves. The default (0) is an ordinary selectable row.
+ */
+typedef enum {
+    NC_ITEM_ACTION = 0,   /**< selectable: runs on_select and/or opens its submenu */
+    NC_ITEM_STATUS = 1,   /**< read-only status text; drawn dimmed; navigation skips it */
+    NC_ITEM_SEPARATOR = 2 /**< horizontal rule; label ignored; navigation skips it */
+} NcMenuItemKind;
+
+/**
  * @brief Declarative menu item description.
+ *
+ * New fields are appended so positional initializers stay valid.
  */
 struct NcMenuItem {
     const char* id;            // stable identifier for the item
@@ -40,6 +51,13 @@ struct NcMenuItem {
     nc_action_fn on_select;    // action to run when selected; may open submenus
     const NcMenuItem* submenu; // optional nested items
     size_t submenu_len;        // length of submenu
+    const char* hotkey;        // main-screen key(s) for the same action, e.g. "t", "+ -", "P/p"; NULL = none
+    NcMenuItemKind kind;       // NC_ITEM_ACTION unless set
+    // The highlight never arrives here on its own: Home, End and the highlight a
+    // frame opens with all skip the row. Arrows and paging still reach it. Set it
+    // on a row that would be destructive to land on with Enter already under the
+    // finger -- one keystroke should not be able to park there.
+    bool no_jump;
 };
 
 /**

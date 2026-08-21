@@ -350,6 +350,9 @@ test_chooser_edge_paths(void) {
     assert(snapshot.count == 2);
     assert(snapshot.sel == 0);
     assert(ui_chooser_handle_key('q') == 1);
+    assert(capture.calls == 1);
+    assert(ui_chooser_active() == 1);
+    assert(ui_chooser_handle_key(27) == 1);
     assert(capture.calls == 2);
     assert(capture.second_sel == -1);
     assert(ui_chooser_active() == 0);
@@ -500,6 +503,8 @@ test_help_scroll_navigation_clamps_to_content(void) {
     assert(ui_help_handle_key('x') == 1);
     assert(ui_help_active() == 1);
     assert(ui_help_handle_key('Q') == 1);
+    assert(ui_help_active() == 1);
+    assert(ui_help_handle_key(27) == 1);
     assert(ui_help_active() == 0);
 }
 

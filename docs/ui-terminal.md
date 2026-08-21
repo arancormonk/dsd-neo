@@ -18,54 +18,313 @@ Tip: Many screens print a short hotkey hint line in the footer while you’re ru
 Press `Enter` to open the nonblocking menu overlay. While it is open, keypresses go to the menu (hotkeys are not
 processed).
 
-Common controls:
+Controls:
 
-- Move selection: arrow keys (`Up`/`Down`), `PageUp`/`PageDown`, `Home`/`End`
+- Move selection: `Up`/`Down`, `PageUp`/`PageDown`, `Home`/`End`
 - Select / open submenu: `Enter`, `Right`
-- Back / close: `Esc`, `q`/`Q`, `Left`
-- Item help: `h`
+- Back / close: `Esc`, `Left`
+- Help for the highlighted row: `h`
+
+`q` does not back out of the menu, its pickers, the help overlay or the RadioReference panel. It quits the program, and only from the main screen — inside the menu it is
+inert, so one keypress too many after the menu closes cannot exit the decoder.
+
+For the same reason `End` stops on `Advanced` rather than on `Quit DSD-neo`: the jump keys never park the highlight
+on the quit row, so `End` followed by `Enter` cannot end a running decode. Reaching it takes a deliberate `Down`,
+`PageDown`, or the `q` hotkey.
+
+Rows come in three kinds:
+
+- **Action rows** are the selectable ones: they run something, open a prompt (a trailing `...`), or open a
+  submenu (a trailing `>`, added by the menu itself).
+- **Status rows** are dimmed, read-only readouts such as `Source: RTL-SDR dev 0` or `Output: Pulse [default]`. The
+  highlight steps over them.
+- **Separators** are horizontal rules that group a submenu; the highlight steps over them too.
+
+How to read a row:
+
+- A state shows in brackets: `Trunking [On]`, `Mute [Off]`. Selecting the row flips it.
+- A trailing `...` means the row opens a prompt or picker; the current value sits in the brackets:
+  `Hangtime... [1.0 s]`.
+- A key on the right edge of the row is the main-screen hotkey for the same action: `Trunking [On]` carries `t`,
+  `Digital gain... [auto]` carries `+ -`. Nearly every hotkey in the tables below appears on its menu row, so the
+  menu is the place to learn them. The exceptions are the shifted aliases (`X`, `O`) and the four modifiers that
+  adjust a visualizer rather than toggle it (`<` `>` for the constellation gate, `,` `.` for the FFT size); those
+  are named in their row's help text instead.
+
+The root is the receiver's signal chain — Input, Decoder, Trunking, Encryption, Audio, Recording & logs — then
+Display, then housekeeping. Put another way: to find a setting, ask which signal it acts on.
+
+### Menu map
+
+Bracketed states and values are examples. `(status)` marks a read-only row; `─────` a separator. Rows marked
+*RTL-SDR input only* appear while the RTL-SDR front end is the input; rows marked *RadioReference builds* need a build
+with libcurl and expat.
+
+```text
+Main Menu
+├── Input
+│   ├── Source: <current input>                      (status)
+│   ├── Switch source
+│   │   ├── Pulse Audio (mic/line)
+│   │   ├── Pulse input device...
+│   │   ├── RTL-SDR                                  (RTL-SDR builds)
+│   │   ├── TCP audio... [Off]                   8
+│   │   ├── UDP audio...
+│   │   ├── WAV / raw file...
+│   │   └── Symbol file (.bin/.raw/.sym)...
+│   ├── Input volume... [4X]                     v
+│   ├── Low-input warning... [-40.0 dBFS]
+│   ├── Invert signal [Off]                      i
+│   └── RTL-SDR                                   (RTL-SDR input only)
+│       ├── Frequency... [769.768750 MHz]
+│       ├── Gain... [AGC]
+│       ├── PPM correction... [0]                { }
+│       ├── Bandwidth... [48 kHz]
+│       ├── Squelch (dB)...
+│       ├── Volume multiplier... [1]             v
+│       ├── Auto-PPM [On]
+│       ├── Tuner autogain [On]
+│       ├── Bias tee [Off]
+│       ├── rtl_tcp adaptive buffering [On]
+│       ├── ─────
+│       ├── Device index...
+│       ├── Restart stream
+│       ├── Auto-PPM & rtl_tcp
+│       │   ├── Auto-PPM SNR threshold... [6.0 dB]
+│       │   ├── Auto-PPM minimum power... [-80.0 dB]
+│       │   ├── Auto-PPM zero-lock PPM... [0.60]
+│       │   ├── Auto-PPM zero-lock Hz... [60]
+│       │   ├── Auto-PPM freeze [Off]
+│       │   ├── ─────
+│       │   ├── rtl_tcp prebuffer... [30 ms]
+│       │   ├── rtl_tcp SO_RCVBUF... [system default]
+│       │   ├── rtl_tcp SO_RCVTIMEO... [Off]
+│       │   └── rtl_tcp MSG_WAITALL [Off]
+│       └── IQ & CQPSK timing
+│           ├── IQ balance [Off]                     (not on the CQPSK path)
+│           ├── IQ DC block [On]
+│           ├── IQ DC shift k... [5]
+│           ├── CQPSK timing gain... [75 x0.001]     (CQPSK path only)
+│           └── CQPSK timing bias (EMA) <n>          (status, CQPSK path only)
+├── Decoder
+│   ├── Mode... [Auto]
+│   ├── Modulation [C4FM]                        m
+│   ├── P25 Phase 2 modulation lock [Off]        M
+│   ├── CQPSK path [On]                              (RTL-SDR input only)
+│   ├── Audio filters
+│   │   ├── Low-pass filter [Off]                V
+│   │   ├── High-pass filter [Off]               B
+│   │   ├── Pulse-shaping band-pass [Off]        N
+│   │   ├── Digital high-pass filter [Off]       H
+│   │   └── Cosine filter [On]
+│   ├── Per-protocol inversion
+│   │   ├── Invert X2-TDMA [Off]
+│   │   ├── Invert DMR [Off]
+│   │   ├── Invert dPMR [Off]
+│   │   └── Invert M17 [Off]
+│   ├── Relaxed CRC checks [Off]                 F
+│   ├── DMR / TDMA
+│   │   ├── DMR late entry [Off]
+│   │   ├── Slot 1 audio [On]                    1
+│   │   ├── Slot 2 audio [On]                    2
+│   │   ├── Slot preference... [Auto]            3
+│   │   └── DMR reset                            D
+│   ├── ProVoice ESK mask [Off]                  A   (ProVoice modes only)
+│   ├── ProVoice EA mode [Off]                   S   (ProVoice modes only)
+│   └── M17 encoder user data... [<unset>]
+├── Trunking
+│   ├── Trunking [Off]                           t
+│   ├── Conventional scanning [Off]              y
+│   ├── Return to control channel                C   (while trunking or scanning)
+│   ├── Next channel                             L   (while trunking or scanning)
+│   ├── ─────
+│   ├── Follow
+│   │   ├── Group calls [On]                     g
+│   │   ├── Private calls [Off]                  u
+│   │   ├── Data calls [Off]                     d
+│   │   ├── Allow-list mode [Off]                w
+│   │   ├── Talkgroup hold... [none]             k/l
+│   │   ├── Hangtime... [1.0 s]
+│   │   ├── Reverse mute [Off]
+│   │   ├── Lock out talkgroup on slot 1         !
+│   │   └── Lock out talkgroup on slot 2         @
+│   ├── Channels & groups
+│   │   ├── Import channel map CSV...
+│   │   ├── Import group list CSV...
+│   │   ├── ─────                                    (RadioReference builds)
+│   │   ├── Import from RadioReference...            (RadioReference builds)
+│   │   ├── Imported RadioReference systems...       (RadioReference builds)
+│   │   ├── RadioReference username... [(not set)]   (RadioReference builds)
+│   │   └── RadioReference application key...        (RadioReference builds without a baked-in key)
+│   ├── P25
+│   │   ├── Prefer CC candidates [On]
+│   │   ├── LCW explicit retune [Off]
+│   │   ├── Phase 2 parameters...
+│   │   └── Timing
+│   │       ├── VC grace... [0.000 s]
+│   │       ├── Minimum follow dwell... [0.000 s]
+│   │       ├── Grant-to-voice timeout... [0.000 s]
+│   │       ├── CC hunt grace... [0.000 s]
+│   │       ├── Safety-net extra... [0.000 s]
+│   │       ├── Safety-net margin... [0.000 s]
+│   │       ├── Phase 1 error hold... [0.0%]
+│   │       └── Phase 1 error hold time... [0.000 s]
+│   ├── ─────
+│   ├── Rigctl: <host:port> [Off]                9
+│   └── Rigctl setmod bandwidth...
+├── Encryption
+│   ├── Mute encrypted audio [On]
+│   ├── Lock out encrypted calls [Off]           e
+│   ├── Clear lockouts [0]
+│   ├── ─────
+│   ├── Keys
+│   │   ├── Basic privacy key (decimal)...
+│   │   ├── Hytera privacy key (hex)...
+│   │   ├── NXDN/dPMR scrambler key (decimal)...
+│   │   ├── RC4 / DES key (hex)...
+│   │   ├── AES-128/256 key (hex)...
+│   │   ├── ─────
+│   │   ├── Force basic/scrambler key [Off]      4
+│   │   └── Force RC4 key [Off]                  6
+│   ├── Import keys CSV (decimal)...
+│   ├── Import keys CSV (hex)...
+│   └── Vendor keystreams
+│       ├── TYT AP (PC4) keystream...
+│       ├── Retevis AP (RC2) keystream...
+│       ├── TYT EP (AES) keystream...
+│       ├── Kenwood DMR scrambler...
+│       ├── Anytone BP keystream...
+│       └── Straight XOR keystream...
+├── Audio
+│   ├── Output: <current sink>                       (status)
+│   ├── Mute [Off]                               x
+│   ├── Switch output
+│   │   ├── Pulse digital output
+│   │   ├── Pulse output device...
+│   │   └── UDP output...
+│   ├── Digital gain... [auto]                   + -
+│   ├── Analog gain... [50]                      * /
+│   ├── Source audio monitor [Off]
+│   ├── Deemphasis [Off]
+│   ├── Audio low-pass... [Off]
+│   ├── ─────
+│   ├── Call alert beep [Off]                    a
+│   └── Alert on... [All]
+├── Recording & logs
+│   ├── Symbol capture
+│   │   ├── Record symbols... [Off]              R
+│   │   ├── Stop recording [Off]                 r
+│   │   ├── ─────
+│   │   ├── Replay last capture [none]           Space
+│   │   └── Stop replay [Off]                    s
+│   ├── WAV files
+│   │   ├── Per-call WAV [Off]                   P/p
+│   │   ├── Static WAV file...
+│   │   └── Raw input WAV file...
+│   ├── Event log
+│   │   ├── Event log file... [off]
+│   │   ├── Stop event log
+│   │   ├── Payload logging to console [Off]     z
+│   │   └── Clear event history
+│   ├── LRRP output
+│   │   ├── LRRP output: off                         (status)
+│   │   ├── Write to ~/lrrp.txt (QGIS)
+│   │   ├── Write to ./DSDPlus.LRRP
+│   │   ├── Custom file...
+│   │   └── Stop LRRP output
+│   └── DSP structured output...
+├── Display
+│   ├── Compact view [Off]                       c
+│   ├── Sections
+│   │   ├── Channels [On]
+│   │   ├── DSP panel [Off]                          (RTL-SDR input only)
+│   │   ├── ─────
+│   │   ├── P25 metrics [Off]
+│   │   ├── P25 affiliations [Off]
+│   │   ├── P25 group affiliation [Off]          T
+│   │   ├── P25 neighbors [Off]
+│   │   ├── P25 IDEN plan [Off]
+│   │   ├── P25 CC candidates [Off]
+│   │   └── P25 callsign decode [Off]
+│   ├── Visualizers                               (RTL-SDR input only)
+│   │   ├── Constellation [Off]                  o
+│   │   ├── Constellation normalization [Radial] n   (constellation on only)
+│   │   ├── Eye diagram [Off]                    E
+│   │   ├── Eye diagram Unicode [On]             U    (eye diagram on only)
+│   │   ├── Eye diagram color [On]               G    (eye diagram on only)
+│   │   ├── FSK histogram [Off]                  K
+│   │   └── Spectrum analyzer [Off]              f
+│   └── Event history
+│       ├── Mode [Short]                         h
+│       ├── Slot [1+2]                           \
+│       ├── Previous event                       [
+│       └── Next event                           ]
+├── Config
+│   ├── Load config...
+│   ├── Load profile...
+│   ├── ─────
+│   ├── Save config
+│   ├── Save config as...
+│   └── Save as default config
+├── Advanced
+│   ├── Realtime scheduling [Off]
+│   ├── Intra-block multithreading [Off]
+│   ├── SSE FTZ/DAZ [On]
+│   ├── Freeze symbol window [Off]
+│   ├── Simulate no-carrier event                Z
+│   ├── ─────
+│   └── Environment variable...
+├── ─────
+└── Quit DSD-neo                                 q
+```
+
+### Decoder mode
+
+**Decoder -> Mode** opens a picker of the decode presets — Auto, P25 (Phase 1 + 2), P25 Phase 1, P25 Phase 2, DMR,
+DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, Analog — and switches which
+protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
+preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
 
 Group policy reload:
 
-- In the Trunking/Import menu path, importing a group list (`-G` CSV) performs a full policy reload. On parse failure,
-  the currently loaded list remains active.
+- Importing a group list (`-G` CSV) from **Trunking -> Channels & groups** performs a full policy reload. On parse
+  failure, the currently loaded list remains active.
 
 Config profiles:
 
-- In the Config menu, `Load Profile...` lists `[profile.NAME]` sections from the active config path, or the default
+- In the Config menu, `Load profile...` lists `[profile.NAME]` sections from the active config path, or the default
   config path when no config has been loaded yet. Loading a profile applies it to the running session and disables
   autosave, matching CLI `--profile NAME` behavior.
 
 RadioReference import:
 
-- **Trunking & Control -> RadioReference... -> Import from RadioReference...** opens the import wizard: sign
-  in, find a system by ZIP code, by country/state/county, or by system ID, choose the site (or, for a
-  Conventional Networked system, the repeaters), and review the preview of what would be generated before
-  importing.
+- **Trunking -> Channels & groups -> Import from RadioReference...** opens the import wizard: sign in, find a
+  system by ZIP code, by country/state/county, or by system ID, choose the site (or, for a Conventional
+  Networked system, the repeaters), and review the preview of what would be generated before importing.
 - Inside the system panel: `Up`/`Down`/`PageUp`/`PageDown`/`Home`/`End` move, `Space` selects a site,
   `p`/`s`/`e` cycle the partial-encryption, simulcast and ESK options, `Enter` imports, `Esc` goes back.
 - An import leaves you on the site list with the selection released, so importing a second site of the
   same system — a second county of a statewide network — costs one more `Enter` and no second fetch.
   Each site is stored as its own set of files.
 - The password is asked once per program run and held in memory only. The username, and in a build without
-  a baked application key the key itself, are set from **Set Account Username...** and **Set Application
-  Key...** in the same submenu and stored in the config file under `[radioreference]`.
-- **Trunking & Control -> RadioReference... -> Imported Systems...** lists your imported systems (one row
-  per stored import, showing the system and the site it covers, with a `*` in the left gutter when the
+  a baked application key the key itself, are set from **RadioReference username...** and **RadioReference
+  application key...** in the same submenu and stored in the config file under `[radioreference]`.
+- **Trunking -> Channels & groups -> Imported RadioReference systems...** lists your imported systems (one
+  row per stored import, showing the system and the site it covers, with a `*` in the left gutter when the
   running session is decoding one of its files). Several rows can name one system, one per site.
   Selecting a row offers **Use this system** (re-apply it offline, exactly as the import did),
   **Refresh from RadioReference** (re-fetch and rebuild that site's files), and **Delete imported
   files** (after a confirmation naming the system and the site).
-- **Trunking & Control -> Lists & Filters -> Import Channel Map CSV...** and **Import Group List CSV...**
-  open a chooser of the imports directory's files of that kind, with an **Enter a path...** row that falls
-  back to typing a path.
+- **Trunking -> Channels & groups -> Import channel map CSV...** and **Import group list CSV...** open a
+  chooser of the imports directory's files of that kind, with an **Enter a path...** row that falls back to
+  typing a path.
 - Messages from these flows are shown where you are looking: inside the prompt (a refused ZIP code or
   system ID), on the row under a chooser's title, in the `Fetching` box (which names the stage in progress),
   and on the system panel's status row. A message too long for one row wraps onto the next, borrowing the
   key-hint row until it expires; long messages stay up longer than short ones.
-- The whole submenu is hidden in a build without libcurl or expat; the Imported Systems entry is hidden
-  until the imports directory resolves, and the application-key entry is hidden in a build with a baked-in
-  key. See `docs/radioreference-import.md`.
+- The RadioReference rows are hidden in a build without libcurl or expat; the Imported RadioReference
+  systems row is hidden until the imports directory resolves, and the application-key row is hidden in a
+  build with a baked-in key. See `docs/radioreference-import.md`.
 
 ## DSP Status
 
@@ -102,7 +361,9 @@ the decoder is idle/searching; the persistent `Input Level` line still shows the
 ## Hotkeys (Main Screen)
 
 Keys are case-sensitive. Some commands only make sense in specific modes (for example, trunking controls require
-trunking/scanner to be enabled, and RTL controls require RTL input).
+trunking/scanner to be enabled, and RTL controls require RTL input). Nearly every hotkey below also appears on its
+menu row, right-aligned, so the menu is the place to learn them; the shifted aliases (`X`, `O`) and the visualizer
+modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in its hotkey column.
 
 ### General
 
@@ -140,7 +401,7 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 | `3` | Cycle TDMA slot preference (slot 1 / slot 2 / auto) |
 | `+` / `-` | Digital gain up/down |
 | `*` / `/` | Analog gain up/down |
-| `v` | Cycle input volume multiplier (non-RTL inputs) |
+| `v` | Cycle the input volume multiplier (non-RTL inputs) or the RTL monitor gain (RTL input) |
 | `4` | Toggle force privacy key over identifiers |
 | `6` | Toggle force RC4 key over missing PI/LE identifiers |
 
@@ -158,7 +419,7 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 | Key | Action |
 |---|---|
 | `O` / `o` | Toggle constellation view |
-| `n` | Toggle constellation normalization |
+| `n` | Switch constellation normalization between radial (p99) and unit circle |
 | `<` / `>` | Adjust constellation gate |
 | `E` | Toggle eye diagram |
 | `U` | Toggle eye diagram Unicode/ASCII |
@@ -198,7 +459,7 @@ trunking/scanner to be enabled, and RTL controls require RTL input).
 
 ## Compact View
 
-Press `c` (or use Menu → UI Display → General → Compact View) to collapse the main screen to a scanner-style
+Press `c` (or use Menu -> Display -> Compact view) to collapse the main screen to a scanner-style
 layout. While active, the header shows a `Compact (c)` indicator and the frame renders only:
 
 - the header banner and any transient status toast;

@@ -162,7 +162,7 @@ dsd-neo --config config.ini --profile p25_trunk
 dsd-neo --config config.ini --list-profiles
 ```
 
-The terminal Config menu also supports `Load Profile...`, which lists profiles from
+The terminal Config menu also supports `Load profile...`, which lists profiles from
 the active config path and applies the selected overlay to the running session.
 
 ### Behavior
@@ -790,10 +790,11 @@ entry as a warning.
 When running with the terminal UI (`frontend = "terminal"` or `--frontend terminal`), the
 **Config** menu provides:
 
-- **Save Config (Current)**: Save current settings to the active config path (loaded via `--config` or **Load Config...**).
-- **Save Config (Default)**: Save current settings to the default config path.
-- **Save Config As...**: Save to a custom path.
-- **Load Config...**: Load a config file and apply it to the running session.
+- **Load config...**: Load a config file and apply it to the running session.
+- **Load profile...**: Load a named profile from the active config without enabling autosave.
+- **Save config**: Save current settings to the active config path (loaded via `--config` or **Load config...**).
+- **Save config as...**: Save to a custom path.
+- **Save as default config**: Save current settings to the default config path and enable autosave.
 
 ### Live Reload
 

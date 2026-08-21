@@ -64,9 +64,6 @@
 #include "dsd-neo/runtime/call_alert.h"
 #include "services.h"
 
-#ifdef USE_RADIO
-#endif
-
 #define DSD_APP_CMD_Q_CAP 128
 
 _Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct dsd_app_command*)0)->data),
@@ -1693,28 +1690,6 @@ current_cc_freq(const dsd_state* state) {
     return dsd_app_cc_freq(state);
 }
 
-/** @brief What to call a decode preset in a message the operator reads. */
-static const char*
-decode_mode_label(dsdneoUserDecodeMode mode) {
-    static const struct {
-        dsdneoUserDecodeMode mode;
-        const char* label;
-    } k_labels[] = {
-        {DSDCFG_MODE_AUTO, "everything"}, {DSDCFG_MODE_P25P1, "P25 Phase 1"}, {DSDCFG_MODE_P25P2, "P25 Phase 2"},
-        {DSDCFG_MODE_TDMA, "P25"},        {DSDCFG_MODE_DMR, "DMR"},           {DSDCFG_MODE_DMR_MONO, "DMR"},
-        {DSDCFG_MODE_NXDN48, "NXDN48"},   {DSDCFG_MODE_NXDN96, "NXDN96"},     {DSDCFG_MODE_X2TDMA, "X2-TDMA"},
-        {DSDCFG_MODE_YSF, "YSF"},         {DSDCFG_MODE_DSTAR, "D-STAR"},      {DSDCFG_MODE_EDACS_PV, "EDACS/ProVoice"},
-        {DSDCFG_MODE_DPMR, "dPMR"},       {DSDCFG_MODE_M17, "M17"},           {DSDCFG_MODE_ANALOG, "analog"},
-    };
-
-    for (size_t i = 0; i < sizeof k_labels / sizeof k_labels[0]; i++) {
-        if (k_labels[i].mode == mode) {
-            return k_labels[i].label;
-        }
-    }
-    return "that mode";
-}
-
 static void
 reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trunk_vc) {
     const double ended_m = dsd_time_now_monotonic_s();
@@ -3072,7 +3047,7 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
     }
     *out_mode = (dsdneoUserDecodeMode)requested;
     if (*out_mode != DSDCFG_MODE_AUTO && dsd_infer_decode_mode_preset(opts) == *out_mode) {
-        ui_set_toast(state, 3, "Decoding %s", decode_mode_label(*out_mode));
+        ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(*out_mode));
         return UI_CMD_APPLY_COMPLETED;
     }
     return UI_CMD_APPLY_UNHANDLED;
@@ -3177,7 +3152,7 @@ decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode m
        old protocol will never be closed by the new one. */
     dsd_frame_sync_reset_mod_state();
     reset_call_tracking(opts, state, 1);
-    ui_set_toast(state, 3, "Decoding %s", decode_mode_label(mode));
+    ui_set_toast(state, 3, "Decoding %s", dsd_decode_mode_display_name(mode));
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -3396,7 +3371,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
         ui_set_toast(state, 4, "Failed: RR import -> CSV import");
         return UI_CMD_APPLY_FAILED;
     }
-    ui_set_toast(state, 4, "Applied: RR import (%s)%s; save via Config menu", decode_mode_label(mode),
+    ui_set_toast(state, 4, "Applied: RR import (%s)%s; save via Config menu", dsd_decode_mode_display_name(mode),
                  p.trunking ? " +trunking" : (p.scanner ? " +scanner" : ""));
     return UI_CMD_APPLY_COMPLETED;
 }

@@ -8,6 +8,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -702,4 +703,36 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
     }
 
     return DSDCFG_MODE_AUTO;
+}
+
+const char*
+dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
+    static const struct {
+        dsdneoUserDecodeMode mode;
+        const char* name;
+    } names[] = {
+        {DSDCFG_MODE_UNSET, "Unset"},
+        {DSDCFG_MODE_AUTO, "Auto"},
+        {DSDCFG_MODE_P25P1, "P25 Phase 1"},
+        {DSDCFG_MODE_P25P2, "P25 Phase 2"},
+        {DSDCFG_MODE_TDMA, "P25 (Phase 1 + 2)"},
+        {DSDCFG_MODE_DMR, "DMR"},
+        {DSDCFG_MODE_DMR_MONO, "DMR (single slot)"},
+        {DSDCFG_MODE_NXDN48, "NXDN48"},
+        {DSDCFG_MODE_NXDN96, "NXDN96"},
+        {DSDCFG_MODE_X2TDMA, "X2-TDMA"},
+        {DSDCFG_MODE_YSF, "YSF"},
+        {DSDCFG_MODE_DSTAR, "D-STAR"},
+        {DSDCFG_MODE_EDACS_PV, "EDACS / ProVoice"},
+        {DSDCFG_MODE_DPMR, "dPMR"},
+        {DSDCFG_MODE_M17, "M17"},
+        {DSDCFG_MODE_ANALOG, "Analog"},
+    };
+
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
+        if (names[i].mode == mode) {
+            return names[i].name;
+        }
+    }
+    return "Unknown";
 }

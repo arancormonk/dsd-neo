@@ -29,9 +29,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "test_support.h"
 
-#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
-#endif
-
 #if DSD_PLATFORM_WIN_NATIVE
 #include <direct.h>
 #else

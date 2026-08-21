@@ -260,7 +260,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
     marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the
     **Imported Systems** browser. `csv_picker.{h,c}` offers the same directory's files of one `kind` to the
-    "Import Channel Map/Group List CSV" menu items, with an "Enter a path..." row falling back to the plain
+    "Import channel map/group list CSV..." menu items, with an "Enter a path..." row falling back to the plain
     prompt. Both headers are terminal-private, both modules are filesystem-only (no curses, no app-control),
     and both are tested headless against a scratch directory (`UI_RR_LIBRARY`, `UI_CSV_PICKER`)
   - Frontend-facing controls and DSP/RTL metrics normally flow through app-control commands and
@@ -300,10 +300,34 @@ Key public headers:
     effects (I/O, mode switches, file ops).
   - Menu action handlers live in `src/ui/terminal/menu_actions.c` and should be thin wrappers that call service helpers
     and use `ui_prompt_open_*_async` to gather input.
-- Extend a menu table:
-  - Add an `NcMenuItem` entry to the relevant submenu array in `src/ui/terminal/menu_items.c` (or the main menu
-    composition in `src/ui/terminal/menus/menu_defs.c`). Set `id`, `label`, optional `help`, and `.on_select`.
-  - For nested menus, set `.submenu` and `.submenu_len` to a child array.
+- Find the row's home. The root (`src/ui/terminal/menus/menu_defs.c`) is the receiver's signal chain — Input, Decoder,
+  Trunking, Encryption, Audio, Recording & logs — then Display, Config, Advanced. A setting goes where the signal it
+  acts on lives, not where the module that implements it lives; every concept has exactly one home.
+  - Within a submenu: a status row first (if any), the primary on/off switch, the settings people change often, then
+    one-shot actions; destructive actions last, after a separator.
+  - No single-item submenus. Nothing deeper than three submenus below the root. No submenu longer than fifteen
+    rows (what a 24-row terminal shows).
+  - A row that opens a submenu gets a trailing ` >` from the renderer, so its label never ends in `...`; `...` is
+    reserved for rows that open a prompt or picker.
+- Extend a menu table (`src/ui/terminal/menu_items.c`): add an `NcMenuItem` entry to the submenu array. The fields
+  (`src/ui/terminal/dsd-neo/ui/menu_core.h`):
+  - `id` — stable identifier; `help` — required on every action row (`h` shows it).
+  - `label` or `label_fn` — a static label, or a generator in `src/ui/terminal/menu_labels.c` that renders the live
+    state.
+  - `on_select` — the action; or `submenu` + `submenu_len` for a nested array.
+  - `is_enabled` — optional predicate; a hidden row is not drawn at all.
+  - `hotkey` — the main-screen key(s) for the same action, drawn right-aligned on the row (`"t"`, `"+ -"`, `"P/p"`).
+    The character must be the one defined in `src/ui/terminal/dsd-neo/ui/keymap.h` and dispatched in
+    `src/ui/terminal/dsd_ncurses_handler.c`; a row never invents a key.
+  - `kind` — `NC_ITEM_ACTION` (default, selectable), `NC_ITEM_STATUS` (dimmed, read-only, skipped by navigation),
+    or `NC_ITEM_SEPARATOR` (a rule; `label` ignored).
+- Label grammar: `Noun [State]` for toggles with `On`/`Off` (never `Active`/`Inactive`, never a `Toggle` prefix);
+  `Noun... [current]` for rows that open a prompt or picker; an imperative verb (`Import ...`, `Clear ...`,
+  `Restart ...`, `Save ...`, `Stop ...`) only for a one-shot action; sentence case; ASCII `...`.
+- `tests/ui/test_ui_menu_tree_audit.c` (`UI_MENU_TREE_AUDIT`) walks the whole tree and enforces the above: help text
+  on every action row, at least two action rows per submenu, the depth and length limits, no two rows sharing an
+  action, no banned words in labels, and a hotkey table cross-checked against `keymap.h`. A new row therefore needs
+  help text, a home that fits the rules, and — if it carries a hotkey — an entry in that test's hotkey table.
 - Keep UI/business logic separate:
   - Do not perform device or file operations directly in menu callbacks. Use services instead to make behavior
     testable and reusable across command entry points.

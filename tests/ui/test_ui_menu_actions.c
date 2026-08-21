@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -60,6 +61,7 @@ typedef struct {
     char title[128];
     const char* labels[32];
     int n;
+    int initial_sel;
     void* user;
     void (*on_done)(void*, int);
     int calls;
@@ -288,6 +290,25 @@ dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* paylo
     return capture_command(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
 }
 
+/* The picker opens on the mode in effect, so the readback is stubbed too. */
+static dsdneoUserDecodeMode g_infer_mode = DSDCFG_MODE_AUTO;
+
+dsdneoUserDecodeMode
+dsd_infer_decode_mode_preset(const dsd_opts* opts) {
+    (void)opts;
+    return g_infer_mode;
+}
+
+/* The decoder-mode picker names its rows through the runtime; a per-mode string
+   lets the test see which preset landed on which row. */
+const char*
+dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
+    static const char* const names[] = {"m0", "m1", "m2",  "m3",  "m4",  "m5",  "m6",  "m7",
+                                        "m8", "m9", "m10", "m11", "m12", "m13", "m14", "m15"};
+    const int i = (int)mode;
+    return (i >= 0 && i < (int)(sizeof names / sizeof names[0])) ? names[i] : "m?";
+}
+
 void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);
 
 void
@@ -345,15 +366,22 @@ ui_prompt_open_double_async(const char* title, double initial, ui_prompt_double_
 }
 
 void
-ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user) {
+ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel,
+                    void (*on_done)(void*, int), void* user) {
     DSD_SNPRINTF(g_chooser.title, sizeof g_chooser.title, "%s", title ? title : "");
     g_chooser.n = count;
+    g_chooser.initial_sel = initial_sel;
     for (int i = 0; i < count && i < (int)(sizeof g_chooser.labels / sizeof g_chooser.labels[0]); i++) {
         g_chooser.labels[i] = items[i];
     }
     g_chooser.user = user;
     g_chooser.on_done = on_done;
     g_chooser.calls++;
+}
+
+void
+ui_chooser_start(const char* title, const char* const* items, int count, void (*on_done)(void*, int), void* user) {
+    ui_chooser_start_at(title, items, count, 0, on_done, user);
 }
 
 const dsdneoRuntimeConfig*
@@ -527,13 +555,6 @@ cb_slot_pref(void* v, int ok, int p) {
 }
 
 void
-cb_slots_on(void* v, int ok, int m) {
-    (void)v;
-    (void)ok;
-    (void)m;
-}
-
-void
 cb_keys_dec(void* v, const char* p) {
     (void)v;
     (void)p;
@@ -682,12 +703,6 @@ cb_tcp_rcvtimeo(void* v, int ok, int ms) {
 
 void
 cb_io_save_symbol_capture(void* v, const char* path) {
-    (void)v;
-    (void)path;
-}
-
-void
-cb_io_read_symbol_bin(void* v, const char* path) {
     (void)v;
     (void)path;
 }
@@ -863,10 +878,6 @@ test_simple_commands_and_prompts(void) {
     act_slot_pref(&ctx);
     rc |= expect_int("slot pref initial", g_prompt.initial_int, 2);
 
-    reset_capture();
-    act_slots_on(&ctx);
-    rc |= expect_int("slot mask initial", g_prompt.initial_int, 1);
-
     return rc;
 }
 
@@ -990,14 +1001,6 @@ test_io_actions_and_choosers(void) {
     io_rigctl_config(&ctx);
     rc |= expect_str("rig prompt prefill", g_prompt.prefill, "rig.local");
     release_prompt_user();
-
-    reset_capture();
-    io_input_vol_up(&ctx);
-    rc |= expect_int("input volume up capped", cmd_i32(), 16);
-
-    reset_capture();
-    io_input_vol_dn(&ctx);
-    rc |= expect_int("input volume down", cmd_i32(), 15);
 
     reset_capture();
     switch_out_pulse(&ctx);
@@ -1417,10 +1420,6 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_str("save symbol prompt", g_prompt.title, "Enter Symbol Capture Filename");
 
     reset_capture();
-    io_read_symbol_bin(&ctx);
-    rc |= expect_str("read symbol prompt", g_prompt.title, "Enter Symbol Capture Filename");
-
-    reset_capture();
     io_toggle_mute_enc(NULL);
     rc |= expect_int("all mutes toggle command", g_cmd.id, DSD_APP_CMD_ALL_MUTES_TOGGLE);
 
@@ -1481,6 +1480,107 @@ test_additional_prompt_and_toggle_actions(void) {
     reset_capture();
     switch_out_toggle_mute(NULL);
     rc |= expect_int("output mute toggle command", g_cmd.id, DSD_APP_CMD_TOGGLE_MUTE);
+
+    return rc;
+}
+
+/*
+ * Rows the signal-chain menu added for commands that were hotkey-only: each
+ * posts exactly its command with no payload, the slot lockouts carry the slot,
+ * and the decoder-mode picker posts the preset of the row chosen.
+ */
+static int
+test_signal_chain_rows(void) {
+    int rc = 0;
+
+    static const struct {
+        void (*fn)(void*);
+        int cmd;
+        const char* tag;
+    } simple[] = {
+        {act_mod_cycle, DSD_APP_CMD_MOD_TOGGLE, "modulation cycle"},
+        {act_mod_p2_toggle, DSD_APP_CMD_MOD_P2_TOGGLE, "p25p2 modulation lock"},
+        {act_lpf_toggle, DSD_APP_CMD_LPF_TOGGLE, "lpf"},
+        {act_hpf_toggle, DSD_APP_CMD_HPF_TOGGLE, "hpf"},
+        {act_pbf_toggle, DSD_APP_CMD_PBF_TOGGLE, "pbf"},
+        {act_hpf_d_toggle, DSD_APP_CMD_HPF_D_TOGGLE, "digital hpf"},
+        {act_slot1_toggle, DSD_APP_CMD_SLOT1_TOGGLE, "slot 1"},
+        {act_slot2_toggle, DSD_APP_CMD_SLOT2_TOGGLE, "slot 2"},
+        {act_dmr_reset, DSD_APP_CMD_DMR_RESET, "dmr reset"},
+        {act_provoice_esk, DSD_APP_CMD_PROVOICE_ESK_TOGGLE, "provoice esk"},
+        {act_provoice_mode, DSD_APP_CMD_PROVOICE_MODE_TOGGLE, "provoice mode"},
+        {act_return_cc, DSD_APP_CMD_RETURN_CC, "return to cc"},
+        {act_channel_cycle, DSD_APP_CMD_CHANNEL_CYCLE, "channel cycle"},
+        {act_force_rc4, DSD_APP_CMD_FORCE_RC4_TOGGLE, "force rc4"},
+        {act_history_cycle, DSD_APP_CMD_HISTORY_CYCLE, "history cycle"},
+        {act_eh_toggle_slot, DSD_APP_CMD_EH_TOGGLE_SLOT, "history slot"},
+        {act_eh_prev, DSD_APP_CMD_EH_PREV, "history prev"},
+        {act_eh_next, DSD_APP_CMD_EH_NEXT, "history next"},
+        {act_sim_nocar, DSD_APP_CMD_SIM_NOCAR, "simulate no carrier"},
+        {act_vis_const, DSD_APP_CMD_CONST_TOGGLE, "constellation"},
+        {act_vis_const_norm, DSD_APP_CMD_CONST_NORM_TOGGLE, "constellation norm"},
+        {act_vis_eye, DSD_APP_CMD_EYE_TOGGLE, "eye"},
+        {act_vis_eye_unicode, DSD_APP_CMD_EYE_UNICODE_TOGGLE, "eye unicode"},
+        {act_vis_eye_color, DSD_APP_CMD_EYE_COLOR_TOGGLE, "eye color"},
+        {act_vis_fsk, DSD_APP_CMD_FSK_HIST_TOGGLE, "fsk histogram"},
+        {act_vis_spectrum, DSD_APP_CMD_SPECTRUM_TOGGLE, "spectrum"},
+    };
+
+    for (size_t i = 0; i < sizeof simple / sizeof simple[0]; i++) {
+        reset_capture();
+        simple[i].fn(NULL);
+        rc |= expect_int(simple[i].tag, g_cmd.id, simple[i].cmd);
+        rc |= expect_int(simple[i].tag, (int)g_cmd.n, 0);
+        rc |= expect_int(simple[i].tag, g_cmd.calls, 1);
+    }
+
+    reset_capture();
+    act_lockout_slot1(NULL);
+    rc |= expect_int("lockout slot 1 command", g_cmd.id, DSD_APP_CMD_LOCKOUT_SLOT);
+    rc |= expect_int("lockout slot 1 payload size", (int)g_cmd.n, (int)sizeof(uint8_t));
+    rc |= expect_int("lockout slot 1 payload", g_cmd.data[0], 0);
+    reset_capture();
+    act_lockout_slot2(NULL);
+    rc |= expect_int("lockout slot 2 command", g_cmd.id, DSD_APP_CMD_LOCKOUT_SLOT);
+    rc |= expect_int("lockout slot 2 payload", g_cmd.data[0], 1);
+
+    reset_capture();
+    act_decode_mode(NULL);
+    rc |= expect_str("decode mode chooser title", g_chooser.title, "Decoder mode");
+    rc |= expect_int("decode mode chooser count", g_chooser.n, 15);
+    rc |= expect_str("decode mode first row is auto", g_chooser.labels[0], "m1");
+    rc |= expect_str("decode mode second row is p25 both phases", g_chooser.labels[1], "m13");
+    rc |= expect_str("decode mode fifth row is dmr", g_chooser.labels[4], "m4");
+    rc |= expect_str("decode mode last row is analog", g_chooser.labels[14], "m14");
+    rc |= expect_int("decode mode opens without posting", g_cmd.calls, 0);
+    g_chooser.on_done(g_chooser.user, 4);
+    rc |= expect_int("decode mode set command", g_cmd.id, DSD_APP_CMD_DECODE_MODE_SET);
+    rc |= expect_int("decode mode set payload", cmd_i32(), (int)DSDCFG_MODE_DMR);
+
+    reset_capture();
+    act_decode_mode(NULL);
+    g_chooser.on_done(g_chooser.user, -1);
+    rc |= expect_int("decode mode cancel posts nothing", g_cmd.calls, 0);
+    g_chooser.on_done(g_chooser.user, 15);
+    rc |= expect_int("decode mode out-of-range posts nothing", g_cmd.calls, 0);
+
+    /* The picker opens on the mode in effect. Row 0 is Auto, and Auto is the one
+       choice the command layer never treats as a no-op, so opening there turned a
+       second Enter into a full decoder reset. */
+    static dsd_opts mode_opts;
+    static dsd_state mode_state;
+    DSD_MEMSET(&mode_opts, 0, sizeof mode_opts);
+    DSD_MEMSET(&mode_state, 0, sizeof mode_state);
+    static UiCtx mode_ctx;
+    mode_ctx = make_ctx(&mode_opts, &mode_state);
+    reset_capture();
+    g_infer_mode = DSDCFG_MODE_P25P2;
+    act_decode_mode(&mode_ctx);
+    rc |= expect_int("decode mode opens on the live preset", g_chooser.initial_sel, 3);
+    reset_capture();
+    g_infer_mode = DSDCFG_MODE_AUTO;
+    act_decode_mode(&mode_ctx);
+    rc |= expect_int("decode mode opens on auto when auto is live", g_chooser.initial_sel, 0);
 
     return rc;
 }
@@ -1559,6 +1659,7 @@ main(void) {
     rc |= test_io_actions_and_choosers();
     rc |= test_key_lrrp_and_display_actions();
     rc |= test_additional_prompt_and_toggle_actions();
+    rc |= test_signal_chain_rows();
     rc |= test_config_and_pulse_failure_variants();
     if (rc == 0) {
         printf("UI_MENU_ACTIONS: OK\n");

@@ -57,7 +57,6 @@ void act_rr_account_key(void* v);
 void act_rev_mute(void* v);
 void act_dmr_le(void* v);
 void act_slot_pref(void* v);
-void act_slots_on(void* v);
 
 // ---- Key import actions ----
 void act_keys_dec(void* v);
@@ -110,7 +109,6 @@ void io_select_call_alert_events(void* vctx);
 void io_toggle_cc_candidates(void* vctx);
 void io_enable_per_call_wav(void* vctx);
 void io_save_symbol_capture(void* vctx);
-void io_read_symbol_bin(void* vctx);
 void io_replay_last_symbol_bin(void* vctx);
 void io_stop_symbol_playback(void* vctx);
 void io_stop_symbol_saving(void* vctx);
@@ -123,8 +121,6 @@ void io_set_gain_ana(void* vctx);
 void io_toggle_monitor(void* vctx);
 void io_toggle_cosine(void* vctx);
 void io_set_input_volume(void* vctx);
-void io_input_vol_up(void* vctx);
-void io_input_vol_dn(void* vctx);
 void io_rigctl_config(void* vctx);
 
 // ---- Inversion actions ----
@@ -171,7 +167,6 @@ void act_toggle_ui_p25_callsign(void* v);
 
 // ---- RTL-SDR actions (USE_RADIO only) ----
 #ifdef USE_RADIO
-void rtl_enable(void* v);
 void rtl_restart(void* v);
 void rtl_set_dev(void* v);
 void rtl_set_freq(void* v);
@@ -192,11 +187,42 @@ void switch_to_rtl(void* vctx);
 void act_toggle_cq(void* v);
 void act_toggle_iqbal(void* v);
 void act_toggle_iq_dc(void* v);
-void act_iq_dc_k_up(void* v);
-void act_iq_dc_k_dn(void* v);
-void act_ted_gain_up(void* v);
-void act_ted_gain_dn(void* v);
 void act_toggle_dsp_panel(void* v);
+#endif
+
+// ---- Rows added with the signal-chain menu (hotkey-only commands) ----
+void act_decode_mode(void* v);
+void act_mod_cycle(void* v);
+void act_mod_p2_toggle(void* v);
+void act_lpf_toggle(void* v);
+void act_hpf_toggle(void* v);
+void act_pbf_toggle(void* v);
+void act_hpf_d_toggle(void* v);
+void act_slot1_toggle(void* v);
+void act_slot2_toggle(void* v);
+void act_dmr_reset(void* v);
+void act_provoice_esk(void* v);
+void act_provoice_mode(void* v);
+void act_return_cc(void* v);
+void act_channel_cycle(void* v);
+void act_lockout_slot1(void* v);
+void act_lockout_slot2(void* v);
+void act_force_rc4(void* v);
+void act_history_cycle(void* v);
+void act_eh_toggle_slot(void* v);
+void act_eh_prev(void* v);
+void act_eh_next(void* v);
+void act_sim_nocar(void* v);
+void act_vis_const(void* v);
+void act_vis_const_norm(void* v);
+void act_vis_eye(void* v);
+void act_vis_eye_unicode(void* v);
+void act_vis_eye_color(void* v);
+void act_vis_fsk(void* v);
+void act_vis_spectrum(void* v);
+#ifdef USE_RADIO
+void act_iq_dc_k_prompt(void* v);
+void act_ted_gain_prompt(void* v);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_ */

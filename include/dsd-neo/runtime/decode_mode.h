@@ -127,6 +127,20 @@ int dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int le
  */
 dsdneoUserDecodeMode dsd_infer_decode_mode_preset(const dsd_opts* opts);
 
+/**
+ * @brief Human-readable name of a decode preset, for anything the operator reads.
+ *
+ * One table for every frontend that names a preset -- the picker, the label that
+ * reads the current mode back, and the toast that confirms an applied mode -- so
+ * they cannot drift apart. A second table is how "DMR" and "DMR (single slot)"
+ * came to confirm themselves with the same word.
+ *
+ * @param mode Decode mode preset.
+ * @return A static string such as "P25 Phase 1"; "Unset" for
+ *         DSDCFG_MODE_UNSET; "Unknown" for any value outside the enum.
+ */
+const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
+
 #ifdef __cplusplus
 }
 #endif

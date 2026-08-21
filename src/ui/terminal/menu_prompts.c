@@ -942,8 +942,10 @@ ui_help_max_scroll(void) {
 
 static int
 ui_help_is_close_key(int ch) {
-    return (ch == DSD_KEY_ESC || ch == 'q' || ch == 'Q' || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER
-            || ch == '\r' || ch == KEY_LEFT);
+    /* Esc, Left, Enter and h close help; 'q' is deliberately not a close key
+       anywhere inside the menu, because it quits the program from the main
+       screen and the habit carried over. */
+    return (ch == DSD_KEY_ESC || ch == 'h' || ch == 'H' || ch == 10 || ch == KEY_ENTER || ch == '\r' || ch == KEY_LEFT);
 }
 
 static int
@@ -1096,9 +1098,9 @@ ui_help_draw_footer(WINDOW* hw, int h, int body_w, int max_scroll) {
         return;
     }
     if (max_scroll > 0) {
-        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/q: close", body_w);
+        mvwaddnstr(hw, h - 2, 2, "Up/Down/PgUp/PgDn: scroll  Esc/h: close", body_w);
     } else {
-        mvwaddnstr(hw, h - 2, 2, "Esc/q/Enter: close", body_w);
+        mvwaddnstr(hw, h - 2, 2, "Esc/h/Enter: close", body_w);
     }
 }
 
@@ -1165,7 +1167,8 @@ ui_chooser_finish(int sel) {
 // Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
+ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel, ui_chooser_done_fn on_done,
+                    void* user_ctx) {
     if (!items || count <= 0) {
         ui_chooser_close();
         if (on_done) {
@@ -1177,7 +1180,7 @@ ui_chooser_start(const char* title, const char* const* items, int count, ui_choo
     g_chooser.title = title;
     g_chooser.items = items;
     g_chooser.count = count;
-    g_chooser.sel = 0;
+    g_chooser.sel = (initial_sel > 0 && initial_sel < count) ? initial_sel : 0;
     g_chooser.top = 0;
     g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
@@ -1186,6 +1189,11 @@ ui_chooser_start(const char* title, const char* const* items, int count, ui_choo
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
+}
+
+void
+ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
+    ui_chooser_start_at(title, items, count, 0, on_done, user_ctx);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed
@@ -1270,7 +1278,8 @@ ui_chooser_handle_navigation_key(int ch) {
 
 static int
 ui_chooser_is_cancel_key(int ch) {
-    return (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC || ch == KEY_LEFT);
+    /* Esc and Left only -- see ui_help_is_close_key() for why 'q' is not. */
+    return (ch == DSD_KEY_ESC || ch == KEY_LEFT);
 }
 
 static int
@@ -1465,7 +1474,7 @@ ui_chooser_render(void) {
         return;
     }
     const char* title = g_chooser.title ? g_chooser.title : "Select";
-    const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/q/Left";
+    const char* footer = "Arrows/PgUp/PgDn  Right/Enter: select  Esc/Left: back";
     int max_item = ui_chooser_max_item_width();
     int h = 0, w = 0, wy = 0, wx = 0;
     if (!ui_chooser_compute_window_rect(title, footer, max_item, &h, &w, &wy, &wx)) {

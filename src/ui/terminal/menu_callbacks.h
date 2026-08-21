@@ -34,7 +34,6 @@ void cb_setmod_bw(void* v, int ok, int bw);
 void cb_tg_hold(void* v, int ok, int tg);
 void cb_hangtime(void* v, int ok, double s);
 void cb_slot_pref(void* v, int ok, int p);
-void cb_slots_on(void* v, int ok, int m);
 
 // ---- Keystream callbacks ----
 void cb_tyt_ap(void* v, const char* s);
@@ -56,7 +55,6 @@ void cb_p2_step(void* u, const char* text);
 
 // ---- IO callbacks ----
 void cb_io_save_symbol_capture(void* v, const char* path);
-void cb_io_read_symbol_bin(void* v, const char* path);
 void cb_udp_out_host(void* u, const char* host);
 void cb_udp_out_port(void* u, int ok, int port);
 void cb_tcp_host(void* u, const char* host);

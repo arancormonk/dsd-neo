@@ -543,9 +543,61 @@ test_analog_monitor_is_not_a_one_way_door(void) {
     return 0;
 }
 
+/*
+ * The menu's mode picker and the label that reads the mode back both come from
+ * this table; every preset needs a name and nothing outside the enum may crash.
+ */
+static int
+test_display_names(void) {
+    static const struct {
+        dsdneoUserDecodeMode mode;
+        const char* name;
+    } cases[] = {
+        {DSDCFG_MODE_UNSET, "Unset"},
+        {DSDCFG_MODE_AUTO, "Auto"},
+        {DSDCFG_MODE_P25P1, "P25 Phase 1"},
+        {DSDCFG_MODE_P25P2, "P25 Phase 2"},
+        {DSDCFG_MODE_TDMA, "P25 (Phase 1 + 2)"},
+        {DSDCFG_MODE_DMR, "DMR"},
+        {DSDCFG_MODE_DMR_MONO, "DMR (single slot)"},
+        {DSDCFG_MODE_NXDN48, "NXDN48"},
+        {DSDCFG_MODE_NXDN96, "NXDN96"},
+        {DSDCFG_MODE_X2TDMA, "X2-TDMA"},
+        {DSDCFG_MODE_YSF, "YSF"},
+        {DSDCFG_MODE_DSTAR, "D-STAR"},
+        {DSDCFG_MODE_EDACS_PV, "EDACS / ProVoice"},
+        {DSDCFG_MODE_DPMR, "dPMR"},
+        {DSDCFG_MODE_M17, "M17"},
+        {DSDCFG_MODE_ANALOG, "Analog"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* got = dsd_decode_mode_display_name(cases[i].mode);
+        if (got == NULL || strcmp(got, cases[i].name) != 0) {
+            DSD_FPRINTF(stderr, "display name for mode %d: got %s want %s\n", (int)cases[i].mode, got ? got : "(null)",
+                        cases[i].name);
+            return 1;
+        }
+    }
+    /* Every enumerator between UNSET and DMR_MONO is covered by the table above. */
+    for (int m = (int)DSDCFG_MODE_UNSET; m <= (int)DSDCFG_MODE_DMR_MONO; m++) {
+        if (strcmp(dsd_decode_mode_display_name((dsdneoUserDecodeMode)m), "Unknown") == 0) {
+            DSD_FPRINTF(stderr, "mode %d has no display name\n", m);
+            return 1;
+        }
+    }
+    if (strcmp(dsd_decode_mode_display_name((dsdneoUserDecodeMode)99), "Unknown") != 0
+        || strcmp(dsd_decode_mode_display_name((dsdneoUserDecodeMode)-1), "Unknown") != 0) {
+        DSD_FPRINTF(stderr, "out-of-range modes should name as Unknown\n");
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_display_names();
     rc |= test_auto_profile_differences();
     rc |= test_p25p2_prefers_qpsk();
     rc |= test_dmr_prefers_gfsk();

@@ -6,6 +6,11 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+/*
+ * The root of the overlay menu is the receiver's signal chain, then
+ * housekeeping, a separator, and Quit. This pins that contract.
+ */
+
 #include <dsd-neo/ui/menu_defs.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -14,18 +19,20 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/ui/menu_core.h"
 
-const NcMenuItem IO_MENU_ITEMS[] = {{.id = "io.child", .label = "IO Child"}};
-const size_t IO_MENU_ITEMS_LEN = sizeof IO_MENU_ITEMS / sizeof IO_MENU_ITEMS[0];
-const NcMenuItem LOGGING_MENU_ITEMS[] = {{.id = "logging.child", .label = "Logging Child"}};
-const size_t LOGGING_MENU_ITEMS_LEN = sizeof LOGGING_MENU_ITEMS / sizeof LOGGING_MENU_ITEMS[0];
+const NcMenuItem INPUT_MENU_ITEMS[] = {{.id = "input.child", .label = "Input Child"}};
+const size_t INPUT_MENU_ITEMS_LEN = sizeof INPUT_MENU_ITEMS / sizeof INPUT_MENU_ITEMS[0];
+const NcMenuItem DECODER_MENU_ITEMS[] = {{.id = "decoder.child", .label = "Decoder Child"}};
+const size_t DECODER_MENU_ITEMS_LEN = sizeof DECODER_MENU_ITEMS / sizeof DECODER_MENU_ITEMS[0];
 const NcMenuItem TRUNK_MENU_ITEMS[] = {{.id = "trunk.child", .label = "Trunk Child"}};
 const size_t TRUNK_MENU_ITEMS_LEN = sizeof TRUNK_MENU_ITEMS / sizeof TRUNK_MENU_ITEMS[0];
-const NcMenuItem KEYS_MENU_ITEMS[] = {{.id = "keys.child", .label = "Keys Child"}};
-const size_t KEYS_MENU_ITEMS_LEN = sizeof KEYS_MENU_ITEMS / sizeof KEYS_MENU_ITEMS[0];
-const NcMenuItem UI_DISPLAY_MENU_ITEMS[] = {{.id = "ui.child", .label = "UI Child"}};
-const size_t UI_DISPLAY_MENU_ITEMS_LEN = sizeof UI_DISPLAY_MENU_ITEMS / sizeof UI_DISPLAY_MENU_ITEMS[0];
-const NcMenuItem LRRP_MENU_ITEMS[] = {{.id = "lrrp.child", .label = "LRRP Child"}};
-const size_t LRRP_MENU_ITEMS_LEN = sizeof LRRP_MENU_ITEMS / sizeof LRRP_MENU_ITEMS[0];
+const NcMenuItem ENC_MENU_ITEMS[] = {{.id = "enc.child", .label = "Encryption Child"}};
+const size_t ENC_MENU_ITEMS_LEN = sizeof ENC_MENU_ITEMS / sizeof ENC_MENU_ITEMS[0];
+const NcMenuItem AUDIO_MENU_ITEMS[] = {{.id = "audio.child", .label = "Audio Child"}};
+const size_t AUDIO_MENU_ITEMS_LEN = sizeof AUDIO_MENU_ITEMS / sizeof AUDIO_MENU_ITEMS[0];
+const NcMenuItem REC_MENU_ITEMS[] = {{.id = "rec.child", .label = "Recording Child"}};
+const size_t REC_MENU_ITEMS_LEN = sizeof REC_MENU_ITEMS / sizeof REC_MENU_ITEMS[0];
+const NcMenuItem DISPLAY_MENU_ITEMS[] = {{.id = "display.child", .label = "Display Child"}};
+const size_t DISPLAY_MENU_ITEMS_LEN = sizeof DISPLAY_MENU_ITEMS / sizeof DISPLAY_MENU_ITEMS[0];
 const NcMenuItem CONFIG_MENU_ITEMS[] = {{.id = "config.child", .label = "Config Child"}};
 const size_t CONFIG_MENU_ITEMS_LEN = sizeof CONFIG_MENU_ITEMS / sizeof CONFIG_MENU_ITEMS[0];
 const NcMenuItem ADV_MENU_ITEMS[] = {{.id = "adv.child", .label = "Advanced Child"}};
@@ -82,6 +89,8 @@ expect_menu_item(const NcMenuItem* item, const char* id, const char* label, cons
     rc |= expect_str_eq("menu id", item->id, id);
     rc |= expect_str_eq("menu label", item->label, label);
     rc |= expect_true("menu has help", item->help != NULL && item->help[0] != '\0');
+    rc |= expect_true("menu is an action row", item->kind == NC_ITEM_ACTION);
+    rc |= expect_true("menu has no predicate", item->is_enabled == NULL);
     rc |= expect_true("submenu pointer", item->submenu == submenu);
     rc |= expect_size_eq("submenu length", item->submenu_len, submenu_len);
     return rc;
@@ -100,32 +109,49 @@ test_main_menu_contract(void) {
     ui_menu_get_main_items(&second_items, &second_n, NULL);
 
     rc |= expect_true("main menu pointer set", items != NULL);
-    rc |= expect_size_eq("main menu count", n, 10U);
+    rc |= expect_size_eq("main menu count", n, 11U);
     rc |= expect_true("main menu pointer stable", second_items == items);
     rc |= expect_size_eq("main menu count stable", second_n, n);
-    if (items == NULL || n < 10U) {
+    if (items == NULL || n < 11U) {
         return rc != 0 ? rc : 1;
     }
 
-    rc |= expect_menu_item(&items[0], "main.io", "Devices & IO", IO_MENU_ITEMS, IO_MENU_ITEMS_LEN);
-    rc |= expect_menu_item(&items[1], "main.logging", "Logging & Capture", LOGGING_MENU_ITEMS, LOGGING_MENU_ITEMS_LEN);
-    rc |= expect_menu_item(&items[2], "main.trunk", "Trunking & Control", TRUNK_MENU_ITEMS, TRUNK_MENU_ITEMS_LEN);
-    rc |= expect_menu_item(&items[3], "main.keys", "Keys & Security", KEYS_MENU_ITEMS, KEYS_MENU_ITEMS_LEN);
-    rc |= expect_menu_item(&items[5], "main.ui", "UI Display", UI_DISPLAY_MENU_ITEMS, UI_DISPLAY_MENU_ITEMS_LEN);
-    rc |= expect_menu_item(&items[6], "lrrp", "LRRP", LRRP_MENU_ITEMS, LRRP_MENU_ITEMS_LEN);
+    /* Signal chain first... */
+    rc |= expect_menu_item(&items[0], "main.input", "Input", INPUT_MENU_ITEMS, INPUT_MENU_ITEMS_LEN);
+    rc |= expect_menu_item(&items[1], "main.decoder", "Decoder", DECODER_MENU_ITEMS, DECODER_MENU_ITEMS_LEN);
+    rc |= expect_menu_item(&items[2], "main.trunking", "Trunking", TRUNK_MENU_ITEMS, TRUNK_MENU_ITEMS_LEN);
+    rc |= expect_menu_item(&items[3], "main.encryption", "Encryption", ENC_MENU_ITEMS, ENC_MENU_ITEMS_LEN);
+    rc |= expect_menu_item(&items[4], "main.audio", "Audio", AUDIO_MENU_ITEMS, AUDIO_MENU_ITEMS_LEN);
+    rc |= expect_menu_item(&items[5], "main.recording", "Recording & logs", REC_MENU_ITEMS, REC_MENU_ITEMS_LEN);
+    /* ...then what you look at, then housekeeping. */
+    rc |= expect_menu_item(&items[6], "main.display", "Display", DISPLAY_MENU_ITEMS, DISPLAY_MENU_ITEMS_LEN);
     rc |= expect_menu_item(&items[7], "main.config", "Config", CONFIG_MENU_ITEMS, CONFIG_MENU_ITEMS_LEN);
-    rc |= expect_menu_item(&items[8], "main.adv", "Advanced & Env", ADV_MENU_ITEMS, ADV_MENU_ITEMS_LEN);
+    rc |= expect_menu_item(&items[8], "main.advanced", "Advanced", ADV_MENU_ITEMS, ADV_MENU_ITEMS_LEN);
 
-    rc |= expect_str_eq("DSP menu id", items[4].id, "main.dsp");
-    rc |= expect_true("DSP predicate wired", items[4].is_enabled == io_rtl_active);
-    rc |= expect_true("DSP submenu disabled without USE_RADIO", items[4].submenu == NULL);
-    rc |= expect_size_eq("DSP submenu length without USE_RADIO", items[4].submenu_len, 0U);
-
-    rc |= expect_str_eq("exit id", items[9].id, "exit");
-    rc |= expect_true("exit has no submenu", items[9].submenu == NULL && items[9].submenu_len == 0U);
-    rc |= expect_true("exit action wired", items[9].on_select == act_exit);
-    items[9].on_select(NULL);
+    /* Quit sits alone below a rule, and opts out of the jump keys so that End +
+       Enter is never an accident -- the rule is what the eye sees, `no_jump` is
+       what stops the highlight. */
+    rc |= expect_true("separator before quit", items[9].kind == NC_ITEM_SEPARATOR);
+    rc |= expect_true("quit skipped by the jump keys", items[10].no_jump);
+    for (size_t i = 0; i < 10U; i++) {
+        rc |= expect_true("only quit opts out of the jump keys", !items[i].no_jump);
+    }
+    rc |= expect_true("separator has no action", items[9].on_select == NULL && items[9].submenu == NULL);
+    rc |= expect_str_eq("exit id", items[10].id, "exit");
+    rc |= expect_str_eq("exit label", items[10].label, "Quit DSD-neo");
+    rc |= expect_str_eq("exit hotkey", items[10].hotkey, "q");
+    rc |= expect_true("exit has no submenu", items[10].submenu == NULL && items[10].submenu_len == 0U);
+    rc |= expect_true("exit action wired", items[10].on_select == act_exit);
+    items[10].on_select(NULL);
     rc |= expect_size_eq("exit action invoked", (size_t)g_exit_calls, 1U);
+
+    /* The root is the same in every build; nothing on it is conditional. */
+    for (size_t i = 0; i < n; i++) {
+        if (items[i].kind == NC_ITEM_SEPARATOR) {
+            continue;
+        }
+        rc |= expect_true("root rows carry no predicate", items[i].is_enabled == NULL);
+    }
 
     return rc;
 }

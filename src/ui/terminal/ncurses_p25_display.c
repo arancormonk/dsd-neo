@@ -30,9 +30,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef USE_RTLSDR
-#endif
-
 static int
 ui_is_p25_synctype(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype) || DSD_SYNC_IS_P25P2(synctype);

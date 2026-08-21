@@ -47,10 +47,6 @@
 #define DSD_KEY_COMPACT          'c'
 
 // UI section visibility
-#define DSD_KEY_TOGGLE_P25M      'J' // show/hide P25 Metrics
-#define DSD_KEY_TOGGLE_CHANS     'I' // show/hide Channels
-// P25 affiliations (RID list)
-#define DSD_KEY_TOGGLE_P25A      'A' // show/hide P25 Affiliations
 // P25 Group Affiliation (RID↔TG)
 #define DSD_KEY_TOGGLE_P25GA     'T' // show/hide P25 Group Affiliation
 
@@ -65,9 +61,16 @@
 #define DSD_KEY_RETURN_CC        'C'
 #define DSD_KEY_CHANNEL_CYCLE    'L'
 #define DSD_KEY_TRUNK_WLIST      'w'
+#define DSD_KEY_TRUNK_GROUP      'g'
 #define DSD_KEY_TRUNK_PRIV       'u'
 #define DSD_KEY_TRUNK_DATA       'd'
 #define DSD_KEY_TRUNK_ENC        'e'
+#define DSD_KEY_LOCKOUT_SLOT1    '!'
+#define DSD_KEY_LOCKOUT_SLOT2    '@'
+
+// ProVoice debug toggles (ProVoice modes only)
+#define DSD_KEY_PROVOICE_ESK     'A'
+#define DSD_KEY_PROVOICE_MODE    'S'
 
 // TDMA/DMR slot toggles and prefs
 #define DSD_KEY_SLOT1_TOGGLE     '1'
