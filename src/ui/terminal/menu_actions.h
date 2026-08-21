@@ -199,4 +199,39 @@ void act_ted_gain_dn(void* v);
 void act_toggle_dsp_panel(void* v);
 #endif
 
+// ---- Rows added with the signal-chain menu (hotkey-only commands) ----
+void act_decode_mode(void* v);
+void act_mod_cycle(void* v);
+void act_mod_p2_toggle(void* v);
+void act_lpf_toggle(void* v);
+void act_hpf_toggle(void* v);
+void act_pbf_toggle(void* v);
+void act_hpf_d_toggle(void* v);
+void act_slot1_toggle(void* v);
+void act_slot2_toggle(void* v);
+void act_dmr_reset(void* v);
+void act_provoice_esk(void* v);
+void act_provoice_mode(void* v);
+void act_return_cc(void* v);
+void act_channel_cycle(void* v);
+void act_lockout_slot1(void* v);
+void act_lockout_slot2(void* v);
+void act_force_rc4(void* v);
+void act_history_cycle(void* v);
+void act_eh_toggle_slot(void* v);
+void act_eh_prev(void* v);
+void act_eh_next(void* v);
+void act_sim_nocar(void* v);
+void act_vis_const(void* v);
+void act_vis_const_norm(void* v);
+void act_vis_eye(void* v);
+void act_vis_eye_unicode(void* v);
+void act_vis_eye_color(void* v);
+void act_vis_fsk(void* v);
+void act_vis_spectrum(void* v);
+#ifdef USE_RADIO
+void act_iq_dc_k_prompt(void* v);
+void act_ted_gain_prompt(void* v);
+#endif
+
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_ACTIONS_H_ */

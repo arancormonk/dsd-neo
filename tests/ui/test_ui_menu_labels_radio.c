@@ -8,6 +8,7 @@
  */
 
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -15,6 +16,7 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdbool.h>
@@ -26,7 +28,6 @@
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "menu_env.h"
 #include "menu_internal.h"
-#include "menu_items.h"
 #include "menu_labels.h"
 
 static dsdneoRuntimeConfig g_cfg;
@@ -44,31 +45,6 @@ static int g_rtl_timing_bias;
 static int g_rtl_auto_ppm;
 static int g_rtl_tuner_autogain;
 static int g_rtl_output_kind;
-static int g_ted_child_visible;
-
-static bool
-ted_child_visible(const void* ctx) {
-    (void)ctx;
-    return g_ted_child_visible != 0;
-}
-
-const NcMenuItem DSP_TED_ITEMS[] = {
-    {.id = "ted-visible", .label = "TED Visible", .is_enabled = ted_child_visible},
-};
-const size_t DSP_TED_ITEMS_LEN = sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0];
-
-int
-ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
-    if (!items) {
-        return 0;
-    }
-    for (size_t i = 0; i < n; i++) {
-        if (!items[i].is_enabled || items[i].is_enabled(ctx)) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 const dsdneoRuntimeConfig*
 dsd_neo_get_config(void) {
@@ -119,6 +95,23 @@ dsd_stat_path(const char* path, dsd_stat_t* st) {
         DSD_MEMSET(st, 0, sizeof(*st));
     }
     return -1;
+}
+
+dsdneoUserDecodeMode
+dsd_infer_decode_mode_preset(const dsd_opts* opts) {
+    (void)opts;
+    return DSDCFG_MODE_AUTO;
+}
+
+const char*
+dsd_decode_mode_display_name(dsdneoUserDecodeMode mode) {
+    (void)mode;
+    return "Auto";
+}
+
+int
+dsd_app_frontend_history_get_mode(void) {
+    return 1;
 }
 
 int
@@ -224,7 +217,6 @@ reset_fixture(dsd_opts* opts, dsd_state* state, UiCtx* ctx) {
     g_rtl_auto_ppm = 0;
     g_rtl_tuner_autogain = 0;
     g_rtl_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
-    g_ted_child_visible = 0;
     ctx->opts = opts;
     ctx->state = state;
 }
@@ -254,10 +246,6 @@ test_radio_modulation_predicates(void) {
     rc |= expect_int("ted hidden for fsk discriminator", is_ted_allowed(&ctx), 0);
     g_rtl_output_kind = RTL_STREAM_OUTPUT_SYMBOL_CQPSK;
     rc |= expect_int("ted allowed for qpsk symbol output", is_ted_allowed(&ctx), 1);
-    g_ted_child_visible = 0;
-    rc |= expect_int("ted submenu hidden", dsp_ted_any(&ctx), 0);
-    g_ted_child_visible = 1;
-    rc |= expect_int("ted submenu visible", dsp_ted_any(&ctx), 1);
 
     return rc;
 }
@@ -271,27 +259,53 @@ test_radio_dsp_labels(void) {
     UiCtx ctx;
     reset_fixture(&opts, &state, &ctx);
 
-    rc |= expect_str("cq inactive", lbl_onoff_cq(&ctx, b, sizeof(b)), "Toggle CQPSK [Inactive]");
+    rc |= expect_str("cq off", lbl_onoff_cq(&ctx, b, sizeof(b)), "CQPSK path [Off]");
     g_rtl_cqpsk = 1;
-    rc |= expect_str("cq active", lbl_onoff_cq(&ctx, b, sizeof(b)), "Toggle CQPSK [Active]");
+    rc |= expect_str("cq on", lbl_onoff_cq(&ctx, b, sizeof(b)), "CQPSK path [On]");
     g_rtl_iq_balance = 1;
-    rc |= expect_str("iq balance active", lbl_onoff_iqbal(&ctx, b, sizeof(b)), "Toggle IQ Balance [Active]");
+    rc |= expect_str("iq balance on", lbl_onoff_iqbal(&ctx, b, sizeof(b)), "IQ balance [On]");
     g_rtl_iq_dc_on = 1;
     g_rtl_iq_dc_k = 5;
-    rc |= expect_str("iq dc on", lbl_iq_dc(&ctx, b, sizeof(b)), "IQ DC Block [On]");
-    rc |= expect_str("iq dc k", lbl_iq_dc_k(&ctx, b, sizeof(b)), "IQ DC Shift k: 5 (+/-)");
+    rc |= expect_str("iq dc on", lbl_iq_dc(&ctx, b, sizeof(b)), "IQ DC block [On]");
+    rc |= expect_str("iq dc k", lbl_iq_dc_k(&ctx, b, sizeof(b)), "IQ DC shift k... [5]");
     g_rtl_ted_gain = 0.0746f;
-    rc |= expect_str("ted gain milli rounds", lbl_ted_gain(&ctx, b, sizeof(b)), "CQPSK Timing Gain: 75 (x0.001, +/-)");
+    rc |= expect_str("ted gain milli rounds", lbl_ted_gain(&ctx, b, sizeof(b)), "CQPSK timing gain... [75 x0.001]");
     g_rtl_timing_bias = -123;
-    rc |= expect_str("timing bias", lbl_cqpsk_timing_bias(&ctx, b, sizeof(b)), "CQPSK Timing Bias (EMA): -123");
+    rc |= expect_str("timing bias", lbl_cqpsk_timing_bias(&ctx, b, sizeof(b)), "CQPSK timing bias (EMA) -123");
 
     opts.frontend_display.show_dsp_panel = 1;
     opts.rtl_bias_tee = 1;
     opts.rtltcp_autotune = 1;
-    rc |= expect_str("dsp panel on", lbl_dsp_panel(&ctx, b, sizeof(b)), "Show DSP Panel [On]");
-    rc |= expect_str("bias tee on", lbl_rtl_bias(&ctx, b, sizeof(b)), "Bias Tee: On");
+    rc |= expect_str("dsp panel on", lbl_dsp_panel(&ctx, b, sizeof(b)), "DSP panel [On]");
+    rc |= expect_str("bias tee on", lbl_rtl_bias(&ctx, b, sizeof(b)), "Bias tee [On]");
     rc |= expect_str("rtl tcp autotune on", lbl_rtl_rtltcp_autotune(&ctx, b, sizeof(b)),
-                     "RTL-TCP Adaptive Networking: On");
+                     "rtl_tcp adaptive buffering [On]");
+
+    return rc;
+}
+
+static int
+test_radio_tuning_labels(void) {
+    int rc = 0;
+    char b[160];
+    static dsd_opts opts;
+    static dsd_state state;
+    UiCtx ctx;
+    reset_fixture(&opts, &state, &ctx);
+
+    opts.rtlsdr_center_freq = 769768750U;
+    opts.rtl_gain_value = 0;
+    opts.rtlsdr_ppm_error = -3;
+    opts.rtl_dsp_bw_khz = 48;
+    opts.rtl_volume_multiplier = 2;
+    rc |= expect_str("rtl frequency", lbl_rtl_freq(&ctx, b, sizeof(b)), "Frequency... [769.768750 MHz]");
+    rc |= expect_str("rtl gain agc", lbl_rtl_gain(&ctx, b, sizeof(b)), "Gain... [AGC]");
+    opts.rtl_gain_value = 28;
+    rc |= expect_str("rtl gain set", lbl_rtl_gain(&ctx, b, sizeof(b)), "Gain... [28]");
+    rc |= expect_str("rtl ppm", lbl_rtl_ppm(&ctx, b, sizeof(b)), "PPM correction... [-3]");
+    rc |= expect_str("rtl bandwidth", lbl_rtl_bw(&ctx, b, sizeof(b)), "Bandwidth... [48 kHz]");
+    rc |= expect_str("rtl volume", lbl_rtl_vol(&ctx, b, sizeof(b)), "Volume multiplier... [2]");
+    rc |= expect_str("rtl frequency null ctx", lbl_rtl_freq(NULL, b, sizeof(b)), "Frequency... [0.000000 MHz]");
 
     return rc;
 }
@@ -306,21 +320,21 @@ test_radio_config_labels(void) {
     reset_fixture(&opts, &state, &ctx);
 
     opts.rtl_auto_ppm = 1;
-    rc |= expect_str("auto ppm opts fallback", lbl_rtl_auto_ppm(&ctx, b, sizeof(b)), "Auto-PPM (Spectrum): On");
+    rc |= expect_str("auto ppm opts fallback", lbl_rtl_auto_ppm(&ctx, b, sizeof(b)), "Auto-PPM [On]");
     state.rtl_ctx = (RtlSdrContext*)0x1;
     g_rtl_auto_ppm = 0;
-    rc |= expect_str("auto ppm live off", lbl_rtl_auto_ppm(&ctx, b, sizeof(b)), "Auto-PPM (Spectrum): Off");
+    rc |= expect_str("auto ppm live off", lbl_rtl_auto_ppm(&ctx, b, sizeof(b)), "Auto-PPM [Off]");
     g_rtl_auto_ppm = 1;
-    rc |= expect_str("auto ppm live on", lbl_rtl_auto_ppm(&ctx, b, sizeof(b)), "Auto-PPM (Spectrum): On");
+    rc |= expect_str("auto ppm live on", lbl_rtl_auto_ppm(&ctx, b, sizeof(b)), "Auto-PPM [On]");
 
     state.rtl_ctx = NULL;
     g_cfg.tuner_autogain_enable = 1;
-    rc |= expect_str("tuner autogain config", lbl_rtl_tuner_autogain(&ctx, b, sizeof(b)), "Tuner Autogain: On");
+    rc |= expect_str("tuner autogain config", lbl_rtl_tuner_autogain(&ctx, b, sizeof(b)), "Tuner autogain [On]");
     state.rtl_ctx = (RtlSdrContext*)0x1;
     g_rtl_tuner_autogain = 0;
-    rc |= expect_str("tuner autogain live off", lbl_rtl_tuner_autogain(&ctx, b, sizeof(b)), "Tuner Autogain: Off");
+    rc |= expect_str("tuner autogain live off", lbl_rtl_tuner_autogain(&ctx, b, sizeof(b)), "Tuner autogain [Off]");
     g_rtl_tuner_autogain = 1;
-    rc |= expect_str("tuner autogain live on", lbl_rtl_tuner_autogain(&ctx, b, sizeof(b)), "Tuner Autogain: On");
+    rc |= expect_str("tuner autogain live on", lbl_rtl_tuner_autogain(&ctx, b, sizeof(b)), "Tuner autogain [On]");
 
     return rc;
 }
@@ -330,6 +344,7 @@ main(void) {
     int rc = 0;
     rc |= test_radio_modulation_predicates();
     rc |= test_radio_dsp_labels();
+    rc |= test_radio_tuning_labels();
     rc |= test_radio_config_labels();
     return rc ? 1 : 0;
 }

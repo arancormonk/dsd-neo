@@ -5,7 +5,12 @@
 
 /*
  * menu_defs.c
- * Concrete menu item arrays for the top-level menus
+ * The root of the overlay menu.
+ *
+ * The order is the receiver's signal chain -- Input, Decoder, Trunking,
+ * Encryption, Audio, Recording -- then what you look at, then housekeeping.
+ * It matches the reading order of the main screen, and it gives every new
+ * item one obvious home: put it where its signal is.
  */
 
 #include <dsd-neo/ui/menu_defs.h>
@@ -18,61 +23,59 @@ void
 ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) {
     (void)ctx; // context used by callbacks; arrays are static so safe to expose
     static int inited = 0;
-    static NcMenuItem items[10];
+    static NcMenuItem items[11];
     if (!inited) {
-        items[0] = (NcMenuItem){.id = "main.io",
-                                .label = "Devices & IO",
-                                .help = "TCP, symbol replay, inversion.",
-                                .submenu = IO_MENU_ITEMS,
-                                .submenu_len = IO_MENU_ITEMS_LEN};
-        items[1] = (NcMenuItem){.id = "main.logging",
-                                .label = "Logging & Capture",
-                                .help = "Symbols, WAV, payloads, alerts, history.",
-                                .submenu = LOGGING_MENU_ITEMS,
-                                .submenu_len = LOGGING_MENU_ITEMS_LEN};
-        items[2] = (NcMenuItem){.id = "main.trunk",
-                                .label = "Trunking & Control",
-                                .help = "P25 CC prefs, Phase 2 params, rigctl.",
+        items[0] = (NcMenuItem){.id = "main.input",
+                                .label = "Input",
+                                .help = "Signal source, input level, RTL-SDR tuning.",
+                                .submenu = INPUT_MENU_ITEMS,
+                                .submenu_len = INPUT_MENU_ITEMS_LEN};
+        items[1] = (NcMenuItem){.id = "main.decoder",
+                                .label = "Decoder",
+                                .help = "Protocol mode, modulation, filters, DMR/TDMA.",
+                                .submenu = DECODER_MENU_ITEMS,
+                                .submenu_len = DECODER_MENU_ITEMS_LEN};
+        items[2] = (NcMenuItem){.id = "main.trunking",
+                                .label = "Trunking",
+                                .help = "Trunking, scanning, follow rules, imports, P25, rig control.",
                                 .submenu = TRUNK_MENU_ITEMS,
                                 .submenu_len = TRUNK_MENU_ITEMS_LEN};
-        items[3] = (NcMenuItem){.id = "main.keys",
-                                .label = "Keys & Security",
-                                .help = "Manage keys and encrypted audio muting.",
-                                .submenu = KEYS_MENU_ITEMS,
-                                .submenu_len = KEYS_MENU_ITEMS_LEN};
-        items[4] = (NcMenuItem){.id = "main.dsp",
-                                .label = "DSP Options",
-                                .help = "RTL-SDR DSP toggles and tuning.",
-                                .is_enabled = io_rtl_active,
-#ifdef USE_RADIO
-                                .submenu = DSP_MENU_ITEMS,
-                                .submenu_len = DSP_MENU_ITEMS_LEN};
-#else
-                                .submenu = NULL,
-                                .submenu_len = 0};
-#endif
-        items[5] = (NcMenuItem){.id = "main.ui",
-                                .label = "UI Display",
-                                .help = "Toggle on-screen sections.",
-                                .submenu = UI_DISPLAY_MENU_ITEMS,
-                                .submenu_len = UI_DISPLAY_MENU_ITEMS_LEN};
-        items[6] = (NcMenuItem){.id = "lrrp",
-                                .label = "LRRP",
-                                .help = "Configure LRRP file output.",
-                                .submenu = LRRP_MENU_ITEMS,
-                                .submenu_len = LRRP_MENU_ITEMS_LEN};
+        items[3] = (NcMenuItem){.id = "main.encryption",
+                                .label = "Encryption",
+                                .help = "Keys, key import, keystreams, encrypted-call policy.",
+                                .submenu = ENC_MENU_ITEMS,
+                                .submenu_len = ENC_MENU_ITEMS_LEN};
+        items[4] = (NcMenuItem){.id = "main.audio",
+                                .label = "Audio",
+                                .help = "Output sink, mute, gains, monitor, tone shaping, call alerts.",
+                                .submenu = AUDIO_MENU_ITEMS,
+                                .submenu_len = AUDIO_MENU_ITEMS_LEN};
+        items[5] = (NcMenuItem){.id = "main.recording",
+                                .label = "Recording & logs",
+                                .help = "Symbol capture, WAV, event log, LRRP, DSP dumps.",
+                                .submenu = REC_MENU_ITEMS,
+                                .submenu_len = REC_MENU_ITEMS_LEN};
+        items[6] = (NcMenuItem){.id = "main.display",
+                                .label = "Display",
+                                .help = "Compact view, on-screen sections, visualizers, event history.",
+                                .submenu = DISPLAY_MENU_ITEMS,
+                                .submenu_len = DISPLAY_MENU_ITEMS_LEN};
         items[7] = (NcMenuItem){.id = "main.config",
                                 .label = "Config",
-                                .help = "Save current settings to a config file.",
+                                .help = "Load and save settings and profiles.",
                                 .submenu = CONFIG_MENU_ITEMS,
                                 .submenu_len = CONFIG_MENU_ITEMS_LEN};
-        items[8] = (NcMenuItem){.id = "main.adv",
-                                .label = "Advanced & Env",
-                                .help = "P25 follower, DSP advanced, RTL/TCP, env editor.",
+        items[8] = (NcMenuItem){.id = "main.advanced",
+                                .label = "Advanced",
+                                .help = "Scheduling, threads, FTZ/DAZ, diagnostics, environment.",
                                 .submenu = ADV_MENU_ITEMS,
                                 .submenu_len = ADV_MENU_ITEMS_LEN};
-        items[9] =
-            (NcMenuItem){.id = "exit", .label = "Exit DSD-neo", .help = "Quit the application.", .on_select = act_exit};
+        items[9] = (NcMenuItem){.id = "main.sep", .kind = NC_ITEM_SEPARATOR};
+        items[10] = (NcMenuItem){.id = "exit",
+                                 .label = "Quit DSD-neo",
+                                 .help = "Quit the application.",
+                                 .hotkey = "q",
+                                 .on_select = act_exit};
         inited = 1;
     }
     if (out_items) {

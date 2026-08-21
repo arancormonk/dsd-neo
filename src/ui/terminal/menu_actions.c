@@ -18,6 +18,7 @@
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1418,4 +1419,146 @@ act_toggle_dsp_panel(void* v) {
     (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
 }
 
+#endif /* USE_RADIO */
+
+// ---- Rows the signal-chain menu added: every hotkey-only command gets a row ----
+
+#define DSD_SIMPLE_ACTION(name, cmd)                                                                                   \
+    void name(void* v) {                                                                                               \
+        UNUSED(v);                                                                                                     \
+        (void)dsd_app_command_action(cmd);                                                                             \
+    }
+
+DSD_SIMPLE_ACTION(act_mod_cycle, DSD_APP_CMD_MOD_TOGGLE)
+DSD_SIMPLE_ACTION(act_mod_p2_toggle, DSD_APP_CMD_MOD_P2_TOGGLE)
+DSD_SIMPLE_ACTION(act_lpf_toggle, DSD_APP_CMD_LPF_TOGGLE)
+DSD_SIMPLE_ACTION(act_hpf_toggle, DSD_APP_CMD_HPF_TOGGLE)
+DSD_SIMPLE_ACTION(act_pbf_toggle, DSD_APP_CMD_PBF_TOGGLE)
+DSD_SIMPLE_ACTION(act_hpf_d_toggle, DSD_APP_CMD_HPF_D_TOGGLE)
+DSD_SIMPLE_ACTION(act_slot1_toggle, DSD_APP_CMD_SLOT1_TOGGLE)
+DSD_SIMPLE_ACTION(act_slot2_toggle, DSD_APP_CMD_SLOT2_TOGGLE)
+DSD_SIMPLE_ACTION(act_dmr_reset, DSD_APP_CMD_DMR_RESET)
+DSD_SIMPLE_ACTION(act_provoice_esk, DSD_APP_CMD_PROVOICE_ESK_TOGGLE)
+DSD_SIMPLE_ACTION(act_provoice_mode, DSD_APP_CMD_PROVOICE_MODE_TOGGLE)
+DSD_SIMPLE_ACTION(act_return_cc, DSD_APP_CMD_RETURN_CC)
+DSD_SIMPLE_ACTION(act_channel_cycle, DSD_APP_CMD_CHANNEL_CYCLE)
+DSD_SIMPLE_ACTION(act_force_rc4, DSD_APP_CMD_FORCE_RC4_TOGGLE)
+DSD_SIMPLE_ACTION(act_history_cycle, DSD_APP_CMD_HISTORY_CYCLE)
+DSD_SIMPLE_ACTION(act_eh_toggle_slot, DSD_APP_CMD_EH_TOGGLE_SLOT)
+DSD_SIMPLE_ACTION(act_eh_prev, DSD_APP_CMD_EH_PREV)
+DSD_SIMPLE_ACTION(act_eh_next, DSD_APP_CMD_EH_NEXT)
+DSD_SIMPLE_ACTION(act_sim_nocar, DSD_APP_CMD_SIM_NOCAR)
+DSD_SIMPLE_ACTION(act_vis_const, DSD_APP_CMD_CONST_TOGGLE)
+DSD_SIMPLE_ACTION(act_vis_const_norm, DSD_APP_CMD_CONST_NORM_TOGGLE)
+DSD_SIMPLE_ACTION(act_vis_eye, DSD_APP_CMD_EYE_TOGGLE)
+DSD_SIMPLE_ACTION(act_vis_eye_unicode, DSD_APP_CMD_EYE_UNICODE_TOGGLE)
+DSD_SIMPLE_ACTION(act_vis_eye_color, DSD_APP_CMD_EYE_COLOR_TOGGLE)
+DSD_SIMPLE_ACTION(act_vis_fsk, DSD_APP_CMD_FSK_HIST_TOGGLE)
+DSD_SIMPLE_ACTION(act_vis_spectrum, DSD_APP_CMD_SPECTRUM_TOGGLE)
+
+#undef DSD_SIMPLE_ACTION
+
+void
+act_lockout_slot1(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 0U);
+}
+
+void
+act_lockout_slot2(void* v) {
+    UNUSED(v);
+    (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, 1U);
+}
+
+// ---- Decoder mode ----
+
+/* Picker order: the catch-all first, then the P25 family, DMR, and the rest
+   roughly by how often they are asked for. The names come from the runtime so
+   the picker and the label that reads the mode back cannot disagree. */
+static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
+    DSDCFG_MODE_AUTO,     DSDCFG_MODE_TDMA,     DSDCFG_MODE_P25P1,  DSDCFG_MODE_P25P2,  DSDCFG_MODE_DMR,
+    DSDCFG_MODE_DMR_MONO, DSDCFG_MODE_NXDN48,   DSDCFG_MODE_NXDN96, DSDCFG_MODE_X2TDMA, DSDCFG_MODE_YSF,
+    DSDCFG_MODE_DSTAR,    DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,   DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG,
+};
+#define DECODE_MODE_CHOICE_COUNT (sizeof k_decode_mode_choices / sizeof k_decode_mode_choices[0])
+static const char* g_decode_mode_labels[DECODE_MODE_CHOICE_COUNT];
+
+static void
+chooser_done_decode_mode(void* u, int sel) {
+    UNUSED(u);
+    if (sel < 0 || sel >= (int)DECODE_MODE_CHOICE_COUNT) {
+        return;
+    }
+    /* The command toasts "Decoding <mode>" itself once it has applied. */
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)k_decode_mode_choices[sel]);
+}
+
+void
+act_decode_mode(void* v) {
+    UNUSED(v);
+    for (size_t i = 0; i < DECODE_MODE_CHOICE_COUNT; i++) {
+        g_decode_mode_labels[i] = dsd_decode_mode_display_name(k_decode_mode_choices[i]);
+    }
+    ui_chooser_start("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT, chooser_done_decode_mode,
+                     NULL);
+}
+
+#ifdef USE_RADIO
+// ---- RTL DSP values entered as a number rather than stepped ----
+
+static int g_iq_dc_k_initial;
+
+static void
+cb_iq_dc_k(void* u, int ok, int k) {
+    UNUSED(u);
+    if (!ok) {
+        return;
+    }
+    if (k < 6) {
+        k = 6;
+    }
+    if (k > 15) {
+        k = 15;
+    }
+    const int delta = k - g_iq_dc_k_initial;
+    if (delta == 0) {
+        return;
+    }
+    dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA, .a = delta};
+    (void)dsd_app_command_dsp_op(&p);
+}
+
+void
+act_iq_dc_k_prompt(void* v) {
+    UNUSED(v);
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    g_iq_dc_k_initial = metrics.iq_dc_shift_k;
+    ui_prompt_open_int_async("IQ DC shift k (6..15)", g_iq_dc_k_initial, cb_iq_dc_k, NULL);
+}
+
+static void
+cb_ted_gain(void* u, int ok, int milli) {
+    UNUSED(u);
+    if (!ok) {
+        return;
+    }
+    if (milli < 1) {
+        milli = 1;
+    }
+    if (milli > 500) {
+        milli = 500;
+    }
+    dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TED_GAIN_SET, .a = milli};
+    (void)dsd_app_command_dsp_op(&p);
+}
+
+void
+act_ted_gain_prompt(void* v) {
+    UNUSED(v);
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    const int milli = (int)(metrics.ted_gain * 1000.0f + 0.5f);
+    ui_prompt_open_int_async("CQPSK timing gain (x0.001, 1..500)", milli, cb_ted_gain, NULL);
+}
 #endif /* USE_RADIO */
