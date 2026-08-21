@@ -20,6 +20,7 @@
 #include <dsd-neo/ui/ui_prims.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/platform/platform.h"
 #include "dsd-neo/ui/menu_core.h"
@@ -873,6 +874,15 @@ ui_prompt_render(void) {
     if (footer_y > 0 && footer_y != input_y) {
         mvwaddnstr(win, footer_y, 2, "Enter=OK  Esc=Cancel", body_w);
     }
+    // The toast, in the blank rows between the field and the footer. A prompt
+    // that re-opens after refusing its input ("Enter a ZIP code (digits only).")
+    // is the only thing on screen, so this is the one place the refusal can be
+    // read; anchored above the footer so a blank row still separates it from
+    // the field.
+    if (footer_y > input_y + 1) {
+        (void)ui_status_draw(win, input_y + 1, 2, body_w, footer_y - input_y - 1,
+                             UI_STATUS_FLAG_ANCHOR_BOTTOM | UI_STATUS_FLAG_BOLD, time(NULL));
+    }
     // Footer/title writes also move the curses cursor; place it last so input editing stays visible.
     wmove(win, input_y, cursor_x);
     wnoutrefresh(win);
@@ -1482,6 +1492,10 @@ ui_chooser_render(void) {
     g_chooser.page_rows = page_rows;
     ui_chooser_clamp_selection();
     ui_chooser_draw_title(win, title, body_w, page_rows);
+    // Row 2 is the spacer under the title: the toast goes there, so a notice
+    // raised just before this list opened ("No systems there. Try another
+    // search.") is read on the list it explains rather than lost behind it.
+    (void)ui_status_draw(win, 2, 2, body_w, 1, UI_STATUS_FLAG_BOLD, time(NULL));
     ui_chooser_draw_items(win, w, body_w, page_rows);
     mvwaddnstr(win, h - 2, 2, footer, body_w);
     wnoutrefresh(win);

@@ -79,6 +79,10 @@ typedef struct {
     int refresh_queue_n;
     int refresh_queue_i;
     int refresh_active;
+    /* The core's latest status text, kept past the toast's expiry: it is what
+       the Fetching box reads while a request is in flight ("Loading counties...",
+       "Checking your RadioReference account..."), which can outlast a toast. */
+    char stage[128];
 } RrPanel;
 
 static RrPanel g_rr_panel;
@@ -139,9 +143,13 @@ rr_hook_panel_changed(void* user) {
 
 static void
 rr_hook_status(void* user, const char* text) {
-    (void)user;
+    RrPanel* p = (RrPanel*)user;
     if (text == NULL) {
         return;
+    }
+    if (p != NULL) {
+        /* "" is the core clearing a stage that has finished. */
+        (void)DSD_SNPRINTF(p->stage, sizeof p->stage, "%s", text);
     }
     ui_statusf("%s", text);
 }
@@ -251,6 +259,11 @@ rr_panel_refresh_queue_start_next(void) {
 #define RR_BROWSE_ROW_MAX        256
 #define RR_BROWSE_TITLE_MAX      176
 
+/* Widest a system name gets inside a status toast. The fixed wording of every
+   toast below stays under 40 columns so that, with this, the whole message
+   fits one row of an 80-column terminal's panel and two rows of the menu. */
+#define RR_STATUS_NAME_MAX       28
+
 /* Columns the chooser spends on itself: a border either side and two columns of
    padding either side (menu_prompts.c draws items at x = 2). */
 #define RR_BROWSE_CHOOSER_CHROME 6
@@ -304,15 +317,19 @@ rr_browse_apply(const RrLibrarySystem* s) {
             DSD_MEMSET(&payload, 0, sizeof payload);
             if (dsd_app_rr_fill_apply_payload(&plan, chan, group, &payload) == 0) {
                 const int rc = dsd_app_command_set_rr_apply(&payload);
+                /* Names are clipped so the wording always fits one status row
+                   (the menu offers ~39 columns after "Status: "); a failure
+                   drops the name entirely - it was the title of the list the
+                   user just left - and keeps the cause and the way out. */
                 if (rc > 0) {
-                    ui_statusf("Applying %s to this session.", named);
+                    ui_statusf("Applying %.*s to this session.", RR_STATUS_NAME_MAX, named);
                 } else {
-                    ui_statusf("Could not apply %s: the decoder is not accepting commands.", named);
+                    ui_statusf("The decoder is not accepting commands; nothing was applied.");
                 }
                 return;
             }
         }
-        ui_statusf("Could not rebuild %s from its saved settings.", named);
+        ui_statusf("Saved settings unreadable; try Refresh from RadioReference.");
         return;
     }
 
@@ -326,9 +343,9 @@ rr_browse_apply(const RrLibrarySystem* s) {
         loaded |= (dsd_app_command_set_string(DSD_APP_CMD_IMPORT_GROUP_LIST, group) > 0) ? 1 : 0;
     }
     if (loaded) {
-        ui_statusf("Loaded %s files; the decode mode was left unchanged.", named);
+        ui_statusf("Loaded %.*s files; decode mode unchanged.", RR_STATUS_NAME_MAX, named);
     } else {
-        ui_statusf("Nothing to load for %s.", named);
+        ui_statusf("%.*s has no files to load.", RR_STATUS_NAME_MAX, named);
     }
 }
 
@@ -360,9 +377,9 @@ rr_browse_delete(const RrLibrarySystem* s) {
         removed += rr_browse_delete_one(s->chan_path);
     }
     if (removed > 0) {
-        ui_statusf("Deleted %s (%d file%s).", named, removed, (removed == 1) ? "" : "s");
+        ui_statusf("Deleted %.*s (%d file%s).", RR_STATUS_NAME_MAX, named, removed, (removed == 1) ? "" : "s");
     } else {
-        ui_statusf("Could not delete %s.", named);
+        ui_statusf("Could not delete %.*s.", RR_STATUS_NAME_MAX, named);
     }
 }
 
@@ -382,7 +399,7 @@ rr_browse_refresh(const RrLibrarySystem* s) {
     if (g_rr_panel.refresh_queue_n == 0) {
         char named[RR_BROWSE_TITLE_MAX];
         rr_library_display_name(s, named, sizeof named);
-        ui_statusf("%s has no files to refresh.", named);
+        ui_statusf("%.*s has no files to refresh.", RR_STATUS_NAME_MAX, named);
         return;
     }
     (void)rr_panel_refresh_queue_start_next();
@@ -532,8 +549,10 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
     if (ctx->lib.count == 0) {
         /* Reported once here, on activation, rather than by the menu predicate:
            listing a directory and reading a sidecar per entry at ~15 FPS would be
-           filesystem traffic for nothing. */
-        ui_statusf("No RadioReference imports found in %s", dir);
+           filesystem traffic for nothing. Says what to do next, not where it
+           looked: the directory is in docs/radioreference-import.md, and a path
+           here was what pushed the advice off the row. */
+        ui_statusf("No imported systems yet; use Import from RadioReference... first.");
         rr_browse_ctx_free(ctx);
         return;
     }
@@ -559,8 +578,13 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
         (void)rr_library_row_format(&ctx->lib.systems[idx], &layout, in_use, ctx->rows[idx], sizeof ctx->rows[0]);
         ctx->items[idx] = ctx->rows[idx];
     }
+    /* An overflow is said in the title, which stays up as long as the list
+       does; a toast raised here would expire behind the chooser. The title is
+       borrowed by pointer for the life of the chooser, so it lives in ctx. */
     if (ctx->lib.overflow) {
-        ui_statusf("Showing the first %d imported systems in %s.", ctx->lib.count, dir);
+        (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Imported Systems (first %d only)", ctx->lib.count);
+    } else {
+        (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Imported Systems");
     }
     /* Refresh runs on the shared session core, which rr_panel_ensure_core() seeds
        from the snapshot only on creation - so an account set from the menu after
@@ -573,7 +597,7 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
             rr_wizard_core_set_stored_app_key(w, opts->rr_app_key);
         }
     }
-    ui_chooser_start("Imported Systems", ctx->items, ctx->lib.count, rr_browse_system_done, ctx);
+    ui_chooser_start(ctx->title, ctx->items, ctx->lib.count, rr_browse_system_done, ctx);
 }
 
 // cppcheck-suppress-end constParameterPointer
@@ -585,6 +609,7 @@ rr_panel_close(void) {
         rr_wizard_core_cancel(g_rr_panel.core); /* bumps the generation; late results are dropped */
     }
     rr_panel_refresh_queue_clear(); /* a half-done system refresh must not resume after a close */
+    g_rr_panel.stage[0] = '\0';
     g_rr_panel.active = 0;
     /* The core, its client and the password deliberately survive: the password is asked
        once per app session. rr_panel_shutdown() is what destroys them. */
@@ -764,8 +789,9 @@ rr_panel_draw_heading(WINDOW* win, int body_w, const dsd_rr_system_info* info, c
         last = count;
     }
     char line[128];
+    /* Says how many may be chosen; the footer says which key does it. */
     (void)DSD_SNPRINTF(line, sizeof line, "%-30.30s(%d-%d/%d)",
-                       info->trunked ? "Site (trunked: one only)" : "Repeaters (Space toggles)",
+                       info->trunked ? "Sites (choose one)" : "Repeaters (choose any)",
                        (count > 0) ? (g_rr_panel.top + 1) : 0, last, count);
     mvwaddnstr(win, 2, 2, line, body_w);
     if (info->trunked) {
@@ -845,30 +871,14 @@ rr_panel_draw_options(WINDOW* win, int h, int body_w, const dsd_rr_import_option
     mvwaddnstr(win, h - 9, 2, line, body_w);
 }
 
-/**
- * @brief How much of text[pos..len) belongs on one @p width-wide row.
- *
- * Breaks at the last space inside the window when there is one, otherwise hard-
- * wraps at @p width. `pos + brk < len` holds on every iteration because the
- * hard-wrap branch is only taken when `len - pos > width`; it is nevertheless
- * spelled out in the loop condition, because clang-analyzer drops that relation
- * across the `take = width` assignment and reports a false ArrayBound without it.
- */
-static size_t
-rr_panel_wrap_take(const char* text, size_t pos, size_t len, size_t width) {
-    const size_t remaining = len - pos;
-    if (remaining <= width) {
-        return remaining;
-    }
-    size_t brk = width;
-    while (brk > 0 && (pos + brk) < len && text[pos + brk] != ' ') {
-        brk--;
-    }
-    return (brk > 0) ? brk : width;
-}
+/* Widest block this panel wraps: the error view offers four rows. */
+#define RR_PANEL_WRAP_ROWS_MAX 4
 
 /**
  * @brief Draw @p text wrapped into at most @p max_rows rows.
+ *
+ * The split is ui_text_wrap()'s, shared with the status toast, so a warning and
+ * a toast break the same way.
  *
  * @param out_clipped Optional; set to 1 when text was left undrawn, so a caller
  *                    listing several blocks can report the one that did not fit
@@ -886,22 +896,19 @@ rr_panel_draw_wrapped(WINDOW* win, int y, int max_rows, int width, const char* t
         }
         return 0;
     }
-    const size_t len = strlen(text);
-    size_t pos = 0;
-    int rows = 0;
-    while (pos < len && rows < max_rows) {
-        const size_t take = rr_panel_wrap_take(text, pos, len, (size_t)width);
-        mvwaddnstr(win, y + rows, 2, text + pos, (int)take);
-        pos += take;
-        while (pos < len && text[pos] == ' ') {
-            pos++;
-        }
-        rows++;
+    if (max_rows > RR_PANEL_WRAP_ROWS_MAX) {
+        max_rows = RR_PANEL_WRAP_ROWS_MAX;
     }
-    if (out_clipped != NULL && pos < len) {
+    UiTextSlice rows[RR_PANEL_WRAP_ROWS_MAX];
+    size_t consumed = 0;
+    const int n = ui_text_wrap(text, width, max_rows, rows, &consumed);
+    for (int i = 0; i < n; i++) {
+        mvwaddnstr(win, y + i, 2, text + rows[i].start, (int)rows[i].len);
+    }
+    if (out_clipped != NULL && consumed < strlen(text)) {
         *out_clipped = 1;
     }
-    return rows;
+    return n;
 }
 
 static void
@@ -950,17 +957,14 @@ rr_panel_draw_plan(WINDOW* win, int h, int body_w, const dsd_rr_import_plan* pla
     }
 }
 
+/*
+ * The status row, with the row under it as overflow. In the system view that
+ * row is the first footer line, so a long toast borrows the key hints for a few
+ * seconds rather than losing its second clause; draw it AFTER the footer.
+ */
 static void
 rr_panel_draw_status(WINDOW* win, int h, int body_w) {
-    char sline[256];
-    const time_t now = time(NULL);
-    if (ui_status_peek(sline, sizeof sline, now)) {
-        char status_line[288];
-        (void)DSD_SNPRINTF(status_line, sizeof status_line, "Status: %s", sline);
-        mvwaddnstr(win, h - 4, 2, status_line, body_w);
-        return;
-    }
-    ui_status_clear_if_expired(now);
+    (void)ui_status_draw(win, h - 4, 2, body_w, 2, UI_STATUS_FLAG_PREFIX, time(NULL));
 }
 
 static void
@@ -1006,20 +1010,22 @@ rr_panel_render_system(void) {
     rr_panel_draw_options(win, h, body_w, rr_wizard_core_options(g_rr_panel.core), plan);
     rr_panel_draw_warnings(win, h, body_w, plan);
     rr_panel_draw_plan(win, h, body_w, plan);
-    rr_panel_draw_status(win, h, body_w);
     rr_panel_draw_footer(win, h, body_w);
+    rr_panel_draw_status(win, h, body_w); /* after the footer: may borrow its first row */
     wnoutrefresh(win);
 }
 
 static void
 rr_panel_render_fetching(void) {
-    static const char* const k_line1 = "Fetching from RadioReference...";
     static const char* const k_line2 = "Esc/q/Left cancels";
+    /* The core names each stage ("Checking your RadioReference account...",
+       "Loading counties..."); the generic line is only for a fetch that did not. */
+    const char* line1 = (g_rr_panel.stage[0] != '\0') ? g_rr_panel.stage : "Fetching from RadioReference...";
     int scr_h = 0;
     int scr_w = 0;
     getmaxyx(stdscr, scr_h, scr_w);
     const int h = 6;
-    int w = 4 + (int)strlen(k_line1);
+    int w = 4 + (int)strlen(line1);
     if (w < RR_PANEL_BOX_MIN_W) {
         w = RR_PANEL_BOX_MIN_W;
     }
@@ -1035,7 +1041,7 @@ rr_panel_render_fetching(void) {
     }
     werase(win);
     box(win, 0, 0);
-    mvwaddnstr(win, 2, 2, k_line1, w - 4);
+    mvwaddnstr(win, 2, 2, line1, w - 4);
     mvwaddnstr(win, 3, 2, k_line2, w - 4);
     wnoutrefresh(win);
 }

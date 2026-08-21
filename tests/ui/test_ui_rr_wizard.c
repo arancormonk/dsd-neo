@@ -369,6 +369,7 @@ typedef struct {
     const char* const* last_chooser_items;
     char last_title[64];
     char last_status[128];
+    char prev_status[128]; /* the status before last_status: a stage text the core has since cleared */
     char last_account_user[128];
     char last_account_key[64];
     int n_post_import;
@@ -427,6 +428,7 @@ h_panel_changed(void* user) {
 static void
 h_status(void* user, const char* text) {
     wiz_harness* h = (wiz_harness*)user;
+    (void)DSD_SNPRINTF(h->prev_status, sizeof(h->prev_status), "%s", h->last_status);
     (void)DSD_SNPRINTF(h->last_status, sizeof(h->last_status), "%s", (text != NULL) ? text : "");
 }
 
@@ -896,7 +898,7 @@ test_zip_to_results(void) {
     rr_wizard_core_on_prompt_done(c.core, "5240x");
     expect("zip: a bad ZIP stays on the step", rr_wizard_core_step(c.core) == RR_STEP_SEARCH_ZIP);
     expect_ll("zip: a bad ZIP reaches no transport", (long long)(atomic_load(&g_call_count) - before_bad), 0);
-    expect("zip: a bad ZIP says so", strcmp(c.h.last_status, "That is not a ZIP code.") == 0);
+    expect("zip: a bad ZIP says what to enter", strcmp(c.h.last_status, "Enter a ZIP code (digits only).") == 0);
 
     const int before = atomic_load(&g_call_count);
     rr_wizard_core_on_prompt_done(c.core, "52401");
@@ -906,7 +908,11 @@ test_zip_to_results(void) {
         expect("zip: SARA label", strcmp(c.h.last_chooser_items[1], "SARA Network (Various, SID 6673)") == 0);
         expect("zip: REC label", strcmp(c.h.last_chooser_items[15], "Linn County REC (Marion, SID 12244)") == 0);
     }
-    expect("zip: status carried the city", strcmp(c.h.last_status, "Cedar Rapids") == 0);
+    /* The city named the chained fetch while it ran, and was cleared - not left
+     * to sit under the list as a stale toast - once that list was up. */
+    expect("zip: status named the city while the county loaded",
+           strcmp(c.h.prev_status, "Loading systems near Cedar Rapids...") == 0);
+    expect("zip: and was cleared once the list was up", c.h.last_status[0] == '\0');
     expect_ll("zip: two transport calls", (long long)(atomic_load(&g_call_count) - before), 2);
     expect_ll("zip: first was getZipcodeInfo", call_index_of("getZipcodeInfo", before), before);
     expect_ll("zip: then getCountyInfo", call_index_of("getCountyInfo", before), before + 1);
@@ -926,7 +932,7 @@ test_system_id_search(void) {
     const int before = atomic_load(&g_call_count);
     rr_wizard_core_on_prompt_done(c.core, "9999999");
     expect("sid: out of range stays on the step", rr_wizard_core_step(c.core) == RR_STEP_SEARCH_SID);
-    expect("sid: out of range says so", strcmp(c.h.last_status, "That is not a RadioReference system ID.") == 0);
+    expect("sid: out of range says what to enter", strcmp(c.h.last_status, "Enter a system ID (digits only).") == 0);
     rr_wizard_core_on_prompt_done(c.core, "abc");
     expect("sid: non-numeric stays on the step", rr_wizard_core_step(c.core) == RR_STEP_SEARCH_SID);
     expect_ll("sid: neither reached the transport", (long long)(atomic_load(&g_call_count) - before), 0);
@@ -969,6 +975,9 @@ test_browse_to_results(void) {
 
     rr_wizard_core_on_chooser_done(c.core, 1);
     expect("browse: reached the country list", pump_until_step(c.core, RR_STEP_BROWSE_COUNTRY, 3000U));
+    /* "Loading countries..." named the fetch while it ran; once the list is up
+     * it would only sit under that list as a stale toast, so the core clears it. */
+    expect("browse: the loading stage is cleared once the list is up", c.h.last_status[0] == '\0');
     expect_ll("browse: 236 countries", (long long)c.h.last_chooser_count, 236);
     expect("browse: country chooser is titled", strcmp(c.h.last_title, "Country") == 0);
     if (c.h.last_chooser_count == 236) {
@@ -992,6 +1001,7 @@ test_browse_to_results(void) {
 
     rr_wizard_core_on_chooser_done(c.core, 57);
     expect("browse: reached the systems list", pump_until_step(c.core, RR_STEP_RESULTS, 3000U));
+    expect("browse: the systems stage is cleared too", c.h.last_status[0] == '\0');
     expect_ll("browse: 24 systems", (long long)c.h.last_chooser_count, 24);
 
     /* The core names C entry points, not SOAP methods, but the wire order is
@@ -1687,8 +1697,8 @@ test_import_now_happy_path(void) {
     (void)DSD_SNPRINTF(want_flag, sizeof(want_flag), "%s", plan->decode_flag);
 
     expect("import: import_now succeeded", rr_wizard_core_import_now(core) == 0);
-    expect("import: status line",
-           strcmp(ic.c.h.last_status, "Imported Johnson Co Simulcast. Pick another site, or Esc to finish.") == 0);
+    expect("import: status line confirms in the footer's verb",
+           strcmp(ic.c.h.last_status, "Imported Johnson Co Simulcast.") == 0);
     expect_file_matches("import: group csv bytes are generator-exact", ic.group_path, want_group, want_group_len);
     expect_file_matches("import: chan csv bytes are generator-exact", ic.chan_path, want_chan, want_chan_len);
     expect("import: last group path reported", strcmp(rr_wizard_core_last_group_path(core), ic.group_path) == 0);
@@ -1776,7 +1786,9 @@ test_import_now_stays_on_the_site_list(void) {
     expect("stay: a plan is still published", plan != NULL);
     if (plan != NULL) {
         expect("stay: the plan asks for the next site", plan->ok == 0);
-        expect("stay: it says which answer is missing", strcmp(plan->blocked_reason, "Select a site.") == 0);
+        expect("stay: it is a question, not a refusal", plan->awaiting_selection == 1);
+        expect("stay: it says what to do from here",
+               strcmp(plan->blocked_reason, "Select another site to import, or Esc to finish.") == 0);
     }
 
     /* One import, one apply: an unselected list cannot write a second time.
@@ -1787,7 +1799,8 @@ test_import_now_stays_on_the_site_list(void) {
     expect_ll("stay: apply still called once", g_hook_apply_count, 1);
     expect("stay: a stray Enter does not error out", rr_wizard_core_step(core) == RR_STEP_SYSTEM);
     expect("stay: and does not retire the system", rr_wizard_core_system(core) != NULL);
-    expect("stay: it just asks for a site", strcmp(ic.c.h.last_status, "Select a site.") == 0);
+    expect("stay: it just repeats the next step",
+           strcmp(ic.c.h.last_status, "Select another site to import, or Esc to finish.") == 0);
     expect("stay: no error text was set", strcmp(rr_wizard_core_error_text(core), "") == 0);
 
     imp_case_close(&ic);
@@ -2026,8 +2039,7 @@ test_import_now_hard_collision(void) {
     imp_case_close(&ic);
 }
 
-static const char k_trunk_scan_reason[] =
-    "A trunk-scan session manages its own channel maps, so an import cannot be applied to it.";
+static const char k_trunk_scan_reason[] = "Stop trunk-scan first; it manages its own channel maps.";
 
 /*
  * A trunk-scan session refuses the apply on the decoder thread, and the command
@@ -2627,7 +2639,7 @@ test_refresh_pushes_only_the_file_the_session_uses(void) {
     /* "was asked to reload it", never "applied": the command queue has no
      * completion channel, so the decoder thread owns the authoritative toast. */
     expect("push: status says the session was asked, not told",
-           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv; the running session was asked to reload it.") == 0);
+           strcmp(rc.c.h.last_status, "Refreshed iowa chan.csv; the session is reloading it.") == 0);
     g_stub_opts_published = 0;
     ref_case_close(&rc);
 }
@@ -2672,7 +2684,7 @@ test_refresh_pushes_a_group_file_as_a_group_list(void) {
               (long long)DSD_APP_CMD_IMPORT_GROUP_LIST);
     expect("kind: posted the refreshed path", strcmp(rc.c.h.last_post_path, rc.csv_path) == 0);
     expect("kind: status names the file",
-           strcmp(rc.c.h.last_status, "Refreshed sara group.csv; the running session was asked to reload it.") == 0);
+           strcmp(rc.c.h.last_status, "Refreshed sara group.csv; the session is reloading it.") == 0);
     g_stub_opts_published = 0;
     ref_case_close(&rc);
 }

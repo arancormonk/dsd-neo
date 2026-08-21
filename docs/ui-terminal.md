@@ -59,6 +59,10 @@ RadioReference import:
 - **Trunking & Control -> Lists & Filters -> Import Channel Map CSV...** and **Import Group List CSV...**
   open a chooser of the imports directory's files of that kind, with an **Enter a path...** row that falls
   back to typing a path.
+- Messages from these flows are shown where you are looking: inside the prompt (a refused ZIP code or
+  system ID), on the row under a chooser's title, in the `Fetching` box (which names the stage in progress),
+  and on the system panel's status row. A message too long for one row wraps onto the next, borrowing the
+  key-hint row until it expires; long messages stay up longer than short ones.
 - The whole submenu is hidden in a build without libcurl or expat; the Imported Systems entry is hidden
   until the imports directory resolves, and the application-key entry is hidden in a build with a baked-in
   key. See `docs/radioreference-import.md`.

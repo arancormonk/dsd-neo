@@ -14,6 +14,7 @@
 #include <curses.h>
 #include <stdio.h>
 
+#include <time.h>
 #include "menu_prompts.h"
 
 WINDOW* ui_make_window(int h, int w, int y, int x); // NOLINT(misc-use-internal-linkage)
@@ -30,6 +31,23 @@ static void
 capture_done(void* user, int sel) {
     (void)user;
     g_done_sel = sel;
+}
+
+int ui_status_peek(char* buf, size_t n, time_t now); // NOLINT(misc-use-internal-linkage)
+void ui_status_clear_if_expired(time_t now);         // NOLINT(misc-use-internal-linkage)
+
+/* The widgets now draw the live toast; these tests raise none. */
+int
+ui_status_peek(char* buf, size_t n, time_t now) { // NOLINT(misc-use-internal-linkage)
+    (void)buf;
+    (void)n;
+    (void)now;
+    return 0;
+}
+
+void
+ui_status_clear_if_expired(time_t now) { // NOLINT(misc-use-internal-linkage)
+    (void)now;
 }
 
 void

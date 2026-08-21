@@ -138,7 +138,8 @@ rr_panel_plan_line(const dsd_rr_import_plan* plan, char* out, size_t out_sz) {
         /* A question, not a refusal - and the reason is already an instruction,
            so it stands on its own without a prefix or the blocked styling. This
            is what the row reads immediately after a successful import, which
-           releases its selection to make room for the next one. */
+           releases its selection and rewords the instruction for that moment
+           ("Select another site to import, or Esc to finish."). */
         (void)DSD_SNPRINTF(out, out_sz, "%s", plan->blocked_reason);
         return 0;
     }

@@ -103,14 +103,16 @@ static const char* const k_status_checking = "Checking your RadioReference accou
 static const char* const k_status_verified = "RadioReference account verified.";
 
 /* Ported verbatim from the Qt frontend. */
-static const char* const k_msg_bad_zip = "That is not a ZIP code.";
+static const char* const k_msg_bad_zip = "Enter a ZIP code (digits only).";
 
 /* New here: the terminal wizard's own search/browse vocabulary. Ported titles
  * keep the Qt section wording ("Find a system", "Country", "State", "County",
  * "Systems"); the three search-mode rows and the status lines have no Qt
  * equivalent because the QML shows all three search forms at once. */
-static const char* const k_msg_bad_sid = "That is not a RadioReference system ID.";
-static const char* const k_msg_no_systems = "RadioReference lists no systems there.";
+static const char* const k_msg_bad_sid = "Enter a system ID (digits only).";
+/* Read on row 2 of the "Find a system" chooser it returns to, whose floor width
+   leaves 42 columns; and it says what to do next. */
+static const char* const k_msg_no_systems = "No systems there. Try another search.";
 static const char* const k_title_search_mode = "Find a system";
 static const char* const k_title_country = "Country";
 static const char* const k_title_state = "State";
@@ -131,8 +133,7 @@ static const char* const k_status_system = "Loading the system...";
 /* Stage 8. No Qt equivalent to port: the Android app has neither a trunk-scan
  * session nor a shared imports folder. File-scope so the test can assert on the
  * same storage. */
-static const char k_rr_blocked_trunk_scan[] =
-    "A trunk-scan session manages its own channel maps, so an import cannot be applied to it.";
+static const char k_rr_blocked_trunk_scan[] = "Stop trunk-scan first; it manages its own channel maps.";
 static const char k_rr_err_name_taken[] = "A different system is already imported under this name.";
 static const char k_rr_err_no_imports_dir[] =
 #ifdef _WIN32
@@ -147,8 +148,11 @@ static const char k_rr_err_apply[] = "The import was written but could not be ap
  * obvious next move is another site, while a conventional one already carries
  * every repeater the user marked. Both name what was written, because the
  * wizard stays open and the row that described it is now unselected. */
-static const char k_rr_status_imported_site[] = "Imported %s. Pick another site, or Esc to finish.";
-static const char k_rr_status_imported_conv[] = "Imported %s. Change the selection, or Esc to finish.";
+/* The toast confirms, in the footer's own verb ("Enter=Import" -> "Imported");
+   what to do next is said by the plan row, which stays up until the user acts,
+   where a toast would expire. Both rows use the footer's "Select". */
+static const char k_rr_next_site[] = "Select another site to import, or Esc to finish.";
+static const char k_rr_next_repeaters[] = "Select repeaters for another import, or Esc to finish.";
 
 /* ---- Result kinds and their two-step frees ------------------------------ */
 
@@ -252,6 +256,7 @@ struct RrWizardCore {
     int widget_open;
     int has_deferred;
     RrWizardStep deferred_step;
+    unsigned status_seq; /* bumped by every status notify; see rr_core_retire_stage() */
 
     char username[128];
     char password[128];
@@ -503,9 +508,26 @@ rr_core_panel_changed(const RrWizardCore* w) {
 }
 
 static void
-rr_core_status_notify(const RrWizardCore* w, const char* text) {
+rr_core_status_notify(RrWizardCore* w, const char* text) {
+    w->status_seq++;
     if (w->hooks.status != NULL) {
         w->hooks.status(w->hook_user, text);
+    }
+}
+
+/**
+ * @brief Clear a stage text ("Loading counties...") once the fetch it named is over.
+ *
+ * Called after a result is applied, with the sequence read before it. When the
+ * batch is complete and applying it said nothing of its own, the stage text is
+ * the toast still showing - and it would sit under the list it loaded, or the
+ * error that replaced it, until it expired. A stage that chained into another
+ * fetch, or landed with its own message, bumped the sequence and is kept.
+ */
+static void
+rr_core_retire_stage(RrWizardCore* w, unsigned seq_before) {
+    if (w->outstanding == 0 && w->status_seq == seq_before) {
+        rr_core_status_notify(w, "");
     }
 }
 
@@ -1500,10 +1522,10 @@ rr_refresh_fail(RrWizardCore* w, const char* text) {
 /**
  * @brief Report the replacement and hand the panel back to the menu.
  *
- * "was asked to reload it", never "applied": dsd_app_drain_cmds() discards the
+ * "is reloading it", never "applied": dsd_app_drain_cmds() discards the
  * handler's return value, so the decoder thread owns the authoritative toast,
  * and svc_import_channel_map() can still refuse outright when a trunk scan is
- * running.
+ * running - in which case its own message follows this one.
  */
 static void
 rr_refresh_succeed(RrWizardCore* w, int pushed) {
@@ -1511,10 +1533,11 @@ rr_refresh_succeed(RrWizardCore* w, int pushed) {
     const char* slash = strrchr(w->refresh.path, RR_PATH_SEP);
     const char* leaf = (slash != NULL) ? slash + 1 : w->refresh.path;
 
+    /* The leaf is clipped so the second clause survives one status row. */
     if (pushed) {
-        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %s; the running session was asked to reload it.", leaf);
+        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %.24s; the session is reloading it.", leaf);
     } else {
-        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %s.", leaf);
+        (void)DSD_SNPRINTF(msg, sizeof msg, "Refreshed %.40s.", leaf);
     }
     DSD_MEMSET(&w->refresh, 0, sizeof w->refresh);
     /* A refresh is one shot: it neither previews nor tunes, so it returns the
@@ -1873,7 +1896,9 @@ rr_core_apply_search_result(RrWizardCore* w, RrWizResult* r) {
              * is what the user reads while that runs. */
             const dsd_rr_zip_info* zip = r->payload.zip;
             if (rr_start_results_for_county(w, zip->ctid)) {
-                rr_core_status_notify(w, zip->city);
+                char near[160];
+                (void)DSD_SNPRINTF(near, sizeof near, "Loading systems near %.96s...", zip->city);
+                rr_core_status_notify(w, near);
             }
             return 1;
         }
@@ -2097,12 +2122,16 @@ rr_core_dispatch(RrWizardCore* w, RrWizResult* r) {
         r->payload = rr_payload_none();
         return 0;
     }
+    const unsigned seq_before = w->status_seq;
     if (r->status != DSD_RR_OK) {
-        return rr_core_dispatch_error(w, r);
+        const int changed = rr_core_dispatch_error(w, r);
+        rr_core_retire_stage(w, seq_before);
+        return changed;
     }
     const int changed = rr_core_apply_result(w, r);
     rr_core_free_result(r->kind, r->payload);
     r->payload = rr_payload_none();
+    rr_core_retire_stage(w, seq_before);
     return changed;
 }
 
@@ -2820,11 +2849,15 @@ rr_import_reset_write_state(RrWizardCore* w) {
  *
  * A system is imported once per site, and re-entering the wizard for each one
  * costs a whole re-fetch of a system already in memory - so this does NOT close
- * the wizard. It releases the selection instead, which returns the plan preview
- * to "Select a site.", makes the next county one keypress away, and stops a
- * stray second Enter from re-importing what was just written. The panel renders
- * the status line inside its own window, so the confirmation is visible without
- * the overlay standing down.
+ * the wizard. It releases the selection instead, which makes the next county
+ * one keypress away and stops a stray second Enter from re-importing what was
+ * just written. The panel renders the status line inside its own window, so the
+ * confirmation is visible without the overlay standing down.
+ *
+ * The rebuilt plan asks for a selection again, and its instruction is reworded
+ * here for the state the user is actually in: not "Select a site." as if nothing
+ * had happened, but "Select another site to import, or Esc to finish." The next
+ * rebuild - any toggle or option change - restores the planner's own wording.
  */
 static void
 rr_import_land_back_on_the_site_list(RrWizardCore* w) {
@@ -2838,9 +2871,13 @@ rr_import_land_back_on_the_site_list(RrWizardCore* w) {
     }
     w->selected_count = 0;
     rr_plan_rebuild(w);
+    if (w->plan.awaiting_selection) {
+        (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof w->plan.blocked_reason, "%s",
+                           conventional ? k_rr_next_repeaters : k_rr_next_site);
+    }
 
-    char text[sizeof(label) + 64];
-    (void)DSD_SNPRINTF(text, sizeof(text), conventional ? k_rr_status_imported_conv : k_rr_status_imported_site, label);
+    char text[sizeof(label) + 32];
+    (void)DSD_SNPRINTF(text, sizeof(text), "Imported %s.", label);
     rr_core_status_notify(w, text);
 }
 

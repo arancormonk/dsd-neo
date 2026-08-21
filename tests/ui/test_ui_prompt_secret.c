@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <time.h>
 #include "menu_prompts.h"
 
 static int g_string_done_called = 0;
@@ -30,6 +31,23 @@ ui_make_window(int h, int w, int y, int x) { // NOLINT(misc-use-internal-linkage
     (void)y;
     (void)x;
     return NULL;
+}
+
+int ui_status_peek(char* buf, size_t n, time_t now); // NOLINT(misc-use-internal-linkage)
+void ui_status_clear_if_expired(time_t now);         // NOLINT(misc-use-internal-linkage)
+
+/* The widgets now draw the live toast; these tests raise none. */
+int
+ui_status_peek(char* buf, size_t n, time_t now) { // NOLINT(misc-use-internal-linkage)
+    (void)buf;
+    (void)n;
+    (void)now;
+    return 0;
+}
+
+void
+ui_status_clear_if_expired(time_t now) { // NOLINT(misc-use-internal-linkage)
+    (void)now;
 }
 
 void
