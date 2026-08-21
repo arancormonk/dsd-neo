@@ -234,8 +234,12 @@ rr_panel_refresh_queue_start_next(void) {
  * from it, and each done-callback either advances to the next level (keeping the
  * context) or frees it exactly once.
  */
-#define RR_BROWSE_ROW_MAX   256
-#define RR_BROWSE_TITLE_MAX 176
+#define RR_BROWSE_ROW_MAX        256
+#define RR_BROWSE_TITLE_MAX      176
+
+/* Columns the chooser spends on itself: a border either side and two columns of
+   padding either side (menu_prompts.c draws items at x = 2). */
+#define RR_BROWSE_CHOOSER_CHROME 6
 
 enum { RR_ACT_USE = 0, RR_ACT_REFRESH, RR_ACT_DELETE, RR_ACT_MAX };
 
@@ -262,6 +266,10 @@ static void
 rr_browse_apply(const RrLibrarySystem* s) {
     const char* chan = s->has_chan ? s->chan_path : NULL;
     const char* group = s->has_group ? s->group_path : NULL;
+    /* Named with its site: several stored imports carry the same system name,
+       one per site, so the system alone would not say which one this is. */
+    char named[RR_BROWSE_TITLE_MAX];
+    rr_library_display_name(s, named, sizeof named);
 
     if (s->recipe.present) {
         /* The same pre-check the wizard runs before its own apply: the decoder's
@@ -282,14 +290,14 @@ rr_browse_apply(const RrLibrarySystem* s) {
             if (dsd_app_rr_fill_apply_payload(&plan, chan, group, &payload) == 0) {
                 const int rc = dsd_app_command_set_rr_apply(&payload);
                 if (rc > 0) {
-                    ui_statusf("Applying %s to this session.", s->name);
+                    ui_statusf("Applying %s to this session.", named);
                 } else {
-                    ui_statusf("Could not apply %s: the decoder is not accepting commands.", s->name);
+                    ui_statusf("Could not apply %s: the decoder is not accepting commands.", named);
                 }
                 return;
             }
         }
-        ui_statusf("Could not rebuild %s from its saved settings.", s->name);
+        ui_statusf("Could not rebuild %s from its saved settings.", named);
         return;
     }
 
@@ -303,9 +311,9 @@ rr_browse_apply(const RrLibrarySystem* s) {
         loaded |= (dsd_app_command_set_string(DSD_APP_CMD_IMPORT_GROUP_LIST, group) > 0) ? 1 : 0;
     }
     if (loaded) {
-        ui_statusf("Loaded %s files; the decode mode was left unchanged.", s->name);
+        ui_statusf("Loaded %s files; the decode mode was left unchanged.", named);
     } else {
-        ui_statusf("Nothing to load for %s.", s->name);
+        ui_statusf("Nothing to load for %s.", named);
     }
 }
 
@@ -327,6 +335,8 @@ rr_browse_delete_one(const char* csv_path) {
 /* Remove both halves of a system and their sidecars. */
 static void
 rr_browse_delete(const RrLibrarySystem* s) {
+    char named[RR_BROWSE_TITLE_MAX];
+    rr_library_display_name(s, named, sizeof named);
     int removed = 0;
     if (s->has_group) {
         removed += rr_browse_delete_one(s->group_path);
@@ -335,9 +345,9 @@ rr_browse_delete(const RrLibrarySystem* s) {
         removed += rr_browse_delete_one(s->chan_path);
     }
     if (removed > 0) {
-        ui_statusf("Deleted %s (%d file%s).", s->name, removed, (removed == 1) ? "" : "s");
+        ui_statusf("Deleted %s (%d file%s).", named, removed, (removed == 1) ? "" : "s");
     } else {
-        ui_statusf("Could not delete %s.", s->name);
+        ui_statusf("Could not delete %s.", named);
     }
 }
 
@@ -355,7 +365,9 @@ rr_browse_refresh(const RrLibrarySystem* s) {
                            s->chan_path);
     }
     if (g_rr_panel.refresh_queue_n == 0) {
-        ui_statusf("%s has no files to refresh.", s->name);
+        char named[RR_BROWSE_TITLE_MAX];
+        rr_library_display_name(s, named, sizeof named);
+        ui_statusf("%s has no files to refresh.", named);
         return;
     }
     (void)rr_panel_refresh_queue_start_next();
@@ -395,12 +407,15 @@ rr_browse_action_done(void* u, int sel) {
             rr_browse_refresh(s);
             rr_browse_ctx_free(ctx);
             return;
-        case RR_ACT_DELETE:
-            (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Delete %s from disk?", s->name);
+        case RR_ACT_DELETE: {
+            char named[RR_BROWSE_TITLE_MAX];
+            rr_library_display_name(s, named, sizeof named);
+            (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Delete %s from disk?", named);
             ctx->confirm_items[0] = "Cancel";
             ctx->confirm_items[1] = "Delete permanently";
             ui_chooser_start(ctx->title, ctx->confirm_items, 2, rr_browse_confirm_done, ctx);
             return;
+        }
         default:
             /* Never the destructive branch: an action kind this switch does not
                know must do nothing, not fall through to deleting files. */
@@ -441,7 +456,7 @@ rr_browse_system_done(void* u, int sel) {
     ctx->action_items[ctx->action_n] = ctx->action_rows[ctx->action_n];
     ctx->action_n++;
 
-    (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "%s", s->name);
+    rr_library_display_name(s, ctx->title, sizeof ctx->title);
     ui_chooser_start(ctx->title, ctx->action_items, ctx->action_n, rr_browse_action_done, ctx);
 }
 
@@ -512,9 +527,17 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
     const char* chan_in_use = (snap != NULL) ? snap->chan_in_file : NULL;
     const char* group_in_use = (snap != NULL) ? snap->group_in_file : NULL;
 
+    /* Measured once for the whole list, against the width the chooser has: it
+       sizes its window to the longest row and clips at the screen edge, so a
+       row built for a wider terminal loses its last column rather than wrapping.
+       The chooser's own frame and padding are what RR_BROWSE_CHOOSER_CHROME
+       accounts for. */
+    RrLibraryLayout layout;
+    rr_library_layout(&ctx->lib, COLS - RR_BROWSE_CHOOSER_CHROME, &layout);
+
     for (int idx = 0; idx < ctx->lib.count; idx++) {
         const int in_use = rr_library_system_in_use(&ctx->lib.systems[idx], chan_in_use, group_in_use);
-        (void)rr_library_row_format(&ctx->lib.systems[idx], in_use, ctx->rows[idx], sizeof ctx->rows[0]);
+        (void)rr_library_row_format(&ctx->lib.systems[idx], &layout, in_use, ctx->rows[idx], sizeof ctx->rows[0]);
         ctx->items[idx] = ctx->rows[idx];
     }
     if (ctx->lib.overflow) {
@@ -565,11 +588,12 @@ rr_panel_tick(dsd_opts* opts, dsd_state* state) {
         dsd_app_request_redraw();
     }
     const RrWizardStep step = rr_wizard_core_step(g_rr_panel.core);
-    /* Both steps are terminal. RR_STEP_IMPORTING is where a written-and-applied
-       import parks and nothing walks it back; RR_STEP_IDLE is where a cancel and
-       a completed refresh land. Neither has a renderer, and rr_panel_handle_key()
-       consumes every key while the panel is active, so staying active on either
-       would leave a modal that draws nothing and cannot be dismissed. */
+    /* RR_STEP_IDLE is terminal: it is where a cancel and a completed refresh
+       land. It has no renderer, and rr_panel_handle_key() consumes every key
+       while the panel is active, so staying active on it would leave a modal
+       that draws nothing and cannot be dismissed. A finished import is NOT
+       terminal - it stays on the site list so the next site of the same system
+       costs one keypress instead of a whole re-fetch. */
     if (step == RR_STEP_ERROR) {
         /* A queued refresh that failed stops the queue: the error renders and the
            user dismisses it; the remaining file is not attempted. */
@@ -583,12 +607,6 @@ rr_panel_tick(dsd_opts* opts, dsd_state* state) {
         if (g_rr_panel.refresh_active && rr_panel_refresh_queue_start_next()) {
             return;
         }
-        rr_panel_refresh_queue_clear();
-        g_rr_panel.active = 0;
-    } else if (step == RR_STEP_IMPORTING) {
-        /* Cleared here too, so "refresh_active implies the panel is active" holds
-           on every terminal step: a queue left armed behind a deactivated panel
-           would resume against a file the next panel session never selected. */
         rr_panel_refresh_queue_clear();
         g_rr_panel.active = 0;
     }

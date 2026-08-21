@@ -217,14 +217,14 @@ rr_stem_trim(char* text, size_t len) {
 }
 
 size_t
-dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz) {
+dsd_rr_sanitize_file_part(const char* text, char* out, size_t out_sz) {
     if (out == NULL || out_sz == 0U) {
         return 0;
     }
     out[0] = '\0';
 
     char scratch[256];
-    size_t len = rr_collapse_label((system_name != NULL) ? system_name : "", scratch, sizeof(scratch));
+    size_t len = rr_collapse_label((text != NULL) ? text : "", scratch, sizeof(scratch));
     for (size_t i = 0; i < len; i++) {
         if (rr_stem_is_illegal(scratch[i])) {
             scratch[i] = '-';
@@ -242,8 +242,7 @@ dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz) {
        reads `len == 0` as always true (it explores only the path where the trim
        consumes everything). */
     if (scratch[0] == '\0') {
-        (void)DSD_SNPRINTF(out, out_sz, "%s", RR_STEM_FALLBACK);
-        return strlen(out);
+        return 0;
     }
     /* Copy through the bounded formatter rather than DSD_MEMCPY + a hand-written
        terminator. len <= limit <= out_sz - 1 already holds (rr_utf8_prefix() cuts to
@@ -253,6 +252,19 @@ dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz) {
        DSD_SNPRINTF carries the bound in its own contract, so neither analyzer has to
        rediscover it. */
     (void)DSD_SNPRINTF(out, out_sz, "%.*s", (int)len, scratch);
+    return strlen(out);
+}
+
+size_t
+dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz) {
+    const size_t len = dsd_rr_sanitize_file_part(system_name, out, out_sz);
+    if (len > 0U) {
+        return len;
+    }
+    if (out == NULL || out_sz == 0U) {
+        return 0;
+    }
+    (void)DSD_SNPRINTF(out, out_sz, "%s", RR_STEM_FALLBACK);
     return strlen(out);
 }
 
@@ -399,6 +411,41 @@ rr_plan_join_site_ids(const dsd_rr_site* sites, const size_t* chosen, size_t cho
     return 0;
 }
 
+/**
+ * @brief Name what the selection covers, for the file stem and the browser.
+ *
+ * Counted rather than named only where naming would mislead: a conventional
+ * import of several repeaters is a set, not a place. One repeater IS a place,
+ * so it is named like any single site.
+ *
+ * @param sites        Caller's site array.
+ * @param chosen       Indexes into @p sites, selection order.
+ * @param chosen_count Number of indexes; must be >= 1.
+ * @param conventional Non-zero for a repeater selection.
+ * @param out          Destination buffer; always NUL-terminated on return.
+ * @param out_sz       Destination size in bytes, passed explicitly.
+ */
+static void
+rr_plan_site_label(const dsd_rr_site* sites, const size_t* chosen, size_t chosen_count, int conventional, char* out,
+                   size_t out_sz) {
+    out[0] = '\0';
+    if (conventional && chosen_count > 1U) {
+        (void)DSD_SNPRINTF(out, out_sz, "%zu repeaters", chosen_count);
+        return;
+    }
+    const dsd_rr_site* site = &sites[chosen[0]];
+    char scratch[256];
+    const size_t len = rr_collapse_display_label(site->descr, scratch, sizeof(scratch));
+    if (len == 0U) {
+        /* No description at all is common. site_number is the RF site, which
+         * repeats within a system - fine for a label the user reads next to the
+         * system name, and never acceptable in site_ids. */
+        (void)DSD_SNPRINTF(out, out_sz, "Site %d", site->site_number);
+        return;
+    }
+    (void)DSD_SNPRINTF(out, out_sz, "%.*s", (int)rr_utf8_prefix(scratch, len, out_sz - 1U), scratch);
+}
+
 /* Shallow copies into one contiguous array, which is what the generators take.
  * `freqs` stays owned by the caller's site array, so this is released with a
  * plain free() and NEVER with dsd_rr_site_list_free(). */
@@ -518,6 +565,8 @@ dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* site
         free(idx);
         return rr_plan_block(plan, "Too many repeaters to record for a later refresh. Select fewer of them.");
     }
+
+    rr_plan_site_label(sites, idx, chosen_count, info->conventional, plan->site_label, sizeof(plan->site_label));
 
     dsd_rr_site* chosen_sites = rr_plan_copy_sites(sites, idx, chosen_count);
     free(idx);

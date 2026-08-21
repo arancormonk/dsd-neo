@@ -56,6 +56,7 @@ prov_group(dsd_rr_provenance* p, int sid, const char* name, int present, dsd_rr_
     DSD_STRNCPY(p->kind, "group", sizeof p->kind - 1);
     p->sid = sid;
     DSD_STRNCPY(p->system_name, name, sizeof p->system_name - 1);
+    DSD_STRNCPY(p->site_label, "Site 1", sizeof p->site_label - 1);
     p->partial_enc_as_de = 1;
     p->imported_at = 1755500000LL;
     p->recipe.present = present;
@@ -102,24 +103,86 @@ test_distinct_sids_are_distinct_systems(void) {
     expect("two systems", lib.count == 2);
 }
 
-/* A row aligns name, protocol and detail; the in-use marker is appended. */
+/** @brief Widths for @p lib rendered into @p cols columns. */
+static RrLibraryLayout
+layout_for(const RrLibrary* lib, int cols) {
+    RrLibraryLayout layout;
+    rr_library_layout(lib, cols, &layout);
+    return layout;
+}
+
+/*
+ * The whole row, spelled out. Four columns after a two-column gutter: system,
+ * site, protocol, and the detail cell that closes the line. The site is there
+ * because several rows can now name the same system.
+ */
 static void
 test_row_format_trunked(void) {
     RrLibrary lib;
     rr_library_init(&lib);
     dsd_rr_provenance g;
     prov_group(&g, 6673, "SARA Network", 1, DSD_RR_PROTO_P25, 769768750LL, 1, 0);
-    (void)rr_library_add(&lib, "/imports/SARA Network group.csv", &g);
+    DSD_STRNCPY(g.site_label, "Sioux City", sizeof g.site_label - 1);
+    (void)rr_library_add(&lib, "/imports/SARA Network - Sioux City group.csv", &g);
+    const RrLibraryLayout layout = layout_for(&lib, 80);
 
     char row[256];
-    (void)rr_library_row_format(&lib.systems[0], 0, row, sizeof row);
-    expect("row leads with the name", strncmp(row, "SARA Network", 12) == 0);
-    expect("row names the protocol", strstr(row, "P25") != NULL);
-    expect("row shows the start frequency", strstr(row, "769.76875") != NULL);
-    expect("row has no marker when idle", strstr(row, "in use") == NULL);
+    (void)rr_library_row_format(&lib.systems[0], &layout, 0, row, sizeof row);
+    expect_str("the whole row", row, "  SARA Network  Sioux City  P25          769.76875");
 
-    (void)rr_library_row_format(&lib.systems[0], 1, row, sizeof row);
-    expect("row marks the in-use system", strstr(row, "in use") != NULL);
+    /* In use is a gutter mark, not a suffix: it costs two columns instead of
+       nine, and it reads down the left edge instead of hiding at the end of
+       lines of differing length. */
+    (void)rr_library_row_format(&lib.systems[0], &layout, 1, row, sizeof row);
+    expect_str("the in-use row", row, "* SARA Network  Sioux City  P25          769.76875");
+}
+
+/*
+ * Nothing imported per-site yet - every sidecar predates the label - so the
+ * site column would be a column of nothing. Drop it and give the width back to
+ * the system name.
+ */
+static void
+test_layout_drops_an_empty_site_column(void) {
+    RrLibrary lib;
+    rr_library_init(&lib);
+    dsd_rr_provenance g;
+    prov_group(&g, 6673, "SARA Network", 1, DSD_RR_PROTO_P25, 769768750LL, 1, 0);
+    g.site_label[0] = '\0';
+    (void)rr_library_add(&lib, "/imports/SARA Network group.csv", &g);
+
+    const RrLibraryLayout layout = layout_for(&lib, 80);
+    expect("no site column", layout.site == 0);
+
+    char row[256];
+    (void)rr_library_row_format(&lib.systems[0], &layout, 0, row, sizeof row);
+    expect_str("the unlabelled row", row, "  SARA Network  P25          769.76875");
+}
+
+/*
+ * Columns are measured against the terminal, not fixed: 80 columns is the width
+ * that has to keep working, and a wide terminal should not waste the space it
+ * has. Neither column is allowed to starve the other.
+ */
+static void
+test_layout_shares_the_width_it_has(void) {
+    RrLibrary lib;
+    rr_library_init(&lib);
+    dsd_rr_provenance g;
+    prov_group(&g, 9, "A Very Long System Name That Goes On And On And On", 1, DSD_RR_PROTO_P25, 770000000LL, 1, 0);
+    DSD_STRNCPY(g.site_label, "A Very Long Site Description Indeed", sizeof g.site_label - 1);
+    (void)rr_library_add(&lib, "/imports/Long - Site group.csv", &g);
+
+    const RrLibraryLayout wide = layout_for(&lib, 200);
+    expect("a wide terminal shows the whole name", wide.name == 40);
+    expect("and the whole site", wide.site == 28);
+
+    const RrLibraryLayout narrow = layout_for(&lib, 80);
+    expect("80 columns splits what is left evenly", narrow.name == 23 && narrow.site == 23);
+
+    /* A terminal narrower than the minimum still renders; the chooser clips it. */
+    const RrLibraryLayout tiny = layout_for(&lib, 40);
+    expect("neither column starves", tiny.name >= 12 && tiny.site >= 10);
 }
 
 /* A files-only system (no recipe) shows dashes rather than a frequency. */
@@ -130,10 +193,11 @@ test_row_format_files_only(void) {
     dsd_rr_provenance g;
     prov_group(&g, 42, "Legacy", 0, DSD_RR_PROTO_UNSUPPORTED, 0, 0, 0);
     (void)rr_library_add(&lib, "/imports/Legacy group.csv", &g);
+    const RrLibraryLayout layout = layout_for(&lib, 80);
 
     char row[256];
-    (void)rr_library_row_format(&lib.systems[0], 0, row, sizeof row);
-    expect("files-only names the system", strncmp(row, "Legacy", 6) == 0);
+    (void)rr_library_row_format(&lib.systems[0], &layout, 0, row, sizeof row);
+    expect("files-only names the system", strstr(row, "Legacy") != NULL);
     expect("files-only shows no frequency", strstr(row, ".") == NULL || strstr(row, "MHz") == NULL);
     expect("files-only uses a dash for the detail", strstr(row, "-") != NULL);
 }
@@ -145,29 +209,73 @@ test_row_format_scan_list(void) {
     rr_library_init(&lib);
     dsd_rr_provenance g;
     prov_group(&g, 7, "County Fire", 1, DSD_RR_PROTO_DMR_CONV, 462562500LL, 0, 1);
-    (void)rr_library_add(&lib, "/imports/County Fire chan.csv", &g);
-    /* Conventional emits a chan (scan list) file. */
+    DSD_STRNCPY(g.site_label, "9 repeaters", sizeof g.site_label - 1);
+    /* Conventional emits a chan (scan list) file, and the kind has to match the
+       name on disk: the two halves are paired by the stem the filename carries. */
     DSD_STRNCPY(g.kind, "chan", sizeof g.kind - 1);
+    expect("the scan list folds", rr_library_add(&lib, "/imports/County Fire - 9 repeaters chan.csv", &g) == 0);
+    const RrLibraryLayout layout = layout_for(&lib, 80);
 
     char row[256];
-    (void)rr_library_row_format(&lib.systems[0], 0, row, sizeof row);
+    (void)rr_library_row_format(&lib.systems[0], &layout, 0, row, sizeof row);
     expect("scan list is flagged", strstr(row, "scan") != NULL);
+    expect("a repeater count stands in for a site", strstr(row, "9 repeaters") != NULL);
 }
 
-/* A long name is truncated so the columns stay aligned. */
+/* Long text is truncated so the columns stay aligned - in both of them. */
 static void
-test_row_format_truncates_long_name(void) {
+test_row_format_truncates_long_text(void) {
     RrLibrary lib;
     rr_library_init(&lib);
     dsd_rr_provenance g;
     prov_group(&g, 9, "A Very Long System Name That Exceeds The Column Width By A Lot", 1, DSD_RR_PROTO_P25,
                770000000LL, 1, 0);
+    DSD_STRNCPY(g.site_label, "A Very Long Site Description Indeed", sizeof g.site_label - 1);
     (void)rr_library_add(&lib, "/imports/Long group.csv", &g);
+    const RrLibraryLayout layout = layout_for(&lib, 80);
 
     char row[256];
-    (void)rr_library_row_format(&lib.systems[0], 0, row, sizeof row);
-    expect("truncated name is marked", strstr(row, "..") != NULL);
+    (void)rr_library_row_format(&lib.systems[0], &layout, 0, row, sizeof row);
+    expect("truncation is marked", strstr(row, "..") != NULL);
+    expect("the name is cut to its column", strstr(row, "A Very Long System Name") == NULL);
+    expect("the site is cut to its column", strstr(row, "A Very Long Site Description") == NULL);
     expect("protocol still present after truncation", strstr(row, "P25") != NULL);
+    expect("frequency still present after truncation", strstr(row, "770") != NULL);
+}
+
+/*
+ * Every message that names a stored import - the action list's title, the
+ * delete confirmation, the apply status - has to name the SITE too. Several
+ * rows carry the same system name now, and "Delete Iowa Statewide from disk?"
+ * would not say which county it is about to delete.
+ */
+static void
+test_display_name_names_the_site(void) {
+    RrLibrary lib;
+    rr_library_init(&lib);
+    dsd_rr_provenance g;
+    prov_group(&g, 8734, "Iowa Statewide", 1, DSD_RR_PROTO_P25, 770418750LL, 1, 0);
+    DSD_STRNCPY(g.site_label, "Polk (Des Moines)", sizeof g.site_label - 1);
+    (void)rr_library_add(&lib, "/imports/Iowa Statewide - Polk group.csv", &g);
+
+    char text[256];
+    rr_library_display_name(&lib.systems[0], text, sizeof text);
+    expect_str("named with its site", text, "Iowa Statewide - Polk (Des Moines)");
+
+    /* A file imported before labels existed has only the one name to give. */
+    rr_library_init(&lib);
+    prov_group(&g, 42, "Legacy", 1, DSD_RR_PROTO_P25, 770000000LL, 1, 0);
+    g.site_label[0] = '\0';
+    (void)rr_library_add(&lib, "/imports/Legacy group.csv", &g);
+    rr_library_display_name(&lib.systems[0], text, sizeof text);
+    expect_str("unlabelled names the system alone", text, "Legacy");
+
+    /* Never NULL and never unterminated: these go straight into a prompt. */
+    char tiny[8];
+    rr_library_display_name(&lib.systems[0], tiny, sizeof tiny);
+    expect_str("a short buffer still yields a usable name", tiny, "Legacy");
+    rr_library_display_name(NULL, text, sizeof text);
+    expect_str("a missing row yields no name", text, "");
 }
 
 /* in_use compares stored paths against the session's in-use paths. */
@@ -223,11 +331,50 @@ test_unusable_sidecars_are_skipped(void) {
     expect("nothing was folded", lib.count == 0);
 }
 
-/* Two pairs can share a sid: the file stem comes from the system name, so a
-   rename re-imports under a new stem and leaves the old pair behind. The newer
-   sidecar must win regardless of the order the directory walk hands them over. */
+/*
+ * A statewide system is imported once per site, so several stored imports
+ * legitimately share a sid. They are told apart by their file stem - the two
+ * halves one import wrote - and each is its own row with its own site.
+ */
 static void
-test_duplicate_sid_keeps_the_newest_half(void) {
+test_two_sites_of_one_system_are_two_rows(void) {
+    RrLibrary lib;
+    rr_library_init(&lib);
+
+    dsd_rr_provenance polk;
+    prov_group(&polk, 8734, "Iowa Statewide", 1, DSD_RR_PROTO_P25, 770418750LL, 1, 0);
+    DSD_STRNCPY(polk.site_label, "Polk (Des Moines)", sizeof polk.site_label - 1);
+    DSD_STRNCPY(polk.site_ids, "16863", sizeof polk.site_ids - 1);
+    dsd_rr_provenance linn;
+    prov_group(&linn, 8734, "Iowa Statewide", 1, DSD_RR_PROTO_P25, 770668750LL, 1, 0);
+    DSD_STRNCPY(linn.site_label, "Linn (Cedar Rapids)", sizeof linn.site_label - 1);
+    DSD_STRNCPY(linn.site_ids, "23581", sizeof linn.site_ids - 1);
+
+    expect("polk folds", rr_library_add(&lib, "/imports/Iowa Statewide - Polk group.csv", &polk) == 0);
+    expect("linn folds", rr_library_add(&lib, "/imports/Iowa Statewide - Linn group.csv", &linn) == 0);
+    expect("one row per site", lib.count == 2);
+    expect_str("first row's site", lib.systems[0].site_label, "Polk (Des Moines)");
+    expect_str("second row's site", lib.systems[1].site_label, "Linn (Cedar Rapids)");
+    expect("both rows keep the system id", lib.systems[0].sid == 8734 && lib.systems[1].sid == 8734);
+
+    /* Each site's two halves still pair up - by stem, which is what one import
+       wrote both of its files under. */
+    dsd_rr_provenance polk_chan = polk;
+    DSD_STRNCPY(polk_chan.kind, "chan", sizeof polk_chan.kind - 1);
+    expect("polk chan folds", rr_library_add(&lib, "/imports/Iowa Statewide - Polk chan.csv", &polk_chan) == 0);
+    expect("still two rows", lib.count == 2);
+    expect("polk has both halves", lib.systems[0].has_group == 1 && lib.systems[0].has_chan == 1);
+    expect("linn still has only its group half", lib.systems[1].has_chan == 0);
+}
+
+/*
+ * RadioReference renames a system from time to time. The re-import lands under
+ * a new stem and the old pair stays on disk, so it gets a row of its own: it is
+ * a real stored import, and a row is the only way to use, refresh or - most of
+ * the time - delete it.
+ */
+static void
+test_a_renamed_system_leaves_both_pairs_listed(void) {
     for (int order = 0; order < 2; order++) {
         RrLibrary lib;
         rr_library_init(&lib);
@@ -240,19 +387,21 @@ test_duplicate_sid_keeps_the_newest_half(void) {
         newer.imported_at = 2000;
 
         if (order == 0) {
-            (void)rr_library_add(&lib, "/imports/Metro Radio group.csv", &older);
-            (void)rr_library_add(&lib, "/imports/Metro Regional group.csv", &newer);
+            (void)rr_library_add(&lib, "/imports/Metro Radio - Site 1 group.csv", &older);
+            (void)rr_library_add(&lib, "/imports/Metro Regional - Site 1 group.csv", &newer);
         } else {
-            (void)rr_library_add(&lib, "/imports/Metro Regional group.csv", &newer);
-            (void)rr_library_add(&lib, "/imports/Metro Radio group.csv", &older);
+            (void)rr_library_add(&lib, "/imports/Metro Regional - Site 1 group.csv", &newer);
+            (void)rr_library_add(&lib, "/imports/Metro Radio - Site 1 group.csv", &older);
         }
-        expect("still one system", lib.count == 1);
-        expect_str("newest half wins regardless of walk order", lib.systems[0].group_path,
-                   "/imports/Metro Regional group.csv");
+        expect("the stale pair is not hidden", lib.count == 2);
+        rr_library_sort(&lib);
+        expect_str("both names are listed", lib.systems[0].name, "Metro Radio");
+        expect_str("both names are listed", lib.systems[1].name, "Metro Regional");
     }
 }
 
-/* sort orders by name, then sid. */
+/* sort orders by name, then site, then sid: sibling sites of one system land
+   together and in a stable order. */
 static void
 test_sort_orders_by_name(void) {
     RrLibrary lib;
@@ -264,10 +413,15 @@ test_sort_orders_by_name(void) {
     (void)rr_library_add(&lib, "/imports/Alpha group.csv", &g);
     prov_group(&g, 2, "Bravo", 1, DSD_RR_PROTO_P25, 770000000LL, 1, 0);
     (void)rr_library_add(&lib, "/imports/Bravo group.csv", &g);
+    prov_group(&g, 2, "Bravo", 1, DSD_RR_PROTO_P25, 770000000LL, 1, 0);
+    DSD_STRNCPY(g.site_label, "Ames", sizeof g.site_label - 1);
+    (void)rr_library_add(&lib, "/imports/Bravo - Ames group.csv", &g);
     rr_library_sort(&lib);
     expect_str("first", lib.systems[0].name, "Alpha");
     expect_str("second", lib.systems[1].name, "Bravo");
-    expect_str("third", lib.systems[2].name, "Charlie");
+    expect_str("sites of one system sort together", lib.systems[1].site_label, "Ames");
+    expect_str("and in order", lib.systems[2].site_label, "Site 1");
+    expect_str("third", lib.systems[3].name, "Charlie");
 }
 
 static int
@@ -332,11 +486,15 @@ main(void) {
     test_row_format_trunked();
     test_row_format_files_only();
     test_row_format_scan_list();
-    test_row_format_truncates_long_name();
+    test_row_format_truncates_long_text();
+    test_layout_drops_an_empty_site_column();
+    test_layout_shares_the_width_it_has();
+    test_display_name_names_the_site();
     test_in_use_predicate();
     test_overflow_is_flagged();
     test_unusable_sidecars_are_skipped();
-    test_duplicate_sid_keeps_the_newest_half();
+    test_two_sites_of_one_system_are_two_rows();
+    test_a_renamed_system_leaves_both_pairs_listed();
     test_sort_orders_by_name();
     test_scan_directory();
 

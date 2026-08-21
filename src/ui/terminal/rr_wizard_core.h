@@ -53,7 +53,6 @@ typedef enum {
     RR_STEP_RESULTS,
     RR_STEP_LOADING_SYSTEM,
     RR_STEP_SYSTEM,
-    RR_STEP_IMPORTING,
     RR_STEP_REFRESHING,
     RR_STEP_ERROR
 } RrWizardStep;
@@ -198,11 +197,12 @@ const dsd_rr_import_options* rr_wizard_core_options(const RrWizardCore* w);
  * @brief The live import plan.
  *
  * INVALIDATED by every mutator: rr_wizard_core_toggle_site(),
- * rr_wizard_core_cycle_option(), rr_wizard_core_cancel() and any pump that
- * reloads a system all free the previous plan first, and with it
- * plan->group_csv_text, plan->chan_csv_text and plan->warnings.items. Re-fetch
- * this pointer at the top of every render; never cache it, and never cache a
- * warning string across a key event. NULL before RR_STEP_SYSTEM.
+ * rr_wizard_core_cycle_option(), rr_wizard_core_import_now(),
+ * rr_wizard_core_cancel() and any pump that reloads a system all free the
+ * previous plan first, and with it plan->group_csv_text, plan->chan_csv_text
+ * and plan->warnings.items. Re-fetch this pointer at the top of every render;
+ * never cache it, and never cache a warning string across a key event. NULL
+ * before RR_STEP_SYSTEM.
  */
 const dsd_rr_import_plan* rr_wizard_core_plan(const RrWizardCore* w);
 
@@ -215,11 +215,17 @@ const dsd_rr_import_plan* rr_wizard_core_plan(const RrWizardCore* w);
  * each into the imports directory, then asks the presenter to post
  * DSD_APP_CMD_RR_APPLY_IMPORT.
  *
- * The stem is resolved once for the pair: a path already owned by a different
- * system takes one " sid<sid>" suffix, and a second collision is refused
- * outright rather than overwriting anything. A re-import of the same system
- * overwrites its own files in place, which is what keeps a [trunking]
- * group_in_file reference pointing at the refreshed list.
+ * The stem names the system AND the site, because one system is stored once per
+ * site. It is resolved once for the pair: a path already owned by anything else
+ * takes a " (2)", " (3)"... suffix, and running out of numbers is refused
+ * outright rather than overwriting anything. A re-import of the same system AND
+ * the same sites overwrites its own files in place, which is what keeps a
+ * [trunking] group_in_file reference pointing at the refreshed list.
+ *
+ * On success the core STAYS on RR_STEP_SYSTEM with its selection released, so
+ * the next site of the same system is one keypress away rather than another
+ * fetch. The plan is rebuilt, and with it invalidated - see
+ * rr_wizard_core_plan().
  *
  * A write that fails part-way unwinds the CSVs it had already written. That
  * unwind DELETES rather than restores: if the group half had overwritten a
@@ -337,6 +343,12 @@ int rr_wizard_core_refresh_stage_replace_for_test(const char* path, const char* 
  */
 size_t rr_wizard_core_refresh_match_sites_for_test(const dsd_rr_site_list* sites, const int* ids, size_t id_count,
                                                    size_t* selected, size_t selected_cap);
+
+/**
+ * @brief Compose the file stem an import writes its pair under.
+ * @return Length written, excluding the terminator.
+ */
+size_t rr_wizard_core_stem_for_test(const char* system_name, const char* site_label, char* out, size_t out_sz);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_ */

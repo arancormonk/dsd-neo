@@ -143,7 +143,12 @@ static const char k_rr_err_no_imports_dir[] =
 static const char k_rr_err_mkdir[] = "The imports folder could not be created.";
 static const char k_rr_err_write[] = "The import files could not be written.";
 static const char k_rr_err_apply[] = "The import was written but could not be applied to this session.";
-static const char k_rr_status_imported[] = "Import written; applying to this session.";
+/* Two clauses, one per selection model: a trunked import is one site and the
+ * obvious next move is another site, while a conventional one already carries
+ * every repeater the user marked. Both name what was written, because the
+ * wizard stays open and the row that described it is now unselected. */
+static const char k_rr_status_imported_site[] = "Imported %s. Pick another site, or Esc to finish.";
+static const char k_rr_status_imported_conv[] = "Imported %s. Change the selection, or Esc to finish.";
 
 /* ---- Result kinds and their two-step frees ------------------------------ */
 
@@ -228,6 +233,10 @@ typedef struct {
     int partial_enc_as_de;
     int site_ids[RR_REFRESH_MAX_SITE_IDS];
     size_t site_id_count;
+    /* Filled by the regeneration, which is where the plan builder resolves it;
+     * copied into the sidecar so a file imported before the label existed stops
+     * showing a blank site column. */
+    char site_label[96];
 } RrRefreshState;
 
 struct RrWizardCore {
@@ -1313,6 +1322,7 @@ rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_c
         dsd_rr_import_plan_free(&plan);
         return -1;
     }
+    (void)DSD_SNPRINTF(w->refresh.site_label, sizeof(w->refresh.site_label), "%s", plan.site_label);
     src = is_chan ? plan.chan_csv_text : plan.group_csv_text;
     len = is_chan ? plan.chan_csv_len : plan.group_csv_len;
     if (src == NULL || len == 0U) {
@@ -1421,8 +1431,9 @@ rr_refresh_stage_and_replace(const char* path, const char* text, size_t len, int
  *
  * The stored site ids are deliberately NOT rewritten to the surviving subset: a
  * site missing from one fetch would otherwise be dropped from provenance
- * permanently and could never come back. Only imported_at, and the system name
- * that RadioReference may have edited, move.
+ * permanently and could never come back. Only imported_at, the system name that
+ * RadioReference may have edited, and the site label the regeneration resolved
+ * move.
  */
 static void
 rr_refresh_touch_provenance(const RrWizardCore* w) {
@@ -1433,6 +1444,12 @@ rr_refresh_touch_provenance(const RrWizardCore* w) {
     }
     DSD_STRNCPY(prov.system_name, w->info.name, sizeof prov.system_name - 1U);
     prov.system_name[sizeof prov.system_name - 1U] = '\0';
+    /* The label the regeneration just resolved, so a file imported before the
+     * label existed stops showing a blank site column - and a site RR has since
+     * renamed shows its new name. The FILE is not renamed to match: a stored
+     * path is what a [trunking] config reference points at. */
+    DSD_STRNCPY(prov.site_label, w->refresh.site_label, sizeof prov.site_label - 1U);
+    prov.site_label[sizeof prov.site_label - 1U] = '\0';
     prov.imported_at = (long long)time(NULL);
     (void)dsd_rr_provenance_write(w->refresh.path, &prov);
 }
@@ -2483,6 +2500,9 @@ rr_import_fill_provenance(const RrWizardCore* w, const char* kind, dsd_rr_proven
     DSD_STRNCPY(p->site_ids, w->plan.site_ids, sizeof(p->site_ids) - 1);
     p->partial_enc_as_de = w->plan.partial_enc_as_de;
     DSD_STRNCPY(p->system_name, w->info.name, sizeof(p->system_name) - 1);
+    /* Display text for the browser's site column, and what the file stem was
+     * built from. The identity stays site_ids. */
+    DSD_STRNCPY(p->site_label, w->plan.site_label, sizeof(p->site_label) - 1);
     p->imported_at = (long long)time(NULL);
     /* The re-apply recipe: what this import did, so the Imported Systems browser
      * can re-apply the system later without another fetch. Both halves of one
@@ -2593,9 +2613,21 @@ rr_import_stem_paths(const char* dir, const char* stem, char* group_out, size_t 
     return (n < 0 || (size_t)n >= chan_sz) ? -1 : 0;
 }
 
-/** @return 0 when @p path is free for @p sid, 1 when it belongs to something else. */
+/**
+ * @brief Whether @p path is already spoken for.
+ *
+ * Both halves of the identity are compared. The sid alone is not enough: one
+ * system is stored once per site, so a path belonging to the SAME system but a
+ * DIFFERENT site is another stored import, and overwriting it would silently
+ * destroy the county the user imported yesterday.
+ *
+ * @param path     Candidate CSV path.
+ * @param sid      RadioReference system id of the import being written.
+ * @param site_ids The import's dsd_rr_import_plan::site_ids.
+ * @return 0 when @p path is free or holds this same import, 1 otherwise.
+ */
 static int
-rr_import_path_conflicts(const char* path, int sid) {
+rr_import_path_conflicts(const char* path, int sid, const char* site_ids) {
     dsd_stat_t st;
     if (dsd_stat_path(path, &st) != 0) {
         return 0; /* nothing there; an orphan ".rr" with no CSV is not a conflict */
@@ -2605,7 +2637,53 @@ rr_import_path_conflicts(const char* path, int sid) {
     if (dsd_rr_provenance_read(path, &prov) != 0) {
         return 1; /* no readable sidecar: a hand-made user file, never overwritten */
     }
-    return (prov.sid == sid) ? 0 : 1; /* same system: a re-import overwrites in place */
+    /* Same system AND same sites: a re-import of this very file, which
+       overwrites in place so a config reference keeps pointing at it. */
+    return (prov.sid == sid && strcmp(prov.site_ids, site_ids) == 0) ? 0 : 1;
+}
+
+/*
+ * Stem budgets. One system is imported once per site, so the stem carries both
+ * and each part gets a cap of its own: sharing one 64-byte budget would let a
+ * long system name eat the site, and the site is the half that tells two stored
+ * imports of one system apart.
+ */
+#define RR_STEM_NAME_BUDGET  40
+#define RR_STEM_SITE_BUDGET  24
+
+/* Stems tried before an import gives up: the bare stem, then " (2)".." (9)". */
+#define RR_STEM_MAX_ATTEMPTS 9
+
+/**
+ * @brief Compose "<system> - <site>", or "<system>" when the site names nothing.
+ *
+ * dsd_rr_sanitize_file_part() rather than _stem() for the site half: the stem
+ * flavour substitutes "radioreference" when nothing survives, and that word
+ * sitting where a place name belongs would read as one.
+ *
+ * @param system_name System name as fetched.
+ * @param site_label  dsd_rr_import_plan::site_label, or "".
+ * @param out         Destination buffer; always NUL-terminated on return.
+ * @param out_sz      Destination size in bytes, passed explicitly.
+ * @return Length written, excluding the terminator; 0 when it did not fit.
+ */
+static size_t
+rr_import_compose_stem(const char* system_name, const char* site_label, char* out, size_t out_sz) {
+    if (out == NULL || out_sz == 0U) {
+        return 0;
+    }
+    out[0] = '\0';
+    char name[RR_STEM_NAME_BUDGET + 1];
+    char site[RR_STEM_SITE_BUDGET + 1];
+    (void)dsd_rr_sanitize_file_stem(system_name, name, sizeof(name));
+    const size_t site_len = dsd_rr_sanitize_file_part(site_label, site, sizeof(site));
+    const int n =
+        (site_len > 0U) ? DSD_SNPRINTF(out, out_sz, "%s - %s", name, site) : DSD_SNPRINTF(out, out_sz, "%s", name);
+    if (n < 0 || (size_t)n >= out_sz) {
+        out[0] = '\0';
+        return 0;
+    }
+    return (size_t)n;
 }
 
 /**
@@ -2616,32 +2694,34 @@ rr_import_path_conflicts(const char* path, int sid) {
  * two stems - or silently overwrite another system's unsuffixed half. Both
  * candidate paths are therefore checked whichever halves this import will write.
  *
- * The bare stem is tried first, then the stem plus one " sid<sid>" suffix.
- * Still colliding after that is a hard error: never a second suffix, never an
- * overwrite.
+ * The bare "<system> - <site>" stem is tried first, then the same stem with a
+ * " (2)", " (3)"... suffix. The numbers are needed even within one system: two
+ * sites can carry the same description, and two different conventional
+ * selections of the same size both label as "<N> repeaters". Running out of
+ * numbers is a hard error - never an overwrite.
  *
  * @return 0 on success, -1 when the caller should report k_rr_err_name_taken.
  */
 static int
 rr_import_resolve_stem(const RrWizardCore* w, const char* dir, char* stem, size_t stem_sz) {
     char base[160];
-    base[0] = '\0';
-    if (dsd_rr_sanitize_file_stem(w->info.name, base, sizeof(base)) == 0) {
-        (void)DSD_SNPRINTF(base, sizeof(base), "%s", "RadioReference");
+    if (rr_import_compose_stem(w->info.name, w->plan.site_label, base, sizeof(base)) == 0U) {
+        return -1;
     }
 
     char group_path[RR_WIZ_PATH_MAX];
     char chan_path[RR_WIZ_PATH_MAX];
-    for (int attempt = 0; attempt < 2; attempt++) {
-        const int n = (attempt == 0) ? DSD_SNPRINTF(stem, stem_sz, "%s", base)
-                                     : DSD_SNPRINTF(stem, stem_sz, "%s sid%d", base, w->sid);
+    for (int attempt = 1; attempt <= RR_STEM_MAX_ATTEMPTS; attempt++) {
+        const int n = (attempt == 1) ? DSD_SNPRINTF(stem, stem_sz, "%s", base)
+                                     : DSD_SNPRINTF(stem, stem_sz, "%s (%d)", base, attempt);
         if (n < 0 || (size_t)n >= stem_sz) {
             return -1;
         }
         if (rr_import_stem_paths(dir, stem, group_path, sizeof(group_path), chan_path, sizeof(chan_path)) != 0) {
             return -1;
         }
-        if (rr_import_path_conflicts(group_path, w->sid) == 0 && rr_import_path_conflicts(chan_path, w->sid) == 0) {
+        if (rr_import_path_conflicts(group_path, w->sid, w->plan.site_ids) == 0
+            && rr_import_path_conflicts(chan_path, w->sid, w->plan.site_ids) == 0) {
             return 0;
         }
     }
@@ -2705,6 +2785,35 @@ rr_import_reset_write_state(RrWizardCore* w) {
 #endif
 }
 
+/**
+ * @brief Report the written import and leave the wizard ready for the next one.
+ *
+ * A system is imported once per site, and re-entering the wizard for each one
+ * costs a whole re-fetch of a system already in memory - so this does NOT close
+ * the wizard. It releases the selection instead, which returns the plan preview
+ * to "Select a site.", makes the next county one keypress away, and stops a
+ * stray second Enter from re-importing what was just written. The panel renders
+ * the status line inside its own window, so the confirmation is visible without
+ * the overlay standing down.
+ */
+static void
+rr_import_land_back_on_the_site_list(RrWizardCore* w) {
+    /* Snapshot first: the rebuild below frees the plan the label lives in. */
+    char label[sizeof(w->plan.site_label)];
+    (void)DSD_SNPRINTF(label, sizeof(label), "%s", (w->plan.site_label[0] != '\0') ? w->plan.site_label : w->info.name);
+    const int conventional = w->info.conventional;
+
+    if (w->site_mark != NULL) {
+        DSD_MEMSET(w->site_mark, 0, w->sites.count);
+    }
+    w->selected_count = 0;
+    rr_plan_rebuild(w);
+
+    char text[sizeof(label) + 64];
+    (void)DSD_SNPRINTF(text, sizeof(text), conventional ? k_rr_status_imported_conv : k_rr_status_imported_site, label);
+    rr_core_status_notify(w, text);
+}
+
 int
 rr_wizard_core_import_now(RrWizardCore* w) {
     if (w == NULL || w->step != RR_STEP_SYSTEM) {
@@ -2745,8 +2854,7 @@ rr_wizard_core_import_now(RrWizardCore* w) {
         rr_core_fail(w, k_rr_err_apply);
         return -1;
     }
-    w->step = RR_STEP_IMPORTING;
-    rr_core_status_notify(w, k_rr_status_imported);
+    rr_import_land_back_on_the_site_list(w);
     return 0;
 }
 
@@ -2894,6 +3002,11 @@ rr_wizard_core_stale_drops_for_test(const RrWizardCore* w) {
 int
 rr_wizard_core_refresh_stage_replace_for_test(const char* path, const char* text, size_t len, int is_chan) {
     return rr_refresh_stage_and_replace(path, text, len, is_chan);
+}
+
+size_t
+rr_wizard_core_stem_for_test(const char* system_name, const char* site_label, char* out, size_t out_sz) {
+    return rr_import_compose_stem(system_name, site_label, out, out_sz);
 }
 
 size_t

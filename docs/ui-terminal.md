@@ -44,13 +44,18 @@ RadioReference import:
   importing.
 - Inside the system panel: `Up`/`Down`/`PageUp`/`PageDown`/`Home`/`End` move, `Space` selects a site,
   `p`/`s`/`e` cycle the partial-encryption, simulcast and ESK options, `Enter` imports, `Esc` goes back.
+- An import leaves you on the site list with the selection released, so importing a second site of the
+  same system — a second county of a statewide network — costs one more `Enter` and no second fetch.
+  Each site is stored as its own set of files.
 - The password is asked once per program run and held in memory only. The username, and in a build without
   a baked application key the key itself, are set from **Set Account Username...** and **Set Application
   Key...** in the same submenu and stored in the config file under `[radioreference]`.
 - **Trunking & Control -> RadioReference... -> Imported Systems...** lists your imported systems (one row
-  per system, marked `* in use` when the running session is decoding one of its files). Selecting a system
-  offers **Use this system** (re-apply it offline, exactly as the import did), **Refresh from
-  RadioReference** (re-fetch and rebuild its files), and **Delete imported files** (after a confirmation).
+  per stored import, showing the system and the site it covers, with a `*` in the left gutter when the
+  running session is decoding one of its files). Several rows can name one system, one per site.
+  Selecting a row offers **Use this system** (re-apply it offline, exactly as the import did),
+  **Refresh from RadioReference** (re-fetch and rebuild that site's files), and **Delete imported
+  files** (after a confirmation naming the system and the site).
 - **Trunking & Control -> Lists & Filters -> Import Channel Map CSV...** and **Import Group List CSV...**
   open a chooser of the imports directory's files of that kind, with an **Enter a path...** row that falls
   back to typing a path.

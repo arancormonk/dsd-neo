@@ -113,6 +113,18 @@ typedef struct {
      * "site_ids = " + this - 1 + "\n". Widen both together.
      */
     char site_ids[2048];
+    /**
+     * Display text for what this import covers: the site's description, "Site
+     * <RF number>" when RadioReference describes none, or "<N> repeaters" for a
+     * conventional selection of several.
+     *
+     * A LABEL, never an identity - site_ids is the identity. It exists because
+     * one system is imported once per site (a statewide network is imported per
+     * county), so the system name alone no longer tells two stored imports
+     * apart: it is what the file stem and the browser's site column are built
+     * from. Empty for a plan blocked before a site was chosen.
+     */
+    char site_label[96];
     char* group_csv_text; /**< Heap; NULL when no talkgroups. Freed by _free(). */
     size_t group_csv_len;
     char* chan_csv_text; /**< Heap; NULL means "no -C file" (a valid outcome). */
@@ -227,6 +239,24 @@ int dsd_rr_protocol_edacs_ea(dsd_rr_protocol protocol);
 size_t dsd_rr_sanitize_file_stem(const char* system_name, char* out, size_t out_sz);
 
 /**
+ * @brief Sanitize one filename COMPONENT, reporting emptiness instead of
+ *        substituting a name.
+ *
+ * The same transformation dsd_rr_sanitize_file_stem() applies, minus its
+ * fallback. A caller composing a stem from several parts needs to know that a
+ * part contributed nothing - a site with no usable description must add no
+ * suffix, and the word "radioreference" sitting where a place name belongs
+ * would read as one.
+ *
+ * @param text   Source text; NULL is treated as "".
+ * @param out    Destination buffer; always NUL-terminated on return.
+ * @param out_sz Destination size in bytes, passed explicitly. Cutting to fit is
+ *               how a caller budgets one part against another.
+ * @return Length written, excluding the terminator; 0 when nothing survived.
+ */
+size_t dsd_rr_sanitize_file_part(const char* text, char* out, size_t out_sz);
+
+/**
  * @brief How a generated system was applied, so a stored import can be re-applied.
  *
  * The provenance already records where a file came from; this records what the
@@ -264,6 +294,9 @@ typedef struct {
                                 copied into it verbatim; see the note there. */
     int partial_enc_as_de; /**< The partial-encryption answer the file was built with. */
     char system_name[128]; /**< System name as fetched, for display only. */
+    char site_label[96];   /**< dsd_rr_import_plan::site_label, for display only.
+                                Empty in every sidecar written before it existed;
+                                a refresh fills one in from the site it matched. */
     long long imported_at; /**< Unix seconds; informational only. */
     dsd_rr_recipe recipe;  /**< How to re-apply; recipe.present == 0 when absent. */
 } dsd_rr_provenance;

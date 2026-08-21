@@ -102,15 +102,30 @@ application key, verifies the account once, and then offers the same search mode
 Selecting a system opens one modal panel with the site list, the three option toggles, and a preview of
 the plan that is recomputed on every keystroke.
 
+A trunked system is imported one site at a time, and a statewide network is usually worth importing
+several times over — once per county you want to be able to tune. So an import does not close the
+wizard: it writes its files, applies them to the session, releases the site selection and stays on the
+site list, with a status line naming what it just wrote. Picking another site and pressing `Enter`
+again imports that one too, with no second fetch. `Esc` closes the wizard when you are done.
+
 The whole submenu is hidden in a build without libcurl or expat.
 
 ### Imported Systems browser
 
 Once you have imported one or more systems, **Trunking & Control -> RadioReference... -> Imported
-Systems...** lists them — one row per system, not one per file, with the group list and channel map an
-import wrote folded back together by system id. Each row shows the system name, its protocol, its start
-frequency (or `<freq> scan` for a conventional multi-repeater list, or `-` when the system carries no
-saved settings), and `* in use` when the running session is decoding one of its files.
+Systems...** lists them — one row per stored import, not one per file, with the group list and channel
+map an import wrote folded back together by the file name they share. Several rows can name the same
+system: one per site, which is the point.
+
+Each row shows the system name, the site it covers, its protocol, and its start frequency (or
+`<freq> scan` for a conventional multi-repeater list, or `-` when the system carries no saved
+settings). A `*` in the left gutter marks a row the running session is decoding. The two text columns
+are measured against your terminal on every open, so a wide one shows more and an 80-column one
+truncates with `..` rather than losing the frequency. The site column is dropped entirely when nothing
+in the directory records one.
+
+The site cell is blank for a file imported before dsd-neo recorded sites; a **Refresh from
+RadioReference** fills it in.
 
 Selecting a system offers three actions:
 
@@ -120,8 +135,10 @@ Selecting a system offers three actions:
   settings; its row reads **Load these files**, which loads whichever CSVs exist and leaves the decode mode
   unchanged.
 - **Refresh from RadioReference** re-fetches the system and rebuilds its files in place, refreshing both
-  halves in turn. This needs your account, like an import.
-- **Delete imported files** removes the system's CSVs and their sidecars from disk after a confirmation.
+  halves in turn — for the site that row was built from, not for the system as a whole. This needs your
+  account, like an import.
+- **Delete imported files** removes that import's CSVs and their sidecars from disk after a confirmation
+  that names the system *and* the site, since several rows can share a system name.
   A running session that already loaded a deleted file keeps decoding its in-memory copy; a saved config
   that references the deleted path will fail to load it on the next launch.
 
@@ -151,11 +168,20 @@ Generated files land in an `imports` directory beside your config file:
 If none of those variables is set there is nowhere to write, and the import is blocked with a message
 naming the variable for your platform.
 
-The names are derived from the system name and are deterministic — `<system> group.csv` and
-`<system> chan.csv` — so re-importing the same system overwrites in place and any config that references
-the path stays valid. Two different systems that sanitise to the same name get the system ID appended, and
-both halves of one import always share a name. A file with no readable sidecar is treated as yours and is
-never overwritten.
+The names are derived from the system name and the site, and are deterministic — `<system> - <site>
+group.csv` and `<system> - <site> chan.csv`. Re-importing the *same site of the same system* overwrites
+in place, so any config that references the path stays valid; importing a *different* site writes a new
+pair beside it, which is how one statewide system ends up stored once per county. A conventional import
+of several repeaters is named `<N> repeaters` rather than for a place.
+
+The system name is cut to 40 bytes and the site to 24, so a long system name cannot squeeze the site
+out of the name. Anything else already holding a candidate name — another system, or a file of your own
+— pushes the import onto ` (2)`, ` (3)` and so on, up to nine tries before it refuses; both halves of one
+import always share a name. A file with no readable sidecar is treated as yours and is never
+overwritten.
+
+A refresh rewrites a file **in place** and never renames it, so a site that RadioReference has since
+renamed shows its new name in the browser while its file keeps the old one.
 
 ### What applying does, and what a save keeps
 

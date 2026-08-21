@@ -1475,6 +1475,20 @@ expect_file_matches(const char* what, const char* path, const char* want, size_t
     free(got);
 }
 
+/** @brief Copy @p len bytes onto the heap so they outlive the plan they came from. */
+static char*
+dup_bytes(const char* src, size_t len) {
+    char* copy = (char*)malloc(len + 1U);
+    if (copy == NULL) {
+        return NULL;
+    }
+    if (len > 0U && src != NULL) {
+        DSD_MEMCPY(copy, src, len);
+    }
+    copy[len] = '\0';
+    return copy;
+}
+
 /** @brief Credential ladder, then the "Enter a system ID" route to a system. */
 static int
 drive_sid_to_system(wiz_case* c, const char* sid_text) {
@@ -1504,7 +1518,7 @@ typedef struct {
     char chan_path[DSD_TEST_PATH_MAX];
 } imp_case;
 
-/** @brief "<scratch>/<stem><suffix>", e.g. suffix " sid6673 group.csv". */
+/** @brief "<scratch>/<stem><suffix>", e.g. suffix " (2) group.csv". */
 static int
 imp_leaf_path(const imp_case* ic, char* out, size_t out_sz, const char* suffix) {
     char leaf[320];
@@ -1535,8 +1549,8 @@ imp_case_close(imp_case* ic) {
     wiz_case_close(&ic->c);
     imp_remove_pair(ic, " group.csv");
     imp_remove_pair(ic, " chan.csv");
-    imp_remove_pair(ic, " sid6673 group.csv");
-    imp_remove_pair(ic, " sid6673 chan.csv");
+    imp_remove_pair(ic, " (2) group.csv");
+    imp_remove_pair(ic, " (2) chan.csv");
     /* remove() unlinks an empty directory on POSIX and simply fails on Windows,
      * where the worst case is a leftover empty temp dir. */
     (void)remove(ic->scratch);
@@ -1547,9 +1561,10 @@ imp_case_close(imp_case* ic) {
  *
  * @param scratch Existing directory to import into, or NULL to make a fresh
  *                one. Re-importing a system is modelled as a SECOND wizard
- *                session over the first one's directory, because a successful
- *                import leaves the core at RR_STEP_IMPORTING and nothing walks
- *                it back to RR_STEP_SYSTEM.
+ *                session over the first one's directory: one session could do
+ *                it now that an import lands back on the site list, but two
+ *                sessions also prove the stem is resolved from what is on
+ *                DISK rather than from anything the core still remembers.
  */
 static int
 imp_case_open_in(imp_case* ic, const char* scratch) {
@@ -1575,7 +1590,10 @@ imp_case_open_in(imp_case* ic, const char* scratch) {
         return 0;
     }
     rr_wizard_core_set_imports_dir_for_test(ic->c.core, ic->scratch);
-    (void)dsd_rr_sanitize_file_stem("SARA Network", ic->stem, sizeof(ic->stem));
+    /* Spelled out rather than composed through the production helper: the
+     * fixture's first site is fixed, so the expected stem is a literal and a
+     * bug in the composer cannot make these paths agree with themselves. */
+    (void)DSD_SNPRINTF(ic->stem, sizeof(ic->stem), "%s", "SARA Network - Johnson Co Simulcast");
     if (imp_leaf_path(ic, ic->group_path, sizeof(ic->group_path), " group.csv") != 0
         || imp_leaf_path(ic, ic->chan_path, sizeof(ic->chan_path), " chan.csv") != 0) {
         expect("import: scratch paths built", 0);
@@ -1588,6 +1606,48 @@ imp_case_open_in(imp_case* ic, const char* scratch) {
 static int
 imp_case_open(imp_case* ic) {
     return imp_case_open_in(ic, NULL);
+}
+
+/*
+ * One system is imported once per site - a statewide network once per county -
+ * so the stem has to carry the site as well as the system, and both parts are
+ * budgeted: a long system name must not push the site, which is the half that
+ * tells two stored imports apart, out of the name entirely.
+ */
+static void
+test_import_stem_names_the_site(void) {
+    char stem[192];
+
+    expect_ll("stem joins system and site",
+              (long long)rr_wizard_core_stem_for_test("SARA Network", "Johnson Co Simulcast", stem, sizeof(stem)), 35);
+    expect("stem text", strcmp(stem, "SARA Network - Johnson Co Simulcast") == 0);
+
+    /* No label is the pre-existing shape, which is also what a refreshed
+     * pre-site-label import keeps: the system name alone, no dangling joiner. */
+    expect_ll("unlabelled stem is the system alone",
+              (long long)rr_wizard_core_stem_for_test("SARA Network", "", stem, sizeof(stem)), 12);
+    expect("unlabelled stem text", strcmp(stem, "SARA Network") == 0);
+    (void)rr_wizard_core_stem_for_test("SARA Network", "//..//", stem, sizeof(stem));
+    expect("no fallback word is appended as a place", strcmp(stem, "SARA Network") == 0);
+
+    /* Illegal bytes are dashed in BOTH parts, and the joiner stays the only
+     * " - " a reader can rely on to split them. */
+    (void)rr_wizard_core_stem_for_test("Bexar County, TX", "Site 3/4", stem, sizeof(stem));
+    expect("both parts are sanitized", strcmp(stem, "Bexar County-TX - Site 3-4") == 0);
+
+    /* 44 A's and 30 B's: the system is cut to 40, the site to 24. */
+    char long_name[64];
+    char long_label[64];
+    DSD_MEMSET(long_name, 'A', sizeof(long_name));
+    long_name[44] = '\0';
+    DSD_MEMSET(long_label, 'B', sizeof(long_label));
+    long_label[30] = '\0';
+    expect_ll("both parts are budgeted",
+              (long long)rr_wizard_core_stem_for_test(long_name, long_label, stem, sizeof(stem)), 40 + 3 + 24);
+    expect("the site survives a long system name", strstr(stem, " - BBBB") != NULL);
+
+    (void)rr_wizard_core_stem_for_test("", "", stem, sizeof(stem));
+    expect("an empty system still yields a stem", strcmp(stem, "radioreference") == 0);
 }
 
 static void
@@ -1614,15 +1674,23 @@ test_import_now_happy_path(void) {
     expect("import: chan csv generated", plan->chan_csv_text != NULL && plan->chan_csv_len > 0U);
     expect("import: site ids are database ids", strcmp(plan->site_ids, "16863") == 0);
 
-    /* import_now() never rebuilds the plan, so the pointer and its two text
-     * buffers stay live for the byte comparison below. */
+    /* import_now() releases the selection and rebuilds the plan, so everything
+     * the written files are compared against is copied out FIRST. */
+    char* want_group = dup_bytes(plan->group_csv_text, plan->group_csv_len);
+    const size_t want_group_len = plan->group_csv_len;
+    char* want_chan = dup_bytes(plan->chan_csv_text, plan->chan_csv_len);
+    const size_t want_chan_len = plan->chan_csv_len;
+    const dsd_rr_protocol want_protocol = plan->protocol;
+    const long long want_tune_hz = plan->tune_hz;
+    const int want_trunking = plan->trunking;
+    char want_flag[sizeof(plan->decode_flag)];
+    (void)DSD_SNPRINTF(want_flag, sizeof(want_flag), "%s", plan->decode_flag);
+
     expect("import: import_now succeeded", rr_wizard_core_import_now(core) == 0);
-    expect("import: step is IMPORTING", rr_wizard_core_step(core) == RR_STEP_IMPORTING);
-    expect("import: status line", strcmp(ic.c.h.last_status, "Import written; applying to this session.") == 0);
-    expect_file_matches("import: group csv bytes are generator-exact", ic.group_path, plan->group_csv_text,
-                        plan->group_csv_len);
-    expect_file_matches("import: chan csv bytes are generator-exact", ic.chan_path, plan->chan_csv_text,
-                        plan->chan_csv_len);
+    expect("import: status line",
+           strcmp(ic.c.h.last_status, "Imported Johnson Co Simulcast. Pick another site, or Esc to finish.") == 0);
+    expect_file_matches("import: group csv bytes are generator-exact", ic.group_path, want_group, want_group_len);
+    expect_file_matches("import: chan csv bytes are generator-exact", ic.chan_path, want_chan, want_chan_len);
     expect("import: last group path reported", strcmp(rr_wizard_core_last_group_path(core), ic.group_path) == 0);
     expect("import: last chan path reported", strcmp(rr_wizard_core_last_chan_path(core), ic.chan_path) == 0);
 
@@ -1645,6 +1713,7 @@ test_import_now_happy_path(void) {
     expect("import: group sidecar site ids", strcmp(prov.site_ids, "16863") == 0);
     expect_ll("import: group sidecar partial enc", prov.partial_enc_as_de, 1);
     expect("import: group sidecar system name", strcmp(prov.system_name, "SARA Network") == 0);
+    expect("import: group sidecar site label", strcmp(prov.site_label, "Johnson Co Simulcast") == 0);
     expect("import: group sidecar stamped", prov.imported_at > 0);
     DSD_MEMSET(&prov, 0, sizeof(prov));
     expect("import: chan sidecar read", dsd_rr_provenance_read(ic.chan_path, &prov) == 0);
@@ -1654,19 +1723,19 @@ test_import_now_happy_path(void) {
     /* The recipe rides in the sidecar so the system re-applies without a fetch,
        and it rebuilds a plan the same apply mapper accepts. */
     expect("import: chan sidecar carries a recipe", prov.recipe.present == 1);
-    expect("import: recipe protocol matches the plan", prov.recipe.protocol == plan->protocol);
-    expect_ll("import: recipe tune matches the plan", prov.recipe.tune_hz, plan->tune_hz);
-    expect("import: recipe trunking matches the plan", prov.recipe.trunking == plan->trunking);
+    expect("import: recipe protocol matches the plan", prov.recipe.protocol == want_protocol);
+    expect_ll("import: recipe tune matches the plan", prov.recipe.tune_hz, want_tune_hz);
+    expect("import: recipe trunking matches the plan", prov.recipe.trunking == want_trunking);
     dsd_rr_import_plan rebuilt;
     expect("import: recipe rebuilds a plan",
            dsd_rr_recipe_to_plan(&prov.recipe, prov.partial_enc_as_de, &rebuilt) == 0);
-    expect("import: rebuilt plan is applicable", rebuilt.ok == 1 && rebuilt.tune_hz == plan->tune_hz);
-    expect("import: rebuilt decode flag matches", strcmp(rebuilt.decode_flag, plan->decode_flag) == 0);
+    expect("import: rebuilt plan is applicable", rebuilt.ok == 1 && rebuilt.tune_hz == want_tune_hz);
+    expect("import: rebuilt decode flag matches", strcmp(rebuilt.decode_flag, want_flag) == 0);
 
     /* The apply hook saw one payload with the right shape. */
     expect_ll("import: apply called once", g_hook_apply_count, 1);
     int want_mode = 0;
-    expect("import: protocol maps to a decode mode", dsd_rr_protocol_decode_mode(plan->protocol, &want_mode) == 0);
+    expect("import: protocol maps to a decode mode", dsd_rr_protocol_decode_mode(want_protocol, &want_mode) == 0);
     expect_ll("import: payload mode", g_hook_apply_payload.decode_mode, want_mode);
     expect("import: payload trunking", g_hook_apply_payload.trunking == 1U && g_hook_apply_payload.scanner == 0U);
     expect("import: payload simulcast", g_hook_apply_payload.simulcast_qpsk == 1U);
@@ -1677,14 +1746,51 @@ test_import_now_happy_path(void) {
     expect("import: payload chan path", strcmp(g_hook_apply_payload.chan_path, ic.chan_path) == 0);
     expect_ll("import: payload tunes the control channel", (long long)g_hook_apply_payload.tune_hz, 851050000LL);
 
+    free(want_group);
+    free(want_chan);
+    imp_case_close(&ic);
+}
+
+/*
+ * A statewide system is imported once per county, and re-entering the wizard
+ * for each one costs a whole re-fetch. So an import lands back on the site list
+ * with its selection released: the next county is one keypress away, the plan
+ * preview goes back to asking for a site rather than describing the one just
+ * written, and a stray second Enter cannot re-import anything.
+ */
+static void
+test_import_now_stays_on_the_site_list(void) {
+    static imp_case ic;
+    if (!imp_case_open(&ic)) {
+        return;
+    }
+    RrWizardCore* core = ic.c.core;
+    expect("stay: import succeeded", rr_wizard_core_import_now(core) == 0);
+    expect("stay: still on the site list", rr_wizard_core_step(core) == RR_STEP_SYSTEM);
+    expect("stay: the system is still loaded", rr_wizard_core_system(core) != NULL);
+    expect("stay: the site list survived", rr_wizard_core_sites(core) != NULL);
+    expect_ll("stay: the selection was released", (long long)rr_wizard_core_selected_count(core), 0);
+    expect("stay: no site is marked", rr_wizard_core_site_selected(core, 0) == 0);
+
+    const dsd_rr_import_plan* plan = rr_wizard_core_plan(core);
+    expect("stay: a plan is still published", plan != NULL);
+    if (plan != NULL) {
+        expect("stay: the plan asks for the next site", plan->ok == 0);
+        expect("stay: it says which answer is missing", strcmp(plan->blocked_reason, "Select a site.") == 0);
+    }
+
+    /* One import, one apply: an unselected list cannot write a second time. */
+    expect("stay: a second Enter writes nothing", rr_wizard_core_import_now(core) == -1);
+    expect_ll("stay: apply still called once", g_hook_apply_count, 1);
+
     imp_case_close(&ic);
 }
 
 /*
  * A re-import must reuse the same two paths: that is what keeps a
  * [trunking] group_in_file reference in the user's config pointing at the
- * refreshed list. Two sessions over one directory, because a successful import
- * parks the core at RR_STEP_IMPORTING.
+ * refreshed list. Two sessions over one directory, so the second import
+ * resolves its stem from the files rather than from a live core's memory.
  */
 static void
 test_import_now_same_sid_overwrites_in_place(void) {
@@ -1710,10 +1816,80 @@ test_import_now_same_sid_overwrites_in_place(void) {
 
     char suffixed[DSD_TEST_PATH_MAX];
     dsd_stat_t st;
-    expect("reimport: suffixed path built",
-           imp_leaf_path(&again, suffixed, sizeof(suffixed), " sid6673 group.csv") == 0);
+    expect("reimport: suffixed path built", imp_leaf_path(&again, suffixed, sizeof(suffixed), " (2) group.csv") == 0);
     expect("reimport: no suffixed variant created", dsd_stat_path(suffixed, &st) != 0);
     imp_case_close(&again);
+}
+
+/*
+ * The point of the whole exercise: a statewide system imported once per county
+ * keeps one stored pair per county. Same sid, different site - so the stem
+ * differs, nothing is overwritten, and each pair records the site it was built
+ * from so a refresh rebuilds THAT county.
+ */
+static void
+test_import_two_sites_of_one_system_coexist(void) {
+    static imp_case first;
+    if (!imp_case_open(&first)) {
+        return;
+    }
+    expect("coexist: first import succeeded", rr_wizard_core_import_now(first.c.core) == 0);
+    char scratch[DSD_TEST_PATH_MAX];
+    (void)DSD_SNPRINTF(scratch, sizeof(scratch), "%s", first.scratch);
+    imp_case_close_keep_files(&first);
+
+    static imp_case second;
+    if (!imp_case_open_in(&second, scratch)) {
+        imp_case_close(&first);
+        return;
+    }
+    /* Site 1 of the captured SARA sites is "Linn Co Simulcast" (site id 23581).
+     * A trunked toggle is a radio select, so this replaces site 0. */
+    rr_wizard_core_toggle_site(second.c.core, 1U);
+    expect("coexist: the second site is selected", rr_wizard_core_site_selected(second.c.core, 1) == 1);
+    expect("coexist: the first site was released", rr_wizard_core_site_selected(second.c.core, 0) == 0);
+    expect("coexist: second import succeeded", rr_wizard_core_import_now(second.c.core) == 0);
+
+    char want_group[DSD_TEST_PATH_MAX];
+    char leaf[320];
+    (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s", "SARA Network - Linn Co Simulcast group.csv");
+    expect("coexist: second path built", dsd_test_path_join(want_group, sizeof(want_group), scratch, leaf) == 0);
+    expect("coexist: the second site wrote its own file",
+           strcmp(rr_wizard_core_last_group_path(second.c.core), want_group) == 0);
+
+    /* The first county's pair is still there, still naming its own site. */
+    dsd_stat_t st;
+    expect("coexist: the first site's file survived", dsd_stat_path(first.group_path, &st) == 0);
+    dsd_rr_provenance prov;
+    DSD_MEMSET(&prov, 0, sizeof(prov));
+    expect("coexist: first sidecar read", dsd_rr_provenance_read(first.group_path, &prov) == 0);
+    expect("coexist: first sidecar keeps its own site", strcmp(prov.site_ids, "16863") == 0);
+    expect("coexist: first sidecar keeps its own label", strcmp(prov.site_label, "Johnson Co Simulcast") == 0);
+    DSD_MEMSET(&prov, 0, sizeof(prov));
+    expect("coexist: second sidecar read", dsd_rr_provenance_read(want_group, &prov) == 0);
+    expect("coexist: second sidecar names the second site", strcmp(prov.site_ids, "23581") == 0);
+    expect("coexist: second sidecar label", strcmp(prov.site_label, "Linn Co Simulcast") == 0);
+    expect("coexist: both pairs share the system id", prov.sid == 6673);
+
+    /* No numbered variant: different sites are different names, not a clash. */
+    char numbered[DSD_TEST_PATH_MAX];
+    (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s", "SARA Network - Johnson Co Simulcast (2) group.csv");
+    expect("coexist: numbered path built", dsd_test_path_join(numbered, sizeof(numbered), scratch, leaf) == 0);
+    expect("coexist: no numbered variant was created", dsd_stat_path(numbered, &st) != 0);
+
+    imp_remove_pair(&second, " group.csv");
+    imp_remove_pair(&second, " chan.csv");
+    (void)DSD_SNPRINTF(numbered, sizeof(numbered), "%s.rr", want_group);
+    (void)remove(numbered);
+    (void)remove(want_group);
+    (void)DSD_SNPRINTF(leaf, sizeof(leaf), "%s", "SARA Network - Linn Co Simulcast chan.csv");
+    if (dsd_test_path_join(numbered, sizeof(numbered), scratch, leaf) == 0) {
+        char side[DSD_TEST_PATH_MAX + 8];
+        (void)DSD_SNPRINTF(side, sizeof(side), "%s.rr", numbered);
+        (void)remove(side);
+        (void)remove(numbered);
+    }
+    imp_case_close(&second);
 }
 
 /**
@@ -1744,8 +1920,8 @@ seed_foreign_csv(const char* path, int sid, const char* kind) {
 static const char k_seed_bytes[] = "Decimal,Hex,AlphaTag,Mode\n1,1,SEED,D\n";
 
 /*
- * A path that already belongs to a different system takes ONE " sid<sid>"
- * suffix, applied to the whole PAIR so the two halves cannot drift apart.
+ * A path that already belongs to something else takes a numbered suffix,
+ * applied to the whole PAIR so the two halves cannot drift apart.
  *
  * @param foreign_sid 0 seeds a sidecar-less user file, which counts as "a
  *                    different system" precisely because nothing proves
@@ -1768,9 +1944,9 @@ run_collision_case(const char* label, int foreign_sid, int seed_chan) {
     char want_group[DSD_TEST_PATH_MAX];
     char want_chan[DSD_TEST_PATH_MAX];
     expect("collision: suffixed group path built",
-           imp_leaf_path(&ic, want_group, sizeof(want_group), " sid6673 group.csv") == 0);
+           imp_leaf_path(&ic, want_group, sizeof(want_group), " (2) group.csv") == 0);
     expect("collision: suffixed chan path built",
-           imp_leaf_path(&ic, want_chan, sizeof(want_chan), " sid6673 chan.csv") == 0);
+           imp_leaf_path(&ic, want_chan, sizeof(want_chan), " (2) chan.csv") == 0);
     expect("collision: the group half took the suffix",
            strcmp(rr_wizard_core_last_group_path(ic.c.core), want_group) == 0);
     expect("collision: the chan half took the same suffix",
@@ -1813,10 +1989,18 @@ test_import_now_hard_collision(void) {
     if (!imp_case_open(&ic)) {
         return;
     }
-    char suffixed[DSD_TEST_PATH_MAX];
-    expect("hard: suffixed path built", imp_leaf_path(&ic, suffixed, sizeof(suffixed), " sid6673 group.csv") == 0);
+    /* Every candidate: the bare stem and each numbered one it would escalate to.
+     * Seeding one short of the ladder would prove nothing - the import would
+     * simply take the next number, which is the intended behaviour. */
+    char candidates[9][DSD_TEST_PATH_MAX];
     seed_foreign_csv(ic.group_path, 0, "group");
-    seed_foreign_csv(suffixed, 0, "group");
+    (void)DSD_SNPRINTF(candidates[0], sizeof(candidates[0]), "%s", ic.group_path);
+    for (int i = 2; i <= 9; i++) {
+        char suffix[32];
+        (void)DSD_SNPRINTF(suffix, sizeof(suffix), " (%d) group.csv", i);
+        expect("hard: numbered path built", imp_leaf_path(&ic, candidates[i - 1], sizeof(candidates[0]), suffix) == 0);
+        seed_foreign_csv(candidates[i - 1], 0, "group");
+    }
 
     expect("hard: import refused", rr_wizard_core_import_now(ic.c.core) == -1);
     expect("hard: error step", rr_wizard_core_step(ic.c.core) == RR_STEP_ERROR);
@@ -1826,8 +2010,12 @@ test_import_now_hard_collision(void) {
     dsd_stat_t st;
     expect("hard: nothing written", dsd_stat_path(ic.chan_path, &st) != 0);
     expect_ll("hard: apply never called", g_hook_apply_count, 0);
-    expect_file_matches("hard: bare stem untouched", ic.group_path, k_seed_bytes, sizeof(k_seed_bytes) - 1U);
-    expect_file_matches("hard: suffixed stem untouched", suffixed, k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+    for (int i = 0; i < 9; i++) {
+        expect_file_matches("hard: candidate stem untouched", candidates[i], k_seed_bytes, sizeof(k_seed_bytes) - 1U);
+    }
+    for (int i = 1; i < 9; i++) {
+        (void)remove(candidates[i]);
+    }
     imp_case_close(&ic);
 }
 
@@ -2271,6 +2459,36 @@ test_refresh_matches_sites_by_database_id(void) {
     ref_case_close(&rc);
 }
 
+/*
+ * Every file imported before the site label existed carries none, and the
+ * browser has a site column to fill. A refresh already re-matches the stored
+ * ids against the freshly fetched sites, so it knows the answer: it fills the
+ * label in rather than leaving an old import blank forever.
+ */
+static void
+test_refresh_fills_in_a_missing_site_label(void) {
+    static ref_case rc;
+    dsd_rr_provenance prov;
+    ref_prov(&prov, "chan", 9340, "36085,36087", 1);
+    if (!ref_case_open(&rc, "iowa chan.csv", k_chan_header, strlen(k_chan_header), &prov)) {
+        return;
+    }
+    expect("label: the seeded sidecar has no label", prov.site_label[0] == '\0');
+    if (!ref_drive(&rc)) {
+        expect("label: refresh finished", 0);
+        ref_case_close(&rc);
+        return;
+    }
+    expect("label: refresh succeeded", rr_wizard_core_step(rc.c.core) == RR_STEP_IDLE);
+
+    dsd_rr_provenance after;
+    DSD_MEMSET(&after, 0, sizeof(after));
+    expect_ll("label: sidecar still readable", (long long)dsd_rr_provenance_read(rc.csv_path, &after), 0);
+    expect("label: the refreshed sidecar names what it covers", strcmp(after.site_label, "2 repeaters") == 0);
+    expect("label: the stored ids are untouched", strcmp(after.site_ids, "36085,36087") == 0);
+    ref_case_close(&rc);
+}
+
 static void
 test_refresh_skips_a_vanished_site(void) {
     static ref_case rc;
@@ -2654,8 +2872,11 @@ main(void) {
     test_sid_load_forgets_the_previous_search();
     test_cancel_mid_system_load();
     test_batch_fault_retires_the_load();
+    test_import_stem_names_the_site();
     test_import_now_happy_path();
+    test_import_now_stays_on_the_site_list();
     test_import_now_same_sid_overwrites_in_place();
+    test_import_two_sites_of_one_system_coexist();
     test_import_now_collides_with_other_system();
     test_import_now_never_overwrites_a_handmade_file();
     test_import_now_stem_is_pair_atomic();
@@ -2668,6 +2889,7 @@ main(void) {
     test_refresh_needs_a_parsable_site_id();
     test_refresh_needs_credentials();
     test_refresh_matches_sites_by_database_id();
+    test_refresh_fills_in_a_missing_site_label();
     test_refresh_skips_a_vanished_site();
     test_refresh_keeps_the_file_when_no_site_matches();
     test_refresh_keeps_the_file_when_one_site_survives();

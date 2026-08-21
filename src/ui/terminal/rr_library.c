@@ -25,8 +25,24 @@
 #define RR_LIB_PATH_SEP '/'
 #endif
 
-/** @brief Name column width; longer names are truncated with "..". */
-#define RR_LIB_NAME_COL 30
+/*
+ * Column bounds. The floors keep a column readable; the ceilings stop one long
+ * name from pushing the frequency off a wide terminal.
+ */
+#define RR_LIB_NAME_MIN      12
+#define RR_LIB_NAME_MAX      40
+#define RR_LIB_SITE_MIN      10
+#define RR_LIB_SITE_MAX      28
+
+/*
+ * Everything a row spends that is not one of the two variable columns: the
+ * gutter, the gaps, the protocol column and the widest detail cell
+ * ("1234.56789 scan"). RR_LIB_FIXED_COLS covers the gap before the site column
+ * as well; RR_LIB_FIXED_NO_SITE is the same row without one.
+ */
+#define RR_LIB_DETAIL_COLS   15
+#define RR_LIB_FIXED_NO_SITE (2 + 2 + DSD_RR_PROTO_SHORT_NAME_MAX + 2 + RR_LIB_DETAIL_COLS)
+#define RR_LIB_FIXED_COLS    (RR_LIB_FIXED_NO_SITE + 2)
 
 void
 rr_library_init(RrLibrary* lib) {
@@ -35,15 +51,50 @@ rr_library_init(RrLibrary* lib) {
     }
 }
 
-/** @brief The system for @p sid, or NULL when it is not present yet. */
+/** @brief The row for @p stem, or NULL when it is not present yet. */
 static RrLibrarySystem*
-rr_library_find(RrLibrary* lib, int sid) {
+rr_library_find(RrLibrary* lib, const char* stem) {
     for (int i = 0; i < lib->count; i++) {
-        if (lib->systems[i].sid == sid) {
+        if (strcmp(lib->systems[i].stem, stem) == 0) {
             return &lib->systems[i];
         }
     }
     return NULL;
+}
+
+/**
+ * @brief The grouping key: @p csv_path's leaf minus its " group.csv" /
+ *        " chan.csv" half suffix.
+ *
+ * @param csv_path Absolute path of a generated CSV.
+ * @param is_chan  Which half it is, from the sidecar's kind.
+ * @param out      Receives the stem; always NUL-terminated on return.
+ * @param out_sz   Destination size in bytes, passed explicitly.
+ * @return 0 on success, -1 when the leaf does not carry the expected suffix or
+ *         the stem does not fit (a truncated stem would merge two rows).
+ */
+static int
+rr_library_stem(const char* csv_path, int is_chan, char* out, size_t out_sz) {
+    const char* slash = strrchr(csv_path, RR_LIB_PATH_SEP);
+#if defined(_WIN32)
+    const char* fwd = strrchr(csv_path, '/');
+    if (fwd != NULL && (slash == NULL || fwd > slash)) {
+        slash = fwd;
+    }
+#endif
+    const char* leaf = (slash != NULL) ? slash + 1 : csv_path;
+    const char* suffix = is_chan ? " chan.csv" : " group.csv";
+    const size_t leaf_len = strlen(leaf);
+    const size_t suffix_len = strlen(suffix);
+    if (leaf_len <= suffix_len || strcmp(leaf + (leaf_len - suffix_len), suffix) != 0) {
+        return -1;
+    }
+    const size_t stem_len = leaf_len - suffix_len;
+    if (stem_len >= out_sz) {
+        return -1;
+    }
+    (void)DSD_SNPRINTF(out, out_sz, "%.*s", (int)stem_len, leaf);
+    return 0;
 }
 
 /**
@@ -69,10 +120,10 @@ rr_library_classify(const dsd_rr_provenance* prov, int* out_is_chan) {
     return 0;
 }
 
-/** @brief Find @p prov's system, or start one. NULL when the library is full. */
+/** @brief Find @p stem's row, or start one. NULL when the library is full. */
 static RrLibrarySystem*
-rr_library_intern(RrLibrary* lib, const dsd_rr_provenance* prov) {
-    RrLibrarySystem* sys = rr_library_find(lib, prov->sid);
+rr_library_intern(RrLibrary* lib, const char* stem, const dsd_rr_provenance* prov) {
+    RrLibrarySystem* sys = rr_library_find(lib, stem);
     if (sys != NULL) {
         return sys;
     }
@@ -82,8 +133,10 @@ rr_library_intern(RrLibrary* lib, const dsd_rr_provenance* prov) {
     }
     sys = &lib->systems[lib->count++];
     DSD_MEMSET(sys, 0, sizeof(*sys));
+    DSD_STRNCPY(sys->stem, stem, sizeof(sys->stem) - 1);
     sys->sid = prov->sid;
     DSD_STRNCPY(sys->name, prov->system_name, sizeof(sys->name) - 1);
+    DSD_STRNCPY(sys->site_label, prov->site_label, sizeof(sys->site_label) - 1);
     sys->partial_enc_as_de = prov->partial_enc_as_de;
     return sys;
 }
@@ -100,37 +153,32 @@ rr_library_merge_meta(RrLibrarySystem* sys, const dsd_rr_provenance* prov) {
     if (sys->name[0] == '\0' && prov->system_name[0] != '\0') {
         DSD_STRNCPY(sys->name, prov->system_name, sizeof(sys->name) - 1);
     }
+    if (sys->site_label[0] == '\0' && prov->site_label[0] != '\0') {
+        DSD_STRNCPY(sys->site_label, prov->site_label, sizeof(sys->site_label) - 1);
+    }
 }
 
 /**
- * @brief Record one half's path, newest sidecar wins.
+ * @brief Record one half's path.
  *
- * Newest-wins, not last-seen-wins: dsd_dir_list() reports entries in whatever
- * order the platform hands back, and two pairs can legitimately share a sid (a
- * renamed system re-imports under a new stem and leaves the old pair on disk).
- * Keying on the sidecar's own timestamp makes the row - and therefore which files
- * "Use this system", "Refresh" and "Delete" act on - the same on every run.
+ * No newest-wins arbitration: the row is keyed on the stem, and a stem plus a
+ * half IS a filename, so two files can never contend for the same slot. When
+ * RadioReference renames a system the old pair keeps its own stem and gets its
+ * own row, rather than being hidden behind the new one where nothing could
+ * delete it.
  */
 static void
-rr_library_record_half(RrLibrarySystem* sys, const char* csv_path, const dsd_rr_provenance* prov, int is_chan) {
+rr_library_record_half(RrLibrarySystem* sys, const char* csv_path, int is_chan) {
     /* The two halves are spelled out rather than selected through a char* alias:
        DSD_STRNCPY bounds the copy with __builtin_object_size(dst, 1), which only
        sees the real size when the destination IS the array. Handing it a pointer
        silently shortens every path. */
     if (is_chan) {
-        if (sys->has_chan && prov->imported_at < sys->chan_at) {
-            return; /* an older duplicate: keep what is already recorded */
-        }
         sys->has_chan = 1;
-        sys->chan_at = prov->imported_at;
         DSD_STRNCPY(sys->chan_path, csv_path, sizeof(sys->chan_path) - 1);
         return;
     }
-    if (sys->has_group && prov->imported_at < sys->group_at) {
-        return;
-    }
     sys->has_group = 1;
-    sys->group_at = prov->imported_at;
     DSD_STRNCPY(sys->group_path, csv_path, sizeof(sys->group_path) - 1);
 }
 
@@ -143,12 +191,16 @@ rr_library_add(RrLibrary* lib, const char* csv_path, const dsd_rr_provenance* pr
     if (rr_library_classify(prov, &is_chan) != 0) {
         return -1;
     }
-    RrLibrarySystem* sys = rr_library_intern(lib, prov);
+    char stem[RR_LIBRARY_STEM_MAX];
+    if (rr_library_stem(csv_path, is_chan, stem, sizeof(stem)) != 0) {
+        return -1;
+    }
+    RrLibrarySystem* sys = rr_library_intern(lib, stem, prov);
     if (sys == NULL) {
         return -1; /* full; overflow already flagged */
     }
     rr_library_merge_meta(sys, prov);
-    rr_library_record_half(sys, csv_path, prov, is_chan);
+    rr_library_record_half(sys, csv_path, is_chan);
     return 0;
 }
 
@@ -223,6 +275,10 @@ rr_library_cmp(const void* lhs, const void* rhs) {
     if (by_name != 0) {
         return by_name;
     }
+    const int by_site = strcmp(a->site_label, b->site_label);
+    if (by_site != 0) {
+        return by_site;
+    }
     return (a->sid > b->sid) - (a->sid < b->sid);
 }
 
@@ -248,27 +304,60 @@ rr_library_system_in_use(const RrLibrarySystem* s, const char* chan_in_use, cons
     return 0;
 }
 
-/** @brief Write the name column, padded to RR_LIB_NAME_COL, truncated with "..". */
-static void
-rr_library_write_name(const RrLibrarySystem* s, char* col, size_t col_sz) {
-    const size_t name_len = strlen(s->name);
-    if (name_len <= RR_LIB_NAME_COL) {
-        (void)DSD_SNPRINTF(col, col_sz, "%-*s", RR_LIB_NAME_COL, s->name);
+void
+rr_library_display_name(const RrLibrarySystem* s, char* out, size_t out_sz) {
+    if (out == NULL || out_sz == 0U) {
         return;
     }
-    /* Keep RR_LIB_NAME_COL columns exactly: (RR_LIB_NAME_COL - 2) name bytes + "..".
-       The cut is by byte, but system_name is free text fetched from
-       RadioReference, so back off to a UTF-8 lead byte first: emitting half a
-       multi-byte sequence makes ncurses draw a replacement glyph and shifts the
-       rest of the row. (Width-aware column fitting is a bigger job; this only
-       guarantees the bytes we do emit are well-formed.) */
-    int keep = RR_LIB_NAME_COL - 2;
-    while (keep > 0 && ((unsigned char)s->name[keep] & 0xC0U) == 0x80U) {
+    if (s == NULL) {
+        out[0] = '\0';
+        return;
+    }
+    if (s->site_label[0] != '\0') {
+        (void)DSD_SNPRINTF(out, out_sz, "%s - %s", s->name, s->site_label);
+        return;
+    }
+    (void)DSD_SNPRINTF(out, out_sz, "%s", s->name);
+}
+
+/**
+ * @brief Write @p text into a @p width-wide cell, truncated with "..".
+ *
+ * The cut is by byte, but the text is free text fetched from RadioReference, so
+ * it backs off to a UTF-8 lead byte first: emitting half a multi-byte sequence
+ * makes ncurses draw a replacement glyph and shifts the rest of the row.
+ * (Width-aware column fitting is a bigger job; this only guarantees the bytes
+ * we do emit are well-formed.)
+ *
+ * @param text   Cell text.
+ * @param width  Column width in bytes; <= 0 writes nothing.
+ * @param out    Destination.
+ * @param out_sz Destination size in bytes, passed explicitly.
+ */
+static void
+rr_library_write_cell(const char* text, int width, char* out, size_t out_sz) {
+    if (width <= 0) {
+        out[0] = '\0';
+        return;
+    }
+    const size_t len = strlen(text);
+    if (len <= (size_t)width) {
+        (void)DSD_SNPRINTF(out, out_sz, "%-*s", width, text);
+        return;
+    }
+    if (width < 3) {
+        /* No room for text plus its truncation mark. rr_library_layout() never
+           produces this; a hand-made layout would otherwise reach a negative
+           precision below, which printf reads as "no precision at all" and which
+           would print the whole string straight through the column. */
+        (void)DSD_SNPRINTF(out, out_sz, "%*s", width, "");
+        return;
+    }
+    int keep = width - 2;
+    while (keep > 0 && ((unsigned char)text[keep] & 0xC0U) == 0x80U) {
         keep--;
     }
-    char head[RR_LIB_NAME_COL + 1];
-    (void)DSD_SNPRINTF(head, sizeof head, "%.*s..", keep, s->name);
-    (void)DSD_SNPRINTF(col, col_sz, "%-*s", RR_LIB_NAME_COL, head);
+    (void)DSD_SNPRINTF(out, out_sz, "%.*s..%*s", keep, text, width - keep - 2, "");
 }
 
 /** @brief Write the detail cell: a start frequency, "<freq> scan", or "-". */
@@ -286,18 +375,108 @@ rr_library_write_detail(const RrLibrarySystem* s, char* col, size_t col_sz) {
     }
 }
 
+/** @brief Clamp @p want into [@p lo, @p hi]. */
+static int
+rr_library_clamp(int want, int lo, int hi) {
+    if (want < lo) {
+        return lo;
+    }
+    return (want > hi) ? hi : want;
+}
+
+/** @brief The longest name and site label stored, in bytes. */
+static void
+rr_library_measure(const RrLibrary* lib, int* out_name, int* out_site) {
+    int name = 0;
+    int site = 0;
+    for (int i = 0; i < lib->count; i++) {
+        const int n = (int)strlen(lib->systems[i].name);
+        const int t = (int)strlen(lib->systems[i].site_label);
+        name = (n > name) ? n : name;
+        site = (t > site) ? t : site;
+    }
+    *out_name = name;
+    *out_site = site;
+}
+
+void
+rr_library_layout(const RrLibrary* lib, int avail_cols, RrLibraryLayout* out) {
+    if (out == NULL) {
+        return;
+    }
+    out->name = RR_LIB_NAME_MIN;
+    out->site = 0;
+    if (lib == NULL) {
+        return;
+    }
+
+    int longest_name = 0;
+    int longest_site = 0;
+    rr_library_measure(lib, &longest_name, &longest_site);
+
+    /* Nothing names a site: every stored import predates the label, so the
+       column would be a column of nothing. Drop it and give the width back. */
+    if (longest_site == 0) {
+        out->name = rr_library_clamp(longest_name, RR_LIB_NAME_MIN, RR_LIB_NAME_MAX);
+        const int room = avail_cols - RR_LIB_FIXED_NO_SITE;
+        if (room > RR_LIB_NAME_MIN && out->name > room) {
+            out->name = room;
+        }
+        return;
+    }
+
+    const int want_name = rr_library_clamp(longest_name, RR_LIB_NAME_MIN, RR_LIB_NAME_MAX);
+    const int want_site = rr_library_clamp(longest_site, RR_LIB_SITE_MIN, RR_LIB_SITE_MAX);
+    int budget = avail_cols - RR_LIB_FIXED_COLS;
+    /* A terminal too narrow for the floors still renders; the chooser clips the
+       row rather than this returning a column nothing can be read out of. */
+    if (budget < RR_LIB_NAME_MIN + RR_LIB_SITE_MIN) {
+        budget = RR_LIB_NAME_MIN + RR_LIB_SITE_MIN;
+    }
+    if (want_name + want_site <= budget) {
+        out->name = want_name;
+        out->site = want_site;
+        return;
+    }
+    /* Both want more than there is. Whichever fits in half takes what it needs
+       and the other takes the rest; when neither does, they split it. */
+    const int half = budget / 2;
+    if (want_name <= half) {
+        out->name = want_name;
+        out->site = budget - want_name;
+    } else if (want_site <= budget - half) {
+        out->site = want_site;
+        out->name = budget - want_site;
+    } else {
+        out->name = half;
+        out->site = budget - half;
+    }
+    /* An odd split can land a column just under its floor. budget is at least
+       the two floors together, so restoring one cannot starve the other. */
+    if (out->name < RR_LIB_NAME_MIN) {
+        out->name = RR_LIB_NAME_MIN;
+        out->site = budget - out->name;
+    }
+    if (out->site < RR_LIB_SITE_MIN) {
+        out->site = RR_LIB_SITE_MIN;
+        out->name = budget - out->site;
+    }
+}
+
 int
-rr_library_row_format(const RrLibrarySystem* s, int in_use, char* out, size_t out_sz) {
-    if (s == NULL || out == NULL || out_sz == 0) {
+rr_library_row_format(const RrLibrarySystem* s, const RrLibraryLayout* layout, int in_use, char* out, size_t out_sz) {
+    if (s == NULL || layout == NULL || out == NULL || out_sz == 0) {
         if (out != NULL && out_sz > 0) {
             out[0] = '\0';
         }
         return 0;
     }
 
-    char name_col[64];
+    char name_col[RR_LIB_NAME_MAX + 8];
+    char site_col[RR_LIB_SITE_MAX + 8];
     char detail_col[48];
-    rr_library_write_name(s, name_col, sizeof name_col);
+    rr_library_write_cell(s->name, layout->name, name_col, sizeof name_col);
+    rr_library_write_cell(s->site_label, layout->site, site_col, sizeof site_col);
     rr_library_write_detail(s, detail_col, sizeof detail_col);
 
     const char* proto = s->recipe.present ? dsd_rr_protocol_short_name(s->recipe.protocol) : NULL;
@@ -305,8 +484,12 @@ rr_library_row_format(const RrLibrarySystem* s, int in_use, char* out, size_t ou
         proto = "-";
     }
 
-    const int n = DSD_SNPRINTF(out, out_sz, "%s  %-*s  %s%s", name_col, DSD_RR_PROTO_SHORT_NAME_MAX, proto, detail_col,
-                               in_use ? "  * in use" : "");
+    /* The gutter leads. Two columns, and the same two whether or not the row is
+       in use, so the columns after it stay aligned down the list. */
+    const int n = (layout->site > 0) ? DSD_SNPRINTF(out, out_sz, "%s%s  %s  %-*s  %s", in_use ? "* " : "  ", name_col,
+                                                    site_col, DSD_RR_PROTO_SHORT_NAME_MAX, proto, detail_col)
+                                     : DSD_SNPRINTF(out, out_sz, "%s%s  %-*s  %s", in_use ? "* " : "  ", name_col,
+                                                    DSD_RR_PROTO_SHORT_NAME_MAX, proto, detail_col);
     if (n < 0) {
         out[0] = '\0';
         return 0;

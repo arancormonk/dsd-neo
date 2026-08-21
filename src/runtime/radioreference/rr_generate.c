@@ -1169,8 +1169,15 @@ rr_is_space(unsigned char c) {
     return (c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v') ? 1 : 0;
 }
 
-size_t
-rr_collapse_label(const char* in, char* out, size_t out_sz) {
+/**
+ * @brief Shared body of the two label collapsers.
+ *
+ * @param csv_safe Non-zero to rewrite ',' as '/', which is what a label bound
+ *                 for a quoting-free CSV column needs and what a label bound
+ *                 for a filename or a screen must not have done to it.
+ */
+static size_t
+rr_collapse_label_impl(const char* in, char* out, size_t out_sz, int csv_safe) {
     size_t len = 0;
     int pending_space = 0;
 
@@ -1189,10 +1196,20 @@ rr_collapse_label(const char* in, char* out, size_t out_sz) {
             out[len++] = ' ';
         }
         pending_space = 0;
-        out[len++] = (c == ',') ? '/' : (char)c;
+        out[len++] = (csv_safe && c == ',') ? '/' : (char)c;
     }
     out[len] = '\0';
     return len;
+}
+
+size_t
+rr_collapse_label(const char* in, char* out, size_t out_sz) {
+    return rr_collapse_label_impl(in, out, out_sz, 1);
+}
+
+size_t
+rr_collapse_display_label(const char* in, char* out, size_t out_sz) {
+    return rr_collapse_label_impl(in, out, out_sz, 0);
 }
 
 size_t

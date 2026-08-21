@@ -202,6 +202,31 @@ test_sanitize_file_stem(void) {
     expect_size("64-byte cap", dsd_rr_sanitize_file_stem(over, out, sizeof(out)), 64U);
 }
 
+/*
+ * The stem builder needs a component that reports emptiness instead of
+ * substituting a name: a site with no usable description must contribute no
+ * suffix at all, and "radioreference" as a SUFFIX would read as a place.
+ */
+static void
+test_sanitize_file_part(void) {
+    char out[128];
+
+    expect_size("part keeps a real label", dsd_rr_sanitize_file_part("Polk Co Simulcast", out, sizeof(out)), 17U);
+    expect_str("part text", out, "Polk Co Simulcast");
+
+    expect_size("part reports empty", dsd_rr_sanitize_file_part("", out, sizeof(out)), 0U);
+    expect_str("part leaves the buffer empty", out, "");
+    expect_size("part reports nothing-survived", dsd_rr_sanitize_file_part("//..//", out, sizeof(out)), 0U);
+    expect_str("no fallback name is substituted", out, "");
+    expect_size("part tolerates NULL", dsd_rr_sanitize_file_part(NULL, out, sizeof(out)), 0U);
+
+    /* The caller budgets by handing over a smaller buffer. */
+    char tight[11];
+    expect_size("part honours the caller's budget",
+                dsd_rr_sanitize_file_part("Black Hawk Co Simulcast", tight, sizeof(tight)), 10U);
+    expect_str("part cut to the budget", tight, "Black Hawk");
+}
+
 static void
 test_system_info_resolve(void) {
     dsd_rr_trs_sysid sysids[1];
@@ -477,6 +502,87 @@ test_plan_conventional(void) {
     dsd_rr_import_plan_free(&plan);
 }
 
+/*
+ * The stored import has to be able to say WHICH site it came from: a statewide
+ * system is imported once per county, and every one of those imports carries
+ * the same system name. The label is display text - the browser's site column
+ * and the file stem - so it names the place, never the database id.
+ */
+static void
+test_plan_site_label(void) {
+    dsd_rr_site_freq freqs[2];
+    freq_set(&freqs[0], 1, 770418750LL, "d", NULL);
+    freq_set(&freqs[1], 2, 770668750LL, "d", NULL);
+    dsd_rr_site sites[2];
+    site_init(&sites[0], &freqs[0], 1U);
+    site_init(&sites[1], &freqs[1], 1U);
+    sites[0].site_db_id = 16863;
+    sites[0].site_number = 1;
+    (void)DSD_SNPRINTF(sites[0].descr, sizeof(sites[0].descr), "%s", "Polk (Des Moines)");
+    sites[1].site_db_id = 16864;
+    sites[1].site_number = 7;
+
+    dsd_rr_system_info info;
+    info_set(&info, DSD_RR_PROTO_P25, 0);
+    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_plan plan;
+
+    const size_t first[] = {0U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("trunked plan built", dsd_rr_import_plan_build(&info, sites, 2U, first, 1U, NULL, 0U, &options, &plan) == 0);
+    expect_str("a trunked import is labelled by its site", plan.site_label, "Polk (Des Moines)");
+    dsd_rr_import_plan_free(&plan);
+
+    /* RadioReference ships sites with no description at all. The RF site number
+     * is display-only and repeats within a system, which is exactly why it is
+     * fine here and never in site_ids. */
+    const size_t second[] = {1U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("undescribed site plan built",
+           dsd_rr_import_plan_build(&info, sites, 2U, second, 1U, NULL, 0U, &options, &plan) == 0);
+    expect_str("an undescribed site falls back to its RF number", plan.site_label, "Site 7");
+    dsd_rr_import_plan_free(&plan);
+}
+
+/*
+ * A conventional import is a set of repeaters rather than one place, so the
+ * label counts them - except at one repeater, where the place is the answer.
+ */
+static void
+test_plan_site_label_conventional(void) {
+    dsd_rr_site_freq freqs[3];
+    freq_set(&freqs[0], 1, 451275000LL, "", NULL);
+    freq_set(&freqs[1], 1, 464525000LL, "", NULL);
+    freq_set(&freqs[2], 1, 453100000LL, "", NULL);
+    dsd_rr_site sites[3];
+    site_init(&sites[0], &freqs[0], 1U);
+    site_init(&sites[1], &freqs[1], 1U);
+    site_init(&sites[2], &freqs[2], 1U);
+    sites[0].site_db_id = 42099;
+    (void)DSD_SNPRINTF(sites[0].descr, sizeof(sites[0].descr), "%s", "Kirkwood");
+    sites[1].site_db_id = 42100;
+    sites[2].site_db_id = 42101;
+
+    dsd_rr_system_info info;
+    info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
+    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_plan plan;
+
+    const size_t all[] = {0U, 1U, 2U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("conventional plan built",
+           dsd_rr_import_plan_build(&info, sites, 3U, all, 3U, NULL, 0U, &options, &plan) == 0);
+    expect_str("many repeaters are counted, not named", plan.site_label, "3 repeaters");
+    dsd_rr_import_plan_free(&plan);
+
+    const size_t one[] = {0U};
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("single-repeater plan built",
+           dsd_rr_import_plan_build(&info, sites, 3U, one, 1U, NULL, 0U, &options, &plan) == 0);
+    expect_str("one repeater is named like a site", plan.site_label, "Kirkwood");
+    dsd_rr_import_plan_free(&plan);
+}
+
 static void
 test_plan_selection_hygiene(void) {
     dsd_rr_site_freq freqs[2];
@@ -685,12 +791,15 @@ main(void) {
     test_choose_app_key();
     test_decode_mode();
     test_sanitize_file_stem();
+    test_sanitize_file_part();
     test_system_info_resolve();
     test_tune_frequency();
     test_plan_trunked_p25();
     test_plan_simulcast_and_esk();
     test_plan_edacs_esk_and_tune_fallback();
     test_plan_conventional();
+    test_plan_site_label();
+    test_plan_site_label_conventional();
     test_plan_selection_hygiene();
     test_plan_blocked();
     test_plan_site_ids_large_selection();

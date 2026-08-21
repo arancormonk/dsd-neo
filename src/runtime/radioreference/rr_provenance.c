@@ -59,6 +59,7 @@ rr_provenance_emit(FILE* fp, const dsd_rr_provenance* p) {
     rr_emit_text(fp, "site_ids", p->site_ids);
     DSD_FPRINTF(fp, "partial_enc_as_de = %d\n", p->partial_enc_as_de ? 1 : 0);
     rr_emit_text(fp, "system_name", p->system_name);
+    rr_emit_text(fp, "site_label", p->site_label);
     DSD_FPRINTF(fp, "imported_at = %lld\n", stamp);
 
     /* The re-apply recipe, only when there is one. A sidecar with no recipe (an
@@ -140,18 +141,35 @@ rr_trim(char* s) {
     return s;
 }
 
+/* The keys whose value is copied verbatim. Split from rr_provenance_assign()
+   so that function stays inside tools/lizard.sh --strict's CCN 15; every key
+   here is one more branch in whichever function holds it.
+
+   @return 1 when @p key was one of them, 0 to keep looking. */
 static int
-rr_provenance_assign(dsd_rr_provenance* out, const char* key, const char* value) {
+rr_provenance_assign_text(dsd_rr_provenance* out, const char* key, const char* value) {
     if (strcmp(key, "kind") == 0) {
         DSD_STRNCPY(out->kind, value, sizeof out->kind - 1);
-        return 0;
+        return 1;
     }
     if (strcmp(key, "site_ids") == 0) {
         DSD_STRNCPY(out->site_ids, value, sizeof out->site_ids - 1);
-        return 0;
+        return 1;
     }
     if (strcmp(key, "system_name") == 0) {
         DSD_STRNCPY(out->system_name, value, sizeof out->system_name - 1);
+        return 1;
+    }
+    if (strcmp(key, "site_label") == 0) {
+        DSD_STRNCPY(out->site_label, value, sizeof out->site_label - 1);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+rr_provenance_assign(dsd_rr_provenance* out, const char* key, const char* value) {
+    if (rr_provenance_assign_text(out, key, value)) {
         return 0;
     }
     if (strcmp(key, "sid") == 0) {

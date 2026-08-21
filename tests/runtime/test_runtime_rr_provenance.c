@@ -44,6 +44,7 @@ fill_sample(dsd_rr_provenance* p) {
     DSD_STRNCPY(p->site_ids, "4181,4182", sizeof p->site_ids - 1);
     p->partial_enc_as_de = 1;
     DSD_STRNCPY(p->system_name, "SARA System", sizeof p->system_name - 1);
+    DSD_STRNCPY(p->site_label, "Sioux City", sizeof p->site_label - 1);
     p->imported_at = 1755500000LL;
 }
 
@@ -80,6 +81,7 @@ expect_round_trip(void) {
     rc |= strcmp(got.site_ids, "4181,4182") == 0 ? 0 : 1;
     rc |= got.partial_enc_as_de == 1 ? 0 : 1;
     rc |= strcmp(got.system_name, "SARA System") == 0 ? 0 : 1;
+    rc |= strcmp(got.site_label, "Sioux City") == 0 ? 0 : 1;
     rc |= got.imported_at == 1755500000LL ? 0 : 1;
 
     /* Overwrite an existing sidecar: this is the Windows replace-existing path. */
@@ -518,6 +520,39 @@ expect_recipe_from_plan_and_back(void) {
     return rc;
 }
 
+/*
+ * Every sidecar on disk predates the site label, and one of those files is
+ * still a perfectly good import: it must read back unlabelled rather than
+ * failing, which would drop the file out of the browser, the picker and
+ * refresh all at once.
+ */
+static int
+expect_sidecar_without_site_label_reads_unlabelled(void) {
+    char scratch[DSD_TEST_PATH_MAX];
+    char csv[DSD_TEST_PATH_MAX];
+    char rr[DSD_TEST_PATH_MAX];
+    if (make_paths(scratch, sizeof scratch, csv, sizeof csv, rr, sizeof rr, "dsd_neo_rr_prov_nolabel") != 0) {
+        return 1;
+    }
+
+    int rc = write_sidecar_text(rr, "kind = group\n"
+                                    "sid = 6673\n"
+                                    "site_ids = 16863\n"
+                                    "partial_enc_as_de = 1\n"
+                                    "system_name = SARA Network\n"
+                                    "imported_at = 1755500000\n");
+
+    dsd_rr_provenance got;
+    DSD_MEMSET(&got, 0, sizeof got);
+    rc |= dsd_rr_provenance_read(csv, &got) == 0 ? 0 : 1;
+    rc |= got.sid == 6673 ? 0 : 1;
+    rc |= got.site_label[0] == '\0' ? 0 : 1;
+
+    (void)remove(rr);
+    (void)DSD_TEST_RMDIR(scratch);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -532,5 +567,6 @@ main(void) {
     rc |= expect_unknown_protocol_token_degrades_to_files_only();
     rc |= expect_recipe_malformed_values_fail();
     rc |= expect_recipe_from_plan_and_back();
+    rc |= expect_sidecar_without_site_label_reads_unlabelled();
     return rc;
 }
