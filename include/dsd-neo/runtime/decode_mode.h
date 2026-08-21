@@ -127,6 +127,18 @@ int dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int le
  */
 dsdneoUserDecodeMode dsd_infer_decode_mode_preset(const dsd_opts* opts);
 
+/**
+ * @brief Human-readable name of a decode preset, for menus and pickers.
+ *
+ * One table for every frontend that lists the presets, so a picker and the
+ * label that reads the current mode back cannot drift apart.
+ *
+ * @param mode Decode mode preset.
+ * @return A static string such as "P25 Phase 1"; "Unset" for
+ *         DSDCFG_MODE_UNSET; "Unknown" for any value outside the enum.
+ */
+const char* dsd_decode_mode_display_name(dsdneoUserDecodeMode mode);
+
 #ifdef __cplusplus
 }
 #endif
