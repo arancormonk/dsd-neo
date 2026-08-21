@@ -210,16 +210,13 @@ waddnstr(WINDOW* win, const char* str, int n) {
     (void)n;
     g_waddnstr_count++;
     if (str) {
-        const size_t used = strlen(g_added_text);
-        if (used < sizeof(g_added_text) - 1U) {
-            size_t copy_len = strlen(str);
-            const size_t avail = sizeof(g_added_text) - used - 1U;
-            if (copy_len > avail) {
-                copy_len = avail;
-            }
-            DSD_MEMCPY(g_added_text + used, str, copy_len);
-            g_added_text[used + copy_len] = '\0';
+        /* Byte loop rather than strlen+memcpy so the static analyzer can see
+         * the index stays inside the buffer. */
+        size_t used = strlen(g_added_text);
+        while (used + 1U < sizeof(g_added_text) && *str != '\0') {
+            g_added_text[used++] = *str++;
         }
+        g_added_text[used] = '\0';
     }
     return OK;
 }

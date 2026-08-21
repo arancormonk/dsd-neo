@@ -1896,9 +1896,10 @@ rr_core_apply_search_result(RrWizardCore* w, RrWizResult* r) {
              * is what the user reads while that runs. */
             const dsd_rr_zip_info* zip = r->payload.zip;
             if (rr_start_results_for_county(w, zip->ctid)) {
-                char near[160];
-                (void)DSD_SNPRINTF(near, sizeof near, "Loading systems near %.96s...", zip->city);
-                rr_core_status_notify(w, near);
+                /* Not "near": <windows.h> defines that as an empty legacy macro. */
+                char nearby[160];
+                (void)DSD_SNPRINTF(nearby, sizeof nearby, "Loading systems near %.96s...", zip->city);
+                rr_core_status_notify(w, nearby);
             }
             return 1;
         }
