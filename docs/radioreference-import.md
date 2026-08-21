@@ -96,7 +96,7 @@ The import screen is a drill-down with two stages, and shows one or the other, n
 
 ## Terminal UI
 
-Open the menu overlay with `Enter`, then **Trunking & Control -> RadioReference... -> Import from
+Open the menu overlay with `Enter`, then **Trunking -> Channels & groups -> Import from
 RadioReference...**. The wizard asks for your username, password and — in a keyless build — your
 application key, verifies the account once, and then offers the same search modes as the Qt screen.
 Selecting a system opens one modal panel with the site list, the three option toggles, and a preview of
@@ -108,12 +108,12 @@ wizard: it writes its files, applies them to the session, releases the site sele
 site list, with a status line naming what it just wrote. Picking another site and pressing `Enter`
 again imports that one too, with no second fetch. `Esc` closes the wizard when you are done.
 
-The whole submenu is hidden in a build without libcurl or expat.
+The RadioReference rows are hidden in a build without libcurl or expat.
 
 ### Imported Systems browser
 
-Once you have imported one or more systems, **Trunking & Control -> RadioReference... -> Imported
-Systems...** lists them — one row per stored import, not one per file, with the group list and channel
+Once you have imported one or more systems, **Trunking -> Channels & groups -> Imported RadioReference
+systems...** lists them — one row per stored import, not one per file, with the group list and channel
 map an import wrote folded back together by the file name they share. Several rows can name the same
 system: one per site, which is the point.
 
@@ -149,7 +149,7 @@ manages its own channel maps, so the decoder refuses the apply and reports it, t
 
 ### Picking a CSV to import
 
-**Trunking & Control -> Lists & Filters -> Import Channel Map CSV...** and **Import Group List CSV...** now
+**Trunking -> Channels & groups -> Import channel map CSV...** and **Import group list CSV...** now
 open a chooser of the imports directory's files of that kind — RadioReference file names carry spaces and
 are tedious to type — with a final **Enter a path...** row that falls back to typing a path. When the
 imports directory holds no matching file, the path prompt opens directly, so nothing changes for a user

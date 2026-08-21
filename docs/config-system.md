@@ -162,7 +162,7 @@ dsd-neo --config config.ini --profile p25_trunk
 dsd-neo --config config.ini --list-profiles
 ```
 
-The terminal Config menu also supports `Load Profile...`, which lists profiles from
+The terminal Config menu also supports `Load profile...`, which lists profiles from
 the active config path and applies the selected overlay to the running session.
 
 ### Behavior
