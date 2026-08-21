@@ -970,7 +970,7 @@ rr_panel_draw_status(WINDOW* win, int h, int body_w) {
 static void
 rr_panel_draw_footer(WINDOW* win, int h, int body_w) {
     mvwaddnstr(win, h - 3, 2, "Space=Select  p=partial-enc  s=simulcast  e=ESK", body_w);
-    mvwaddnstr(win, h - 2, 2, "Up/Down/PgUp/PgDn/Home/End  Enter=Import  Esc/q/Left=Back", body_w);
+    mvwaddnstr(win, h - 2, 2, "Up/Down/PgUp/PgDn/Home/End  Enter=Import  Esc/Left=Back", body_w);
 }
 
 /* ---- Views --------------------------------------------------------------- */
@@ -1017,7 +1017,7 @@ rr_panel_render_system(void) {
 
 static void
 rr_panel_render_fetching(void) {
-    static const char* const k_line2 = "Esc/q/Left cancels";
+    static const char* const k_line2 = "Esc/Left cancels";
     /* The core names each stage ("Checking your RadioReference account...",
        "Loading counties..."); the generic line is only for a fetch that did not. */
     const char* line1 = (g_rr_panel.stage[0] != '\0') ? g_rr_panel.stage : "Fetching from RadioReference...";
@@ -1074,7 +1074,7 @@ rr_panel_render_error(void) {
     (void)rr_panel_draw_wrapped(win, 2, 4, body_w, (text != NULL && text[0] != '\0') ? text : "Unknown error.", NULL);
     wattroff(win, COLOR_PAIR(RR_PANEL_CP_ERROR) | A_BOLD);
     rr_panel_draw_status(win, h, body_w);
-    mvwaddnstr(win, h - 2, 2, "Esc/q/Left=Back", body_w);
+    mvwaddnstr(win, h - 2, 2, "Esc/Left=Back", body_w);
     wnoutrefresh(win);
 }
 
@@ -1121,9 +1121,11 @@ rr_panel_handle_resize_event(void) {
     dsd_app_request_redraw();
 }
 
+/* Esc and Left only: 'q' quits the program from the main screen, so it is not
+   a back key anywhere inside the menu or its panels. */
 static int
 rr_panel_is_cancel_key(int ch) {
-    return (ch == 'q' || ch == 'Q' || ch == DSD_KEY_ESC || ch == KEY_LEFT);
+    return (ch == DSD_KEY_ESC || ch == KEY_LEFT);
 }
 
 static int

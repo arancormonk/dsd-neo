@@ -25,7 +25,7 @@ Controls:
 - Back / close: `Esc`, `Left`
 - Help for the highlighted row: `h`
 
-`q` does not back out of the menu. It quits the program, and only from the main screen — inside the menu it is
+`q` does not back out of the menu, its pickers, the help overlay or the RadioReference panel. It quits the program, and only from the main screen — inside the menu it is
 inert, so one keypress too many after the menu closes cannot exit the decoder.
 
 Rows come in three kinds:

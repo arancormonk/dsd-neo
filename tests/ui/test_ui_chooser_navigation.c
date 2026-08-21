@@ -98,9 +98,14 @@ main(void) {
     assert(ui_chooser_handle_key('\r') == 1);
     assert(g_done_sel == 0);
 
+    /* 'q' quits the program from the main screen, so inside a picker it is inert; Esc cancels. */
     ui_chooser_start("Devices", ITEMS, (int)(sizeof ITEMS / sizeof ITEMS[0]), capture_done, NULL);
     assert(ui_chooser_handle_key('q') == 1);
+    assert(g_done_sel == 0);
+    assert(ui_chooser_active() == 1);
+    assert(ui_chooser_handle_key(27) == 1);
     assert(g_done_sel == -1);
+    assert(ui_chooser_active() == 0);
 
     printf("UI_CHOOSER_NAVIGATION: OK\n");
     return 0;
