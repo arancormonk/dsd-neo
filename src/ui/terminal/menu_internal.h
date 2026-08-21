@@ -166,12 +166,26 @@ ui_scroll_follow_selection(int total, int page_rows, int top, int sel_pos) {
 }
 
 // ---- Visibility helpers (from menu_render.c) ----
+// "Enabled" rows are drawn (actions, status rows, separators); "selectable" rows are
+// the enabled action rows, the only ones the highlight can rest on.
 int ui_is_enabled(const NcMenuItem* it, const void* ctx);
+int ui_is_selectable(const NcMenuItem* it, const void* ctx);
 int ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx);
 int ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
+int ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
 int ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx);
 
 // ---- Render helpers (from menu_render.c) ----
+/**
+ * @brief Format one row exactly as it is drawn: label left, hotkey right-aligned.
+ *
+ * Pure (no curses). With a hotkey the row is exactly @p width columns and the
+ * label is truncated before the hotkey or its two-column gap ever is; without
+ * one it is the bare label, truncated to @p width. A separator formats as "".
+ *
+ * @return Characters written to @p out.
+ */
+int ui_menu_format_row(const NcMenuItem* it, const void* ctx, int width, char* out, size_t out_size);
 void ui_draw_menu(WINDOW* win, const NcMenuItem* items, size_t n, int hi, int* top_io, const char* title,
                   const void* ctx);
 void ui_overlay_layout(UiMenuFrame* f, const void* ctx);

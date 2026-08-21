@@ -59,13 +59,15 @@ ui_frame_items_rows(const UiMenuFrame* f) {
     return rows;
 }
 
+/* The highlight only ever rests on selectable rows (enabled actions); status rows
+   and separators are drawn but stepped over. */
 static int
-ui_first_enabled_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
+ui_first_selectable_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
     if (!items || n == 0) {
         return 0;
     }
     for (size_t i = 0; i < n; i++) {
-        if (ui_is_enabled(&items[i], ctx)) {
+        if (ui_is_selectable(&items[i], ctx)) {
             return (int)i;
         }
     }
@@ -73,12 +75,12 @@ ui_first_enabled_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
 }
 
 static int
-ui_last_enabled_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
+ui_last_selectable_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
     if (!items || n == 0) {
         return 0;
     }
     for (size_t i = n; i > 0; i--) {
-        if (ui_is_enabled(&items[i - 1], ctx)) {
+        if (ui_is_selectable(&items[i - 1], ctx)) {
             return (int)(i - 1);
         }
     }
@@ -86,7 +88,7 @@ ui_last_enabled_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
 }
 
 static int
-ui_step_enabled(const NcMenuItem* items, size_t n, const UiCtx* ctx, int from, int dir, int steps) {
+ui_step_selectable(const NcMenuItem* items, size_t n, const UiCtx* ctx, int from, int dir, int steps) {
     if (!items || n == 0) {
         return 0;
     }
@@ -103,7 +105,7 @@ ui_step_enabled(const NcMenuItem* items, size_t n, const UiCtx* ctx, int from, i
                 next = idx;
                 break;
             }
-            if (ui_is_enabled(&items[next], ctx)) {
+            if (ui_is_selectable(&items[next], ctx)) {
                 break;
             }
         }
@@ -210,7 +212,7 @@ ui_menu_push_submenu(const NcMenuItem* it, const UiCtx* ctx) {
     DSD_MEMSET(nf, 0, sizeof(*nf));
     nf->items = it->submenu;
     nf->n = it->submenu_len;
-    nf->hi = ui_first_enabled_idx(nf->items, nf->n, ctx);
+    nf->hi = ui_first_selectable_idx(nf->items, nf->n, ctx);
     nf->top = 0;
     nf->title = it->label ? it->label : it->id;
     ui_overlay_layout(nf, ctx);
@@ -225,8 +227,8 @@ ui_menu_refresh_current_frame(const UiCtx* ctx) {
     if (!cf->items || cf->n == 0) {
         return;
     }
-    if (!ui_is_enabled(&cf->items[cf->hi], ctx)) {
-        cf->hi = ui_next_enabled(cf->items, cf->n, ctx, cf->hi, +1);
+    if (!ui_is_selectable(&cf->items[cf->hi], ctx)) {
+        cf->hi = ui_next_selectable(cf->items, cf->n, ctx, cf->hi, +1);
     }
     ui_overlay_layout(cf, ctx);
     ui_frame_keep_highlight_visible(cf, ctx);
@@ -251,7 +253,7 @@ ui_menu_activate_current(UiCtx* ctx) {
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];
     const NcMenuItem* it = &f->items[f->hi];
-    if (!ui_is_enabled(it, ctx)) {
+    if (!ui_is_selectable(it, ctx)) {
         return 1;
     }
     ui_menu_push_submenu(it, ctx);
@@ -290,12 +292,12 @@ ui_menu_handle_resize(UiMenuFrame* f, const UiCtx* ctx, int ch) {
 static int
 ui_menu_handle_arrow_keys(UiMenuFrame* f, const UiCtx* ctx, int ch) {
     if (ch == KEY_UP) {
-        f->hi = ui_next_enabled(f->items, f->n, ctx, f->hi, -1);
+        f->hi = ui_next_selectable(f->items, f->n, ctx, f->hi, -1);
         ui_frame_keep_highlight_visible(f, ctx);
         return 1;
     }
     if (ch == KEY_DOWN) {
-        f->hi = ui_next_enabled(f->items, f->n, ctx, f->hi, +1);
+        f->hi = ui_next_selectable(f->items, f->n, ctx, f->hi, +1);
         ui_frame_keep_highlight_visible(f, ctx);
         return 1;
     }
@@ -305,12 +307,12 @@ ui_menu_handle_arrow_keys(UiMenuFrame* f, const UiCtx* ctx, int ch) {
 static int
 ui_menu_handle_edge_keys(UiMenuFrame* f, const UiCtx* ctx, int ch) {
     if (ch == KEY_HOME) {
-        f->hi = ui_first_enabled_idx(f->items, f->n, ctx);
+        f->hi = ui_first_selectable_idx(f->items, f->n, ctx);
         f->top = 0;
         return 1;
     }
     if (ch == KEY_END) {
-        f->hi = ui_last_enabled_idx(f->items, f->n, ctx);
+        f->hi = ui_last_selectable_idx(f->items, f->n, ctx);
         f->top =
             ui_scroll_last_page_top(ui_visible_count_and_maxlab(f->items, f->n, ctx, NULL), ui_frame_items_rows(f));
         return 1;
@@ -329,7 +331,7 @@ ui_menu_handle_page_keys(UiMenuFrame* f, const UiCtx* ctx, int ch) {
         return 0;
     }
     int page = ui_scroll_page_step_from_rows(ui_frame_items_rows(f));
-    f->hi = ui_step_enabled(f->items, f->n, ctx, f->hi, dir, page);
+    f->hi = ui_step_selectable(f->items, f->n, ctx, f->hi, dir, page);
     f->top += (dir < 0) ? -page : page;
     ui_frame_keep_highlight_visible(f, ctx);
     return 1;
@@ -347,9 +349,12 @@ ui_menu_handle_help_key(UiMenuFrame* f, const UiCtx* ctx, int ch) {
     return 1;
 }
 
+/* Esc and Left only. 'q' quits the program from the main screen, so letting it
+   also mean "back" here made one keypress too many after the menu closed exit
+   the decoder. */
 static int
 ui_menu_handle_back_key(int ch) {
-    if (ch != KEY_LEFT && ch != DSD_KEY_ESC && ch != 'q' && ch != 'Q') {
+    if (ch != KEY_LEFT && ch != DSD_KEY_ESC) {
         return 0;
     }
     if (g_depth > 1) {
@@ -388,7 +393,7 @@ ui_menu_open_async(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(g_stack, 0, sizeof(g_stack));
     g_stack[0].items = items;
     g_stack[0].n = n;
-    g_stack[0].hi = ui_first_enabled_idx(items, n, ctx);
+    g_stack[0].hi = ui_first_selectable_idx(items, n, ctx);
     g_stack[0].top = 0;
     g_stack[0].title = "Main Menu";
     ui_overlay_layout(&g_stack[0], ctx);
@@ -468,8 +473,8 @@ ui_menu_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     UiMenuFrame* f = &g_stack[g_depth - 1];
-    if (f->items && f->n > 0 && !ui_is_enabled(&f->items[f->hi], ctx)) {
-        f->hi = ui_next_enabled(f->items, f->n, ctx, f->hi, +1);
+    if (f->items && f->n > 0 && !ui_is_selectable(&f->items[f->hi], ctx)) {
+        f->hi = ui_next_selectable(f->items, f->n, ctx, f->hi, +1);
     }
     // Ensure window exists with up-to-date geometry
     ui_overlay_layout(f, ctx);

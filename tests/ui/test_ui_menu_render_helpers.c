@@ -161,6 +161,65 @@ test_enabled_navigation_and_visible_index(void) {
     assert(ui_visible_index_for_item(ITEMS, count, &ctx, 1) == 0);
 }
 
+static const NcMenuItem ROW_ITEMS[] = {
+    {.id = "trunk", .label = "Trunking", .hotkey = "t"},
+    {.id = "gain", .label = "Digital gain...", .hotkey = "+ -"},
+    {.id = "sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "status", .label = "Source: RTL-SDR dev 0", .kind = NC_ITEM_STATUS},
+    {.id = "plain", .label = "Plain"},
+    {.id = "off", .label = "Off row", .hotkey = "z", .is_enabled = enabled_bit0},
+};
+
+static void
+test_row_format_and_selectable(void) {
+    RenderCtx none = {0, "on"};
+    char row[64];
+
+    /* Hotkey right-aligned; the row is exactly `width` columns. */
+    assert(ui_menu_format_row(&ROW_ITEMS[0], &none, 20, row, sizeof row) == 20);
+    assert(strcmp(row, "Trunking           t") == 0);
+    assert(ui_menu_format_row(&ROW_ITEMS[1], &none, 20, row, sizeof row) == 20);
+    assert(strcmp(row, "Digital gain...  + -") == 0);
+
+    /* A narrow row truncates the label, never the hotkey or its gap. */
+    assert(ui_menu_format_row(&ROW_ITEMS[0], &none, 8, row, sizeof row) == 8);
+    assert(strcmp(row, "Trunk  t") == 0);
+
+    /* Rows without a hotkey are the bare label; separators are empty. */
+    assert(ui_menu_format_row(&ROW_ITEMS[4], &none, 20, row, sizeof row) == 5);
+    assert(strcmp(row, "Plain") == 0);
+    assert(ui_menu_format_row(&ROW_ITEMS[3], &none, 40, row, sizeof row) == (int)strlen("Source: RTL-SDR dev 0"));
+    assert(ui_menu_format_row(&ROW_ITEMS[2], &none, 20, row, sizeof row) == 0);
+    assert(row[0] == '\0');
+    assert(ui_menu_format_row(NULL, &none, 20, row, sizeof row) == 0);
+    assert(ui_menu_format_row(&ROW_ITEMS[0], &none, 20, NULL, 0) == 0);
+
+    /* The widest row counts its hotkey column so the window fits it. */
+    int maxlab = 0;
+    assert(ui_visible_count_and_maxlab(ROW_ITEMS, 1, &none, &maxlab) == 1);
+    assert(maxlab == (int)strlen("Trunking") + 2 + 1);
+    assert(ui_visible_count_and_maxlab(ROW_ITEMS, 2, &none, &maxlab) == 2);
+    assert(maxlab == (int)strlen("Digital gain...") + 2 + 3);
+    /* Separators and status rows are visible rows (they take a line)... */
+    assert(ui_visible_count_and_maxlab(ROW_ITEMS, 5, &none, &maxlab) == 5);
+    assert(maxlab == (int)strlen("Source: RTL-SDR dev 0"));
+
+    /* ...but only enabled action rows are selectable. */
+    assert(ui_is_selectable(&ROW_ITEMS[0], &none) == 1);
+    assert(ui_is_selectable(&ROW_ITEMS[2], &none) == 0);
+    assert(ui_is_selectable(&ROW_ITEMS[3], &none) == 0);
+    assert(ui_is_selectable(&ROW_ITEMS[5], &none) == 0);
+    assert(ui_is_selectable(NULL, &none) == 0);
+
+    /* Navigation steps over status rows and separators. */
+    const size_t count = sizeof ROW_ITEMS / sizeof ROW_ITEMS[0];
+    assert(ui_next_selectable(ROW_ITEMS, count, &none, 1, 1) == 4);
+    assert(ui_next_selectable(ROW_ITEMS, count, &none, 4, 1) == 0);
+    assert(ui_next_selectable(ROW_ITEMS, count, &none, 0, -1) == 4);
+    assert(ui_next_selectable(NULL, count, &none, 0, 1) == 0);
+    assert(ui_next_selectable(&ROW_ITEMS[2], 1, &none, 0, 1) == 0);
+}
+
 static void
 test_count_and_labels(void) {
     RenderCtx ctx = {0x02, "wide"};
@@ -211,8 +270,8 @@ test_overlay_size_helpers(void) {
     assert(ui_overlay_compute_height_for_test(2) == 9);
     assert(ui_overlay_compute_height_for_test(8) == 15);
 
-    assert(ui_overlay_compute_width_for_test(NULL, 0) == 50);
-    assert(ui_overlay_compute_width_for_test(&frame, 8) == 50);
+    assert(ui_overlay_compute_width_for_test(NULL, 0) == 48);
+    assert(ui_overlay_compute_width_for_test(&frame, 8) == 48);
     frame.title = "A title that is deliberately longer than the footer helper text";
     assert(ui_overlay_compute_width_for_test(&frame, 8) == (int)strlen(frame.title) + 4);
     frame.title = "";
@@ -405,9 +464,57 @@ test_draw_menu_scrolls_and_renders_enabled_items(void) {
     frame.title = "Live Layout";
     ui_overlay_layout(&frame, &ctx);
     assert(frame.h == 11);
-    assert(frame.w == 50);
+    assert(frame.w == 48);
     assert(frame.y == 6);
-    assert(frame.x == 15);
+    assert(frame.x == 16);
+
+    delwin(win);
+    stop_curses_render_test();
+}
+
+static void
+test_draw_menu_renders_kinds_and_hotkeys(void) {
+    if (!start_curses_render_test()) {
+        stop_curses_render_test();
+        printf("UI_MENU_RENDER_HELPERS: curses kinds draw test skipped\n");
+        return;
+    }
+
+    RenderCtx none = {0, "on"};
+    WINDOW* win = newwin(12, 52, 0, 0);
+    assert(win != NULL);
+    int top = 0;
+    g_status_peek_result = 0;
+
+    ui_draw_menu(win, ROW_ITEMS, sizeof ROW_ITEMS / sizeof ROW_ITEMS[0], 0, &top, "Kinds", &none);
+
+    char line[96];
+    /* Row 2: the highlighted action row, hotkey in the last text column (x=2, text_w=48). */
+    read_window_line(win, 2, line, sizeof line);
+    assert(strncmp(line + 2, "Trunking", 8) == 0);
+    assert(line[2 + 48 - 1] == 't');
+    /* Row 3: second action row, three-char hotkey ends in the same column. */
+    read_window_line(win, 3, line, sizeof line);
+    assert(strstr(line, "Digital gain...") != NULL);
+    assert(line[2 + 48 - 1] == '-');
+    assert(line[2 + 48 - 3] == '+');
+    /* Row 4: the separator carries no text from any neighbour. */
+    read_window_line(win, 4, line, sizeof line);
+    assert(strstr(line, "Source") == NULL);
+    assert(strstr(line, "Plain") == NULL);
+    /* Row 5: the status row is drawn as text; row 6 the plain row; the disabled row is absent. */
+    read_window_line(win, 5, line, sizeof line);
+    assert(strstr(line, "Source: RTL-SDR dev 0") != NULL);
+    read_window_line(win, 6, line, sizeof line);
+    assert(strstr(line, "Plain") != NULL);
+    read_window_line(win, 7, line, sizeof line);
+    assert(strstr(line, "Off row") == NULL);
+    /* The footer names the row count including the separator and status rows. */
+    read_window_line(win, 8, line, sizeof line);
+    assert(strstr(line, "(1/5)") != NULL);
+    read_window_line(win, 9, line, sizeof line);
+    assert(strstr(line, "Esc/Left: back") != NULL);
+    assert(strstr(line, "q/") == NULL);
 
     delwin(win);
     stop_curses_render_test();
@@ -417,11 +524,13 @@ int
 main(void) {
     test_visibility_helpers();
     test_enabled_navigation_and_visible_index();
+    test_row_format_and_selectable();
     test_count_and_labels();
     test_overlay_size_helpers();
     test_overlay_layout_helper();
     test_render_window_guard_paths();
     test_draw_menu_scrolls_and_renders_enabled_items();
+    test_draw_menu_renders_kinds_and_hotkeys();
     printf("UI_MENU_RENDER_HELPERS: OK\n");
     return 0;
 }

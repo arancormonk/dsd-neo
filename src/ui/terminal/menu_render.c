@@ -35,6 +35,11 @@ ui_is_enabled(const NcMenuItem* it, const void* ctx) {
 }
 
 int
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    return (it && it->kind == NC_ITEM_ACTION && ui_is_enabled(it, ctx)) ? 1 : 0;
+}
+
+int
 ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     if (!items || n == 0) {
         return 0;
@@ -56,6 +61,21 @@ ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, in
     for (size_t k = 0; k < n; k++) {
         idx = (idx + ((dir > 0) ? 1 : -1) + (int)n) % (int)n;
         if (ui_is_enabled(&items[idx], ctx)) {
+            return idx;
+        }
+    }
+    return from;
+}
+
+int
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+    if (!items || n == 0) {
+        return 0;
+    }
+    int idx = from;
+    for (size_t k = 0; k < n; k++) {
+        idx = (idx + ((dir > 0) ? 1 : -1) + (int)n) % (int)n;
+        if (ui_is_selectable(&items[idx], ctx)) {
             return idx;
         }
     }
@@ -158,11 +178,51 @@ ui_menu_item_label(const NcMenuItem* it, const void* ctx, char* out, size_t out_
     return lab;
 }
 
+/* Columns the hotkey takes on its row: the key text plus a two-column gap from the label. */
+static int
+ui_menu_item_hotkey_cols(const NcMenuItem* it) {
+    if (!it || !it->hotkey || !*it->hotkey) {
+        return 0;
+    }
+    return (int)strlen(it->hotkey) + 2;
+}
+
 static int
 ui_menu_item_label_len(const NcMenuItem* it, const void* ctx) {
+    if (it && it->kind == NC_ITEM_SEPARATOR) {
+        return 0;
+    }
     char dyn[128];
     const char* lab = ui_menu_item_label(it, ctx, dyn, sizeof dyn);
-    return (int)strlen(lab);
+    return (int)strlen(lab) + ui_menu_item_hotkey_cols(it);
+}
+
+int
+ui_menu_format_row(const NcMenuItem* it, const void* ctx, int width, char* out, size_t out_size) {
+    if (!out || out_size == 0) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!it || it->kind == NC_ITEM_SEPARATOR || width < 1) {
+        return 0;
+    }
+    char labfmt[140];
+    const char* lab = ui_menu_item_label(it, ctx, labfmt, sizeof labfmt);
+    const int hotkey_cols = ui_menu_item_hotkey_cols(it);
+    if (hotkey_cols == 0) {
+        DSD_SNPRINTF(out, out_size, "%.*s", width, lab);
+        return (int)strlen(out);
+    }
+    int label_cols = width - hotkey_cols;
+    if (label_cols < 0) {
+        label_cols = 0;
+    }
+    int pad_to = width - (int)strlen(it->hotkey);
+    if (pad_to < 0) {
+        pad_to = 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%-*.*s%s", pad_to, label_cols, lab, it->hotkey);
+    return (int)strlen(out);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -191,15 +251,28 @@ ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const N
             break;
         }
         int y = layout->items_top + drawn++;
+        const NcMenuItem* it = &items[i];
         mvwhline(menu_win, y, 1, ' ', layout->mw - 2);
-        if ((int)i == hi) {
-            wattron(menu_win, A_REVERSE);
+        if (it->kind == NC_ITEM_SEPARATOR) {
+            wattron(menu_win, A_DIM);
+            mvwhline(menu_win, y, layout->x, ACS_HLINE, layout->text_w);
+            wattroff(menu_win, A_DIM);
+            continue;
         }
-        char labfmt[140];
-        const char* lab = ui_menu_item_label(&items[i], ctx, labfmt, sizeof labfmt);
-        mvwaddnstr(menu_win, y, layout->x, lab, layout->text_w);
-        if ((int)i == hi) {
-            wattroff(menu_win, A_REVERSE);
+        char row[160];
+        (void)ui_menu_format_row(it, ctx, layout->text_w, row, sizeof row);
+        const int is_hi = ((int)i == hi) && it->kind == NC_ITEM_ACTION;
+        const int attr = is_hi ? A_REVERSE : ((it->kind == NC_ITEM_STATUS) ? A_DIM : A_NORMAL);
+        if (attr != A_NORMAL) {
+            wattron(menu_win, attr);
+        }
+        if (is_hi) {
+            // The highlight spans the whole row so the hotkey column reads as part of it.
+            mvwhline(menu_win, y, layout->x, ' ', layout->text_w);
+        }
+        mvwaddnstr(menu_win, y, layout->x, row, layout->text_w);
+        if (attr != A_NORMAL) {
+            wattroff(menu_win, attr);
         }
     }
     while (drawn < layout->items_rows) {
@@ -230,7 +303,7 @@ ui_menu_draw_footer_lines(WINDOW* menu_win, const UiMenuDrawLayout* layout, int 
     int help_y = layout->mh - 3;
     if (help_y >= layout->footer_min_y && help_y <= layout->mh - 2) {
         mvwhline(menu_win, help_y, 1, ' ', layout->mw - 2);
-        mvwaddnstr(menu_win, help_y, layout->x, "Enter/Right: select  h: help  Esc/q/Left: back", layout->text_w);
+        mvwaddnstr(menu_win, help_y, layout->x, "Enter/Right: select  h: help  Esc/Left: back", layout->text_w);
     }
 }
 
@@ -325,7 +398,7 @@ ui_overlay_center_axis(int outer, int inner) {
 static int
 ui_overlay_compute_width(const UiMenuFrame* f, int maxlab) {
     const char* footer_keys = "Arrows/PgUp/PgDn/Home/End  (000/000)";
-    const char* footer_help = "Enter/Right: select  h: help  Esc/q/Left: back";
+    const char* footer_help = "Enter/Right: select  h: help  Esc/Left: back";
     const int pad_x = 2;
     int width = pad_x + ((maxlab > 0) ? maxlab : 1);
     width = ui_max_int(width, pad_x + (int)strlen(footer_keys));

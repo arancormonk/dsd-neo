@@ -53,7 +53,7 @@ ted_child_visible(const void* ctx) {
 }
 
 const NcMenuItem DSP_TED_ITEMS[] = {
-    {"ted-visible", "TED Visible", NULL, NULL, ted_child_visible, NULL, NULL, 0},
+    {.id = "ted-visible", .label = "TED Visible", .is_enabled = ted_child_visible},
 };
 const size_t DSP_TED_ITEMS_LEN = sizeof DSP_TED_ITEMS / sizeof DSP_TED_ITEMS[0];
 
