@@ -234,25 +234,26 @@ ui_menu_draw_footer_lines(WINDOW* menu_win, const UiMenuDrawLayout* layout, int 
     }
 }
 
+/*
+ * The status row is the last interior row. A message too long for it takes the
+ * key-help row above as well, and the hints come back when the toast expires:
+ * the menu's floor width leaves ~39 columns after "Status: ", which cut every
+ * two-clause message in half. Anchored to the bottom so a one-row message sits
+ * where it always did.
+ */
 static void
 ui_menu_draw_status_line(WINDOW* menu_win, const UiMenuDrawLayout* layout, time_t now) {
     if (!menu_win || !layout) {
         return;
     }
-    char sline[256];
-    if (ui_status_peek(sline, sizeof sline, now)) {
-        int status_y = layout->mh - 2;
-        if (status_y >= layout->footer_min_y) {
-            mvwhline(menu_win, status_y, 1, ' ', layout->mw - 2);
-            if (layout->x <= layout->mw - 2) {
-                char status_line[288];
-                DSD_SNPRINTF(status_line, sizeof status_line, "Status: %s", sline);
-                mvwaddnstr(menu_win, status_y, layout->x, status_line, layout->mw - layout->x - 1);
-            }
-        }
+    const int y_last = layout->mh - 2;
+    if (y_last < layout->footer_min_y || layout->x > layout->mw - 2) {
+        ui_status_clear_if_expired(now);
         return;
     }
-    ui_status_clear_if_expired(now);
+    const int y_first = (y_last - 1 >= layout->footer_min_y) ? (y_last - 1) : y_last;
+    (void)ui_status_draw(menu_win, y_first, layout->x, layout->mw - layout->x - 1, y_last - y_first + 1,
+                         UI_STATUS_FLAG_PREFIX | UI_STATUS_FLAG_ANCHOR_BOTTOM, now);
 }
 
 void

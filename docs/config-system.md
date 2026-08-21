@@ -319,6 +319,8 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `decode` | ENUM | Decode mode preset | `auto` |
 | `dmr_mono` | BOOL | Enable the single-slot DMR decoder without changing `decode` | `false` |
+| `edacs_ea` | BOOL | Decode EDACS with extended addressing, without changing `decode` | `false` |
+| `edacs_esk` | BOOL | Apply the EDACS ESK `0xA0` scrambling mask, without changing `decode` | `false` |
 | `demod` | ENUM | Demodulator path | `auto` |
 
 **[trunking] section:**
@@ -332,6 +334,8 @@ small subset is exposed as config keys for convenience (for example
 | `tune_private_calls` | BOOL | Follow private calls | `true` |
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
+| `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
+| `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
 
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
@@ -340,6 +344,15 @@ small subset is exposed as config keys for convenience (for example
 | `targets_csv` | PATH | Scan target list CSV | (empty) |
 | `idle_dwell_ms` | INT (250-600000) | Default idle dwell per target | `3000` |
 | `activity_hold_ms` | INT (250-600000) | Conventional DMR activity hold | `1200` |
+
+**[radioreference] section:**
+| Key | Type | Description | Default |
+|-----|------|-------------|---------|
+| `username` | STRING | RadioReference account username | (empty) |
+| `app_key` | STRING | RadioReference application key (ignored when a key is baked into the build) | (empty) |
+
+The password has no key here and never will: it is asked once per program run and held in memory
+only. See `docs/radioreference-import.md`.
 
 **[logging] section:**
 | Key | Type | Description | Default |
@@ -757,12 +770,13 @@ Older releases also wrote per-system P25 control-channel candidate files under
 loader and both environment variables after the cache support window ends or a
 migration imports the saved frequencies into current channel-map inputs.
 
-The RadioReference import (`docs/radioreference-import.md`) has **no INI keys in
-v1**. Its account settings live in the Qt app's own settings store, and the
-password is never persisted anywhere. A `[radioreference]` section with
-`username` and `app_key` is reserved for a future terminal-UI adopter; nothing
-reads one today, so a config carrying it is ignored like any other unknown
-section.
+The RadioReference import (`docs/radioreference-import.md`) persists exactly two
+keys, `[radioreference] username` and `[radioreference] app_key`, shared by the
+terminal wizard and the Qt frontend. The **password is never persisted**: it is
+held in wizard memory for one program run, and there is no schema row, no
+`dsdneoUserConfig` field and no `dsd_opts` field for it. A build that bakes in an
+application key (`DSD_RR_APP_KEY`) ignores a stored `app_key` outright, and the
+key row is not offered.
 
 Separately, normal loading ignores unknown keys and sections so configuration
 introduced during a staged deployment can survive rollback to an older binary;

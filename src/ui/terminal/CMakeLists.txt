@@ -24,6 +24,11 @@ target_sources(
         menu_items.c
         menu_prompts.c
         menu_render.c
+        rr_wizard_core.c
+        rr_panel.c
+        rr_panel_format.c
+        rr_library.c
+        csv_picker.c
         panels/header.c
         panels/footer.c
         menus/menu_defs.c

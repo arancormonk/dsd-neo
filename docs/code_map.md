@@ -48,6 +48,8 @@ Generated (do not edit/commit):
 - Target: `dsd-neo_platform`
 - Responsibilities: cross-platform primitives (audio backend, sockets, threading, timing, filesystem/curses
   compatibility)
+  - Directory listing: `dsd_dir_list()` in `include/dsd-neo/platform/file_compat.h`, implemented once per
+    platform in `file_compat_posix.c` and `file_compat_win32.c`
   - Audio backends: selected by `DSD_AUDIO_BACKEND` (`auto` → PortAudio on Windows, PulseAudio
     elsewhere; `none` → `audio_null.c` discard/silence backend; `aaudio` → Android). Exactly one
     backend translation unit is compiled per build; the shared last-error store lives in
@@ -81,6 +83,12 @@ Generated (do not edit/commit):
     `include/dsd-neo/runtime/radioreference.h` and `radioreference_generate.h`; needs `USE_CURL` and `USE_EXPAT`, and
     reports `dsd_rr_available() == 0` without them. Shared curl setup lives in the module-private
     `src/runtime/curl_common.h`, alongside `rdio_export.c`'s use of it.
+    The frontend-agnostic import policy — system classification, the import-plan builder, tune-frequency
+    selection, Hz-to-MHz text, the baked-key rule and the output filename stem — lives in
+    `radioreference/rr_import.c` behind `include/dsd-neo/runtime/radioreference_import.h` and compiles with
+    or without curl and expat, so the no-expat configuration still builds it. `radioreference/rr_provenance.c`
+    reads and writes the plain-text `<file>.rr` sidecars that make a generated CSV refreshable. Both
+    frontends consume that header, so the Qt model and the terminal wizard cannot drift apart.
 - Build files: `src/runtime/CMakeLists.txt`
 - Config docs: `docs/config-system.md`, `docs/radioreference-import.md`
 
@@ -120,6 +128,10 @@ depending directly on protocol headers. The runtime provides a small hook table 
   - Command queue dispatch and menu service helpers
   - Frontend runtime/control-pump glue and telemetry hook installation
   - Public frontend boundary headers under `<dsd-neo/app_control/...>`
+  - RadioReference apply: `include/dsd-neo/app_control/rr_import_apply.h` carries the by-value apply payload
+    and the pure plan-to-payload mapper; `src/app_control/rr_import_apply.c` implements it, and the
+    `DSD_APP_CMD_RR_APPLY_IMPORT` / `DSD_APP_CMD_RR_ACCOUNT_SET` handlers run on the decoder thread so no
+    frontend ever writes `dsd_opts` itself
 - Behavior note: `dsd_app_frontend_get_metrics*` reports tuner and demodulator readings only for RTL-family
   input (`AUDIO_IN_RTL`, which covers both a local dongle and rtl_tcp). Every one of those readings comes from
   the RTL stream, whose state is process-global and outlives the session that produced it, so on a WAV, stdin,
@@ -240,6 +252,17 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
 - Responsibilities:
   - Terminal frontend implementation (panels, logging, protocol displays, visualizers)
   - Data-driven, nonblocking menu overlay implemented under `src/ui/terminal/` (`menu_*.c`, `menus/menu_defs.c`)
+  - RadioReference import wizard: `rr_wizard_core.{h,c}` is the curses-free state machine (headless-testable,
+    driven by the `RrWizardHooks` table) and `rr_panel.{h,c}` is the modal presenter that renders it and
+    implements those hooks. Both live directly in `src/ui/terminal/` next to `menu_prompts.c`, not in
+    `panels/`, which holds only the two non-modal display strips (`header.c`, `footer.c`)
+  - Imported RadioReference systems: `rr_library.{h,c}` is the curses-free model of the imports directory
+    (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
+    marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the
+    **Imported Systems** browser. `csv_picker.{h,c}` offers the same directory's files of one `kind` to the
+    "Import Channel Map/Group List CSV" menu items, with an "Enter a path..." row falling back to the plain
+    prompt. Both headers are terminal-private, both modules are filesystem-only (no curses, no app-control),
+    and both are tested headless against a scratch directory (`UI_RR_LIBRARY`, `UI_CSV_PICKER`)
   - Frontend-facing controls and DSP/RTL metrics normally flow through app-control commands and
     `include/dsd-neo/app_control/frontend.h`. The terminal frontend retains a small set of terminal-private backend
     integrations.
@@ -302,7 +325,9 @@ Key public headers:
 
 Additional includes of interest:
 
-- Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`
+- Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`,
+  `<dsd-neo/runtime/radioreference.h>`, `<dsd-neo/runtime/radioreference_generate.h>`,
+  `<dsd-neo/runtime/radioreference_import.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,
   `<dsd-neo/io/rtl_demod_config.h>`, `<dsd-neo/io/rtl_metrics.h>`, `<dsd-neo/io/control.h>`,
   `<dsd-neo/io/rigctl_client.h>`, `<dsd-neo/io/m17_udp.h>`, `<dsd-neo/io/udp_audio.h>`,

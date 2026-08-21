@@ -573,6 +573,12 @@ typedef struct dsdneoUserConfig {
     dsdneoUserDecodeMode decode_mode;
     int has_dmr_mono;
     int dmr_mono;
+    /* The EDACS EA/ESK variant. Applied AFTER the decode preset, which resets
+       both: see apply_mode_config(). esk is a boolean over the single 0xA0 mask
+       the four CLI variants and the RadioReference apply handler all use. */
+    int has_edacs_variant;
+    int edacs_ea;
+    int edacs_esk;
     int has_demod;
     dsdneoUserDemodPath demod_path;
 
@@ -586,6 +592,13 @@ typedef struct dsdneoUserConfig {
     int trunk_tune_private_calls;
     int trunk_tune_data_calls;
     int trunk_tune_enc_calls;
+    int trunk_scanner;
+    int trunk_p25_prefer_candidates;
+
+    /* [radioreference] */
+    int has_radioreference;
+    char rr_username[128];
+    char rr_app_key[64];
 
     /* [trunk_scan] */
     int has_trunk_scan;
@@ -634,6 +647,29 @@ typedef struct dsdneoUserConfig {
  * @return Pointer to default path string or NULL when unavailable.
  */
 const char* dsd_user_config_default_path(void);
+
+/**
+ * @brief Resolve "<config dir>/imports" (no I/O).
+ *
+ * Derived by replacing the final component of dsd_user_config_default_path()
+ * with "imports", using the platform separator. Recomputed on every call into
+ * an internal static buffer: the value is not latched, so the pointer is only
+ * valid until the next call.
+ *
+ * @return Pointer to the imports directory path, or NULL when no config path
+ *         resolves (none of XDG_CONFIG_HOME/HOME, or APPDATA on Windows, is set).
+ */
+const char* dsd_user_imports_dir(void);
+
+/**
+ * @brief Create dsd_user_imports_dir() and its parents with mode 0700.
+ *
+ * Existing directories are accepted. The result is verified with stat, because
+ * the underlying component walk reports nothing.
+ *
+ * @return 0 when the directory exists afterwards; -1 otherwise.
+ */
+int dsd_user_imports_dir_create(void);
 
 /**
  * @brief Load a user config from the given path.

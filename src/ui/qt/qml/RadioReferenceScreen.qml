@@ -187,6 +187,13 @@ Item {
         return screen.plan.blockedReason !== undefined ? screen.plan.blockedReason : ""
     }
 
+    // The one blocked plan that is a question, not a refusal: no site picked yet.
+    // It is also the state a SUCCESSFUL import leaves behind, which is why it must
+    // not read as an error.
+    function planAwaitingSelection() {
+        return screen.plan.awaitingSelection === true
+    }
+
     function planWarnings() {
         return screen.plan.warnings !== undefined ? screen.plan.warnings : []
     }
@@ -1397,7 +1404,10 @@ Item {
                     }
 
                     // Blocked: the reason, in magenta, with Import disabled
-                    // rather than hidden so it is clear what is missing.
+                    // rather than hidden so it is clear what is missing. An unmade
+                    // site choice is the exception - it is a question, and it is
+                    // also what a successful import leaves behind - so it is shown
+                    // in the ordinary subdued text instead of the error colour.
                     Text {
                         // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
                         objectName: "radioReferenceBlockedBanner"
@@ -1407,7 +1417,7 @@ Item {
                         text: screen.planBlockedReason()
                         font.family: Theme.sans
                         font.pixelSize: 13
-                        color: Theme.magenta
+                        color: screen.planAwaitingSelection() ? Theme.textSubdued : Theme.magenta
                         wrapMode: Text.Wrap
                     }
 

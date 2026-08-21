@@ -742,6 +742,59 @@ dsd_user_config_save_atomic(const char* path, const dsdneoUserConfig* cfg) {
     return config_replace_temp_file(tmp, save_path);
 }
 
+const char*
+dsd_user_imports_dir(void) {
+    // No `static int inited` latch, unlike dsd_user_config_default_path(): a latch
+    // would cache the failure case forever and would make the pair untestable.
+    static char buf[1024];
+
+    buf[0] = '\0';
+
+    const char* cfg = dsd_user_config_default_path();
+    if (!cfg || !*cfg) {
+        return NULL;
+    }
+
+    // Replace the final component rather than appending to a directory that may
+    // not have one: config_parent_dir() returns 1 only when it stripped a parent.
+    char dir[1024];
+    if (config_parent_dir(cfg, dir, sizeof dir) != 1) {
+        return NULL;
+    }
+
+#if defined(_WIN32)
+    int n = DSD_SNPRINTF(buf, sizeof buf, "%s\\imports", dir);
+#else
+    int n = DSD_SNPRINTF(buf, sizeof buf, "%s/imports", dir);
+#endif
+    if (n < 0 || (size_t)n >= sizeof buf) {
+        buf[0] = '\0';
+        return NULL;
+    }
+    return buf;
+}
+
+int
+dsd_user_imports_dir_create(void) {
+    const char* dir = dsd_user_imports_dir();
+    if (!dir || !*dir) {
+        return -1;
+    }
+
+    // ensure_dir_exists() is `static void` and discards every dsd_mkdir() result;
+    // it is shared with dsd_user_config_save_atomic(), so its signature stays as
+    // it is and the outcome is verified here instead. Its internal char buf[1024]
+    // also truncates pathological paths silently - the stat below is what catches
+    // that.
+    ensure_dir_exists(dir);
+
+    dsd_stat_t st;
+    if (dsd_stat_path(dir, &st) != 0 || dsd_stat_is_regular(&st)) {
+        return -1;
+    }
+    return 0;
+}
+
 static const char*
 ini_bool(int value) {
     return value ? "true" : "false";
@@ -926,6 +979,10 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->has_dmr_mono) {
         DSD_FPRINTF(out, "dmr_mono = %s\n", ini_bool(cfg->dmr_mono));
     }
+    if (cfg->has_edacs_variant) {
+        DSD_FPRINTF(out, "edacs_ea = %s\n", ini_bool(cfg->edacs_ea));
+        DSD_FPRINTF(out, "edacs_esk = %s\n", ini_bool(cfg->edacs_esk));
+    }
     if (cfg->has_demod) {
         switch (cfg->demod_path) {
             case DSDCFG_DEMOD_AUTO: DSD_FPRINTF(out, "demod = \"auto\"\n"); break;
@@ -953,6 +1010,20 @@ render_trunking_section(FILE* out, const dsdneoUserConfig* cfg) {
     DSD_FPRINTF(out, "tune_private_calls = %s\n", ini_bool(cfg->trunk_tune_private_calls));
     DSD_FPRINTF(out, "tune_data_calls = %s\n", ini_bool(cfg->trunk_tune_data_calls));
     DSD_FPRINTF(out, "tune_enc_calls = %s\n", ini_bool(cfg->trunk_tune_enc_calls));
+    DSD_FPRINTF(out, "scanner = %s\n", ini_bool(cfg->trunk_scanner));
+    DSD_FPRINTF(out, "p25_prefer_candidates = %s\n", ini_bool(cfg->trunk_p25_prefer_candidates));
+    DSD_FPRINTF(out, "\n");
+}
+
+static void
+render_radioreference_section(FILE* out, const dsdneoUserConfig* cfg) {
+    DSD_FPRINTF(out, "[radioreference]\n");
+    if (cfg->rr_username[0]) {
+        DSD_FPRINTF(out, "username = \"%s\"\n", cfg->rr_username);
+    }
+    if (cfg->rr_app_key[0]) {
+        DSD_FPRINTF(out, "app_key = \"%s\"\n", cfg->rr_app_key);
+    }
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1052,6 +1123,9 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
     }
     if (cfg->has_trunking) {
         render_trunking_section(stream, cfg);
+    }
+    if (cfg->has_radioreference) {
+        render_radioreference_section(stream, cfg);
     }
     if (cfg->has_trunk_scan) {
         render_trunk_scan_section(stream, cfg);
@@ -1236,6 +1310,14 @@ apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state)
     if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
         opts->dmr_mono = cfg->dmr_mono ? 1 : 0;
     }
+    /* Must follow dsd_apply_decode_mode_preset() above: decode_mode_apply_edacs_pv()
+       zeroes both fields unconditionally, so applying these first would silently
+       lose them. Unlike dmr_mono there is no preset that carries the variant
+       itself - one edacs_pv preset covers all four CLI forms - so no guard. */
+    if (cfg->has_edacs_variant) {
+        state->ea_mode = cfg->edacs_ea ? 1 : 0;
+        state->esk_mask = cfg->edacs_esk ? (unsigned short)0xA0 : (unsigned short)0;
+    }
 }
 
 static void
@@ -1288,6 +1370,37 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
     opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
     opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
+    /* Exactly one automatic tuner owner, the invariant ui_handle_trunk_set/
+       ui_handle_scanner_toggle (src/app_control/actions/actions_trunk.c) and
+       rr_apply_tuner_owner (src/app_control/app_command_queue.c) both enforce.
+       A bare assignment here would leave trunking AND the scanner live together -
+       the trunking SM following a control channel while
+       no_carrier_step_scanner_mode_if_needed() retunes off it every hangtime -
+       because the trunk_enabled branch above is deliberately one-way and never
+       clears. trunk_enabled wins when a config asks for both, matching
+       rr_apply_tuner_owner. */
+    if (cfg->trunk_scanner && !cfg->trunk_enabled) {
+        opts->scanner_mode = 1;
+        opts->trunk_enable = 0;
+    } else {
+        opts->scanner_mode = 0;
+    }
+    opts->p25_prefer_candidates = cfg->trunk_p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
+}
+
+static void
+apply_radioreference_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+    if (!cfg || !opts || !cfg->has_radioreference) {
+        return;
+    }
+    if (cfg->rr_username[0]) {
+        DSD_SNPRINTF(opts->rr_username, sizeof opts->rr_username, "%s", cfg->rr_username);
+        opts->rr_username[sizeof opts->rr_username - 1] = '\0';
+    }
+    if (cfg->rr_app_key[0]) {
+        DSD_SNPRINTF(opts->rr_app_key, sizeof opts->rr_app_key, "%s", cfg->rr_app_key);
+        opts->rr_app_key[sizeof opts->rr_app_key - 1] = '\0';
+    }
 }
 
 static void
@@ -1436,6 +1549,7 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
     apply_mode_config(cfg, opts, state);
     apply_demod_config(cfg, opts, state);
     apply_trunking_config(cfg, opts);
+    apply_radioreference_config(cfg, opts);
     apply_trunk_scan_config(cfg, opts);
     apply_logging_config(cfg, opts);
     apply_alerts_config(cfg, opts);
@@ -1548,11 +1662,24 @@ snapshot_output_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 static void
-snapshot_mode_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->has_mode = 1;
     cfg->decode_mode = dsd_infer_decode_mode_preset(opts);
     cfg->has_dmr_mono = 1;
     cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
+    /* The only snapshotter that reads dsd_state. NOT unconditional, unlike
+       dmr_mono: ea_mode is TRI-state - dsd_init.c seeds it at -1 ("no EDACS
+       addressing mode chosen yet"), which edacs-fme.c, provoice.c, dsd_events.c
+       and the ncurses EDACS rows all distinguish from 0 (standard). Writing -1
+       through a truthiness test would save it as "extended addressing" and there
+       is no way back: the in-session toggle only ever produces 0 or 1. Omitting
+       the keys until the answer exists is what keeps -1 reachable, and
+       apply_mode_config() leaves ea_mode alone when they are absent.
+       esk_mask can only be non-zero once one of -fh/-fH/-fe/-fE has run, so it is
+       never stranded by the same gate. */
+    cfg->has_edacs_variant = (state->ea_mode >= 0) ? 1 : 0;
+    cfg->edacs_ea = (state->ea_mode > 0) ? 1 : 0;
+    cfg->edacs_esk = (state->esk_mask != 0) ? 1 : 0;
 }
 
 static void
@@ -1585,6 +1712,17 @@ snapshot_trunking_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->trunk_tune_private_calls = opts->trunk_tune_private_calls ? 1 : 0;
     cfg->trunk_tune_data_calls = opts->trunk_tune_data_calls ? 1 : 0;
     cfg->trunk_tune_enc_calls = opts->trunk_tune_enc_calls ? 1 : 0;
+    cfg->trunk_scanner = opts->scanner_mode ? 1 : 0;
+    cfg->trunk_p25_prefer_candidates = opts->p25_prefer_candidates ? 1 : 0;
+}
+
+static void
+snapshot_radioreference_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
+    cfg->has_radioreference = (opts->rr_username[0] || opts->rr_app_key[0]) ? 1 : 0;
+    DSD_SNPRINTF(cfg->rr_username, sizeof cfg->rr_username, "%s", opts->rr_username);
+    cfg->rr_username[sizeof cfg->rr_username - 1] = '\0';
+    DSD_SNPRINTF(cfg->rr_app_key, sizeof cfg->rr_app_key, "%s", opts->rr_app_key);
+    cfg->rr_app_key[sizeof cfg->rr_app_key - 1] = '\0';
 }
 
 static void
@@ -1661,9 +1799,10 @@ dsd_snapshot_opts_to_user_config(const dsd_opts* opts, const dsd_state* state, d
     user_cfg_reset(cfg);
     snapshot_input_config(opts, cfg);
     snapshot_output_config(opts, cfg);
-    snapshot_mode_config(opts, cfg);
+    snapshot_mode_config(opts, state, cfg);
     snapshot_demod_config(opts, cfg);
     snapshot_trunking_config(opts, cfg);
+    snapshot_radioreference_config(opts, cfg);
     snapshot_trunk_scan_config(opts, cfg);
     snapshot_logging_config(opts, cfg);
     snapshot_alerts_config(opts, cfg);

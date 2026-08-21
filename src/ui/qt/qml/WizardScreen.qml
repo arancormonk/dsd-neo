@@ -718,11 +718,12 @@ Item {
                     spacing: 10
 
                     Repeater {
-                        model: Util.DECODE_MODES
+                        model: Util.decodeChips(wizard.decodeFlag)
 
                         DecodeChip {
                             required property var modelData
 
+                            objectName: "wizardDecode_" + modelData.label
                             text: modelData.label
                             selected: wizard.decodeFlag === modelData.flag
                             onClicked: wizard.pickDecodeFlag(modelData.flag)
@@ -731,6 +732,7 @@ Item {
                 }
 
                 Text {
+                    objectName: "wizardDecodeHint"
                     width: parent.width
                     text: Util.decodeHint(wizard.decodeFlag)
                     font.family: Theme.sans

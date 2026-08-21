@@ -353,6 +353,68 @@ dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_siz
     return fclose(fp);
 }
 
+// Split out of dsd_dir_list() to keep it under the CCN ceiling tools/lizard.sh
+// enforces; it carries every per-entry rejection the walk applies.
+static int
+dsd_dir_entry_is_regular_file(const char* dir, const char* name) {
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        return 0;
+    }
+
+    char path[1024];
+    int n = DSD_SNPRINTF(path, sizeof path, "%s/%s", dir, name);
+    if (n < 0 || (size_t)n >= sizeof path) {
+        return 0; // cannot build a path for it, so it cannot be classified
+    }
+
+    // No ent->d_type: it is not portable off glibc and appears nowhere else
+    // in this tree. dsd_stat_path()/dsd_stat_is_regular() are the project
+    // classifiers and also drop symlinks-to-directories and device nodes.
+    dsd_stat_t st;
+    return (dsd_stat_path(path, &st) == 0 && dsd_stat_is_regular(&st)) ? 1 : 0;
+}
+
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
+int
+dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
+    if (!dir || dir[0] == '\0' || !cb) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    DIR* d = opendir(dir);
+    if (!d) {
+        return -1;
+    }
+
+    int list_errno = 0;
+    for (;;) {
+        // Cleared per iteration so a dsd_stat_path() failure inside the
+        // classifier cannot be mistaken for a readdir() failure on the next pass.
+        errno = 0;
+        const struct dirent* ent = readdir(d);
+        if (!ent) {
+            list_errno = errno; // 0 means a clean end of directory
+            break;
+        }
+        if (!dsd_dir_entry_is_regular_file(dir, ent->d_name)) {
+            continue;
+        }
+        if (cb(ent->d_name, user) != 0) {
+            break;
+        }
+    }
+
+    if (closedir(d) != 0 && list_errno == 0) {
+        list_errno = errno;
+    }
+    errno = list_errno;
+    return list_errno == 0 ? 0 : -1;
+}
+
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
+
 ssize_t
 dsd_read(int fd, void* buf, size_t count) {
     return read(fd, buf, count);

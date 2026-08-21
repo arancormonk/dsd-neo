@@ -47,7 +47,16 @@ ui_statusf(const char* fmt, ...) {
     va_start(ap, fmt);
     (void)DSD_VSNPRINTF(s_status_msg, sizeof s_status_msg, fmt, ap);
     va_end(ap);
-    s_status_expire = time(NULL) + 3; // ~3 seconds visibility
+    /* Held long enough to read: a short message for ~3 s, plus a second per 32
+       characters, capped at 8 s. Reading runs at roughly 25 characters a second
+       and the eye has to find the toast first, so a flat 3 s clipped the two-
+       clause messages the RadioReference flows produce. */
+    const size_t len = strlen(s_status_msg);
+    time_t hold = 3 + (time_t)(len / 32U);
+    if (hold > 8) {
+        hold = 8;
+    }
+    s_status_expire = time(NULL) + hold;
 }
 
 int

@@ -72,6 +72,50 @@ void rr_copy_field(char* dst, size_t dst_sz, const char* src);
  */
 int rr_subscription_expired(const char* sub_expire, long long now_epoch_seconds);
 
+/**
+ * @brief Strip control bytes, replace commas and collapse whitespace runs.
+ *
+ * Commas become slashes because the group parser has no quoting at all; both
+ * ends end up trimmed because a leading space would survive into the UI - the
+ * importer trims the mode column but hands the name column through verbatim.
+ * A filename stem built on this must UNDO the comma rewrite: see
+ * dsd_rr_sanitize_file_stem() in rr_import.c.
+ *
+ * @param in     Source label.
+ * @param out    Destination buffer.
+ * @param out_sz Destination size in bytes, passed explicitly.
+ * @return Length written, excluding the terminator.
+ */
+size_t rr_collapse_label(const char* in, char* out, size_t out_sz);
+
+/**
+ * @brief rr_collapse_label() for text that is NOT going into a CSV column.
+ *
+ * Same control-byte strip and whitespace collapse, but a comma stays a comma:
+ * the rewrite exists only because the importer's name column cannot quote one,
+ * and a label bound for a filename or the screen would be disfigured by it.
+ *
+ * @param in     Source label.
+ * @param out    Destination buffer.
+ * @param out_sz Destination size in bytes, passed explicitly.
+ * @return Length written, excluding the terminator.
+ */
+size_t rr_collapse_display_label(const char* in, char* out, size_t out_sz);
+
+/**
+ * @brief Longest prefix of `text` that fits in `limit` bytes and ends on a
+ *        UTF-8 codepoint boundary.
+ *
+ * A byte-oriented cut would leave a lone lead byte in the file. An invalid lead
+ * byte is treated as one byte, so malformed input still makes progress.
+ *
+ * @param text  Text to measure.
+ * @param len   Text length.
+ * @param limit Byte ceiling.
+ * @return Prefix length in bytes.
+ */
+size_t rr_utf8_prefix(const char* text, size_t len, size_t limit);
+
 #ifdef __cplusplus
 }
 #endif

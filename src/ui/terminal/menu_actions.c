@@ -24,6 +24,7 @@
 #if defined(__SSE__) || defined(__SSE2__)
 #include <xmmintrin.h>
 #endif
+#include "csv_picker.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
@@ -32,6 +33,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
+#include "rr_panel.h"
 
 #ifdef USE_RADIO
 #endif
@@ -341,13 +343,13 @@ act_setmod_bw(void* v) {
 void
 act_import_chan(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_string_async("Channel map CSV", NULL, 1024, cb_import_chan, c);
+    ui_csv_import_picker_open("chan", "Channel map CSV", 1024, cb_import_chan, c);
 }
 
 void
 act_import_group(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_string_async("Group list CSV", NULL, 1024, cb_import_group, c);
+    ui_csv_import_picker_open("group", "Group list CSV", 1024, cb_import_group, c);
 }
 
 void
@@ -384,6 +386,44 @@ void
 act_hangtime(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_prompt_open_double_async("Hangtime seconds", c->opts->trunk_hangtime, cb_hangtime, c);
+}
+
+void
+act_rr_import(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    rr_panel_open_import(c->opts, c->state);
+}
+
+void
+act_rr_library(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    rr_panel_open_library(c->opts, c->state);
+}
+
+void
+act_rr_account_user(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    ui_prompt_open_string_async("RadioReference username", c->opts->rr_username, sizeof c->opts->rr_username,
+                                cb_rr_account_user, c);
+}
+
+void
+act_rr_account_key(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    if (!c || !c->opts) {
+        return;
+    }
+    ui_prompt_open_string_async("RadioReference application key", c->opts->rr_app_key, sizeof c->opts->rr_app_key,
+                                cb_rr_account_key, c);
 }
 
 // ---- DMR/TDMA actions ----

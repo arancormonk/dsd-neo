@@ -37,6 +37,32 @@ void ui_prompt_open_string_async(const char* title, const char* prefill, size_t 
                                  void* user_ctx);
 
 /**
+ * @brief Open a masked (secret) string prompt asynchronously.
+ *
+ * Identical to ui_prompt_open_string_async() except that the field renders one
+ * '*' per typed byte, the input buffer is overwritten with zeroes before it is
+ * freed, and the copy handed to @p on_done is overwritten after the callback
+ * returns. There is no prefill parameter on purpose: a secret is never
+ * redisplayed.
+ *
+ * The visible length of the secret is still disclosed by the cursor column;
+ * that is accepted.
+ *
+ * @param title    Title shown in prompt window. NOT copied: the widget stores
+ *                 the pointer, so it must outlive the prompt.
+ * @param cap      Buffer capacity, as passed to calloc(). The longest secret
+ *                 that survives is cap - 1 bytes (characters plus the NUL), so
+ *                 pass max_secret_len + 1; further typing is silently dropped.
+ *                 Values below 2 are clamped to 2.
+ * @param on_done  Callback invoked when the user completes. The text is freed
+ *                 immediately after the callback returns, so a caller that
+ *                 keeps it must copy it (and scrub its own copy). NULL text
+ *                 means cancel; "" means Enter on an empty field.
+ * @param user_ctx User context passed to callback.
+ */
+void ui_prompt_open_secret_async(const char* title, size_t cap, ui_prompt_string_done_fn on_done, void* user_ctx);
+
+/**
  * @brief Open an integer prompt asynchronously.
  *
  * @param title    Title shown in prompt window.
@@ -186,6 +212,21 @@ void ui_prompt_rows_for_test(int height, int* title_y, int* input_y, int* footer
 void ui_prompt_field_geometry_for_test(int width, int* field_col, int* field_right, int* field_width);
 UiPromptViewTestSnapshot ui_prompt_view_for_test(const char* text, size_t cursor, int field_col, int field_right,
                                                  int field_width);
+
+/** @brief Test hook: 1 when the active prompt masks its input, 0 otherwise. */
+int ui_prompt_mask_active_for_test(void);
+
+/**
+ * @brief Test hook: the text ui_prompt_render() would draw for the whole buffer.
+ *
+ * Masking applied, horizontal scroll window NOT applied (that window depends on
+ * the curses screen geometry). Truncated to @p out_size - 1 bytes.
+ *
+ * @param out      Destination buffer; set to "" on every failure path.
+ * @param out_size Size of @p out in bytes.
+ * @return 1 when a prompt is active and @p out was filled, 0 otherwise.
+ */
+int ui_prompt_display_text_for_test(char* out, size_t out_size);
 #endif
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_MENU_PROMPTS_H_ */

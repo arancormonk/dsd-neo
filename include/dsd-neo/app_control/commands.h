@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMANDS_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_COMMANDS_H_
 
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/runtime/config.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -211,6 +212,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR = 565,  // no payload
     DSD_APP_CMD_IMPORT_KEYS_CLEAR = 566,        // no payload; dec and hex share one keyring
 
+    // RadioReference import (docs/radioreference-import.md)
+    DSD_APP_CMD_RR_APPLY_IMPORT = 570, // payload: dsd_app_rr_apply_payload
+    DSD_APP_CMD_RR_ACCOUNT_SET = 571,  // payload: dsd_app_rr_account_payload
+
     // P25 helpers
     DSD_APP_CMD_P25_P2_PARAMS_SET = 580, // payload: struct { uint64_t wacn, sysid, cc; }
 
@@ -331,6 +336,8 @@ int dsd_app_command_set_aes_key(const dsd_app_aes_key_payload* payload);
 int dsd_app_command_dsp_op(const dsd_app_dsp_payload* payload);
 int dsd_app_command_apply_config(const dsdneoUserConfig* config);
 int dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* payload);
+int dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload);
+int dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload);
 
 #ifdef __cplusplus
 }

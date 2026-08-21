@@ -251,7 +251,9 @@ class RadioReferenceModel : public QObject {
      *                    to what the RadioReference record says when absent.
      * @return {ok, protocol, protocolName, conventional, scanList, siteCount,
      *          decodeFlag, trunking, freqMhz, groupCsvText, chanCsvText, chanNeed,
-     *          warnings, blockedReason}.
+     *          warnings, blockedReason, awaitingSelection}. awaitingSelection marks
+     *          the one blocked plan that is a question rather than a refusal (no
+     *          site picked yet), so a frontend can say so without the error styling.
      */
     Q_INVOKABLE QVariantMap buildImportPlan(const QVariantList& siteIndexes, const QVariantMap& options);
 
@@ -359,9 +361,6 @@ class RadioReferenceModel : public QObject {
     void setError(int kind, const QString& text);
     void clearSystem();
     void finishSystemLoad();
-
-    /** @brief Shallow copies of the selected sites, in selection order. */
-    QList<dsd_rr_site> selectedSites(const QVariantList& siteIndexes, QVariantList* warnings) const;
 
     /**
      * @brief Run both generators for @p chosen into @p plan.

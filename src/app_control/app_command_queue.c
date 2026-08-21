@@ -8,9 +8,11 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/constants.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
@@ -40,7 +42,9 @@
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <limits.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -67,6 +71,8 @@
 
 _Static_assert(sizeof(dsdneoUserConfig) <= sizeof(((struct dsd_app_command*)0)->data),
                "dsd_app_command payload too small for dsdneoUserConfig");
+_Static_assert(sizeof(dsd_app_rr_apply_payload) <= sizeof(((struct dsd_app_command*)0)->data),
+               "dsd_app_command payload too small for dsd_app_rr_apply_payload");
 
 enum {
     UI_CMD_APPLY_UNHANDLED = 0,
@@ -2586,6 +2592,18 @@ dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* paylo
                    : DSD_APP_COMMAND_SUBMIT_REJECTED;
 }
 
+int
+dsd_app_command_set_rr_apply(const dsd_app_rr_apply_payload* payload) {
+    return payload ? dsd_app_command_submit(DSD_APP_CMD_RR_APPLY_IMPORT, payload, sizeof *payload)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
+int
+dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload) {
+    return payload ? dsd_app_command_submit(DSD_APP_CMD_RR_ACCOUNT_SET, payload, sizeof *payload)
+                   : DSD_APP_COMMAND_SUBMIT_REJECTED;
+}
+
 static int
 ui_cmd_payload_has_min_size(const struct dsd_app_command* c, size_t want) {
     return c != NULL && c->n >= want;
@@ -2623,6 +2641,8 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_DSP_OP, sizeof(dsd_app_dsp_payload)},
     {DSD_APP_CMD_CONFIG_APPLY, sizeof(dsdneoUserConfig)},
     {DSD_APP_CMD_CONFIG_METADATA_SET, sizeof(dsd_app_config_metadata_payload)},
+    {DSD_APP_CMD_RR_APPLY_IMPORT, sizeof(dsd_app_rr_apply_payload)},
+    {DSD_APP_CMD_RR_ACCOUNT_SET, sizeof(dsd_app_rr_account_payload)},
 };
 
 static size_t
@@ -3059,6 +3079,25 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
 }
 
 /**
+ * @brief Recompute symbol timing for @p mode at the live demod rate and publish it.
+ *
+ * Split out of apply_decode_mode_set() so the RadioReference apply can run it
+ * again after it overrides the modulation: svc_publish_symbol_profile() reads
+ * state->rf_mod, so a QPSK override applied after the preset needs a second
+ * publish or the front end keeps the preset's demodulator and channel filter.
+ */
+static void
+decode_mode_republish(const dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
+    const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(mode);
+    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
+    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
+    /* The SPS hunt resumes from wherever the previous mode left it, and its next
+       pass overwrites the timing just computed; the RTL front end likewise keeps
+       the old mode's demodulator family and channel filter until told otherwise. */
+    svc_publish_symbol_profile(opts, state, profile);
+}
+
+/**
  * @brief Switch which protocols are decoded, mid-session.
  *
  * Goes through the same preset helper the CLI uses, so a mode chosen here means
@@ -3073,17 +3112,13 @@ decode_mode_set_early_verdict(const dsd_opts* opts, dsd_state* state, const stru
  *
  * Every preset also settles the modulation, which is why a panel offering both
  * reads modulation back from the engine rather than remembering what it asked for.
+ *
+ * Callers that already hold a dsdneoUserDecodeMode use this directly; it does no
+ * payload decoding, so nothing has to synthesize a struct dsd_app_command to
+ * reach it.
  */
 static int
-apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (!state || c->n < (int)sizeof(int32_t)) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
-    }
-    dsdneoUserDecodeMode mode = DSDCFG_MODE_AUTO;
-    const int early = decode_mode_set_early_verdict(opts, state, c, &mode);
-    if (early != UI_CMD_APPLY_UNHANDLED) {
-        return early;
-    }
+decode_mode_apply_value(dsd_opts* opts, dsd_state* state, dsdneoUserDecodeMode mode) {
     /* The presets also carry an audio layout, but the output stream was opened
        once at session start with the layout in force then (openAudioOutput()
        reads pulse_digi_out_channels/pulse_digi_rate_out and the backend fixes
@@ -3136,19 +3171,254 @@ apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
        the channel filter published just below, and a mode running on one symbol
        clock with a hunt profile and a filter built for another is exactly what
        that costs. */
-    const dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(mode);
-    state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, current_demod_rate(opts, state));
-    state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-    /* The SPS hunt resumes from wherever the previous mode left it, and its next
-       pass overwrites the timing just computed; the RTL front end likewise keeps
-       the old mode's demodulator family and channel filter until told otherwise. */
-    svc_publish_symbol_profile(opts, state, profile);
+    decode_mode_republish(opts, state, mode);
     /* The decoder was hunting for a different protocol a moment ago: its
        modulation votes describe frames of the old kind, and any call open on the
        old protocol will never be closed by the new one. */
     dsd_frame_sync_reset_mod_state();
     reset_call_tracking(opts, state, 1);
     ui_set_toast(state, 3, "Decoding %s", decode_mode_label(mode));
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+static int
+apply_decode_mode_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!state || c->n < (int)sizeof(int32_t)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsdneoUserDecodeMode mode = DSDCFG_MODE_AUTO;
+    const int early = decode_mode_set_early_verdict(opts, state, c, &mode);
+    if (early != UI_CMD_APPLY_UNHANDLED) {
+        return early;
+    }
+    return decode_mode_apply_value(opts, state, mode);
+}
+
+/**
+ * @brief Everything that can refuse a RadioReference apply before it mutates anything.
+ *
+ * After this returns COMPLETED the sequence is best-effort and cannot roll back;
+ * svc_import_channel_map() in particular writes opts->chan_in_file before it
+ * validates and never restores it.
+ */
+static int
+rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    // Same invariant svc_import_channel_map() enforces for -C: a trunk-scan run
+    // gets its channel maps per target. Refusing the whole apply (rather than
+    // just the channel-map half, which is all svc_import_group_list would leave)
+    // is what keeps a half-applied import off a live session.
+    if (opts->trunk_scan_enabled == 1) {
+        ui_set_toast(state, 4, "Failed: RR import -> trunk scan owns the channel map");
+        return UI_CMD_APPLY_FAILED;
+    }
+    /* <=, not <: DSDCFG_MODE_UNSET is 0 and is not a preset, so letting it through
+       would run dsd_apply_decode_mode_preset() and republish a symbol profile for
+       "no mode". Neither producer can emit it today; the guard is what keeps that
+       true. */
+    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_DMR_MONO) {
+        ui_set_toast(state, 4, "Failed: RR import -> decode mode");
+        return UI_CMD_APPLY_FAILED;
+    }
+    dsd_csv_validation counts;
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    if (p->has_chan && (dsd_csv_validate_chan_file(p->chan_path, &counts) != 0 || counts.accepted == 0U)) {
+        ui_set_toast(state, 4, "Failed: RR import -> channel map unreadable");
+        return UI_CMD_APPLY_FAILED;
+    }
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    if (p->has_group && (dsd_csv_validate_group_file(p->group_path, &counts) != 0 || counts.accepted == 0U)) {
+        ui_set_toast(state, 4, "Failed: RR import -> group list unreadable");
+        return UI_CMD_APPLY_FAILED;
+    }
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/* decode_mode_apply_edacs_pv() resets both fields to 0, so the variant has to be
+   restated after the preset. Values verified against the optarg[0] == 'h'/'H'/
+   'e'/'E' branches of case 'f': in the args macro (grep state->esk_mask in
+   src/runtime/cli/args.c): -fh/-fe leave 0, -fH/-fE set 0xA0. */
+static void
+rr_apply_edacs_variants(dsd_state* state, const dsd_app_rr_apply_payload* p, dsdneoUserDecodeMode mode) {
+    if (mode != DSDCFG_MODE_EDACS_PV) {
+        return;
+    }
+    state->ea_mode = p->edacs_ea ? 1 : 0;
+    state->esk_mask = p->edacs_esk ? (unsigned short)0xA0 : (unsigned short)0;
+}
+
+/* The `-mq` block, including the two case 'm': prologue lines. mod_cli_lock is
+   load-bearing: snapshot_demod_config() in src/runtime/config_user.cpp returns
+   early without it, so Config->Save would emit no [demod] section at all. */
+static void
+rr_apply_simulcast(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    if (!p->simulcast_qpsk) {
+        return;
+    }
+    opts->mod_p25p2_c4fm = 0;
+    opts->mod_p25p2_profile_lock = 0;
+    opts->mod_c4fm = 0;
+    opts->mod_qpsk = 1;
+    opts->mod_gfsk = 0;
+    state->rf_mod = 1;
+    opts->mod_cli_lock = 1;
+}
+
+/* One automatic tuner owner at a time, mirroring ui_handle_trunk_set and
+   ui_handle_scanner_toggle in src/app_control/actions/actions_trunk.c.
+   opts->trunk_cli_seen is CLI provenance and is deliberately not touched -- the
+   in-session action handlers do not touch it either. */
+static void
+rr_apply_tuner_owner(dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
+    if (p->trunking) {
+        opts->trunk_enable = 1;
+        opts->scanner_mode = 0;
+    } else if (p->scanner) {
+        opts->scanner_mode = 1;
+        opts->trunk_enable = 0;
+    } else {
+        opts->trunk_enable = 0;
+        opts->scanner_mode = 0;
+    }
+}
+
+/* A half the import did not write CLEARS the live one rather than leaving it:
+   this command re-points the session at a different system, and a stale channel
+   map is not merely out of date, it resolves the new system's voice grants
+   against the old system's frequencies and tunes off-system. chan_need == 2
+   protocols (DMR Cap+/Con+/TIII) legitimately produce no channel map at all, so
+   this is an ordinary outcome, not an edge case. services.h says the same thing
+   about why the clear counterparts exist: "the previous file would otherwise
+   stay live for the session". */
+static int
+rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    int rc = UI_CMD_APPLY_COMPLETED;
+    if (p->has_chan) {
+        if (svc_import_channel_map(opts, state, p->chan_path) != 0) {
+            rc = UI_CMD_APPLY_FAILED;
+        }
+    } else {
+        (void)svc_clear_channel_map(opts, state);
+    }
+    if (p->has_group) {
+        if (svc_import_group_list(opts, state, p->group_path) != 0) {
+            rc = UI_CMD_APPLY_FAILED;
+        }
+    } else {
+        (void)svc_clear_group_list(opts, state);
+    }
+    return rc;
+}
+
+/* io_control_set_freq() is compiled unconditionally and dispatches rigctl
+   (opts->use_rigctl == 1) and RTL (opts->audio_in_type == AUDIO_IN_RTL) itself,
+   returning -1 when neither owns the tuner. 0 is applied and
+   RTL_STREAM_TUNE_TIMEOUT is accepted-pending; anything else is a session that
+   cannot retune (WAV, stdin, UDP, symbol file), which the preview already warned
+   about and which must not fail the whole apply. */
+static void
+rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    if (p->tune_hz == 0U) {
+        return;
+    }
+    /* io_control_set_freq() takes a long, which is 32-bit signed under the
+       win-msvc-* presets while the payload carries a full uint32_t (and
+       rr_generate.c accepts sites up to 6 GHz). Casting a value above LONG_MAX
+       there would hand the tuner a NEGATIVE frequency, so the retune is skipped
+       instead - the same outcome as a session that cannot retune at all, which
+       the import preview already warns about. Guarded by the preprocessor because
+       where long is 64-bit the test is provably false and -Werror=type-limits
+       rejects it. */
+#if LONG_MAX < UINT32_MAX
+    if (p->tune_hz > (uint32_t)LONG_MAX) {
+        return;
+    }
+#endif
+    (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
+}
+
+/* The session was just re-pointed at a different system, so the old system's CC
+   candidates and sync timestamps are wrong rather than merely stale. This is the
+   DSD_APP_CMD_SIM_NOCAR field set WITHOUT noCarrier(): the call state is already
+   ended by reset_call_tracking below, and noCarrier() would additionally unwind
+   the audio path for a tune that was requested, not lost. */
+static void
+rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
+    dsd_trunk_cc_candidates_reset(state);
+    state->last_cc_sync_time = 0;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    dsd_frame_sync_reset_mod_state();
+    reset_call_tracking(opts, state, 1);
+}
+
+/**
+ * @brief Apply a finished RadioReference import to the live session.
+ *
+ * Runs decode_mode_apply_value() rather than apply_decode_mode_set(): the latter
+ * short-circuits through decode_mode_set_early_verdict() whenever the session is
+ * already in the target mode, which skips the preset, the SPS recompute and the
+ * symbol-profile publish -- exactly what a refresh re-applying the same mode
+ * needs to happen. It also avoids putting a second ~16 KB struct dsd_app_command
+ * on the decoder thread's frame; the drain already holds one.
+ */
+static int
+apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->n < sizeof(dsd_app_rr_apply_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_rr_apply_payload p;
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    p.chan_path[sizeof p.chan_path - 1] = '\0';
+    p.group_path[sizeof p.group_path - 1] = '\0';
+
+    const int pre = rr_apply_preflight(opts, state, &p);
+    if (pre != UI_CMD_APPLY_COMPLETED) {
+        return pre;
+    }
+    const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
+    if (decode_mode_apply_value(opts, state, mode) != UI_CMD_APPLY_COMPLETED) {
+        ui_set_toast(state, 4, "Failed: RR import -> decode mode");
+        return UI_CMD_APPLY_FAILED;
+    }
+    rr_apply_edacs_variants(state, &p, mode);
+    rr_apply_simulcast(opts, state, &p);
+    opts->p25_prefer_candidates = p.p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
+    rr_apply_tuner_owner(opts, &p);
+    const int files_rc = rr_apply_files(opts, state, &p);
+    /* Unconditional, and after every write to state->rf_mod: svc_publish_symbol_profile()
+       reads it, so the simulcast override needs a second publish, and a re-apply
+       onto an already-matching mode needs the first one. */
+    decode_mode_republish(opts, state, mode);
+    rr_apply_tune(opts, state, &p);
+    rr_apply_reacquire(opts, state);
+
+    if (files_rc != UI_CMD_APPLY_COMPLETED) {
+        ui_set_toast(state, 4, "Failed: RR import -> CSV import");
+        return UI_CMD_APPLY_FAILED;
+    }
+    ui_set_toast(state, 4, "Applied: RR import (%s)%s; save via Config menu", decode_mode_label(mode),
+                 p.trunking ? " +trunking" : (p.scanner ? " +scanner" : ""));
+    return UI_CMD_APPLY_COMPLETED;
+}
+
+/* The UI thread never writes dsd_opts: the opts pointer a menu action receives
+   alternates between the live struct and the read-only published snapshot, and
+   the decoder thread republishes opts by whole-struct copy after every drained
+   command. */
+static int
+apply_rr_account_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || c->n < sizeof(dsd_app_rr_account_payload)) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    dsd_app_rr_account_payload account;
+    DSD_MEMCPY(&account, c->data, sizeof account);
+    account.username[sizeof account.username - 1] = '\0';
+    account.app_key[sizeof account.app_key - 1] = '\0';
+    DSD_SNPRINTF(opts->rr_username, sizeof opts->rr_username, "%s", account.username);
+    DSD_SNPRINTF(opts->rr_app_key, sizeof opts->rr_app_key, "%s", account.app_key);
+    /* Never echo either field: tools/check_secret_redaction.sh runs on every push
+       and the credential policy in radioreference.h forbids it outright. */
+    ui_set_toast(state, 3, "Applied: RadioReference account");
     return UI_CMD_APPLY_COMPLETED;
 }
 
@@ -3200,6 +3470,8 @@ apply_cmd_trunk_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_
         case DSD_APP_CMD_RETURN_CC: return apply_manual_return_to_cc(opts, state);
         case DSD_APP_CMD_TUNER_RELEASE: return apply_tuner_release(opts, state);
         case DSD_APP_CMD_DECODE_MODE_SET: return apply_decode_mode_set(opts, state, c);
+        case DSD_APP_CMD_RR_APPLY_IMPORT: return apply_rr_import(opts, state, c);
+        case DSD_APP_CMD_RR_ACCOUNT_SET: return apply_rr_account_set(opts, state, c);
         case DSD_APP_CMD_SIM_NOCAR:
             if (!state) {
                 return 1;

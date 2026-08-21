@@ -49,6 +49,15 @@ int dsd_trunk_cc_candidates_next(dsd_state* state, double now_monotonic_s, uint8
 
 void dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, double until_monotonic_s);
 
+/**
+ * @brief Forget every CC candidate for @p state, including the add/use counters.
+ *
+ * Used when the session is re-pointed at a different system: the old system's
+ * candidates are not merely stale, they are wrong. No-op when the state has no
+ * candidate extension yet (this never allocates one).
+ */
+void dsd_trunk_cc_candidates_reset(const dsd_state* state);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

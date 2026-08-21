@@ -25,6 +25,7 @@
 #include <string.h>
 #include "command_dispatch.h"
 
+#include "csv_picker.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/ui/menu_core.h"
@@ -33,6 +34,7 @@
 #include "menu_env.h"
 #include "menu_internal.h"
 #include "menu_prompts.h"
+#include "rr_panel.h"
 
 typedef struct {
     int id;
@@ -310,6 +312,16 @@ ui_prompt_open_string_async(const char* title, const char* prefill, size_t cap, 
     g_prompt.calls++;
 }
 
+/* menu_actions.c routes the import items through the CSV picker; with no imports
+   directory of matching files it prompts, so forward to the prompt stub to keep
+   the existing "opens the path prompt" assertions honest. */
+void
+ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
+                          void* user_ctx) {
+    (void)kind;
+    ui_prompt_open_string_async(prompt_title, NULL, cap, on_done, user_ctx);
+}
+
 void
 ui_prompt_open_int_async(const char* title, int initial, ui_prompt_int_done_fn cb, void* user) {
     DSD_SNPRINTF(g_prompt.title, sizeof g_prompt.title, "%s", title ? title : "");
@@ -531,6 +543,30 @@ void
 cb_keys_hex(void* v, const char* p) {
     (void)v;
     (void)p;
+}
+
+void
+cb_rr_account_user(void* v, const char* text) {
+    (void)v;
+    (void)text;
+}
+
+void
+cb_rr_account_key(void* v, const char* text) {
+    (void)v;
+    (void)text;
+}
+
+void
+rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+void
+rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
 }
 
 void

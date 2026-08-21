@@ -307,6 +307,8 @@ struct dsd_opts {
     char pa_output_idx[100];
     char wav_out_dir[512];
     char rdio_api_key[256];
+    char rr_username[128]; // RadioReference account; mirrored from config, never the password
+    char rr_app_key[64];   // RadioReference application key; empty when the build bakes one in
     char mbe_in_file[1024];
     char audio_out_dev[1024];
     char mbe_out_dir[1024];

@@ -197,6 +197,32 @@ FILE* dsd_fopen_existing_local_file(const char* requested, char* out, size_t out
 FILE* dsd_fopen_existing_regular_file(const char* path, const char* mode);
 
 /**
+ * @brief Callback invoked once per regular file found by dsd_dir_list().
+ *
+ * @param name  Directory entry name with no path prefix.
+ * @param user  Opaque pointer forwarded from the caller.
+ * @return 0 to continue the walk, non-zero to stop it.
+ */
+typedef int (*dsd_dir_list_cb)(const char* name, void* user);
+
+/**
+ * @brief List the regular files in a directory.
+ *
+ * Entries are reported by bare name with no path prefix; "." and ".." and every
+ * subdirectory are skipped. The order is whatever the platform returns, so a
+ * caller that needs a stable order must sort. Stopping the walk by returning
+ * non-zero from @p cb is not an error.
+ *
+ * @param dir   Directory to walk.
+ * @param cb    Per-entry callback.
+ * @param user  Opaque pointer forwarded to @p cb.
+ * @return 0 when the directory was walked to the end or the callback stopped it;
+ *         -1 with errno set when the directory cannot be opened or reading it
+ *         failed part-way (entries already reported are not retracted).
+ */
+int dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user);
+
+/**
  * @brief Read from a file descriptor.
  *
  * @param fd        File descriptor.

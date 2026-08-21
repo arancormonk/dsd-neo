@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/ui/ui_prims.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -209,16 +210,13 @@ waddnstr(WINDOW* win, const char* str, int n) {
     (void)n;
     g_waddnstr_count++;
     if (str) {
-        const size_t used = strlen(g_added_text);
-        if (used < sizeof(g_added_text) - 1U) {
-            size_t copy_len = strlen(str);
-            const size_t avail = sizeof(g_added_text) - used - 1U;
-            if (copy_len > avail) {
-                copy_len = avail;
-            }
-            DSD_MEMCPY(g_added_text + used, str, copy_len);
-            g_added_text[used + copy_len] = '\0';
+        /* Byte loop rather than strlen+memcpy so the static analyzer can see
+         * the index stays inside the buffer. */
+        size_t used = strlen(g_added_text);
+        while (used + 1U < sizeof(g_added_text) && *str != '\0') {
+            g_added_text[used++] = *str++;
         }
+        g_added_text[used] = '\0';
     }
     return OK;
 }
@@ -239,6 +237,14 @@ wattr_on(WINDOW* win, attr_t attrs, void* opts) {
     assert(win == stdscr);
     g_wattr_on_count++;
     g_last_attr_on = attrs;
+    return OK;
+}
+
+int
+wattr_off(WINDOW* win, attr_t attrs, void* opts) {
+    (void)opts;
+    (void)attrs;
+    assert(win == stdscr);
     return OK;
 }
 
@@ -282,6 +288,118 @@ test_status_lifecycle(void) {
     assert(ui_status_peek(buf, sizeof buf, now + 10) == 0);
     ui_status_clear_if_expired(now + 10);
     assert(ui_status_peek(buf, sizeof buf, now) == 0);
+}
+
+static void
+test_status_hold_scales_with_length(void) {
+    char buf[256];
+    /* A short message holds ~3 s; a long one holds longer, capped at 8 s. The
+       checks are placed at offsets the second boundary cannot move across:
+       expire is t0 + hold with t0 <= now, so now + hold is always past it and
+       now + (hold - 2) is never. */
+    ui_statusf("level %d", 7);
+    time_t now = time(NULL);
+    assert(ui_status_peek(buf, sizeof buf, now + 3) == 0);
+
+    const char* long_msg = "Stop trunk-scan first; it manages its own channel maps. Then import again.";
+    assert(strlen(long_msg) >= 64U);
+    ui_statusf("%s", long_msg);
+    now = time(NULL);
+    assert(ui_status_peek(buf, sizeof buf, now + 3) == 1);
+    assert(ui_status_peek(buf, sizeof buf, now + 5) == 0);
+
+    char huge[250];
+    DSD_MEMSET(huge, 'x', sizeof huge - 1U);
+    huge[sizeof huge - 1U] = '\0';
+    ui_statusf("%s", huge);
+    now = time(NULL);
+    assert(ui_status_peek(buf, sizeof buf, now + 6) == 1);
+    assert(ui_status_peek(buf, sizeof buf, now + 8) == 0);
+    ui_statusf("%s", "");
+}
+
+static void
+test_text_wrap(void) {
+    UiTextSlice rows[4];
+    size_t consumed = 99;
+
+    /* Fits: one row, everything consumed. */
+    assert(ui_text_wrap("Imported X.", 20, 4, rows, &consumed) == 1);
+    assert(rows[0].start == 0 && rows[0].len == 11);
+    assert(consumed == 11);
+
+    /* Breaks at the last space inside the window; the space is skipped. */
+    const char* two = "Select another site, or Esc to finish.";
+    assert(ui_text_wrap(two, 24, 4, rows, &consumed) == 2);
+    assert(rows[0].len == 23); /* "Select another site, or" */
+    assert(rows[1].start == 24 && rows[1].len == strlen(two) - 24);
+    assert(consumed == strlen(two));
+
+    /* No space to break at: hard-wraps at the width. */
+    assert(ui_text_wrap("abcdefghij", 4, 4, rows, &consumed) == 3);
+    assert(rows[0].len == 4 && rows[1].len == 4 && rows[2].len == 2);
+
+    /* Out of rows: consumed reports the shortfall. */
+    assert(ui_text_wrap(two, 24, 1, rows, &consumed) == 1);
+    assert(consumed < strlen(two));
+
+    /* Degenerate inputs draw nothing and report nothing consumed. */
+    assert(ui_text_wrap(NULL, 24, 1, rows, &consumed) == 0);
+    assert(consumed == 0);
+    assert(ui_text_wrap("x", 0, 1, rows, NULL) == 0);
+    assert(ui_text_wrap("x", 5, 0, rows, NULL) == 0);
+    assert(ui_text_wrap("", 5, 1, rows, &consumed) == 0);
+}
+
+static void
+test_status_draw_wraps_and_anchors(void) {
+    const time_t now = time(NULL);
+
+    /* Nothing live: nothing drawn, nothing touched. */
+    reset_curses_stubs();
+    ui_statusf("%s", "");
+    assert(ui_status_draw(stdscr, 5, 2, 40, 2, UI_STATUS_FLAG_PREFIX, now) == 0);
+    assert(g_waddnstr_count == 0);
+
+    /* Short message, bottom-anchored over two rows: lands on the LAST row. */
+    reset_curses_stubs();
+    ui_statusf("Imported %s.", "Johnson Co");
+    assert(ui_status_draw(stdscr, 5, 2, 40, 2, UI_STATUS_FLAG_PREFIX | UI_STATUS_FLAG_ANCHOR_BOTTOM, now) == 1);
+    assert(g_waddnstr_count == 1);
+    assert(g_last_move_y == 6);
+    assert(g_last_move_x == 2);
+    assert(strcmp(g_added_text, "Status: Imported Johnson Co.") == 0);
+    assert(g_whline_count == 1);
+    assert(g_last_hline_y == 6);
+    assert(g_last_hline_len == 40);
+
+    /* Long message over two rows, top-anchored: both rows, in order, word-split. */
+    reset_curses_stubs();
+    ui_statusf("%s", "Stop trunk-scan first; it manages its own channel maps.");
+    assert(ui_status_draw(stdscr, 5, 2, 36, 2, UI_STATUS_FLAG_PREFIX, now) == 2);
+    assert(g_waddnstr_count == 2);
+    assert(g_whline_count == 2);
+    assert(g_last_move_y == 6); /* the second row was the last one drawn */
+    assert(g_last_move_x == 2);
+    /* The stub's waddnstr() ignores n, so the split itself is test_text_wrap()'s
+       to prove; this only checks the text went out from the start. */
+    assert(strncmp(g_added_text, "Status: Stop trunk-scan first; it", 33) == 0);
+
+    /* A dialog notice: no prefix, bold on and off around the text. */
+    reset_curses_stubs();
+    ui_statusf("%s", "Enter a ZIP code (digits only).");
+    assert(ui_status_draw(stdscr, 2, 2, 50, 1, UI_STATUS_FLAG_BOLD, now) == 1);
+    assert(g_wattr_on_count == 1);
+    assert(g_last_attr_on == A_BOLD);
+    assert(strcmp(g_added_text, "Enter a ZIP code (digits only).") == 0);
+
+    /* Too narrow to be useful: nothing drawn, the toast is left alone. */
+    reset_curses_stubs();
+    assert(ui_status_draw(stdscr, 2, 2, 3, 1, 0, now) == 0);
+    assert(g_waddnstr_count == 0);
+    char buf[64];
+    assert(ui_status_peek(buf, sizeof buf, now) == 1);
+    ui_statusf("%s", "");
 }
 
 static void
@@ -413,6 +531,9 @@ test_border_helpers_restore_saved_attributes(void) {
 int
 main(void) {
     test_status_lifecycle();
+    test_status_hold_scales_with_length();
+    test_text_wrap();
+    test_status_draw_wraps_and_anchors();
     test_iden_color_mapping();
     test_gamma_map_contract();
     test_window_lifecycle_contracts();

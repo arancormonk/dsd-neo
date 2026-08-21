@@ -21,6 +21,8 @@ void cb_import_chan(void* v, const char* p);
 void cb_import_group(void* v, const char* p);
 void cb_keys_dec(void* v, const char* p);
 void cb_keys_hex(void* v, const char* p);
+void cb_rr_account_user(void* v, const char* text);
+void cb_rr_account_key(void* v, const char* text);
 
 // ---- Config callbacks ----
 void cb_config_load(void* v, const char* path);

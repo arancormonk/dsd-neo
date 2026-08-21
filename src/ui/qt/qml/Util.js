@@ -155,18 +155,87 @@ function findDecodeMode(flag) {
     return null
 }
 
+// LEGACY_DECODE_LABELS is a plain object, so a bare `[flag] !== undefined` also
+// answers for every Object.prototype member: a saved decodeFlag of "constructor",
+// "toString" or "__proto__" would hand a Function back to callers that expect a
+// label string and render it into a chip. hasOwnProperty is what keeps the lookup
+// to the twelve rows actually declared.
+function legacyDecodeLabel(flag) {
+    if (typeof flag !== "string")
+        return null
+    if (!Object.prototype.hasOwnProperty.call(LEGACY_DECODE_LABELS, flag))
+        return null
+    return LEGACY_DECODE_LABELS[flag]
+}
+
 function decodeLabel(flag) {
     var mode = findDecodeMode(flag)
     if (mode !== null)
         return mode.short
-    if (LEGACY_DECODE_LABELS[flag] !== undefined)
-        return LEGACY_DECODE_LABELS[flag]
+    var legacy = legacyDecodeLabel(flag)
+    if (legacy !== null)
+        return legacy
     return "Auto"
 }
 
 function decodeHint(flag) {
     var mode = findDecodeMode(flag)
-    return mode !== null ? mode.hint : ""
+    if (mode !== null)
+        return mode.hint
+    // A composite the catalog does not offer still gets a line: this row going
+    // blank was half of what made an imported system read as "nothing chosen".
+    if (legacyDecodeLabel(flag) !== null)
+        return "Saved with this system — tap another chip to change it."
+    return ""
+}
+
+// The chip row to render for `flag`: the catalog, with the entry a composite
+// flag refines swapped for the composite itself, or the composite appended when
+// the catalog has no entry it refines (EDACS, which is kept out on purpose).
+//
+// The importer picks flags DECODE_MODES deliberately does not offer — "-mq -^",
+// "-fs -Y", the EDACS forms — and the row matches on the whole flag string, so
+// they used to select nothing at all. Pointing them at their base chip instead
+// would be worse than the blank row: the base carries the SHORT flag, so one
+// tap would silently drop the "-^" or the "-Y" the import added. The chip the
+// user sees therefore carries the WHOLE flag. Tapping it changes nothing;
+// tapping any other replaces it cleanly.
+//
+// Swapping rather than appending also keeps the row honest: "-mq -^" would
+// otherwise sit next to "P25 Simulcast" as a second, near-identical chip.
+function decodeChips(flag) {
+    if (findDecodeMode(flag) !== null)
+        return DECODE_MODES
+    var label = legacyDecodeLabel(flag)
+    if (label === null)
+        return DECODE_MODES
+
+    var out = []
+    var placed = false
+    for (var i = 0; i < DECODE_MODES.length; i++) {
+        var m = DECODE_MODES[i]
+        // `m.flag + " "` and not a bare prefix: Auto's empty flag would match
+        // everything, and "-f1" must not be read as refining "-f".
+        if (!placed && m.flag !== "" && flag.indexOf(m.flag + " ") === 0) {
+            out.push({ label: label, short: label, flag: flag,
+                       trunked: m.trunked, hint: decodeHint(flag) })
+            placed = true
+        } else if (!placed && m.label === label) {
+            // A legacy ALIAS rather than a refinement: "-f1" carries the same
+            // label as the catalog's "-ft" P25 chip but is not "-ft "-prefixed,
+            // so appending it would put two chips reading "P25" side by side -
+            // and WizardScreen.qml names the delegate after the label, so the two
+            // would share an objectName as well. Swap, exactly as a refinement does.
+            out.push({ label: label, short: label, flag: flag,
+                       trunked: m.trunked, hint: decodeHint(flag) })
+            placed = true
+        } else {
+            out.push(m)
+        }
+    }
+    if (!placed)
+        out.push({ label: label, short: label, flag: flag, hint: decodeHint(flag) })
+    return out
 }
 
 // Whether the wizard should suggest turning call-following on, for a user who
@@ -187,6 +256,14 @@ function decodeHint(flag) {
 function suggestsTrunking(flag, hz) {
     var mode = findDecodeMode(flag)
     if (mode === null)
+        // Unreachable for the composites: the only two writers that can put one
+        // in decodeFlag - applyRadioReference() and openForEdit() - both call
+        // answerTrunking() with it, and refreshTrunkingSuggestion() (the sole
+        // caller here) returns early once trunkingAnswered is set. Tapping the
+        // composite chip decodeChips() splices in cannot reach it either, since
+        // that chip only exists while decodeFlag already holds the composite.
+        // If either writer ever stops answering, resolve the composite the way
+        // decodeChips() does rather than widening findDecodeMode().
         return false
     if (mode.trunked === true)
         return true

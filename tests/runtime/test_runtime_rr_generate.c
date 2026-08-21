@@ -301,6 +301,57 @@ test_protocol_table(void) {
                                          && dsd_rr_protocol_is_conventional(DSD_RR_PROTO_UNSUPPORTED) == 0);
 }
 
+/*
+ * The token is what a sidecar stores, so it must be stable across builds and
+ * round-trip for every importable protocol; the short name is what a terminal
+ * column shows, so it must fit the RR_PROTO_SHORT_NAME_MAX budget the browser
+ * lays out against.
+ */
+static void
+test_protocol_tokens(void) {
+    static const struct {
+        dsd_rr_protocol protocol;
+        const char* token;
+        const char* short_name;
+    } rows[] = {
+        {DSD_RR_PROTO_P25, "p25", "P25"},
+        {DSD_RR_PROTO_DMR_CONPLUS, "dmr_conplus", "DMR Con+"},
+        {DSD_RR_PROTO_DMR_CAPPLUS, "dmr_capplus", "DMR Cap+"},
+        {DSD_RR_PROTO_DMR_TIER3, "dmr_tier3", "DMR TIII"},
+        {DSD_RR_PROTO_DMR_XPT, "dmr_xpt", "DMR XPT"},
+        {DSD_RR_PROTO_NXDN48, "nxdn48", "NXDN48"},
+        {DSD_RR_PROTO_NXDN96, "nxdn96", "NXDN96"},
+        {DSD_RR_PROTO_EDACS_STD, "edacs_std", "EDACS"},
+        {DSD_RR_PROTO_EDACS_EA, "edacs_ea", "EDACS EA"},
+        {DSD_RR_PROTO_P25_CONV, "p25_conv", "P25 conv"},
+        {DSD_RR_PROTO_DMR_CONV, "dmr_conv", "DMR conv"},
+        {DSD_RR_PROTO_NXDN48_CONV, "nxdn48_conv", "NXDN48 conv"},
+        {DSD_RR_PROTO_NXDN96_CONV, "nxdn96_conv", "NXDN96 conv"},
+    };
+
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        expect_str(rows[i].token, dsd_rr_protocol_token(rows[i].protocol), rows[i].token);
+        expect_str(rows[i].short_name, dsd_rr_protocol_short_name(rows[i].protocol), rows[i].short_name);
+        expect(rows[i].token, dsd_rr_protocol_from_token(rows[i].token) == rows[i].protocol);
+        expect("short name fits the column", strlen(rows[i].short_name) <= (size_t)DSD_RR_PROTO_SHORT_NAME_MAX);
+    }
+    /* Every importable protocol has a token: an enum value added without one
+     * would write sidecars with no recipe. */
+    for (int p = 0; p < (int)DSD_RR_PROTO_UNSUPPORTED; p++) {
+        expect("every protocol has a token", dsd_rr_protocol_token((dsd_rr_protocol)p) != NULL);
+        expect("every protocol has a short name", dsd_rr_protocol_short_name((dsd_rr_protocol)p) != NULL);
+    }
+    expect("unsupported has no token", dsd_rr_protocol_token(DSD_RR_PROTO_UNSUPPORTED) == NULL);
+    expect("unsupported has no short name", dsd_rr_protocol_short_name(DSD_RR_PROTO_UNSUPPORTED) == NULL);
+    /* A token this build does not know is a future protocol, not an error:
+     * the caller degrades to "files only" rather than refusing the sidecar. */
+    expect("unknown token is unsupported", dsd_rr_protocol_from_token("tetra") == DSD_RR_PROTO_UNSUPPORTED);
+    expect("empty token is unsupported", dsd_rr_protocol_from_token("") == DSD_RR_PROTO_UNSUPPORTED);
+    expect("NULL token is unsupported", dsd_rr_protocol_from_token(NULL) == DSD_RR_PROTO_UNSUPPORTED);
+    /* Tokens are exact: case is part of the identity. */
+    expect("token match is case sensitive", dsd_rr_protocol_from_token("P25") == DSD_RR_PROTO_UNSUPPORTED);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Classification                                                             */
 /* ------------------------------------------------------------------------- */
@@ -1275,6 +1326,7 @@ test_chan_argument_validation(void) {
 int
 main(void) {
     test_protocol_table();
+    test_protocol_tokens();
     test_classify_strings();
     test_classify_from_fixtures();
     test_group_csv();

@@ -443,6 +443,21 @@ dsd_neo_add_public_header_smoke_test(
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_import
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_IMPORT
+  dsd-neo/runtime/radioreference_import.h
+  C
+)
+# Also as C++: the Android JNI and Qt sources are the real consumers and no
+# Linux/macOS CI job compiles them, so nothing else would catch this header
+# losing its extern "C" guard.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_radioreference_import_cxx
+  HEADERS_PUBLIC_RUNTIME_RADIOREFERENCE_IMPORT_CXX
+  dsd-neo/runtime/radioreference_import.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_rdio_export
   HEADERS_PUBLIC_RUNTIME_RDIO_EXPORT
   dsd-neo/runtime/rdio_export.h
@@ -534,6 +549,20 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_notification_status_cxx
   HEADERS_PUBLIC_APP_CONTROL_NOTIFICATION_STATUS_CXX
   dsd-neo/app_control/notification_status.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rr_import_apply
+  HEADERS_PUBLIC_APP_CONTROL_RR_IMPORT_APPLY
+  dsd-neo/app_control/rr_import_apply.h
+  C
+)
+# Also as C++: the Qt model (Stage 12) is the only C++ consumer and no Linux/macOS CI
+# job compiles it, so nothing else would catch this header losing its extern "C" guard.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_rr_import_apply_cxx
+  HEADERS_PUBLIC_APP_CONTROL_RR_IMPORT_APPLY_CXX
+  dsd-neo/app_control/rr_import_apply.h
   CXX
 )
 dsd_neo_add_public_header_smoke_test(
@@ -1538,6 +1567,66 @@ if(DSD_ENABLE_TERMINAL_UI)
     )
 
     add_executable(
+        dsd-neo_test_ui_rr_panel
+        ui/test_ui_rr_panel.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_panel_format.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_panel
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_panel
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(dsd-neo_test_ui_rr_panel PRIVATE dsd-neo_runtime)
+    add_test(NAME UI_RR_PANEL COMMAND dsd-neo_test_ui_rr_panel)
+
+    add_executable(
+        dsd-neo_test_ui_rr_library
+        ui/test_ui_rr_library.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_library.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_library
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_library
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_rr_library
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME UI_RR_LIBRARY COMMAND dsd-neo_test_ui_rr_library)
+
+    add_executable(
+        dsd-neo_test_ui_csv_picker
+        ui/test_ui_csv_picker.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/csv_picker.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_csv_picker
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_csv_picker
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_csv_picker
+        PRIVATE dsd-neo_runtime dsd-neo_test_support
+    )
+    add_test(NAME UI_CSV_PICKER COMMAND dsd-neo_test_ui_csv_picker)
+
+    add_executable(
         dsd-neo_test_ui_menu_defs
         ui/test_ui_menu_defs.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menus/menu_defs.c
@@ -2177,6 +2266,28 @@ if(DSD_ENABLE_TERMINAL_UI)
         NAME UI_PROMPT_VALIDATION
         COMMAND dsd-neo_test_ui_prompt_validation
     )
+
+    add_executable(
+        dsd-neo_test_ui_prompt_secret
+        ui/test_ui_prompt_secret.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_prompts.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_prompt_secret
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+            ${CURSES_INCLUDE_DIRS}
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_prompt_secret
+        PRIVATE DSD_NEO_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_prompt_secret
+        PRIVATE dsd-neo_test_support ${CURSES_LIBRARIES}
+    )
+    add_test(NAME UI_PROMPT_SECRET COMMAND dsd-neo_test_ui_prompt_secret)
 endif()
 
 # The Qt Quick frontend itself only builds for Android, but the session-phase
@@ -2817,6 +2928,22 @@ target_link_libraries(
 )
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
+# rr_import.c is pure policy - no transport, no parser - and compiles
+# unconditionally, so its suite is registered outside the expat gate below.
+# The android-shape job builds a configuration with no expat on purpose, and
+# RUNTIME_RR_NO_EXPAT only pins the parser stub's refusal; gating this suite
+# would leave the hoisted policy untested in exactly that build.
+add_executable(dsd-neo_test_runtime_rr_import runtime/test_runtime_rr_import.c)
+target_include_directories(
+    dsd-neo_test_runtime_rr_import
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_import
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_IMPORT COMMAND dsd-neo_test_runtime_rr_import)
+
 # Every case in the three suites below starts by parsing a captured response, so
 # without expat they would all assert the stub's refusal rather than anything
 # about RadioReference. The android-shape job builds exactly that configuration
@@ -2889,10 +3016,48 @@ if(DSD_HAS_EXPAT)
             dsd-neo_test_support
     )
     add_test(NAME RUNTIME_RR_GENERATE COMMAND dsd-neo_test_runtime_rr_generate)
+
+    # The wizard core is compiled directly, never linked: dsd-neo_ui_terminal
+    # links ${CURSES_LIBRARIES} PRIVATE, which a static library still propagates
+    # as $<LINK_ONLY:>, and the target does not exist at all under
+    # -DDSD_ENABLE_TERMINAL_UI=OFF. Same reasoning for
+    # src/app_control/rr_import_apply.c: dsd-neo_app_control drags dsd-neo_engine
+    # and every io backend into what is a headless unit test. dsd-neo_core +
+    # dsd-neo_proto_dmr are here because the test round-trips the written CSVs
+    # through dsd_csv_validate_*, and dsd_import.c calls
+    # dmr_parse_static_keystream_spec. Deliberately not inside a terminal-UI
+    # gate - running headless in that configure is the point.
+    add_executable(
+        dsd-neo_test_ui_rr_wizard
+        ui/test_ui_rr_wizard.c
+        ${PROJECT_SOURCE_DIR}/src/ui/terminal/rr_wizard_core.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rr_import_apply.c
+    )
+    target_include_directories(
+        dsd-neo_test_ui_rr_wizard
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_rr_wizard
+        PRIVATE
+            DSD_NEO_TEST_HOOKS
+            "DSD_NEO_TEST_RR_FIXTURE_DIR=\"${_DSD_NEO_RR_FIXTURE_DIR}\""
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_rr_wizard
+        PRIVATE
+            dsd-neo_runtime
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            dsd-neo_test_support
+    )
+    add_test(NAME UI_RR_WIZARD COMMAND dsd-neo_test_ui_rr_wizard)
 else()
     message(
         STATUS
-        "RUNTIME_RR_SOAP/CLIENT/GENERATE: skipped, expat not available; RUNTIME_RR_NO_EXPAT covers the stub"
+        "RUNTIME_RR_SOAP/CLIENT/GENERATE and UI_RR_WIZARD: skipped, expat not available; RUNTIME_RR_NO_EXPAT covers the stub"
     )
     add_executable(
         dsd-neo_test_runtime_rr_no_expat
@@ -3999,6 +4164,20 @@ target_link_libraries(
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
 add_executable(
+    dsd-neo_test_runtime_rr_provenance
+    runtime/test_runtime_rr_provenance.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_rr_provenance
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_rr_provenance
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(NAME RUNTIME_RR_PROVENANCE COMMAND dsd-neo_test_runtime_rr_provenance)
+
+add_executable(
     dsd-neo_test_runtime_decode_mode
     runtime/test_runtime_decode_mode.c
 )
@@ -4095,6 +4274,39 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
+
+add_executable(dsd-neo_test_app_control_rr_apply ui/test_app_control_rr_apply.c)
+target_include_directories(
+    dsd-neo_test_app_control_rr_apply
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/app_control
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS} dsd-neo_test_support
+    )
+endif()
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE DSD_NEO_TEST_IO_CONTROL_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_app_control_rr_apply
+        PRIVATE "LINKER:--wrap=io_control_set_freq"
+    )
+endif()
+add_test(NAME APP_CONTROL_RR_APPLY COMMAND dsd-neo_test_app_control_rr_apply)
 
 set(_DSD_BOOTSTRAP_FIXTURE_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/runtime_bootstrap_fixtures"
@@ -7723,6 +7935,17 @@ target_link_libraries(
     PRIVATE dsd-neo_platform
 )
 add_test(NAME PLATFORM_FILE_COMPAT COMMAND dsd-neo_test_platform_file_compat)
+
+add_executable(dsd-neo_test_platform_dir_list platform/test_platform_dir_list.c)
+target_include_directories(
+    dsd-neo_test_platform_dir_list
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_dir_list
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(NAME PLATFORM_DIR_LIST COMMAND dsd-neo_test_platform_dir_list)
 
 add_executable(dsd-neo_test_platform_nonce platform/test_platform_nonce.c)
 target_include_directories(

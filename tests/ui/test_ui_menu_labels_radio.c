@@ -15,6 +15,7 @@
 #include <dsd-neo/io/tcp_input.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/ui/menu_core.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -90,6 +91,25 @@ int
 tcp_input_is_valid(const tcp_input_ctx* ctx) {
     (void)ctx;
     return 0;
+}
+
+int
+dsd_rr_available(void) {
+    return 1;
+}
+
+/* menu_labels.c reaches dsd_user_imports_dir() from rr_imports_available(); this
+ * target links no libraries at all, so the runtime definition is stubbed here. */
+static const char* g_imports_dir = "/tmp/dsd-neo-imports";
+
+const char*
+dsd_user_imports_dir(void) {
+    return g_imports_dir;
+}
+
+const char*
+dsd_rr_builtin_app_key(void) {
+    return "";
 }
 
 int

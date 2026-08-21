@@ -23,9 +23,18 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
+#include "dsd-neo/platform/platform.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd-neo/runtime/config_schema.h"
 #include "test_support.h"
+
+#if DSD_PLATFORM_WIN_NATIVE
+#include <direct.h>
+#define DSD_TEST_RMDIR _rmdir
+#else
+#include <unistd.h>
+#define DSD_TEST_RMDIR rmdir
+#endif
 
 static int
 write_temp_config(const char* contents, char* out_path, size_t out_sz) {
@@ -92,6 +101,163 @@ expect_contains(const char* label, const char* haystack, const char* needle) {
         return 1;
     }
     return 0;
+}
+
+/*
+ * Like expect_contains(), but never echoes the rendered buffer: this INI carries
+ * RadioReference credentials and a failure message must not leak them.
+ */
+static int
+expect_contains_quiet(const char* label, const char* haystack, const char* needle) {
+    if (!haystack || !needle || !strstr(haystack, needle)) {
+        DSD_FPRINTF(stderr, "FAIL: %s did not render the expected line\n", label ? label : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_absent_quiet(const char* label, const char* haystack, const char* needle) {
+    if (!haystack || !needle || strstr(haystack, needle)) {
+        DSD_FPRINTF(stderr, "FAIL: %s rendered a line that should be absent\n", label ? label : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_radioreference_schema_rows(void) {
+    int rc = 0;
+    int n = 0;
+    const int count = dsdcfg_schema_count();
+    for (int i = 0; i < count; i++) {
+        const dsdcfg_schema_entry_t* e = dsdcfg_schema_get(i);
+        if (e && e->section && strcmp(e->section, "radioreference") == 0) {
+            n++;
+        }
+    }
+    if (n != 2) {
+        DSD_FPRINTF(stderr, "FAIL: expected 2 radioreference schema rows, found %d\n", n);
+        rc |= 1;
+    }
+    if (dsdcfg_schema_find("radioreference", "username") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: radioreference.username is not in the schema\n");
+        rc |= 1;
+    }
+    if (dsdcfg_schema_find("radioreference", "app_key") == NULL) {
+        DSD_FPRINTF(stderr, "FAIL: radioreference.app_key is not in the schema\n");
+        rc |= 1;
+    }
+    if (dsdcfg_schema_find("radioreference", "password") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: radioreference.password must never be a persisted setting\n");
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_radioreference_config_roundtrip(void) {
+    static const char* ini = "[radioreference]\n"
+                             "username = \"alice\"\n"
+                             "app_key = \"K-1\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    int rc = 0;
+    if (!cfg.has_radioreference) {
+        DSD_FPRINTF(stderr, "FAIL: [radioreference] did not set has_radioreference\n");
+        rc |= 1;
+    }
+    if (strcmp(cfg.rr_username, "alice") != 0 || strcmp(cfg.rr_app_key, "K-1") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [radioreference] keys did not load into dsdneoUserConfig\n");
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strcmp(opts.rr_username, "alice") != 0 || strcmp(opts.rr_app_key, "K-1") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [radioreference] keys did not reach dsd_opts\n");
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.has_radioreference || strcmp(snap.rr_username, "alice") != 0 || strcmp(snap.rr_app_key, "K-1") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the radioreference credentials\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("radioreference section header", rendered, "[radioreference]\n");
+    rc |= expect_contains_quiet("radioreference username", rendered, "username = \"alice\"\n");
+    rc |= expect_contains_quiet("radioreference app key", rendered, "app_key = \"K-1\"\n");
+
+    /* A session with no RadioReference credentials must not emit the section at all. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig empty_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &empty_snap);
+    if (empty_snap.has_radioreference) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot set has_radioreference with no credentials\n");
+        rc |= 1;
+    }
+    if (render_config_to_buffer(&empty_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_absent_quiet("empty radioreference section", rendered, "[radioreference]");
+
+    return rc;
+}
+
+static int
+test_radioreference_save_atomic_roundtrip(void) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_radioreference = 1;
+    DSD_SNPRINTF(cfg.rr_username, sizeof cfg.rr_username, "%s", "alice");
+    DSD_SNPRINTF(cfg.rr_app_key, sizeof cfg.rr_app_key, "%s", "K-1");
+
+    char save_path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(save_path, sizeof save_path, "dsdneo_config_rr_save");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for radioreference save path\n");
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    int rc = 0;
+    if (dsd_user_config_save_atomic(save_path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "save_atomic failed for the radioreference config\n");
+        rc |= 1;
+    } else {
+        dsdneoUserConfig loaded;
+        if (dsd_user_config_load(save_path, &loaded) != 0) {
+            DSD_FPRINTF(stderr, "reload of the saved radioreference config failed\n");
+            rc |= 1;
+        } else if (!loaded.has_radioreference || strcmp(loaded.rr_username, "alice") != 0
+                   || strcmp(loaded.rr_app_key, "K-1") != 0) {
+            DSD_FPRINTF(stderr, "FAIL: saved radioreference credentials did not survive a reload\n");
+            rc |= 1;
+        }
+    }
+
+    (void)remove(save_path);
+    return rc;
 }
 
 static int
@@ -1817,9 +1983,360 @@ test_dmr_mono_preset_precedes_false_override(void) {
     return 0;
 }
 
+/*
+ * The three settings a RadioReference import applies that used to have no INI
+ * key at all: conventional scanning (-Y), the P25 learned-candidate preference
+ * (-^), and the EDACS EA/ESK variant. Before these keys existed, a Config->Save
+ * of an imported multi-repeater conventional system or an ESK EDACS system came
+ * back decoding differently on the next launch.
+ */
+static int
+test_persistence_gap_schema_rows(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* section;
+        const char* key;
+    } expected[] = {
+        {"trunking", "scanner"},
+        {"trunking", "p25_prefer_candidates"},
+        {"mode", "edacs_ea"},
+        {"mode", "edacs_esk"},
+    };
+
+    for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
+        if (dsdcfg_schema_find(expected[i].section, expected[i].key) == NULL) {
+            DSD_FPRINTF(stderr, "FAIL: %s.%s is not in the schema\n", expected[i].section, expected[i].key);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+static int
+test_scanner_and_candidates_roundtrip(void) {
+    static const char* ini = "[trunking]\n"
+                             "scanner = true\n"
+                             "p25_prefer_candidates = true\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "scanner/candidates config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.scanner_mode != 1) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] scanner did not reach opts.scanner_mode\n");
+        rc |= 1;
+    }
+    if (opts.p25_prefer_candidates != 1) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] p25_prefer_candidates did not reach dsd_opts\n");
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.trunk_scanner || !snap.trunk_p25_prefer_candidates) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the scanner / candidate-preference answers\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scanner", rendered, "scanner = true\n");
+    rc |= expect_contains_quiet("trunking candidate preference", rendered, "p25_prefer_candidates = true\n");
+
+    /* Off must round-trip as explicitly off, not as an omitted key: these are
+       tuner-owner answers, and a missing key would silently inherit whatever
+       the previous session left in opts. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig off_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &off_snap);
+    if (render_config_to_buffer(&off_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scanner off", rendered, "scanner = false\n");
+    rc |= expect_contains_quiet("trunking candidates off", rendered, "p25_prefer_candidates = false\n");
+    return rc;
+}
+
+/*
+ * The ordering that makes this work at all: dsd_apply_decode_mode_preset() for
+ * edacs_pv runs decode_mode_apply_edacs_pv(), which resets state->ea_mode and
+ * state->esk_mask to 0 unconditionally. Both keys must therefore be applied
+ * AFTER the preset, exactly like dmr_mono. Loading them before it would leave a
+ * config that reads correctly and decodes wrongly.
+ */
+static int
+test_edacs_variant_roundtrip(void) {
+    static const char* ini = "version = 1\n\n"
+                             "[mode]\n"
+                             "decode = \"edacs_pv\"\n"
+                             "edacs_ea = true\n"
+                             "edacs_esk = true\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "edacs variant config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (state.ea_mode != 1) {
+        DSD_FPRINTF(stderr, "FAIL: edacs_ea lost to the decode preset (ea_mode=%d)\n", state.ea_mode);
+        rc |= 1;
+    }
+    /* 0xA0 is the only non-zero mask any CLI variant or the RadioReference apply
+       handler ever sets; the key is a boolean over exactly that value. */
+    if (state.esk_mask != 0xA0) {
+        DSD_FPRINTF(stderr, "FAIL: edacs_esk did not set the 0xA0 mask (esk_mask=0x%X)\n", (unsigned)state.esk_mask);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.edacs_ea || !snap.edacs_esk) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the EDACS EA/ESK variant\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("edacs ea", rendered, "edacs_ea = true\n");
+    rc |= expect_contains_quiet("edacs esk", rendered, "edacs_esk = true\n");
+
+    /* The other half of the 2x2 the four CLI variants expose: EA on, ESK off. */
+    static const char* ini_ea_only = "version = 1\n\n"
+                                     "[mode]\n"
+                                     "decode = \"edacs_pv\"\n"
+                                     "edacs_ea = true\n"
+                                     "edacs_esk = false\n";
+    if (write_temp_config(ini_ea_only, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg2;
+    load_rc = dsd_user_config_load(path, &cfg2);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "edacs ea-only config failed to load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg2, &opts, &state);
+    if (state.ea_mode != 1 || state.esk_mask != 0) {
+        DSD_FPRINTF(stderr, "FAIL: ea-only variant wrong (ea_mode=%d esk_mask=0x%X)\n", state.ea_mode,
+                    (unsigned)state.esk_mask);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * state->ea_mode is TRI-state: dsd_init.c seeds it at -1 ("no EDACS addressing
+ * mode chosen yet"), which edacs-fme.c, provoice.c, dsd_events.c and the ncurses
+ * EDACS rows all distinguish from 0 (standard). A snapshot that folded -1 through
+ * a truthiness test would save it as "extended addressing", and the next load
+ * would pin every session to EA with no way back - the in-session toggle only
+ * ever produces 0 or 1. So the keys must be OMITTED until the answer exists, and
+ * a config without them must leave -1 alone.
+ */
+static int
+test_edacs_variant_unanswered_is_not_persisted(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    state.ea_mode = -1; /* what dsd_init.c installs */
+    state.esk_mask = 0;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.has_edacs_variant) {
+        DSD_FPRINTF(stderr, "FAIL: an unanswered EDACS mode was recorded (edacs_ea=%d)\n", snap.edacs_ea);
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "edacs_ea") != NULL || strstr(rendered, "edacs_esk") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: an unanswered EDACS mode reached the INI\n");
+        rc |= 1;
+    }
+
+    /* And the other direction: an unrelated config must not decide the question.
+       A [mode] decode preset is excluded on purpose - dsd_apply_decode_mode_preset()
+       runs decode_mode_apply_edacs_pv(), which answers "standard" by design, the
+       same as the CLI's -fh. */
+    static const char* ini = "version = 1\n\n"
+                             "[trunking]\n"
+                             "enabled = true\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "EDACS-less config failed to load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    state.ea_mode = -1;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (state.ea_mode != -1) {
+        DSD_FPRINTF(stderr, "FAIL: a config with no EDACS keys answered the question (ea_mode=%d)\n", state.ea_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * Exactly one automatic tuner owner. actions_trunk.c and rr_apply_tuner_owner
+ * both enforce it; a config apply that set scanner_mode on its own would leave
+ * the trunking SM following a control channel while the scanner retunes off it
+ * on every hangtime expiry.
+ */
+static int
+test_scanner_and_trunking_are_mutually_exclusive(void) {
+    int rc = 0;
+    static const char* ini = "version = 1\n\n"
+                             "[trunking]\n"
+                             "enabled = true\n"
+                             "scanner = true\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "trunking+scanner config failed to load\n");
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.trunk_enable != 1 || opts.scanner_mode != 0) {
+        DSD_FPRINTF(stderr, "FAIL: both tuner owners live (trunk_enable=%d scanner_mode=%d)\n", opts.trunk_enable,
+                    opts.scanner_mode);
+        rc |= 1;
+    }
+
+    /* Scanner alone still wins the tuner, and clears a trunking flag the session
+       was carrying from somewhere else. */
+    static const char* ini_scan = "version = 1\n\n"
+                                  "[trunking]\n"
+                                  "enabled = false\n"
+                                  "scanner = true\n";
+    if (write_temp_config(ini_scan, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg2;
+    load_rc = dsd_user_config_load(path, &cfg2);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "scanner-only config failed to load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    opts.trunk_enable = 1;
+    dsd_apply_user_config_to_opts(&cfg2, &opts, &state);
+    if (opts.scanner_mode != 1 || opts.trunk_enable != 0) {
+        DSD_FPRINTF(stderr, "FAIL: scanner did not take the tuner (trunk_enable=%d scanner_mode=%d)\n",
+                    opts.trunk_enable, opts.scanner_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * MUST be the first case main() runs. dsd_user_config_default_path() latches its
+ * answer in `static char buf[1024]; static int inited` (src/runtime/config_user.cpp,
+ * identifier dsd_user_config_default_path), so the environment override only takes
+ * effect if nothing in this binary has asked for a config path yet. No other case
+ * in this file touches a config-path helper today; keep it that way.
+ */
+static int
+test_imports_dir_follows_config_dir(void) {
+    char scratch[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(scratch, sizeof scratch, "dsdneo_imports_dir") == NULL) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+#if defined(_WIN32)
+    const char* cfg_env = "APPDATA";
+#else
+    const char* cfg_env = "XDG_CONFIG_HOME";
+#endif
+    if (dsd_test_setenv(cfg_env, scratch, 1) != 0) {
+        DSD_FPRINTF(stderr, "dsd_test_setenv(%s) failed\n", cfg_env);
+        return 1;
+    }
+
+    /* Not named *_dir: readability-suspicious-call-argument reads a "<x>_dir"
+       argument in dsd_test_path_join's `out` slot as swapped with its `dir`. */
+    char cfg_root[DSD_TEST_PATH_MAX];
+    char expected[DSD_TEST_PATH_MAX];
+    int rc = dsd_test_path_join(cfg_root, sizeof cfg_root, scratch, "dsd-neo") != 0 ? 1 : 0;
+    rc |= dsd_test_path_join(expected, sizeof expected, cfg_root, "imports") != 0 ? 1 : 0;
+
+    const char* dir = dsd_user_imports_dir();
+    if (!dir) {
+        DSD_FPRINTF(stderr, "dsd_user_imports_dir returned NULL\n");
+        (void)DSD_TEST_RMDIR(scratch);
+        return 1;
+    }
+    rc |= strcmp(dir, expected) == 0 ? 0 : 1;
+
+    rc |= dsd_user_imports_dir_create() == 0 ? 0 : 1;
+    dsd_stat_t st;
+    rc |= dsd_stat_path(expected, &st) == 0 && !dsd_stat_is_regular(&st) ? 0 : 1;
+
+    /* Idempotent, and the answer is recomputed rather than latched. */
+    rc |= dsd_user_imports_dir_create() == 0 ? 0 : 1;
+    rc |= strcmp(dsd_user_imports_dir(), expected) == 0 ? 0 : 1;
+
+    (void)DSD_TEST_RMDIR(expected);
+    (void)DSD_TEST_RMDIR(cfg_root);
+    (void)DSD_TEST_RMDIR(scratch);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_imports_dir_follows_config_dir();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_decode_mode_and_load_guards();
     rc |= test_persisted_v1_load_boundary();
@@ -1845,6 +2362,14 @@ main(void) {
     rc |= test_snapshot_staged_file_rate_uses_requested_rate();
     rc |= test_snapshot_mode_inference_tdma_and_auto();
     rc |= test_snapshot_roundtrip_dmr_mono_override();
+    rc |= test_radioreference_schema_rows();
+    rc |= test_radioreference_config_roundtrip();
+    rc |= test_radioreference_save_atomic_roundtrip();
     rc |= test_dmr_mono_preset_precedes_false_override();
+    rc |= test_persistence_gap_schema_rows();
+    rc |= test_scanner_and_candidates_roundtrip();
+    rc |= test_edacs_variant_roundtrip();
+    rc |= test_edacs_variant_unanswered_is_not_persisted();
+    rc |= test_scanner_and_trunking_are_mutually_exclusive();
     return rc;
 }

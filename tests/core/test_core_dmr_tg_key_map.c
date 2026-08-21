@@ -20,18 +20,11 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
-#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/state_fwd.h"
-
-#if DSD_PLATFORM_WIN_NATIVE
-#define TG_KEY_NULL_DEVICE "NUL"
-#else
-#define TG_KEY_NULL_DEVICE "/dev/null"
-#endif
 
 static int
 expect_eq(const char* tag, long long got, long long want) {
@@ -266,9 +259,16 @@ count_substring_in_file(const char* path, const char* needle) {
 
 // Redirects stderr to a fresh temp file, calls activate_via_map(state, slot) five times, and
 // returns how many times `needle` appears in what was written, or -1 if the capture itself could
-// not be set up. Points stderr back at the null device before deleting the temp file: Windows
-// refuses remove() on a file that is still open, so unlinking while stderr holds it would orphan
-// one temp file per capture in the CTest working directory.
+// not be set up.
+//
+// Swaps the descriptor underneath stderr rather than freopen()ing a path over it, for two reasons.
+// The temp file keeps the private descriptor dsd_mkstemp() returned: closing it and reopening the
+// name in "w" mode would re-create the file at 0666 & ~umask if anything unlinked it in the gap,
+// which is the world-writable-creation class semgrep/dsd-neo.yml bans in tests. And the saved
+// descriptor puts the real stderr back afterwards, so every later test can still report its own
+// failures -- several of them call this helper, and expect_eq() writes to stderr.
+//
+// Both descriptors are closed before remove(): Windows refuses to unlink a file that is still open.
 static int
 capture_notice_hits(dsd_state* state, int slot, const char* needle) {
     char tmpl[] = "dsd-neo-test-tg-key-note-XXXXXX";
@@ -276,10 +276,19 @@ capture_notice_hits(dsd_state* state, int slot, const char* needle) {
     if (fd < 0) {
         return -1;
     }
-    (void)dsd_close(fd);
+
+    const int err_fd = dsd_fileno(stderr);
+    const int saved_err = (err_fd >= 0) ? dsd_dup(err_fd) : -1;
+    if (saved_err < 0) {
+        (void)dsd_close(fd);
+        (void)remove(tmpl);
+        return -1;
+    }
 
     fflush(stderr);
-    if (freopen(tmpl, "w", stderr) == NULL) {
+    if (dsd_dup2(fd, err_fd) < 0) {
+        (void)dsd_close(saved_err);
+        (void)dsd_close(fd);
         (void)remove(tmpl);
         return -1;
     }
@@ -287,7 +296,10 @@ capture_notice_hits(dsd_state* state, int slot, const char* needle) {
         (void)activate_via_map(state, slot);
     }
     fflush(stderr);
-    (void)freopen(TG_KEY_NULL_DEVICE, "w", stderr);
+
+    (void)dsd_dup2(saved_err, err_fd);
+    (void)dsd_close(saved_err);
+    (void)dsd_close(fd);
 
     const int hits = count_substring_in_file(tmpl, needle);
     (void)remove(tmpl);
@@ -301,9 +313,6 @@ capture_notice_hits(dsd_state* state, int slot, const char* needle) {
 // variants share the same latch helper (keyring_dmr_tg_map_note_should_print()), so both are
 // exercised here rather than just the applied one: the skipped notice is the CSV-typo path this
 // feature added the notice for in the first place, and losing its latch carries the identical risk.
-//
-// Runs last, and reports on stdout: restoring stderr after the capture is not portable, so it is
-// left pointing at the null device and no later test may depend on it.
 static int
 test_notice_is_emitted_once_per_epoch(void) {
     int rc = 0;
@@ -320,10 +329,10 @@ test_notice_is_emitted_once_per_epoch(void) {
     const int applied_hits = capture_notice_hits(&applied_state, 0, "DMR TG Key Map");
     dsd_state_ext_free_all(&applied_state);
     if (applied_hits < 0) {
-        printf("note-capture: could not set up applied-notice capture\n");
+        DSD_FPRINTF(stderr, "note-capture: could not set up applied-notice capture\n");
         rc = 1;
     } else if (applied_hits != 1) {
-        printf("note-once-per-epoch: got %d notices want 1\n", applied_hits);
+        DSD_FPRINTF(stderr, "note-once-per-epoch: got %d notices want 1\n", applied_hits);
         rc = 1;
     }
 
@@ -339,18 +348,13 @@ test_notice_is_emitted_once_per_epoch(void) {
     const int skipped_hits = capture_notice_hits(&skipped_state, 0, "has no scalar key");
     dsd_state_ext_free_all(&skipped_state);
     if (skipped_hits < 0) {
-        printf("note-capture: could not set up skipped-notice capture\n");
+        DSD_FPRINTF(stderr, "note-capture: could not set up skipped-notice capture\n");
         rc = 1;
     } else if (skipped_hits != 1) {
-        printf("note-skipped-once-per-epoch: got %d notices want 1\n", skipped_hits);
+        DSD_FPRINTF(stderr, "note-skipped-once-per-epoch: got %d notices want 1\n", skipped_hits);
         rc = 1;
     }
 
-    const int restored = (freopen(TG_KEY_NULL_DEVICE, "w", stderr) != NULL);
-    if (!restored) {
-        printf("note-capture: could not reopen stderr to null device\n");
-        rc = 1;
-    }
     return rc;
 }
 
@@ -822,7 +826,6 @@ main(void) {
     rc |= test_both_notices_can_print_in_one_epoch();
     rc |= test_stale_active_epoch_self_heals_on_the_next_lc();
     rc |= test_none_need_alg_produces_no_notice();
-    // Last: it redirects stderr and cannot portably restore it.
     rc |= test_notice_is_emitted_once_per_epoch();
     if (rc == 0) {
         printf("CORE_DMR_TG_KEY_MAP: OK\n");

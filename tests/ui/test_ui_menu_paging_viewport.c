@@ -116,6 +116,31 @@ ui_chooser_render(void) { // NOLINT(misc-use-internal-linkage)
 }
 
 int
+rr_panel_active(void) { // NOLINT(misc-use-internal-linkage)
+    return 0;
+}
+
+int
+rr_panel_handle_key(int ch) { // NOLINT(misc-use-internal-linkage)
+    (void)ch;
+    return 0;
+}
+
+void
+rr_panel_render(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+void
+rr_panel_tick(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    (void)opts;
+    (void)state;
+}
+
+void
+rr_panel_close(void) { // NOLINT(misc-use-internal-linkage)
+}
+
+int
 ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx) {
     (void)ctx;
     return (items && n > 0) ? 1 : 0;

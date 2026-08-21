@@ -372,6 +372,28 @@ test_draw_menu_scrolls_and_renders_enabled_items(void) {
 
     read_window_line(win, 7, line, sizeof line);
     assert(strstr(line, "Status: ready") != NULL);
+    read_window_line(win, 6, line, sizeof line);
+    assert(strstr(line, "Enter/Right: select") != NULL);
+
+    /* A message too long for the status row wraps onto the key-help row above
+       it, at a word break, instead of being cut off at the frame. */
+    DSD_SNPRINTF(g_status_text, sizeof g_status_text, "Stop trunk-scan first; it manages its own channel maps.");
+    ui_draw_menu(win, ITEMS, sizeof ITEMS / sizeof ITEMS[0], 4, &top, "Menu Title", &ctx);
+    read_window_line(win, 6, line, sizeof line);
+    assert(strstr(line, "Status: Stop trunk-scan first; it manages its own") != NULL);
+    assert(strstr(line, "Enter/Right") == NULL);
+    read_window_line(win, 7, line, sizeof line);
+    assert(strstr(line, "channel maps.") != NULL);
+    assert(strstr(line, "own") == NULL);
+
+    /* A short one gives the help row back. */
+    DSD_SNPRINTF(g_status_text, sizeof g_status_text, "ready");
+    ui_draw_menu(win, ITEMS, sizeof ITEMS / sizeof ITEMS[0], 4, &top, "Menu Title", &ctx);
+    read_window_line(win, 6, line, sizeof line);
+    assert(strstr(line, "Enter/Right: select") != NULL);
+    read_window_line(win, 7, line, sizeof line);
+    assert(strstr(line, "Status: ready") != NULL);
+    assert(strstr(line, "maps") == NULL);
 
     g_status_peek_result = 0;
     ui_draw_menu(win, ITEMS, sizeof ITEMS / sizeof ITEMS[0], 0, NULL, NULL, &ctx);

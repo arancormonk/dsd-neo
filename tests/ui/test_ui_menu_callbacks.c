@@ -12,6 +12,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/rr_import_apply.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -170,6 +171,11 @@ dsd_app_command_set_config_metadata(const dsd_app_config_metadata_payload* paylo
     }
     g_config_metadata_calls++;
     return capture_command(DSD_APP_CMD_CONFIG_METADATA_SET, payload, payload ? sizeof *payload : 0U);
+}
+
+int
+dsd_app_command_set_rr_account(const dsd_app_rr_account_payload* payload) {
+    return capture_command(DSD_APP_CMD_RR_ACCOUNT_SET, payload, payload ? sizeof *payload : 0U);
 }
 
 void ui_statusf(const char* fmt, ...) DSD_ATTR_FORMAT(printf, 1, 2);

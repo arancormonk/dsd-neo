@@ -18,6 +18,9 @@
 // ---- Visibility/predicate functions ----
 bool io_always_on(const void* ctx);
 bool io_rtl_active(const void* ctx);
+bool rr_feature_available(const void* ctx);
+bool rr_key_prompt_offered(const void* ctx);
+bool rr_imports_available(const void* ctx);
 
 #ifdef USE_RADIO
 bool is_mod_qpsk(const void* v);
@@ -29,6 +32,7 @@ int ui_current_mod(const void* v);
 
 // ---- Label functions ----
 // State labels
+const char* lbl_rr_account(const void* v, char* b, size_t n);
 const char* lbl_invert_all(const void* v, char* b, size_t n);
 const char* lbl_toggle_payload(const void* v, char* b, size_t n);
 const char* lbl_trunk(const void* v, char* b, size_t n);
