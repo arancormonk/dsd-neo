@@ -371,16 +371,32 @@ main(void) {
 
     /* Slot lockout hotkeys should carry the exact slot index. */
     cap_reset();
-    assert(dsd_terminal_handle_input(opts, state, '!') == 1);
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_LOCKOUT_SLOT1) == 1);
     assert(g_cap.id == DSD_APP_CMD_LOCKOUT_SLOT);
     assert(g_cap.n == sizeof(uint8_t));
     assert(g_cap.data[0] == 0U);
 
     cap_reset();
-    assert(dsd_terminal_handle_input(opts, state, '@') == 1);
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_LOCKOUT_SLOT2) == 1);
     assert(g_cap.id == DSD_APP_CMD_LOCKOUT_SLOT);
     assert(g_cap.n == sizeof(uint8_t));
     assert(g_cap.data[0] == 1U);
+
+    /* Every main-screen key is named in keymap.h; these three used to be literals in the handler. */
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_TRUNK_GROUP) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_TRUNK_GROUP_TOGGLE);
+
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_PROVOICE_ESK) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_PROVOICE_ESK_TOGGLE);
+
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_PROVOICE_MODE) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_PROVOICE_MODE_TOGGLE);
 
     /* Unknown keys are still consumed but do not enqueue command work. */
     cap_reset();

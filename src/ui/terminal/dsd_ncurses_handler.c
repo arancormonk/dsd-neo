@@ -100,9 +100,9 @@ ncurses_try_post_simple_cmd(int c) {
         {DSD_KEY_TRUNK_PRIV, DSD_APP_CMD_TRUNK_PRIV_TOGGLE},
         {DSD_KEY_TRUNK_DATA, DSD_APP_CMD_TRUNK_DATA_TOGGLE},
         {DSD_KEY_TRUNK_ENC, DSD_APP_CMD_TRUNK_ENC_TOGGLE},
-        {'g', DSD_APP_CMD_TRUNK_GROUP_TOGGLE},
-        {'A', DSD_APP_CMD_PROVOICE_ESK_TOGGLE},
-        {'S', DSD_APP_CMD_PROVOICE_MODE_TOGGLE},
+        {DSD_KEY_TRUNK_GROUP, DSD_APP_CMD_TRUNK_GROUP_TOGGLE},
+        {DSD_KEY_PROVOICE_ESK, DSD_APP_CMD_PROVOICE_ESK_TOGGLE},
+        {DSD_KEY_PROVOICE_MODE, DSD_APP_CMD_PROVOICE_MODE_TOGGLE},
         {DSD_KEY_TCP_AUDIO, DSD_APP_CMD_TCP_CONNECT_AUDIO},
         {DSD_KEY_RIGCTL_CONN, DSD_APP_CMD_RIGCTL_CONNECT},
         {DSD_KEY_RETURN_CC, DSD_APP_CMD_RETURN_CC},
@@ -190,8 +190,8 @@ ncurses_handle_encoder_and_lockout_keys(dsd_opts* opts, dsd_state* state, int c)
         (void)dsd_app_command_action(opts->m17encoder == 1 ? DSD_APP_CMD_M17_TX_TOGGLE : DSD_APP_CMD_EH_TOGGLE_SLOT);
         return 1;
     }
-    if (c == '!' || c == '@') {
-        uint8_t slot = (uint8_t)((c == '@') ? 1 : 0);
+    if (c == DSD_KEY_LOCKOUT_SLOT1 || c == DSD_KEY_LOCKOUT_SLOT2) {
+        uint8_t slot = (uint8_t)((c == DSD_KEY_LOCKOUT_SLOT2) ? 1 : 0);
         (void)dsd_app_command_set_u8(DSD_APP_CMD_LOCKOUT_SLOT, slot);
         return 1;
     }
