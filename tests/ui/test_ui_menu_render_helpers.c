@@ -143,15 +143,6 @@ test_enabled_navigation_and_visible_index(void) {
     RenderCtx ctx = {0x02, "wide"};
     size_t count = sizeof ITEMS / sizeof ITEMS[0];
 
-    assert(ui_next_enabled(NULL, count, &ctx, 0, 1) == 0);
-    assert(ui_next_enabled(ITEMS, 0, &ctx, 0, 1) == 0);
-    assert(ui_next_enabled(ITEMS, count, &ctx, 0, 1) == 3);
-    assert(ui_next_enabled(ITEMS, count, &ctx, 3, 1) == 4);
-    assert(ui_next_enabled(ITEMS, count, &ctx, 0, -1) == 5);
-
-    RenderCtx none = {0, "wide"};
-    assert(ui_next_enabled(&ITEMS[1], 1, &none, 0, 1) == 0);
-
     assert(ui_visible_index_for_item(NULL, count, &ctx, 0) == 0);
     assert(ui_visible_index_for_item(ITEMS, count, &ctx, -1) == 0);
     assert(ui_visible_index_for_item(ITEMS, count, &ctx, (int)count) == 0);

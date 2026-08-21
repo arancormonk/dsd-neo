@@ -260,7 +260,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (folds the group-list and channel-map halves of an import back into one system by RR system id, sorts,
     marks the in-use one, formats a row; capped at `RR_LIBRARY_MAX`) and `rr_panel.c` presents it as the
     **Imported Systems** browser. `csv_picker.{h,c}` offers the same directory's files of one `kind` to the
-    "Import Channel Map/Group List CSV" menu items, with an "Enter a path..." row falling back to the plain
+    "Import channel map/group list CSV..." menu items, with an "Enter a path..." row falling back to the plain
     prompt. Both headers are terminal-private, both modules are filesystem-only (no curses, no app-control),
     and both are tested headless against a scratch directory (`UI_RR_LIBRARY`, `UI_CSV_PICKER`)
   - Frontend-facing controls and DSP/RTL metrics normally flow through app-control commands and

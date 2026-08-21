@@ -171,7 +171,6 @@ ui_scroll_follow_selection(int total, int page_rows, int top, int sel_pos) {
 int ui_is_enabled(const NcMenuItem* it, const void* ctx);
 int ui_is_selectable(const NcMenuItem* it, const void* ctx);
 int ui_submenu_has_visible(const NcMenuItem* items, size_t n, const void* ctx);
-int ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
 int ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir);
 int ui_visible_index_for_item(const NcMenuItem* items, size_t n, const void* ctx, int idx);
 

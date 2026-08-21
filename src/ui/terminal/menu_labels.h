@@ -19,10 +19,11 @@
 #include <stddef.h>
 
 // ---- Visibility/predicate functions ----
-bool io_always_on(const void* ctx);
 bool io_rtl_active(const void* ctx);
 bool trunk_enabled(const void* ctx);
 bool provoice_active(const void* ctx);
+bool const_view_active(const void* ctx);
+bool eye_view_active(const void* ctx);
 bool rr_feature_available(const void* ctx);
 bool rr_key_prompt_offered(const void* ctx);
 bool rr_imports_available(const void* ctx);
@@ -50,7 +51,6 @@ const char* lbl_dmr_le(const void* v, char* b, size_t n);
 const char* lbl_slot1(const void* v, char* b, size_t n);
 const char* lbl_slot2(const void* v, char* b, size_t n);
 const char* lbl_slotpref(const void* v, char* b, size_t n);
-const char* lbl_slots_on(const void* v, char* b, size_t n);
 const char* lbl_provoice_esk(const void* v, char* b, size_t n);
 const char* lbl_provoice_mode(const void* v, char* b, size_t n);
 const char* lbl_invert_all(const void* v, char* b, size_t n);

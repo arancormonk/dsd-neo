@@ -57,7 +57,6 @@ void act_rr_account_key(void* v);
 void act_rev_mute(void* v);
 void act_dmr_le(void* v);
 void act_slot_pref(void* v);
-void act_slots_on(void* v);
 
 // ---- Key import actions ----
 void act_keys_dec(void* v);
@@ -110,7 +109,6 @@ void io_select_call_alert_events(void* vctx);
 void io_toggle_cc_candidates(void* vctx);
 void io_enable_per_call_wav(void* vctx);
 void io_save_symbol_capture(void* vctx);
-void io_read_symbol_bin(void* vctx);
 void io_replay_last_symbol_bin(void* vctx);
 void io_stop_symbol_playback(void* vctx);
 void io_stop_symbol_saving(void* vctx);
@@ -123,8 +121,6 @@ void io_set_gain_ana(void* vctx);
 void io_toggle_monitor(void* vctx);
 void io_toggle_cosine(void* vctx);
 void io_set_input_volume(void* vctx);
-void io_input_vol_up(void* vctx);
-void io_input_vol_dn(void* vctx);
 void io_rigctl_config(void* vctx);
 
 // ---- Inversion actions ----
@@ -171,7 +167,6 @@ void act_toggle_ui_p25_callsign(void* v);
 
 // ---- RTL-SDR actions (USE_RADIO only) ----
 #ifdef USE_RADIO
-void rtl_enable(void* v);
 void rtl_restart(void* v);
 void rtl_set_dev(void* v);
 void rtl_set_freq(void* v);
@@ -192,10 +187,6 @@ void switch_to_rtl(void* vctx);
 void act_toggle_cq(void* v);
 void act_toggle_iqbal(void* v);
 void act_toggle_iq_dc(void* v);
-void act_iq_dc_k_up(void* v);
-void act_iq_dc_k_dn(void* v);
-void act_ted_gain_up(void* v);
-void act_ted_gain_dn(void* v);
 void act_toggle_dsp_panel(void* v);
 #endif
 

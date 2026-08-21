@@ -146,6 +146,15 @@ static const NcMenuItem KIND_ITEMS[] = {
     {.id = "kind2", .label = "Kind 2", .on_select = act_kind2},
 };
 
+/* The first and last rows opt out of the jump keys, the way the root menu's Quit
+   row does. Home and End must not park the highlight one Enter away from them. */
+static const NcMenuItem JUMP_GUARD_ITEMS[] = {
+    {.id = "jump0", .label = "Jump 0", .on_select = act_kind0, .no_jump = true},
+    {.id = "jump1", .label = "Jump 1", .on_select = act_kind1},
+    {.id = "jump.sep", .kind = NC_ITEM_SEPARATOR},
+    {.id = "jump2", .label = "Jump 2", .on_select = act_kind2, .no_jump = true},
+};
+
 static const NcMenuItem ROOT_ITEMS[] = {
     {.id = "root0", .label = "Root 0", .on_select = act_root0},
     {.id = "root1", .label = "Root 1", .is_enabled = item_disabled, .on_select = act_root0},
@@ -212,6 +221,9 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
     } else if (g_fixture == 3) {
         items = KIND_ITEMS;
         n = sizeof KIND_ITEMS / sizeof KIND_ITEMS[0];
+    } else if (g_fixture == 4) {
+        items = JUMP_GUARD_ITEMS;
+        n = sizeof JUMP_GUARD_ITEMS / sizeof JUMP_GUARD_ITEMS[0];
     }
     if (out_items) {
         *out_items = items;
@@ -332,21 +344,6 @@ ui_is_enabled(const NcMenuItem* it, const void* ctx) {
         return ui_submenu_has_visible(it->submenu, it->submenu_len, ctx);
     }
     return 1;
-}
-
-int
-ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
-    if (!items || n == 0) {
-        return 0;
-    }
-    int idx = from;
-    for (size_t i = 0; i < n; i++) {
-        idx = (idx + ((dir > 0) ? 1 : -1) + (int)n) % (int)n;
-        if (ui_is_enabled(&items[idx], ctx)) {
-            return idx;
-        }
-    }
-    return from;
 }
 
 int
@@ -618,6 +615,42 @@ main(void) {
     assert(ui_menu_is_open() == 1);
     assert(ui_menu_handle_key('Q', opts, state) == 0);
     assert(ui_menu_is_open() == 1);
+    assert(ui_menu_handle_key(27, opts, state) == 1);
+    assert(ui_menu_is_open() == 0);
+
+    /* A row that opted out of the jump keys is reachable only by stepping onto it. */
+    g_fixture = 4;
+    reset_capture();
+    reset_modal_capture();
+    ui_menu_open_async(opts, state);
+    assert(ui_menu_is_open() == 1);
+
+    /* The frame does not even open on the guarded first row. */
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_END, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_HOME, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind1");
+
+    /* The guard is against a single keystroke, not against the row: arrows still
+       land on it, across the separator and around the wrap. */
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind2");
+
+    reset_capture();
+    assert(ui_menu_handle_key(KEY_DOWN, opts, state) == 1);
+    assert(ui_menu_handle_key('\r', opts, state) == 1);
+    assert_last_action("kind0");
+
     assert(ui_menu_handle_key(27, opts, state) == 1);
     assert(ui_menu_is_open() == 0);
 

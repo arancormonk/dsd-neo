@@ -163,7 +163,6 @@ test_predicates(void) {
     UiCtx ctx;
     reset_fixture(&opts, &state, &ctx);
 
-    rc |= expect_int("always-on predicate", io_always_on(NULL), 1);
     rc |= expect_int("rtl active null ctx", io_rtl_active(NULL), 0);
     opts.audio_in_type = AUDIO_IN_RTL;
     rc |= expect_int("rtl active input", io_rtl_active(&ctx), 1);
@@ -193,10 +192,10 @@ test_decoder_labels(void) {
     UiCtx ctx;
     reset_fixture(&opts, &state, &ctx);
 
-    rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode [Auto]");
+    rc |= expect_str("decode mode auto", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [Auto]");
     g_infer_mode = DSDCFG_MODE_DMR;
-    rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode [DMR]");
-    rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode [Auto]");
+    rc |= expect_str("decode mode dmr", lbl_decode_mode(&ctx, b, sizeof(b)), "Mode... [DMR]");
+    rc |= expect_str("decode mode null ctx is auto", lbl_decode_mode(NULL, b, sizeof(b)), "Mode... [Auto]");
 
     state.rf_mod = 1;
     rc |= expect_str("modulation from live state", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [QPSK]");
@@ -206,11 +205,23 @@ test_decoder_labels(void) {
     opts.mod_c4fm = 1;
     rc |= expect_str("modulation falls back to opts", lbl_modulation(&ctx, b, sizeof(b)), "Modulation [C4FM]");
 
+    /* The lock reads which modulation is in force, not opts.mod_p25p2_c4fm: the toggle
+       behind this row clears that flag on every press and says C4FM through rf_mod. */
     rc |= expect_str("p2 lock off", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)), "P25 Phase 2 modulation lock [Off]");
     opts.mod_p25p2_profile_lock = 1;
+    state.rf_mod = 1;
     rc |= expect_str("p2 lock qpsk", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)), "P25 Phase 2 modulation lock [QPSK]");
+    state.rf_mod = 0;
+    rc |= expect_str("p2 lock c4fm after second press", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [C4FM]");
+    /* The CLI's -f3 spelling sets the flag without the profile lock; still a lock. */
+    opts.mod_p25p2_profile_lock = 0;
     opts.mod_p25p2_c4fm = 1;
-    rc |= expect_str("p2 lock c4fm", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)), "P25 Phase 2 modulation lock [C4FM]");
+    state.rf_mod = 1;
+    rc |= expect_str("p2 lock c4fm from cli flag", lbl_p25p2_mod_lock(&ctx, b, sizeof(b)),
+                     "P25 Phase 2 modulation lock [C4FM]");
+    opts.mod_p25p2_c4fm = 0;
+    state.rf_mod = 7;
 
     opts.use_lpf = 1;
     opts.use_hpf = 0;
@@ -240,14 +251,6 @@ test_decoder_labels(void) {
     rc |= expect_str("slot pref two", lbl_slotpref(&ctx, b, sizeof(b)), "Slot preference... [2]");
     opts.slot_preference = 5;
     rc |= expect_str("slot pref auto", lbl_slotpref(&ctx, b, sizeof(b)), "Slot preference... [Auto]");
-    opts.slot1_on = 1;
-    opts.slot2_on = 1;
-    rc |= expect_str("slots both", lbl_slots_on(&ctx, b, sizeof(b)), "Synth slots... [Both]");
-    opts.slot2_on = 0;
-    rc |= expect_str("slot one", lbl_slots_on(&ctx, b, sizeof(b)), "Synth slots... [1]");
-    opts.slot1_on = 0;
-    rc |= expect_str("slots off", lbl_slots_on(&ctx, b, sizeof(b)), "Synth slots... [Off]");
-
     state.esk_mask = 0xA0;
     state.ea_mode = 0;
     rc |= expect_str("provoice esk on", lbl_provoice_esk(&ctx, b, sizeof(b)), "ProVoice ESK mask [On]");
@@ -549,8 +552,13 @@ test_display_and_advanced_labels(void) {
     opts.frontend_display.fsk_hist_view = 0;
     opts.frontend_display.spectrum_view = 1;
     rc |= expect_str("constellation on", lbl_vis_const(&ctx, b, sizeof(b)), "Constellation [On]");
-    rc |= expect_str("constellation norm off", lbl_vis_const_norm(&ctx, b, sizeof(b)),
-                     "Constellation normalization [Off]");
+    /* Two named modes, not on/off: 0 is radial p99 and is still normalizing. */
+    rc |= expect_str("constellation norm radial", lbl_vis_const_norm(&ctx, b, sizeof(b)),
+                     "Constellation normalization [Radial]");
+    opts.frontend_display.const_norm_mode = 1;
+    rc |= expect_str("constellation norm unit", lbl_vis_const_norm(&ctx, b, sizeof(b)),
+                     "Constellation normalization [Unit circle]");
+    opts.frontend_display.const_norm_mode = 0;
     rc |= expect_str("eye on", lbl_vis_eye(&ctx, b, sizeof(b)), "Eye diagram [On]");
     rc |= expect_str("eye unicode on", lbl_vis_eye_unicode(&ctx, b, sizeof(b)), "Eye diagram Unicode [On]");
     rc |= expect_str("eye color off", lbl_vis_eye_color(&ctx, b, sizeof(b)), "Eye diagram color [Off]");
@@ -567,6 +575,9 @@ test_display_and_advanced_labels(void) {
     rc |= expect_str("history slot 1", lbl_history_slot(&ctx, b, sizeof(b)), "Slot [1]");
     state.eh_slot = 1;
     rc |= expect_str("history slot 2", lbl_history_slot(&ctx, b, sizeof(b)), "Slot [2]");
+    /* The third state is the startup default, and used to read exactly like slot 1. */
+    state.eh_slot = 2;
+    rc |= expect_str("history slot both", lbl_history_slot(&ctx, b, sizeof(b)), "Slot [1+2]");
 
     g_env_double_has_value = 1;
     g_env_double_value = -22.25;

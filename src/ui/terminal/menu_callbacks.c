@@ -362,22 +362,6 @@ cb_slot_pref(void* v, int ok, int p) {
     }
 }
 
-void
-cb_slots_on(void* v, int ok, int m) {
-    const UiCtx* c = mutable_ui_ctx_from_callback(v);
-    if (!c) {
-        return;
-    }
-    if (ok) {
-        int adjusted = 0;
-        int32_t mask = (int32_t)clamp_int_with_notice("Slot mask", m, 0, 3, &adjusted);
-        (void)dsd_app_command_set_i32(DSD_APP_CMD_SLOTS_ONOFF_SET, mask);
-        if (!adjusted) {
-            ui_statusf("Applying slot mask: %d", (int)mask);
-        }
-    }
-}
-
 // ---- Keystream callbacks ----
 
 void
@@ -682,18 +666,6 @@ cb_io_save_symbol_capture(void* v, const char* path) {
 }
 
 void
-cb_io_read_symbol_bin(void* v, const char* path) {
-    const UiCtx* c = mutable_ui_ctx_from_callback(v);
-    if (!c) {
-        return;
-    }
-    if (path && *path) {
-        (void)dsd_app_command_set_string(DSD_APP_CMD_SYMBOL_IN_OPEN, path);
-        ui_statusf("Symbol input open requested");
-    }
-}
-
-void
 cb_udp_out_port(void* u, int ok, int port) {
     UdpOutCtx* ctx = (UdpOutCtx*)u;
     if (!ctx) {
@@ -868,13 +840,20 @@ cb_switch_to_symbol(void* v, const char* path) {
         return;
     }
     if (path && *path) {
-        size_t len = strlen(path);
-        if (len >= 4 && dsd_strcasecmp(path + len - 4, ".bin") == 0) {
-            (void)dsd_app_command_set_string(DSD_APP_CMD_SYMBOL_IN_OPEN, path);
-            ui_statusf("Symbol input open requested");
-        } else {
+        /* The stream types are the named exceptions; everything else is a dibit
+           capture. Testing for ".bin" instead sent any capture the operator had
+           named without that suffix -- nothing appends it, including the "Record
+           symbols..." prompt -- to the symbol-stream reader, which parses it as a
+           different format and decodes nothing, with no error. */
+        const size_t len = strlen(path);
+        const int is_stream = (len >= 4 && dsd_strcasecmp(path + len - 4, ".raw") == 0)
+                              || (len >= 4 && dsd_strcasecmp(path + len - 4, ".sym") == 0);
+        if (is_stream) {
             (void)dsd_app_command_set_string(DSD_APP_CMD_INPUT_SYM_STREAM_SET, path);
             ui_statusf("Symbol stream input requested");
+        } else {
+            (void)dsd_app_command_set_string(DSD_APP_CMD_SYMBOL_IN_OPEN, path);
+            ui_statusf("Symbol input open requested");
         }
     }
 }

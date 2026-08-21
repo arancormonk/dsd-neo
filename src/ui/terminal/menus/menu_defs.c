@@ -71,11 +71,16 @@ ui_menu_get_main_items(const NcMenuItem** out_items, size_t* out_n, UiCtx* ctx) 
                                 .submenu = ADV_MENU_ITEMS,
                                 .submenu_len = ADV_MENU_ITEMS_LEN};
         items[9] = (NcMenuItem){.id = "main.sep", .kind = NC_ITEM_SEPARATOR};
+        // The rule above is what the eye reads; `no_jump` is what stops the
+        // highlight. Without it End lands here and the next Enter quits a running
+        // decode -- two keystrokes, no confirmation. Arrows, Page Down and the 'q'
+        // hotkey still reach it; only the jump to the end of the list does not.
         items[10] = (NcMenuItem){.id = "exit",
                                  .label = "Quit DSD-neo",
                                  .help = "Quit the application.",
                                  .hotkey = "q",
-                                 .on_select = act_exit};
+                                 .on_select = act_exit,
+                                 .no_jump = true};
         inited = 1;
     }
     if (out_items) {

@@ -37,12 +37,6 @@ onoff(int on) {
 
 // ---- Visibility/predicate functions ----
 
-bool
-io_always_on(const void* ctx) {
-    (void)ctx;
-    return true;
-}
-
 static int
 menu_audio_in_is_soapy(const dsd_opts* opts) {
     const char* dev = opts ? opts->audio_in_dev : NULL;
@@ -74,6 +68,22 @@ bool
 provoice_active(const void* ctx) {
     const UiCtx* c = (const UiCtx*)ctx;
     return c && c->opts && c->opts->frame_provoice == 1;
+}
+
+/* The commands behind the constellation and eye sub-options refuse to do anything
+   unless their parent view is up (DSD_APP_CMD_CONST_NORM_TOGGLE,
+   DSD_APP_CMD_EYE_UNICODE_TOGGLE, DSD_APP_CMD_EYE_COLOR_TOGGLE all test it). Without
+   these gates the rows are selectable and Enter is a silent no-op. */
+bool
+const_view_active(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    return c && c->opts && c->opts->frontend_display.constellation == 1;
+}
+
+bool
+eye_view_active(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    return c && c->opts && c->opts->frontend_display.eye_view == 1;
 }
 
 bool
@@ -194,7 +204,8 @@ const char*
 lbl_decode_mode(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     dsdneoUserDecodeMode mode = (c && c->opts) ? dsd_infer_decode_mode_preset(c->opts) : DSDCFG_MODE_AUTO;
-    DSD_SNPRINTF(b, n, "Mode [%s]", dsd_decode_mode_display_name(mode));
+    /* "..." because the row opens a picker; without it the grammar promises a toggle. */
+    DSD_SNPRINTF(b, n, "Mode... [%s]", dsd_decode_mode_display_name(mode));
     return b;
 }
 
@@ -216,8 +227,20 @@ const char*
 lbl_p25p2_mod_lock(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     const char* s = "Off";
-    if (c && c->opts && c->opts->mod_p25p2_profile_lock) {
-        s = c->opts->mod_p25p2_c4fm ? "C4FM" : "QPSK";
+    /* Which modulation the lock pinned, read from the modulation itself. Reading
+       opts->mod_p25p2_c4fm instead reported QPSK forever: ui_handle_mod_p2_toggle()
+       -- the only thing this row and its 'M' hotkey run -- clears that flag on every
+       press and expresses the choice through mod_qpsk/rf_mod. The flag is a CLI-only
+       spelling of "P25p2 C4FM at 6000 sps", so it still counts as a lock. */
+    if (c && c->opts && (c->opts->mod_p25p2_profile_lock || c->opts->mod_p25p2_c4fm)) {
+        int qpsk = (c->opts->mod_qpsk != 0);
+        if (c->state && c->state->rf_mod >= 0 && c->state->rf_mod <= 2) {
+            qpsk = (c->state->rf_mod == 1);
+        }
+        if (c->opts->mod_p25p2_c4fm) {
+            qpsk = 0;
+        }
+        s = qpsk ? "QPSK" : "C4FM";
     }
     DSD_SNPRINTF(b, n, "P25 Phase 2 modulation lock [%s]", s);
     return b;
@@ -285,16 +308,6 @@ lbl_slotpref(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     const char* now = (c->opts->slot_preference == 0) ? "1" : (c->opts->slot_preference == 1) ? "2" : "Auto";
     DSD_SNPRINTF(b, n, "Slot preference... [%s]", now);
-    return b;
-}
-
-const char*
-lbl_slots_on(const void* v, char* b, size_t n) {
-    const UiCtx* c = (const UiCtx*)v;
-    const char* now = (c->opts->slot1_on && c->opts->slot2_on)
-                          ? "Both"
-                          : (c->opts->slot1_on ? "1" : (c->opts->slot2_on ? "2" : "Off"));
-    DSD_SNPRINTF(b, n, "Synth slots... [%s]", now);
     return b;
 }
 
@@ -978,8 +991,11 @@ lbl_vis_const(const void* v, char* b, size_t n) {
 const char*
 lbl_vis_const_norm(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    DSD_SNPRINTF(b, n, "Constellation normalization [%s]",
-                 onoff(c && c->opts && c->opts->frontend_display.const_norm_mode));
+    /* Two normalizations, not on/off: 0 is radial p99, which is the default and is
+       still normalizing. "Off" said the opposite, and disagreed with the main screen
+       ("Norm: radial/unit") and the visualizer's own legend. */
+    const int unit = (c && c->opts && c->opts->frontend_display.const_norm_mode) ? 1 : 0;
+    DSD_SNPRINTF(b, n, "Constellation normalization [%s]", unit ? "Unit circle" : "Radial");
     return b;
 }
 
@@ -1031,8 +1047,13 @@ lbl_history_mode(const void* v, char* b, size_t n) {
 const char*
 lbl_history_slot(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
-    const int slot = (c && c->state && c->state->eh_slot == 1) ? 2 : 1;
-    DSD_SNPRINTF(b, n, "Slot [%d]", slot);
+    /* Three states, not two: ui_handle_eh_toggle_slot() cycles 0 -> 1 -> 2 -> 0 and
+       the session starts on 2. Naming 2 "1" made the merged view read exactly like
+       slot 1, so cycling off it looked as if the row had done nothing. Matches what
+       the main screen's history header prints. */
+    const unsigned slot = (c && c->state) ? (unsigned)c->state->eh_slot : 2U;
+    const char* s = (slot == 0U) ? "1" : ((slot == 1U) ? "2" : "1+2");
+    DSD_SNPRINTF(b, n, "Slot [%s]", s);
     return b;
 }
 

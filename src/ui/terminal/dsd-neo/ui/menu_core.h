@@ -53,6 +53,11 @@ struct NcMenuItem {
     size_t submenu_len;        // length of submenu
     const char* hotkey;        // main-screen key(s) for the same action, e.g. "t", "+ -", "P/p"; NULL = none
     NcMenuItemKind kind;       // NC_ITEM_ACTION unless set
+    // The highlight never arrives here on its own: Home, End and the highlight a
+    // frame opens with all skip the row. Arrows and paging still reach it. Set it
+    // on a row that would be destructive to land on with Enter already under the
+    // finger -- one keystroke should not be able to park there.
+    bool no_jump;
 };
 
 /**

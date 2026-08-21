@@ -301,6 +301,8 @@
     X(lbl_window_freeze)
 
 #define AUDIT_PREDICATES(X)                                                                                            \
+    X(const_view_active)                                                                                               \
+    X(eye_view_active)                                                                                                 \
     X(io_rtl_active)                                                                                                   \
     X(is_not_qpsk)                                                                                                     \
     X(is_ted_allowed)                                                                                                  \

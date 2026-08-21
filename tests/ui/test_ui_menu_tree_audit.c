@@ -73,12 +73,29 @@ typedef struct {
     char hotkey[8];
 } HotkeyRow;
 
+/* Which keys a hotkey cell actually names. A two-key cell is "<key><sep><key>", so
+   the separator at index 1 is not itself a binding -- and ' ' and '/' ARE bound keys
+   (replay, analog gain down), so scanning the raw cell reported them covered by rows
+   that do not bind them, and deleting the row that did left this audit green. */
+static int
+hotkey_cell_binds(const HotkeyRow* row, int key) {
+    if (strcmp(row->hotkey, "Space") == 0) {
+        return key == ' ';
+    }
+    const size_t len = strlen(row->hotkey);
+    if (len == 3) {
+        return row->hotkey[0] == (char)key || row->hotkey[2] == (char)key;
+    }
+    return len == 1 && row->hotkey[0] == (char)key;
+}
+
 static const HotkeyRow k_hotkeys[] = {
     {"exit", {DSD_KEY_QUIT, 0}},
     {"input.volume", {DSD_KEY_RTL_VOL_CYCLE, 0}},
     {"input.invert", {DSD_KEY_INVERT, 0}},
     {"src.tcp", {DSD_KEY_TCP_AUDIO, 0}},
     {"rtl.ppm", {DSD_KEY_PPM_DOWN, ' ', DSD_KEY_PPM_UP, 0}},
+    {"rtl.vol", {DSD_KEY_RTL_VOL_CYCLE, 0}},
     {"dec.mod", {DSD_KEY_MOD_TOGGLE, 0}},
     {"dec.p2lock", {DSD_KEY_MOD_P2, 0}},
     {"dec.crc", {DSD_KEY_AGGR_SYNC, 0}},
@@ -337,11 +354,7 @@ audit_hotkeys(void) {
         const int key = k_command_keys[k];
         int covered = 0;
         for (size_t t = 0; t < table_n && !covered; t++) {
-            if (strcmp(k_hotkeys[t].hotkey, "Space") == 0) {
-                covered = (key == ' ');
-            } else {
-                covered = (strchr(k_hotkeys[t].hotkey, key) != NULL);
-            }
+            covered = hotkey_cell_binds(&k_hotkeys[t], key);
         }
         for (size_t e = 0; e < sizeof k_keys_without_rows / sizeof k_keys_without_rows[0] && !covered; e++) {
             covered = (k_keys_without_rows[e].key == key);

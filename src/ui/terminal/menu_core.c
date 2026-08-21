@@ -60,18 +60,36 @@ ui_frame_items_rows(const UiMenuFrame* f) {
 }
 
 /* The highlight only ever rests on selectable rows (enabled actions); status rows
-   and separators are drawn but stepped over. */
+   and separators are drawn but stepped over.
+
+   A jump target is narrower still: it is where the highlight may arrive without the
+   operator having stepped onto the row -- Home, End, and the row a frame opens on. A
+   `no_jump` row is left out of that set, so no single keystroke can park Enter on it.
+   The two helpers below answer "where may the highlight land", which is why the flag
+   belongs in them and not in the arrow and paging walks -- those are how you
+   deliberately reach such a row. */
+static int
+ui_is_jump_target(const NcMenuItem* it, const UiCtx* ctx) {
+    return (it && !it->no_jump && ui_is_selectable(it, ctx)) ? 1 : 0;
+}
+
 static int
 ui_first_selectable_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
     if (!items || n == 0) {
         return 0;
     }
+    int fallback = -1;
     for (size_t i = 0; i < n; i++) {
-        if (ui_is_selectable(&items[i], ctx)) {
+        if (ui_is_jump_target(&items[i], ctx)) {
             return (int)i;
         }
+        if (fallback < 0 && ui_is_selectable(&items[i], ctx)) {
+            fallback = (int)i;
+        }
     }
-    return 0;
+    /* Every selectable row opted out, so the guard has nothing left to protect:
+       land on a real row rather than on a rule the highlight cannot show. */
+    return (fallback >= 0) ? fallback : 0;
 }
 
 static int
@@ -79,12 +97,16 @@ ui_last_selectable_idx(const NcMenuItem* items, size_t n, const UiCtx* ctx) {
     if (!items || n == 0) {
         return 0;
     }
+    int fallback = -1;
     for (size_t i = n; i > 0; i--) {
-        if (ui_is_selectable(&items[i - 1], ctx)) {
+        if (ui_is_jump_target(&items[i - 1], ctx)) {
             return (int)(i - 1);
         }
+        if (fallback < 0 && ui_is_selectable(&items[i - 1], ctx)) {
+            fallback = (int)(i - 1);
+        }
     }
-    return 0;
+    return (fallback >= 0) ? fallback : 0;
 }
 
 static int

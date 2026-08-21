@@ -153,7 +153,13 @@ ui_is_enabled(const NcMenuItem* it, const void* ctx) {
 }
 
 int
-ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
+ui_is_selectable(const NcMenuItem* it, const void* ctx) {
+    (void)ctx;
+    return it ? 1 : 0;
+}
+
+int
+ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
     (void)ctx;
     if (!items || n == 0) {
         return 0;
@@ -166,17 +172,6 @@ ui_next_enabled(const NcMenuItem* items, size_t n, const void* ctx, int from, in
         idx = (int)n - 1;
     }
     return idx;
-}
-
-int
-ui_is_selectable(const NcMenuItem* it, const void* ctx) {
-    (void)ctx;
-    return it ? 1 : 0;
-}
-
-int
-ui_next_selectable(const NcMenuItem* items, size_t n, const void* ctx, int from, int dir) {
-    return ui_next_enabled(items, n, ctx, from, dir);
 }
 
 int

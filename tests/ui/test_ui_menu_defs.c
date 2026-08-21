@@ -128,8 +128,14 @@ test_main_menu_contract(void) {
     rc |= expect_menu_item(&items[7], "main.config", "Config", CONFIG_MENU_ITEMS, CONFIG_MENU_ITEMS_LEN);
     rc |= expect_menu_item(&items[8], "main.advanced", "Advanced", ADV_MENU_ITEMS, ADV_MENU_ITEMS_LEN);
 
-    /* Quit sits alone below a rule so End + Enter is never an accident. */
+    /* Quit sits alone below a rule, and opts out of the jump keys so that End +
+       Enter is never an accident -- the rule is what the eye sees, `no_jump` is
+       what stops the highlight. */
     rc |= expect_true("separator before quit", items[9].kind == NC_ITEM_SEPARATOR);
+    rc |= expect_true("quit skipped by the jump keys", items[10].no_jump);
+    for (size_t i = 0; i < 10U; i++) {
+        rc |= expect_true("only quit opts out of the jump keys", !items[i].no_jump);
+    }
     rc |= expect_true("separator has no action", items[9].on_select == NULL && items[9].submenu == NULL);
     rc |= expect_str_eq("exit id", items[10].id, "exit");
     rc |= expect_str_eq("exit label", items[10].label, "Quit DSD-neo");

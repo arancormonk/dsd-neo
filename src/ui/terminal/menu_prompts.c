@@ -1167,7 +1167,8 @@ ui_chooser_finish(int sel) {
 // Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
+ui_chooser_start_at(const char* title, const char* const* items, int count, int initial_sel, ui_chooser_done_fn on_done,
+                    void* user_ctx) {
     if (!items || count <= 0) {
         ui_chooser_close();
         if (on_done) {
@@ -1179,7 +1180,7 @@ ui_chooser_start(const char* title, const char* const* items, int count, ui_choo
     g_chooser.title = title;
     g_chooser.items = items;
     g_chooser.count = count;
-    g_chooser.sel = 0;
+    g_chooser.sel = (initial_sel > 0 && initial_sel < count) ? initial_sel : 0;
     g_chooser.top = 0;
     g_chooser.page_rows = 0;
     g_chooser.on_done = on_done;
@@ -1188,6 +1189,11 @@ ui_chooser_start(const char* title, const char* const* items, int count, ui_choo
         delwin(g_chooser.win);
         g_chooser.win = NULL;
     }
+}
+
+void
+ui_chooser_start(const char* title, const char* const* items, int count, ui_chooser_done_fn on_done, void* user_ctx) {
+    ui_chooser_start_at(title, items, count, 0, on_done, user_ctx);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed

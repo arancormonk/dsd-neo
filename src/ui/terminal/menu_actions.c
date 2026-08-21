@@ -36,12 +36,6 @@
 #include "menu_prompts.h"
 #include "rr_panel.h"
 
-#ifdef USE_RADIO
-#endif
-
-#if defined(__SSE__) || defined(__SSE2__)
-#endif
-
 // ---- Main menu actions ----
 
 void
@@ -447,13 +441,6 @@ act_slot_pref(void* v) {
     ui_prompt_open_int_async("Slot 1 or 2", c->opts->slot_preference + 1, cb_slot_pref, c);
 }
 
-void
-act_slots_on(void* v) {
-    UiCtx* c = (UiCtx*)v;
-    int m = (c->opts->slot1_on ? 1 : 0) | (c->opts->slot2_on ? 2 : 0);
-    ui_prompt_open_int_async("Slots mask (0..3)", m, cb_slots_on, c);
-}
-
 // ---- Key import actions ----
 
 void
@@ -813,12 +800,6 @@ io_save_symbol_capture(void* vctx) {
 }
 
 void
-io_read_symbol_bin(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    ui_prompt_open_string_async("Enter Symbol Capture Filename", NULL, 1024, cb_io_read_symbol_bin, c);
-}
-
-void
 io_replay_last_symbol_bin(void* vctx) {
     UNUSED(vctx);
     (void)dsd_app_command_action(DSD_APP_CMD_REPLAY_LAST);
@@ -985,30 +966,6 @@ io_set_input_volume(void* vctx) {
         m = 16;
     }
     ui_prompt_open_int_async("Input Volume Multiplier (1..16)", m, cb_input_vol, c);
-}
-
-void
-io_input_vol_up(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    int m = c->opts->input_volume_multiplier;
-    if (m < 16) {
-        m++;
-    }
-    int32_t v = m;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_INPUT_VOL_SET, v);
-    ui_statusf("Input Volume requested: %dX", m);
-}
-
-void
-io_input_vol_dn(void* vctx) {
-    UiCtx* c = (UiCtx*)vctx;
-    int m = c->opts->input_volume_multiplier;
-    if (m > 1) {
-        m--;
-    }
-    int32_t v = m;
-    (void)dsd_app_command_set_i32(DSD_APP_CMD_INPUT_VOL_SET, v);
-    ui_statusf("Input Volume requested: %dX", m);
 }
 
 void
@@ -1252,12 +1209,6 @@ act_toggle_ui_p25_callsign(void* v) {
 #ifdef USE_RADIO
 
 void
-rtl_enable(void* v) {
-    UNUSED(v);
-    (void)dsd_app_command_action(DSD_APP_CMD_RTL_ENABLE_INPUT);
-}
-
-void
 rtl_restart(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
@@ -1372,48 +1323,6 @@ act_toggle_iq_dc(void* v) {
 }
 
 void
-act_iq_dc_k_up(void* v) {
-    UNUSED(v);
-    dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA, .a = +1};
-    (void)dsd_app_command_dsp_op(&p);
-}
-
-void
-act_iq_dc_k_dn(void* v) {
-    UNUSED(v);
-    dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_IQ_DC_K_DELTA, .a = -1};
-    (void)dsd_app_command_dsp_op(&p);
-}
-
-void
-act_ted_gain_up(void* v) {
-    UNUSED(v);
-    dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
-    float g = metrics.ted_gain;
-    int g_milli = (int)(g * 1000.0f + 0.5f);
-    if (g_milli < 500) {
-        g_milli += 5;
-    }
-    dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TED_GAIN_SET, .a = g_milli};
-    (void)dsd_app_command_dsp_op(&p);
-}
-
-void
-act_ted_gain_dn(void* v) {
-    UNUSED(v);
-    dsd_frontend_metrics metrics;
-    (void)dsd_app_frontend_get_metrics(&metrics);
-    float g = metrics.ted_gain;
-    int g_milli = (int)(g * 1000.0f + 0.5f);
-    if (g_milli > 10) {
-        g_milli -= 5;
-    }
-    dsd_app_dsp_payload p = {.op = DSD_APP_DSP_OP_TED_GAIN_SET, .a = g_milli};
-    (void)dsd_app_command_dsp_op(&p);
-}
-
-void
 act_toggle_dsp_panel(void* v) {
     UNUSED(v);
     (void)dsd_app_command_action(DSD_APP_CMD_UI_SHOW_DSP_PANEL_TOGGLE);
@@ -1481,7 +1390,20 @@ static const dsdneoUserDecodeMode k_decode_mode_choices[] = {
     DSDCFG_MODE_DSTAR,    DSDCFG_MODE_EDACS_PV, DSDCFG_MODE_DPMR,   DSDCFG_MODE_M17,    DSDCFG_MODE_ANALOG,
 };
 #define DECODE_MODE_CHOICE_COUNT (sizeof k_decode_mode_choices / sizeof k_decode_mode_choices[0])
+/* Filled once: every entry is a pointer into the runtime's own static name table,
+   so there is nothing to refresh between opens. */
 static const char* g_decode_mode_labels[DECODE_MODE_CHOICE_COUNT];
+static int g_decode_mode_labels_ready;
+
+static int
+decode_mode_choice_index(dsdneoUserDecodeMode mode) {
+    for (size_t i = 0; i < DECODE_MODE_CHOICE_COUNT; i++) {
+        if (k_decode_mode_choices[i] == mode) {
+            return (int)i;
+        }
+    }
+    return 0;
+}
 
 static void
 chooser_done_decode_mode(void* u, int sel) {
@@ -1493,21 +1415,36 @@ chooser_done_decode_mode(void* u, int sel) {
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)k_decode_mode_choices[sel]);
 }
 
+// cppcheck-suppress-begin constParameterPointer
 void
 act_decode_mode(void* v) {
-    UNUSED(v);
-    for (size_t i = 0; i < DECODE_MODE_CHOICE_COUNT; i++) {
-        g_decode_mode_labels[i] = dsd_decode_mode_display_name(k_decode_mode_choices[i]);
+    const UiCtx* c = (const UiCtx*)v;
+    if (!g_decode_mode_labels_ready) {
+        for (size_t i = 0; i < DECODE_MODE_CHOICE_COUNT; i++) {
+            g_decode_mode_labels[i] = dsd_decode_mode_display_name(k_decode_mode_choices[i]);
+        }
+        g_decode_mode_labels_ready = 1;
     }
-    ui_chooser_start("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT, chooser_done_decode_mode,
-                     NULL);
+    /* Opened on the mode in effect, not on the first row. The first row is Auto,
+       and Auto is the one choice the command layer never treats as a no-op: it
+       re-enables every protocol and resets the modulation, so a stray second Enter
+       would drag a settled QPSK session back to C4FM. */
+    const dsdneoUserDecodeMode now = (c && c->opts) ? dsd_infer_decode_mode_preset(c->opts) : DSDCFG_MODE_AUTO;
+    ui_chooser_start_at("Decoder mode", g_decode_mode_labels, (int)DECODE_MODE_CHOICE_COUNT,
+                        decode_mode_choice_index(now), chooser_done_decode_mode, NULL);
 }
+
+// cppcheck-suppress-end constParameterPointer
 
 #ifdef USE_RADIO
 // ---- RTL DSP values entered as a number rather than stepped ----
 
-static int g_iq_dc_k_initial;
-
+/* The DSP layer only offers a DELTA op for k, so an absolute value typed into the
+   prompt has to be turned into one. The baseline is read here, in the callback,
+   rather than snapshotted when the prompt opened: the prompt is modeless, and the
+   queue handler applies the delta to whatever k is live by the time it runs, so a
+   stale baseline (a stream restart or a config apply in between) lands on a k the
+   operator never typed. */
 static void
 cb_iq_dc_k(void* u, int ok, int k) {
     UNUSED(u);
@@ -1520,7 +1457,9 @@ cb_iq_dc_k(void* u, int ok, int k) {
     if (k > 15) {
         k = 15;
     }
-    const int delta = k - g_iq_dc_k_initial;
+    dsd_frontend_metrics metrics;
+    (void)dsd_app_frontend_get_metrics(&metrics);
+    const int delta = k - metrics.iq_dc_shift_k;
     if (delta == 0) {
         return;
     }
@@ -1533,18 +1472,19 @@ act_iq_dc_k_prompt(void* v) {
     UNUSED(v);
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
-    g_iq_dc_k_initial = metrics.iq_dc_shift_k;
-    ui_prompt_open_int_async("IQ DC shift k (6..15)", g_iq_dc_k_initial, cb_iq_dc_k, NULL);
+    ui_prompt_open_int_async("IQ DC shift k (6..15)", metrics.iq_dc_shift_k, cb_iq_dc_k, NULL);
 }
 
+/* 10, not 1: DSD_APP_DSP_OP_TED_GAIN_SET clamps there, so a lower bound of 1 in
+   the prompt title accepted 1..9 and then silently applied 10. */
 static void
 cb_ted_gain(void* u, int ok, int milli) {
     UNUSED(u);
     if (!ok) {
         return;
     }
-    if (milli < 1) {
-        milli = 1;
+    if (milli < 10) {
+        milli = 10;
     }
     if (milli > 500) {
         milli = 500;
@@ -1559,6 +1499,6 @@ act_ted_gain_prompt(void* v) {
     dsd_frontend_metrics metrics;
     (void)dsd_app_frontend_get_metrics(&metrics);
     const int milli = (int)(metrics.ted_gain * 1000.0f + 0.5f);
-    ui_prompt_open_int_async("CQPSK timing gain (x0.001, 1..500)", milli, cb_ted_gain, NULL);
+    ui_prompt_open_int_async("CQPSK timing gain (x0.001, 10..500)", milli, cb_ted_gain, NULL);
 }
 #endif /* USE_RADIO */

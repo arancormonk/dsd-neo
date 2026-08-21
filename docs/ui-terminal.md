@@ -28,6 +28,10 @@ Controls:
 `q` does not back out of the menu, its pickers, the help overlay or the RadioReference panel. It quits the program, and only from the main screen — inside the menu it is
 inert, so one keypress too many after the menu closes cannot exit the decoder.
 
+For the same reason `End` stops on `Advanced` rather than on `Quit DSD-neo`: the jump keys never park the highlight
+on the quit row, so `End` followed by `Enter` cannot end a running decode. Reaching it takes a deliberate `Down`,
+`PageDown`, or the `q` hotkey.
+
 Rows come in three kinds:
 
 - **Action rows** are the selectable ones: they run something, open a prompt (a trailing `...`), or open a
@@ -42,8 +46,10 @@ How to read a row:
 - A trailing `...` means the row opens a prompt or picker; the current value sits in the brackets:
   `Hangtime... [1.0 s]`.
 - A key on the right edge of the row is the main-screen hotkey for the same action: `Trunking [On]` carries `t`,
-  `Digital gain... [auto]` carries `+ -`. Every hotkey in the tables below appears on its menu row, so the menu
-  is the place to learn them.
+  `Digital gain... [auto]` carries `+ -`. Nearly every hotkey in the tables below appears on its menu row, so the
+  menu is the place to learn them. The exceptions are the shifted aliases (`X`, `O`) and the four modifiers that
+  adjust a visualizer rather than toggle it (`<` `>` for the constellation gate, `,` `.` for the FFT size); those
+  are named in their row's help text instead.
 
 The root is the receiver's signal chain — Input, Decoder, Trunking, Encryption, Audio, Recording & logs — then
 Display, then housekeeping. Put another way: to find a setting, ask which signal it acts on.
@@ -75,7 +81,7 @@ Main Menu
 │       ├── PPM correction... [0]                { }
 │       ├── Bandwidth... [48 kHz]
 │       ├── Squelch (dB)...
-│       ├── Volume multiplier... [1]
+│       ├── Volume multiplier... [1]             v
 │       ├── Auto-PPM [On]
 │       ├── Tuner autogain [On]
 │       ├── Bias tee [Off]
@@ -101,7 +107,7 @@ Main Menu
 │           ├── CQPSK timing gain... [75 x0.001]     (CQPSK path only)
 │           └── CQPSK timing bias (EMA) <n>          (status, CQPSK path only)
 ├── Decoder
-│   ├── Mode [Auto]
+│   ├── Mode... [Auto]
 │   ├── Modulation [C4FM]                        m
 │   ├── P25 Phase 2 modulation lock [Off]        M
 │   ├── CQPSK path [On]                              (RTL-SDR input only)
@@ -242,15 +248,15 @@ Main Menu
 │   │   └── P25 callsign decode [Off]
 │   ├── Visualizers                               (RTL-SDR input only)
 │   │   ├── Constellation [Off]                  o
-│   │   ├── Constellation normalization [Off]    n
+│   │   ├── Constellation normalization [Radial] n   (constellation on only)
 │   │   ├── Eye diagram [Off]                    E
-│   │   ├── Eye diagram Unicode [On]             U
-│   │   ├── Eye diagram color [On]               G
+│   │   ├── Eye diagram Unicode [On]             U    (eye diagram on only)
+│   │   ├── Eye diagram color [On]               G    (eye diagram on only)
 │   │   ├── FSK histogram [Off]                  K
 │   │   └── Spectrum analyzer [Off]              f
 │   └── Event history
 │       ├── Mode [Short]                         h
-│       ├── Slot [1]                             \
+│       ├── Slot [1+2]                           \
 │       ├── Previous event                       [
 │       └── Next event                           ]
 ├── Config
@@ -277,7 +283,7 @@ Main Menu
 **Decoder -> Mode** opens a picker of the decode presets — Auto, P25 (Phase 1 + 2), P25 Phase 1, P25 Phase 2, DMR,
 DMR (single slot), NXDN48, NXDN96, X2-TDMA, YSF, D-STAR, EDACS / ProVoice, dPMR, M17, Analog — and switches which
 protocols are decoded without restarting, the same way the CLI `-f` presets do at startup. The row reads the live
-preset back (`Mode [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
+preset back (`Mode... [P25 Phase 1]`), and the footer toasts `Decoding <mode>` once the change has applied.
 
 Group policy reload:
 
@@ -355,8 +361,9 @@ the decoder is idle/searching; the persistent `Input Level` line still shows the
 ## Hotkeys (Main Screen)
 
 Keys are case-sensitive. Some commands only make sense in specific modes (for example, trunking controls require
-trunking/scanner to be enabled, and RTL controls require RTL input). Every hotkey below also appears on its menu
-row, right-aligned, so the menu is the place to learn them.
+trunking/scanner to be enabled, and RTL controls require RTL input). Nearly every hotkey below also appears on its
+menu row, right-aligned, so the menu is the place to learn them; the shifted aliases (`X`, `O`) and the visualizer
+modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in its hotkey column.
 
 ### General
 
@@ -394,7 +401,7 @@ row, right-aligned, so the menu is the place to learn them.
 | `3` | Cycle TDMA slot preference (slot 1 / slot 2 / auto) |
 | `+` / `-` | Digital gain up/down |
 | `*` / `/` | Analog gain up/down |
-| `v` | Cycle input volume multiplier (non-RTL inputs) |
+| `v` | Cycle the input volume multiplier (non-RTL inputs) or the RTL monitor gain (RTL input) |
 | `4` | Toggle force privacy key over identifiers |
 | `6` | Toggle force RC4 key over missing PI/LE identifiers |
 
@@ -412,7 +419,7 @@ row, right-aligned, so the menu is the place to learn them.
 | Key | Action |
 |---|---|
 | `O` / `o` | Toggle constellation view |
-| `n` | Toggle constellation normalization |
+| `n` | Switch constellation normalization between radial (p99) and unit circle |
 | `<` / `>` | Adjust constellation gate |
 | `E` | Toggle eye diagram |
 | `U` | Toggle eye diagram Unicode/ASCII |
