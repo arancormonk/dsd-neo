@@ -131,6 +131,56 @@ test_fill_payload_conventional_dmr(void) {
     return rc;
 }
 
+/*
+ * dsd_rr_site_is_simulcast() keys off the site description and fires for ANY
+ * protocol, which is why dsd_rr_decode_flag() only lets the answer select an
+ * alternate for the family it belongs to. The payload has to make the same
+ * distinction: forcing QPSK on a DMR/NXDN/EDACS site merely DESCRIBED as
+ * "Simulcast" publishes a QPSK symbol profile for a C4FM protocol, decodes
+ * nothing, and is then stored in the .rr recipe and re-applied forever.
+ */
+static int
+test_fill_payload_simulcast_is_p25_only(void) {
+    int rc = 0;
+    dsd_rr_import_plan plan;
+    dsd_app_rr_apply_payload payload;
+
+    plan_init(&plan);
+    plan.protocol = DSD_RR_PROTO_DMR_CAPPLUS;
+    plan.trunking = 1;
+    plan.simulcast = 1;
+    plan.tune_hz = 851012500LL;
+    rc |= expect_int("dmr simulcast maps", dsd_app_rr_fill_apply_payload(&plan, "d chan.csv", "", &payload), 0);
+    rc |= expect_int("dmr simulcast does not force qpsk", payload.simulcast_qpsk, 0);
+
+    plan_init(&plan);
+    plan.protocol = DSD_RR_PROTO_EDACS_STD;
+    plan.trunking = 1;
+    plan.simulcast = 1;
+    plan.tune_hz = 851012500LL;
+    rc |= expect_int("edacs simulcast maps", dsd_app_rr_fill_apply_payload(&plan, "", "e group.csv", &payload), 0);
+    rc |= expect_int("edacs simulcast does not force qpsk", payload.simulcast_qpsk, 0);
+
+    plan_init(&plan);
+    plan.protocol = DSD_RR_PROTO_NXDN48;
+    plan.trunking = 1;
+    plan.simulcast = 1;
+    plan.tune_hz = 851012500LL;
+    rc |= expect_int("nxdn simulcast maps", dsd_app_rr_fill_apply_payload(&plan, "", "n group.csv", &payload), 0);
+    rc |= expect_int("nxdn simulcast does not force qpsk", payload.simulcast_qpsk, 0);
+
+    /* Conventional P25 does carry the alternate, so it must still force QPSK. */
+    plan_init(&plan);
+    plan.protocol = DSD_RR_PROTO_P25_CONV;
+    plan.conventional = 1;
+    plan.scan_list = 1;
+    plan.simulcast = 1;
+    plan.tune_hz = 851012500LL;
+    rc |= expect_int("p25 conv simulcast maps", dsd_app_rr_fill_apply_payload(&plan, "p chan.csv", "", &payload), 0);
+    rc |= expect_int("p25 conv simulcast forces qpsk", payload.simulcast_qpsk, 1);
+    return rc;
+}
+
 static int
 test_fill_payload_edacs_and_refusals(void) {
     int rc = 0;
@@ -415,6 +465,7 @@ main(void) {
     int rc = 0;
     rc |= test_fill_payload_trunked_p25();
     rc |= test_fill_payload_conventional_dmr();
+    rc |= test_fill_payload_simulcast_is_p25_only();
     rc |= test_fill_payload_edacs_and_refusals();
     rc |= test_submit_null_guards();
     rc |= test_apply_dmr_trunked_with_files();

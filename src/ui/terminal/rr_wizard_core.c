@@ -1315,10 +1315,17 @@ rr_refresh_regenerate(RrWizardCore* w, const size_t* selected, size_t selected_c
     DSD_MEMSET(&plan, 0, sizeof plan);
     *out_text = NULL;
     *out_len = 0;
+    /* Deliberately NOT gated on plan.ok: that flag also carries "this site lists no
+     * frequency to start on", and a refresh neither tunes nor applies a decode
+     * flag. Requiring it would fail a talkgroup-list refresh that regenerated
+     * perfectly, on a site whose frequency list RadioReference has since emptied.
+     * Every state that really has nothing to write blocks BEFORE the generators
+     * run, so it reaches the "src == NULL || len == 0" test below and reports -2.
+     * RadioReferenceModel::completeRefresh() calls generateFiles() directly and
+     * carries no such coupling either. */
     if (dsd_rr_import_plan_build(&w->info, w->sites.items, w->sites.count, selected, selected_count,
                                  w->talkgroups.items, w->talkgroups.count, &options, &plan)
-            != 0
-        || plan.ok == 0) {
+        != 0) {
         dsd_rr_import_plan_free(&plan);
         return -1;
     }
@@ -1753,8 +1760,15 @@ static void
 rr_plan_rebuild(RrWizardCore* w) {
     dsd_rr_import_plan_free(&w->plan);
     rr_group_cache_sync(w);
-    (void)dsd_rr_import_plan_build(&w->info, w->sites.items, w->sites.count, w->selected, w->selected_count, NULL, 0U,
-                                   &w->options, &w->plan);
+    /* -1 is an allocation failure, and it leaves ok == 0 with an EMPTY
+       blocked_reason - a combination rr_panel_plan_line() falls through to the
+       success formatting, so the preview would read as a valid plan that Enter
+       then refuses with "Nothing to import yet." Say what happened instead. */
+    if (dsd_rr_import_plan_build(&w->info, w->sites.items, w->sites.count, w->selected, w->selected_count, NULL, 0U,
+                                 &w->options, &w->plan)
+        != 0) {
+        (void)DSD_SNPRINTF(w->plan.blocked_reason, sizeof w->plan.blocked_reason, "%s", k_msg_out_of_memory);
+    }
     rr_plan_splice_group(w);
     w->plan_valid = 1;
     /* Before the notify, never after: the redraw it triggers must already see
@@ -2032,8 +2046,14 @@ rr_core_note_stale_drop(RrWizardCore* w) {
  */
 static int
 rr_core_dispatch_error(RrWizardCore* w, RrWizResult* r) {
-    if (r->kind == RR_FETCH_TRS_TALKGROUP_CATS && w->step == RR_STEP_LOADING_SYSTEM) {
-        /* Category names are display-only; losing them must not lose the load. */
+    if (r->kind == RR_FETCH_TRS_TALKGROUP_CATS
+        && (w->step == RR_STEP_LOADING_SYSTEM || w->step == RR_STEP_REFRESHING)) {
+        /* Category names are display-only; losing them must not lose the load.
+           RR_STEP_REFRESHING is the same load seen from the browser -
+           rr_wizard_core_begin_refresh() overwrites the step right after
+           rr_load_system() queues the four fetches - and rr_refresh_complete()
+           reads sites and talkgroups only, so a categories fault must not abort a
+           refresh either. */
         r->payload = rr_payload_none();
         return rr_core_apply_system_slot(w, r);
     }
@@ -2924,6 +2944,15 @@ rr_wizard_core_begin_refresh(RrWizardCore* w, const char* csv_path) {
         return -1;
     }
     if (dsd_rr_provenance_read(csv_path, &prov) != 0 || prov.sid <= 0) {
+        rr_core_fail(w, k_msg_no_provenance);
+        return -1;
+    }
+    /* The same filter rr_library_classify() applies, restated because this is a
+       public entry point the browser is not the only way to reach:
+       rr_refresh_complete() treats every kind that is not "chan" as the group
+       half, so an empty, truncated or future third kind would have the user's
+       stored file overwritten with a regenerated talkgroup list. */
+    if (strcmp(prov.kind, "chan") != 0 && strcmp(prov.kind, "group") != 0) {
         rr_core_fail(w, k_msg_no_provenance);
         return -1;
     }

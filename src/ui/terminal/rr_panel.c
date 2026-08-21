@@ -12,10 +12,10 @@
  * and writes neither dsd_opts nor dsd_state: the account write path is a
  * command posted to the decoder thread.
  *
- * rr_panel_render() draws nothing yet - Stage 10 fills it. Until then the
- * credential prompts, the search-mode chooser, the browse choosers and the
- * results chooser all render through menu_prompts.c, which keeps priority over
- * the panel in both the key chain and the render chain.
+ * The panel draws the system view, the fetching placeholder and the error view
+ * itself; the credential prompts, the search-mode chooser, the browse choosers
+ * and the results chooser all render through menu_prompts.c, which keeps
+ * priority over the panel in both the key chain and the render chain.
  */
 
 #include <curses.h>
@@ -180,6 +180,20 @@ rr_panel_ensure_core(void) {
     };
     if (g_rr_panel.core == NULL) {
         g_rr_panel.core = rr_wizard_core_create(&hooks, &g_rr_panel);
+        /* Seed the stored account HERE rather than only in rr_panel_open_import():
+           the Imported Systems browser reaches begin_refresh() through this
+           function, so a core created by a Refresh would otherwise start with no
+           username and no application key and rr_refresh_creds_ready() would
+           refuse every refresh with "enter your username, password and
+           application key first" - even for an account already in the config.
+           The published snapshot, never the live struct: the decoder thread owns
+           dsd_opts. A NULL snapshot (nothing published yet) simply seeds nothing,
+           and rr_panel_open_import() reseeds from the opts it was handed. */
+        const dsd_opts* snap = dsd_app_get_latest_opts_snapshot();
+        if (g_rr_panel.core != NULL && snap != NULL) {
+            rr_wizard_core_set_username(g_rr_panel.core, snap->rr_username);
+            rr_wizard_core_set_stored_app_key(g_rr_panel.core, snap->rr_app_key);
+        }
     }
     return g_rr_panel.core;
 }
@@ -271,18 +285,19 @@ rr_browse_apply(const RrLibrarySystem* s) {
     char named[RR_BROWSE_TITLE_MAX];
     rr_library_display_name(s, named, sizeof named);
 
+    /* The same pre-check the wizard runs before its own apply, and ahead of BOTH
+       branches: svc_import_channel_map() refuses outright during a trunk-scan
+       session and dsd_app_drain_cmds() discards the handler's return value, so
+       the files-only path would otherwise read "Loaded <system> files" for a
+       command the decoder silently threw away. */
+    char blocked[256];
+    blocked[0] = '\0';
+    if (rr_wizard_core_session_block_reason(blocked, sizeof blocked) != 0) {
+        ui_statusf("%s", blocked);
+        return;
+    }
+
     if (s->recipe.present) {
-        /* The same pre-check the wizard runs before its own apply: the decoder's
-           handler refuses an RR apply outright during a trunk-scan session and
-           that refusal never comes back through the submit, so without this the
-           user would read "Applying <system>" and then be contradicted by a
-           decoder-thread toast. */
-        char blocked[256];
-        blocked[0] = '\0';
-        if (rr_wizard_core_session_block_reason(blocked, sizeof blocked) != 0) {
-            ui_statusf("%s", blocked);
-            return;
-        }
         dsd_rr_import_plan plan;
         if (dsd_rr_recipe_to_plan(&s->recipe, s->partial_enc_as_de, &plan) == 0) {
             dsd_app_rr_apply_payload payload;
@@ -410,7 +425,12 @@ rr_browse_action_done(void* u, int sel) {
         case RR_ACT_DELETE: {
             char named[RR_BROWSE_TITLE_MAX];
             rr_library_display_name(s, named, sizeof named);
-            (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Delete %s from disk?", named);
+            /* Bounded so the WORDING always survives: named[] is as wide as
+               ctx->title, so a long "<system> - <site>" would otherwise push
+               "from disk?" off the end and leave a destructive confirmation
+               reading as a bare name above "Cancel" / "Delete permanently". */
+            (void)DSD_SNPRINTF(ctx->title, sizeof ctx->title, "Delete %.*s from disk?",
+                               (int)(sizeof ctx->title - sizeof "Delete  from disk?"), named);
             ctx->confirm_items[0] = "Cancel";
             ctx->confirm_items[1] = "Delete permanently";
             ui_chooser_start(ctx->title, ctx->confirm_items, 2, rr_browse_confirm_done, ctx);
@@ -484,7 +504,6 @@ rr_panel_open_import(dsd_opts* opts, dsd_state* state) {
 
 void
 rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
-    (void)opts;
     (void)state;
     /* Copied before anything else runs, the same way rr_import_resolve_dir()
        does: dsd_user_imports_dir() has no latch and rewrites its internal static
@@ -543,6 +562,17 @@ rr_panel_open_library(dsd_opts* opts, dsd_state* state) {
     if (ctx->lib.overflow) {
         ui_statusf("Showing the first %d imported systems in %s.", ctx->lib.count, dir);
     }
+    /* Refresh runs on the shared session core, which rr_panel_ensure_core() seeds
+       from the snapshot only on creation - so an account set from the menu after
+       the core existed would not reach it. Reseed here, the same way
+       rr_panel_open_import() does, before any row can be picked. */
+    if (opts != NULL) {
+        RrWizardCore* w = rr_panel_ensure_core();
+        if (w != NULL) {
+            rr_wizard_core_set_username(w, opts->rr_username);
+            rr_wizard_core_set_stored_app_key(w, opts->rr_app_key);
+        }
+    }
     ui_chooser_start("Imported Systems", ctx->items, ctx->lib.count, rr_browse_system_done, ctx);
 }
 
@@ -564,6 +594,12 @@ void
 rr_panel_shutdown(void) {
     if (g_rr_panel.core != NULL) {
         rr_wizard_core_cancel(g_rr_panel.core); /* cancel FIRST: destroy joins the worker */
+        /* Cancelling from RR_STEP_SYSTEM/LOADING_SYSTEM backs out onto the list it
+           came from, which opens a chooser through the hooks - and ui_chooser_start()
+           keeps the title and the item array BY POINTER, both of them owned by the
+           core rr_wizard_core_destroy() is about to free. Close it while those
+           pointers are still valid. */
+        ui_chooser_close();
         rr_wizard_core_destroy(g_rr_panel.core);
         g_rr_panel.core = NULL;
     }
@@ -831,9 +867,23 @@ rr_panel_wrap_take(const char* text, size_t pos, size_t len, size_t width) {
     return (brk > 0) ? brk : width;
 }
 
+/**
+ * @brief Draw @p text wrapped into at most @p max_rows rows.
+ *
+ * @param out_clipped Optional; set to 1 when text was left undrawn, so a caller
+ *                    listing several blocks can report the one that did not fit
+ *                    as unread rather than counting it as shown.
+ * @return Rows drawn.
+ */
 static int
-rr_panel_draw_wrapped(WINDOW* win, int y, int max_rows, int width, const char* text) {
+rr_panel_draw_wrapped(WINDOW* win, int y, int max_rows, int width, const char* text, int* out_clipped) {
+    if (out_clipped != NULL) {
+        *out_clipped = 0;
+    }
     if (win == NULL || text == NULL || width < 4 || max_rows < 1) {
+        if (out_clipped != NULL && text != NULL && text[0] != '\0') {
+            *out_clipped = 1;
+        }
         return 0;
     }
     const size_t len = strlen(text);
@@ -847,6 +897,9 @@ rr_panel_draw_wrapped(WINDOW* win, int y, int max_rows, int width, const char* t
             pos++;
         }
         rows++;
+    }
+    if (out_clipped != NULL && pos < len) {
+        *out_clipped = 1;
     }
     return rows;
 }
@@ -862,7 +915,14 @@ rr_panel_draw_warnings(WINDOW* win, int h, int body_w, const dsd_rr_import_plan*
     for (i = 0; i < plan->warnings.count && y < y_end; i++) {
         char line[DSD_RR_WARNING_TEXT_MAX + 8];
         (void)DSD_SNPRINTF(line, sizeof line, "! %s", plan->warnings.items[i].text);
-        y += rr_panel_draw_wrapped(win, y, y_end - y, body_w, line);
+        int clipped = 0;
+        y += rr_panel_draw_wrapped(win, y, y_end - y, body_w, line, &clipped);
+        if (clipped) {
+            /* Break with i still ON this warning: only part of it was drawn, and
+               the "(+N more)" marker below overwrites the row it landed in, so
+               counting it as shown would understate the remainder by one. */
+            break;
+        }
     }
     if (i < plan->warnings.count) {
         char more[40];
@@ -1005,7 +1065,7 @@ rr_panel_render_error(void) {
        clamp for, so no ternary here - cppcheck --strict rejects the always-true condition. */
     mvwaddnstr(win, 0, 2, " RadioReference: could not continue ", w - 6);
     wattron(win, COLOR_PAIR(RR_PANEL_CP_ERROR) | A_BOLD);
-    (void)rr_panel_draw_wrapped(win, 2, 4, body_w, (text != NULL && text[0] != '\0') ? text : "Unknown error.");
+    (void)rr_panel_draw_wrapped(win, 2, 4, body_w, (text != NULL && text[0] != '\0') ? text : "Unknown error.", NULL);
     wattroff(win, COLOR_PAIR(RR_PANEL_CP_ERROR) | A_BOLD);
     rr_panel_draw_status(win, h, body_w);
     mvwaddnstr(win, h - 2, 2, "Esc/q/Left=Back", body_w);

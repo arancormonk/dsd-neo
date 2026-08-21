@@ -1370,7 +1370,21 @@ apply_trunking_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->trunk_tune_private_calls = cfg->trunk_tune_private_calls ? 1 : 0;
     opts->trunk_tune_data_calls = cfg->trunk_tune_data_calls ? 1 : 0;
     opts->trunk_tune_enc_calls = cfg->trunk_tune_enc_calls ? 1 : 0;
-    opts->scanner_mode = cfg->trunk_scanner ? 1 : 0;
+    /* Exactly one automatic tuner owner, the invariant ui_handle_trunk_set/
+       ui_handle_scanner_toggle (src/app_control/actions/actions_trunk.c) and
+       rr_apply_tuner_owner (src/app_control/app_command_queue.c) both enforce.
+       A bare assignment here would leave trunking AND the scanner live together -
+       the trunking SM following a control channel while
+       no_carrier_step_scanner_mode_if_needed() retunes off it every hangtime -
+       because the trunk_enabled branch above is deliberately one-way and never
+       clears. trunk_enabled wins when a config asks for both, matching
+       rr_apply_tuner_owner. */
+    if (cfg->trunk_scanner && !cfg->trunk_enabled) {
+        opts->scanner_mode = 1;
+        opts->trunk_enable = 0;
+    } else {
+        opts->scanner_mode = 0;
+    }
     opts->p25_prefer_candidates = cfg->trunk_p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
 }
 
@@ -1653,11 +1667,18 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
     cfg->decode_mode = dsd_infer_decode_mode_preset(opts);
     cfg->has_dmr_mono = 1;
     cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
-    /* The only snapshotter that reads dsd_state. Recorded unconditionally, like
-       dmr_mono: "off" is a real answer here, and omitting the keys would let a
-       reload inherit whatever the previous session left behind. */
-    cfg->has_edacs_variant = 1;
-    cfg->edacs_ea = state->ea_mode ? 1 : 0;
+    /* The only snapshotter that reads dsd_state. NOT unconditional, unlike
+       dmr_mono: ea_mode is TRI-state - dsd_init.c seeds it at -1 ("no EDACS
+       addressing mode chosen yet"), which edacs-fme.c, provoice.c, dsd_events.c
+       and the ncurses EDACS rows all distinguish from 0 (standard). Writing -1
+       through a truthiness test would save it as "extended addressing" and there
+       is no way back: the in-session toggle only ever produces 0 or 1. Omitting
+       the keys until the answer exists is what keeps -1 reachable, and
+       apply_mode_config() leaves ea_mode alone when they are absent.
+       esk_mask can only be non-zero once one of -fh/-fH/-fe/-fE has run, so it is
+       never stranded by the same gate. */
+    cfg->has_edacs_variant = (state->ea_mode >= 0) ? 1 : 0;
+    cfg->edacs_ea = (state->ea_mode > 0) ? 1 : 0;
     cfg->edacs_esk = (state->esk_mask != 0) ? 1 : 0;
 }
 

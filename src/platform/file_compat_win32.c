@@ -318,6 +318,20 @@ dsd_resolve_existing_local_file(const char* requested, char* out, size_t out_siz
     return fclose(fp);
 }
 
+// Split out of dsd_dir_list() to keep it under the CCN ceiling tools/lizard.sh
+// enforces, the same way dsd_dir_entry_is_regular_file() is split out on the
+// POSIX side; it carries the per-entry rejection the walk applies.
+//
+// @return 0 to keep walking, non-zero when the callback asked to stop.
+static int
+dsd_dir_report_entry(const struct _finddata_t* data, dsd_dir_list_cb cb, void* user) {
+    // _A_SUBDIR also covers "." and "..", so no separate name test is needed.
+    if ((data->attrib & _A_SUBDIR) != 0) {
+        return 0;
+    }
+    return cb(data->name, user);
+}
+
 // Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
 // cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 int
@@ -343,17 +357,26 @@ dsd_dir_list(const char* dir, dsd_dir_list_cb cb, void* user) {
     }
 
     int list_errno = 0;
-    do {
-        // _A_SUBDIR also covers "." and "..", so no separate name test is needed.
-        if ((data.attrib & _A_SUBDIR) != 0) {
-            continue;
+    for (;;) {
+        if (dsd_dir_report_entry(&data, cb, user) != 0) {
+            break; // the callback stopped the walk; not an error
         }
-        if (cb(data.name, user) != 0) {
+        // Cleared per iteration so a callback's own errno cannot be mistaken for a
+        // _findnext() failure on the next pass, mirroring the readdir() loop in
+        // file_compat_posix.c.
+        errno = 0;
+        if (_findnext(handle, &data) != 0) {
+            // ENOENT is the clean end of the directory; anything else is a real
+            // read failure and the header promises -1 for one ("reading it failed
+            // part-way"). Treating them alike would report a truncated listing as
+            // a complete one, which is how the Imported Systems browser decides
+            // whether files are missing or simply absent.
+            list_errno = (errno == ENOENT) ? 0 : errno;
             break;
         }
-    } while (_findnext(handle, &data) == 0);
+    }
 
-    if (_findclose(handle) != 0) {
+    if (_findclose(handle) != 0 && list_errno == 0) {
         list_errno = errno ? errno : EINVAL;
     }
     errno = list_errno;

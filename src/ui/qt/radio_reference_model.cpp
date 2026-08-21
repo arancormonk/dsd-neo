@@ -1145,6 +1145,12 @@ plan_base_map(dsd_rr_protocol protocol, const QVariantMap& systemDetails) {
 void
 plan_into_map(const dsd_rr_import_plan& plan, QVariantMap* map) {
     map->insert(QStringLiteral("blockedReason"), field(plan.blocked_reason));
+    /* Inserted before the early return, because "Select a site." is exactly the
+       blocked plan this distinguishes: an unmade choice is a question, not a
+       refusal, and painting it in the magenta blocked banner answers a successful
+       import with a red error. dsd_rr_import_plan::awaiting_selection carries the
+       same distinction the terminal panel uses. */
+    map->insert(QStringLiteral("awaitingSelection"), plan.awaiting_selection != 0);
     map->insert(QStringLiteral("warnings"), to_warning_list(plan.warnings));
     if (plan.protocol == DSD_RR_PROTO_UNSUPPORTED || plan.site_count <= 0) {
         return; /* blocked before a selection resolved */

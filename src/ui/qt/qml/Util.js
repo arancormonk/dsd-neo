@@ -155,12 +155,26 @@ function findDecodeMode(flag) {
     return null
 }
 
+// LEGACY_DECODE_LABELS is a plain object, so a bare `[flag] !== undefined` also
+// answers for every Object.prototype member: a saved decodeFlag of "constructor",
+// "toString" or "__proto__" would hand a Function back to callers that expect a
+// label string and render it into a chip. hasOwnProperty is what keeps the lookup
+// to the twelve rows actually declared.
+function legacyDecodeLabel(flag) {
+    if (typeof flag !== "string")
+        return null
+    if (!Object.prototype.hasOwnProperty.call(LEGACY_DECODE_LABELS, flag))
+        return null
+    return LEGACY_DECODE_LABELS[flag]
+}
+
 function decodeLabel(flag) {
     var mode = findDecodeMode(flag)
     if (mode !== null)
         return mode.short
-    if (LEGACY_DECODE_LABELS[flag] !== undefined)
-        return LEGACY_DECODE_LABELS[flag]
+    var legacy = legacyDecodeLabel(flag)
+    if (legacy !== null)
+        return legacy
     return "Auto"
 }
 
@@ -170,7 +184,7 @@ function decodeHint(flag) {
         return mode.hint
     // A composite the catalog does not offer still gets a line: this row going
     // blank was half of what made an imported system read as "nothing chosen".
-    if (LEGACY_DECODE_LABELS[flag] !== undefined)
+    if (legacyDecodeLabel(flag) !== null)
         return "Saved with this system — tap another chip to change it."
     return ""
 }
@@ -192,8 +206,8 @@ function decodeHint(flag) {
 function decodeChips(flag) {
     if (findDecodeMode(flag) !== null)
         return DECODE_MODES
-    var label = LEGACY_DECODE_LABELS[flag]
-    if (label === undefined)
+    var label = legacyDecodeLabel(flag)
+    if (label === null)
         return DECODE_MODES
 
     var out = []
@@ -203,6 +217,15 @@ function decodeChips(flag) {
         // `m.flag + " "` and not a bare prefix: Auto's empty flag would match
         // everything, and "-f1" must not be read as refining "-f".
         if (!placed && m.flag !== "" && flag.indexOf(m.flag + " ") === 0) {
+            out.push({ label: label, short: label, flag: flag,
+                       trunked: m.trunked, hint: decodeHint(flag) })
+            placed = true
+        } else if (!placed && m.label === label) {
+            // A legacy ALIAS rather than a refinement: "-f1" carries the same
+            // label as the catalog's "-ft" P25 chip but is not "-ft "-prefixed,
+            // so appending it would put two chips reading "P25" side by side -
+            // and WizardScreen.qml names the delegate after the label, so the two
+            // would share an objectName as well. Swap, exactly as a refinement does.
             out.push({ label: label, short: label, flag: flag,
                        trunked: m.trunked, hint: decodeHint(flag) })
             placed = true

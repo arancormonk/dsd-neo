@@ -2157,6 +2157,129 @@ test_edacs_variant_roundtrip(void) {
 }
 
 /*
+ * state->ea_mode is TRI-state: dsd_init.c seeds it at -1 ("no EDACS addressing
+ * mode chosen yet"), which edacs-fme.c, provoice.c, dsd_events.c and the ncurses
+ * EDACS rows all distinguish from 0 (standard). A snapshot that folded -1 through
+ * a truthiness test would save it as "extended addressing", and the next load
+ * would pin every session to EA with no way back - the in-session toggle only
+ * ever produces 0 or 1. So the keys must be OMITTED until the answer exists, and
+ * a config without them must leave -1 alone.
+ */
+static int
+test_edacs_variant_unanswered_is_not_persisted(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    state.ea_mode = -1; /* what dsd_init.c installs */
+    state.esk_mask = 0;
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.has_edacs_variant) {
+        DSD_FPRINTF(stderr, "FAIL: an unanswered EDACS mode was recorded (edacs_ea=%d)\n", snap.edacs_ea);
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "edacs_ea") != NULL || strstr(rendered, "edacs_esk") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: an unanswered EDACS mode reached the INI\n");
+        rc |= 1;
+    }
+
+    /* And the other direction: an unrelated config must not decide the question.
+       A [mode] decode preset is excluded on purpose - dsd_apply_decode_mode_preset()
+       runs decode_mode_apply_edacs_pv(), which answers "standard" by design, the
+       same as the CLI's -fh. */
+    static const char* ini = "version = 1\n\n"
+                             "[trunking]\n"
+                             "enabled = true\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    const int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "EDACS-less config failed to load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    state.ea_mode = -1;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (state.ea_mode != -1) {
+        DSD_FPRINTF(stderr, "FAIL: a config with no EDACS keys answered the question (ea_mode=%d)\n", state.ea_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * Exactly one automatic tuner owner. actions_trunk.c and rr_apply_tuner_owner
+ * both enforce it; a config apply that set scanner_mode on its own would leave
+ * the trunking SM following a control channel while the scanner retunes off it
+ * on every hangtime expiry.
+ */
+static int
+test_scanner_and_trunking_are_mutually_exclusive(void) {
+    int rc = 0;
+    static const char* ini = "version = 1\n\n"
+                             "[trunking]\n"
+                             "enabled = true\n"
+                             "scanner = true\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "trunking+scanner config failed to load\n");
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.trunk_enable != 1 || opts.scanner_mode != 0) {
+        DSD_FPRINTF(stderr, "FAIL: both tuner owners live (trunk_enable=%d scanner_mode=%d)\n", opts.trunk_enable,
+                    opts.scanner_mode);
+        rc |= 1;
+    }
+
+    /* Scanner alone still wins the tuner, and clears a trunking flag the session
+       was carrying from somewhere else. */
+    static const char* ini_scan = "version = 1\n\n"
+                                  "[trunking]\n"
+                                  "enabled = false\n"
+                                  "scanner = true\n";
+    if (write_temp_config(ini_scan, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg2;
+    load_rc = dsd_user_config_load(path, &cfg2);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "scanner-only config failed to load\n");
+        return 1;
+    }
+    reset_opts_and_state(opts, state);
+    opts.trunk_enable = 1;
+    dsd_apply_user_config_to_opts(&cfg2, &opts, &state);
+    if (opts.scanner_mode != 1 || opts.trunk_enable != 0) {
+        DSD_FPRINTF(stderr, "FAIL: scanner did not take the tuner (trunk_enable=%d scanner_mode=%d)\n",
+                    opts.trunk_enable, opts.scanner_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
  * MUST be the first case main() runs. dsd_user_config_default_path() latches its
  * answer in `static char buf[1024]; static int inited` (src/runtime/config_user.cpp,
  * identifier dsd_user_config_default_path), so the environment override only takes
@@ -2246,5 +2369,7 @@ main(void) {
     rc |= test_persistence_gap_schema_rows();
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_edacs_variant_roundtrip();
+    rc |= test_edacs_variant_unanswered_is_not_persisted();
+    rc |= test_scanner_and_trunking_are_mutually_exclusive();
     return rc;
 }

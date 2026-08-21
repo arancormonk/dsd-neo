@@ -44,6 +44,7 @@
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <limits.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -3210,7 +3211,11 @@ rr_apply_preflight(const dsd_opts* opts, dsd_state* state, const dsd_app_rr_appl
         ui_set_toast(state, 4, "Failed: RR import -> trunk scan owns the channel map");
         return UI_CMD_APPLY_FAILED;
     }
-    if (p->decode_mode < 0 || p->decode_mode > (int32_t)DSDCFG_MODE_DMR_MONO) {
+    /* <=, not <: DSDCFG_MODE_UNSET is 0 and is not a preset, so letting it through
+       would run dsd_apply_decode_mode_preset() and republish a symbol profile for
+       "no mode". Neither producer can emit it today; the guard is what keeps that
+       true. */
+    if (p->decode_mode <= (int32_t)DSDCFG_MODE_UNSET || p->decode_mode > (int32_t)DSDCFG_MODE_DMR_MONO) {
         ui_set_toast(state, 4, "Failed: RR import -> decode mode");
         return UI_CMD_APPLY_FAILED;
     }
@@ -3276,14 +3281,30 @@ rr_apply_tuner_owner(dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
     }
 }
 
+/* A half the import did not write CLEARS the live one rather than leaving it:
+   this command re-points the session at a different system, and a stale channel
+   map is not merely out of date, it resolves the new system's voice grants
+   against the old system's frequencies and tunes off-system. chan_need == 2
+   protocols (DMR Cap+/Con+/TIII) legitimately produce no channel map at all, so
+   this is an ordinary outcome, not an edge case. services.h says the same thing
+   about why the clear counterparts exist: "the previous file would otherwise
+   stay live for the session". */
 static int
 rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
     int rc = UI_CMD_APPLY_COMPLETED;
-    if (p->has_chan && svc_import_channel_map(opts, state, p->chan_path) != 0) {
-        rc = UI_CMD_APPLY_FAILED;
+    if (p->has_chan) {
+        if (svc_import_channel_map(opts, state, p->chan_path) != 0) {
+            rc = UI_CMD_APPLY_FAILED;
+        }
+    } else {
+        (void)svc_clear_channel_map(opts, state);
     }
-    if (p->has_group && svc_import_group_list(opts, state, p->group_path) != 0) {
-        rc = UI_CMD_APPLY_FAILED;
+    if (p->has_group) {
+        if (svc_import_group_list(opts, state, p->group_path) != 0) {
+            rc = UI_CMD_APPLY_FAILED;
+        }
+    } else {
+        (void)svc_clear_group_list(opts, state);
     }
     return rc;
 }
@@ -3299,6 +3320,19 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
     if (p->tune_hz == 0U) {
         return;
     }
+    /* io_control_set_freq() takes a long, which is 32-bit signed under the
+       win-msvc-* presets while the payload carries a full uint32_t (and
+       rr_generate.c accepts sites up to 6 GHz). Casting a value above LONG_MAX
+       there would hand the tuner a NEGATIVE frequency, so the retune is skipped
+       instead - the same outcome as a session that cannot retune at all, which
+       the import preview already warns about. Guarded by the preprocessor because
+       where long is 64-bit the test is provably false and -Werror=type-limits
+       rejects it. */
+#if LONG_MAX < UINT32_MAX
+    if (p->tune_hz > (uint32_t)LONG_MAX) {
+        return;
+    }
+#endif
     (void)io_control_set_freq(opts, state, (long int)p->tune_hz);
 }
 

@@ -451,7 +451,9 @@ rr_plan_site_label(const dsd_rr_site* sites, const size_t* chosen, size_t chosen
  * plain free() and NEVER with dsd_rr_site_list_free(). */
 static dsd_rr_site*
 rr_plan_copy_sites(const dsd_rr_site* sites, const size_t* chosen, size_t chosen_count) {
-    dsd_rr_site* copies = (dsd_rr_site*)malloc(chosen_count * sizeof(*copies));
+    /* calloc, not malloc(n * size): it traps the multiply, which is why the
+     * selection index array four lines up uses it too. */
+    dsd_rr_site* copies = (dsd_rr_site*)calloc(chosen_count, sizeof(*copies));
     if (copies == NULL) {
         return NULL;
     }
@@ -527,10 +529,17 @@ int
 dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* sites, size_t site_count,
                          const size_t* selected, size_t selected_count, const dsd_rr_talkgroup* talkgroups,
                          size_t talkgroup_count, const dsd_rr_import_options* options, dsd_rr_import_plan* plan) {
+    if (plan == NULL) {
+        return -1;
+    }
+    /* Zeroed BEFORE the argument check, not after it: the header promises that a
+     * -1 leaves the plan zeroed, and tells the caller to run
+     * dsd_rr_import_plan_free() on every path. Returning early over an
+     * uninitialised struct would hand that free() stack garbage. */
+    DSD_MEMSET(plan, 0, sizeof(*plan));
     if (!rr_plan_args_ok(info, sites, site_count, options, plan)) {
         return -1;
     }
-    DSD_MEMSET(plan, 0, sizeof(*plan));
     plan->protocol = info->protocol;
     plan->conventional = info->conventional;
     plan->trunking = info->trunked;
@@ -547,6 +556,7 @@ dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* site
     if (selected != NULL && selected_count > 0U) {
         idx = (size_t*)calloc(selected_count, sizeof(*idx));
         if (idx == NULL) {
+            dsd_rr_import_plan_free(plan); /* restore the "-1 leaves it zeroed" contract */
             return -1;
         }
         chosen_count = rr_plan_select_sites(site_count, selected, selected_count, idx, &plan->warnings);
@@ -572,6 +582,10 @@ dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* site
     dsd_rr_site* chosen_sites = rr_plan_copy_sites(sites, idx, chosen_count);
     free(idx);
     if (chosen_sites == NULL) {
+        /* rr_plan_select_sites() may already have added a warning, and site_ids /
+         * site_label are written by now, so a bare return would leave a -1 the
+         * header says is zeroed - and leak the warning array. */
+        dsd_rr_import_plan_free(plan);
         return -1;
     }
     if (rr_plan_generate_files(plan, chosen_sites, chosen_count, talkgroups, talkgroup_count, info->conventional)

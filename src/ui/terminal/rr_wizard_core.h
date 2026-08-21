@@ -20,8 +20,8 @@
  * and does nothing but park a result in a mutex-guarded ring;
  * rr_wizard_core_pump() drains that ring back on the UI thread.
  *
- * rr_wizard_core_pump() has no caller yet. Stage 9 wires it through
- * rr_panel_tick(), which ui_menu_tick() reaches on the UI thread's input loop.
+ * rr_wizard_core_pump() is driven by rr_panel_tick(), which ui_menu_tick()
+ * reaches on the UI thread's input loop.
  */
 #ifndef DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_
 #define DSD_NEO_SRC_UI_TERMINAL_RR_WIZARD_CORE_H_
@@ -37,7 +37,7 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 
-/** @brief Where the wizard is. Steps beyond RR_STEP_SEARCH_MODE arrive later. */
+/** @brief Where the wizard is. */
 typedef enum {
     RR_STEP_IDLE = 0,
     RR_STEP_CREDS_USERNAME,

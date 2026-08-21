@@ -135,6 +135,20 @@ Item {
                    "the catalog entry it replaced must come back")
         }
 
+        // "-f1" is a legacy ALIAS rather than a refinement: it carries the
+        // catalog's own "P25" label but is not "-ft "-prefixed, so appending it
+        // would leave two chips reading "P25" side by side - and the delegate is
+        // named after its label, so findChild() could not tell them apart either.
+        function test_08_a_legacy_alias_replaces_the_chip_it_shadows() {
+            tc.wizard.decodeFlag = "-f1"
+            compare(tc.selectedLabels(), ["P25"],
+                    "the legacy alias must select the one P25 chip")
+            compare(tc.chipFor("P25").modelData.flag, "-f1",
+                    "the surviving P25 chip must carry the saved flag")
+            verify(tc.chipFor("P25 Simulcast") !== null,
+                   "the rest of the catalog is untouched")
+        }
+
         // A flag nobody has a name for must not invent a chip; the row falls
         // back to showing nothing selected rather than a mystery label.
         function test_07_an_unknown_flag_adds_no_chip() {

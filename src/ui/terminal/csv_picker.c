@@ -202,7 +202,21 @@ csv_picker_chooser_done(void* user, int sel) {
 void
 ui_csv_import_picker_open(const char* kind, const char* prompt_title, size_t cap, ui_prompt_string_done_fn on_done,
                           void* user_ctx) {
-    const char* dir = dsd_user_imports_dir();
+    /* Copied before anything else runs: dsd_user_imports_dir() has no latch and
+       rewrites its internal static buffer on every call, so the returned pointer
+       is only good until the next one - and it is held here across a directory
+       walk that reads a sidecar per entry. rr_panel_open_library() and
+       rr_import_resolve_dir() copy it first for the same reason.
+       ui_csv_picker_collect() treats an empty dir as "no candidates". */
+    const char* resolved = dsd_user_imports_dir();
+    char dir[CSV_PICKER_PATH_MAX];
+    dir[0] = '\0';
+    if (resolved != NULL) {
+        const int dir_n = DSD_SNPRINTF(dir, sizeof dir, "%s", resolved);
+        if (dir_n <= 0 || (size_t)dir_n >= sizeof dir) {
+            dir[0] = '\0';
+        }
+    }
 
     CsvPickerCtx* ctx = (CsvPickerCtx*)calloc(1U, sizeof(*ctx));
     if (ctx == NULL) {

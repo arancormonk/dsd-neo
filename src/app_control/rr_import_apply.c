@@ -9,8 +9,8 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /**
  * @brief Copy a path into the payload and report whether it is meaningful.
@@ -25,6 +25,33 @@ rr_copy_path(char* dst, size_t dst_sz, const char* path) {
     }
     DSD_SNPRINTF(dst, dst_sz, "%s", path);
     return 1U;
+}
+
+/**
+ * @brief Whether the plan's simulcast answer is one this protocol acts on.
+ *
+ * NOT a bare copy of plan->simulcast: dsd_rr_site_is_simulcast() keys off the
+ * site description and modulation and fires for ANY protocol, which is why
+ * dsd_rr_decode_flag() only lets the answer select an alternate for the family
+ * it belongs to (rr_generate.c, RR_ALT_ON_SIMULCAST). Forcing QPSK on a DMR,
+ * NXDN or EDACS site merely described as "Simulcast" would publish a QPSK symbol
+ * profile for a C4FM protocol and decode nothing - and the wrong answer would
+ * then be stored in the .rr recipe and re-applied forever. Asking the table the
+ * same question the flag did covers a protocol that gains an alternate later
+ * without a second list to keep in step.
+ *
+ * Split out of dsd_app_rr_fill_apply_payload() to keep it under the CCN ceiling
+ * tools/lizard.sh enforces.
+ */
+static uint8_t
+rr_simulcast_qpsk(const dsd_rr_import_plan* plan) {
+    if (!plan->simulcast) {
+        return 0U;
+    }
+    const char* with_simulcast = dsd_rr_decode_flag(plan->protocol, 1, plan->esk, plan->scan_list);
+    const char* without_simulcast = dsd_rr_decode_flag(plan->protocol, 0, plan->esk, plan->scan_list);
+    return (with_simulcast != NULL && without_simulcast != NULL && strcmp(with_simulcast, without_simulcast) != 0) ? 1U
+                                                                                                                   : 0U;
 }
 
 int
@@ -44,7 +71,7 @@ dsd_app_rr_fill_apply_payload(const dsd_rr_import_plan* plan, const char* chan_p
     out->decode_mode = (int32_t)mode;
     out->edacs_ea = dsd_rr_protocol_edacs_ea(plan->protocol) ? 1U : 0U;
     out->edacs_esk = plan->esk ? 1U : 0U;
-    out->simulcast_qpsk = plan->simulcast ? 1U : 0U;
+    out->simulcast_qpsk = rr_simulcast_qpsk(plan);
     /* -^ only makes sense on a trunked P25 control channel: supplying a channel
        map sets p25_has_user_lcn_list(), which would otherwise disable the
        decoder's own learned SCCB candidates (rr_generate.c, k_protocols[]). */
