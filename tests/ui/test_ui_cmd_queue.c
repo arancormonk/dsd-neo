@@ -1536,6 +1536,19 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_contains("repeat still names the mode", state.ui_msg, "DMR");
     freeState(&state);
 
+    /* Two picker rows spell DMR, and this toast is the only thing that says which
+     * one landed. It has to name the row the operator chose, which means reading
+     * the same table the picker was built from rather than a second one. */
+    init_test_context(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 0;
+    rc |= expect_int("dmr mono mode queued",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR_MONO),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("dmr mono mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("dmr mono names its own row", state.ui_msg, "DMR (single slot)");
+    freeState(&state);
+
     /* The payload travels as a plain int32 but dsdneoUserDecodeMode is packed to a
      * byte, so an out-of-range value does not stay out of range: 260 casts to 4,
      * which is DSDCFG_MODE_DMR, and the DMR preset would run for a command nobody
@@ -1560,6 +1573,7 @@ test_modulation_and_decode_mode_setters(void) {
     rc |= expect_int("auto mode drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("auto re-enables p25", opts.frame_p25p1, 1);
     rc |= expect_int("auto keeps dmr", opts.frame_dmr, 1);
+    rc |= expect_contains("auto names its own row", state.ui_msg, "Auto");
 
     /* Both carry a payload, so the payload-less action API must refuse them. */
     rc |= expect_int("mod set rejects an action submit", dsd_app_command_action(DSD_APP_CMD_MOD_SET),

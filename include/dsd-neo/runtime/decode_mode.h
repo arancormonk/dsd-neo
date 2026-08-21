@@ -128,10 +128,12 @@ int dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int le
 dsdneoUserDecodeMode dsd_infer_decode_mode_preset(const dsd_opts* opts);
 
 /**
- * @brief Human-readable name of a decode preset, for menus and pickers.
+ * @brief Human-readable name of a decode preset, for anything the operator reads.
  *
- * One table for every frontend that lists the presets, so a picker and the
- * label that reads the current mode back cannot drift apart.
+ * One table for every frontend that names a preset -- the picker, the label that
+ * reads the current mode back, and the toast that confirms an applied mode -- so
+ * they cannot drift apart. A second table is how "DMR" and "DMR (single slot)"
+ * came to confirm themselves with the same word.
  *
  * @param mode Decode mode preset.
  * @return A static string such as "P25 Phase 1"; "Unset" for

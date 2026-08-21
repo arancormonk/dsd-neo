@@ -57,9 +57,6 @@
 #include "m17_internal.h"
 #include "m17_rrc_taps.h"
 
-#ifdef USE_RADIO
-#endif
-
 #ifdef USE_CODEC2
 #include <codec2/codec2.h>
 #endif

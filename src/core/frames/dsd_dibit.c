@@ -39,9 +39,6 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #ifdef USE_RADIO
-#endif
-
-#ifdef USE_RADIO
 #define DSD_RTL_OUTPUT_KIND_FSK_DISCRIMINATOR 1
 #endif
 

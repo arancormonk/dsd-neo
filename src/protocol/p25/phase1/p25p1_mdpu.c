@@ -32,9 +32,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-#ifdef USE_RADIO
-#endif
-
 static int16_t
 saturating_llr_add(int acc, int value) {
     acc += value;
