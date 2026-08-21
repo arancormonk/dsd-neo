@@ -553,6 +553,7 @@ dsd_rr_import_plan_build(const dsd_rr_system_info* info, const dsd_rr_site* site
     }
     if (chosen_count == 0U) {
         free(idx);
+        plan->awaiting_selection = 1;
         return rr_plan_block(plan, info->conventional ? "Select at least one repeater." : "Select a site.");
     }
 

@@ -42,7 +42,15 @@ int rr_panel_site_row_format(const dsd_rr_site* site, int trunked, int selected,
 void rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_site_selected_fn is_selected,
                             const void* user, RrPanelCounter* out);
 
-/** @brief The plan summary row. Returns 1 when the plan is blocked, 0 when not, -1 on bad output. */
+/**
+ * @brief The plan summary row.
+ *
+ * A plan merely waiting for a site choice (dsd_rr_import_plan::awaiting_selection)
+ * reports 0, not 1: the caller paints a blocked row red and bold, and an unmade
+ * choice is a question rather than a refusal.
+ *
+ * @return 1 when the plan is blocked, 0 when not, -1 on bad output.
+ */
 int rr_panel_plan_line(const dsd_rr_import_plan* plan, char* out, size_t out_sz);
 
 #endif /* DSD_NEO_SRC_UI_TERMINAL_RR_PANEL_FORMAT_H_ */

@@ -133,6 +133,18 @@ typedef struct {
     long long tune_hz;        /**< Session start frequency; 0 when the site lists none. */
     char freq_mhz[32];        /**< Exact MHz text of tune_hz; "" when 0. */
     char blocked_reason[256]; /**< Non-empty means the Import action must be disabled. */
+    /**
+     * 1 when the ONLY thing missing is the user's site choice.
+     *
+     * Such a plan is blocked, but it is a question rather than a refusal: it is
+     * the state a freshly opened conventional system is in, and the state an
+     * import returns to once it releases its selection. A frontend that paints
+     * every blocked plan as an error would otherwise answer a successful import
+     * with a red "Blocked: Select a site.". Every other blocked_reason - an
+     * undecodable system, a site with no frequency - is a real refusal, because
+     * no choice on that screen changes the answer.
+     */
+    int awaiting_selection;
     dsd_rr_warning_list warnings;
 } dsd_rr_import_plan;
 

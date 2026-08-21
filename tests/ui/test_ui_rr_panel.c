@@ -171,11 +171,34 @@ static void
 test_plan_line_blocked(void) {
     dsd_rr_import_plan plan;
     DSD_MEMSET(&plan, 0, sizeof plan);
-    DSD_SNPRINTF(plan.blocked_reason, sizeof plan.blocked_reason, "%s", "Select at least one repeater.");
+    DSD_SNPRINTF(plan.blocked_reason, sizeof plan.blocked_reason, "%s",
+                 "This site lists no frequency to start on, so the session would have nothing to tune.");
 
     char line[320];
     assert(rr_panel_plan_line(&plan, line, sizeof line) == 1);
-    assert(strcmp(line, "Blocked: Select at least one repeater.") == 0);
+    assert(strncmp(line, "Blocked: This site lists no frequency", 37) == 0);
+}
+
+/*
+ * An unmade choice is not a refusal. The panel paints a blocked plan red and
+ * bold, and "Blocked: Select a site." lands under the status line the moment an
+ * import succeeds and releases its selection - reading as a verdict on the
+ * import that just worked. A plan waiting for a site says so plainly instead.
+ */
+static void
+test_plan_line_awaiting_a_selection(void) {
+    dsd_rr_import_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof plan);
+    plan.awaiting_selection = 1;
+    DSD_SNPRINTF(plan.blocked_reason, sizeof plan.blocked_reason, "%s", "Select a site.");
+
+    char line[320];
+    assert(rr_panel_plan_line(&plan, line, sizeof line) == 0);
+    assert(strcmp(line, "Select a site.") == 0);
+
+    DSD_SNPRINTF(plan.blocked_reason, sizeof plan.blocked_reason, "%s", "Select at least one repeater.");
+    assert(rr_panel_plan_line(&plan, line, sizeof line) == 0);
+    assert(strcmp(line, "Select at least one repeater.") == 0);
 }
 
 int
@@ -188,6 +211,7 @@ main(void) {
     test_counter_drops_empty_and_duplicates_before_the_cap();
     test_plan_line_normal();
     test_plan_line_blocked();
+    test_plan_line_awaiting_a_selection();
     printf("UI_RR_PANEL: OK\n");
     return 0;
 }

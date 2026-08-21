@@ -633,6 +633,63 @@ test_plan_selection_hygiene(void) {
     dsd_rr_import_plan_free(&plan);
 }
 
+/*
+ * "Select a site." is the panel asking a question, not refusing one: it is the
+ * state a freshly opened conventional system is in, and the state an import
+ * returns to when it releases its selection. A frontend that paints every
+ * blocked plan as an error needs to tell the two apart.
+ */
+static void
+test_plan_awaiting_a_selection_is_not_a_refusal(void) {
+    dsd_rr_site_freq freqs[1];
+    freq_set(&freqs[0], 1, 851012500LL, "d", NULL);
+    dsd_rr_site sites[1];
+    site_init(&sites[0], freqs, 1U);
+
+    dsd_rr_system_info info;
+    dsd_rr_import_options options = {-1, -1, 1};
+    dsd_rr_import_plan plan;
+
+    info_set(&info, DSD_RR_PROTO_P25, 0);
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("empty selection still builds",
+           dsd_rr_import_plan_build(&info, sites, 1U, NULL, 0U, NULL, 0U, &options, &plan) == 0);
+    expect("empty selection is not importable", plan.ok == 0);
+    expect("empty selection is waiting, not refusing", plan.awaiting_selection == 1);
+    expect_str("and it says what it wants", plan.blocked_reason, "Select a site.");
+    dsd_rr_import_plan_free(&plan);
+
+    info_set(&info, DSD_RR_PROTO_DMR_CONV, 0);
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("empty repeater selection builds",
+           dsd_rr_import_plan_build(&info, sites, 1U, NULL, 0U, NULL, 0U, &options, &plan) == 0);
+    expect("empty repeater selection is waiting", plan.awaiting_selection == 1);
+    expect_str("named for what it holds", plan.blocked_reason, "Select at least one repeater.");
+    dsd_rr_import_plan_free(&plan);
+
+    /* A system this build cannot decode is a real refusal: no choice the user
+     * makes on this screen changes the answer. */
+    info_set(&info, DSD_RR_PROTO_UNSUPPORTED, 0);
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    const size_t selected[] = {0U};
+    expect("unsupported still builds",
+           dsd_rr_import_plan_build(&info, sites, 1U, selected, 1U, NULL, 0U, &options, &plan) == 0);
+    expect("unsupported is a refusal, not a question", plan.awaiting_selection == 0);
+    dsd_rr_import_plan_free(&plan);
+
+    /* So is a site with nothing to tune: the site IS chosen, and it is no good. */
+    dsd_rr_site_freq none[1];
+    freq_set(&none[0], 1, 0LL, "", NULL);
+    dsd_rr_site bare[1];
+    site_init(&bare[0], none, 1U);
+    info_set(&info, DSD_RR_PROTO_P25, 0);
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    expect("frequency-less site builds",
+           dsd_rr_import_plan_build(&info, bare, 1U, selected, 1U, NULL, 0U, &options, &plan) == 0);
+    expect("a chosen but useless site is a refusal", plan.awaiting_selection == 0);
+    dsd_rr_import_plan_free(&plan);
+}
+
 static void
 test_plan_blocked(void) {
     dsd_rr_site_freq freqs[1];
@@ -802,6 +859,7 @@ main(void) {
     test_plan_site_label_conventional();
     test_plan_selection_hygiene();
     test_plan_blocked();
+    test_plan_awaiting_a_selection_is_not_a_refusal();
     test_plan_site_ids_large_selection();
     test_plan_site_ids_overflow();
     test_plan_argument_validation();

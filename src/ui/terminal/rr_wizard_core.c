@@ -2769,6 +2769,16 @@ rr_import_check_ready(RrWizardCore* w) {
         return -1;
     }
     if (w->plan.ok == 0) {
+        if (w->plan.awaiting_selection) {
+            /* Not an error: the user pressed Import before choosing, which is
+             * also the state every successful import leaves behind. Failing
+             * here would park the core on RR_STEP_ERROR, and dismissing that
+             * cancels the core and retires the loaded system - so a stray
+             * Enter would throw away the fetch the next site was going to
+             * reuse. Say what is missing and stay on the list. */
+            rr_core_status_notify(w, w->plan.blocked_reason);
+            return -1;
+        }
         rr_core_fail(w, (w->plan.blocked_reason[0] != '\0') ? w->plan.blocked_reason : k_rr_err_write);
         return -1;
     }

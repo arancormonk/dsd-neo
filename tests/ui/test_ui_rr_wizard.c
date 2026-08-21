@@ -1779,9 +1779,16 @@ test_import_now_stays_on_the_site_list(void) {
         expect("stay: it says which answer is missing", strcmp(plan->blocked_reason, "Select a site.") == 0);
     }
 
-    /* One import, one apply: an unselected list cannot write a second time. */
+    /* One import, one apply: an unselected list cannot write a second time.
+     * And it must not ERROR: dismissing the wizard's error step cancels the
+     * core, which retires the loaded system - so a stray Enter would throw away
+     * the very fetch this whole flow exists to reuse. */
     expect("stay: a second Enter writes nothing", rr_wizard_core_import_now(core) == -1);
     expect_ll("stay: apply still called once", g_hook_apply_count, 1);
+    expect("stay: a stray Enter does not error out", rr_wizard_core_step(core) == RR_STEP_SYSTEM);
+    expect("stay: and does not retire the system", rr_wizard_core_system(core) != NULL);
+    expect("stay: it just asks for a site", strcmp(ic.c.h.last_status, "Select a site.") == 0);
+    expect("stay: no error text was set", strcmp(rr_wizard_core_error_text(core), "") == 0);
 
     imp_case_close(&ic);
 }
