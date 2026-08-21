@@ -232,6 +232,34 @@ ui_menu_item_label_for_test(const NcMenuItem* it, const void* ctx, char* out, si
 }
 #endif
 
+/* One row: a dimmed rule for a separator, dimmed text for a status row, and for
+   an action row the formatted label/hotkey line -- reversed across the whole row
+   when highlighted, so the hotkey column reads as part of it. */
+static void
+ui_menu_draw_one_row(WINDOW* menu_win, const UiMenuDrawLayout* layout, const NcMenuItem* it, int y, int is_hi,
+                     const void* ctx) {
+    mvwhline(menu_win, y, 1, ' ', layout->mw - 2);
+    if (it->kind == NC_ITEM_SEPARATOR) {
+        wattron(menu_win, A_DIM);
+        mvwhline(menu_win, y, layout->x, ACS_HLINE, layout->text_w);
+        wattroff(menu_win, A_DIM);
+        return;
+    }
+    char row[160];
+    (void)ui_menu_format_row(it, ctx, layout->text_w, row, sizeof row);
+    const int attr = is_hi ? A_REVERSE : ((it->kind == NC_ITEM_STATUS) ? A_DIM : A_NORMAL);
+    if (attr != A_NORMAL) {
+        wattron(menu_win, attr);
+    }
+    if (is_hi) {
+        mvwhline(menu_win, y, layout->x, ' ', layout->text_w);
+    }
+    mvwaddnstr(menu_win, y, layout->x, row, layout->text_w);
+    if (attr != A_NORMAL) {
+        wattroff(menu_win, attr);
+    }
+}
+
 static void
 ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const NcMenuItem* items, size_t n, int hi,
                        int top, const void* ctx) {
@@ -250,30 +278,9 @@ ui_menu_draw_item_rows(WINDOW* menu_win, const UiMenuDrawLayout* layout, const N
         if (drawn >= layout->items_rows) {
             break;
         }
-        int y = layout->items_top + drawn++;
-        const NcMenuItem* it = &items[i];
-        mvwhline(menu_win, y, 1, ' ', layout->mw - 2);
-        if (it->kind == NC_ITEM_SEPARATOR) {
-            wattron(menu_win, A_DIM);
-            mvwhline(menu_win, y, layout->x, ACS_HLINE, layout->text_w);
-            wattroff(menu_win, A_DIM);
-            continue;
-        }
-        char row[160];
-        (void)ui_menu_format_row(it, ctx, layout->text_w, row, sizeof row);
-        const int is_hi = ((int)i == hi) && it->kind == NC_ITEM_ACTION;
-        const int attr = is_hi ? A_REVERSE : ((it->kind == NC_ITEM_STATUS) ? A_DIM : A_NORMAL);
-        if (attr != A_NORMAL) {
-            wattron(menu_win, attr);
-        }
-        if (is_hi) {
-            // The highlight spans the whole row so the hotkey column reads as part of it.
-            mvwhline(menu_win, y, layout->x, ' ', layout->text_w);
-        }
-        mvwaddnstr(menu_win, y, layout->x, row, layout->text_w);
-        if (attr != A_NORMAL) {
-            wattroff(menu_win, attr);
-        }
+        const int y = layout->items_top + drawn++;
+        const int is_hi = ((int)i == hi) && items[i].kind == NC_ITEM_ACTION;
+        ui_menu_draw_one_row(menu_win, layout, &items[i], y, is_hi, ctx);
     }
     while (drawn < layout->items_rows) {
         mvwhline(menu_win, layout->items_top + drawn, 1, ' ', layout->mw - 2);
