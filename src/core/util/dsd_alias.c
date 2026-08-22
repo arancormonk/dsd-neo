@@ -375,8 +375,19 @@ apx_embedded_alias_unscramble(const uint8_t* encoded, size_t encoded_size, uint1
 
     uint16_t accumulator = num_bytes;
 
+    // The count is uint16_t and both spans are size_t. Fold them into one size_t bound rather than
+    // comparing a narrow counter against a wider limit in the loop condition, which is only safe
+    // here by way of the num_bytes term (CodeQL cpp/comparison-with-wider-type).
+    size_t limit = num_bytes;
+    if (limit > encoded_size) {
+        limit = encoded_size;
+    }
+    if (limit > decoded_size) {
+        limit = decoded_size;
+    }
+
     //Ilya's Voodoo Code
-    for (uint16_t i = 0; i < num_bytes && i < encoded_size && i < decoded_size; i++) {
+    for (size_t i = 0; i < limit; i++) {
         // Multiplication step 1
         uint16_t accum_mult = accumulator * 293 + 0x72E9;
 
