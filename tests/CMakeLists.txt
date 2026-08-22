@@ -163,6 +163,17 @@ add_test(
         ${PROJECT_SOURCE_DIR}/cmake/vcpkg_dependency_contract.cmake
 )
 
+# The Semgrep SARIF filter is what keeps a documented `nosemgrep` from arriving
+# as an open code-scanning alert, and it only ever runs in CI - pin its behavior
+# where a local `ctest` sees it.
+add_test(
+    NAME SARIF_DROP_SUPPRESSED
+    COMMAND
+        ${CMAKE_COMMAND}
+        "-DDSD_TEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/sarif_drop_suppressed"
+        -P ${PROJECT_SOURCE_DIR}/tests/cmake/SarifDropSuppressed.cmake
+)
+
 # Runs everywhere: the macOS curses decision takes fabricated prefix trees, so
 # hosts that can never reach the real code path still guard it.
 add_test(
