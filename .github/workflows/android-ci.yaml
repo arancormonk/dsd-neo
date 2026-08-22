@@ -86,6 +86,26 @@ jobs:
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
 
+      # vcpkg's bootstrap fetches the vcpkg-tool binary with `curl --retry 3`,
+      # but curl only spends that retry budget on timeouts and 5xx/429
+      # responses: a connection-level failure -- curl 35, "Recv failure:
+      # Connection reset by peer" -- aborts on the first attempt and fails the
+      # job before any of our code is built. --retry-all-errors extends the
+      # existing budget to those resets. It goes in a curlrc because run-vcpkg
+      # invokes bootstrap-vcpkg.sh itself, so there is no command line of ours
+      # to add it to, and because it then also covers the curl calls vcpkg
+      # makes for port sources. Linux-only: the Windows bootstrap downloads
+      # through tls12-download.exe, which never reads this file.
+      - name: Make curl retry connection resets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$HOME/.curlrc" << 'EOF'
+          retry = 3
+          retry-all-errors
+          retry-delay = 5
+          EOF
+
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
         with:
@@ -477,6 +497,26 @@ jobs:
           ccache --zero-stats
           ccache --set-config=max_size=500M
           ccache --set-config=compression=true
+
+      # vcpkg's bootstrap fetches the vcpkg-tool binary with `curl --retry 3`,
+      # but curl only spends that retry budget on timeouts and 5xx/429
+      # responses: a connection-level failure -- curl 35, "Recv failure:
+      # Connection reset by peer" -- aborts on the first attempt and fails the
+      # job before any of our code is built. --retry-all-errors extends the
+      # existing budget to those resets. It goes in a curlrc because run-vcpkg
+      # invokes bootstrap-vcpkg.sh itself, so there is no command line of ours
+      # to add it to, and because it then also covers the curl calls vcpkg
+      # makes for port sources. Linux-only: the Windows bootstrap downloads
+      # through tls12-download.exe, which never reads this file.
+      - name: Make curl retry connection resets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$HOME/.curlrc" << 'EOF'
+          retry = 3
+          retry-all-errors
+          retry-delay = 5
+          EOF
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5
