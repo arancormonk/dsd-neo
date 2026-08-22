@@ -731,7 +731,7 @@ dmr_udt_set_text_event(dsd_state* state, uint8_t slot, const char* text) {
 
 static void
 dmr_udt_emit_scalar(dmr_udt_ctx* ctx, uint32_t scalar) {
-    if (scalar >= 0x20U && scalar != 0x7FU) {
+    if (!dsd_unicode_scalar_is_control(scalar)) {
         dsd_unicode_fput_scalar(scalar, stderr);
         if (scalar < 0x7FU) {
             dmr_udt_append_text_event(ctx->state, ctx->slot, (char)scalar);

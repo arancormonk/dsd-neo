@@ -59,7 +59,7 @@ convert_hex_to_dec(uint16_t input) {
 
 static void
 utf16_text_emit_scalar(uint32_t scalar) {
-    if (scalar >= 0x20U && scalar != 0x040DU) { // If not a linebreak or terminal commmands
+    if (!dsd_unicode_scalar_is_control(scalar) && scalar != 0x040DU) { // If not a linebreak or terminal commmands
         dsd_unicode_fput_scalar(scalar, stderr);
     } else if (scalar == 0U) { // If padding (0 could also indicate end of text terminator?)
         DSD_FPRINTF(stderr, "_");

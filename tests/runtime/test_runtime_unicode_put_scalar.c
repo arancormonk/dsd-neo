@@ -44,6 +44,18 @@ test_utf8_mode_writes_utf8_bytes(void) {
 }
 
 static void
+test_utf8_mode_writes_nul_scalar(void) {
+    /* U+0000 is a scalar value: it must reach the stream as one NUL byte rather than vanish
+     * because the encoded form looks like an empty C string. */
+    static const uint32_t scalars[] = {0x41U, 0x00U, 0x42U};
+    char buf[64];
+    assert(dsd_test_setenv("DSD_FORCE_UTF8", "1", 1) == 0);
+    assert(dsd_test_unsetenv("DSD_FORCE_ASCII") == 0);
+    capture_put_scalars(scalars, sizeof scalars / sizeof scalars[0], buf, sizeof buf);
+    assert(memcmp(buf, "A\0B", 4U) == 0);
+}
+
+static void
 test_ascii_mode_prints_printable_low_byte_or_question_mark(void) {
     static const uint32_t scalars[] = {0x41U, 0x4739U, 0x1F600U, DSD_UNICODE_REPLACEMENT, 0x0AU};
     char buf[64];
@@ -57,6 +69,7 @@ test_ascii_mode_prints_printable_low_byte_or_question_mark(void) {
 int
 main(void) {
     test_utf8_mode_writes_utf8_bytes();
+    test_utf8_mode_writes_nul_scalar();
     test_ascii_mode_prints_printable_low_byte_or_question_mark();
     assert(dsd_test_unsetenv("DSD_FORCE_ASCII") == 0);
     DSD_FPRINTF(stderr, "RUNTIME_UNICODE_PUT_SCALAR: PASS\n");

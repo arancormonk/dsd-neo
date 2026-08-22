@@ -45,12 +45,6 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     return 1;
 }
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_unicode_supported(void) {
-    return 1;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
@@ -101,6 +95,10 @@ main(void) {
     st->event_history_s = (Event_History_I*)calloc(2u, sizeof(Event_History_I));
     assert(st->event_history_s != NULL);
     st->currentslot = 0;
+
+    /* Drive the real dsd_unicode_supported(); a local stub would collide with dsd-neo_runtime. */
+    assert(dsd_test_setenv("DSD_FORCE_UTF8", "1", 1) == 0);
+    assert(dsd_test_unsetenv("DSD_FORCE_ASCII") == 0);
 
     /* The alias block store holds bits; five UTF-16 code units, MSB first. */
     static const uint16_t units[] = {0x4739U, 0xD83DU, 0xDE00U, 0xD800U, 0x0041U};

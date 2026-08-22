@@ -359,12 +359,14 @@ rules:
       every emoji. glibc drops it; the Windows UCRT reports the failed conversion as a string of length -1
       and then writes the stack to the stream until the process faults, which is how a DMR UDT crashed the
       Windows build. Decode with <dsd-neo/core/utf16.h> and print through dsd_unicode_fput_scalar().
+      The %C and %S aliases reach the same runtime conversion and are blocked too.
     paths:
       include:
         - /android/**
         - /apps/**
         - /include/**
         - /src/**
+        - /tests/**
       exclude:
         - /android/third_party/**
         - /src/third_party/**
@@ -378,9 +380,61 @@ rules:
           - pattern: LOG_INFO($FMT, ...)
           - pattern: LOG_DEBUG($FMT, ...)
           - pattern: printf($FMT, ...)
+          # The terminal UI renders off-air alias and text fields through these.
+          - pattern: printw($FMT, ...)
+          - pattern: mvprintw($Y, $X, $FMT, ...)
+          - pattern: wprintw($WIN, $FMT, ...)
+          - pattern: mvwprintw($WIN, $Y, $X, $FMT, ...)
+          - pattern: vw_printw($WIN, $FMT, $AP)
+          - pattern: vwprintw($WIN, $FMT, $AP)
       - metavariable-regex:
           metavariable: $FMT
-          regex: '.*%[-+ #0-9.*]*l[cs].*'
+          # The %C/%S branch omits the space flag so that a "%% Sxx" literal is not a match.
+          regex: '.*(%[-+ #0-9.*]*l[cs]|%[-+#0-9.*]*[CS]).*'
+
+  - id: dsd-neo.no-wide-character-output
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Wide-character output function. These hand a wchar_t to the C runtime to encode in the current
+      locale, which is the same conversion %lc performs and fails at: off-air UTF-16 regularly carries a
+      lone surrogate, which has no encoding, and the Windows UCRT turns that failure into an unbounded
+      write of the stack (issue #358). Decode with <dsd-neo/core/utf16.h> and print the scalar values
+      through dsd_unicode_fput_scalar(), which emits UTF-8 bytes and never consults the runtime.
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+        - /tests/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+    pattern-either:
+      - pattern: fwprintf(...)
+      - pattern: wprintf(...)
+      - pattern: swprintf(...)
+      - pattern: vfwprintf(...)
+      - pattern: vwprintf(...)
+      - pattern: vswprintf(...)
+      - pattern: fputws(...)
+      - pattern: fputwc(...)
+      - pattern: putwc(...)
+      - pattern: putwchar(...)
+      # The curses wide API reaches the same conversion (PDCurses goes through wcrtomb).
+      - pattern: addwstr(...)
+      - pattern: waddwstr(...)
+      - pattern: mvaddwstr(...)
+      - pattern: mvwaddwstr(...)
+      - pattern: addnwstr(...)
+      - pattern: waddnwstr(...)
+      - pattern: add_wch(...)
+      - pattern: wadd_wch(...)
+      - pattern: mvadd_wch(...)
+      - pattern: mvwadd_wch(...)
+      - pattern: echo_wchar(...)
+      - pattern: wecho_wchar(...)
 
   - id: dsd-neo.no-unbounded-byte-to-bit-unpack
     languages: [c, cpp]

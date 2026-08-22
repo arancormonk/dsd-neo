@@ -61,14 +61,27 @@ dsd_utf16_is_low_surrogate(uint16_t unit) {
 }
 
 /**
+ * @brief Return 1 for a C0 or C1 control, else 0.
+ *
+ * The C1 half matters as much as the C0 half for radio text: a terminal reading UTF-8 turns
+ * U+009B back into CSI and U+009D into OSC, so encoding those faithfully would hand an escape
+ * sequence from off-air data to the operator's terminal just as a bare 0x1B would.
+ */
+static inline int
+dsd_unicode_scalar_is_control(uint32_t scalar) {
+    return scalar < 0x20U || (scalar >= 0x7FU && scalar <= 0x9FU);
+}
+
+/**
  * @brief Feed one UTF-16 code unit.
  *
  * Writes the scalar values that become available to @p out and returns how many were written
- * (0, 1 or 2). A high surrogate is held until the next unit. A high surrogate followed by
- * anything but a low surrogate yields U+FFFD and then the value of the current unit, so give
- * @p out room for DSD_UTF16_MAX_SCALARS_PER_UNIT values; a lone low surrogate yields U+FFFD.
- * The decoder state advances regardless of how many values fit. Nothing happens when @p out
- * cannot hold anything.
+ * (0, 1 or 2). A high surrogate is held until the next unit. A held high surrogate that is not
+ * completed yields U+FFFD, followed by the value of the current unit unless that unit is itself
+ * a high surrogate (which is held in turn), so give @p out room for
+ * DSD_UTF16_MAX_SCALARS_PER_UNIT values; a lone low surrogate yields U+FFFD. The decoder state
+ * advances regardless of how many values fit, so a smaller @p out_count drops scalar values
+ * outright. Nothing happens when @p out cannot hold anything.
  */
 static inline size_t
 dsd_utf16_decoder_push(dsd_utf16_decoder* dec, uint16_t unit, uint32_t* out, size_t out_count) {

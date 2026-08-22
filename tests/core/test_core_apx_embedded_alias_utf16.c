@@ -41,12 +41,6 @@ dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const cha
     return 0;
 }
 
-int
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_unicode_supported(void) {
-    return 1;
-}
-
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecoverable_errors) {
@@ -60,13 +54,17 @@ p25_lcw(dsd_opts* opts, dsd_state* state, uint8_t lcw_bits[], uint8_t irrecovera
 #pragma GCC diagnostic pop
 #endif
 
-/* UTF-16BE: U+4739, U+1F600 as a surrogate pair, a lone high surrogate, then 'A'. */
-static const uint8_t kAlias[] = {0x47, 0x39, 0xD8, 0x3D, 0xDE, 0x00, 0xD8, 0x00, 0x00, 0x41};
+/*
+ * UTF-16BE: U+4739, U+1F600 as a surrogate pair, a lone high surrogate, 'A', then U+001B. The
+ * octets descramble to whatever the air carried, so the ESC must be shown as a space rather than
+ * put on the operator's terminal as a control byte.
+ */
+static const uint8_t kAlias[] = {0x47, 0x39, 0xD8, 0x3D, 0xDE, 0x00, 0xD8, 0x00, 0x00, 0x41, 0x00, 0x1B};
 
 static const char kExpected[] = "\xE4\x9C\xB9"
                                 "\xF0\x9F\x98\x80"
                                 "\xEF\xBF\xBD"
-                                "A";
+                                "A ";
 
 /* Layout of the alias record as apx_embedded_alias_decode() reads it. */
 #define ALIAS_OCTETS  ((uint16_t)sizeof kAlias)
@@ -98,7 +96,7 @@ find_encoding(uint8_t* encoded, size_t count) {
         int found = 0;
         for (unsigned candidate = 0; candidate < 256U; candidate++) {
             encoded[i] = (uint8_t)candidate;
-            apx_embedded_alias_unscramble(encoded, ALIAS_OCTETS, decoded, sizeof decoded);
+            apx_embedded_alias_unscramble(encoded, count, ALIAS_OCTETS, decoded, sizeof decoded);
             if (decoded[i] == kAlias[i]) {
                 found = 1;
                 break;
@@ -114,7 +112,7 @@ find_encoding(uint8_t* encoded, size_t count) {
  * 65534 and a long record ran past the 200-octet scratch buffers.
  */
 static void
-decode_record_of(dsd_opts* opts, dsd_state* st, size_t record_bits) {
+decode_record_of(dsd_opts* opts, dsd_state* st, size_t record_bits, const char* want) {
     const size_t input_bits = sizeof(st->dmr_pdu_sf[0]);
     const size_t crc_offset = RECORD_OFFSET + record_bits - CRC_BITS;
     uint8_t* input = (uint8_t*)calloc(input_bits, 1U);
@@ -135,16 +133,22 @@ decode_record_of(dsd_opts* opts, dsd_state* st, size_t record_bits) {
     assert(dsd_test_capture_stderr_read(&cap, buf, sizeof buf) == 0);
 
     assert(strstr(buf, "Alias CRC Error") == NULL);
-    assert(strstr(buf, " Alias: ") != NULL);
+    if (strstr(buf, want) == NULL) {
+        DSD_FPRINTF(stderr, "record of %u bits printed: %s\n", (unsigned)record_bits, buf);
+        assert(0 && "unexpected handling of an off-air record length");
+    }
     free(input);
 }
 
 static void
 test_alias_length_from_air_is_bounded(dsd_opts* opts, dsd_state* st) {
-    /* Only the FQSUID, with its tail doubling as the CRC: no alias octets at all. */
-    decode_record_of(opts, st, FQSUID_BITS);
-    /* More alias octets than the scratch buffers hold. */
-    decode_record_of(opts, st, FQSUID_BITS + (250U * 8U) + CRC_BITS);
+    /* Shorter than the FQSUID plus its CRC: the CRC span would read below input[72]. */
+    decode_record_of(opts, st, FQSUID_BITS, " Alias Length Error;");
+    /* The FQSUID and its CRC and nothing else: a well-formed record with no alias octets. */
+    decode_record_of(opts, st, FQSUID_BITS + CRC_BITS, " Alias: ");
+    /* More alias octets than the scratch buffers hold. The count seeds the descrambler, so a
+     * clamped count would decode every octet wrong instead of truncating; the record is rejected. */
+    decode_record_of(opts, st, FQSUID_BITS + (250U * 8U) + CRC_BITS, " Alias Length Error (250 octets);");
 }
 
 int
@@ -154,6 +158,10 @@ main(void) {
     assert(opts != NULL && st != NULL);
     st->event_history_s = (Event_History_I*)calloc(2u, sizeof(Event_History_I));
     assert(st->event_history_s != NULL);
+
+    /* Drive the real dsd_unicode_supported(); a local stub would collide with dsd-neo_runtime. */
+    assert(dsd_test_setenv("DSD_FORCE_UTF8", "1", 1) == 0);
+    assert(dsd_test_unsetenv("DSD_FORCE_ASCII") == 0);
 
     uint8_t encoded[ALIAS_OCTETS];
     find_encoding(encoded, sizeof encoded);

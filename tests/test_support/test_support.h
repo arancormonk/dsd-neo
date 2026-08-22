@@ -252,9 +252,6 @@ dsd_test_capture_stderr_read(const dsd_test_capture_stderr* cap, char* buf, size
         return -1;
     }
     size_t n = fread(buf, 1U, buf_size - 1U, f);
-    if (n >= buf_size) {
-        n = buf_size - 1U;
-    }
     buf[n] = '\0';
     (void)fclose(f);
     (void)remove(cap->path);

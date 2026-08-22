@@ -37,8 +37,11 @@ dsd_unicode_fput_scalar(uint32_t scalar, FILE* stream) {
     }
     if (dsd_unicode_supported()) {
         char utf8[DSD_UTF8_MAX_BYTES + 1];
-        if (dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8) > 0U) {
-            (void)fputs(utf8, stream);
+        // Written by length, not as a string: U+0000 encodes to one NUL byte, which fputs()
+        // would silently drop while the ASCII fallback below still prints something.
+        const size_t n = dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8);
+        if (n > 0U) {
+            (void)fwrite(utf8, 1U, n, stream);
         }
         return;
     }

@@ -137,6 +137,28 @@ apx_alias_state_accept_block(dsd_state* state, uint8_t slot, uint8_t sequence, u
     return 1;
 }
 
+/**
+ * @brief Store one alias block into the superframe row, bounded.
+ *
+ * The block number is checked against ta_len, but ta_len is itself an unvalidated 8-bit field
+ * taken off the air: a header claiming more blocks than the row holds would walk this copy past
+ * the end of the row and into unrelated dsd_state members.
+ *
+ * @return 1 when the block was stored, 0 when the record was rejected and the store reset.
+ */
+static int
+apx_alias_store_block(dsd_state* state, uint8_t slot, size_t offset, const uint8_t* bits, size_t len) {
+    const size_t capacity = sizeof(state->dmr_pdu_sf[slot]);
+    if (offset > capacity || len > capacity - offset) {
+        DSD_FPRINTF(stderr, " Alias Block Overflow");
+        DSD_MEMSET(state->dmr_pdu_sf[slot], 0, capacity);
+        apx_alias_state_reset(state, slot);
+        return 0;
+    }
+    DSD_MEMCPY(state->dmr_pdu_sf[slot] + offset, bits, len);
+    return 1;
+}
+
 //Motorola P25 OTA Alias Decoding ripped/demystified from Ilya Smirnov's SDRTrunk Voodoo Code
 static uint8_t moto_alias_lut[256] = {
     0xD2, 0xF6, 0xD4, 0x2B, 0x63, 0x49, 0x94, 0x5E, 0xA7, 0x5C, 0x70, 0x69, 0xF7, 0x08, 0xB1, 0x7D, 0x38, 0xCF, 0xCC,
@@ -209,7 +231,9 @@ apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot,
         DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
 
         //use dmr_pdu_sf for storage, store data relevant portion at ptr of (bn-1) * 44 + 72 offset for header
-        DSD_MEMCPY(state->dmr_pdu_sf[slot] + (((bn - 1) * 44) + 72), lc_bits + 28, 44 * sizeof(uint8_t));
+        if (!apx_alias_store_block(state, slot, ((size_t)(bn - 1U) * 44U) + 72U, lc_bits + 28, 44U)) {
+            return;
+        }
 
         if (ta_len == bn) //this is the last block, proceed to decoding
         {
@@ -308,8 +332,11 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
         DSD_FPRINTF(stderr, " BN: %d/%d;", bn, ta_len);
 
         //use dmr_pdu_sf for storage, store data relevant portion at ptr calculated below
-        DSD_MEMCPY(state->dmr_pdu_sf[slot] + (alias_st + ((bn - 1) * rel_bits)), lc_bits + rel_st,
-                   rel_bits * sizeof(uint8_t)); //Fix this value when samples arrive
+        const size_t store_off = (size_t)alias_st + ((size_t)(bn - 1U) * (size_t)rel_bits);
+        if (!apx_alias_store_block(state, slot, store_off, lc_bits + rel_st,
+                                   (size_t)rel_bits)) { //Fix this value when samples arrive
+            return;
+        }
 
         //debug, dump accumulated data at this end
 
@@ -340,7 +367,8 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
-apx_embedded_alias_unscramble(const uint8_t* encoded, uint16_t num_bytes, uint8_t* decoded, size_t decoded_size) {
+apx_embedded_alias_unscramble(const uint8_t* encoded, size_t encoded_size, uint16_t num_bytes, uint8_t* decoded,
+                              size_t decoded_size) {
     if (encoded == NULL || decoded == NULL) {
         return;
     }
@@ -348,7 +376,7 @@ apx_embedded_alias_unscramble(const uint8_t* encoded, uint16_t num_bytes, uint8_
     uint16_t accumulator = num_bytes;
 
     //Ilya's Voodoo Code
-    for (uint16_t i = 0; i < num_bytes && i < decoded_size; i++) {
+    for (uint16_t i = 0; i < num_bytes && i < encoded_size && i < decoded_size; i++) {
         // Multiplication step 1
         uint16_t accum_mult = accumulator * 293 + 0x72E9;
 
@@ -376,6 +404,18 @@ apx_embedded_alias_unscramble(const uint8_t* encoded, uint16_t num_bytes, uint8_
     }
 }
 
+// The alias octets descramble to whatever the air carried, so controls are shown as a space the
+// way the DMR alias and UDT printers do: an unfiltered C0 byte would put an ESC sequence from
+// off-air data straight onto the operator's terminal.
+static void
+apx_embedded_alias_print_scalar(uint32_t scalar) {
+    if (!dsd_unicode_scalar_is_control(scalar)) {
+        dsd_unicode_fput_scalar(scalar, stderr);
+    } else {
+        DSD_FPRINTF(stderr, " ");
+    }
+}
+
 // The alias octets are UTF-16BE. Pairs are combined and unpaired halves shown as U+FFFD before
 // anything reaches stderr, so the C runtime never sees a code unit it cannot encode (issue #358).
 static void
@@ -387,13 +427,16 @@ apx_embedded_alias_print_utf16(const uint8_t* decoded, uint16_t num_bytes) {
         uint16_t unit = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
         size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
         for (size_t k = 0; k < n; k++) {
-            dsd_unicode_fput_scalar(scalars[k], stderr);
+            apx_embedded_alias_print_scalar(scalars[k]);
         }
     }
     if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
-        dsd_unicode_fput_scalar(scalars[0], stderr);
+        apx_embedded_alias_print_scalar(scalars[0]);
     }
 }
+
+/** @brief Scratch capacity for one Motorola APX embedded alias record, in octets. */
+#define APX_ALIAS_MAX_OCTETS 200
 
 void
 apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t num_bits, uint8_t* input) {
@@ -401,6 +444,27 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     UNUSED(opts);
     UNUSED(state);
     UNUSED(slot);
+
+    // num_bits is measured off the air, and every span below is derived from it, so validate it
+    // before deriving any of them. The record is a 56-bit fully qualified SUID, the alias octets,
+    // then a 16-bit CRC: below 72 bits the CRC would read before input[72] and its (size_t) length
+    // would underflow.
+    //subtract 2 CRC and 7 FQSUID
+    const int alias_octets = (num_bits / 8) - 9;
+    if (input == NULL || num_bits < 72 || alias_octets < 0) {
+        DSD_FPRINTF(stderr, " Alias Length Error;");
+        return;
+    }
+
+    // A record longer than the scratch buffers used to run past them. Clamping is not a safe
+    // truncation here: the octet count seeds the descrambler, so a clamped count decodes every
+    // octet wrong rather than yielding a correct prefix. Report the length instead of printing text
+    // that is known to be garbage. Rejecting here also caps the CRC span below at 72 + 1679 bits.
+    if (alias_octets > APX_ALIAS_MAX_OCTETS) {
+        DSD_FPRINTF(stderr, " Alias Length Error (%d octets);", alias_octets);
+        return;
+    }
+    const uint16_t num_bytes = (uint16_t)alias_octets;
 
     //debug, dump completed data set
 
@@ -428,34 +492,26 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
 
         //WIP: Working, needs more samples to verify various num_bits values
         uint16_t ptr = 128; //starting point of encoded alias
-        uint8_t encoded[200];
+        uint8_t encoded[APX_ALIAS_MAX_OCTETS];
         DSD_MEMSET(encoded, 0, sizeof(encoded));
-        uint8_t decoded[200];
+        uint8_t decoded[APX_ALIAS_MAX_OCTETS];
         DSD_MEMSET(decoded, 0, sizeof(decoded));
-        int alias_octets = (num_bits / 8) - 9; //subtract 2 CRC and 7 FQSUID
-
-        // num_bits is measured off the air. A record of fewer than nine octets used to wrap this
-        // count to 65534, and a long one ran past the scratch buffers below; keep it inside them,
-        // with the historical minimum of one octet.
-        if (alias_octets < 1) {
-            alias_octets = 1;
-        }
-        if (alias_octets > (int)sizeof(encoded)) {
-            alias_octets = (int)sizeof(encoded);
-        }
-        uint16_t num_bytes = (uint16_t)alias_octets;
 
         for (uint16_t i = 0; i < num_bytes; i++) {
             encoded[i] = (uint8_t)convert_bits_into_output(&input[ptr], 8);
             ptr += 8;
         }
 
-        apx_embedded_alias_unscramble(encoded, num_bytes, decoded, sizeof(decoded));
+        apx_embedded_alias_unscramble(encoded, sizeof(encoded), num_bytes, decoded, sizeof(decoded));
 
         DSD_FPRINTF(stderr, " Alias: ");
         apx_embedded_alias_print_utf16(decoded, num_bytes);
 
-        apx_embedded_alias_dump(opts, state, slot, num_bytes, input, decoded);
+        // Fewer than two octets is no UTF-16 unit at all; dumping it would persist an empty alias
+        // into the talkgroup policy table and the user's group file.
+        if (num_bytes >= 2) {
+            apx_embedded_alias_dump(opts, state, slot, num_bytes, input, decoded);
+        }
     }
 }
 
@@ -1093,6 +1149,31 @@ dmr_talker_alias_append_char(char* alias_string, size_t alias_size, char charact
 }
 
 static void
+dmr_talker_alias_print_scalar(uint32_t scalar) {
+    if (!dsd_unicode_scalar_is_control(scalar) && scalar != 0xFFFFU) {
+        dsd_unicode_fput_scalar(scalar, stderr);
+    } else {
+        DSD_FPRINTF(stderr, " ");
+    }
+}
+
+static void
+dmr_talker_alias_collect_scalar(uint32_t scalar, char* alias_string, size_t alias_size) {
+    if (scalar == 0U) {
+        dmr_talker_alias_append_text(alias_string, alias_size, " ");
+    } else if (!dsd_unicode_scalar_is_control(scalar) && scalar <= 0xFEU) {
+        // Encoded, not truncated to a byte: 0x80..0xFE stored raw is invalid UTF-8, and the stored
+        // alias is rendered as UTF-8 by both the ncurses UI and the event log.
+        char utf8[DSD_UTF8_MAX_BYTES + 1];
+        if (dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8) > 0U) {
+            dmr_talker_alias_append_text(alias_string, alias_size, utf8);
+        }
+    } else {
+        dmr_talker_alias_append_text(alias_string, alias_size, "*");
+    }
+}
+
+static void
 dmr_talker_alias_decode_iso7(const uint8_t* bits, uint16_t end, char* alias_string, size_t alias_size) {
     for (uint16_t i = 0; i < end; i++) {
         uint8_t character = (uint8_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 7)], 7);
@@ -1106,37 +1187,20 @@ dmr_talker_alias_decode_iso7(const uint8_t* bits, uint16_t end, char* alias_stri
     }
 }
 
+// ISO-8859-1 octets are Unicode scalar values already, so they go out through the same UTF-8
+// encoder the UTF-16 format uses: 0x80..0xFE written as a raw byte is invalid UTF-8 both on stderr
+// and in the stored alias, which the ncurses UI and the event log both render as UTF-8.
 static void
 dmr_talker_alias_decode_iso8(const uint8_t* bits, uint16_t end, char* alias_string, size_t alias_size) {
     for (uint16_t i = 0; i < end; i++) {
         uint8_t character = (uint8_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 8)], 8);
         if (character >= 0x20 && character != 0x7F && character != 0xFF) {
-            DSD_FPRINTF(stderr, "%c", character);
-            dmr_talker_alias_append_char(alias_string, alias_size, (char)character);
+            dmr_talker_alias_print_scalar(character);
+            dmr_talker_alias_collect_scalar(character, alias_string, alias_size);
         } else {
             DSD_FPRINTF(stderr, " ");
             dmr_talker_alias_append_text(alias_string, alias_size, " ");
         }
-    }
-}
-
-static void
-dmr_talker_alias_print_scalar(uint32_t scalar) {
-    if (scalar >= 0x20U && scalar != 0x7FU && scalar != 0xFFFFU) {
-        dsd_unicode_fput_scalar(scalar, stderr);
-    } else {
-        DSD_FPRINTF(stderr, " ");
-    }
-}
-
-static void
-dmr_talker_alias_collect_scalar(uint32_t scalar, char* alias_string, size_t alias_size) {
-    if (scalar == 0U) {
-        dmr_talker_alias_append_text(alias_string, alias_size, " ");
-    } else if (scalar >= 0x20U && scalar <= 0xFEU) {
-        dmr_talker_alias_append_char(alias_string, alias_size, (char)(scalar & 0xFFU));
-    } else {
-        dmr_talker_alias_append_text(alias_string, alias_size, "*");
     }
 }
 
