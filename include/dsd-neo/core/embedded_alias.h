@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -34,6 +35,17 @@ void apx_embedded_alias_header_phase2(dsd_opts* opts, dsd_state* state, uint8_t 
 void apx_embedded_alias_blocks_phase1(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
 void apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t* lc_bits);
 void apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t num_bits, uint8_t* input);
+/**
+ * @brief Unscramble Motorola APX embedded alias octets.
+ *
+ * Pure inverse of the over-the-air scrambling: @p decoded[i] depends on @p encoded[0..i] and on
+ * @p num_bytes. Both spans are stated because @p num_bytes is measured off the air: it reads and
+ * writes at most min(@p num_bytes, @p encoded_size, @p decoded_size) octets. Note that a
+ * @p num_bytes that does not match the record produces different octets throughout rather than a
+ * correct prefix, because the count seeds the descrambler.
+ */
+void apx_embedded_alias_unscramble(const uint8_t* encoded, size_t encoded_size, uint16_t num_bytes, uint8_t* decoded,
+                                   size_t decoded_size);
 void apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint16_t num_bytes,
                              const uint8_t* input, const uint8_t* decoded);
 

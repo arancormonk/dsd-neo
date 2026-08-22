@@ -231,6 +231,10 @@ print_snr_meter(const dsd_opts* opts, double snr_db, int mod) {
 #endif
         if (use_unicode) {
 #if defined(DSD_USE_PDCURSES) && defined(DSD_HAS_PDCURSES_WIDE_API)
+            // snr_block_glyphs is a compile-time table of U+2581..U+2588, never radio-sourced
+            // text, so there is no code unit here the runtime can fail to encode; PDCurses has no
+            // narrow path for these glyphs.
+            // nosemgrep: dsd-neo.no-wide-character-output
             addwstr(snr_block_glyphs[i]);
 #else
             snr_emit_str(snr_block_glyphs[i]);

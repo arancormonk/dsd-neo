@@ -19,6 +19,7 @@
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -729,31 +730,33 @@ dmr_udt_set_text_event(dsd_state* state, uint8_t slot, const char* text) {
 }
 
 static void
-dmr_udt_print_utf16_char(uint16_t utf16c) {
-    if (dsd_unicode_supported()) {
-        DSD_FPRINTF(stderr, "%lc", utf16c);
-    } else {
-        unsigned char lo = (unsigned char)(utf16c & 0xFF);
-        if (lo >= 0x20 && lo < 0x7F) {
-            fputc((int)lo, stderr);
-        } else {
-            fputc('?', stderr);
+dmr_udt_emit_scalar(dmr_udt_ctx* ctx, uint32_t scalar) {
+    if (!dsd_unicode_scalar_is_control(scalar)) {
+        dsd_unicode_fput_scalar(scalar, stderr);
+        if (scalar < 0x7FU) {
+            dmr_udt_append_text_event(ctx->state, ctx->slot, (char)scalar);
         }
+    } else {
+        DSD_FPRINTF(stderr, " ");
     }
 }
 
+// The units are UTF-16. Pairs are combined and unpaired halves shown as U+FFFD before anything
+// reaches stderr, so the C runtime never sees a code unit it cannot encode (issue #358).
 static void
 dmr_udt_emit_utf16_text(dmr_udt_ctx* ctx, int bit_offset, int char_count) {
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    dsd_utf16_decoder_reset(&decoder);
     for (int i = 0; i < char_count; i++) {
-        uint16_t utf16c = (uint16_t)convert_bits_into_output(&ctx->cs_bits[(i * 16) + bit_offset], 16);
-        if (utf16c >= 0x20 && utf16c != 0x7F) {
-            dmr_udt_print_utf16_char(utf16c);
-            if (utf16c < 0x7F) {
-                dmr_udt_append_text_event(ctx->state, ctx->slot, (char)(utf16c & 0xFF));
-            }
-        } else {
-            DSD_FPRINTF(stderr, " ");
+        uint16_t unit = (uint16_t)convert_bits_into_output(&ctx->cs_bits[(i * 16) + bit_offset], 16);
+        size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t k = 0; k < n; k++) {
+            dmr_udt_emit_scalar(ctx, scalars[k]);
         }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
+        dmr_udt_emit_scalar(ctx, scalars[0]);
     }
 }
 
