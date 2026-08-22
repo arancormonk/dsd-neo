@@ -20,8 +20,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/runtime/unicode.h>
-#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -340,6 +340,62 @@ apx_embedded_alias_blocks_phase2(dsd_opts* opts, dsd_state* state, uint8_t slot,
 }
 
 void
+apx_embedded_alias_unscramble(const uint8_t* encoded, uint16_t num_bytes, uint8_t* decoded, size_t decoded_size) {
+    if (encoded == NULL || decoded == NULL) {
+        return;
+    }
+
+    uint16_t accumulator = num_bytes;
+
+    //Ilya's Voodoo Code
+    for (uint16_t i = 0; i < num_bytes && i < decoded_size; i++) {
+        // Multiplication step 1
+        uint16_t accum_mult = accumulator * 293 + 0x72E9;
+
+        // Lookup table step
+        uint8_t lut = moto_alias_lut[encoded[i]];
+        uint8_t mult1 = lut - (accum_mult >> 8);
+
+        // Incrementing step
+        uint8_t mult2 = 1;
+        uint8_t shortstop = accum_mult | 0x1;
+        uint8_t increment = shortstop << 1;
+
+        //clang warning -- warning: result of comparison of constant -1 with expression of type 'uint8_t' (aka 'unsigned char') is always true [-Wtautological-constant-out-of-range-compare]
+        while (shortstop != 1) //this one tests out okay, so may use it instead
+        {
+            shortstop += increment;
+            mult2 += 2;
+        }
+
+        // Multiplication step 2
+        decoded[i] = mult1 * mult2;
+
+        // Update the accumulator
+        accumulator += encoded[i] + 1;
+    }
+}
+
+// The alias octets are UTF-16BE. Pairs are combined and unpaired halves shown as U+FFFD before
+// anything reaches stderr, so the C runtime never sees a code unit it cannot encode (issue #358).
+static void
+apx_embedded_alias_print_utf16(const uint8_t* decoded, uint16_t num_bytes) {
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    dsd_utf16_decoder_reset(&decoder);
+    for (int i = 0; i < num_bytes / 2; i++) {
+        uint16_t unit = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
+        size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t k = 0; k < n; k++) {
+            dsd_unicode_fput_scalar(scalars[k], stderr);
+        }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
+        dsd_unicode_fput_scalar(scalars[0], stderr);
+    }
+}
+
+void
 apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_t num_bits, uint8_t* input) {
 
     UNUSED(opts);
@@ -376,61 +432,28 @@ apx_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
         DSD_MEMSET(encoded, 0, sizeof(encoded));
         uint8_t decoded[200];
         DSD_MEMSET(decoded, 0, sizeof(decoded));
-        uint16_t num_bytes = (num_bits / 8) - 9; //subtract 2 CRC and 7 FQSUID
+        int alias_octets = (num_bits / 8) - 9; //subtract 2 CRC and 7 FQSUID
 
-        //sanity check
-        if (num_bytes == 0) {
-            num_bytes = 1;
+        // num_bits is measured off the air. A record of fewer than nine octets used to wrap this
+        // count to 65534, and a long one ran past the scratch buffers below; keep it inside them,
+        // with the historical minimum of one octet.
+        if (alias_octets < 1) {
+            alias_octets = 1;
         }
+        if (alias_octets > (int)sizeof(encoded)) {
+            alias_octets = (int)sizeof(encoded);
+        }
+        uint16_t num_bytes = (uint16_t)alias_octets;
 
         for (uint16_t i = 0; i < num_bytes; i++) {
             encoded[i] = (uint8_t)convert_bits_into_output(&input[ptr], 8);
             ptr += 8;
         }
 
-        uint16_t accumulator = num_bytes;
+        apx_embedded_alias_unscramble(encoded, num_bytes, decoded, sizeof(decoded));
 
-        //Ilya's Voodoo Code
-        for (uint16_t i = 0; i < num_bytes; i++) {
-            // Multiplication step 1
-            uint16_t accum_mult = accumulator * 293 + 0x72E9;
-
-            // Lookup table step
-            uint8_t lut = moto_alias_lut[encoded[i]];
-            uint8_t mult1 = lut - (accum_mult >> 8);
-
-            // Incrementing step
-            uint8_t mult2 = 1;
-            uint8_t shortstop = accum_mult | 0x1;
-            uint8_t increment = shortstop << 1;
-
-            //clang warning -- warning: result of comparison of constant -1 with expression of type 'uint8_t' (aka 'unsigned char') is always true [-Wtautological-constant-out-of-range-compare]
-            while (shortstop != 1) //this one tests out okay, so may use it instead
-            {
-                shortstop += increment;
-                mult2 += 2;
-            }
-
-            // Multiplication step 2
-            decoded[i] = mult1 * mult2;
-
-            // Update the accumulator
-            accumulator += encoded[i] + 1;
-        }
         DSD_FPRINTF(stderr, " Alias: ");
-        for (int i = 0; i < num_bytes / 2; i++) {
-            uint16_t ch = (uint16_t)(((decoded[(i * 2) + 0]) << 8) | ((decoded[(i * 2) + 1]) << 0));
-            if (dsd_unicode_supported()) {
-                DSD_FPRINTF(stderr, "%lc", ch);
-            } else {
-                unsigned char lo = (unsigned char)(ch & 0xFF);
-                if (lo >= 0x20 && lo < 0x7F) {
-                    fputc((int)lo, stderr);
-                } else {
-                    fputc('?', stderr);
-                }
-            }
-        }
+        apx_embedded_alias_print_utf16(decoded, num_bytes);
 
         apx_embedded_alias_dump(opts, state, slot, num_bytes, input, decoded);
     }
@@ -1098,43 +1121,44 @@ dmr_talker_alias_decode_iso8(const uint8_t* bits, uint16_t end, char* alias_stri
 }
 
 static void
-dmr_talker_alias_print_utf16_char(uint16_t character) {
-    if (character >= 0x20 && character != 0x7F && character != 0xFFFF) {
-        if (dsd_unicode_supported()) {
-            DSD_FPRINTF(stderr, "%lc", character);
-        } else {
-            unsigned char lo = (unsigned char)(character & 0xFF);
-            if (lo >= 0x20 && lo < 0x7F) {
-                fputc((int)lo, stderr);
-            } else {
-                fputc('?', stderr);
-            }
-        }
+dmr_talker_alias_print_scalar(uint32_t scalar) {
+    if (scalar >= 0x20U && scalar != 0x7FU && scalar != 0xFFFFU) {
+        dsd_unicode_fput_scalar(scalar, stderr);
     } else {
         DSD_FPRINTF(stderr, " ");
     }
 }
 
 static void
-dmr_talker_alias_collect_utf16_char(uint16_t character, char* alias_string, size_t alias_size) {
-    if (character == 0) {
+dmr_talker_alias_collect_scalar(uint32_t scalar, char* alias_string, size_t alias_size) {
+    if (scalar == 0U) {
         dmr_talker_alias_append_text(alias_string, alias_size, " ");
-    } else if (character >= 0x20 && character <= 0xFE) {
-        dmr_talker_alias_append_char(alias_string, alias_size, (char)(character & 0xFF));
+    } else if (scalar >= 0x20U && scalar <= 0xFEU) {
+        dmr_talker_alias_append_char(alias_string, alias_size, (char)(scalar & 0xFFU));
     } else {
         dmr_talker_alias_append_text(alias_string, alias_size, "*");
     }
 }
 
+// The units are UTF-16. Pairs are combined and unpaired halves shown as U+FFFD before anything
+// reaches stderr, so the C runtime never sees a code unit it cannot encode (issue #358). The
+// output locale is dsd_unicode_init_locale()'s business; this path no longer resets it.
 static void
 dmr_talker_alias_decode_utf16(const uint8_t* bits, uint16_t end, char* alias_string, size_t alias_size) {
-    setlocale(
-        LC_ALL,
-        ""); //needed when encoded alias contains Chinese (or probably any non-roman charset that isn't default on users terminal)
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    dsd_utf16_decoder_reset(&decoder);
     for (uint16_t i = 0; i < end; i++) {
-        uint16_t character = (uint16_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 16)], 16);
-        dmr_talker_alias_print_utf16_char(character);
-        dmr_talker_alias_collect_utf16_char(character, alias_string, alias_size);
+        uint16_t unit = (uint16_t)convert_bits_into_output((uint8_t*)&bits[((size_t)i * 16)], 16);
+        size_t n = dsd_utf16_decoder_push(&decoder, unit, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t k = 0; k < n; k++) {
+            dmr_talker_alias_print_scalar(scalars[k]);
+            dmr_talker_alias_collect_scalar(scalars[k], alias_string, alias_size);
+        }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
+        dmr_talker_alias_print_scalar(scalars[0]);
+        dmr_talker_alias_collect_scalar(scalars[0], alias_string, alias_size);
     }
 }
 

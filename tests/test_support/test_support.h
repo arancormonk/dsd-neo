@@ -231,6 +231,36 @@ dsd_test_capture_stderr_begin(dsd_test_capture_stderr* cap, const char* prefix) 
     return 0;
 }
 
+/**
+ * @brief Read what a finished capture collected into @p buf and delete the capture file.
+ *
+ * Call after dsd_test_capture_stderr_end(). @p buf is always NUL-terminated; output longer than
+ * @p buf_size - 1 is truncated.
+ *
+ * @return 0 on success, -1 otherwise.
+ */
+static inline int
+dsd_test_capture_stderr_read(const dsd_test_capture_stderr* cap, char* buf, size_t buf_size) {
+    if (!cap || !buf || buf_size == 0U) {
+        errno = EINVAL;
+        return -1;
+    }
+    buf[0] = '\0';
+
+    FILE* f = fopen(cap->path, "rb");
+    if (!f) {
+        return -1;
+    }
+    size_t n = fread(buf, 1U, buf_size - 1U, f);
+    if (n >= buf_size) {
+        n = buf_size - 1U;
+    }
+    buf[n] = '\0';
+    (void)fclose(f);
+    (void)remove(cap->path);
+    return 0;
+}
+
 static inline int
 dsd_test_capture_stderr_end(dsd_test_capture_stderr* cap) {
     if (!cap) {

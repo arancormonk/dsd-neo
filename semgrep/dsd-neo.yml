@@ -349,6 +349,39 @@ rules:
           metavariable: $FMT
           regex: '.*\\\\[ntr].*'
 
+  - id: dsd-neo.no-wide-char-conversion-in-format-string
+    languages: [c, cpp]
+    severity: ERROR
+    message: >-
+      Format string uses a wide-character conversion (%lc or %ls). It asks the C runtime to encode a wide
+      character in the current locale, and text taken off the air regularly contains a UTF-16 code unit that
+      has no encoding of its own: a lone surrogate, which is one unit in 32 of a garbage payload and half of
+      every emoji. glibc drops it; the Windows UCRT reports the failed conversion as a string of length -1
+      and then writes the stack to the stream until the process faults, which is how a DMR UDT crashed the
+      Windows build. Decode with <dsd-neo/core/utf16.h> and print through dsd_unicode_fput_scalar().
+    paths:
+      include:
+        - /android/**
+        - /apps/**
+        - /include/**
+        - /src/**
+      exclude:
+        - /android/third_party/**
+        - /src/third_party/**
+    patterns:
+      - pattern-either:
+          - pattern: DSD_FPRINTF($STREAM, $FMT, ...)
+          - pattern: DSD_SNPRINTF($DST, $SZ, $FMT, ...)
+          - pattern: DSD_VSNPRINTF($DST, $SZ, $FMT, $AP)
+          - pattern: LOG_ERROR($FMT, ...)
+          - pattern: LOG_WARN($FMT, ...)
+          - pattern: LOG_INFO($FMT, ...)
+          - pattern: LOG_DEBUG($FMT, ...)
+          - pattern: printf($FMT, ...)
+      - metavariable-regex:
+          metavariable: $FMT
+          regex: '.*%[-+ #0-9.*]*l[cs].*'
+
   - id: dsd-neo.no-unbounded-byte-to-bit-unpack
     languages: [c, cpp]
     severity: ERROR

@@ -17,6 +17,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
@@ -56,7 +57,20 @@ convert_hex_to_dec(uint16_t input) {
     return (uint16_t)value;
 }
 
-static void DSD_ATTR_USED
+static void
+utf16_text_emit_scalar(uint32_t scalar) {
+    if (scalar >= 0x20U && scalar != 0x040DU) { // If not a linebreak or terminal commmands
+        dsd_unicode_fput_scalar(scalar, stderr);
+    } else if (scalar == 0U) { // If padding (0 could also indicate end of text terminator?)
+        DSD_FPRINTF(stderr, "_");
+    } else if (scalar == 0x040DU) { //Ѝ or 0x040D may be ETLF
+        DSD_FPRINTF(stderr, " / ");
+    } else {
+        DSD_FPRINTF(stderr, "-");
+    }
+}
+
+void
 utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     // Only opened when wr says so, and closed under the same condition a loop
@@ -69,29 +83,20 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
                      sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
                      ""); //full text string
     }
+    // The octets are UTF-16BE. Pairs are combined and unpaired halves shown as U+FFFD before
+    // anything reaches stderr, so the C runtime never sees a code unit it cannot encode
+    // (issue #358).
+    dsd_utf16_decoder decoder;
+    uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
+    dsd_utf16_decoder_reset(&decoder);
     for (uint16_t i = 0; (uint16_t)(i + 1U) < len; i += 2) {
         uint16_t ch16 = (uint16_t)input[i + 0];
         ch16 <<= 8;
         ch16 |= (uint16_t)input[i + 1];
 
-        if (ch16 >= 0x20 && ch16 != 0x040D) { // If not a linebreak or terminal commmands
-            if (dsd_unicode_supported()) {
-                DSD_FPRINTF(stderr, "%lc", ch16);
-            } else {
-                /* best-effort ASCII: print low byte if printable */
-                unsigned char lo = (unsigned char)(ch16 & 0xFF);
-                if (lo >= 0x20 && lo < 0x7F) {
-                    fputc((int)lo, stderr);
-                } else {
-                    fputc('?', stderr);
-                }
-            }
-        } else if (ch16 == 0) { // If padding (0 could also indicate end of text terminator?)
-            DSD_FPRINTF(stderr, "_");
-        } else if (ch16 == 0x040D) { //Ѝ or 0x040D may be ETLF
-            DSD_FPRINTF(stderr, " / ");
-        } else {
-            DSD_FPRINTF(stderr, "-");
+        size_t n = dsd_utf16_decoder_push(&decoder, ch16, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
+        for (size_t k = 0; k < n; k++) {
+            utf16_text_emit_scalar(scalars[k]);
         }
 
         //convert to ascii range (will break eastern langauge, but can't do much about that right now)
@@ -106,6 +111,9 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
             dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
                        sizeof state->event_history_s[slot].Event_History_Items[0].text_message, c);
         }
+    }
+    if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
+        utf16_text_emit_scalar(scalars[0]);
     }
 
     //add elipses to indicate this is possibly truncated

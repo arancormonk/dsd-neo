@@ -591,6 +591,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_core_utf16
+  HEADERS_PUBLIC_CORE_UTF16
+  dsd-neo/core/utf16.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_core_opts
   HEADERS_PUBLIC_CORE_OPTS
   dsd-neo/core/opts.h
@@ -1331,6 +1337,23 @@ target_link_libraries(
 add_test(
     NAME RUNTIME_UNICODE_BLOCK_GLYPHS
     COMMAND dsd-neo_test_runtime_unicode_block_glyphs
+)
+
+add_executable(
+    dsd-neo_test_runtime_unicode_put_scalar
+    runtime/test_runtime_unicode_put_scalar.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_unicode_put_scalar
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_unicode_put_scalar
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME RUNTIME_UNICODE_PUT_SCALAR
+    COMMAND dsd-neo_test_runtime_unicode_put_scalar
 )
 
 add_executable(dsd-neo_test_runtime_log runtime/test_runtime_log.cpp)
@@ -3453,6 +3476,14 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_dsd_time PRIVATE dsd-neo_core)
 add_test(NAME CORE_DSD_TIME COMMAND dsd-neo_test_core_dsd_time)
+
+# UTF-16 decoding / UTF-8 encoding for radio-sourced text (header-only)
+add_executable(dsd-neo_test_core_utf16 core/test_core_utf16.c)
+target_include_directories(
+    dsd-neo_test_core_utf16
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(NAME CORE_UTF16 COMMAND dsd-neo_test_core_utf16)
 
 add_executable(
     dsd-neo_test_core_secret_redaction
@@ -6543,6 +6574,21 @@ add_test(
     COMMAND dsd-neo_test_dmr_block_type2_bounds
 )
 
+# DMR UDT UTF-16 text is transcoded by dsd-neo, never handed to %lc (issue #358)
+add_executable(
+    dsd-neo_test_dmr_udt_utf16_text
+    protocol/dmr/test_dmr_udt_utf16_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_udt_utf16_text
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_udt_utf16_text
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_UDT_UTF16_TEXT COMMAND dsd-neo_test_dmr_udt_utf16_text)
+
 add_executable(
     dsd-neo_test_dmr_ms_data
     protocol/dmr/test_dmr_ms_data.c
@@ -6981,6 +7027,30 @@ target_link_libraries(
 )
 add_test(NAME DMR_LRRP_CRC_GATING COMMAND dsd-neo_test_dmr_lrrp_crc_gating)
 
+# DMR SMS/TMS UTF-16 text: surrogate pairs combine, unpaired halves become U+FFFD
+add_executable(
+    dsd-neo_test_dmr_pdu_utf16_text
+    protocol/dmr/test_dmr_pdu_utf16_text.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_pdu_utf16_text
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_pdu_utf16_text
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_pdu_utf16_text
+    PRIVATE dsd-neo_test_support
+)
+add_test(NAME DMR_PDU_UTF16_TEXT COMMAND dsd-neo_test_dmr_pdu_utf16_text)
+
 # DMR LRRP: IP/UDP header lengths (IHL/UDP len) must bound LRRP payload
 add_executable(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
@@ -7092,6 +7162,50 @@ target_link_libraries(
 add_test(
     NAME DMR_TALKER_ALIAS_HEADER_LEN
     COMMAND dsd-neo_test_dmr_talker_alias_header_len
+)
+
+# DMR talker alias, UTF-16 format: transcoded by dsd-neo, never handed to %lc (issue #358)
+add_executable(
+    dsd-neo_test_dmr_talker_alias_utf16
+    protocol/dmr/test_dmr_talker_alias_utf16.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_talker_alias_utf16
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_talker_alias_utf16
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+)
+add_test(
+    NAME DMR_TALKER_ALIAS_UTF16
+    COMMAND dsd-neo_test_dmr_talker_alias_utf16
+)
+
+# Motorola APX embedded alias, UTF-16 text: same transcoding path as the DMR alias
+add_executable(
+    dsd-neo_test_core_apx_embedded_alias_utf16
+    core/test_core_apx_embedded_alias_utf16.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_alias.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/tests/test_support/csv_import_stub.c
+)
+target_include_directories(
+    dsd-neo_test_core_apx_embedded_alias_utf16
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_apx_embedded_alias_utf16
+    PRIVATE dsd-neo_runtime dsd-neo_test_call_state_support dsd-neo_test_support
+)
+add_test(
+    NAME CORE_APX_EMBEDDED_ALIAS_UTF16
+    COMMAND dsd-neo_test_core_apx_embedded_alias_utf16
 )
 
 # FEC core (Hamming/Golay/QR) block code tests
@@ -8648,6 +8762,7 @@ target_link_libraries(dsd-neo_test_p25_status_symbol PRIVATE dsd-neo_proto_p25)
 add_test(NAME P25_STATUS_SYMBOL COMMAND dsd-neo_test_p25_status_symbol)
 
 set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
+    dsd-neo_test_core_apx_embedded_alias_utf16
     dsd-neo_test_core_hytera_bp_silence
     dsd-neo_test_core_straight_keystream_validation
     dsd-neo_test_csi72
@@ -8664,12 +8779,14 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_lrrp_time_fallback
     dsd-neo_test_dmr_lrrp_time_valid
     dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_pdu_utf16_text
     dsd-neo_test_dmr_relaxed_header_ip
     dsd-neo_test_dmr_t3_ann_wd_tscc
     dsd-neo_test_dmr_t3_cmove
     dsd-neo_test_dmr_t3_force_release
     dsd-neo_test_dmr_t3_move_release
     dsd-neo_test_dmr_talker_alias_header_len
+    dsd-neo_test_dmr_talker_alias_utf16
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse
     dsd-neo_test_m17_protocol_names
