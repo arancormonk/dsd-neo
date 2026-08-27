@@ -560,6 +560,8 @@ typedef struct dsdneoUserConfig {
     int tcp_port;
     char udp_addr[64];
     int udp_port;
+    double input_warn_db;     /* low input-level advisory threshold in dBFS */
+    int input_warn_db_is_set; /* distinguish explicit value from default */
 
     /* [output] */
     int has_output;

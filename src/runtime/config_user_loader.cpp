@@ -340,6 +340,15 @@ apply_input_file_network_keys(dsdneoUserConfig* cfg, const char* key_lc, const c
 
 static void
 apply_input_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val, user_cfg_parse_mode_t mode) {
+    /* Source-independent advisory threshold; LOW advisories exist for every input family. */
+    if (strcmp(key_lc, "input_warn_db") == 0) {
+        double parsed = 0.0;
+        if (user_config_parse_double_value(val, &parsed) == 0) {
+            cfg->input_warn_db = parsed;
+            cfg->input_warn_db_is_set = 1;
+        }
+        return;
+    }
     apply_input_source_keys(cfg, key_lc, val);
     if (apply_input_rtl_keys(cfg, key_lc, val, mode)) {
         return;

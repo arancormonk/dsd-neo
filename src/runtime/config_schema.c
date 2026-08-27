@@ -49,6 +49,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"input", "tcp_port", "TCP direct input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535},
     {"input", "udp_addr", "UDP input bind address", "127.0.0.1", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"input", "udp_port", "UDP input port", "7355", NULL, DSDCFG_TYPE_INT, 1, 65535},
+    {"input", "input_warn_db", "Low input-level advisory threshold in dBFS", "-40.0", NULL, DSDCFG_TYPE_DOUBLE, -200,
+     0},
 
     /* [output] section */
     {"output", "backend", "Audio output backend", "pulse", "pulse|null", DSDCFG_TYPE_ENUM, 0, 0},

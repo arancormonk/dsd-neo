@@ -94,6 +94,26 @@ user_config_parse_int_value(const char* val, int* out_value) {
     return 0;
 }
 
+int
+user_config_parse_double_value(const char* val, double* out_value) {
+    if (!val || !*val || !out_value) {
+        return -1;
+    }
+    errno = 0;
+    char* end = NULL;
+    const double parsed = strtod(val, &end);
+    if (errno == ERANGE || end == val || (end && *end != '\0') || !std::isfinite(parsed)) {
+        return -1;
+    }
+    /* strtod() also accepts hex-float spellings ("0x10" == 16.0); the config grammar is
+       decimal, so reject any parse that consumed characters outside decimal float syntax. */
+    if (strspn(val, " \t\n\v\f\r0123456789+-.eE") != strlen(val)) {
+        return -1;
+    }
+    *out_value = parsed;
+    return 0;
+}
+
 char*
 user_config_trim_ascii_whitespace(char* text) {
     if (!text) {
@@ -184,10 +204,11 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->trunk_tune_enc_calls = 1;
     cfg->trunk_scan_idle_dwell_ms = 3000;
     cfg->trunk_scan_activity_hold_ms = 1200;
-
     cfg->rtl_auto_ppm = 0;
     cfg->soapy_bandwidth_hz = -1;
     cfg->soapy_bandwidth_hz_is_set = 0;
+    cfg->input_warn_db = -40.0;
+    cfg->input_warn_db_is_set = 0;
 
     cfg->call_alert_enabled = 0;
     cfg->call_alert_events = DSD_CALL_ALERT_EVENT_ALL;
@@ -949,6 +970,7 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
         case DSDCFG_INPUT_UDP: render_input_udp(out, cfg); break;
         default: break;
     }
+    DSD_FPRINTF(out, "input_warn_db = %.1f\n", cfg->input_warn_db);
     DSD_FPRINTF(out, "\n");
 }
 
@@ -1276,6 +1298,18 @@ apply_input_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_i
         default: break;
     }
     apply_input_rtl_auto_ppm(cfg, opts);
+    /* Source-independent advisory threshold; clamp to the same [-200, 0] window
+       the CLI, env, and runtime menu command enforce. */
+    if (cfg->input_warn_db_is_set) {
+        double warn_db = cfg->input_warn_db;
+        if (warn_db < -200.0) {
+            warn_db = -200.0;
+        }
+        if (warn_db > 0.0) {
+            warn_db = 0.0;
+        }
+        opts->input_warn_db = warn_db;
+    }
     /* The digital resample policy governs the whole rtl-family demod chain, including IQ
        replay, which can run under any configured input source — apply it unconditionally. */
     opts->digital_resample_mode = digital_resample_mode_from_name(cfg->digital_resample);
@@ -1637,6 +1671,10 @@ snapshot_input_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (cfg->input_source == DSDCFG_INPUT_RTL || cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         cfg->rtl_auto_ppm = opts->rtl_auto_ppm ? 1 : 0;
     }
+
+    /* LOW advisories exist for every input source, so the threshold snapshots unconditionally. */
+    cfg->input_warn_db = opts->input_warn_db;
+    cfg->input_warn_db_is_set = 1;
 }
 
 static void
@@ -1841,6 +1879,14 @@ render_template_type_hint(FILE* stream, const dsdcfg_schema_entry_t* e) {
                 DSD_FPRINTF(stream, "# Range: %d to %d\n", e->min_val, e->max_val);
             } else if (e->min_val != 0) {
                 DSD_FPRINTF(stream, "# Minimum: %d\n", e->min_val);
+            }
+            break;
+        case DSDCFG_TYPE_DOUBLE:
+            /* DOUBLE bounds mirror the validation guard: max_val is literal (0 is a real
+               ceiling, e.g. the 0 dBFS input_warn_db bound), so a bounded entry always
+               states its full window. */
+            if (e->min_val != 0 || e->max_val != 0) {
+                DSD_FPRINTF(stream, "# Range: %d to %d\n", e->min_val, e->max_val);
             }
             break;
         case DSDCFG_TYPE_BOOL: DSD_FPRINTF(stream, "# Values: true, false\n"); break;

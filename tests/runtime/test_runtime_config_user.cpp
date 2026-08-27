@@ -261,6 +261,106 @@ test_radioreference_save_atomic_roundtrip(void) {
 }
 
 static int
+test_input_warn_db_load_snapshot_render(void) {
+    /* Canonical load: the INI value parses and flags as explicitly set. */
+    static const char* ini = "[input]\n"
+                             "source = \"rtl\"\n"
+                             "input_warn_db = -60.5\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    int rc = 0;
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    if (!cfg.has_input || cfg.input_source != DSDCFG_INPUT_RTL) {
+        DSD_FPRINTF(stderr, "input section not parsed as RTL\n");
+        rc |= 1;
+    }
+    if (!cfg.input_warn_db_is_set || cfg.input_warn_db != -60.5) {
+        DSD_FPRINTF(stderr, "FAIL: input_warn_db not parsed as -60.5 (got %f, is_set=%d)\n", cfg.input_warn_db,
+                    cfg.input_warn_db_is_set);
+        rc |= 1;
+    }
+    (void)remove(path);
+
+    /* Trailing junk is rejected on load: the key stays unset and the default applies. */
+    static const char* junk_ini = "[input]\n"
+                                  "source = \"rtl\"\n"
+                                  "input_warn_db = -20junk\n";
+    if (write_temp_config(junk_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig junk_cfg;
+    if (dsd_user_config_load(path, &junk_cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    if (junk_cfg.input_warn_db_is_set || junk_cfg.input_warn_db != -40.0) {
+        DSD_FPRINTF(stderr, "FAIL: invalid input_warn_db must fall back to the -40.0 default (got %f, is_set=%d)\n",
+                    junk_cfg.input_warn_db, junk_cfg.input_warn_db_is_set);
+        rc |= 1;
+    }
+    (void)remove(path);
+
+    /* Hex-float spellings are rejected on load: the key stays unset and the default applies. */
+    static const char* hex_ini = "[input]\n"
+                                 "source = \"rtl\"\n"
+                                 "input_warn_db = 0x10\n";
+    if (write_temp_config(hex_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig hex_cfg;
+    if (dsd_user_config_load(path, &hex_cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    if (hex_cfg.input_warn_db_is_set || hex_cfg.input_warn_db != -40.0) {
+        DSD_FPRINTF(stderr, "FAIL: hex input_warn_db must fall back to the -40.0 default (got %f, is_set=%d)\n",
+                    hex_cfg.input_warn_db, hex_cfg.input_warn_db_is_set);
+        rc |= 1;
+    }
+    (void)remove(path);
+
+    /* Exit-autosave direction: the live opts threshold snapshots back into the config
+       so menu-made changes persist on exit. */
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.input_warn_db = -55.5;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.input_warn_db_is_set || snap.input_warn_db != -55.5) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the live input_warn_db (got %f, is_set=%d)\n", snap.input_warn_db,
+                    snap.input_warn_db_is_set);
+        rc |= 1;
+    }
+
+    /* The rendered INI always carries the live advisory threshold. */
+    dsdneoUserConfig render_cfg;
+    DSD_MEMSET(&render_cfg, 0, sizeof render_cfg);
+    render_cfg.has_input = 1;
+    render_cfg.input_source = DSDCFG_INPUT_RTL;
+    render_cfg.input_warn_db = -57.5;
+    render_cfg.input_warn_db_is_set = 1;
+    char rendered[8192];
+    if (render_config_to_buffer(&render_cfg, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("render input warn db", rendered, "input_warn_db = -57.5\n");
+
+    return rc;
+}
+
+static int
 test_apply_file_input_rescales_symbol_timing(void) {
     dsdneoUserConfig cfg = {};
     cfg.has_input = 1;
@@ -2365,6 +2465,7 @@ main(void) {
     rc |= test_radioreference_schema_rows();
     rc |= test_radioreference_config_roundtrip();
     rc |= test_radioreference_save_atomic_roundtrip();
+    rc |= test_input_warn_db_load_snapshot_render();
     rc |= test_dmr_mono_preset_precedes_false_override();
     rc |= test_persistence_gap_schema_rows();
     rc |= test_scanner_and_candidates_roundtrip();

@@ -440,6 +440,58 @@ test_basic_pulse_config_apply(void) {
 }
 
 static int
+test_input_warn_db_apply_clamps_to_window(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    int rc = 0;
+
+    /* Omitted key: opts keeps the initOpts default. */
+    dsdneoUserConfig unset_cfg = {0};
+    unset_cfg.has_input = 1;
+    unset_cfg.input_source = DSDCFG_INPUT_PULSE;
+    dsd_apply_user_config_to_opts(&unset_cfg, opts, state);
+    if (opts->input_warn_db != -40.0) {
+        DSD_FPRINTF(stderr, "FAIL: unset input_warn_db should keep the -40.0 default (got %f)\n", opts->input_warn_db);
+        rc |= 1;
+    }
+
+    /* In-range value applies verbatim. */
+    dsdneoUserConfig cfg = {0};
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_PULSE;
+    cfg.input_warn_db_is_set = 1;
+    cfg.input_warn_db = -60.0;
+    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    if (opts->input_warn_db != -60.0) {
+        DSD_FPRINTF(stderr, "FAIL: input_warn_db not applied (got %f)\n", opts->input_warn_db);
+        rc |= 1;
+    }
+
+    /* Out-of-range values clamp to the universal [-200, 0] window. */
+    cfg.input_warn_db = -250.0;
+    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    if (opts->input_warn_db != -200.0) {
+        DSD_FPRINTF(stderr, "FAIL: input_warn_db below the window not clamped to -200.0 (got %f)\n",
+                    opts->input_warn_db);
+        rc |= 1;
+    }
+    cfg.input_warn_db = 5.0;
+    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    if (opts->input_warn_db != 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: input_warn_db above the window not clamped to 0.0 (got %f)\n", opts->input_warn_db);
+        rc |= 1;
+    }
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+static int
 test_output_config_without_frontend_preserves_active_frontend(void) {
     test_runtime runtime;
     if (alloc_test_runtime(&runtime) != 0) {
@@ -2724,6 +2776,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
+    rc |= test_input_warn_db_apply_clamps_to_window();
     rc |= test_output_config_without_frontend_preserves_active_frontend();
     rc |= test_ui_command_queue_applies_fifo();
     rc |= test_ui_command_queue_overflow_drops_oldest();
