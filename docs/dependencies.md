@@ -24,7 +24,10 @@ Required dependencies are:
 
 Optional compiled dependencies are:
 
-- librtlsdr for RTL-SDR input
+- librtlsdr for RTL-SDR input. RTL-SDR Blog V4 and V4 Lite dongles need
+  librtlsdr 2.0.3 or newer (older releases misdetect their R828D/R828S tuners
+  as an R820T); the versions this project pins for CI, Windows and Android
+  builds are 2.0.3
 - SoapySDR 0.8.1 or newer for non-RTL SDR devices; the CMake package must
   export an imported target (`SoapySDR` or `SoapySDR::SoapySDR`)
 - Codec2 for additional vocoder paths. On Windows and Android it comes from the

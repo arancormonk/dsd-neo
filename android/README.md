@@ -449,7 +449,7 @@ privately for the Android app only.
 | Project | Version | Upstream commit | What is vendored |
 | --- | --- | --- | --- |
 | libusb | v1.0.30 | `87a55632db62c9bdc58cd31d3ccfa673f1bb017f` | The exact source list upstream's own `android/jni/libusb.mk` builds — the `linux_usbfs` backend plus the POSIX event/thread shims — with upstream's `android/config.h` |
-| librtlsdr | v2.0.2 (osmocom) | `619ac3186ea0ffc092615e1f59f7397e5e6f668c` | The library only: `librtlsdr.c`, the five tuner drivers and `include/`; the `rtl_*` command-line tools and their helpers are dropped |
+| librtlsdr | v2.0.3 (osmocom) | `797f8143266d983c56d8f35d2d442527529dd8a5` | The library only: `librtlsdr.c`, the five tuner drivers and `include/`; the `rtl_*` command-line tools and their helpers are dropped |
 
 librtlsdr is GPL-2.0-or-later and libusb is LGPL-2.1-or-later; both upstream
 license texts travel with the snapshots (`*/COPYING`) and both are listed in the

@@ -8,11 +8,13 @@ with libusb_wrap_sys_device(), and run the normal claim/probe sequence.
 The claim/probe tail of rtlsdr_open() is split into rtlsdr_init_opened_device()
 so both open paths share it verbatim.
 
-Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
+Generated against rtl-sdr v2.0.3 (797f8143266d983c56d8f35d2d442527529dd8a5).
 
---- a/include/rtl-sdr.h	2026-08-02 11:58:25.788423961 -0500
-+++ b/include/rtl-sdr.h	2026-08-02 11:58:25.790134466 -0500
-@@ -62,6 +62,20 @@
+diff --git a/include/rtl-sdr.h b/include/rtl-sdr.h
+index d64701e..6f75802 100644
+--- a/include/rtl-sdr.h
++++ b/include/rtl-sdr.h
+@@ -62,6 +62,20 @@ RTLSDR_API int rtlsdr_get_index_by_serial(const char *serial);
  
  RTLSDR_API int rtlsdr_open(rtlsdr_dev_t **dev, uint32_t index);
  
@@ -33,9 +35,11 @@ Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
  RTLSDR_API int rtlsdr_close(rtlsdr_dev_t *dev);
  
  /* configuration functions */
---- a/src/librtlsdr.c	2026-08-02 11:58:25.787572794 -0500
-+++ b/src/librtlsdr.c	2026-08-02 11:58:25.789363688 -0500
-@@ -1442,66 +1442,13 @@
+diff --git a/src/librtlsdr.c b/src/librtlsdr.c
+index 55d2ef1..514bd5e 100644
+--- a/src/librtlsdr.c
++++ b/src/librtlsdr.c
+@@ -1442,66 +1442,13 @@ int rtlsdr_check_dongle_model(void *dev, char *manufact_check, char *product_che
  }
  
  
@@ -106,7 +110,7 @@ Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
  
  	if (libusb_kernel_driver_active(dev->devh, 0) == 1) {
  		dev->driver_active = 1;
-@@ -1511,7 +1458,7 @@
+@@ -1511,7 +1458,7 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
  			fprintf(stderr, "Detached kernel driver\n");
  		} else {
  			fprintf(stderr, "Detaching kernel driver failed!");
@@ -115,7 +119,7 @@ Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
  		}
  #else
  		fprintf(stderr, "\nKernel driver is active, or device is "
-@@ -1526,7 +1473,7 @@
+@@ -1526,7 +1473,7 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
  	r = libusb_claim_interface(dev->devh, 0);
  	if (r < 0) {
  		fprintf(stderr, "usb_claim_interface error %d\n", r);
@@ -124,7 +128,7 @@ Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
  	}
  
  	dev->rtl_xtal = DEF_RTL_XTAL_FREQ;
-@@ -1639,6 +1586,73 @@
+@@ -1644,6 +1591,73 @@ found:
  
  	rtlsdr_set_i2c_repeater(dev, 0);
  
@@ -198,7 +202,7 @@ Generated against rtl-sdr v2.0.2 (619ac3186ea0ffc092615e1f59f7397e5e6f668c).
  	*out_dev = dev;
  
  	return 0;
-@@ -1656,6 +1670,75 @@
+@@ -1661,6 +1675,75 @@ err:
  	return r;
  }
  

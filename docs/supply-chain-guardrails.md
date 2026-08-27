@@ -22,7 +22,7 @@ repo=https://github.com/arancormonk/mbelib-neo
 git ls-remote "$repo" HEAD
 ```
 
-Update the matching SHA in `tools/ci-dependency-pins.env`, then run `tools/check_workflow_git_pins.sh`, `tools/check_workflow_download_pins.sh`, `tools/check_vcpkg_overlay_pins.sh`, and the affected CI/local build path. For `mbelib-neo` and `codec2`, keep the matching `*_TARBALL_SHA512` values in the same file aligned with the GitHub archive used by the vcpkg overlay port.
+Update the matching SHA in `tools/ci-dependency-pins.env`, then run `tools/check_workflow_git_pins.sh`, `tools/check_workflow_download_pins.sh`, `tools/check_vcpkg_overlay_pins.sh`, and the affected CI/local build path. For `mbelib-neo`, `codec2` and `rtlsdr`, keep the matching `*_TARBALL_SHA512` values in the same file aligned with the GitHub archive used by the vcpkg overlay port.
 
 For AppImage helper projects, refresh the source SHA only after checking the upstream changes. Do not switch back to `releases/download/continuous` helper AppImages. If a container base image or CMake installer changes, update the digest or SHA256 in `tools/ci-dependency-pins.env` in the same change as the workflow update.
 

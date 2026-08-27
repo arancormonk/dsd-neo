@@ -1510,7 +1510,12 @@ static int rtlsdr_init_opened_device(rtlsdr_dev_t *dev)
 	reg = rtlsdr_i2c_read_reg(dev, R820T_I2C_ADDR, R82XX_CHECK_ADDR);
 	if (reg == R82XX_CHECK_VAL) {
 		fprintf(stderr, "Found Rafael Micro R820T tuner\n");
+
+		if (rtlsdr_check_dongle_model(dev, "RTLSDRBlog", "Blog V4L"))
+			fprintf(stderr, "RTL-SDR Blog V4 Lite Detected\n");
+
 		dev->tuner_type = RTLSDR_TUNER_R820T;
+
 		goto found;
 	}
 
@@ -1815,7 +1820,6 @@ static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
 		    LIBUSB_TRANSFER_NO_DEVICE == xfer->status) {
 #endif
 			dev->dev_lost = 1;
-			rtlsdr_cancel_async(dev);
 			fprintf(stderr, "cb transfer status: %d, "
 				"canceling...\n", xfer->status);
 #ifndef _WIN32
@@ -2013,6 +2017,11 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 			break;
 		}
 
+		/* Check if device was lost due to transfer errors */
+		if (dev->dev_lost && RTLSDR_RUNNING == dev->async_status) {
+			dev->async_status = RTLSDR_CANCELING;
+		}
+
 		if (RTLSDR_CANCELING == dev->async_status) {
 			next_status = RTLSDR_INACTIVE;
 
@@ -2055,6 +2064,9 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	_rtlsdr_free_async_buffers(dev);
 
 	dev->async_status = next_status;
+
+	if (dev->dev_lost)
+		return -1;
 
 	return r;
 }
