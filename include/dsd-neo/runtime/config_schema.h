@@ -31,7 +31,8 @@ typedef enum DSD_ATTR_PACKED {
     DSDCFG_TYPE_BOOL,       /**< Boolean (true/false, yes/no, 1/0) */
     DSDCFG_TYPE_ENUM,       /**< String from a set of allowed values */
     DSDCFG_TYPE_PATH,       /**< File path (supports ~ and $VAR expansion) */
-    DSDCFG_TYPE_FREQ        /**< Frequency string (supports K/M/G suffix) */
+    DSDCFG_TYPE_FREQ,       /**< Frequency string (supports K/M/G suffix) */
+    DSDCFG_TYPE_DOUBLE      /**< Floating-point value with optional min/max */
 } dsdcfg_type_t;
 
 /**
@@ -44,8 +45,8 @@ typedef struct {
     const char* default_str; /**< Default value as string (for template) */
     const char* allowed;     /**< Pipe-separated allowed values (for ENUM) */
     dsdcfg_type_t type;      /**< Value type */
-    int min_val;             /**< Minimum value (for INT type) */
-    int max_val;             /**< Maximum value (for INT type, 0 = no max) */
+    int min_val;             /**< Minimum value (for INT/DOUBLE type) */
+    int max_val;             /**< Maximum value (for INT/DOUBLE type, 0 = no max) */
 } dsdcfg_schema_entry_t;
 
 /**

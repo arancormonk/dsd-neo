@@ -304,6 +304,7 @@ small subset is exposed as config keys for convenience (for example
 | `tcp_port` | INT (1-65535) | TCP PCM input port | `7355` |
 | `udp_addr` | STRING | UDP bind address | `127.0.0.1` |
 | `udp_port` | INT (1-65535) | UDP port | `7355` |
+| `input_warn_db` | DOUBLE (-200-0) | Low input-level advisory threshold in dBFS | `-40.0` |
 
 **[output] section:**
 | Key | Type | Description | Default |

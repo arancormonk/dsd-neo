@@ -84,6 +84,23 @@ is_compatible_enum_value(const dsdcfg_schema_entry_t* entry, const char* val) {
            && dsd_strcasecmp(val, "native") == 0;
 }
 
+/* Factored out of validate_entry_value() so the switch stays under the CCN 15 gate tools/lizard.sh --strict enforces. */
+static void
+validate_double_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                            int line_num, const char* diag_section, const char* diag_key) {
+    double dbl_val = 0.0;
+    if (user_config_parse_double_value(val, &dbl_val) != 0) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Invalid numeric value '%s'", val);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    } else if ((entry->min_val != 0 || entry->max_val != 0)
+               && (dbl_val < (double)entry->min_val || dbl_val > (double)entry->max_val)) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Value %.1f is out of range [%d, %d]", dbl_val, entry->min_val, entry->max_val);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, line_num, diag_section, diag_key, msg);
+    }
+}
+
 static void
 validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags, int line_num,
                      const char* diag_section, const char* diag_key) {
@@ -115,6 +132,10 @@ validate_entry_value(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
             }
             break;
         }
+
+        case DSDCFG_TYPE_DOUBLE:
+            validate_double_entry_value(entry, val, diags, line_num, diag_section, diag_key);
+            break;
 
         case DSDCFG_TYPE_ENUM:
             if (!is_compatible_enum_value(entry, val)) {

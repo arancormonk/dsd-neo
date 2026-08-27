@@ -351,7 +351,10 @@ The default RTL input line shows the SQL threshold but does not duplicate channe
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
 
-The low-level threshold is controlled by `--input-level-warn-db` or `DSD_NEO_INPUT_WARN_DB` and defaults to `-40 dBFS`.
+The low-level threshold is controlled by `--input-level-warn-db`, `DSD_NEO_INPUT_WARN_DB`, or the `[input]`
+`input_warn_db` user-config key, and defaults to `-40 dBFS`. Changes made through the terminal menu persist through
+config autosave on exit when config loading is enabled.
+
 Hot/clipping advisories use fixed thresholds: peak at or above `-1.0 dBFS` is `HOT`, and at least `0.1%` clipped or
 near-rail samples is `CLIP`. Footer messages are rate-limited. RF low-level status remains persistent but does not
 produce repeated low-level footer messages because a quiet channel and too little RF gain are not reliably

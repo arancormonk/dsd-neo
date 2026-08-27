@@ -1065,6 +1065,91 @@ test_int_out_of_range_negative_max(void) {
 }
 
 static int
+test_input_warn_db_double_validation(void) {
+    // In-range double: no diagnostics for the key
+    static const char* valid_ini = "[input]\n"
+                                   "source = \"rtl\"\n"
+                                   "input_warn_db = -60\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(valid_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    int result = 0;
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+    (void)rc;
+
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].key, "input_warn_db")) {
+            DSD_FPRINTF(stderr, "FAIL: valid input_warn_db produced a diagnostic: %s\n", diags.items[i].message);
+            result = 1;
+        }
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    // Below the [-200, 0] window: warning mentioning out of range
+    static const char* range_ini = "[input]\n"
+                                   "source = \"rtl\"\n"
+                                   "input_warn_db = -250\n";
+    if (write_temp_config(range_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    rc = dsd_user_config_validate(path, &diags);
+    (void)rc;
+
+    int found_range_warning = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_WARNING && strstr(diags.items[i].key, "input_warn_db")
+            && strstr(diags.items[i].message, "out of range")) {
+            found_range_warning = 1;
+            break;
+        }
+    }
+    if (!found_range_warning) {
+        DSD_FPRINTF(stderr, "FAIL: missing out-of-range warning for input_warn_db=-250\n");
+        result = 1;
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    // Non-numeric value: error mentioning the invalid value
+    static const char* junk_ini = "[input]\n"
+                                  "source = \"rtl\"\n"
+                                  "input_warn_db = abc\n";
+    if (write_temp_config(junk_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    rc = dsd_user_config_validate(path, &diags);
+    (void)rc;
+
+    int found_invalid_error = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].key, "input_warn_db")
+            && strstr(diags.items[i].message, "Invalid numeric value")) {
+            found_invalid_error = 1;
+            break;
+        }
+    }
+    if (!found_invalid_error) {
+        DSD_FPRINTF(stderr, "FAIL: missing invalid-value error for input_warn_db=abc\n");
+        result = 1;
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_diags_have_line_numbers(void) {
     static const char* ini = "[input]\n"
                              "source = \"pulse\"\n"
@@ -1477,6 +1562,7 @@ main(void) {
     rc |= test_invalid_source_rejected_after_soapy_added();
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
+    rc |= test_input_warn_db_double_validation();
     rc |= test_diags_have_line_numbers();
     rc |= test_empty_config();
     rc |= test_nonexistent_file();

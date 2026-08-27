@@ -22,6 +22,7 @@ int user_config_include_stack_contains_path(const char** include_stack, int incl
 int user_config_parse_decode_mode_value(const char* val, dsdneoUserDecodeMode* out_mode);
 int user_config_parse_bool_value(const char* val, int* out_value);
 int user_config_parse_int_value(const char* val, int* out_value);
+int user_config_parse_double_value(const char* val, double* out_value);
 char* user_config_trim_ascii_whitespace(char* text);
 void user_config_lowercase_ascii(char* text);
 void user_config_strip_wrapping_quotes(char* val);
