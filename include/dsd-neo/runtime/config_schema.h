@@ -46,7 +46,7 @@ typedef struct {
     const char* allowed;     /**< Pipe-separated allowed values (for ENUM) */
     dsdcfg_type_t type;      /**< Value type */
     int min_val;             /**< Minimum value (for INT/DOUBLE type) */
-    int max_val;             /**< Maximum value (for INT/DOUBLE type, 0 = no max) */
+    int max_val;             /**< Maximum value (INT: 0 = no max; DOUBLE: literal bound) */
 } dsdcfg_schema_entry_t;
 
 /**

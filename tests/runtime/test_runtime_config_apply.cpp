@@ -480,6 +480,12 @@ test_input_warn_db_apply_clamps_to_window(void) {
                     opts->input_warn_db);
         rc |= 1;
     }
+    cfg.input_warn_db = 5.0;
+    dsd_apply_user_config_to_opts(&cfg, opts, state);
+    if (opts->input_warn_db != 0.0) {
+        DSD_FPRINTF(stderr, "FAIL: input_warn_db above the window not clamped to 0.0 (got %f)\n", opts->input_warn_db);
+        rc |= 1;
+    }
 
     free_test_runtime(&runtime);
     return rc;

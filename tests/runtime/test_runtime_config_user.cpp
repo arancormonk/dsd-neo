@@ -310,6 +310,40 @@ test_input_warn_db_load_snapshot_render(void) {
     }
     (void)remove(path);
 
+    /* Hex-float spellings are rejected on load: the key stays unset and the default applies. */
+    static const char* hex_ini = "[input]\n"
+                                 "source = \"rtl\"\n"
+                                 "input_warn_db = 0x10\n";
+    if (write_temp_config(hex_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig hex_cfg;
+    if (dsd_user_config_load(path, &hex_cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    if (hex_cfg.input_warn_db_is_set || hex_cfg.input_warn_db != -40.0) {
+        DSD_FPRINTF(stderr, "FAIL: hex input_warn_db must fall back to the -40.0 default (got %f, is_set=%d)\n",
+                    hex_cfg.input_warn_db, hex_cfg.input_warn_db_is_set);
+        rc |= 1;
+    }
+    (void)remove(path);
+
+    /* Exit-autosave direction: the live opts threshold snapshots back into the config
+       so menu-made changes persist on exit. */
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.input_warn_db = -55.5;
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.input_warn_db_is_set || snap.input_warn_db != -55.5) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the live input_warn_db (got %f, is_set=%d)\n", snap.input_warn_db,
+                    snap.input_warn_db_is_set);
+        rc |= 1;
+    }
+
     /* The rendered INI always carries the live advisory threshold. */
     dsdneoUserConfig render_cfg;
     DSD_MEMSET(&render_cfg, 0, sizeof render_cfg);

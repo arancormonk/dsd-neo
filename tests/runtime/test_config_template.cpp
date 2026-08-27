@@ -169,6 +169,10 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing commented input_warn_db key\n");
         rc = 1;
     }
+    if (!strstr(content, "# Range: -200 to 0")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing input_warn_db range hint\n");
+        rc = 1;
+    }
     if (strstr(content, "version =") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
         rc = 1;

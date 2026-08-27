@@ -105,6 +105,11 @@ user_config_parse_double_value(const char* val, double* out_value) {
     if (errno == ERANGE || end == val || (end && *end != '\0') || !std::isfinite(parsed)) {
         return -1;
     }
+    /* strtod() also accepts hex-float spellings ("0x10" == 16.0); the config grammar is
+       decimal, so reject any parse that consumed characters outside decimal float syntax. */
+    if (strspn(val, " \t\n\v\f\r0123456789+-.eE") != strlen(val)) {
+        return -1;
+    }
     *out_value = parsed;
     return 0;
 }
@@ -1870,12 +1875,18 @@ render_template_type_hint(FILE* stream, const dsdcfg_schema_entry_t* e) {
             }
             break;
         case DSDCFG_TYPE_INT:
-        case DSDCFG_TYPE_DOUBLE:
-            /* Both types share the integer min/max hint convention (0 max = no explicit max). */
             if (e->max_val > 0) {
                 DSD_FPRINTF(stream, "# Range: %d to %d\n", e->min_val, e->max_val);
             } else if (e->min_val != 0) {
                 DSD_FPRINTF(stream, "# Minimum: %d\n", e->min_val);
+            }
+            break;
+        case DSDCFG_TYPE_DOUBLE:
+            /* DOUBLE bounds mirror the validation guard: max_val is literal (0 is a real
+               ceiling, e.g. the 0 dBFS input_warn_db bound), so a bounded entry always
+               states its full window. */
+            if (e->min_val != 0 || e->max_val != 0) {
+                DSD_FPRINTF(stream, "# Range: %d to %d\n", e->min_val, e->max_val);
             }
             break;
         case DSDCFG_TYPE_BOOL: DSD_FPRINTF(stream, "# Values: true, false\n"); break;

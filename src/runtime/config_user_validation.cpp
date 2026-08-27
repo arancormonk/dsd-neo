@@ -96,7 +96,7 @@ validate_double_entry_value(const dsdcfg_schema_entry_t* entry, const char* val,
     } else if ((entry->min_val != 0 || entry->max_val != 0)
                && (dbl_val < (double)entry->min_val || dbl_val > (double)entry->max_val)) {
         char msg[128];
-        DSD_SNPRINTF(msg, sizeof msg, "Value %.1f is out of range [%d, %d]", dbl_val, entry->min_val, entry->max_val);
+        DSD_SNPRINTF(msg, sizeof msg, "Value %g is out of range [%d, %d]", dbl_val, entry->min_val, entry->max_val);
         dsdcfg_diags_add(diags, DSDCFG_DIAG_WARNING, line_num, diag_section, diag_key, msg);
     }
 }
