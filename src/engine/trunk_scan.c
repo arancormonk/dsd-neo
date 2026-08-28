@@ -19,6 +19,7 @@
 #endif
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/log.h>
@@ -178,6 +179,7 @@ typedef struct {
     uint8_t nxdn_base_freq;
     uint8_t nxdn_step;
     uint8_t nxdn_bw;
+    nxdn_trunk_diag_ledger nxdn_diag;
 } dsd_trunk_scan_snapshot;
 
 typedef struct {
@@ -1178,6 +1180,9 @@ trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* s
     snapshot->nxdn_base_freq = state->nxdn_base_freq;
     snapshot->nxdn_step = state->nxdn_step;
     snapshot->nxdn_bw = state->nxdn_bw;
+    // Channels seen without a mapping are a property of the site, not of the decoder, so each
+    // target keeps its own ledger rather than accumulating every target's misses in one.
+    nxdn_trunk_diag_ledger_save(state, &snapshot->nxdn_diag);
 }
 
 static void
@@ -1192,6 +1197,7 @@ trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot
     state->nxdn_base_freq = snapshot->nxdn_base_freq;
     state->nxdn_step = snapshot->nxdn_step;
     state->nxdn_bw = snapshot->nxdn_bw;
+    nxdn_trunk_diag_ledger_restore(state, &snapshot->nxdn_diag);
 }
 
 static void
@@ -2053,6 +2059,16 @@ dsd_engine_trunk_scan_active_p25_ctx(void) {
     return &rt->p25_ctx;
 }
 
+const char*
+dsd_engine_trunk_scan_active_chan_csv(const dsd_state* state) {
+    const dsd_trunk_scan_coord* coord = trunk_scan_get_const(state);
+    if (!coord || coord->active >= coord->count) {
+        return NULL;
+    }
+    const char* chan_csv = coord->targets[coord->active].target.chan_csv;
+    return (chan_csv[0] != '\0') ? chan_csv : NULL;
+}
+
 void*
 dsd_engine_trunk_scan_active_dmr_ctx(void) {
     if (!g_trunk_scan_coord || g_trunk_scan_coord->count == 0) {
@@ -2144,6 +2160,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.tick = dsd_engine_trunk_scan_tick;
     hooks.dmr_conventional_activity = dsd_engine_trunk_scan_dmr_conventional_activity;
     hooks.nxdn_conventional_activity = dsd_engine_trunk_scan_nxdn_conventional_activity;
+    hooks.active_chan_csv = dsd_engine_trunk_scan_active_chan_csv;
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     dsd_trunk_scan_hooks_set(hooks);
 }
@@ -2242,12 +2259,32 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     return 0;
 }
 
+// Each target carries its own missing-channel ledger and channel map, so the exit summary the
+// engine logs once for a single system becomes one line per target with a channel map here.
+static void
+trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
+    if (!coord || coord->count == 0) {
+        return;
+    }
+    if (coord->active < coord->count) {
+        trunk_scan_save_target_snapshot(coord, state, &coord->targets[coord->active]);
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        if (rt->target.type != DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+            continue;
+        }
+        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, rt->snapshot.trunk_chan_map);
+    }
+}
+
 void
 dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
-    const dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!coord) {
         return;
     }
+    trunk_scan_log_nxdn_diag_summaries(coord, state);
     trunk_scan_restore_saved_opts(opts, coord);
     trunk_scan_uninstall_runtime_hooks(coord);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);

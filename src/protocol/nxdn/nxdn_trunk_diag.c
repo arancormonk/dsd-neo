@@ -8,16 +8,22 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-typedef struct {
-    uint8_t missing_seen[(0xFFFFu + 7u) / 8u];
-    uint32_t missing_unique;
-} nxdn_trunk_diag_t;
+typedef nxdn_trunk_diag_ledger nxdn_trunk_diag_t;
+
+static nxdn_trunk_diag_t*
+nxdn_trunk_diag_get(const dsd_state* state) {
+    if (!state) {
+        return NULL;
+    }
+    return DSD_STATE_EXT_GET_AS(nxdn_trunk_diag_t, (dsd_state*)state, DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG);
+}
 
 static nxdn_trunk_diag_t*
 nxdn_trunk_diag_get_or_create(dsd_state* state) {
@@ -25,7 +31,7 @@ nxdn_trunk_diag_get_or_create(dsd_state* state) {
         return NULL;
     }
 
-    nxdn_trunk_diag_t* diag = DSD_STATE_EXT_GET_AS(nxdn_trunk_diag_t, state, DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG);
+    nxdn_trunk_diag_t* diag = nxdn_trunk_diag_get(state);
     if (diag) {
         return diag;
     }
@@ -66,15 +72,10 @@ nxdn_trunk_diag_note_missing_channel(dsd_state* state, uint16_t channel) {
     return 1;
 }
 
-size_t
-nxdn_trunk_diag_collect_unmapped_channels(const dsd_state* state, uint16_t* out, size_t out_cap) {
-    if (!state) {
-        return 0;
-    }
-
-    const nxdn_trunk_diag_t* diag =
-        DSD_STATE_EXT_GET_AS(const nxdn_trunk_diag_t, (dsd_state*)state, DSD_STATE_EXT_PROTO_NXDN_TRUNK_DIAG);
-    if (!diag || diag->missing_unique == 0) {
+static size_t
+nxdn_trunk_diag_collect_from(const nxdn_trunk_diag_ledger* ledger, const long int* chan_map, uint16_t* out,
+                             size_t out_cap) {
+    if (!ledger || !chan_map || ledger->missing_unique == 0) {
         return 0;
     }
 
@@ -84,10 +85,10 @@ nxdn_trunk_diag_collect_unmapped_channels(const dsd_state* state, uint16_t* out,
     for (unsigned int ch = 1; ch < 0xFFFFu; ch++) {
         const size_t byte_idx = (size_t)ch / 8u;
         const uint8_t bit_mask = (uint8_t)(1u << (ch % 8u));
-        if ((diag->missing_seen[byte_idx] & bit_mask) == 0) {
+        if ((ledger->missing_seen[byte_idx] & bit_mask) == 0) {
             continue;
         }
-        if (state->trunk_chan_map[ch] != 0) {
+        if (chan_map[ch] != 0) {
             continue;
         }
 
@@ -100,13 +101,75 @@ nxdn_trunk_diag_collect_unmapped_channels(const dsd_state* state, uint16_t* out,
     return total;
 }
 
+size_t
+nxdn_trunk_diag_collect_unmapped_channels(const dsd_state* state, uint16_t* out, size_t out_cap) {
+    if (!state) {
+        return 0;
+    }
+    return nxdn_trunk_diag_collect_from(nxdn_trunk_diag_get(state), state->trunk_chan_map, out, out_cap);
+}
+
+void
+nxdn_trunk_diag_ledger_save(const dsd_state* state, nxdn_trunk_diag_ledger* out) {
+    if (!out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+
+    const nxdn_trunk_diag_t* diag = nxdn_trunk_diag_get(state);
+    if (!diag) {
+        return;
+    }
+    DSD_MEMCPY(out, diag, sizeof(*out));
+}
+
+void
+nxdn_trunk_diag_ledger_restore(dsd_state* state, const nxdn_trunk_diag_ledger* ledger) {
+    if (!state || !ledger) {
+        return;
+    }
+
+    nxdn_trunk_diag_t* diag = nxdn_trunk_diag_get(state);
+    if (!diag) {
+        // Nothing recorded on either side: rotating past targets that never decoded a grant must
+        // not allocate a ledger for each of them.
+        if (ledger->missing_unique == 0) {
+            return;
+        }
+        diag = nxdn_trunk_diag_get_or_create(state);
+        if (!diag) {
+            return;
+        }
+    }
+    DSD_MEMCPY(diag, ledger, sizeof(*diag));
+}
+
+const char*
+nxdn_trunk_diag_chan_map_path(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts) {
+        return NULL;
+    }
+    if (opts->chan_in_file[0] != '\0') {
+        return opts->chan_in_file;
+    }
+    if (opts->trunk_scan_enabled != 1) {
+        return NULL;
+    }
+
+    // Trunk scan rejects a global -C map and imports each target's chan_csv through throwaway
+    // options, so the coordinator is the only holder of the path.
+    const char* path = dsd_trunk_scan_hook_active_chan_csv(state);
+    return (path && path[0] != '\0') ? path : NULL;
+}
+
 void
 nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state, uint16_t channel,
                                          const char* context) {
     if (!opts || !state) {
         return;
     }
-    if (opts->chan_in_file[0] == '\0') {
+    const char* chan_csv = nxdn_trunk_diag_chan_map_path(opts, state);
+    if (!chan_csv) {
         return;
     }
     if (channel == 0 || channel >= 0xFFFFu) {
@@ -121,10 +184,9 @@ nxdn_trunk_diag_log_missing_channel_once(const dsd_opts* opts, dsd_state* state,
 
     if (context && context[0] != '\0') {
         LOG_INFO("NOTICE: NXDN trunking: %s: CH %u has no frequency mapping in chan_csv (%s)\n", context, channel,
-                 opts->chan_in_file);
+                 chan_csv);
     } else {
-        LOG_INFO("NOTICE: NXDN trunking: CH %u has no frequency mapping in chan_csv (%s)\n", channel,
-                 opts->chan_in_file);
+        LOG_INFO("NOTICE: NXDN trunking: CH %u has no frequency mapping in chan_csv (%s)\n", channel, chan_csv);
     }
 }
 
@@ -171,17 +233,14 @@ nxdn_trunk_diag_summary_finalize(char* msg, size_t msg_cap, size_t used) {
 }
 
 void
-nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
-    if (!opts || !state) {
-        return;
-    }
-    if (opts->chan_in_file[0] == '\0') {
+nxdn_trunk_diag_log_summary_for(const char* chan_csv, const nxdn_trunk_diag_ledger* ledger, const long int* chan_map) {
+    if (!chan_csv || chan_csv[0] == '\0') {
         return;
     }
 
     uint16_t missing[16];
     const size_t cap = sizeof(missing) / sizeof(missing[0]);
-    const size_t total = nxdn_trunk_diag_collect_unmapped_channels(state, missing, cap);
+    const size_t total = nxdn_trunk_diag_collect_from(ledger, chan_map, missing, cap);
     if (total == 0) {
         return;
     }
@@ -189,7 +248,7 @@ nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
     char msg[512];
     int n =
         DSD_SNPRINTF(msg, sizeof msg, "NXDN trunking: %zu channel%s missing frequency mapping in chan_csv (%s):", total,
-                     (total == 1) ? " is" : "s are", opts->chan_in_file);
+                     (total == 1) ? " is" : "s are", chan_csv);
     if (n < 0) {
         return;
     }
@@ -201,4 +260,13 @@ nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
     nxdn_trunk_diag_summary_finalize(msg, sizeof msg, used);
 
     LOG_INFO("NOTICE: %s", msg);
+}
+
+void
+nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return;
+    }
+    nxdn_trunk_diag_log_summary_for(nxdn_trunk_diag_chan_map_path(opts, state), nxdn_trunk_diag_get(state),
+                                    state->trunk_chan_map);
 }

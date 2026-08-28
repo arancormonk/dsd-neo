@@ -18,6 +18,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -2381,6 +2382,109 @@ test_nxdn_state_isolated_per_target(void) {
     return test_rc;
 }
 
+/*
+ * The NXDN missing-channel diagnostics have to work per target under trunk scan: the coordinator
+ * is the only holder of the parked target's chan_csv path, and one decoder state is shared by
+ * every target, so the ledger of channels seen without a mapping has to travel with the snapshot.
+ */
+static int
+test_nxdn_trunk_diag_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n1,461012500\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file(dir,
+                           "a,nxdn-trunk,461000000,chan.csv,250,,\n"
+                           "b,nxdn-trunk,462000000,,250,,\n",
+                           target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn diag scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    const char* active_csv = dsd_trunk_scan_hook_active_chan_csv(&state);
+    if (!active_csv || !strstr(active_csv, "chan.csv")) {
+        DSD_FPRINTF(stderr, "parked target chan_csv not visible to protocol code: %s\n",
+                    active_csv ? active_csv : "(null)");
+        test_rc = 1;
+    }
+    if (nxdn_trunk_diag_chan_map_path(&opts, &state) == NULL) {
+        DSD_FPRINTF(stderr, "diag path unresolved for a target with a chan_csv\n");
+        test_rc = 1;
+    }
+
+    /* Target A decodes a grant for a channel its map does not cover. */
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 5, "grant");
+    if (nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0) != 1) {
+        DSD_FPRINTF(stderr, "missing channel not recorded for parked scan target\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "nxdn diag scan did not rotate to second target\n");
+        test_rc = 1;
+    }
+    if (nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0) != 0) {
+        DSD_FPRINTF(stderr, "second target inherited the first target's missing-channel ledger\n");
+        test_rc = 1;
+    }
+    if (dsd_trunk_scan_hook_active_chan_csv(&state) != NULL) {
+        DSD_FPRINTF(stderr, "target without a chan_csv reported one\n");
+        test_rc = 1;
+    }
+    /* Without a channel map there is nothing to report a missing mapping against. */
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 7, "grant");
+    if (nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0) != 0) {
+        DSD_FPRINTF(stderr, "target without a chan_csv recorded a missing channel\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn diag scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    uint16_t missing[4];
+    DSD_MEMSET(missing, 0, sizeof missing);
+    if (nxdn_trunk_diag_collect_unmapped_channels(&state, missing, 4) != 1 || missing[0] != 5) {
+        DSD_FPRINTF(stderr, "first target did not get its missing-channel ledger back\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (dsd_trunk_scan_hook_active_chan_csv(&state) != NULL) {
+        DSD_FPRINTF(stderr, "scan chan_csv hook still installed after shutdown\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
 static int
 test_state_ext_cleanup_clears_scan_hooks(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -4197,6 +4301,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
+    rc |= run_with_default_tune_hook(test_nxdn_trunk_diag_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);
     rc |= run_with_default_tune_hook(test_dmr_trunk_sm_timeout_releases_scan_hold);

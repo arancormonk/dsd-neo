@@ -194,6 +194,9 @@ During scanning:
   header or data header, or an NXDN VCALL, DCALL or SDCALL header. The allow/block list, private-call tuning,
   data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
   only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
+- An `nxdn-trunk` target with a `chan_csv` reports channels it was granted but could not map, once per channel while
+  it is parked (`NOTICE: NXDN trunking: grant: CH 12 has no frequency mapping in chan_csv (site.csv)`), and a summary
+  for each such target at exit. Every target keeps its own list, so one target's gaps are never attributed to another.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
 
 Expected log messages include:

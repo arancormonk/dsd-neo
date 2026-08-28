@@ -47,6 +47,11 @@ dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_s
     }
 }
 
+const char*
+dsd_trunk_scan_hook_active_chan_csv(const dsd_state* state) {
+    return g_trunk_scan_hooks.active_chan_csv ? g_trunk_scan_hooks.active_chan_csv(state) : NULL;
+}
+
 void
 dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state) {
     if (g_trunk_scan_hooks.enc_lockout_clear_snapshots) {

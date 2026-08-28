@@ -2581,7 +2581,11 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     dsd_exitflag_store(1);
 
-    nxdn_trunk_diag_log_summary(opts, state);
+    // Under trunk scan each target owns a channel map and a ledger, so the coordinator logs one
+    // summary per target from its snapshots as it shuts down.
+    if (opts->trunk_scan_enabled != 1) {
+        nxdn_trunk_diag_log_summary(opts, state);
+    }
     dsd_engine_cleanup_codec2(state);
     dsd_engine_cleanup_watchdog_snapshots(opts, state);
     noCarrier(opts, state);

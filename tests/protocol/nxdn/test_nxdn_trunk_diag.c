@@ -11,6 +11,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -43,6 +44,106 @@ expect_eq_u16(const char* tag, uint16_t got, uint16_t want) {
         return 1;
     }
     return 0;
+}
+
+static const char* g_active_chan_csv;
+
+static const char*
+test_active_chan_csv(const dsd_state* state) {
+    (void)state;
+    return g_active_chan_csv;
+}
+
+static void
+set_scan_chan_csv_hook(const char* path) {
+    g_active_chan_csv = path;
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.active_chan_csv = test_active_chan_csv;
+    dsd_trunk_scan_hooks_set(hooks);
+}
+
+/*
+ * Under trunk scan the global -C channel map is rejected, so opts->chan_in_file is always empty
+ * and the per-target chan_csv lives in the coordinator. The diagnostics have to ask the
+ * coordinator for it, or they silently never report a missing channel mapping for a scan target.
+ */
+static int
+test_chan_map_path_resolves_under_trunk_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.trunk_scan_enabled = 1;
+    set_scan_chan_csv_hook("targets/site.csv");
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 40, "grant");
+    rc |= expect_eq_size("scan-target-path-records", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 1);
+
+    /* A scan target without a chan_csv has no map to report against. */
+    set_scan_chan_csv_hook(NULL);
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 41, "grant");
+    rc |= expect_eq_size("scan-target-no-csv-skipped", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 1);
+
+    /* An empty string is the same as no channel map. */
+    set_scan_chan_csv_hook("");
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 42, "grant");
+    rc |=
+        expect_eq_size("scan-target-empty-csv-skipped", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 1);
+
+    /* Outside trunk scan the coordinator hook is not the authority; -C alone is. */
+    opts.trunk_scan_enabled = 0;
+    set_scan_chan_csv_hook("targets/site.csv");
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 43, "grant");
+    rc |= expect_eq_size("non-scan-ignores-hook", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 1);
+
+    /* A global -C still wins wherever it is set. */
+    (void)DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "global.csv");
+    nxdn_trunk_diag_log_missing_channel_once(&opts, &state, 44, "grant");
+    rc |= expect_eq_size("global-chan-map-records", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 2);
+
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    g_active_chan_csv = NULL;
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/*
+ * The ledger is per decoder-state, but trunk scan rotates several NXDN targets through one state,
+ * so the coordinator has to be able to park and restore each target's ledger.
+ */
+static int
+test_ledger_save_and_restore_round_trip(void) {
+    static dsd_state state;
+    nxdn_trunk_diag_ledger ledger;
+    int rc = 0;
+
+    DSD_MEMSET(&ledger, 0xAB, sizeof(ledger));
+    nxdn_trunk_diag_ledger_save(&state, &ledger);
+    rc |= expect_eq_size("empty-state-saves-empty-ledger", (size_t)ledger.missing_unique, 0);
+
+    rc |= expect_eq_int("note-ch60", nxdn_trunk_diag_note_missing_channel(&state, 60), 1);
+    rc |= expect_eq_int("note-ch61", nxdn_trunk_diag_note_missing_channel(&state, 61), 1);
+    nxdn_trunk_diag_ledger_save(&state, &ledger);
+    rc |= expect_eq_size("saved-two", (size_t)ledger.missing_unique, 2);
+
+    /* Switching to another target starts from that target's (empty) ledger. */
+    nxdn_trunk_diag_ledger empty;
+    DSD_MEMSET(&empty, 0, sizeof(empty));
+    nxdn_trunk_diag_ledger_restore(&state, &empty);
+    rc |= expect_eq_size("restored-empty", nxdn_trunk_diag_collect_unmapped_channels(&state, NULL, 0), 0);
+    rc |= expect_eq_int("note-ch60-again-on-other-target", nxdn_trunk_diag_note_missing_channel(&state, 60), 1);
+
+    /* Switching back restores what the first target had already seen. */
+    nxdn_trunk_diag_ledger_restore(&state, &ledger);
+    uint16_t out[4];
+    DSD_MEMSET(out, 0, sizeof out);
+    rc |= expect_eq_size("restored-two", nxdn_trunk_diag_collect_unmapped_channels(&state, out, 4), 2);
+    rc |= expect_eq_u16("restored-out0", out[0], 60);
+    rc |= expect_eq_u16("restored-out1", out[1], 61);
+    rc |= expect_eq_int("restored-dedup-holds", nxdn_trunk_diag_note_missing_channel(&state, 60), 0);
+
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 int
@@ -120,5 +221,8 @@ main(void) {
     dsd_state_ext_free_all(&state);
     dsd_state_ext_free_all(&log_state);
     dsd_state_ext_free_all(&overflow_state);
+
+    rc |= test_chan_map_path_resolves_under_trunk_scan();
+    rc |= test_ledger_save_and_restore_round_trip();
     return rc;
 }

@@ -30,6 +30,7 @@ typedef struct {
                                       int is_private, int encrypted, int data_call);
     void (*nxdn_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                        int is_private, int encrypted, int data_call);
+    const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
 } dsd_trunk_scan_hooks;
 
@@ -53,6 +54,16 @@ void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const d
 /** @copydoc dsd_trunk_scan_hook_dmr_conventional_activity */
 void dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                     uint32_t source, int is_private, int encrypted, int data_call);
+
+/**
+ * @brief Path of the channel map belonging to the currently parked scan target.
+ *
+ * Trunk scan rejects a global `-C` channel map and loads each target's `chan_csv` through
+ * throwaway options, so `opts->chan_in_file` is empty while scanning and protocol code cannot
+ * name the map it is missing entries from. Returns NULL when trunk scan is not installed or the
+ * parked target has no channel map.
+ */
+const char* dsd_trunk_scan_hook_active_chan_csv(const dsd_state* state);
 
 /**
  * @brief Drop the encrypted-target lockout ledger held in every scan-target snapshot.

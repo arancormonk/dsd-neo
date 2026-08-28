@@ -81,6 +81,13 @@ void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 /**
+ * @brief Channel-map path of the currently parked scan target, or NULL when it has none.
+ *
+ * Backs the `active_chan_csv` runtime hook: per-target `chan_csv` files are imported through
+ * throwaway options, so this is the only place the path survives for protocol code to name.
+ */
+const char* dsd_engine_trunk_scan_active_chan_csv(const dsd_state* state);
+/**
  * @brief Report decoded conventional activity so the active target keeps its park.
  *
  * Each entry point only acts when the target currently parked is of its own
