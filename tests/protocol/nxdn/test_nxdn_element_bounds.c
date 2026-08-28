@@ -1059,6 +1059,82 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     return rc;
 }
 
+/*
+ * CCH_INFO DFA control-channel adoption. The site broadcast is the authority on the outbound
+ * control channel: it must override a trunk-scan target's CSV park frequency (which is a guess),
+ * but never an operator-supplied LCN list, and never a target the coordinator shaped for DMR.
+ */
+static int
+run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, long int seeded_lcn0, long int seeded_p25_cc,
+                          long int seeded_trunk_cc, int seeded_lcn_count, int expect_adopt) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[128];
+    const uint32_t location_id = (2U << 12U) | 0x021U;
+    const uint16_t ofn1 = 0x1221U;
+    const uint16_t ifn1 = 0x2332U;
+    const long int cc_freq = 852262500L;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    reset_assignment_capture();
+
+    state->nxdn_rcn = 1;
+    g_mapped_channel = ofn1;
+    g_mapped_channel_freq = cc_freq;
+
+    opts->trunk_scan_enabled = trunk_scan_enabled;
+    state->trunk_lcn_freq[0] = seeded_lcn0;
+    state->p25_cc_freq = seeded_p25_cc;
+    state->trunk_cc_freq = seeded_trunk_cc;
+    state->lcn_freq_count = seeded_lcn_count;
+
+    set_message_type(bits, 0x1AU);
+    write_bits_u64(bits, 8U, location_id, 24U);
+    write_bits_u64(bits, 32U, 0x13U, 6U);
+    write_bits_u64(bits, 38U, 1U, 2U);
+    write_bits_u64(bits, 40U, ofn1, 16U);
+    write_bits_u64(bits, 56U, ifn1, 16U);
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s-lcn0", tag);
+    rc |= expect_int(label, (int)state->trunk_lcn_freq[0], (int)(expect_adopt ? cc_freq : seeded_lcn0));
+    DSD_SNPRINTF(label, sizeof label, "%s-p25-cc", tag);
+    rc |= expect_int(label, (int)state->p25_cc_freq, (int)(expect_adopt ? cc_freq : seeded_p25_cc));
+    DSD_SNPRINTF(label, sizeof label, "%s-trunk-cc", tag);
+    rc |= expect_int(label, (int)state->trunk_cc_freq, (int)(expect_adopt ? cc_freq : seeded_trunk_cc));
+
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_cch_dfa_control_channel_adoption_pinning(void) {
+    const long int park = 461000000L;
+    int rc = 0;
+
+    /* Plain -T with nothing learned yet: first broadcast seeds the control channel. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-unseeded", 0, 0, 0, 0, 0, 1);
+    /* Plain -T after adoption (or with an imported LCN list): the existing value is pinned. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-pinned", 0, park, park, park, 1, 0);
+    /* Trunk scan parks an nxdn-trunk target on its CSV frequency: the site broadcast wins. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-park", 1, park, park, park, 1, 1);
+    /* A per-target chan_csv with LCN rows is operator intent: pinned even under scan. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-lcn-list", 1, park, park, park, 2, 0);
+    /* A dmr-trunk target keeps p25_cc_freq at 0: a stray NXDN broadcast must not retune it. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-dmr-target", 1, park, 0, park, 1, 0);
+
+    return rc;
+}
+
 static int
 test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1841,6 +1917,7 @@ main(void) {
     rc |= test_dst_id_info_complete_event();
     rc |= test_srv_info_anchors_control_channel_from_rigctl();
     rc |= test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency();
+    rc |= test_cch_dfa_control_channel_adoption_pinning();
     rc |= test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions();
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();

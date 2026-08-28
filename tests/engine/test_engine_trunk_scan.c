@@ -2606,6 +2606,77 @@ test_p25_pending_retune_holds_scan_dwell(void) {
     return test_rc;
 }
 
+/*
+ * Once the NXDN decoder corrects an nxdn-trunk target's control channel from the site broadcast
+ * (nxdn_cch_info_dfa_version), the coordinator must carry that correction across rotations and
+ * re-park on it rather than on the stale CSV frequency. Pins the snapshot + retune contract the
+ * decoder-side adoption depends on.
+ */
+static int
+test_nxdn_trunk_target_follows_corrected_cc(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,nxdn-trunk,461000000,,250,,\n"
+                             "b,nxdn-trunk,462000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_freq = 0;
+
+    const long int corrected_cc = 461012500L;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_freq != 461000000L) {
+        DSD_FPRINTF(stderr, "corrected-cc scan init failed rc=%d active=%zu freq=%ld err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_freq, err);
+        test_rc = 1;
+    }
+
+    /* The decoder adopts the site-broadcast outbound control channel while parked on target A. */
+    state.trunk_lcn_freq[0] = corrected_cc;
+    state.p25_cc_freq = corrected_cc;
+    state.trunk_cc_freq = corrected_cc;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || g_counting_tune_to_cc_freq != 462000000L) {
+        DSD_FPRINTF(stderr, "corrected-cc scan did not rotate to second target active=%zu freq=%ld\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "corrected-cc scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    if (g_counting_tune_to_cc_freq != corrected_cc) {
+        DSD_FPRINTF(stderr, "re-park used stale CSV frequency %ld instead of corrected %ld\n",
+                    g_counting_tune_to_cc_freq, corrected_cc);
+        test_rc = 1;
+    }
+    if (state.p25_cc_freq != corrected_cc || state.trunk_cc_freq != corrected_cc) {
+        DSD_FPRINTF(stderr, "re-park did not restore corrected CC p25=%ld trunk=%ld\n", state.p25_cc_freq,
+                    state.trunk_cc_freq);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_p25_pending_retune_adopts_sm_retry(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -4059,6 +4130,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
+    rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);

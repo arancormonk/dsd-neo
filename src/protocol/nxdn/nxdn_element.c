@@ -36,6 +36,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -1672,6 +1673,28 @@ nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t ch
     UNUSED(state);
 }
 
+/*
+ * Whether the operator has pinned the control channel, in which case a site broadcast must not
+ * move it. A learned or imported LCN list is operator intent; the trunk-scan coordinator's
+ * slot-0 seed is only the target CSV's park frequency, which may be a few kHz off the real
+ * outbound CC, so the broadcast is allowed to correct it. p25_has_user_lcn_list()
+ * (src/protocol/p25/p25_trunk_sm.c) draws the same line for P25.
+ */
+static int
+nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
+    if (state->trunk_lcn_freq[0] == 0) {
+        return 0;
+    }
+    if (opts->trunk_scan_enabled != 1) {
+        return 1;
+    }
+    // Coordinator contract: p25-trunk and nxdn-trunk targets carry p25_cc_freq while dmr-trunk
+    // targets keep it at 0, so a stray NXDN broadcast decoded under -fa while parked on a DMR
+    // target cannot retune it. More entries than the single seeded slot mean a per-target
+    // chan_csv supplied real LCNs.
+    return (state->lcn_freq_count > 1 || state->p25_cc_freq == 0) ? 1 : 0;
+}
+
 static int
 nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits,
                           uint32_t location_id, uint8_t channel1sts) {
@@ -1719,11 +1742,18 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
 
     const long int freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
     nxdn_channel_to_frequency(opts, state, IFN1);
-    if (state->trunk_lcn_freq[0] == 0 && freq1 != 0) {
+    if (freq1 != 0 && !nxdn_cc_is_operator_pinned(opts, state)) {
+        const long int previous_cc = state->trunk_cc_freq;
         state->trunk_lcn_freq[0] = freq1;
         state->p25_cc_freq = freq1;
         state->trunk_cc_freq = freq1;
         state->lcn_freq_count = 1;
+        // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the
+        // park frequency has been corrected the adoption is idempotent.
+        if (previous_cc != 0 && previous_cc != freq1) {
+            LOG_INFO("NOTICE: NXDN trunking: site control channel is %.6lf MHz; following it\n",
+                     (double)freq1 / 1000000.0);
+        }
     }
 
     return 1;

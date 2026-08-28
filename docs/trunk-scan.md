@@ -186,6 +186,10 @@ During scanning:
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
   (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
+- `nxdn-trunk` targets follow the site-broadcast outbound control channel: when a DFA site announces a control
+  channel that differs from the target's `frequency_hz`, DSD-neo adopts it (logging
+  `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that target there from then on.
+  A per-target `chan_csv` containing LCN rows pins the control channel instead, so an operator list always wins.
 - Conventional DMR and conventional NXDN targets stay parked only after allowed activity is decoded (a DMR voice
   header or an NXDN VCALL header). The allow/block list, private-call tuning, data-call tuning, and encrypted-call
   tuning controls all apply to that decision.
