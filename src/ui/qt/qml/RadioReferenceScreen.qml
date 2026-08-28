@@ -61,11 +61,6 @@ Item {
     property string notice: ""
     property bool noticeIsProblem: false
 
-    // A scan list holds 26 entries (trunk_lcn_freq[]) and the generator
-    // truncates past that with a warning. Conventional systems can have far more
-    // repeaters than this, so the count is always shown against the ceiling.
-    readonly property int scanListMax: 26
-
     readonly property bool systemLoaded: radioReference.systemDetails.sid !== undefined
                                          && radioReference.systemDetails.sid > 0
 
@@ -1159,11 +1154,10 @@ Item {
                         rightPadding: Theme.cardPadding
                         bottomPadding: 6
                         visible: radioReference.conventional
-                        text: qsTr("%1 of %2 repeaters selected").arg(screen.selectedSites.length)
-                                                                 .arg(screen.scanListMax)
+                        text: qsTr("%1 repeater(s) selected").arg(screen.selectedSites.length)
                         font.family: Theme.sans
                         font.pixelSize: 12
-                        color: screen.selectedSites.length > screen.scanListMax ? Theme.magenta : Theme.textSubdued
+                        color: Theme.textSubdued
                         wrapMode: Text.Wrap
                     }
 

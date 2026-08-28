@@ -1147,6 +1147,7 @@ freeState(dsd_state* state) {
     }
 
     dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
 
 #ifdef USE_CODEC2
     if (state->codec2_3200) {

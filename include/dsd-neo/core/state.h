@@ -419,6 +419,12 @@ struct dsd_state {
     uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
     uint32_t trunk_chan_map_used_count;
     uint64_t trunk_chan_map_seq;
+    /* Scan-list tail beyond the 26 embedded slots (NULL until a longer list is
+     * imported). dsd_state_trunk_lcn_slot() abstracts both segments. Never inside
+     * a UI_SNAPSHOT_COPY_RANGE: the first range ends at trunk_lcn_freq and members
+     * from trunk_chan_map on are copied explicitly. */
+    long int* trunk_lcn_freq_ext;
+    size_t trunk_lcn_freq_ext_capacity;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -1384,6 +1390,38 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     }
     state->trunk_chan_map_seq++;
 }
+
+/**
+ * Address the scan-list LCN slot at index i. The first 26 slots live in the
+ * embedded trunk_lcn_freq array (protocol fixed-slot writers keep raw-indexing
+ * those); slots >= 26 live in the heap tail trunk_lcn_freq_ext. Callers must
+ * guarantee 0 <= i < lcn_freq_count for reads, or that the index is addressable
+ * (trunk_lcn_freq_ext_capacity > i - 26) for writes into the tail.
+ */
+static inline long int*
+dsd_state_trunk_lcn_slot(dsd_state* state, int i) {
+    return i < 26 ? &state->trunk_lcn_freq[i] : &state->trunk_lcn_freq_ext[i - 26];
+}
+
+/** Const-qualified dsd_state_trunk_lcn_slot() for read-only contexts. */
+static inline const long int*
+dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
+    return i < 26 ? &state->trunk_lcn_freq[i] : &state->trunk_lcn_freq_ext[i - 26];
+}
+
+/**
+ * Ensure scan-list indices 0..count_needed-1 are addressable via
+ * dsd_state_trunk_lcn_slot(): grows the heap tail by doubling and zero-fills
+ * the new tail; no-op when count_needed <= 26. Returns 0 on success, -1 on
+ * allocation failure (state left valid, contents preserved).
+ */
+int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
+
+/**
+ * Free the scan-list heap tail and zero its pointer/capacity. The embedded
+ * 26 slots are part of dsd_state and need no release.
+ */
+void dsd_state_trunk_lcn_free(dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

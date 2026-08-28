@@ -737,9 +737,10 @@ test_chan_p25_identifiers(void) {
 }
 
 static void
-test_chan_p25_cap(void) {
-    /* trunk_lcn_freq[] holds 26 entries and nothing is ever padded: a 0 slot
-     * does not skip to the next row, it burns a hunt cycle. */
+test_chan_p25_full_list(void) {
+    /* The ranked hunt list is heap-backed and bounded only by the site's own
+     * frequency count, and nothing is ever padded: a 0 slot does not skip to
+     * the next row, it burns a hunt cycle. */
     dsd_rr_site_freq freqs[30];
     for (int i = 0; i < 30; i++) {
         freq_set(&freqs[i], i + 1, 851000000LL + ((long long)i * 12500LL), (i == 0) ? "d" : "", NULL);
@@ -751,8 +752,9 @@ test_chan_p25_cap(void) {
     size_t len = 0;
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
-    expect("p25 capped generated", dsd_rr_generate_chan_csv(DSD_RR_PROTO_P25, &site, 1U, &text, &len, &warnings) == 0);
-    expect("p25 truncation warned", warned(&warnings, "26-slot"));
+    expect("p25 full list generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_P25, &site, 1U, &text, &len, &warnings) == 0);
+    expect("p25 no truncation warning", !warned(&warnings, "26-slot"));
 
     size_t rows = 0;
     for (const char* p = text; p != NULL && *p != '\0'; p++) {
@@ -760,13 +762,13 @@ test_chan_p25_cap(void) {
             rows++;
         }
     }
-    expect_size("p25 capped at 26 rows plus header", rows, 27U);
+    expect_size("p25 emits 30 rows plus header", rows, 31U);
     expect("p25 emits no zero placeholder", strstr(text, ",0\n") == NULL);
 
     dsd_csv_validation counts;
     DSD_MEMSET(&counts, 0, sizeof(counts));
     if (validate_generated(text, 0, &counts) == 0) {
-        expect_counts("p25 round-trip", &counts, 26U, 0U);
+        expect_counts("p25 round-trip", &counts, 30U, 0U);
     }
     free(text);
     dsd_rr_warning_list_free(&warnings);
@@ -911,8 +913,8 @@ test_chan_tier3_fixture(void) {
 
 static void
 test_chan_tier3_no_false_cap(void) {
-    /* The 26-entry limit applies only to the positional LCN list. Rows past it
-     * still land in trunk_chan_map[], which is 0xFFFF wide, so DMR and NXDN maps
+    /* The positional LCN list is heap-backed and unbounded, and DMR/NXDN rows
+     * land in trunk_chan_map[], which is 0xFFFF wide, so DMR and NXDN maps
      * must not be capped or warned about. */
     dsd_rr_site_freq freqs[30];
     char ch_id[8];
@@ -1217,19 +1219,19 @@ test_chan_conventional_truncation(void) {
         dsd_rr_site_list_free(&sites);
         return;
     }
-    /* 36 single-frequency repeaters, 33 of them distinct: this is the fixture
-     * that forces the 26-slot truncation. */
+    /* 36 single-frequency repeaters, 33 of them distinct: this fixture
+     * exercises a large scan list that pre-2026 builds truncated at 26 rows;
+     * every distinct repeater now lands in the map. */
     expect_size("36 conventional repeaters", sites.count, 36U);
 
     char* text = NULL;
     size_t len = 0;
     dsd_rr_warning_list warnings;
     DSD_MEMSET(&warnings, 0, sizeof(warnings));
-    expect("conventional truncated generated",
+    expect("conventional full list generated",
            dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_CONV, sites.items, sites.count, &text, &len, &warnings) == 0);
     expect("conventional duplicates warned", warned(&warnings, "3 selected repeater(s) share a frequency"));
-    expect("conventional truncation warned",
-           warned(&warnings, "7 selected repeater(s) past the 26-frequency scan limit"));
+    expect("conventional no truncation warning", !warned(&warnings, "past the 26-frequency scan limit"));
 
     size_t rows = 0;
     for (const char* p = text; p != NULL && *p != '\0'; p++) {
@@ -1237,16 +1239,16 @@ test_chan_conventional_truncation(void) {
             rows++;
         }
     }
-    expect_size("conventional capped at 26 rows plus header", rows, 27U);
+    expect_size("conventional emits 33 rows plus header", rows, 34U);
     expect("conventional first row", text != NULL && strstr(text, "\n1,146755000\n") != NULL);
-    expect("conventional last row", text != NULL && strstr(text, "\n26,443200000\n") != NULL);
+    expect("conventional has a 33rd row", text != NULL && strstr(text, "\n33,") != NULL);
 
     dsd_csv_validation counts;
     DSD_MEMSET(&counts, 0, sizeof(counts));
     if (text != NULL && validate_generated(text, 0, &counts) == 0) {
-        /* All 26 are reachable here: scanner mode rolls over 0..count-1 rather
+        /* All 33 are reachable here: scanner mode rolls over 0..count-1 rather
          * than indexing lcn - 1, unlike EDACS. */
-        expect_counts("conventional round-trip", &counts, 26U, 0U);
+        expect_counts("conventional round-trip", &counts, 33U, 0U);
     }
     free(text);
     dsd_rr_warning_list_free(&warnings);
@@ -1333,7 +1335,7 @@ main(void) {
     test_group_csv_fixture();
     test_chan_p25_ranking();
     test_chan_p25_identifiers();
-    test_chan_p25_cap();
+    test_chan_p25_full_list();
     test_chan_p25_fixture();
     test_chan_conplus();
     test_chan_tier3_fixture();

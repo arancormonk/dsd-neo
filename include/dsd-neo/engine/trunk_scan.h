@@ -21,7 +21,6 @@ extern "C" {
 #endif
 
 enum {
-    DSD_TRUNK_SCAN_MAX_TARGETS = 32,
     DSD_TRUNK_SCAN_DWELL_MIN_MS = 250,
     DSD_TRUNK_SCAN_DWELL_MAX_MS = 600000,
     DSD_TRUNK_SCAN_IDLE_DWELL_DEFAULT_MS = 3000,
@@ -55,9 +54,21 @@ typedef struct {
 } dsd_trunk_scan_target;
 
 typedef struct {
-    dsd_trunk_scan_target targets[DSD_TRUNK_SCAN_MAX_TARGETS];
+    dsd_trunk_scan_target* targets; /**< Owned heap array; NULL when empty. */
     size_t count;
+    size_t capacity;
 } dsd_trunk_scan_target_list;
+
+/**
+ * @brief Release a target list's owned storage and zero it.
+ *
+ * The list returned by a successful dsd_trunk_scan_load_targets_csv() owns its
+ * `targets` array; callers must reset it once the coordinator has copied the
+ * targets out. A failed load never writes `*out`, so nothing to reset there.
+ *
+ * @param list List to clear; NULL is ignored.
+ */
+void dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list);
 
 int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                                     size_t err_sz);

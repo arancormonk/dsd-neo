@@ -649,6 +649,47 @@ main(void) {
         return 1;
     }
 
+    // Scan lists past 26 entries spill into a heap tail; the scanner step has to
+    // hop through those via dsd_state_trunk_lcn_slot() exactly like the embedded
+    // slots, and wrap from the tail back to the head of the list.
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    rc |= expect_true("scanner-ext-tail-reserve", dsd_state_trunk_lcn_reserve(state, 30) == 0);
+    for (int i = 0; i < 30; i++) {
+        *dsd_state_trunk_lcn_slot(state, i) = 944012500 + 12500 * (long)i;
+    }
+    state->lcn_freq_count = 30;
+    state->lcn_freq_roll = 26;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_tune_calls = 0;
+
+    noCarrier(opts, state);
+
+    rc |= expect_true("scanner-ext-tail-hop-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 944337500U);
+    rc |= expect_true("scanner-ext-tail-hop-advanced", state->lcn_freq_roll == 27);
+
+    state->lcn_freq_roll = 29;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("scanner-ext-tail-last-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 944375000U);
+    rc |= expect_true("scanner-ext-tail-last-advanced", state->lcn_freq_roll == 30);
+
+    // roll == count wraps to the head on the next pass (engine.c clamps before reading).
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("scanner-ext-tail-wraps-to-head", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 944012500U);
+    rc |= expect_true("scanner-ext-tail-wrap-advanced", state->lcn_freq_roll == 1);
+
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
     // With both backends configured the rigctl leg runs first. If it lands and the RTL leg then
     // fails, the scan step is abandoned -- but the radio has already moved off the frequency the
     // open call was decoded from. The end must still be EXPLICIT: reporting sync loss would leave

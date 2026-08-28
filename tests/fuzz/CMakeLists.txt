@@ -69,6 +69,8 @@ target_sources(
         ${PROJECT_SOURCE_DIR}/src/core/file/dsd_import.c
         ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
         ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+        # dsd_import.c owns the scan-list heap tail through these.
+        ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
         ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
         # csvDmrTgKeyImport() clears the live map through keyring_dmr_tg_map_reset().
         ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c

@@ -26,6 +26,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_RADIO_REFERENCE_MODEL_H_
 #define DSD_NEO_SRC_UI_QT_RADIO_REFERENCE_MODEL_H_
 
+#include <QByteArray>
 #include <QList>
 #include <QMap>
 #include <QObject>

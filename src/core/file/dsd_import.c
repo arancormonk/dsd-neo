@@ -719,11 +719,11 @@ csv_chan_freq_plausible(long int freq) {
     return hz >= CSV_CHAN_FREQ_MIN_HZ && hz <= CSV_CHAN_FREQ_MAX_HZ;
 }
 
-static void
+static int
 csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
                             int* freq_parsed) {
     if (!state || !field || !chan_number) {
-        return;
+        return 0;
     }
     if (field_count == 0) {
         long int parsed_chan = 0;
@@ -732,14 +732,14 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
         } else {
             *chan_number = -1;
         }
-        return;
+        return 0;
     }
     if (field_count != 1) {
-        return;
+        return 0;
     }
 
     if (*chan_number < 0 || *chan_number >= 0xFFFF) {
-        return;
+        return 0;
     }
 
     long int freq = 0;
@@ -751,16 +751,21 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
         }
     }
 
-    if (state->lcn_freq_count < 0
-        || state->lcn_freq_count >= (int)(sizeof(state->trunk_lcn_freq) / sizeof(state->trunk_lcn_freq[0]))) {
-        return;
+    if (state->lcn_freq_count < 0) {
+        return 0;
+    }
+    if (dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count + 1) != 0) {
+        LOG_ERROR("channel map import out of memory\n");
+        return -1;
     }
 
     // The LCN list is positional -- EDACS reads it in row order -- so a row the
     // map refused still has to take its slot, as a 0 every consumer reads as
-    // "unknown". Dropping it would renumber every LCN below it.
-    state->trunk_lcn_freq[state->lcn_freq_count] = usable ? freq : 0L;
+    // "unknown". Dropping it would renumber every LCN below it. Slots past the
+    // 26 embedded entries land in the heap tail via dsd_state_trunk_lcn_slot().
+    *dsd_state_trunk_lcn_slot(state, state->lcn_freq_count) = usable ? freq : 0L;
     state->lcn_freq_count++; // keep tally of number of Frequencies imported
+    return 0;
 }
 
 /* id_ok may be NULL; set when the key-id column actually parsed as decimal. */
@@ -819,7 +824,7 @@ csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* fi
     }
 }
 
-/** @brief Parse one channel row into @p state. @return 1 when a frequency loaded. */
+/** @brief Parse one channel row into @p state. @return 1 when a frequency loaded, -1 on allocation failure. */
 static int
 chan_import_row(dsd_state* state, char* buffer, int* out_field_count, long int* out_chan_number) {
     int field_count = 0;
@@ -829,7 +834,9 @@ chan_import_row(dsd_state* state, char* buffer, int* out_field_count, long int* 
 
     const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
     while (field) {
-        csv_chan_import_apply_field(state, field_count, field, &chan_number, &freq_parsed);
+        if (csv_chan_import_apply_field(state, field_count, field, &chan_number, &freq_parsed) != 0) {
+            return -1;
+        }
         field = dsd_strtok_r(NULL, ",", &saveptr);
         field_count++;
     }
@@ -865,6 +872,10 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
             continue;
         }
         const int freq_parsed = chan_import_row(state, buffer, &field_count, &chan_number);
+        if (freq_parsed < 0) {
+            fclose(fp);
+            return -1;
+        }
         if (stats) {
             // A dry run exists to produce the three counters; echoing every row
             // through the process-global logger would put thousands of records
@@ -1241,6 +1252,7 @@ csv_validate_into_throwaway(const char* path, dsd_csv_validation* out, csv_valid
         rc = run(path, state, out);
         dsd_state_ext_free_all(state);
     }
+    dsd_state_trunk_lcn_free(state);
     free(state);
 
     if (rc != 0) {

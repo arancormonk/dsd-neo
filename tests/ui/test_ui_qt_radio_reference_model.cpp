@@ -557,15 +557,18 @@ test_conventional_system(void) {
     expect_str("one repeater takes plain -fs", single.value(QStringLiteral("decodeFlag")).toString(),
                QStringLiteral("-fs"));
 
-    /* Past 26 the generator truncates, and the user has to be told. */
+    /* No ceiling: every distinct repeater frequency lands in the map however
+     * long the list grows — pre-2026 builds truncated at 26 rows. These 30
+     * repeaters carry 27 distinct frequencies. */
     QVariantList many;
     for (int i = 0; i < 30; i++) {
         many.append(i);
     }
-    const QVariantMap capped = h.model.buildImportPlan(many, QVariantMap());
-    expect_int("the scan list caps at 26 rows", row_count(capped.value(QStringLiteral("chanCsvText")).toString()), 27);
-    expect("truncation is reported", warned(capped, QStringLiteral("scan limit")));
-    expect("shared repeater frequencies are reported", warned(capped, QStringLiteral("share a frequency")));
+    const QVariantMap uncapped = h.model.buildImportPlan(many, QVariantMap());
+    expect_int("all 27 distinct frequencies are emitted",
+               row_count(uncapped.value(QStringLiteral("chanCsvText")).toString()), 28);
+    expect("no truncation warning", !warned(uncapped, QStringLiteral("scan limit")));
+    expect("shared repeater frequencies are reported", warned(uncapped, QStringLiteral("share a frequency")));
 }
 
 void

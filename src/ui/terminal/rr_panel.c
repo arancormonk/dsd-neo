@@ -803,13 +803,7 @@ rr_panel_draw_heading(WINDOW* win, int body_w, const dsd_rr_system_info* info, c
     if (cx <= (int)strlen(line) + 2) {
         return;
     }
-    if (counter.over_cap) {
-        wattron(win, COLOR_PAIR(RR_PANEL_CP_WARN) | A_BOLD);
-    }
     mvwaddnstr(win, 2, cx, counter.text, (int)strlen(counter.text));
-    if (counter.over_cap) {
-        wattroff(win, COLOR_PAIR(RR_PANEL_CP_WARN) | A_BOLD);
-    }
 }
 
 static void

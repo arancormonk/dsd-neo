@@ -214,11 +214,8 @@ p25_diag_freq_in_lcn_list(const dsd_state* state, long freq) {
     if (count < 0) {
         count = 0;
     }
-    if (count > 26) {
-        count = 26;
-    }
     for (int i = 0; i < count; i++) {
-        if (state->trunk_lcn_freq[i] == freq) {
+        if (*dsd_state_trunk_lcn_slot_const(state, i) == freq) {
             return 1;
         }
     }
@@ -4875,8 +4872,8 @@ next_lcn_freq(dsd_state* state, long* out_freq) {
     }
     // Skip duplicates
     if (state->lcn_freq_roll > 0) {
-        long prev = state->trunk_lcn_freq[state->lcn_freq_roll - 1];
-        long cur = state->trunk_lcn_freq[state->lcn_freq_roll];
+        long prev = *dsd_state_trunk_lcn_slot(state, state->lcn_freq_roll - 1);
+        long cur = *dsd_state_trunk_lcn_slot(state, state->lcn_freq_roll);
         if (prev == cur) {
             state->lcn_freq_roll++;
             if (state->lcn_freq_roll >= state->lcn_freq_count) {
@@ -4884,7 +4881,8 @@ next_lcn_freq(dsd_state* state, long* out_freq) {
             }
         }
     }
-    long f = (state->lcn_freq_roll < state->lcn_freq_count) ? state->trunk_lcn_freq[state->lcn_freq_roll] : 0;
+    long f =
+        (state->lcn_freq_roll < state->lcn_freq_count) ? *dsd_state_trunk_lcn_slot(state, state->lcn_freq_roll) : 0;
     state->lcn_freq_roll++;
     if (f != 0) {
         *out_freq = f;

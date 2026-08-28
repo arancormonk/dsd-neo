@@ -199,8 +199,9 @@ What the wire actually shows, across sid 9340 (36 sites) and sid 12244 (2 sites)
 - Site descriptions are plain place names (`Waukee`, `Ames`, `Marion`, `North Liberty`), which is
   what makes a multi-site picker usable.
 
-**Why 36 sites matters:** `state->trunk_lcn_freq[]` holds 26 entries, so a scan list built from
-this system must truncate and warn. That is the golden the fixture exists for.
+**Why 36 sites matters:** the runtime scan list is heap-backed and unbounded, so a scan list built
+from this system now carries every distinct repeater (33) without truncating. The fixture exercises
+a large list end to end — dedup, row count, and round-trip — at a size old 26-slot builds cut off.
 
 **No NXDN Conventional Networked system was findable** in any of the 33 counties probed across
 Iowa and Florida, though flavor 45 is in the live flavor table. The classifier branch is therefore

@@ -52,6 +52,7 @@ static void
 free_test_state(dsd_state* state) {
     if (state) {
         dsd_state_ext_free_all(state);
+        dsd_state_trunk_lcn_free(state);
     }
     free(state);
 }
@@ -547,6 +548,75 @@ test_channel_import_rejects_malformed_rows_without_reusing_previous_channel(void
     }
     if (state->lcn_freq_count != 3 || state->trunk_lcn_freq[0] != 851000000L || state->trunk_lcn_freq[1] != 0L
         || state->trunk_lcn_freq[2] != 853000000L) {
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+static int
+test_channel_import_extends_past_26_entries(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-large-XXXXXX";
+    int fd = -1;
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    // 40 data rows: every row takes its positional LCN slot, so slots run
+    // past the 26 embedded trunk_lcn_freq entries into the heap tail. Channel
+    // 2 carries a garbage frequency to prove the 0-placeholder pattern
+    // (existing test) survives on both sides of the 26-entry boundary.
+    char body[2048];
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body), "channel,frequency\n");
+    for (int i = 1; i <= 40; i++) {
+        if (i == 2) {
+            (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body), "%d,notafrequency\n", i);
+        } else {
+            (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body), "%d,%ld\n", i,
+                               851000000L + (long)(i - 1) * 12500L);
+        }
+    }
+    if (write_text_file(tmpl, body) != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "40-row channel import returned error\n");
+        failed = 1;
+    }
+    if (state->lcn_freq_count != 40 || state->trunk_lcn_freq_ext == NULL || state->trunk_lcn_freq_ext_capacity < 14U) {
+        DSD_FPRINTF(stderr, "channel import tail state wrong count=%d ext=%p cap=%zu\n", state->lcn_freq_count,
+                    (void*)state->trunk_lcn_freq_ext, state->trunk_lcn_freq_ext_capacity);
+        failed = 1;
+    }
+    if (state->trunk_lcn_freq[0] != 851000000L || state->trunk_lcn_freq[1] != 0L
+        || state->trunk_lcn_freq[2] != 851025000L) {
+        DSD_FPRINTF(stderr, "embedded LCN slot pattern broken\n");
+        failed = 1;
+    }
+    if (*dsd_state_trunk_lcn_slot(state, 26) != 851325000L || *dsd_state_trunk_lcn_slot(state, 39) != 851487500L) {
+        DSD_FPRINTF(stderr, "ext LCN tail rows 27/40 mismatch\n");
         failed = 1;
     }
 
@@ -1092,6 +1162,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_rejects_malformed_rows_without_reusing_previous_channel() != 0) {
+        return 1;
+    }
+    if (test_channel_import_extends_past_26_entries() != 0) {
         return 1;
     }
     if (test_group_import_range_after_many_exact_rows() != 0) {
