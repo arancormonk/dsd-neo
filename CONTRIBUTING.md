@@ -105,6 +105,7 @@ tools/quality_preflight.sh
 
 Additional focused checks:
 
+- Cross-module includes or new headers: `tools/check_arch_rules.sh`
 - CMake changes: `tools/cmake_format_check.sh`
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`
 - Dependency input changes: `tools/osv_scan.sh`

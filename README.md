@@ -471,6 +471,7 @@ Quick examples
   - `tools/cmake_format_check.sh` (CMake formatting with gersemi; use `--fix` to rewrite).
   - `tools/gitleaks.sh` (secret scanning with SARIF output for GitHub code scanning).
 - Security guardrails:
+  - `tools/check_arch_rules.sh` (module include boundaries and forbidden constructs from `cmake/arch_rules.cmake`; see `docs/code_map.md`).
   - `tools/check_secret_redaction.sh` (blocks formatted key/keystream output outside the redaction formatter helpers).
   - `tools/check_workflow_git_pins.sh` (blocks floating public GitHub source checkouts in workflows and CI helper scripts).
   - `tools/check_workflow_download_pins.sh` (blocks mutable release helper downloads and digestless AppImage container refs).
@@ -478,7 +479,7 @@ Quick examples
   - `tools/check_release_hardening.ps1` (verifies Windows PE ASLR, NX, and high-entropy VA hardening).
 - Fuzzing: `tools/fuzz_smoke.sh` configures/builds the `fuzz-asan-debug` preset and runs bounded libFuzzer smoke passes.
 - Git hooks: `tools/install-git-hooks.sh` enables auto‑format on commit and a CI-aligned pre-push analysis pass
-  (security guardrails including workflow source/download pins, install-destination checks, clang-format, CMake format,
+  (architecture rules, security guardrails including workflow source/download pins, install-destination checks, clang-format, CMake format,
   clang-tidy, cppcheck, IWYU, GCC fanalyzer, Lizard, Semgrep, zizmor, OSV scan, and shell/workflow lint) on changed
   paths.
 - Optional full scan-build pre-push/preflight pass: set `DSD_HOOK_RUN_SCAN_BUILD=1`.

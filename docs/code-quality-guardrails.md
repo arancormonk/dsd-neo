@@ -34,6 +34,7 @@ Run the smallest useful set before opening a PR, then broaden it when the change
 - Sanitizer-sensitive code: `ctest --preset asan-ubsan-debug --output-on-failure` after configuring/building the matching preset.
 - Threading changes: `ctest --preset tsan-debug --output-on-failure` where the affected tests are supported by TSan.
 - Fuzz-facing changes: `tools/fuzz_smoke.sh`.
+- Cross-module includes or new headers: `tools/check_arch_rules.sh` (also run by pre-push and CI).
 - CMake changes: `tools/cmake_format_check.sh`.
 - Workflow changes: `tools/workflow_lint.sh` and `tools/zizmor.sh`.
 - Dependency input changes: `tools/osv_scan.sh`.
