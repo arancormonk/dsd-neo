@@ -190,9 +190,10 @@ During scanning:
   channel that differs from the target's `frequency_hz`, DSD-neo adopts it (logging
   `NOTICE: NXDN trunking: site control channel is X MHz; following it`) and re-parks that target there from then on.
   A per-target `chan_csv` containing LCN rows pins the control channel instead, so an operator list always wins.
-- Conventional DMR and conventional NXDN targets stay parked only after allowed activity is decoded (a DMR voice
-  header or an NXDN VCALL header). The allow/block list, private-call tuning, data-call tuning, and encrypted-call
-  tuning controls all apply to that decision.
+- Conventional DMR and conventional NXDN targets stay parked only after allowed activity is decoded: a DMR voice
+  header or data header, or an NXDN VCALL, DCALL or SDCALL header. The allow/block list, private-call tuning,
+  data-call tuning, and encrypted-call tuning controls all apply to that decision, so data headers refresh the hold
+  only when data-call tuning is enabled (`-e`, or `tune_data_calls` in a config file); it is off by default.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
 
 Expected log messages include:

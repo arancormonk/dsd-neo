@@ -2206,6 +2206,70 @@ test_nxdn_conventional_activity_hold(void) {
     return test_rc;
 }
 
+/*
+ * Data traffic holds a conventional target exactly as far as data-call tuning allows: reported
+ * activity is run through the same talkgroup policy as voice, and --trunk-tune-data-calls is off
+ * by default, so a data header holds the park only when the operator asked to follow data.
+ */
+static int
+run_conventional_data_call_hold_case(const char* tag, const char* body, int tune_data_calls, size_t expect_active,
+                                     void (*report)(const dsd_opts*, const dsd_state*, uint32_t, uint32_t, int, int,
+                                                    int)) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_tune_data_calls = tune_data_calls;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "%s: data-call scan init failed: %s\n", tag, err);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.10);
+    report(&opts, &state, 1001, 2002, 0, 0, 1);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != expect_active) {
+        DSD_FPRINTF(stderr, "%s: data-call activity left active=%zu want %zu\n", tag,
+                    dsd_engine_trunk_scan_active_index(&state), expect_active);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_conventional_activity_data_call_respects_tune_data_calls(void) {
+    static const char nxdn_body[] = "a,nxdn-conventional,461000000,,250,250,\n"
+                                    "b,nxdn-conventional,462000000,,250,250,\n";
+    static const char dmr_body[] = "a,dmr-conventional,461000000,,250,250,\n"
+                                   "b,dmr-conventional,462000000,,250,250,\n";
+    int rc = 0;
+
+    rc |= run_conventional_data_call_hold_case("nxdn-data-followed", nxdn_body, 1, 0,
+                                               dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_conventional_data_call_hold_case("nxdn-data-not-followed", nxdn_body, 0, 1,
+                                               dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_conventional_data_call_hold_case("dmr-data-followed", dmr_body, 1, 0,
+                                               dsd_engine_trunk_scan_dmr_conventional_activity);
+    rc |= run_conventional_data_call_hold_case("dmr-data-not-followed", dmr_body, 0, 1,
+                                               dsd_engine_trunk_scan_dmr_conventional_activity);
+    return rc;
+}
+
 static int
 test_nxdn_trunk_target_holds_while_tuned(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -4129,6 +4193,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);

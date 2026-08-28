@@ -653,10 +653,32 @@ nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+/*
+ * Report a decoded data-call header to the trunk-scan coordinator, so a parked conventional NXDN
+ * target keeps its activity hold for data traffic and not only for voice. A header is the only
+ * data element carrying a call identity; the blocks that follow it carry none.
+ *
+ * Held behind the link layer's CRC gate for the same reason the VCALL site is: an unverified
+ * header carries a garbage identity, and acting on one parks the coordinator on noise for a full
+ * activity_hold_ms. The header's own two-bit cipher field is the encryption classification --
+ * data calls have no equivalent of the voice hysteresis in nxdn_enc_class.c -- and a misread
+ * costs at most one hold refresh, because talkgroup policy exempts data calls from the
+ * encrypted-target lockout ledger.
+ */
+static void
+nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint8_t call_type, uint16_t source,
+                                      uint16_t target, uint8_t cipher) {
+    if (state->NxdnElementsContent.VCallCrcIsGood == 0U) {
+        return;
+    }
+    // call_type 4 is the individual/private call, spelled the same way as the trunked data-grant
+    // path in NXDN_decode_VCALL_ASSGN().
+    dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, target, source, (call_type == 4U) ? 1 : 0,
+                                                   (cipher != 0U) ? 1 : 0, 1);
+}
+
 static void
 nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    UNUSED(opts);
-
     if (state == NULL || Message == NULL) {
         return;
     }
@@ -743,6 +765,8 @@ nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
+
+    nxdn_data_header_report_scan_activity(opts, state, call_type, source, target, cipher);
 }
 
 struct nxdn_dcall_header_info {
@@ -885,8 +909,6 @@ nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* i
 
 static void
 nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
-    UNUSED(opts);
-
     if (state == NULL || Message == NULL) {
         return;
     }
@@ -902,6 +924,7 @@ nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size
     nxdn_dcall_header_parse(&info, state, Message, message_bits);
     nxdn_dcall_header_print(&info, state);
     nxdn_dcall_header_apply(state, &info);
+    nxdn_data_header_report_scan_activity(opts, state, info.call_type, info.source, info.target, info.cipher);
 }
 
 enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };

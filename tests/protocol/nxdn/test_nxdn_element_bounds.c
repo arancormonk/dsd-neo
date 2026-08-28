@@ -16,6 +16,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1135,6 +1136,114 @@ test_cch_dfa_control_channel_adoption_pinning(void) {
     return rc;
 }
 
+static int g_scan_activity_calls;
+static uint32_t g_scan_activity_target;
+static uint32_t g_scan_activity_source;
+static int g_scan_activity_is_private;
+static int g_scan_activity_encrypted;
+static int g_scan_activity_data_call;
+
+static void
+capture_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                                        int is_private, int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    g_scan_activity_calls++;
+    g_scan_activity_target = target;
+    g_scan_activity_source = source;
+    g_scan_activity_is_private = is_private;
+    g_scan_activity_encrypted = encrypted;
+    g_scan_activity_data_call = data_call;
+}
+
+static void
+reset_scan_activity_capture(void) {
+    g_scan_activity_calls = 0;
+    g_scan_activity_target = 0;
+    g_scan_activity_source = 0;
+    g_scan_activity_is_private = 0;
+    g_scan_activity_encrypted = 0;
+    g_scan_activity_data_call = 0;
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.nxdn_conventional_activity = capture_scan_nxdn_conventional_activity;
+    dsd_trunk_scan_hooks_set(hooks);
+}
+
+/*
+ * A conventional NXDN scan target holds its park on decoded activity. Data traffic counts:
+ * SDCALL and DCALL headers are the only data elements carrying a call identity, so they are
+ * what the coordinator can run through talkgroup policy.
+ */
+static int
+run_data_header_scan_activity_case(const char* tag, uint8_t message_type, uint8_t crc_ok, uint8_t call_type,
+                                   uint8_t cipher, uint16_t source, uint16_t target, int expect_calls,
+                                   int expect_private, int expect_encrypted) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[128];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    reset_assignment_capture();
+    reset_scan_activity_capture();
+
+    set_message_type(bits, message_type);
+    write_bits_u64(bits, 16U, call_type, 3U);
+    write_bits_u64(bits, 24U, source, 16U);
+    write_bits_u64(bits, 40U, target, 16U);
+    write_bits_u64(bits, 56U, cipher, 2U);
+    write_bits_u64(bits, 68U, 2U, 4U); /* block count */
+
+    NXDN_Elements_Content_decode(opts, state, crc_ok, bits, sizeof(bits));
+
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s-calls", tag);
+    rc |= expect_int(label, g_scan_activity_calls, expect_calls);
+    if (expect_calls > 0) {
+        DSD_SNPRINTF(label, sizeof label, "%s-target", tag);
+        rc |= expect_int(label, (int)g_scan_activity_target, (int)target);
+        DSD_SNPRINTF(label, sizeof label, "%s-source", tag);
+        rc |= expect_int(label, (int)g_scan_activity_source, (int)source);
+        DSD_SNPRINTF(label, sizeof label, "%s-private", tag);
+        rc |= expect_int(label, g_scan_activity_is_private, expect_private);
+        DSD_SNPRINTF(label, sizeof label, "%s-encrypted", tag);
+        rc |= expect_int(label, g_scan_activity_encrypted, expect_encrypted);
+        DSD_SNPRINTF(label, sizeof label, "%s-data-call", tag);
+        rc |= expect_int(label, g_scan_activity_data_call, 1);
+    }
+
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_data_call_headers_report_conventional_scan_activity(void) {
+    int rc = 0;
+
+    /* Clear group data call over a DCALL header. */
+    rc |= run_data_header_scan_activity_case("dcall-group", 0x09U, 1U, 1U, 0U, 1234U, 5678U, 1, 0, 0);
+    /* Encrypted private data call: the header's own cipher field is the only classification. */
+    rc |= run_data_header_scan_activity_case("dcall-private-enc", 0x09U, 1U, 4U, 1U, 4321U, 8765U, 1, 1, 1);
+    /* Short data calls carry the same identity and must hold the target too. */
+    rc |= run_data_header_scan_activity_case("sdcall-group", 0x38U, 1U, 1U, 0U, 11U, 22U, 1, 0, 0);
+    /* A header the link layer could not verify must never park the coordinator. */
+    rc |= run_data_header_scan_activity_case("dcall-bad-crc", 0x09U, 0U, 1U, 0U, 1234U, 5678U, 0, 0, 0);
+    rc |= run_data_header_scan_activity_case("sdcall-bad-crc", 0x38U, 0U, 1U, 0U, 11U, 22U, 0, 0, 0);
+    /* Elements without a call identity are not activity reports. */
+    rc |= run_data_header_scan_activity_case("sdcall-iv", 0x3AU, 1U, 1U, 0U, 11U, 22U, 0, 0, 0);
+    rc |= run_data_header_scan_activity_case("dcall-data-block", 0x0BU, 1U, 1U, 0U, 11U, 22U, 0, 0, 0);
+
+    return rc;
+}
+
 static int
 test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1918,6 +2027,7 @@ main(void) {
     rc |= test_srv_info_anchors_control_channel_from_rigctl();
     rc |= test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency();
     rc |= test_cch_dfa_control_channel_adoption_pinning();
+    rc |= test_data_call_headers_report_conventional_scan_activity();
     rc |= test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions();
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();

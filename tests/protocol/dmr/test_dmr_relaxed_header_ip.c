@@ -16,6 +16,7 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/fec/rs_12_9.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1366,6 +1367,113 @@ test_data_header_prints_fsn_and_final_flag(void) {
     return rc;
 }
 
+static int g_scan_activity_calls;
+static uint32_t g_scan_activity_target;
+static uint32_t g_scan_activity_source;
+static int g_scan_activity_is_private;
+static int g_scan_activity_encrypted;
+static int g_scan_activity_data_call;
+
+static void
+capture_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                                       int is_private, int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    g_scan_activity_calls++;
+    g_scan_activity_target = target;
+    g_scan_activity_source = source;
+    g_scan_activity_is_private = is_private;
+    g_scan_activity_encrypted = encrypted;
+    g_scan_activity_data_call = data_call;
+}
+
+static void
+reset_scan_activity_capture(void) {
+    g_scan_activity_calls = 0;
+    g_scan_activity_target = 0;
+    g_scan_activity_source = 0;
+    g_scan_activity_is_private = 0;
+    g_scan_activity_encrypted = 0;
+    g_scan_activity_data_call = 0;
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.dmr_conventional_activity = capture_scan_dmr_conventional_activity;
+    dsd_trunk_scan_hooks_set(hooks);
+}
+
+/*
+ * A conventional DMR scan target holds its park on decoded activity. Data traffic counts: the
+ * data header is the DMR counterpart of the voice LC that dmr_flco() already reports, and it is
+ * the only part of a data burst carrying a call identity.
+ */
+static int
+run_dmr_data_header_scan_activity_case(const char* tag, uint8_t dpf, uint8_t gi, uint32_t source, uint32_t target,
+                                       uint32_t crc_correct, int relaxed, int expect_calls, int expect_private) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    opts.aggressive_framesync = relaxed ? 0 : 1;
+    reset_scan_activity_capture();
+
+    set_bits(bits, 0, gi, 1);
+    set_bits(bits, 4, dpf, 4);
+    set_bits(bits, 8, 4U, 4); // SAP=4, IP based
+    set_bits(bits, 16, target, 24);
+    set_bits(bits, 40, source, 24);
+    set_bits(bits, 65, 2U, 7); // blocks to follow
+
+    dmr_dheader(&opts, &state, dheader, bits, crc_correct, /*IrrecoverableErrors=*/0);
+
+    int rc = 0;
+    if (g_scan_activity_calls != expect_calls) {
+        DSD_FPRINTF(stderr, "%s: scan activity calls got %d want %d\n", tag, g_scan_activity_calls, expect_calls);
+        rc = 1;
+    }
+    if (expect_calls > 0) {
+        if (g_scan_activity_target != target || g_scan_activity_source != source) {
+            DSD_FPRINTF(stderr, "%s: identity got tgt=%u src=%u want tgt=%u src=%u\n", tag, g_scan_activity_target,
+                        g_scan_activity_source, target, source);
+            rc = 1;
+        }
+        if (g_scan_activity_is_private != expect_private || g_scan_activity_encrypted != 0
+            || g_scan_activity_data_call != 1) {
+            DSD_FPRINTF(stderr, "%s: flags got private=%d enc=%d data=%d want private=%d enc=0 data=1\n", tag,
+                        g_scan_activity_is_private, g_scan_activity_encrypted, g_scan_activity_data_call,
+                        expect_private);
+            rc = 1;
+        }
+    }
+
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    return rc;
+}
+
+static int
+test_data_header_reports_conventional_scan_activity(void) {
+    int rc = 0;
+
+    /* Unconfirmed group data call. */
+    rc |= run_dmr_data_header_scan_activity_case("dmr-dheader-group", 2U, 1U, 0x000456U, 0x000123U, 1U, 0, 1, 0);
+    /* Confirmed individual data call. */
+    rc |= run_dmr_data_header_scan_activity_case("dmr-dheader-private", 3U, 0U, 0x000456U, 0x000123U, 1U, 0, 1, 1);
+    /* Unified Data Transport carries identity too. */
+    rc |= run_dmr_data_header_scan_activity_case("dmr-dheader-udt", 0U, 1U, 0x000456U, 0x000123U, 1U, 0, 1, 0);
+    /* A response header is an ACK for an earlier PDU, not fresh activity. */
+    rc |= run_dmr_data_header_scan_activity_case("dmr-dheader-response", 1U, 1U, 0x000456U, 0x000123U, 1U, 0, 0, 0);
+    /* A proprietary header deliberately keeps the previous transmission's identity. */
+    rc |= run_dmr_data_header_scan_activity_case("dmr-dheader-proprietary", 15U, 1U, 0x000456U, 0x000123U, 1U, 0, 0, 0);
+    /* Relaxed CRC still prints the header, but an unverified identity must not park the scan. */
+    rc |= run_dmr_data_header_scan_activity_case("dmr-dheader-relaxed-crc", 2U, 1U, 0x000456U, 0x000123U, 0U, 1, 0, 0);
+
+    return rc;
+}
+
 static void
 test_irrecoverable_header_resets_data_state(void) {
     static dsd_opts opts;
@@ -1697,6 +1805,7 @@ main(int argc, char** argv) {
     test_type1_encrypted_notice_reports_missing_key();
     test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
+    rc |= test_data_header_reports_conventional_scan_activity();
     rc |= test_type1_mnis_ars_registration_prints_device_id();
     rc |= test_type1_mnis_ars_fallback_dump_is_bounded();
     rc |= test_ars_message_type_labels();

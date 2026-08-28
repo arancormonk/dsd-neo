@@ -25,6 +25,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/pdu.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/unicode.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -611,6 +612,16 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
                      f.sap_string, f.target, f.source);
         if (f.a == 1) {
             dsd_append(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot], "- RSP REQ ");
+        }
+        // Data traffic keeps a parked conventional DMR scan target, the same way dmr_flco()
+        // reports voice. Only these formats carry a fresh identity: a response header (dpf 1) is
+        // an ACK for an earlier PDU, and a proprietary header (dpf 15) deliberately inherits the
+        // previous transmission's addresses. The explicit CRC test matters because the gate above
+        // also admits headers under the relaxed-CRC options, and an unverified identity would
+        // park the coordinator on noise; the standard header carries no encryption field, so the
+        // encrypted flag is 0 (the MFID-specific ENC bit lives in the dpf 15 header excluded here).
+        if (CRCCorrect == 1) {
+            dsd_trunk_scan_hook_dmr_conventional_activity(opts, state, f.target, f.source, (f.gi == 0) ? 1 : 0, 0, 1);
         }
     }
     state->data_header_sap[slot] = f.sap;
