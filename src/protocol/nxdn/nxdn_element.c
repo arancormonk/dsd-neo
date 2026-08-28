@@ -1707,16 +1707,26 @@ nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t ch
  */
 static int
 nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled != 1) {
+        return state->trunk_lcn_freq[0] != 0;
+    }
+
+    // Only the parked target's own control channel may move, and only an nxdn-trunk target has one
+    // this broadcast can describe. Checked before the "nothing learned yet" case below: under -fa
+    // an NXDN element decoded while parked on another target type is stray traffic (or a false
+    // sync), and adopting from it would plant a control channel on a target that has none, or move
+    // one that belongs to another protocol.
+    //   - conventional targets run with trunk_enable == 0 and have no control channel at all;
+    //   - a p25-trunk target owns the coordinator's P25 SM context and carries its control channel
+    //     in the same p25_cc_freq field this adoption would overwrite;
+    //   - a dmr-trunk target owns the DMR SM context (and keeps p25_cc_freq at 0).
+    if (opts->trunk_enable != 1 || dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL) {
+        return 1;
+    }
     if (state->trunk_lcn_freq[0] == 0) {
         return 0;
     }
-    if (opts->trunk_scan_enabled != 1) {
-        return 1;
-    }
-    // Coordinator contract: p25-trunk and nxdn-trunk targets carry p25_cc_freq while dmr-trunk
-    // targets keep it at 0, so a stray NXDN broadcast decoded under -fa while parked on a DMR
-    // target cannot retune it. More entries than the single seeded slot mean a per-target
-    // chan_csv supplied real LCNs.
+    // More entries than the single seeded slot mean a per-target chan_csv supplied real LCNs.
     return (state->lcn_freq_count > 1 || state->p25_cc_freq == 0) ? 1 : 0;
 }
 

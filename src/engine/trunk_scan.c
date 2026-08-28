@@ -332,11 +332,19 @@ scan_parse_ms_field(const char* s, int default_ms, int* out) {
     return 0;
 }
 
-/* Single home for the two type axes the coordinator dispatches on, so a new target type is
+/* Single home for the type axes the coordinator dispatches on, so a new target type is
  * classified in one place instead of in every `type == A || type == B` chain. */
 static int
 trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
     return type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL || type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL;
+}
+
+/* Target types whose control channel is anchored in state->p25_cc_freq. NXDN trunking reads and
+ * writes that field the same way P25 does; DMR trunking keeps it at 0 and uses trunk_cc_freq
+ * alone, which is what stops a stray NXDN element from moving a DMR target's control channel. */
+static int
+trunk_scan_type_anchors_p25_cc_freq(dsd_trunk_scan_target_type type) {
+    return type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK || type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK;
 }
 
 /* DMR and NXDN96 share the 4800 sym/s four-level GFSK demod profile. */
@@ -1554,7 +1562,7 @@ trunk_scan_seed_target_state(dsd_state* state, const dsd_trunk_scan_target* targ
     state->p25_last_vc_tune_time_m = 0.0;
     state->dmr_rest_channel = -1;
 
-    if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+    if (trunk_scan_type_anchors_p25_cc_freq(target->type)) {
         state->p25_cc_freq = (long int)target->frequency_hz;
         state->trunk_cc_freq = (long int)target->frequency_hz;
         state->trunk_lcn_freq[0] = (long int)target->frequency_hz;
@@ -1664,7 +1672,7 @@ trunk_scan_retune_freq(const dsd_state* state, const dsd_trunk_scan_target* targ
     if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         return trunk_scan_p25_retune_freq(state, target);
     }
-    if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+    if (!trunk_scan_type_is_conventional(target->type)) {
         return trunk_scan_dmr_retune_freq(state, target);
     }
     return (long int)target->frequency_hz;
@@ -1677,22 +1685,15 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
         *out_request_id = 0U;
     }
     const long int freq = trunk_scan_retune_freq(state, &rt->target);
-    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-        state->p25_cc_freq = freq;
-        state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_p25_cc_sps(opts, state), out_request_id);
+    if (trunk_scan_type_is_conventional(rt->target.type)) {
+        return dsd_engine_scan_tune_to_freq(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
     }
-    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
-        state->p25_cc_freq = 0;
-        state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
-    }
-    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
-        state->p25_cc_freq = freq;
-        state->trunk_cc_freq = freq;
-        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
-    }
-    return dsd_engine_scan_tune_to_freq(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
+    /* Trunk targets re-park on their control channel; only the two axes differ per type. */
+    state->p25_cc_freq = trunk_scan_type_anchors_p25_cc_freq(rt->target.type) ? freq : 0;
+    state->trunk_cc_freq = freq;
+    const int cc_sps =
+        trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state) : trunk_scan_dmr_sps(opts, state);
+    return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
 }
 
 static int

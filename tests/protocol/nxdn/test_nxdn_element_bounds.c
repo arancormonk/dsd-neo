@@ -1060,14 +1060,38 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     return rc;
 }
 
+static int g_parked_scan_ctx_marker;
+
+static void*
+parked_scan_ctx_marker(void) {
+    return &g_parked_scan_ctx_marker;
+}
+
+/*
+ * Model which scan-target context the coordinator would expose while parked: 1 = p25-trunk,
+ * 2 = dmr-trunk, 0 = anything else (nxdn-trunk or a conventional target).
+ */
+static void
+set_parked_scan_target_ctx(int parked_ctx) {
+    dsd_trunk_scan_hooks hooks = {0};
+    if (parked_ctx == 1) {
+        hooks.p25_ctx = parked_scan_ctx_marker;
+    } else if (parked_ctx == 2) {
+        hooks.dmr_ctx = parked_scan_ctx_marker;
+    }
+    dsd_trunk_scan_hooks_set(hooks);
+}
+
 /*
  * CCH_INFO DFA control-channel adoption. The site broadcast is the authority on the outbound
  * control channel: it must override a trunk-scan target's CSV park frequency (which is a guess),
- * but never an operator-supplied LCN list, and never a target the coordinator shaped for DMR.
+ * but never an operator-supplied LCN list, and never a target the coordinator shaped for another
+ * protocol.
  */
 static int
-run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, long int seeded_lcn0, long int seeded_p25_cc,
-                          long int seeded_trunk_cc, int seeded_lcn_count, int expect_adopt) {
+run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, int trunk_enable, int parked_ctx,
+                          long int seeded_lcn0, long int seeded_p25_cc, long int seeded_trunk_cc, int seeded_lcn_count,
+                          int expect_adopt) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     uint8_t bits[128];
@@ -1089,6 +1113,8 @@ run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, long int seed
     g_mapped_channel_freq = cc_freq;
 
     opts->trunk_scan_enabled = trunk_scan_enabled;
+    opts->trunk_enable = trunk_enable;
+    set_parked_scan_target_ctx(parked_ctx);
     state->trunk_lcn_freq[0] = seeded_lcn0;
     state->p25_cc_freq = seeded_p25_cc;
     state->trunk_cc_freq = seeded_trunk_cc;
@@ -1112,6 +1138,7 @@ run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, long int seed
     DSD_SNPRINTF(label, sizeof label, "%s-trunk-cc", tag);
     rc |= expect_int(label, (int)state->trunk_cc_freq, (int)(expect_adopt ? cc_freq : seeded_trunk_cc));
 
+    set_parked_scan_target_ctx(0);
     free(state);
     free(opts);
     return rc;
@@ -1123,15 +1150,20 @@ test_cch_dfa_control_channel_adoption_pinning(void) {
     int rc = 0;
 
     /* Plain -T with nothing learned yet: first broadcast seeds the control channel. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-unseeded", 0, 0, 0, 0, 0, 1);
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-unseeded", 0, 1, 0, 0, 0, 0, 0, 1);
     /* Plain -T after adoption (or with an imported LCN list): the existing value is pinned. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-pinned", 0, park, park, park, 1, 0);
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-pinned", 0, 1, 0, park, park, park, 1, 0);
     /* Trunk scan parks an nxdn-trunk target on its CSV frequency: the site broadcast wins. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-park", 1, park, park, park, 1, 1);
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-park", 1, 1, 0, park, park, park, 1, 1);
     /* A per-target chan_csv with LCN rows is operator intent: pinned even under scan. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-lcn-list", 1, park, park, park, 2, 0);
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-lcn-list", 1, 1, 0, park, park, park, 2, 0);
     /* A dmr-trunk target keeps p25_cc_freq at 0: a stray NXDN broadcast must not retune it. */
-    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-dmr-target", 1, park, 0, park, 1, 0);
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-dmr-target", 1, 1, 2, park, 0, park, 1, 0);
+    /* A p25-trunk target carries its own control channel in p25_cc_freq: a stray NXDN element
+     * decoded under -fa must not move it to an NXDN frequency. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-p25-target", 1, 1, 1, park, park, park, 1, 0);
+    /* Conventional targets run with trunk_enable == 0 and have no control channel to adopt. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-conventional-target", 1, 0, 0, 0, 0, 0, 0, 0);
 
     return rc;
 }
