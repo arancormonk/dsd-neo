@@ -99,8 +99,8 @@ static void nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const
 static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
 static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
 static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32]);
-static void nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
-static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
@@ -207,6 +207,7 @@ nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
 }
 
 static void
+// cppcheck-suppress constParameterCallback -- signature is fixed by the message-type dispatch table.
 nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     if (elements_bits < 79U) {
         DSD_FPRINTF(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
@@ -234,6 +235,7 @@ nxdn_element_handle_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* e
 }
 
 static void
+// cppcheck-suppress constParameterCallback -- signature is fixed by the message-type dispatch table.
 nxdn_element_handle_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     nxdn_dcall_header(opts, state, elements, elements_bits);
 }
@@ -678,7 +680,7 @@ nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* sta
 }
 
 static void
-nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
+nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     if (state == NULL || Message == NULL) {
         return;
     }
@@ -908,7 +910,7 @@ nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* i
 }
 
 static void
-nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
+nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     if (state == NULL || Message == NULL) {
         return;
     }

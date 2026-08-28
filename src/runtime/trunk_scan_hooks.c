@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
