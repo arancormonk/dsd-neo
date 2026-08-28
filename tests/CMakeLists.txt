@@ -4190,6 +4190,7 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression

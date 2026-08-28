@@ -407,7 +407,8 @@ test_parser_accepts_nxdn_targets(void) {
     static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
     if (write_targets_file_with_header(dir, header,
                                        "nxdn,nxdn-trunk,461000000,chan.csv,,,site,gfsk\n"
-                                       "conv,nxdn-conventional,462000000,,250,500,,auto\n",
+                                       "conv,nxdn-conventional,462000000,,250,500,,auto\n"
+                                       "conv48,nxdn48-conventional,462000000,,250,500,,gfsk\n",
                                        target_path, sizeof target_path)
         != 0) {
         cleanup_paths(dir, NULL, chan_path);
@@ -424,7 +425,7 @@ test_parser_accepts_nxdn_targets(void) {
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
 
     int test_rc = 0;
-    if (rc != 0 || list.count != 2) {
+    if (rc != 0 || list.count != 3) {
         DSD_FPRINTF(stderr, "parser nxdn rc=%d count=%zu err=%s\n", rc, list.count, err);
         test_rc = 1;
     }
@@ -441,6 +442,15 @@ test_parser_accepts_nxdn_targets(void) {
             || list.targets[1].activity_hold_ms != 500
             || list.targets[1].modulation != DSD_TRUNK_SCAN_MODULATION_AUTO) {
             DSD_FPRINTF(stderr, "parser nxdn conventional target 1 mismatch\n");
+            test_rc = 1;
+        }
+        /* Same frequency as target 1 on purpose: the two NXDN conventional variants are distinct
+           target types, so the (type, frequency) duplicate check must not collapse them. */
+        if (list.targets[2].type != DSD_TRUNK_SCAN_TARGET_NXDN48_CONVENTIONAL
+            || list.targets[2].frequency_hz != 462000000U || list.targets[2].dwell_ms != 250
+            || list.targets[2].activity_hold_ms != 500 || list.targets[2].modulation != DSD_TRUNK_SCAN_MODULATION_GFSK
+            || list.targets[2].chan_csv[0] != '\0') {
+            DSD_FPRINTF(stderr, "parser nxdn48 conventional target 2 mismatch\n");
             test_rc = 1;
         }
     }
@@ -645,6 +655,10 @@ test_parser_rejects_invalid_inputs(void) {
     rc |= expect_parser_rejects_with_header(
         "nxdn-unsupported-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
         "a,nxdn-trunk,461000000,,,,,cqpsk\n");
+    rc |= expect_parser_rejects("nxdn48-conventional-chan-csv", "a,nxdn48-conventional,461556250,chan.csv,,,\n");
+    rc |= expect_parser_rejects_with_header(
+        "nxdn48-unsupported-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
+        "a,nxdn48-conventional,461556250,,,,,c4fm\n");
     rc |= expect_parser_rejects_with_header("invalid-rtl-gain",
                                             "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n",
                                             "a,p25-trunk,851000000,,,,,50\n");
@@ -2120,6 +2134,197 @@ test_mixed_target_switch_resets_nxdn_demod_profile(void) {
 }
 
 static int
+test_nxdn48_target_selects_2400_demod_profile(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("n96,nxdn-conventional,461000000,,250,,\n"
+                             "n48,nxdn48-conventional,461556250,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    g_scan_tune_to_freq_ted_sps = 0;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn48 demod scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    if (test_rc == 0
+        && (state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4 || state.samplesPerSymbol != 10
+            || state.symbolCenter != 4 || state.rf_mod != 2 || g_scan_tune_to_freq_ted_sps != 10)) {
+        DSD_FPRINTF(stderr, "nxdn96 target profile wrong idx=%d sps=%d center=%d rf_mod=%d ted=%d\n",
+                    state.sps_hunt_idx, state.samplesPerSymbol, state.symbolCenter, state.rf_mod,
+                    g_scan_tune_to_freq_ted_sps);
+        test_rc = 1;
+    }
+
+    /* Poison every axis the coordinator owns: parking an NXDN48 target must re-seed all of them. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.sps_hunt_counter = 17;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    state.rf_mod = 0;
+    g_scan_tune_to_freq_ted_sps = 0;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4
+        || state.sps_hunt_counter != 0 || state.samplesPerSymbol != 20 || state.symbolCenter != 9 || state.rf_mod != 2
+        || g_scan_tune_to_freq_ted_sps != 20) {
+        DSD_FPRINTF(stderr,
+                    "nxdn48 target profile wrong active=%zu idx=%d counter=%d sps=%d center=%d rf_mod=%d ted=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.sps_hunt_idx, state.sps_hunt_counter,
+                    state.samplesPerSymbol, state.symbolCenter, state.rf_mod, g_scan_tune_to_freq_ted_sps);
+        test_rc = 1;
+    }
+
+    /* Rotating back must not leak the 2400 timing into the NXDN96 target. */
+    g_scan_tune_to_freq_ted_sps = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4
+        || state.samplesPerSymbol != 10 || state.symbolCenter != 4 || state.rf_mod != 2
+        || g_scan_tune_to_freq_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "nxdn96 target inherited 2400 timing active=%zu idx=%d sps=%d center=%d ted=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.sps_hunt_idx, state.samplesPerSymbol,
+                    state.symbolCenter, g_scan_tune_to_freq_ted_sps);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_nxdn48_target_uses_rtl_output_rate_for_sps(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("n48,nxdn48-conventional,461556250,,250,,\n"
+                             "n96,nxdn-conventional,461000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_rtl_stream_metrics_hooks metrics_hooks = {0};
+    metrics_hooks.output_rate_hz = fake_rtl_output_rate_hz;
+    g_fake_rtl_output_rate_hz = 24000U;
+    dsd_rtl_stream_metrics_hooks_set(&metrics_hooks);
+
+    g_scan_tune_to_freq_ted_sps = 0;
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    /* 24000 / 2400 = 10, the same sps NXDN96 gets at 48 kHz -- so only the hunt profile separates them. */
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0
+        || state.sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4 || state.samplesPerSymbol != 10
+        || state.symbolCenter != 4 || g_scan_tune_to_freq_ted_sps != 10) {
+        DSD_FPRINTF(stderr, "nxdn48 target ignored RTL output rate rc=%d idx=%d sps=%d center=%d ted=%d err=%s\n", rc,
+                    state.sps_hunt_idx, state.samplesPerSymbol, state.symbolCenter, g_scan_tune_to_freq_ted_sps, err);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* One init cycle with the given NXDN frame flags; returns the captured stderr in `buf`. */
+static int
+run_nxdn_decoder_warning_case(const char* label, const char* target_path, int frame_nxdn48, int frame_nxdn96, char* buf,
+                              size_t buf_sz) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    opts.frame_nxdn48 = frame_nxdn48;
+    opts.frame_nxdn96 = frame_nxdn96;
+
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "trunkscan48warn") != 0) {
+        DSD_FPRINTF(stderr, "%s: stderr capture failed\n", label);
+        return 1;
+    }
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)dsd_test_capture_stderr_end(&cap);
+    if (dsd_test_capture_stderr_read(&cap, buf, buf_sz) != 0) {
+        DSD_FPRINTF(stderr, "%s: stderr read failed\n", label);
+        return 1;
+    }
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "%s: scan init failed rc=%d err=%s\n", label, rc, err);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_warns_when_nxdn48_decoder_disabled(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("n48,nxdn48-conventional,461556250,,250,,\n"
+                             "n96,nxdn-conventional,461000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    int test_rc = 0;
+    char buf[4096];
+
+    /* NXDN96 enabled only: the NXDN48 row is the one that cannot decode. */
+    if (run_nxdn_decoder_warning_case("nxdn48-disabled", target_path, 0, 1, buf, sizeof buf) != 0) {
+        test_rc = 1;
+    } else if (!strstr(buf, "1 trunk scan target(s) have no enabled NXDN48 decoder (first: 'n48')")
+               || !strstr(buf, "use -fi or -fa to decode them") || strstr(buf, "NXDN96 decoder") != NULL) {
+        DSD_FPRINTF(stderr, "nxdn48 disabled warning wrong:\n%s\n", buf);
+        test_rc = 1;
+    }
+
+    /* NXDN48 enabled only: the NXDN96 row is the one that cannot decode. */
+    if (run_nxdn_decoder_warning_case("nxdn96-disabled", target_path, 1, 0, buf, sizeof buf) != 0) {
+        test_rc = 1;
+    } else if (!strstr(buf, "1 trunk scan target(s) have no enabled NXDN96 decoder (first: 'n96')")
+               || !strstr(buf, "use -fn or -fa to decode them") || strstr(buf, "NXDN48 decoder") != NULL) {
+        DSD_FPRINTF(stderr, "nxdn96 disabled warning wrong:\n%s\n", buf);
+        test_rc = 1;
+    }
+
+    /* Both enabled (-fa): neither variant warns. */
+    if (run_nxdn_decoder_warning_case("both-enabled", target_path, 1, 1, buf, sizeof buf) != 0) {
+        test_rc = 1;
+    } else if (strstr(buf, "NXDN48 decoder") != NULL || strstr(buf, "NXDN96 decoder") != NULL) {
+        DSD_FPRINTF(stderr, "both-enabled warned anyway:\n%s\n", buf);
+        test_rc = 1;
+    }
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
 test_nxdn_conventional_activity_hold(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
@@ -2268,7 +2473,130 @@ test_conventional_activity_data_call_respects_tune_data_calls(void) {
                                                dsd_engine_trunk_scan_dmr_conventional_activity);
     rc |= run_conventional_data_call_hold_case("dmr-data-not-followed", dmr_body, 0, 1,
                                                dsd_engine_trunk_scan_dmr_conventional_activity);
+
+    /* The NXDN entry point serves both conventional variants: nxdn_element.c reports VCALL/DCALL
+       identity without knowing whether the site is 6.25 or 12.5 kHz. */
+    static const char nxdn48_body[] = "a,nxdn48-conventional,461556250,,250,250,\n"
+                                      "b,nxdn48-conventional,462556250,,250,250,\n";
+    rc |= run_conventional_data_call_hold_case("nxdn48-data-followed", nxdn48_body, 1, 0,
+                                               dsd_engine_trunk_scan_nxdn_conventional_activity);
+    rc |= run_conventional_data_call_hold_case("nxdn48-data-not-followed", nxdn48_body, 0, 1,
+                                               dsd_engine_trunk_scan_nxdn_conventional_activity);
     return rc;
+}
+
+/*
+ * The NXDN entry point holds either NXDN conventional variant, and neither conventional family
+ * may claim the other's park: a DMR voice header decoded while an NXDN48 target is parked says
+ * nothing about that target's channel.
+ */
+static int
+test_conventional_activity_families_do_not_cross(void) {
+    static const char nxdn48_first[] = "n48,nxdn48-conventional,461556250,,250,250,\n"
+                                       "dmrc,dmr-conventional,461112500,,250,250,\n";
+    static const char dmr_first[] = "dmrc,dmr-conventional,461112500,,250,250,\n"
+                                    "n48,nxdn48-conventional,461556250,,250,250,\n";
+    int rc = 0;
+
+    /* NXDN hook holds a parked nxdn48-conventional target (data-call tuning on to reuse the helper). */
+    rc |= run_conventional_data_call_hold_case("nxdn-hook-holds-nxdn48", nxdn48_first, 1, 0,
+                                               dsd_engine_trunk_scan_nxdn_conventional_activity);
+    /* DMR hook must not: the target rotates away despite the reported activity. */
+    rc |= run_conventional_data_call_hold_case("dmr-hook-skips-nxdn48", nxdn48_first, 1, 1,
+                                               dsd_engine_trunk_scan_dmr_conventional_activity);
+    /* And the NXDN hook must not claim a parked dmr-conventional target. */
+    rc |= run_conventional_data_call_hold_case("nxdn-hook-skips-dmr", dmr_first, 1, 1,
+                                               dsd_engine_trunk_scan_nxdn_conventional_activity);
+    return rc;
+}
+
+static int
+test_nxdn48_conventional_activity_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,nxdn48-conventional,461556250,,250,250,\n"
+                             "b,nxdn48-conventional,462556250,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn48 conventional scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_nxdn_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "NXDN48 conventional activity did not hold the target\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.61);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.87);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "NXDN48 target did not rotate after conventional hold and dwell\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_use_allow_list = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    trunk_scan_test_set_now(0.0);
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "nxdn48 allowlist scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_nxdn_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "blocked allow-list traffic held NXDN48 conventional target\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_tune_enc_calls = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    trunk_scan_test_set_now(0.0);
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "nxdn48 encrypted lockout scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_nxdn_conventional_activity(&opts, &state, 1001, 2002, 1, 1, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "encrypted NXDN48 conventional traffic held target despite lockout\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
 }
 
 static int
@@ -4296,8 +4624,13 @@ main(void) {
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
+    rc |= run_with_default_tune_hook(test_nxdn48_target_selects_2400_demod_profile);
+    rc |= run_with_default_tune_hook(test_nxdn48_target_uses_rtl_output_rate_for_sps);
+    rc |= run_with_default_tune_hook(test_warns_when_nxdn48_decoder_disabled);
     rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_conventional_activity_data_call_respects_tune_data_calls);
+    rc |= run_with_default_tune_hook(test_conventional_activity_families_do_not_cross);
+    rc |= run_with_default_tune_hook(test_nxdn48_conventional_activity_hold);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
     rc |= run_with_default_tune_hook(test_nxdn_trunk_target_follows_corrected_cc);
     rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);

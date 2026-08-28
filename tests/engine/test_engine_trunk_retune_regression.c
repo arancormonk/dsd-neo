@@ -72,6 +72,7 @@ static int g_rtl_pending_tuner_autogain_is_set = 0;
 static int g_rtl_pending_tuner_autogain_on = 0;
 static uint32_t g_rtl_pending_target_freq_hz = 0;
 static size_t g_trunk_scan_target_count = 0;
+static int g_trunk_scan_active_gfsk_symbol_rate = 0;
 static int g_trunk_scan_saved_autogain_is_set = 0;
 static int g_trunk_scan_saved_autogain_on = 0;
 static int g_trunk_scan_active_p25_cqpsk_is_set = 0;
@@ -216,6 +217,13 @@ dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on) 
         *out_on = g_trunk_scan_saved_autogain_on;
     }
     return g_trunk_scan_saved_autogain_is_set;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state) {
+    (void)state;
+    return g_trunk_scan_active_gfsk_symbol_rate;
 }
 
 int
@@ -832,6 +840,59 @@ main(void) {
     assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
     assert(g_rtl_ted_sps == 10);
     assert(g_rtl_ted_sps_override == 0);
+
+    /* A parked nxdn48-conventional scan target runs 2400 sym/s in a 6.25 kHz channel. rf_mod == 2
+     * is true for every GFSK-family target, so only the coordinator's own answer separates it from
+     * the 4800 sym/s DMR/NXDN96 case above -- and a wrong filter here never self-corrects, because
+     * a pinned SPS hunt stops re-applying the demod profile. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 2;
+    g_trunk_scan_target_count = 2;
+    g_trunk_scan_active_gfsk_symbol_rate = 2400;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_rtl_ted_sps = 10;
+    g_rtl_ted_sps_override = 10;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461556250, 20, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_pending_active == 0);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 2400);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
+    assert(g_rtl_ted_sps == 20); /* 48000 / 2400 from the stubbed RTL output rate */
+    assert(g_rtl_ted_sps_override == 0);
+
+    /* A parked 4800-class scan target keeps the 12.5 kHz chain. */
+    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_ted_sps = 20;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
+    assert(g_rtl_ted_sps == 10);
+
+    /* Outside trunk scan the coordinator answers 0 and the rf_mod == 2 gate still picks 4800. */
+    g_trunk_scan_target_count = 0;
+    g_trunk_scan_active_gfsk_symbol_rate = 0;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_ted_sps = 20;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
+    assert(g_rtl_ted_sps == 10);
+    rtl_stream_clear_pending_retune_profile();
 
     /* Trunk-scan RTL retunes queue the active target/global gain with the
      * demod profile so gain changes happen at the retune boundary. */
