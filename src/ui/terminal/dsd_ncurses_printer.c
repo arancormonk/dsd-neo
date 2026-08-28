@@ -849,7 +849,8 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
     if (opts->scanner_mode == 1) {
         printw("| Scan Mode: ");
         if (state->lcn_freq_roll != 0) {
-            printw(" Frequency: %.06lf MHz", (double)state->trunk_lcn_freq[state->lcn_freq_roll - 1] / 1000000);
+            printw(" Frequency: %.06lf MHz",
+                   (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
         }
         printw(" Speed: %.02lf sec \n",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden

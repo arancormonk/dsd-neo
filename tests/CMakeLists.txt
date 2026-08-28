@@ -1526,6 +1526,8 @@ add_executable(
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
+    # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail.
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_ui_menu_services
@@ -2782,6 +2784,7 @@ add_executable(
     ui/test_ui_snapshot_event_history.c
     ${PROJECT_SOURCE_DIR}/src/core/util/talkgroup_policy.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
@@ -4194,6 +4197,7 @@ add_executable(
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan

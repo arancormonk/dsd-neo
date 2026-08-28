@@ -110,6 +110,26 @@ ui_snapshot_copy_trunk_chan_map(dsd_state* dst, const dsd_state* src) {
     dst->trunk_chan_map_seq = src->trunk_chan_map_seq;
 }
 
+/* The embedded trunk_lcn_freq[26] is a plain array copied by the byte ranges
+ * above; the scan-list heap tail past slot 26 needs an explicit deep copy.
+ * Runs after the range that carries lcn_freq_count/lcn_freq_roll so dst is
+ * never left claiming more entries than its tail holds: on reserve failure the
+ * count is clamped back to the 26 embedded slots and the roll restarted. */
+static void
+ui_snapshot_copy_trunk_lcn_freq_ext(dsd_state* dst, const dsd_state* src) {
+    const int count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
+    if (count <= 26) {
+        return;
+    }
+    const size_t ext_count = (size_t)count - 26;
+    if (dsd_state_trunk_lcn_reserve(dst, (size_t)count) != 0) {
+        dst->lcn_freq_count = 26;
+        dst->lcn_freq_roll = 0;
+        return;
+    }
+    DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext, ext_count * sizeof(dst->trunk_lcn_freq_ext[0]));
+}
+
 static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
@@ -124,6 +144,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dmr_alias_format, DMRvcR);
     UI_SNAPSHOT_COPY_RANGE(dst, src, octet_counter, p25_p2_audio_allowed);
     UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_audio_ring_count, dstar_gps);
+    ui_snapshot_copy_trunk_lcn_freq_ext(dst, src);
     UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
 }

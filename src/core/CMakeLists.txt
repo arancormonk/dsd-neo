@@ -27,6 +27,7 @@ target_sources(
         util/dsd_misc.c
         util/bit_packing.c
         util/dsd_init.c
+        util/dsd_state_trunk_lcn.c
         util/enc_lockout.c
         util/dsd_events.c
         util/call_state.c

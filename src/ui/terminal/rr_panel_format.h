@@ -19,18 +19,11 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_import.h>
 
-/* Mirrors RR_LCN_LIST_MAX (`#define RR_LCN_LIST_MAX    26U` in
- * src/runtime/radioreference/rr_generate.c), which is file-static there. */
-#define RR_PANEL_LCN_CAP 26
-
 typedef struct {
-    int kept;       /* distinct usable frequencies kept, 0..RR_PANEL_LCN_CAP */
+    int kept;       /* distinct usable frequencies kept, no cap */
     int empty;      /* selected sites whose first usable frequency is 0 */
     int duplicates; /* selected sites repeating an already-kept frequency */
-    int dropped;    /* selected sites past the cap */
-    int cap;        /* always RR_PANEL_LCN_CAP */
-    int over_cap;   /* dropped > 0 */
-    char text[40];  /* "[ 3 of 26 ]" or "[ 26 of 26 - 1 dropped ]" */
+    char text[40];  /* "[ 3 distinct frequencies ]" */
 } RrPanelCounter;
 
 typedef int (*rr_panel_site_selected_fn)(const void* user, size_t index);

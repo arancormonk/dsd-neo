@@ -384,6 +384,7 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
         }
     }
 
+    dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, chan_path);
     return test_rc;
 }
@@ -423,6 +424,7 @@ test_parser_accepts_quoted_chan_csv_with_comma(void) {
         test_rc = 1;
     }
 
+    dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, chan_path);
     return test_rc;
 }
@@ -477,6 +479,7 @@ test_parser_accepts_optional_modulation_and_gain_columns(void) {
         }
     }
 
+    dsd_trunk_scan_target_list_reset(&list);
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
 }
@@ -498,9 +501,12 @@ expect_parser_rejects(const char* name, const char* body) {
     opts.trunk_scan_idle_dwell_ms = 3000;
     opts.trunk_scan_activity_hold_ms = 1200;
     dsd_trunk_scan_target_list list;
-    DSD_MEMSET(&list, 0xA5, sizeof list);
+    static dsd_trunk_scan_target sentinel[7];
+    DSD_MEMSET(sentinel, 0, sizeof sentinel);
+    DSD_SNPRINTF(sentinel[0].id, sizeof sentinel[0].id, "%s", "sentinel");
+    list.targets = sentinel;
     list.count = 7;
-    DSD_SNPRINTF(list.targets[0].id, sizeof list.targets[0].id, "%s", "sentinel");
+    list.capacity = 7;
     char err[256] = {0};
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
     int test_rc = 0;
@@ -508,7 +514,8 @@ expect_parser_rejects(const char* name, const char* body) {
         DSD_FPRINTF(stderr, "%s should have been rejected\n", name);
         test_rc = 1;
     }
-    if (list.count != 7 || strcmp(list.targets[0].id, "sentinel") != 0) {
+    if (list.count != 7 || list.targets != sentinel || list.capacity != 7
+        || strcmp(list.targets[0].id, "sentinel") != 0) {
         DSD_FPRINTF(stderr, "%s mutated output on failure\n", name);
         test_rc = 1;
     }
@@ -578,17 +585,45 @@ test_parser_rejects_invalid_inputs(void) {
 }
 
 static int
-test_parser_rejects_too_many_targets(void) {
+test_parser_accepts_100_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
     char body[8192];
     body[0] = '\0';
-    for (int i = 0; i < DSD_TRUNK_SCAN_MAX_TARGETS + 1; i++) {
+    for (int i = 0; i < 100; i++) {
         char row[128];
         DSD_SNPRINTF(row, sizeof row, "id%d,dmr-conventional,%u,,,,\n", i, 461000000U + (unsigned)i);
         if (append_text(body, sizeof body, row) != 0) {
+            cleanup_paths(dir, NULL, NULL);
             return 1;
         }
     }
-    return expect_parser_rejects("too-many-targets", body);
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file(dir, body, target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || list.count != 100 || list.targets == NULL || strcmp(list.targets[99].id, "id99") != 0
+        || list.targets[99].frequency_hz != 461000099U || list.targets[99].dwell_ms != 3000
+        || list.targets[99].activity_hold_ms != 1200) {
+        DSD_FPRINTF(stderr, "parser 100 targets rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
 }
 
 static int
@@ -904,6 +939,60 @@ test_coordinator_idle_rotation_and_state_restore(void) {
         test_rc = 1;
     }
     test_rc |= expect_target0_p25_state(&state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_coordinator_rotation_past_32_targets(void) {
+    char body[8192];
+    body[0] = '\0';
+    for (int i = 0; i < 40; i++) {
+        char row[128];
+        DSD_SNPRINTF(row, sizeof row, "id%d,dmr-conventional,%u,,,,\n", i, 461000000U + (unsigned)i);
+        if (append_text(body, sizeof body, row) != 0) {
+            return 1;
+        }
+    }
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "scan init 40 targets failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    for (size_t i = 1; i < 40 && test_rc == 0; i++) {
+        trunk_scan_test_set_now(0.25 * (double)i);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        if (dsd_engine_trunk_scan_active_index(&state) != i) {
+            DSD_FPRINTF(stderr, "scan rotation stalled at index %zu (expected %zu)\n",
+                        dsd_engine_trunk_scan_active_index(&state), i);
+            test_rc = 1;
+        }
+    }
+    if (test_rc == 0) {
+        trunk_scan_test_set_now(0.25 * 40.0);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+            DSD_FPRINTF(stderr, "scan did not wrap from index 39 to 0\n");
+            test_rc = 1;
+        }
+    }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -3543,8 +3632,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
-    rc |= run_with_default_tune_hook(test_parser_rejects_too_many_targets);
+    rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_lifecycle_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_current_rows_isolated_per_target);

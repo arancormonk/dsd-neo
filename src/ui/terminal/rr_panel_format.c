@@ -18,6 +18,7 @@
 #include <dsd-neo/runtime/radioreference.h>
 #include <dsd-neo/runtime/radioreference_generate.h>
 #include <dsd-neo/runtime/radioreference_import.h>
+#include <stdlib.h>
 
 /**
  * @brief Resolve the row's trailing tag and the frequency it advertises.
@@ -80,23 +81,26 @@ rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_sit
         return;
     }
     DSD_MEMSET(out, 0, sizeof *out);
-    out->cap = RR_PANEL_LCN_CAP;
-    long long chosen[RR_PANEL_LCN_CAP];
-    DSD_MEMSET(chosen, 0, sizeof chosen);
+    long long* chosen = (long long*)calloc(site_count > 0U ? site_count : 1U, sizeof *chosen);
+    if (chosen == NULL) {
+        (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ selection unavailable ]");
+        return;
+    }
+    size_t count = 0;
     if (sites != NULL && is_selected != NULL) {
         for (size_t i = 0; i < site_count; i++) {
             if (!is_selected(user, i)) {
                 continue;
             }
             /* Mirrors rr_chan_conventional (src/runtime/radioreference/rr_generate.c): empty
-             * first, then duplicate, then the cap - so the cap counts DISTINCT frequencies. */
+             * first, then duplicates - the kept count is DISTINCT frequencies, with no cap. */
             const long long hz = dsd_rr_site_first_freq_hz(&sites[i]);
             if (hz == 0) {
                 out->empty++;
                 continue;
             }
             int duplicate = 0;
-            for (int k = 0; k < out->kept; k++) {
+            for (size_t k = 0; k < count; k++) {
                 if (chosen[k] == hz) {
                     duplicate = 1;
                     break;
@@ -106,20 +110,13 @@ rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_sit
                 out->duplicates++;
                 continue;
             }
-            if (out->kept >= out->cap) {
-                out->dropped++;
-                continue;
-            }
-            chosen[out->kept] = hz;
-            out->kept++;
+            chosen[count] = hz;
+            count++;
         }
     }
-    out->over_cap = (out->dropped > 0) ? 1 : 0;
-    if (out->over_cap) {
-        (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ %d of %d - %d dropped ]", out->kept, out->cap, out->dropped);
-        return;
-    }
-    (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ %d of %d ]", out->kept, out->cap);
+    out->kept = (int)count;
+    free(chosen);
+    (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ %d distinct frequencies ]", out->kept);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed

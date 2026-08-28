@@ -55,7 +55,7 @@ Column behavior:
 
 Target list limits and validation:
 
-- Maximum 32 targets.
+- No target-count limit; bounded only by memory.
 - Blank rows are skipped.
 - Every data row must contain the seven fields above.
 - The header may have optional columns after `notes`, but the first seven header names must match the required prefix.

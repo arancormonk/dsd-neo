@@ -1299,7 +1299,7 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
         state->lcn_freq_roll = 0;
     }
 
-    long int freq = state->trunk_lcn_freq[state->lcn_freq_roll];
+    long int freq = *dsd_state_trunk_lcn_slot(state, state->lcn_freq_roll);
     // Tracks whether the receiver has physically moved yet, so a later leg failing cannot retract a
     // move that already happened. With both rigctl and an RTL front end configured the rigctl leg
     // runs first and commits s_last_rigctl_freq; if the RTL tune then fails the scan step is

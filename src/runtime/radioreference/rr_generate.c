@@ -46,10 +46,9 @@
 #define RR_FREQ_MIN_HZ     100000LL
 #define RR_FREQ_MAX_HZ     6000000000LL
 
-/* state->trunk_lcn_freq[] holds 26 entries. EDACS indexes it as lcn - 1 with
- * lcn < 26, so a 26th EDACS row is stored but unreachable; scanner mode rolls
- * over 0..lcn_freq_count-1 and can reach all 26. */
-#define RR_LCN_LIST_MAX    26U
+/* EDACS indexes the runtime's scan list as lcn - 1 with lcn < 26, so only the
+ * first 25 slots are reachable for EDACS. The list itself is heap-backed and
+ * unbounded; scanner mode rolls over 0..lcn_freq_count-1. */
 #define RR_EDACS_LCN_MAX   25U
 
 /* Connect Plus LCNs are 4 bits (dmr_csbk.c); Tier III channel numbers are 12
@@ -694,8 +693,8 @@ typedef struct {
  * Column 2 in row order IS the hunt rotation try_next_cc() walks, so the primary
  * control channel goes first, then the alternates, then every remaining site
  * frequency - on a Phase 2 system any site channel can carry the CC after a
- * rotation or failover. Duplicates are dropped and the list is capped at the 26
- * slots trunk_lcn_freq[] holds. Nothing is ever padded: a 0 slot does not skip
+ * rotation or failover. Duplicates are dropped; the ranked list is bounded by
+ * the site's own frequency count. Nothing is ever padded: a 0 slot does not skip
  * to the next row, it burns a hunt cycle on the known primary, and LCN-sourced
  * probes never get the cooldown a failed candidate-array entry gets.
  *
@@ -707,40 +706,44 @@ typedef struct {
  */
 static size_t
 rr_p25_rank_freqs(const dsd_rr_site* site, size_t* order, size_t max, rr_p25_skips* skips) {
-    long long chosen[RR_LCN_LIST_MAX] = {0};
+    long long* chosen = (long long*)calloc(site->freq_count > 0U ? site->freq_count : 1U, sizeof *chosen);
     size_t count = 0;
 
-    for (int pass = 0; pass < 3; pass++) {
-        for (size_t i = 0; i < site->freq_count; i++) {
-            const dsd_rr_site_freq* freq = &site->freqs[i];
-            const int rank = freq->is_control ? 0 : (freq->is_alt_control ? 1 : 2);
-            if (rank != pass) {
-                continue;
-            }
-            if (!rr_freq_usable(freq->freq_hz)) {
-                skips->unusable++;
-                continue;
-            }
-            int duplicate = 0;
-            for (size_t k = 0; k < count; k++) {
-                if (chosen[k] == freq->freq_hz) {
-                    duplicate = 1;
-                    break;
+    if (chosen) {
+
+        for (int pass = 0; pass < 3; pass++) {
+            for (size_t i = 0; i < site->freq_count; i++) {
+                const dsd_rr_site_freq* freq = &site->freqs[i];
+                const int rank = freq->is_control ? 0 : (freq->is_alt_control ? 1 : 2);
+                if (rank != pass) {
+                    continue;
                 }
+                if (!rr_freq_usable(freq->freq_hz)) {
+                    skips->unusable++;
+                    continue;
+                }
+                int duplicate = 0;
+                for (size_t k = 0; k < count; k++) {
+                    if (chosen[k] == freq->freq_hz) {
+                        duplicate = 1;
+                        break;
+                    }
+                }
+                if (duplicate) {
+                    skips->duplicate++;
+                    continue;
+                }
+                if (count >= max) {
+                    skips->truncated++;
+                    continue;
+                }
+                chosen[count] = freq->freq_hz;
+                order[count] = i;
+                count++;
             }
-            if (duplicate) {
-                skips->duplicate++;
-                continue;
-            }
-            if (count >= max) {
-                skips->truncated++;
-                continue;
-            }
-            chosen[count] = freq->freq_hz;
-            order[count] = i;
-            count++;
         }
     }
+    free(chosen);
     return count;
 }
 
@@ -761,20 +764,28 @@ rr_p25_rank_freqs(const dsd_rr_site* site, size_t* order, size_t max, rr_p25_ski
  */
 static int
 rr_p25_identifiers_usable(const dsd_rr_site* site, const size_t* order, size_t count) {
-    long seen[RR_LCN_LIST_MAX] = {0};
-    for (size_t i = 0; i < count; i++) {
+    long* seen = (long*)calloc(count > 0U ? count : 1U, sizeof *seen);
+    if (!seen) {
+        return 0;
+    }
+    int usable = (count > 0U) ? 1 : 0;
+    for (size_t i = 0; i < count && usable; i++) {
         const long chan = rr_freq_channel(&site->freqs[order[i]], 1);
         if (chan < RR_P25_IDENTIFIER_MIN || chan > RR_CHAN_NUMBER_MAX) {
-            return 0;
+            usable = 0;
         }
         for (size_t k = 0; k < i; k++) {
             if (seen[k] == chan) {
-                return 0;
+                usable = 0;
+                break;
             }
         }
-        seen[i] = chan;
+        if (usable) {
+            seen[i] = chan;
+        }
     }
-    return (count > 0U) ? 1 : 0;
+    free(seen);
+    return usable;
 }
 
 /**
@@ -786,10 +797,21 @@ rr_p25_identifiers_usable(const dsd_rr_site* site, const size_t* order, size_t c
  */
 static void
 rr_chan_p25(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warnings) {
-    size_t order[RR_LCN_LIST_MAX] = {0};
+    size_t* order = (size_t*)calloc(site->freq_count > 0U ? site->freq_count : 1U, sizeof *order);
+    if (!order) {
+        rr_warn(warnings, "could not allocate the scan list");
+        return;
+    }
     rr_p25_skips skips = {0U, 0U, 0U};
-    const size_t count = rr_p25_rank_freqs(site, order, RR_LCN_LIST_MAX, &skips);
+    size_t count = rr_p25_rank_freqs(site, order, site->freq_count, &skips);
+    /* The ranked indexes reference site->freqs, so the count never exceeds the
+     * site's frequency list by construction; clamping keeps that invariant
+     * visible where the heap allocation is sized. */
+    if (count > site->freq_count) {
+        count = site->freq_count;
+    }
     if (count == 0U) {
+        free(order);
         rr_warn(warnings, "This P25 site lists no usable frequencies, so no channel map was generated.");
         return;
     }
@@ -823,6 +845,7 @@ rr_chan_p25(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warning
         const long chan = verbatim ? rr_freq_channel(freq, 1) : (long)(i + 1U);
         rr_text_chan_row(text, chan, freq->freq_hz, NULL);
     }
+    free(order);
 }
 
 /**
@@ -1023,11 +1046,14 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
  */
 static void
 rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text, dsd_rr_warning_list* warnings) {
-    long long chosen[RR_LCN_LIST_MAX] = {0};
+    long long* chosen = (long long*)calloc(site_count > 0U ? site_count : 1U, sizeof *chosen);
+    if (!chosen) {
+        rr_warn(warnings, "could not allocate the scan list");
+        return;
+    }
     size_t count = 0;
     size_t duplicates = 0;
     size_t empty = 0;
-    size_t truncated = 0;
 
     for (size_t i = 0; i < site_count; i++) {
         const long long freq_hz = dsd_rr_site_first_freq_hz(&sites[i]);
@@ -1044,10 +1070,6 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
         }
         if (duplicate) {
             duplicates++;
-            continue;
-        }
-        if (count >= RR_LCN_LIST_MAX) {
-            truncated++;
             continue;
         }
         chosen[count] = freq_hz;
@@ -1067,16 +1089,12 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
                            duplicates);
         rr_warn(warnings, msg);
     }
-    if (truncated > 0U) {
-        (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu selected repeater(s) past the 26-frequency scan limit were dropped.",
-                           truncated);
-        rr_warn(warnings, msg);
-    }
 
     /* One repeater means "tune it and decode": a one-entry scan list makes
      * no_carrier_step_scanner_mode_if_needed() retune to the frequency it is
      * already on at every hangtime expiry, which is pure churn. */
     if (count < 2U) {
+        free(chosen);
         return;
     }
 
@@ -1085,6 +1103,7 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
     }
     rr_warn(warnings, "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any other input the "
                       "session stays on the first frequency.");
+    free(chosen);
 }
 
 /**

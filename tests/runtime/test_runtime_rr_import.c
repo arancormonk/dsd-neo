@@ -744,12 +744,12 @@ test_plan_blocked(void) {
 
 static void
 test_plan_site_ids_large_selection(void) {
-    /* The scan list caps at 26 frequencies (RR_LCN_LIST_MAX) and says so in a
-     * warning, so a big conventional selection has always produced a usable
-     * 26-row map plus the full talkgroup list. site_ids only records the
-     * selection for a later refresh, and refusing the whole import - talkgroups
-     * included - over that bookkeeping field was disproportionate. A selection
-     * this size must build. */
+    /* The scan list is heap-backed and unbounded, so a big conventional
+     * selection produces a full map plus the full talkgroup list, with no
+     * truncation warning. site_ids only records the selection for a later
+     * refresh, and refusing the whole import - talkgroups included - over
+     * that bookkeeping field was disproportionate. A selection this size
+     * must build. */
     enum { RR_TEST_LARGE = 200 };
 
     dsd_rr_site_freq freqs[RR_TEST_LARGE];
@@ -777,8 +777,15 @@ test_plan_site_ids_large_selection(void) {
     /* First and last id both survive: a silent truncation would drop the tail. */
     expect("id list starts at the first selection", strncmp(plan.site_ids, "10000,", 6) == 0);
     expect("id list ends at the last selection", strstr(plan.site_ids, ",10199") != NULL);
-    expect("the scan-list cap is reported rather than the import refused",
-           warned(&plan.warnings, "174 selected repeater(s) past the 26-frequency scan limit were dropped."));
+    expect("the scan list is not truncated", !warned(&plan.warnings, "past the 26-frequency scan limit"));
+    /* The plan carries the full deduped list: 200 data rows plus header. */
+    size_t rows = 0;
+    for (const char* p = plan.chan_csv_text; p != NULL && *p != '\0'; p++) {
+        if (*p == '\n') {
+            rows++;
+        }
+    }
+    expect("plan chan map carries all 200 rows", rows == (size_t)RR_TEST_LARGE + 1U);
     dsd_rr_import_plan_free(&plan);
 }
 

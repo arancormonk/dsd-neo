@@ -119,7 +119,7 @@ Columns:
 
 Validation notes:
 
-- Maximum 32 targets.
+- No target-count limit; bounded only by memory.
 - Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected.
 - `chan_csv` on `dmr-conventional` rows is rejected.
 - Global `-C`/`[trunking] chan_csv` is rejected in trunk scan mode so channel maps do not leak across systems.

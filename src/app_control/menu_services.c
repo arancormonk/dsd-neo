@@ -332,16 +332,25 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * LCN the new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
  * shorter list has to restart the hunt rather than resume mid-way.
  */
-static void
+static int
 chan_map_adopt(dsd_state* dst, const dsd_state* src) {
+    if (dsd_state_trunk_lcn_reserve(dst, (size_t)src->lcn_freq_count) != 0) {
+        LOG_ERROR("channel map adopt out of memory\n");
+        return -1;
+    }
     DSD_MEMCPY(dst->trunk_chan_map, src->trunk_chan_map, sizeof dst->trunk_chan_map);
     DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
     dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
     DSD_MEMCPY(dst->trunk_lcn_freq, src->trunk_lcn_freq, sizeof dst->trunk_lcn_freq);
+    if (src->lcn_freq_count > 26) {
+        DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext,
+                   (size_t)(src->lcn_freq_count - 26) * sizeof(dst->trunk_lcn_freq_ext[0]));
+    }
     dst->lcn_freq_count = src->lcn_freq_count;
     dst->lcn_freq_roll = 0;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;
+    return 0;
 }
 
 int
@@ -372,12 +381,14 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // that would replace the live map with zeros; refuse instead, which is what
     // the additive import used to do by doing nothing.
     const int mapped_any = (imported->trunk_chan_map_used_count > 0);
+    int adopt_rc = -1;
     if (import_rc == 0 && mapped_any) {
-        chan_map_adopt(state, imported);
+        adopt_rc = chan_map_adopt(state, imported);
     }
     dsd_state_ext_free_all(imported);
+    dsd_state_trunk_lcn_free(imported);
     free(imported);
-    return (import_rc == 0 && mapped_any) ? 0 : -1;
+    return (import_rc == 0 && mapped_any && adopt_rc == 0) ? 0 : -1;
 }
 
 int
@@ -395,6 +406,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
     state->trunk_chan_map_used_count = 0;
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
+    dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
     // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving

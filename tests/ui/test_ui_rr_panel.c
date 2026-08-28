@@ -83,7 +83,7 @@ test_site_row_conventional_with_color_code(void) {
 }
 
 static void
-test_counter_under_cap(void) {
+test_counter_counts_distinct_frequencies(void) {
     dsd_rr_site_freq freqs[3];
     dsd_rr_site sites[3];
     const long long hz[3] = {146755000LL, 444525000LL, 443125000LL};
@@ -97,16 +97,13 @@ test_counter_under_cap(void) {
     assert(counter.kept == 3);
     assert(counter.empty == 0);
     assert(counter.duplicates == 0);
-    assert(counter.dropped == 0);
-    assert(counter.cap == 26);
-    assert(counter.over_cap == 0);
-    assert(strcmp(counter.text, "[ 3 of 26 ]") == 0);
+    assert(strcmp(counter.text, "[ 3 distinct frequencies ]") == 0);
 }
 
 static void
-test_counter_over_cap_needs_distinct_frequencies(void) {
-    /* 27 selected repeaters with 27 DISTINCT frequencies: the generator caps on distinct
-     * frequencies, so 26 are kept and exactly one is dropped. */
+test_counter_keeps_every_distinct_frequency(void) {
+    /* 27 selected repeaters with 27 DISTINCT frequencies: the scan list is
+     * unbounded, so all 27 are kept. */
     dsd_rr_site_freq freqs[27];
     dsd_rr_site sites[27];
     for (size_t i = 0; i < 27; i++) {
@@ -116,14 +113,12 @@ test_counter_over_cap_needs_distinct_frequencies(void) {
     }
     RrPanelCounter counter;
     rr_panel_counter_state(sites, 27, select_all, NULL, &counter);
-    assert(counter.kept == 26);
-    assert(counter.dropped == 1);
-    assert(counter.over_cap == 1);
-    assert(strcmp(counter.text, "[ 26 of 26 - 1 dropped ]") == 0);
+    assert(counter.kept == 27);
+    assert(strcmp(counter.text, "[ 27 distinct frequencies ]") == 0);
 }
 
 static void
-test_counter_drops_empty_and_duplicates_before_the_cap(void) {
+test_counter_skips_empty_and_duplicates(void) {
     dsd_rr_site_freq freqs[3];
     dsd_rr_site sites[4];
     const long long hz[3] = {146755000LL, 146755000LL, 443125000LL};
@@ -139,9 +134,7 @@ test_counter_drops_empty_and_duplicates_before_the_cap(void) {
     assert(counter.kept == 2);
     assert(counter.duplicates == 1);
     assert(counter.empty == 1);
-    assert(counter.dropped == 0);
-    assert(counter.over_cap == 0);
-    assert(strcmp(counter.text, "[ 2 of 26 ]") == 0);
+    assert(strcmp(counter.text, "[ 2 distinct frequencies ]") == 0);
 }
 
 static void
@@ -206,9 +199,9 @@ main(void) {
     test_site_row_trunked_with_control();
     test_site_row_trunked_without_control();
     test_site_row_conventional_with_color_code();
-    test_counter_under_cap();
-    test_counter_over_cap_needs_distinct_frequencies();
-    test_counter_drops_empty_and_duplicates_before_the_cap();
+    test_counter_counts_distinct_frequencies();
+    test_counter_keeps_every_distinct_frequency();
+    test_counter_skips_empty_and_duplicates();
     test_plan_line_normal();
     test_plan_line_blocked();
     test_plan_line_awaiting_a_selection();

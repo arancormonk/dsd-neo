@@ -260,8 +260,6 @@ multi-select list, sorted by name, showing each repeater's frequency and colour 
 - **Exactly one repeater** produces no file at all. The session simply tunes that frequency. This
   is deliberate: a one-entry scan list makes the scanner retune to the frequency it is already on
   at every hangtime expiry.
-- The list is **capped at 26 entries** — the runtime's positional frequency array holds 26 — and the
-  screen shows a running count against that ceiling. Selecting more truncates, with a warning.
 - Duplicate frequencies are dropped, with a warning: two repeaters can share one output.
 - **Scanning needs an RTL-SDR or a rigctl-controlled radio.** On a WAV, UDP or TCP source the
   scanner never steps, so the session looks stuck on one frequency. The preview says so.

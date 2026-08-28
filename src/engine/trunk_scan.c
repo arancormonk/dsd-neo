@@ -78,6 +78,9 @@ typedef struct {
     long int trunk_vc_freq[2];
     time_t p25_patch_last_update[8];
     long int trunk_lcn_freq[26];
+    long int* trunk_lcn_freq_ext;
+    size_t trunk_lcn_freq_ext_count;
+    size_t trunk_lcn_freq_ext_capacity;
     dsd_trunk_cc_candidates cc_candidates;
     p25_nb_entry_t p25_nb_entries[P25_NB_MAX];
     p25_secondary_cc_entry_t p25_secondary_cc_entries[P25_SECONDARY_CC_MAX];
@@ -181,7 +184,7 @@ typedef struct {
 } dsd_trunk_scan_target_runtime;
 
 typedef struct {
-    dsd_trunk_scan_target_runtime targets[DSD_TRUNK_SCAN_MAX_TARGETS];
+    dsd_trunk_scan_target_runtime* targets;
     dsd_trunk_scan_snapshot scratch_snapshot;
     size_t count;
     size_t active;
@@ -509,6 +512,31 @@ scan_parse_target_overrides(dsd_trunk_scan_target* target, const dsd_trunk_scan_
 }
 
 static int
+scan_target_list_reserve(dsd_trunk_scan_target_list* list, size_t needed) {
+    if (needed <= list->capacity) {
+        return 0;
+    }
+    size_t capacity = list->capacity > 0 ? list->capacity : 32;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(dsd_trunk_scan_target)) {
+        return -1;
+    }
+    dsd_trunk_scan_target* targets = (dsd_trunk_scan_target*)realloc(list->targets, capacity * sizeof *targets);
+    if (!targets) {
+        return -1;
+    }
+    list->targets = targets;
+    list->capacity = capacity;
+    return 0;
+}
+
+static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
     size_t field_count = 0;
@@ -558,6 +586,10 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
 
+    if (scan_target_list_reserve(parsed, parsed->count + 1) != 0) {
+        scan_set_error(parse->err, parse->err_sz, "out of memory loading trunk scan targets");
+        return -1;
+    }
     parsed->targets[parsed->count++] = target;
     return 0;
 }
@@ -640,11 +672,6 @@ scan_load_target_csv_rows(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan_t
         if (trimmed_line[0] == '\0') {
             continue;
         }
-        if (parsed->count >= DSD_TRUNK_SCAN_MAX_TARGETS) {
-            scan_set_error(parse->err, parse->err_sz, "too many trunk scan targets (max %d)",
-                           DSD_TRUNK_SCAN_MAX_TARGETS);
-            return -1;
-        }
 
         parse->row = row;
         if (scan_parse_target_row(trimmed_line, parsed, parse) != 0) {
@@ -691,18 +718,57 @@ dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trun
     int rows_rc = scan_load_target_csv_rows(fp, line, sizeof line, &parsed, &parse);
     fclose(fp);
     if (rows_rc != 0) {
+        dsd_trunk_scan_target_list_reset(&parsed);
         return -1;
     }
     if (parsed.count == 0) {
         scan_set_error(err, err_sz, "trunk scan target CSV has no targets");
+        dsd_trunk_scan_target_list_reset(&parsed);
         return -1;
     }
     *out = parsed;
     return 0;
 }
 
+void
+dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list) {
+    if (!list) {
+        return;
+    }
+    free(list->targets);
+    list->targets = NULL;
+    list->count = 0;
+    list->capacity = 0;
+}
+
+static int
+trunk_scan_snapshot_lcn_ext_reserve(dsd_trunk_scan_snapshot* snapshot, size_t ext_needed) {
+    if (ext_needed <= snapshot->trunk_lcn_freq_ext_capacity) {
+        return 0;
+    }
+    size_t capacity = snapshot->trunk_lcn_freq_ext_capacity > 0 ? snapshot->trunk_lcn_freq_ext_capacity : 8;
+    while (capacity < ext_needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = ext_needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(long int)) {
+        return -1;
+    }
+    long int* ext = (long int*)realloc(snapshot->trunk_lcn_freq_ext, capacity * sizeof *ext);
+    if (!ext) {
+        return -1;
+    }
+    snapshot->trunk_lcn_freq_ext = ext;
+    snapshot->trunk_lcn_freq_ext_capacity = capacity;
+    return 0;
+}
+
 static void
 trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
+    free(snapshot->trunk_lcn_freq_ext);
     DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
     snapshot->dmr_mfid = -1;
     snapshot->dmr_color_code = 16;
@@ -814,6 +880,20 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     DSD_MEMCPY(snapshot->trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
     trunk_scan_save_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->trunk_lcn_freq, state->trunk_lcn_freq, sizeof(snapshot->trunk_lcn_freq));
+    if (state->lcn_freq_count > 26) {
+        const size_t ext_count = (size_t)state->lcn_freq_count - 26;
+        if (trunk_scan_snapshot_lcn_ext_reserve(snapshot, ext_count) == 0) {
+            DSD_MEMCPY(snapshot->trunk_lcn_freq_ext, state->trunk_lcn_freq_ext,
+                       ext_count * sizeof(snapshot->trunk_lcn_freq_ext[0]));
+            snapshot->trunk_lcn_freq_ext_count = ext_count;
+        } else {
+            /* Tail capture failed; the dmr save clamps the snapshot count to
+             * the 26 embedded slots so the snapshot stays self-consistent. */
+            snapshot->trunk_lcn_freq_ext_count = 0;
+        }
+    } else {
+        snapshot->trunk_lcn_freq_ext_count = 0;
+    }
     DSD_MEMCPY(snapshot->trunk_chan_map, state->trunk_chan_map, sizeof(snapshot->trunk_chan_map));
     DSD_MEMCPY(snapshot->trunk_chan_map_used, state->trunk_chan_map_used, sizeof(snapshot->trunk_chan_map_used));
     snapshot->trunk_chan_map_used_count = state->trunk_chan_map_used_count;
@@ -1015,6 +1095,10 @@ trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* sn
     snapshot->dmr_rest_channel = state->dmr_rest_channel;
     snapshot->lcn_freq_count = state->lcn_freq_count;
     snapshot->lcn_freq_roll = state->lcn_freq_roll;
+    if (snapshot->lcn_freq_count > 26 && snapshot->trunk_lcn_freq_ext_count == 0) {
+        snapshot->lcn_freq_count = 26;
+        snapshot->lcn_freq_roll = 0;
+    }
     snapshot->is_con_plus = state->is_con_plus;
 }
 
@@ -1031,8 +1115,17 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
     DSD_MEMCPY(state->dmr_branding_sub, snapshot->dmr_branding_sub, sizeof(state->dmr_branding_sub));
     DSD_MEMCPY(state->dmr_site_parms, snapshot->dmr_site_parms, sizeof(state->dmr_site_parms));
     state->dmr_rest_channel = snapshot->dmr_rest_channel;
-    state->lcn_freq_count = snapshot->lcn_freq_count;
     state->lcn_freq_roll = snapshot->lcn_freq_roll;
+    state->lcn_freq_count = snapshot->lcn_freq_count;
+    if (state->lcn_freq_count > 26) {
+        if (dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count) == 0) {
+            DSD_MEMCPY(state->trunk_lcn_freq_ext, snapshot->trunk_lcn_freq_ext,
+                       (size_t)(state->lcn_freq_count - 26) * sizeof(state->trunk_lcn_freq_ext[0]));
+        } else {
+            state->lcn_freq_count = 26;
+            state->lcn_freq_roll = 0;
+        }
+    }
     state->is_con_plus = snapshot->is_con_plus;
 }
 
@@ -1864,9 +1957,22 @@ trunk_scan_uninstall_runtime_hooks(const dsd_trunk_scan_coord* coord) {
 }
 
 static void
+trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
+    if (!coord) {
+        return;
+    }
+    for (size_t i = 0; i < coord->count; i++) {
+        free(coord->targets[i].snapshot.trunk_lcn_freq_ext);
+    }
+    free(coord->scratch_snapshot.trunk_lcn_freq_ext);
+    free(coord->targets);
+    free(coord);
+}
+
+static void
 trunk_scan_free(void* ptr) {
     trunk_scan_uninstall_runtime_hooks((const dsd_trunk_scan_coord*)ptr);
-    free(ptr);
+    trunk_scan_coord_free((dsd_trunk_scan_coord*)ptr);
 }
 
 static void
@@ -1881,11 +1987,8 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     dsd_trunk_scan_hooks_set(hooks);
 }
 
-int
-dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz) {
-    if (!opts || !state || !opts->trunk_scan_enabled) {
-        return 0;
-    }
+static int
+trunk_scan_init_validate(const dsd_opts* opts, const dsd_state* state, char* err, size_t err_sz) {
     if (opts->scanner_mode == 1) {
         scan_set_error(err, err_sz, "--trunk-scan cannot be combined with -Y scanner mode");
         return -1;
@@ -1906,6 +2009,45 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         scan_set_error(err, err_sz, "--trunk-scan requires an open RTL input or rigctl tuning");
         return -1;
     }
+    return 0;
+}
+
+static dsd_trunk_scan_coord*
+trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* opts, char* err, size_t err_sz) {
+    dsd_trunk_scan_coord* coord = (dsd_trunk_scan_coord*)calloc(1, sizeof(*coord));
+    if (!coord) {
+        scan_set_error(err, err_sz, "failed to allocate trunk scan coordinator");
+        return NULL;
+    }
+    coord->count = list->count;
+    coord->targets = (dsd_trunk_scan_target_runtime*)calloc(list->count, sizeof *coord->targets);
+    if (!coord->targets) {
+        scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
+        free(coord);
+        return NULL;
+    }
+    trunk_scan_capture_saved_opts(coord, opts);
+    return coord;
+}
+
+/* Undo a partially-attached init: restore the global opts the coordinator
+ * captured, release the coordinator and its snapshots, and drop the target
+ * list's owned storage. */
+static void
+trunk_scan_init_release(dsd_opts* opts, dsd_trunk_scan_coord* coord, dsd_trunk_scan_target_list* list) {
+    trunk_scan_restore_saved_opts(opts, coord);
+    trunk_scan_coord_free(coord);
+    dsd_trunk_scan_target_list_reset(list);
+}
+
+int
+dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz) {
+    if (!opts || !state || !opts->trunk_scan_enabled) {
+        return 0;
+    }
+    if (trunk_scan_init_validate(opts, state, err, err_sz) != 0) {
+        return -1;
+    }
 
     dsd_trunk_scan_target_list list;
     if (dsd_trunk_scan_load_targets_csv(opts->trunk_scan_targets_csv, opts, &list, err, err_sz) != 0) {
@@ -1913,26 +2055,23 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
 
-    dsd_trunk_scan_coord* coord = (dsd_trunk_scan_coord*)calloc(1, sizeof(*coord));
+    dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {
-        scan_set_error(err, err_sz, "failed to allocate trunk scan coordinator");
+        dsd_trunk_scan_target_list_reset(&list);
         return -1;
     }
-    coord->count = list.count;
-    trunk_scan_capture_saved_opts(coord, opts);
 
     if (trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {
-        trunk_scan_restore_saved_opts(opts, coord);
-        free(coord);
+        trunk_scan_init_release(opts, coord, &list);
         return -1;
     }
 
     if (dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, coord, trunk_scan_free) != 0) {
-        trunk_scan_restore_saved_opts(opts, coord);
-        free(coord);
+        trunk_scan_init_release(opts, coord, &list);
         scan_set_error(err, err_sz, "failed to attach trunk scan coordinator");
         return -1;
     }
+    dsd_trunk_scan_target_list_reset(&list);
     trunk_scan_install_runtime_hooks(coord);
     if (trunk_scan_switch_to(opts, state, coord, 0, 0) != 0 && coord->count > 1) {
         trunk_scan_advance(opts, state, coord);
