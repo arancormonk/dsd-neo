@@ -8,7 +8,7 @@
  * @brief Runtime hook table for single-tuner trunk scan coordination.
  *
  * Protocol code can report periodic scan ticks and decoded conventional DMR
- * activity without depending on engine-owned scan coordinator headers.
+ * and NXDN activity without depending on engine-owned scan coordinator headers.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_RUNTIME_TRUNK_SCAN_HOOKS_H_
@@ -28,6 +28,8 @@ typedef struct {
     void (*tick)(dsd_opts* opts, dsd_state* state);
     void (*dmr_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
                                       int is_private, int encrypted, int data_call);
+    void (*nxdn_conventional_activity)(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                                       int is_private, int encrypted, int data_call);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
 } dsd_trunk_scan_hooks;
 
@@ -38,6 +40,8 @@ void* dsd_trunk_scan_hook_dmr_ctx(void);
 void dsd_trunk_scan_hook_tick(dsd_opts* opts, dsd_state* state);
 void dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                    uint32_t source, int is_private, int encrypted, int data_call);
+void dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                    uint32_t source, int is_private, int encrypted, int data_call);
 
 /**
  * @brief Drop the encrypted-target lockout ledger held in every scan-target snapshot.

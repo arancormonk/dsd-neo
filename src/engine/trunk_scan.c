@@ -168,6 +168,16 @@ typedef struct {
     uint8_t dmr_confidence_mismatch_count;
     uint8_t p25_chan_tdma_explicit[16];
     uint8_t dmr_lcn_trust[0x1000];
+    uint16_t nxdn_grant_chan;
+    long int nxdn_grant_freq;
+    unsigned int nxdn_last_ran;
+    uint32_t nxdn_location_sys_code;
+    uint16_t nxdn_location_site_code;
+    char nxdn_location_category[14];
+    uint8_t nxdn_rcn;
+    uint8_t nxdn_base_freq;
+    uint8_t nxdn_step;
+    uint8_t nxdn_bw;
 } dsd_trunk_scan_snapshot;
 
 typedef struct {
@@ -337,6 +347,14 @@ scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
         *out = DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL;
         return 0;
     }
+    if (strcmp(s, "nxdn-trunk") == 0) {
+        *out = DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK;
+        return 0;
+    }
+    if (strcmp(s, "nxdn-conventional") == 0) {
+        *out = DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL;
+        return 0;
+    }
     return -1;
 }
 
@@ -434,7 +452,8 @@ scan_parse_modulation(const char* s, dsd_trunk_scan_target_type type, dsd_trunk_
         return 0;
     }
     if (strcmp(s, "gfsk") == 0
-        && (type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL)) {
+        && (type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL
+            || type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK || type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL)) {
         *out = DSD_TRUNK_SCAN_MODULATION_GFSK;
         return 0;
     }
@@ -567,8 +586,9 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     }
 
     if (chan_csv[0] != '\0') {
-        if (target.type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL) {
-            scan_set_error(parse->err, parse->err_sz, "row %u sets chan_csv for conventional DMR target", parse->row);
+        if (target.type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL
+            || target.type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL) {
+            scan_set_error(parse->err, parse->err_sz, "row %u sets chan_csv for a conventional target", parse->row);
             return -1;
         }
         if (dsd_path_resolve_relative_to_file(parse->resolved_path, chan_csv, target.chan_csv, sizeof target.chan_csv)
@@ -1130,6 +1150,35 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
 }
 
 static void
+trunk_scan_save_nxdn_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    snapshot->nxdn_grant_chan = state->nxdn_grant_chan;
+    snapshot->nxdn_grant_freq = state->nxdn_grant_freq;
+    snapshot->nxdn_last_ran = state->nxdn_last_ran;
+    snapshot->nxdn_location_sys_code = state->nxdn_location_sys_code;
+    snapshot->nxdn_location_site_code = state->nxdn_location_site_code;
+    DSD_MEMCPY(snapshot->nxdn_location_category, state->nxdn_location_category,
+               sizeof(snapshot->nxdn_location_category));
+    snapshot->nxdn_rcn = state->nxdn_rcn;
+    snapshot->nxdn_base_freq = state->nxdn_base_freq;
+    snapshot->nxdn_step = state->nxdn_step;
+    snapshot->nxdn_bw = state->nxdn_bw;
+}
+
+static void
+trunk_scan_restore_nxdn_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    state->nxdn_grant_chan = snapshot->nxdn_grant_chan;
+    state->nxdn_grant_freq = snapshot->nxdn_grant_freq;
+    state->nxdn_last_ran = snapshot->nxdn_last_ran;
+    state->nxdn_location_sys_code = snapshot->nxdn_location_sys_code;
+    state->nxdn_location_site_code = snapshot->nxdn_location_site_code;
+    DSD_MEMCPY(state->nxdn_location_category, snapshot->nxdn_location_category, sizeof(state->nxdn_location_category));
+    state->nxdn_rcn = snapshot->nxdn_rcn;
+    state->nxdn_base_freq = snapshot->nxdn_base_freq;
+    state->nxdn_step = snapshot->nxdn_step;
+    state->nxdn_bw = snapshot->nxdn_bw;
+}
+
+static void
 trunk_scan_save_timing_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
     snapshot->last_cc_sync_time = state->last_cc_sync_time;
     snapshot->p25_last_cc_msg_time = state->p25_last_cc_msg_time;
@@ -1191,6 +1240,7 @@ trunk_scan_save_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapsh
     trunk_scan_save_p25_catalog_snapshot(state, snapshot);
     trunk_scan_save_p25_eval_snapshot(state, snapshot);
     trunk_scan_save_dmr_snapshot(state, snapshot);
+    trunk_scan_save_nxdn_snapshot(state, snapshot);
     trunk_scan_save_timing_snapshot(state, snapshot);
     trunk_scan_save_cc_candidate_snapshot(state, snapshot);
 }
@@ -1206,6 +1256,7 @@ trunk_scan_restore_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* sna
     trunk_scan_restore_p25_catalog_snapshot(state, snapshot);
     trunk_scan_restore_p25_eval_snapshot(state, snapshot);
     trunk_scan_restore_dmr_snapshot(state, snapshot);
+    trunk_scan_restore_nxdn_snapshot(state, snapshot);
     trunk_scan_restore_timing_snapshot(state, snapshot);
     trunk_scan_restore_cc_candidate_snapshot(state, snapshot);
 }
@@ -1288,6 +1339,13 @@ trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
 }
 
 static int
+trunk_scan_target_is_nxdn(const dsd_trunk_scan_target* target) {
+    return target
+           && (target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK
+               || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL);
+}
+
+static int
 trunk_scan_p25_sm_mode_from_ctx(const p25_sm_ctx_t* ctx) {
     switch (p25_sm_get_state(ctx)) {
         case P25_SM_ON_CC: return DSD_P25_SM_MODE_ON_CC;
@@ -1353,29 +1411,24 @@ trunk_scan_dmr_sps(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static void
-trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
-    if (!opts || !state || !target) {
-        return;
+trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
+    state->sps_hunt_idx =
+        state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->sps_hunt_counter = 0;
+    int p25_sps = trunk_scan_p25_cc_sps(opts, state);
+    state->samplesPerSymbol = p25_sps;
+    state->symbolCenter = dsd_opts_symbol_center(p25_sps);
+    if (target->modulation == DSD_TRUNK_SCAN_MODULATION_CQPSK) {
+        state->rf_mod = 1;
+    } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
+        state->rf_mod = 0;
+    } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
+        state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : 0;
     }
-    if (trunk_scan_target_is_p25(target)) {
-        state->sps_hunt_idx =
-            state->p25_cc_is_tdma == 1 ? DSD_FRAME_SYNC_SPS_PROFILE_6000_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-        state->sps_hunt_counter = 0;
-        int p25_sps = trunk_scan_p25_cc_sps(opts, state);
-        state->samplesPerSymbol = p25_sps;
-        state->symbolCenter = dsd_opts_symbol_center(p25_sps);
-        if (target->modulation == DSD_TRUNK_SCAN_MODULATION_CQPSK) {
-            state->rf_mod = 1;
-        } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
-            state->rf_mod = 0;
-        } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
-            state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : 0;
-        }
-        return;
-    }
-    if (!trunk_scan_target_is_dmr(target)) {
-        return;
-    }
+}
+
+static void
+trunk_scan_apply_dmr_class_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->sps_hunt_counter = 0;
     int dmr_sps = trunk_scan_dmr_sps(opts, state);
@@ -1385,6 +1438,21 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
         || !opts->mod_cli_lock) {
         state->rf_mod = 2;
     }
+}
+
+static void
+trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_trunk_scan_target* target) {
+    if (!opts || !state || !target) {
+        return;
+    }
+    if (trunk_scan_target_is_p25(target)) {
+        trunk_scan_apply_p25_target_demod(opts, state, target);
+        return;
+    }
+    if (!trunk_scan_target_is_dmr(target) && !trunk_scan_target_is_nxdn(target)) {
+        return;
+    }
+    trunk_scan_apply_dmr_class_target_demod(opts, state, target);
 }
 
 static void
@@ -1462,8 +1530,10 @@ trunk_scan_apply_target_opts(dsd_opts* opts, const dsd_trunk_scan_coord* coord, 
     opts->trunk_is_tuned = 0;
     switch (target->type) {
         case DSD_TRUNK_SCAN_TARGET_P25_TRUNK:
-        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK: opts->trunk_enable = 1; break;
-        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: opts->trunk_enable = 0; break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK: opts->trunk_enable = 1; break;
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL:
+        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: opts->trunk_enable = 0; break;
     }
 }
 
@@ -1477,7 +1547,7 @@ trunk_scan_seed_target_state(dsd_state* state, const dsd_trunk_scan_target* targ
     state->p25_last_vc_tune_time_m = 0.0;
     state->dmr_rest_channel = -1;
 
-    if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+    if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
         state->p25_cc_freq = (long int)target->frequency_hz;
         state->trunk_cc_freq = (long int)target->frequency_hz;
         state->trunk_lcn_freq[0] = (long int)target->frequency_hz;
@@ -1587,7 +1657,7 @@ trunk_scan_retune_freq(const dsd_state* state, const dsd_trunk_scan_target* targ
     if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
         return trunk_scan_p25_retune_freq(state, target);
     }
-    if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+    if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
         return trunk_scan_dmr_retune_freq(state, target);
     }
     return (long int)target->frequency_hz;
@@ -1607,6 +1677,11 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     }
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         state->p25_cc_freq = 0;
+        state->trunk_cc_freq = freq;
+        return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
+    }
+    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+        state->p25_cc_freq = freq;
         state->trunk_cc_freq = freq;
         return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, trunk_scan_dmr_sps(opts, state), out_request_id);
     }
@@ -1730,6 +1805,9 @@ trunk_scan_active_is_held(const dsd_opts* opts, const dsd_trunk_scan_coord* coor
     if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
         return (opts->trunk_is_tuned == 1 || dmr_sm_get_state(&rt->dmr_ctx) == DMR_SM_TUNED);
     }
+    if (rt->target.type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
+        return opts->trunk_is_tuned == 1;
+    }
     double now_m = trunk_scan_now_m();
     double hold_s = (double)rt->target.activity_hold_ms / 1000.0;
     return rt->last_allowed_activity_m > 0.0 && (now_m - rt->last_allowed_activity_m) < hold_s;
@@ -1773,6 +1851,38 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
         return;
     }
     LOG_WARN("WARNING: Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
+}
+
+static void
+trunk_scan_warn_disabled_target_decoders(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
+    if (!opts || !list) {
+        return;
+    }
+    for (size_t i = 0; i < list->count; i++) {
+        const dsd_trunk_scan_target* target = &list->targets[i];
+        int enabled = 1;
+        const char* name = "";
+        const char* hint = "";
+        if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
+            enabled = opts->frame_p25p1;
+            name = "P25";
+            hint = "-ft, -f1, or -fa";
+        } else if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK
+                   || target->type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL) {
+            enabled = opts->frame_dmr;
+            name = "DMR";
+            hint = "-fs, -ft, or -fa";
+        } else if (target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK
+                   || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL) {
+            enabled = opts->frame_nxdn96;
+            name = "NXDN96";
+            hint = "-fn or -fa";
+        }
+        if (!enabled) {
+            LOG_WARN("WARNING: Trunk scan target '%s' has no enabled %s decoder; use %s to decode it\n", target->id,
+                     name, hint);
+        }
+    }
 }
 
 static void
@@ -1946,6 +2056,31 @@ dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_
     }
 }
 
+void
+dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                 uint32_t source, int is_private, int encrypted, int data_call) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->count == 0) {
+        return;
+    }
+    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
+    if (rt->target.type != DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL) {
+        return;
+    }
+
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    if (is_private) {
+        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
+    } else {
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
+    }
+    if (rc == 0 && decision.tune_allowed) {
+        rt->last_allowed_activity_m = trunk_scan_now_m();
+        rt->idle_since_m = -1.0;
+    }
+}
+
 static void
 trunk_scan_uninstall_runtime_hooks(const dsd_trunk_scan_coord* coord) {
     if (g_trunk_scan_coord != coord) {
@@ -1983,6 +2118,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.dmr_ctx = dsd_engine_trunk_scan_active_dmr_ctx;
     hooks.tick = dsd_engine_trunk_scan_tick;
     hooks.dmr_conventional_activity = dsd_engine_trunk_scan_dmr_conventional_activity;
+    hooks.nxdn_conventional_activity = dsd_engine_trunk_scan_nxdn_conventional_activity;
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     dsd_trunk_scan_hooks_set(hooks);
 }
@@ -2054,6 +2190,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         return -1;
     }
     trunk_scan_warn_ignored_target_gain(opts, state, &list);
+    trunk_scan_warn_disabled_target_decoders(opts, &list);
 
     dsd_trunk_scan_coord* coord = trunk_scan_coord_create(&list, opts, err, err_sz);
     if (!coord) {

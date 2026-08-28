@@ -390,6 +390,64 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
 }
 
 static int
+test_parser_accepts_nxdn_targets(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency\n1,461037500\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "nxdn,nxdn-trunk,461000000,chan.csv,,,site,gfsk\n"
+                                       "conv,nxdn-conventional,462000000,,250,500,,auto\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+
+    int test_rc = 0;
+    if (rc != 0 || list.count != 2) {
+        DSD_FPRINTF(stderr, "parser nxdn rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    }
+    if (test_rc == 0) {
+        if (list.targets[0].type != DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK || list.targets[0].frequency_hz != 461000000U
+            || list.targets[0].dwell_ms != 3000 || list.targets[0].activity_hold_ms != 1200
+            || list.targets[0].modulation != DSD_TRUNK_SCAN_MODULATION_GFSK
+            || !strstr(list.targets[0].chan_csv, "chan.csv")) {
+            DSD_FPRINTF(stderr, "parser nxdn trunk target 0 mismatch\n");
+            test_rc = 1;
+        }
+        if (list.targets[1].type != DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL
+            || list.targets[1].frequency_hz != 462000000U || list.targets[1].dwell_ms != 250
+            || list.targets[1].activity_hold_ms != 500
+            || list.targets[1].modulation != DSD_TRUNK_SCAN_MODULATION_AUTO) {
+            DSD_FPRINTF(stderr, "parser nxdn conventional target 1 mismatch\n");
+            test_rc = 1;
+        }
+    }
+
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+static int
 test_parser_accepts_quoted_chan_csv_with_comma(void) {
     char dir[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
@@ -578,6 +636,10 @@ test_parser_rejects_invalid_inputs(void) {
     rc |= expect_parser_rejects_with_header(
         "unsupported-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
         "a,dmr-trunk,452000000,,,,,cqpsk\n");
+    rc |= expect_parser_rejects("nxdn-conventional-chan-csv", "a,nxdn-conventional,461000000,chan.csv,,,\n");
+    rc |= expect_parser_rejects_with_header(
+        "nxdn-unsupported-modulation", "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n",
+        "a,nxdn-trunk,461000000,,,,,cqpsk\n");
     rc |= expect_parser_rejects_with_header("invalid-rtl-gain",
                                             "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,rtl_gain\n",
                                             "a,p25-trunk,851000000,,,,,50\n");
@@ -1904,6 +1966,344 @@ test_conventional_activity_encrypted_lockout_does_not_hold(void) {
         DSD_FPRINTF(stderr, "encrypted conventional traffic held target despite lockout\n");
         test_rc = 1;
     }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static void
+seed_nxdn_identity(dsd_state* state, uint16_t grant_chan, long int grant_freq, unsigned int ran, uint32_t sys_code,
+                   uint16_t site_code, const char* category, uint8_t rcn, uint8_t base_freq, uint8_t step, uint8_t bw) {
+    state->nxdn_grant_chan = grant_chan;
+    state->nxdn_grant_freq = grant_freq;
+    state->nxdn_last_ran = ran;
+    state->nxdn_location_sys_code = sys_code;
+    state->nxdn_location_site_code = site_code;
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof state->nxdn_location_category, "%s", category);
+    state->nxdn_rcn = rcn;
+    state->nxdn_base_freq = base_freq;
+    state->nxdn_step = step;
+    state->nxdn_bw = bw;
+}
+
+static int
+expect_nxdn_identity(const char* label, const dsd_state* state, uint16_t grant_chan, long int grant_freq,
+                     unsigned int ran, uint32_t sys_code, uint16_t site_code, const char* category, uint8_t rcn,
+                     uint8_t base_freq, uint8_t step, uint8_t bw) {
+    if (state->nxdn_grant_chan != grant_chan || state->nxdn_grant_freq != grant_freq || state->nxdn_last_ran != ran
+        || state->nxdn_location_sys_code != sys_code || state->nxdn_location_site_code != site_code
+        || strcmp(state->nxdn_location_category, category) != 0 || state->nxdn_rcn != rcn
+        || state->nxdn_base_freq != base_freq || state->nxdn_step != step || state->nxdn_bw != bw) {
+        DSD_FPRINTF(stderr,
+                    "%s NXDN identity mismatch chan=%u freq=%ld ran=%u sys=%u site=%u cat='%s' rcn=%u "
+                    "base=%u step=%u bw=%u\n",
+                    label, state->nxdn_grant_chan, state->nxdn_grant_freq, state->nxdn_last_ran,
+                    state->nxdn_location_sys_code, state->nxdn_location_site_code, state->nxdn_location_category,
+                    state->nxdn_rcn, state->nxdn_base_freq, state->nxdn_step, state->nxdn_bw);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_nxdn_trunk_target_seeds_control_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("n,nxdn-trunk,461000000,,250,,\n", target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn seed scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+    if (test_rc == 0
+        && (state.p25_cc_freq != 461000000 || state.trunk_cc_freq != 461000000 || state.lcn_freq_count < 1
+            || state.trunk_lcn_freq[0] != 461000000)) {
+        DSD_FPRINTF(stderr, "nxdn trunk seed invalid cc=%ld trunk_cc=%ld lcn_count=%d lcn0=%ld\n", state.p25_cc_freq,
+                    state.trunk_cc_freq, state.lcn_freq_count, state.trunk_lcn_freq[0]);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_mixed_target_switch_resets_nxdn_demod_profile(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("p25,p25-trunk,851000000,,250,,\n"
+                             "nxdn,nxdn-trunk,461000000,,250,,\n"
+                             "conv,nxdn-conventional,462000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn demod scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    state.rf_mod = 1;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rf_mod != 2 || state.samplesPerSymbol != 10
+        || state.symbolCenter != 4) {
+        DSD_FPRINTF(stderr, "NXDN trunk target inherited P25 demod state active=%zu rf_mod=%d sps=%d center=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod, state.samplesPerSymbol,
+                    state.symbolCenter);
+        test_rc = 1;
+    }
+
+    state.rf_mod = 1;
+    state.samplesPerSymbol = 8;
+    state.symbolCenter = 3;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 2 || state.rf_mod != 2 || state.samplesPerSymbol != 10
+        || state.symbolCenter != 4) {
+        DSD_FPRINTF(
+            stderr, "NXDN conventional target inherited P25 demod state active=%zu rf_mod=%d sps=%d center=%d\n",
+            dsd_engine_trunk_scan_active_index(&state), state.rf_mod, state.samplesPerSymbol, state.symbolCenter);
+        test_rc = 1;
+    }
+
+    state.rf_mod = 2;
+    state.samplesPerSymbol = 10;
+    state.symbolCenter = 4;
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rf_mod != 0 || state.samplesPerSymbol != 10
+        || state.symbolCenter != 4) {
+        DSD_FPRINTF(stderr, "P25 target inherited NXDN demod state active=%zu rf_mod=%d sps=%d center=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), state.rf_mod, state.samplesPerSymbol,
+                    state.symbolCenter);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_nxdn_conventional_activity_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,nxdn-conventional,461000000,,250,250,\n"
+                             "b,nxdn-conventional,462000000,,250,250,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "nxdn conventional scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_nxdn_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.30);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "allowed NXDN conventional activity did not hold target\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.61);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.87);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "NXDN target did not rotate after conventional hold and dwell\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_use_allow_list = 1;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    trunk_scan_test_set_now(0.0);
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "nxdn allowlist scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_nxdn_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "blocked allow-list traffic held NXDN conventional target\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+
+    reset_scan_opts_state(&opts, &state);
+    opts.trunk_tune_enc_calls = 0;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+    trunk_scan_test_set_now(0.0);
+    rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "nxdn encrypted lockout scan init failed: %s\n", err);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.10);
+    dsd_engine_trunk_scan_nxdn_conventional_activity(&opts, &state, 1001, 2002, 1, 1, 0);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "encrypted NXDN conventional traffic held target despite lockout\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_nxdn_trunk_target_holds_while_tuned(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("n,nxdn-trunk,461000000,,250,,\n"
+                             "c,dmr-conventional,462000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn hold scan init failed rc=%d err=%s\n", rc, err);
+        test_rc = 1;
+    }
+
+    opts.trunk_is_tuned = 1;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "tuned NXDN trunk target rotated away while tuned\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "tuned NXDN trunk target rotated away on second tick\n");
+        test_rc = 1;
+    }
+
+    opts.trunk_is_tuned = 0;
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "NXDN trunk target rotated on idle clock restart tick\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(1.04);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "NXDN trunk target did not rotate after release and dwell\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_nxdn_state_isolated_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,nxdn-trunk,461000000,,250,,\n"
+                             "b,nxdn-trunk,462000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn identity scan init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+
+    seed_nxdn_identity(&state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "nxdn identity scan did not rotate to second target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_nxdn_identity("fresh target", &state, 0, 0, 0U, 0U, 0, "", 0, 0, 0, 0);
+
+    seed_nxdn_identity(&state, 34, 462037500, 9U, 0x44U, 5, "Type-C", 2, 110, 25, 6);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "nxdn identity scan did not rotate back to first target\n");
+        test_rc = 1;
+    }
+    test_rc |= expect_nxdn_identity("restored target", &state, 12, 461012500, 7U, 0x25U, 3, "Type-C", 1, 96, 12, 4);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -3631,6 +4031,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
+    rc |= run_with_default_tune_hook(test_parser_accepts_nxdn_targets);
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
@@ -3648,6 +4049,11 @@ main(void) {
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);
+    rc |= run_with_default_tune_hook(test_nxdn_trunk_target_seeds_control_channel);
+    rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_nxdn_demod_profile);
+    rc |= run_with_default_tune_hook(test_nxdn_conventional_activity_hold);
+    rc |= run_with_default_tune_hook(test_nxdn_trunk_target_holds_while_tuned);
+    rc |= run_with_default_tune_hook(test_nxdn_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_state_ext_cleanup_clears_scan_hooks);
     rc |= run_with_default_tune_hook(test_protocol_hooks_only_expose_matching_target_contexts);
     rc |= run_with_default_tune_hook(test_dmr_trunk_sm_timeout_releases_scan_hold);

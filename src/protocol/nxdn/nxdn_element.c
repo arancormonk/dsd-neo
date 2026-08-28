@@ -37,6 +37,7 @@
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2327,6 +2328,10 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
+    if (info->message_type == 0x01U) {
+        dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, info->destination_id, info->source_unit_id,
+                                                       info->call_type == 4U ? 1 : 0, info->cipher_type != 0U, 0);
+    }
     if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
         nxdn_vcall_publish(opts, state, info);
     }

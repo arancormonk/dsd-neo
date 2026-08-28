@@ -31,6 +31,8 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_P25_TRUNK = 0,
     DSD_TRUNK_SCAN_TARGET_DMR_TRUNK = 1,
     DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL = 2,
+    DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK = 3,
+    DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL = 4,
 } dsd_trunk_scan_target_type;
 
 typedef enum {
@@ -80,6 +82,8 @@ void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                      uint32_t source, int is_private, int encrypted, int data_call);
+void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                      uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 int dsd_engine_trunk_scan_saved_tuner_autogain(const dsd_state* state, int* out_on);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);

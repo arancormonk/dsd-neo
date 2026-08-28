@@ -40,6 +40,14 @@ dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_st
 }
 
 void
+dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                               uint32_t source, int is_private, int encrypted, int data_call) {
+    if (g_trunk_scan_hooks.nxdn_conventional_activity) {
+        g_trunk_scan_hooks.nxdn_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
+    }
+}
+
+void
 dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state) {
     if (g_trunk_scan_hooks.enc_lockout_clear_snapshots) {
         g_trunk_scan_hooks.enc_lockout_clear_snapshots(state);

@@ -1,8 +1,8 @@
 # Single-Tuner Trunk Scan
 
 Single-tuner trunk scan lets one retunable receiver rotate across several explicit targets instead of staying on one
-system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, DMR trunk, and one-frequency DMR
-channels, but you do not have a separate receiver for each system.
+system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, DMR trunk, DMR conventional,
+and NXDN (trunk and conventional) targets, but you do not have a separate receiver for each system.
 
 The scan coordinator parks on one target, watches for activity, and moves to the next idle target after the configured
 dwell time. Trunking state and per-target channel maps are kept separate, so a channel number or learned control-channel
@@ -44,13 +44,13 @@ Column behavior:
 | Column | Required | Meaning |
 |--------|----------|---------|
 | `id` | Yes | Unique short name used in log messages. Keep it under 64 bytes. |
-| `type` | Yes | `p25-trunk`, `dmr-trunk`, or `dmr-conventional`. |
+| `type` | Yes | `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, or `nxdn-conventional`. |
 | `frequency_hz` | Yes | Initial park/control frequency in decimal Hz. Suffixes such as `M` are not accepted in CSV. |
-| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR. |
+| `chan_csv` | No | Channel map for a trunk target. Paths are resolved relative to the target CSV file. Leave empty for conventional DMR and conventional NXDN. |
 | `dwell_ms` | No | Idle dwell for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
-| `activity_hold_ms` | No | Conventional DMR activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
+| `activity_hold_ms` | No | Conventional DMR/NXDN activity hold for this target. Empty uses the CLI/config default. Valid range: `250..600000`. |
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
-| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR accepts `auto`, `gfsk`. |
+| `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and NXDN accept `auto`, `gfsk`. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 
 Target list limits and validation:
@@ -64,8 +64,9 @@ Target list limits and validation:
   values above `LONG_MAX`.
 - Duplicate `id` values are rejected.
 - Duplicate `(type, frequency_hz)` pairs are rejected.
-- `chan_csv` is only valid for `p25-trunk` and `dmr-trunk` targets.
-- `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is DMR-only.
+- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets.
+- `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is valid for DMR and NXDN
+  targets.
 - `rtl_gain` only affects RTL-family inputs opened by DSD-neo. It is ignored when scan retuning is done through rigctl
   against a non-RTL audio input.
 - The parser is intentionally small. It can handle a quoted `chan_csv` that contains a comma, but it is not a full CSV
@@ -101,8 +102,10 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   `1200`.
 - Per-target CSV values override these defaults.
 
-Use `-ft` or an equivalent config mode (`mode.decode = "tdma"`) for mixed P25 and DMR scan lists. Narrower modes can be
-used when every target is the same protocol.
+Use `-fa` (AUTO) or an equivalent config mode (`mode.decode = "auto"`) for mixed scan lists that contain NXDN targets:
+`-ft` enables the P25/DMR decoders but not NXDN96, so NXDN rows would sit idle with a startup warning. Use `-fn` for
+NXDN-only lists. DSD-neo logs a warning at scan start for any target whose decoder is not enabled by the selected
+mode; it does not silently flip mode-preset frame flags.
 
 ## Config Usage
 
@@ -174,9 +177,11 @@ During scanning:
 - A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
-- P25 and DMR trunk targets stay parked while their trunking state machine is following an active call.
-- Conventional DMR targets stay parked only after allowed activity is decoded. The allow/block list, private-call
-  tuning, data-call tuning, and encrypted-call tuning controls all apply to that decision.
+- P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
+  (NXDN stays parked while following an active grant and returns to its control channel at hangtime/release).
+- Conventional DMR and conventional NXDN targets stay parked only after allowed activity is decoded (a DMR voice
+  header or an NXDN VCALL header). The allow/block list, private-call tuning, data-call tuning, and encrypted-call
+  tuning controls all apply to that decision.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
 
 Expected log messages include:
@@ -205,8 +210,8 @@ fields, but not in the target CSV.
 
 `row N has invalid modulation`
 
-Use `auto`, `c4fm`, or `cqpsk` for P25 targets. Use `auto` or `gfsk` for DMR targets. Leave the field empty to keep
-global/default modulation handling.
+Use `auto`, `c4fm`, or `cqpsk` for P25 targets. Use `auto` or `gfsk` for DMR and NXDN targets. Leave the field empty
+to keep global/default modulation handling.
 
 `row N has invalid rtl_gain`
 
@@ -215,7 +220,8 @@ from `1` to `49` for manual RTL-family gain in dB.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 
-Move channel maps into the target CSV `chan_csv` column. Conventional DMR rows must leave `chan_csv` empty.
+Move channel maps into the target CSV `chan_csv` column. Conventional DMR and conventional NXDN rows must leave
+`chan_csv` empty.
 
 `--trunk-scan requires an open RTL input or rigctl tuning`
 
@@ -229,7 +235,9 @@ rotating across unrelated scan targets.
 
 ## Limitations
 
-- Only P25 trunk, DMR trunk, and one-frequency DMR conventional targets are supported.
+- P25 trunk, DMR trunk, DMR conventional, NXDN trunk, and NXDN conventional targets are supported. NXDN targets are
+  12.5 kHz NXDN96; 6.25 kHz NXDN48 conventional channels are not a trunk-scan target type (use `-Y` with `-fi` for
+  those).
 - There is one active receiver. Traffic on targets that are not currently parked can be missed.
 - Group policy is global across all scan targets.
 - Target CSV files are simple comma-delimited files, not full RFC 4180 CSV.

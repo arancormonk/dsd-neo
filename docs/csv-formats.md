@@ -108,20 +108,20 @@ Columns:
 | Column | Required | Behavior |
 |--------|----------|----------|
 | `id` | Yes | Unique short target name used in log messages. Empty or too-long IDs are rejected. |
-| `type` | Yes | One of `p25-trunk`, `dmr-trunk`, or `dmr-conventional`. |
+| `type` | Yes | One of `p25-trunk`, `dmr-trunk`, `dmr-conventional`, `nxdn-trunk`, or `nxdn-conventional`. |
 | `frequency_hz` | Yes | Decimal Hz only. Normal 64-bit builds accept `1..4294967295`; 32-bit builds may reject values above `LONG_MAX`. Do not use `K`/`M`/`G` suffixes in CSV. |
-| `chan_csv` | No | Optional channel-map path for trunk targets. Paths are resolved relative to this CSV. Leave empty for conventional DMR. |
+| `chan_csv` | No | Optional channel-map path for trunk targets. Paths are resolved relative to this CSV. Leave empty for conventional DMR and conventional NXDN. |
 | `dwell_ms` | No | Per-target idle dwell (`250..600000`). Empty uses `--trunk-scan-dwell-ms` or `[trunk_scan] idle_dwell_ms`. |
-| `activity_hold_ms` | No | Per-target conventional DMR activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. |
+| `activity_hold_ms` | No | Per-target conventional DMR/NXDN activity hold (`250..600000`). Empty uses `--trunk-scan-activity-hold-ms` or `[trunk_scan] activity_hold_ms`. |
 | `notes` | No | Ignored. Use for local notes. |
-| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR accepts `auto`, `gfsk`. |
+| `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and NXDN accept `auto`, `gfsk`. |
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
 
 Validation notes:
 
 - No target-count limit; bounded only by memory.
 - Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected.
-- `chan_csv` on `dmr-conventional` rows is rejected.
+- `chan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`) rows is rejected.
 - Global `-C`/`[trunking] chan_csv` is rejected in trunk scan mode so channel maps do not leak across systems.
 - One tuner can only monitor the active target; traffic on other targets can be missed.
 - This parser can handle a quoted `chan_csv` field containing a comma, but it is not a full RFC 4180 parser and does not
@@ -134,6 +134,8 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gai
 county-p25,p25-trunk,851012500,,3000,,primary P25 control channel,cqpsk,18
 city-dmr,dmr-trunk,452012500,dmr_channels.csv,3000,,DMR Tier III control channel,auto,
 plant,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
+site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
+field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96 channel,gfsk,
 ```
 
 ## Group List CSV (`-G <file>` / `[trunking] group_csv`)
