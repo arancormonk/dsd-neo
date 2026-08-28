@@ -397,7 +397,7 @@ Quick examples
 
 - UDP in → Pulse out with UI: `dsd-neo -i udp -o pulse --frontend terminal`
 - DMR trunking from TCP PCM input (with rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
-- Single-tuner P25/DMR trunk scan from RTL-SDR: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
+- Single-tuner P25/DMR/NXDN trunk scan from RTL-SDR: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
 - IQ capture + inspect + replay: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal` then `dsd-neo --iq-info p25-control.iq.json` then `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
 
 ## Configuration

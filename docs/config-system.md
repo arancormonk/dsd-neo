@@ -344,7 +344,7 @@ small subset is exposed as config keys for convenience (for example
 | `enabled` | BOOL | Enable single-tuner trunk scan | `false` |
 | `targets_csv` | PATH | Scan target list CSV | (empty) |
 | `idle_dwell_ms` | INT (250-600000) | Default idle dwell per target | `3000` |
-| `activity_hold_ms` | INT (250-600000) | Conventional DMR activity hold | `1200` |
+| `activity_hold_ms` | INT (250-600000) | Conventional DMR/NXDN activity hold | `1200` |
 
 **[radioreference] section:**
 | Key | Type | Description | Default |

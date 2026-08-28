@@ -2328,11 +2328,16 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
-    if (info->message_type == 0x01U) {
-        dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, info->destination_id, info->source_unit_id,
-                                                       info->call_type == 4U ? 1 : 0, info->cipher_type != 0U, 0);
-    }
     if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
+        // Held behind the same CRC gate as the publish below: a miscorrected VCALL carries a
+        // garbage destination_id, and letting it refresh the conventional scan hold would park
+        // the coordinator on noise for a full activity_hold_ms per corrupt burst. The encryption
+        // flag is the corroborated classification nxdn_vcall_apply_state() just applied, not the
+        // raw element field -- a lone flipped cipher_type would otherwise drop the hold mid-call
+        // under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent.
+        dsd_trunk_scan_hook_nxdn_conventional_activity(
+            opts, state, info->destination_id, info->source_unit_id,
+            nxdn_vcall_kind(info->call_type) == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, state->nxdn_cipher_type != 0U, 0);
         nxdn_vcall_publish(opts, state, info);
     }
     nxdn_vcall_run_enc_lockout(opts, state, info);

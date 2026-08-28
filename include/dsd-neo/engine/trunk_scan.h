@@ -80,8 +80,31 @@ void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
+/**
+ * @brief Report decoded conventional activity so the active target keeps its park.
+ *
+ * Each entry point only acts when the target currently parked is of its own
+ * conventional type; anything else (including trunk targets, or trunk scan not
+ * being installed) is ignored. The call identity is run through the global
+ * talkgroup policy, and only an allowed call refreshes the target's
+ * activity hold, so allow/block lists, private-call, data-call and
+ * encrypted-call tuning controls all apply to the park decision.
+ *
+ * Callers must pass identity that has already cleared the protocol's own
+ * FEC/CRC gate: an unverified header would park the coordinator on noise.
+ *
+ * @param opts       Decoder options (policy and hold controls).
+ * @param state      Decoder state owning the scan coordinator.
+ * @param target     Destination talkgroup (group call) or destination unit (private call).
+ * @param source     Source unit id, or 0 when unknown.
+ * @param is_private Non-zero for a private/individual call, zero for a group call.
+ * @param encrypted  Non-zero when the call is encrypted; pass the protocol's corroborated
+ *                   classification, not a single frame's raw cipher field.
+ * @param data_call  Non-zero for data traffic rather than voice.
+ */
 void dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                      uint32_t source, int is_private, int encrypted, int data_call);
+/** @copydoc dsd_engine_trunk_scan_dmr_conventional_activity */
 void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                       uint32_t source, int is_private, int encrypted, int data_call);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);

@@ -35,6 +35,8 @@ id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation,rtl_gai
 county-p25,p25-trunk,851012500,,3000,,P25 control channel,cqpsk,18
 city-dmr,dmr-trunk,456318750,dmr_t3_chan.csv,3000,,DMR Tier III control channel,auto,
 plant-dmr,dmr-conventional,461112500,,1500,1200,one-frequency DMR,gfsk,auto
+site-nxdn,nxdn-trunk,461037500,,3000,,NXDN Type-C control channel,auto,
+field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,
 ```
 
 The repository includes a starter file at `examples/trunk_scan_targets.csv`.
@@ -74,10 +76,11 @@ Target list limits and validation:
 
 ## CLI Usage
 
-For a mixed P25/DMR scan with an RTL-SDR:
+For a mixed scan with an RTL-SDR (the shipped starter file contains P25, DMR and NXDN rows, so use `-fa`; `-ft` is
+enough for a list with no NXDN targets):
 
 ```sh
-dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
+dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal
 ```
 
 For an external receiver that sends PCM audio over TCP and is tuned through rigctl:
@@ -98,14 +101,18 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
 
 - `--trunk-scan-dwell-ms <ms>` sets the default idle dwell for targets whose `dwell_ms` column is empty. Default:
   `3000`.
-- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR activity. Default:
-  `1200`.
+- `--trunk-scan-activity-hold-ms <ms>` sets the default hold time after allowed conventional DMR/NXDN activity.
+  Default: `1200`.
 - Per-target CSV values override these defaults.
 
-Use `-fa` (AUTO) or an equivalent config mode (`mode.decode = "auto"`) for mixed scan lists that contain NXDN targets:
-`-ft` enables the P25/DMR decoders but not NXDN96, so NXDN rows would sit idle with a startup warning. Use `-fn` for
-NXDN-only lists. DSD-neo logs a warning at scan start for any target whose decoder is not enabled by the selected
-mode; it does not silently flip mode-preset frame flags.
+Use the `-fa` (AUTO) command-line mode for mixed scan lists that contain NXDN targets: `-ft` enables the P25/DMR
+decoders but not NXDN96, so NXDN rows would sit idle with a startup warning. Use `-fn` for NXDN-only lists. DSD-neo
+logs a warning at scan start for any target whose decoder is not enabled by the selected mode; it does not silently
+flip mode-preset frame flags.
+
+`mode.decode = "auto"` in a config file is not equivalent: the config profile of the AUTO preset deliberately leaves
+the frame flags at their defaults, which do not include NXDN96. Set `mode.decode = "nxdn96"` for NXDN-only lists, or
+pass `-fa` on the command line for mixed lists.
 
 ## Config Usage
 
@@ -188,7 +195,8 @@ Expected log messages include:
 
 ```text
 Trunk scan target 'county-p25' at 851012500 Hz
-Trunk scan enabled with 3 targets
+Trunk scan enabled with 5 targets
+2 trunk scan target(s) have no enabled NXDN96 decoder (first: 'site-nxdn'); use -fn or -fa to decode them
 Trunk scan target 'city-dmr' retune failed; cooling down briefly
 ```
 
@@ -217,6 +225,14 @@ to keep global/default modulation handling.
 
 Leave the field empty to inherit the global/default gain. Use `0` or `auto` for device automatic gain, or an integer
 from `1` to `49` for manual RTL-family gain in dB.
+
+`N trunk scan target(s) have no enabled <NAME> decoder (first: '<id>'); use <flags> to decode them`
+
+The selected decode mode does not enable the decoder those targets need, so they park and dwell without ever
+decoding. One line is logged per decoder class, not per target. Use `-fa` for a mixed list, `-fn` for an NXDN-only
+list, `-ft`/`-f1`/`-f2` for P25, or `-fs`/`-ft` for DMR. DSD-neo does not flip mode-preset frame flags for you.
+Note that `mode.decode = "auto"` in a config file does not enable NXDN96 -- pass `-fa` on the command line, or set
+`mode.decode = "nxdn96"`.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 

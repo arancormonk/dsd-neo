@@ -392,8 +392,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
     printf("                 Uses per-target chan_csv values; cannot be combined with global -C or IQ replay.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf(
-        "      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR activity hold (250..600000, default 1200).\n");
+    printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/NXDN activity hold (250..600000, default "
+           "1200).\n");
     printf("  -W            Use Imported Group List as a Trunking Allow/White List -- Only Tune with Mode A\n");
     printf("  -p            Disable Tune to Private Calls (DMR TIII, P25, NXDN Type-C and Type-D)\n");
     printf("  -E            Disable Tune to Group Calls (DMR TIII, Con+, Cap+, P25, NXDN Type-C, and Type-D)\n");

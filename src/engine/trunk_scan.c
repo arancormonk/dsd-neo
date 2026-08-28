@@ -330,6 +330,20 @@ scan_parse_ms_field(const char* s, int default_ms, int* out) {
     return 0;
 }
 
+/* Single home for the two type axes the coordinator dispatches on, so a new target type is
+ * classified in one place instead of in every `type == A || type == B` chain. */
+static int
+trunk_scan_type_is_conventional(dsd_trunk_scan_target_type type) {
+    return type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL || type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL;
+}
+
+/* DMR and NXDN96 share the 4800 sym/s four-level GFSK demod profile. */
+static int
+trunk_scan_type_is_gfsk_family(dsd_trunk_scan_target_type type) {
+    return type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL
+           || type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK || type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL;
+}
+
 static int
 scan_parse_type(const char* s, dsd_trunk_scan_target_type* out) {
     if (!s || !out) {
@@ -451,9 +465,7 @@ scan_parse_modulation(const char* s, dsd_trunk_scan_target_type type, dsd_trunk_
         *out = DSD_TRUNK_SCAN_MODULATION_CQPSK;
         return 0;
     }
-    if (strcmp(s, "gfsk") == 0
-        && (type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK || type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL
-            || type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK || type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL)) {
+    if (strcmp(s, "gfsk") == 0 && trunk_scan_type_is_gfsk_family(type)) {
         *out = DSD_TRUNK_SCAN_MODULATION_GFSK;
         return 0;
     }
@@ -586,8 +598,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
     }
 
     if (chan_csv[0] != '\0') {
-        if (target.type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL
-            || target.type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL) {
+        if (trunk_scan_type_is_conventional(target.type)) {
             scan_set_error(parse->err, parse->err_sz, "row %u sets chan_csv for a conventional target", parse->row);
             return -1;
         }
@@ -798,6 +809,11 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
+    /* NXDN "not decoded yet" sentinels, matching initState() (src/core/util/dsd_init.c) and
+     * noCarrier(): RAN 0 is a legal value, so a zeroed snapshot would publish a fabricated
+     * RAN 0 for a target that has never decoded one. */
+    snapshot->nxdn_last_ran = (unsigned int)-1;
+    snapshot->nxdn_location_category[0] = ' ';
 }
 
 static void
@@ -1327,22 +1343,8 @@ trunk_scan_get_const(const dsd_state* state) {
 }
 
 static int
-trunk_scan_target_is_dmr(const dsd_trunk_scan_target* target) {
-    return target
-           && (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK
-               || target->type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL);
-}
-
-static int
 trunk_scan_target_is_p25(const dsd_trunk_scan_target* target) {
     return target && target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK;
-}
-
-static int
-trunk_scan_target_is_nxdn(const dsd_trunk_scan_target* target) {
-    return target
-           && (target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK
-               || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL);
 }
 
 static int
@@ -1449,10 +1451,9 @@ trunk_scan_apply_target_demod(const dsd_opts* opts, dsd_state* state, const dsd_
         trunk_scan_apply_p25_target_demod(opts, state, target);
         return;
     }
-    if (!trunk_scan_target_is_dmr(target) && !trunk_scan_target_is_nxdn(target)) {
-        return;
+    if (trunk_scan_type_is_gfsk_family(target->type)) {
+        trunk_scan_apply_dmr_class_target_demod(opts, state, target);
     }
-    trunk_scan_apply_dmr_class_target_demod(opts, state, target);
 }
 
 static void
@@ -1853,35 +1854,68 @@ trunk_scan_warn_ignored_target_gain(const dsd_opts* opts, const dsd_state* state
     LOG_WARN("WARNING: Trunk scan rtl_gain target overrides require RTL-family input; ignoring target gain settings\n");
 }
 
+typedef enum {
+    TRUNK_SCAN_DECODER_P25 = 0,
+    TRUNK_SCAN_DECODER_DMR = 1,
+    TRUNK_SCAN_DECODER_NXDN = 2,
+    TRUNK_SCAN_DECODER_COUNT = 3,
+} trunk_scan_decoder_class;
+
+/* Exhaustive switch with no default: adding a target type must fail the build here rather than
+ * silently classing the new type as "always decodable". */
+static trunk_scan_decoder_class
+trunk_scan_target_decoder_class(dsd_trunk_scan_target_type type) {
+    switch (type) {
+        case DSD_TRUNK_SCAN_TARGET_P25_TRUNK: return TRUNK_SCAN_DECODER_P25;
+        case DSD_TRUNK_SCAN_TARGET_DMR_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL: return TRUNK_SCAN_DECODER_DMR;
+        case DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK:
+        case DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL: return TRUNK_SCAN_DECODER_NXDN;
+    }
+    return TRUNK_SCAN_DECODER_P25;
+}
+
 static void
 trunk_scan_warn_disabled_target_decoders(const dsd_opts* opts, const dsd_trunk_scan_target_list* list) {
     if (!opts || !list) {
         return;
     }
+
+    static const struct {
+        const char* name;
+        const char* hint;
+    } k_decoders[TRUNK_SCAN_DECODER_COUNT] = {
+        {"P25", "-ft, -f1, -f2, or -fa"},
+        {"DMR", "-fs, -ft, or -fa"},
+        {"NXDN96", "-fn or -fa"},
+    };
+
+    /* P25 mirrors the engine's own no_carrier_p25_frames_enabled(): a TDMA control channel is
+     * followed with -f2 alone, which leaves frame_p25p1 clear. */
+    const int enabled[TRUNK_SCAN_DECODER_COUNT] = {
+        (opts->frame_p25p1 == 1 || opts->frame_p25p2 == 1),
+        (opts->frame_dmr == 1),
+        (opts->frame_nxdn96 == 1),
+    };
+
+    /* One line per decoder class, not per target: scan lists are unbounded. */
+    size_t missing[TRUNK_SCAN_DECODER_COUNT] = {0};
+    const char* first_id[TRUNK_SCAN_DECODER_COUNT] = {NULL, NULL, NULL};
     for (size_t i = 0; i < list->count; i++) {
-        const dsd_trunk_scan_target* target = &list->targets[i];
-        int enabled = 1;
-        const char* name = "";
-        const char* hint = "";
-        if (target->type == DSD_TRUNK_SCAN_TARGET_P25_TRUNK) {
-            enabled = opts->frame_p25p1;
-            name = "P25";
-            hint = "-ft, -f1, or -fa";
-        } else if (target->type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK
-                   || target->type == DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL) {
-            enabled = opts->frame_dmr;
-            name = "DMR";
-            hint = "-fs, -ft, or -fa";
-        } else if (target->type == DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK
-                   || target->type == DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL) {
-            enabled = opts->frame_nxdn96;
-            name = "NXDN96";
-            hint = "-fn or -fa";
+        const trunk_scan_decoder_class cls = trunk_scan_target_decoder_class(list->targets[i].type);
+        if (enabled[cls]) {
+            continue;
         }
-        if (!enabled) {
-            LOG_WARN("WARNING: Trunk scan target '%s' has no enabled %s decoder; use %s to decode it\n", target->id,
-                     name, hint);
+        if (missing[cls]++ == 0) {
+            first_id[cls] = list->targets[i].id;
         }
+    }
+    for (int cls = 0; cls < (int)TRUNK_SCAN_DECODER_COUNT; cls++) {
+        if (missing[cls] == 0) {
+            continue;
+        }
+        LOG_WARN("WARNING: %zu trunk scan target(s) have no enabled %s decoder (first: '%s'); use %s to decode them\n",
+                 missing[cls], k_decoders[cls].name, first_id[cls], k_decoders[cls].hint);
     }
 }
 
@@ -2031,15 +2065,17 @@ dsd_engine_trunk_scan_active_dmr_ctx(void) {
     return &rt->dmr_ctx;
 }
 
-void
-dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
-                                                uint32_t source, int is_private, int encrypted, int data_call) {
+/* Shared body for every conventional target type: the hold decision is protocol-independent,
+ * so the per-protocol entry points below differ only in which target type may claim the hold. */
+static void
+trunk_scan_conventional_activity(dsd_trunk_scan_target_type expect, const dsd_opts* opts, const dsd_state* state,
+                                 uint32_t target, uint32_t source, int is_private, int encrypted, int data_call) {
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     if (!opts || !state || !coord || coord->count == 0) {
         return;
     }
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (rt->target.type != DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL) {
+    if (rt->target.type != expect) {
         return;
     }
 
@@ -2057,28 +2093,17 @@ dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_
 }
 
 void
+dsd_engine_trunk_scan_dmr_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                                uint32_t source, int is_private, int encrypted, int data_call) {
+    trunk_scan_conventional_activity(DSD_TRUNK_SCAN_TARGET_DMR_CONVENTIONAL, opts, state, target, source, is_private,
+                                     encrypted, data_call);
+}
+
+void
 dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
                                                  uint32_t source, int is_private, int encrypted, int data_call) {
-    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
-    if (!opts || !state || !coord || coord->count == 0) {
-        return;
-    }
-    dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (rt->target.type != DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL) {
-        return;
-    }
-
-    dsd_tg_policy_decision decision;
-    int rc = 0;
-    if (is_private) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, data_call, &decision);
-    } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, data_call, &decision);
-    }
-    if (rc == 0 && decision.tune_allowed) {
-        rt->last_allowed_activity_m = trunk_scan_now_m();
-        rt->idle_since_m = -1.0;
-    }
+    trunk_scan_conventional_activity(DSD_TRUNK_SCAN_TARGET_NXDN_CONVENTIONAL, opts, state, target, source, is_private,
+                                     encrypted, data_call);
 }
 
 static void

@@ -29,7 +29,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
 - Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
-- Scan several P25/DMR targets with one tuner: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal` (use `-fa` instead of `-ft` when the list contains NXDN targets; `-fn` for NXDN-only lists)
+- Scan several P25/DMR/NXDN targets with one tuner: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal` (`-ft` is enough when the list has no NXDN targets; `-fn` for NXDN-only lists)
 - Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal`
 - Inspect a capture: `dsd-neo --iq-info p25-control.iq.json`
 - Replay a capture through demod: `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`

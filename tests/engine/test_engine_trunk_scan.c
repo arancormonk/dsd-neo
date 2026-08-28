@@ -363,6 +363,7 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
     opts.trunk_scan_idle_dwell_ms = 3000;
     opts.trunk_scan_activity_hold_ms = 1200;
     dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
     char err[256] = {0};
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
 
@@ -417,6 +418,7 @@ test_parser_accepts_nxdn_targets(void) {
     opts.trunk_scan_idle_dwell_ms = 3000;
     opts.trunk_scan_activity_hold_ms = 1200;
     dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
     char err[256] = {0};
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
 
@@ -472,6 +474,7 @@ test_parser_accepts_quoted_chan_csv_with_comma(void) {
     opts.trunk_scan_idle_dwell_ms = 3000;
     opts.trunk_scan_activity_hold_ms = 1200;
     dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
     char err[256] = {0};
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
 
@@ -510,6 +513,7 @@ test_parser_accepts_optional_modulation_and_gain_columns(void) {
     opts.trunk_scan_idle_dwell_ms = 3000;
     opts.trunk_scan_activity_hold_ms = 1200;
     dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
     char err[256] = {0};
     int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
 
@@ -2294,7 +2298,9 @@ test_nxdn_state_isolated_per_target(void) {
         DSD_FPRINTF(stderr, "nxdn identity scan did not rotate to second target\n");
         test_rc = 1;
     }
-    test_rc |= expect_nxdn_identity("fresh target", &state, 0, 0, 0U, 0U, 0, "", 0, 0, 0, 0);
+    /* A never-visited target must come back with the "no RAN decoded" sentinel, not a
+     * fabricated RAN 0. */
+    test_rc |= expect_nxdn_identity("fresh target", &state, 0, 0, (unsigned int)-1, 0U, 0, " ", 0, 0, 0, 0);
 
     seed_nxdn_identity(&state, 34, 462037500, 9U, 0x44U, 5, "Type-C", 2, 110, 25, 6);
     trunk_scan_test_set_now(0.52);
