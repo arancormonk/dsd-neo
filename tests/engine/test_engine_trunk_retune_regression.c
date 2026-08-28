@@ -507,6 +507,91 @@ main(void) {
     assert(state->symbolCenter == 8);
     assert(state->rf_mod == 2);
 
+    /* NXDN trunking populates p25_cc_freq the same way P25 does, so a return to an NXDN control
+     * channel must not be mistaken for a P25 one: rewriting rf_mod to C4FM/QPSK drops the GFSK
+     * slicing an NXDN96 (or DMR-class) control channel needs. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 1;
+
+    state->p25_cc_freq = 461000000;
+    state->trunk_cc_freq = 461000000;
+    state->p25_cc_is_tdma = 2; /* initState() sentinel: no P25 control channel seen */
+    state->synctype = DSD_SYNC_NXDN_POS;
+    state->lastsynctype = DSD_SYNC_NXDN_POS;
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 4;
+    state->rf_mod = 2;
+    state->sps_hunt_counter = 5;
+
+    g_setfreq_calls = 0;
+    g_last_setfreq_hz = 0;
+
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+
+    assert(g_setfreq_calls == 1);
+    assert(g_last_setfreq_hz == 461000000);
+    assert(state->rf_mod == 2);
+    assert(state->samplesPerSymbol == 10);
+    assert(state->symbolCenter == 4);
+    assert(state->sps_hunt_counter == 5);
+
+    /* EDACS also anchors p25_cc_freq and runs GFSK; same rule applies. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 1;
+
+    state->p25_cc_freq = 856000000;
+    state->trunk_cc_freq = 856000000;
+    state->p25_cc_is_tdma = 2;
+    state->synctype = DSD_SYNC_EDACS_POS;
+    state->lastsynctype = DSD_SYNC_EDACS_POS;
+    state->samplesPerSymbol = 5;
+    state->symbolCenter = 2;
+    state->rf_mod = 2;
+
+    g_setfreq_calls = 0;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_setfreq_calls == 1);
+    assert(state->rf_mod == 2);
+    assert(state->samplesPerSymbol == 5);
+    assert(state->symbolCenter == 2);
+
+    /* A parked non-P25 trunk-scan target that has not synced yet reads as P25 by synctype alone
+     * (DSD_SYNC_P25P1_POS is 0), so the coordinator's own target type is the authority. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->trunk_scan_enabled = 1;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = 1;
+
+    state->p25_cc_freq = 462000000;
+    state->trunk_cc_freq = 462000000;
+    state->p25_cc_is_tdma = 2;
+    state->samplesPerSymbol = 10;
+    state->symbolCenter = 4;
+    state->rf_mod = 0; /* global -mc lock with an empty target modulation column */
+    state->sps_hunt_counter = 5;
+    g_trunk_scan_target_count = 2;
+    g_trunk_scan_active_p25_target = 0;
+
+    g_setfreq_calls = 0;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_setfreq_calls == 1);
+    assert(state->sps_hunt_counter == 5);
+    g_trunk_scan_target_count = 0;
+
     /* A fixed input without rigctl has no tuner backend and must not fabricate
      * successful voice, control-channel, or scan retunes. */
     DSD_MEMSET(opts, 0, sizeof(*opts));

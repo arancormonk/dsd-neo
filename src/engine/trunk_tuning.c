@@ -71,13 +71,24 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
     state->sps_hunt_counter = 0;
 }
 
+/*
+ * Whether the control channel currently being followed is a P25 one.
+ *
+ * p25_cc_freq is not the answer: NXDN and EDACS trunking anchor that same field, so the
+ * frequency being set proves only that some protocol has a control channel. Everything derived
+ * from a P25 control channel -- the 4800/6000 symbol rate, the C4FM/QPSK choice, the P25 SPS
+ * hunt profile -- is wrong for those protocols, which run GFSK at their own rates.
+ */
 static int
-dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
-    if (!opts || !state || opts->trunk_enable != 1 || ted_sps <= 0) {
-        return 0;
-    }
+dsd_engine_cc_is_p25(const dsd_state* state) {
     if (dsd_engine_trunk_scan_active_p25_ctx() != NULL) {
         return 1;
+    }
+    // Under trunk scan the coordinator knows the parked target's protocol, and that beats sync
+    // history: a target that has not synced yet reads as P25 by synctype alone, because
+    // DSD_SYNC_P25P1_POS is 0.
+    if (dsd_engine_trunk_scan_target_count(state) > 0) {
+        return 0;
     }
     if (state->rf_mod == 2) {
         return 0;
@@ -90,9 +101,20 @@ dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, i
     return 1;
 }
 
+static int
+dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    if (!opts || !state || opts->trunk_enable != 1 || ted_sps <= 0) {
+        return 0;
+    }
+    return dsd_engine_cc_is_p25(state);
+}
+
 static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || state->p25_cc_freq == 0) {
+    // Skipping is safe for the other protocols rather than merely harmless: DMR and NXDN96 are
+    // already parked at 4800 sym/s with the four-level profile, and NXDN48/EDACS carry rates
+    // this function cannot express at all.
+    if (!opts || !state || state->p25_cc_freq == 0 || !dsd_engine_cc_is_p25(state)) {
         return;
     }
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
