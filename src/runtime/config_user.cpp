@@ -1702,7 +1702,10 @@ snapshot_output_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 static void
 snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     cfg->has_mode = 1;
-    cfg->decode_mode = dsd_infer_decode_mode_preset(opts);
+    /* Exact, not the AUTO-falling-back spelling: a decoder set no preset reproduces must render
+       no `decode` key at all. Saving it as "auto" would reload as every decoder enabled, so a
+       session that never chose a mode would come back wider than it was saved. */
+    cfg->decode_mode = dsd_infer_decode_mode_preset_exact(opts);
     cfg->has_dmr_mono = 1;
     cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
     /* The only snapshotter that reads dsd_state. NOT unconditional, unlike

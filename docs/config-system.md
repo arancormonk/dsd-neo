@@ -538,11 +538,12 @@ changing the selected frame mask. This allows shared presets such as `auto` and
 `tdma` to use the single-slot DMR decoder while retaining their non-DMR
 candidates.
 
-`decode = "auto"` preserves the protocol candidates already established by
-initialization and any active configuration/profile overlay; it does not replace
-them with the CLI full-search preset. Interactive Auto has the same preservation
-semantics. In contrast, CLI `-fa` explicitly enables every digital candidate in
-the five-profile hunt matrix:
+`decode = "auto"` enables every digital candidate in the five-profile hunt
+matrix below, exactly as CLI `-fa` and the interactive Auto choice do. All three
+entry points select the same decoder set; only `-fa` additionally resets the
+demodulator to C4FM and the audio layout to stereo, because on the config path
+those belong to the `demod` and `dmr_mono` keys, which are applied after the
+preset and therefore win. The hunt matrix:
 
 | Hunt profile | Symbol rate | Levels | Candidates |
 | --- | ---: | ---: | --- |
@@ -554,6 +555,12 @@ the five-profile hunt matrix:
 
 Profiles without an enabled candidate are skipped. A successful sync retains
 the active rate, level count, symbol timing, and RTL-family channel profile.
+
+Autosave records the decoder set only when a preset reproduces it exactly: an
+`-fa` session saves `decode = "auto"` and reloads with every decoder enabled,
+while a session whose decoder set matches no preset saves no `decode` key at
+all and reloads with the initialization defaults left alone. Independent keys
+such as `dmr_mono` are still saved either way.
 Passive analog monitoring and already-framed M17 UDP input are outside this
 frame-sync hunt.
 

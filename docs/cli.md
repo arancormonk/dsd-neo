@@ -290,10 +290,10 @@ Notes
 
   A detected sync locks the active rate, level count, timing, and RTL-family channel profile. Passive analog monitoring
   (`-fA`) and already-framed M17 UDP input (`-fU`) are not frame-sync hunt candidates.
-- The three Auto entry points intentionally differ: CLI `-fa` installs the complete matrix above; config
-  `decode = "auto"` preserves the protocol flags established during initialization or by the current overlay; and the
-  interactive Auto choice preserves the current candidate set. This lets configs and interactive setup retain a
-  deliberately narrowed scanner while `-fa` remains the explicit full-search preset.
+- All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
+  interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
+  layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
+  wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.

@@ -25,8 +25,12 @@ extern "C" {
 /**
  * @brief Caller profile for decode preset application.
  *
- * Some presets intentionally differ between config and CLI paths to preserve
- * existing behavior.
+ * Every profile selects the same decoders for a given mode. The profiles differ only in the
+ * surrounding audio-layout bookkeeping that another layer already owns: the config path keeps
+ * its own `dmr_mono`/output keys and applies `[mode] demod` after the preset, and the
+ * interactive path carries the wizard's answers. See decode_mode_apply_auto(),
+ * decode_mode_apply_nxdn48()/_nxdn96(), decode_mode_apply_x2tdma() and decode_mode_apply_ysf(),
+ * the only presets that read the profile at all.
  */
 typedef enum DSD_ATTR_PACKED {
     DSD_DECODE_PRESET_PROFILE_CONFIG = 0,
@@ -126,6 +130,20 @@ int dsd_rtl_channel_profile_for(const dsd_opts* opts, int symbol_rate_hz, int le
  * @return Inferred decode mode; `DSDCFG_MODE_AUTO` when no exact preset match.
  */
 dsdneoUserDecodeMode dsd_infer_decode_mode_preset(const dsd_opts* opts);
+
+/**
+ * @brief Decode-mode preset that exactly reproduces @p opts' decoder set, if one does.
+ *
+ * Same answer as dsd_infer_decode_mode_preset() whenever a preset matches, but reports
+ * DSDCFG_MODE_UNSET instead of falling back to AUTO for a decoder set no preset produces.
+ * Persistence needs that distinction: writing `decode = "auto"` for an arbitrary set would
+ * reload as *every* decoder. Callers that only label the current mode for a user should keep
+ * using the AUTO-falling-back spelling.
+ *
+ * @param opts Options to inspect; NULL yields DSDCFG_MODE_UNSET.
+ * @return The matching preset, or DSDCFG_MODE_UNSET when none reproduces the set.
+ */
+dsdneoUserDecodeMode dsd_infer_decode_mode_preset_exact(const dsd_opts* opts);
 
 /**
  * @brief Human-readable name of a decode preset, for anything the operator reads.

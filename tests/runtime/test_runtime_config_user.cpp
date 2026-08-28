@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
 #include <stdio.h>
@@ -1960,12 +1961,134 @@ test_snapshot_mode_inference_tdma_and_auto(void) {
         rc |= 1;
     }
 
+    /* A decoder set no preset reproduces must not be persisted as a preset: saving it as "auto"
+       would reload as every decoder enabled. The snapshot leaves the mode unset so the renderer
+       omits the key and the reload keeps whatever the fresh session established. */
     reset_opts_and_state(opts, state);
     opts.frame_dmr = 1;
     opts.frame_ysf = 1;
     dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.decode_mode != DSDCFG_MODE_UNSET) {
+        DSD_FPRINTF(stderr, "expected unset mode inference for an unmatched set, got %d\n", (int)snap.decode_mode);
+        rc |= 1;
+    }
+    char unmatched[4096];
+    if (render_config_to_buffer(&snap, unmatched, sizeof unmatched) != 0) {
+        return 1;
+    }
+    if (strstr(unmatched, "decode =") != nullptr) {
+        DSD_FPRINTF(stderr, "unmatched decoder set rendered a decode key:\n%s\n", unmatched);
+        rc |= 1;
+    }
+
+    /* The AUTO set itself still round-trips as "auto". */
+    reset_opts_and_state(opts, state);
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dpmr = 1;
+    opts.frame_provoice = 1;
+    opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
     if (snap.decode_mode != DSDCFG_MODE_AUTO) {
-        DSD_FPRINTF(stderr, "expected AUTO fallback mode inference, got %d\n", (int)snap.decode_mode);
+        DSD_FPRINTF(stderr, "expected AUTO inference for the full decoder set, got %d\n", (int)snap.decode_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/*
+ * A -fa session must come back as a -fa session. The decoder set is persisted as `decode =
+ * "auto"` and reloading it re-enables every decoder; a session that never chose a mode persists
+ * no decode key at all and reloads with the initialization defaults untouched.
+ */
+static int
+test_snapshot_roundtrip_preserves_decoder_set(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+
+    reset_opts_and_state(opts, state);
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "decode = \"auto\"") == nullptr) {
+        DSD_FPRINTF(stderr, "-fa session did not persist decode = \"auto\":\n%s\n", rendered);
+        return 1;
+    }
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig loaded;
+    int load_rc = dsd_user_config_load(path, &loaded);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "reloading the -fa snapshot failed\n");
+        return 1;
+    }
+
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&loaded, &opts, &state);
+    if (!(opts.frame_dstar == 1 && opts.frame_x2tdma == 1 && opts.frame_p25p1 == 1 && opts.frame_p25p2 == 1
+          && opts.frame_nxdn48 == 1 && opts.frame_nxdn96 == 1 && opts.frame_dmr == 1 && opts.frame_dpmr == 1
+          && opts.frame_provoice == 1 && opts.frame_ysf == 1 && opts.frame_m17 == 1)) {
+        DSD_FPRINTF(stderr, "reloaded auto config lost decoders\n");
+        rc |= 1;
+    }
+
+    /* The initialization default set persists no decode key, so a reload cannot widen it. */
+    reset_opts_and_state(opts, state);
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_ysf = 1;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "decode =") != nullptr) {
+        DSD_FPRINTF(stderr, "default decoder set rendered a decode key:\n%s\n", rendered);
+        return 1;
+    }
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+    load_rc = dsd_user_config_load(path, &loaded);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "reloading the default snapshot failed\n");
+        return 1;
+    }
+
+    reset_opts_and_state(opts, state);
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_ysf = 1;
+    dsd_apply_user_config_to_opts(&loaded, &opts, &state);
+    if (opts.frame_nxdn48 != 0 || opts.frame_nxdn96 != 0 || opts.frame_dpmr != 0 || opts.frame_provoice != 0
+        || opts.frame_m17 != 0) {
+        DSD_FPRINTF(stderr, "reloading a default-set config widened the decoder set\n");
+        rc |= 1;
+    }
+    if (opts.frame_dmr != 1 || opts.frame_p25p1 != 1) {
+        DSD_FPRINTF(stderr, "reloading a default-set config dropped decoders\n");
         rc |= 1;
     }
     return rc;
@@ -1984,11 +2107,14 @@ test_snapshot_roundtrip_dmr_mono_override(void) {
         int frame_p25p1;
         int frame_p25p2;
         int frame_dmr;
+        int all_digital;
         int expected_stereo;
     } cases[] = {
-        {"dmr-only", DSDCFG_MODE_DMR_MONO, 0, 0, 0, 1, 0},
-        {"auto", DSDCFG_MODE_AUTO, 1, 1, 1, 1, 1},
-        {"tdma", DSDCFG_MODE_TDMA, 0, 1, 1, 1, 1},
+        {"dmr-only", DSDCFG_MODE_DMR_MONO, 0, 0, 0, 1, 0, 0},
+        /* Matches no preset, so it persists without a decode key; the override must survive anyway. */
+        {"unmatched-set", DSDCFG_MODE_UNSET, 1, 1, 1, 1, 0, 1},
+        {"auto", DSDCFG_MODE_AUTO, 0, 0, 0, 0, 1, 1},
+        {"tdma", DSDCFG_MODE_TDMA, 0, 1, 1, 1, 0, 1},
     };
 
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -1997,6 +2123,19 @@ test_snapshot_roundtrip_dmr_mono_override(void) {
         opts.frame_p25p1 = cases[i].frame_p25p1;
         opts.frame_p25p2 = cases[i].frame_p25p2;
         opts.frame_dmr = cases[i].frame_dmr;
+        if (cases[i].all_digital) {
+            opts.frame_dstar = 1;
+            opts.frame_x2tdma = 1;
+            opts.frame_p25p1 = 1;
+            opts.frame_p25p2 = 1;
+            opts.frame_nxdn48 = 1;
+            opts.frame_nxdn96 = 1;
+            opts.frame_dmr = 1;
+            opts.frame_dpmr = 1;
+            opts.frame_provoice = 1;
+            opts.frame_ysf = 1;
+            opts.frame_m17 = 1;
+        }
         opts.dmr_mono = 1;
         opts.dmr_stereo = cases[i].expected_stereo;
         state.dmr_stereo = cases[i].expected_stereo;
@@ -2461,6 +2600,7 @@ main(void) {
     rc |= test_apply_mode_ysf_uses_config_profile_behavior();
     rc |= test_snapshot_staged_file_rate_uses_requested_rate();
     rc |= test_snapshot_mode_inference_tdma_and_auto();
+    rc |= test_snapshot_roundtrip_preserves_decoder_set();
     rc |= test_snapshot_roundtrip_dmr_mono_override();
     rc |= test_radioreference_schema_rows();
     rc |= test_radioreference_config_roundtrip();

@@ -115,9 +115,8 @@ decoders with separate mode presets -- `-fn` enables NXDN96 only and `-fi` enabl
 DSD-neo logs a warning at scan start for any target whose decoder is not enabled by the selected mode; it does not
 silently flip mode-preset frame flags.
 
-`mode.decode = "auto"` in a config file is not equivalent: the config profile of the AUTO preset deliberately leaves
-the frame flags at their defaults, which include neither NXDN rate. Set `mode.decode = "nxdn96"` or
-`mode.decode = "nxdn48"` for a single-rate list, or pass `-fa` on the command line for mixed lists.
+`mode.decode = "auto"` in a config file is equivalent to `-fa` for decoder selection, so it serves mixed lists too.
+Use `mode.decode = "nxdn96"` or `mode.decode = "nxdn48"` when a single-rate list is all you want enabled.
 
 ## Config Usage
 
@@ -250,9 +249,8 @@ from `1` to `49` for manual RTL-family gain in dB.
 The selected decode mode does not enable the decoder those targets need, so they park and dwell without ever
 decoding. One line is logged per decoder class, not per target, and NXDN96 and NXDN48 are separate classes. Use
 `-fa` for a mixed list, `-fn` for an NXDN96-only list, `-fi` for an NXDN48-only list, `-ft`/`-f1`/`-f2` for P25, or
-`-fs`/`-ft` for DMR. A list holding both NXDN rates needs `-fa`. DSD-neo does not flip mode-preset frame flags for
-you. Note that `mode.decode = "auto"` in a config file enables neither NXDN rate -- pass `-fa` on the command line,
-or set `mode.decode = "nxdn96"`/`"nxdn48"`.
+`-fs`/`-ft` for DMR. A list holding both NXDN rates needs `-fa`, or `mode.decode = "auto"` in a config file, which
+selects the same decoders. DSD-neo does not flip mode-preset frame flags for you.
 
 `--trunk-scan cannot be combined with global -C/channel-map config`
 
