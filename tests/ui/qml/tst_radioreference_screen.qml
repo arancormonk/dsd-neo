@@ -211,12 +211,15 @@ Item {
             var count = findChild(tc.screen, "radioReferenceRepeaterCount")
             tryVerify(function () { return count.visible },
                       2000, "a conventional system did not show the repeater count")
-            verify(count.text.indexOf("26") >= 0,
-                   "the repeater count does not name the 26-entry ceiling: " + count.text)
+            // The count line reports the selection itself; the scan list grows
+            // with every distinct repeater, so no ceiling is promised here.
+            compare(count.text, "0 repeater(s) selected",
+                    "the repeater count does not read the empty selection")
 
             tc.screen.toggleSite(0)
             tc.screen.toggleSite(1)
             compare(tc.screen.selectedSites.length, 2, "a conventional system refused a second repeater")
+            compare(count.text, "2 repeater(s) selected", "the repeater count did not follow the selection")
             tc.screen.toggleSite(0)
             compare(tc.screen.selectedSites.length, 1, "tapping a chosen repeater did not deselect it")
 
