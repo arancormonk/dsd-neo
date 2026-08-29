@@ -231,7 +231,13 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 - `--iq-capture-format <cu8|cf32>` Capture format request (`cu8` default).
 - `--iq-capture-max-mb <n>` Capture byte cap in MiB (`0` unlimited).
 - `--iq-replay <path>` Replay capture metadata/data through the RTL pipeline.
-- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default).
+- `--iq-replay-rate <fast|realtime>` Replay pacing mode (`fast` default). `fast` lets the front end run ahead of the
+  decoder, bounded only by the output ring (~43 s at 48 kHz), so a short capture can be fully demodulated under the
+  profile the run started with: channel-profile changes the decoder requests mid-replay then land after the samples
+  they were meant to shape, or never at all once the reader hits EOF. Decoder-side symbol timing still follows the SPS
+  hunt either way, but anything that depends on the front end reacting to the decoder -- the Auto hunt narrowing the
+  channel filter onto a candidate, and the stream realignment that comes with it -- only behaves like live hardware
+  under `realtime`. Reproduce hunt and trunking behaviour with `realtime`; `fast` is for throughput over a capture.
 - `--iq-loop` Loop replay when EOF is reached.
 - `--iq-info <path>` Print capture metadata summary and exit.
 
@@ -290,6 +296,14 @@ Notes
 
   A detected sync locks the active rate, level count, timing, and RTL-family channel profile. Passive analog monitoring
   (`-fA`) and already-framed M17 UDP input (`-fU`) are not frame-sync hunt candidates.
+- On RTL-family FSK input the decoder's symbol timing follows the hunt profile from the moment the hunt selects it. The
+  matching front-end channel profile is requested asynchronously and is applied by the demod thread on its next block,
+  so the two are briefly out of step after every hunt step; decoding does not wait for the front end to catch up.
+- The hunt dwells on each candidate profile for a bounded number of buffer passes, so a full rotation over the five
+  profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
+  rotation can therefore be missed entirely even though the same capture decodes under its native preset -- Auto
+  converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short
+  bursts. Name the narrower preset when you already know the mode and cannot afford the search.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
@@ -548,7 +562,8 @@ Resampler
 
 CQPSK timing
 
-RTL-family FSK digital decode selects its own symbol timing and normalization internally. CQPSK uses the OP25-style
+RTL-family FSK digital decode selects its own symbol timing and normalization internally, deriving samples-per-symbol
+from the active SPS hunt profile rather than from the front end's published symbol rate. CQPSK uses the OP25-style
 Gardner/Costas/FLL-band-edge symbol chain.
 
 - `DSD_NEO_TED_GAIN=<float>` — CQPSK/OP25 Gardner timing loop gain override

@@ -93,6 +93,17 @@ int dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const ds
 int dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.
+ *
+ * The decoder's own timing authority on RTL-family FSK input: the front end applies
+ * a hunt's profile request asynchronously, so its published symbol rate lags the
+ * hunt and must not be what the slicer derives samples-per-symbol from.
+ *
+ * @param state Decoder state; NULL or an out-of-range index yields the 4800/4 default.
+ */
+int dsd_frame_sync_active_profile_symbol_rate_hz(const dsd_state* state);
+
+/**
  * @brief Scan for a valid frame sync pattern and return its type.
  */
 int getFrameSync(dsd_opts* opts, dsd_state* state);

@@ -68,24 +68,6 @@ enum {
     FRAME_SYNC_HISTORY_CAPACITY = 48,
 };
 
-typedef struct {
-    int symbol_rate_hz;
-    int levels;
-} frame_sync_sps_profile;
-
-/* Keep this order in sync with dsd_state::sps_hunt_idx. */
-static const frame_sync_sps_profile k_frame_sync_sps_profiles[DSD_FRAME_SYNC_SPS_PROFILE_COUNT] = {
-    {4800, 4}, {2400, 4}, {9600, 2}, {6000, 4}, {4800, 2},
-};
-
-static const frame_sync_sps_profile*
-frame_sync_sps_profile_for_index(int index) {
-    if (index < 0 || index >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
-        return &k_frame_sync_sps_profiles[DSD_FRAME_SYNC_SPS_PROFILE_4800_4];
-    }
-    return &k_frame_sync_sps_profiles[index];
-}
-
 static int
 frame_sync_opts_has_4800_four_level_mode(const dsd_opts* opts) {
     if (!opts) {
