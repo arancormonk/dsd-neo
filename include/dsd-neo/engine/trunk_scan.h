@@ -143,6 +143,10 @@ int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* 
  * is rotated by the no-sync SPS hunt, so a plain `-T` session can be sitting on the 2400 profile
  * during dead air. The coordinator's own target type is the only stable answer.
  *
+ * The tuning layer treats a non-zero answer as authoritative for the RTL chain regardless of
+ * `rf_mod`, so a target whose modulation column is empty under a global `-m` lock still gets its
+ * own symbol rate and channel filter.
+ *
  * @param state Decoder state owning the scan coordinator.
  * @return 2400 or 4800 for a parked GFSK-family target; 0 when trunk scan is not installed or the
  *         parked target is P25.
