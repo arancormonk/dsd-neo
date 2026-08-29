@@ -72,10 +72,16 @@ nxdn_trunk_diag_note_missing_channel(dsd_state* state, uint16_t channel) {
     return 1;
 }
 
+long int
+nxdn_trunk_diag_dense_chan_lookup(const void* ctx, uint16_t channel) {
+    const long int* chan_map = (const long int*)ctx;
+    return chan_map ? chan_map[channel] : 0;
+}
+
 static size_t
-nxdn_trunk_diag_collect_from(const nxdn_trunk_diag_ledger* ledger, const long int* chan_map, uint16_t* out,
-                             size_t out_cap) {
-    if (!ledger || !chan_map || ledger->missing_unique == 0) {
+nxdn_trunk_diag_collect_from(const nxdn_trunk_diag_ledger* ledger, nxdn_trunk_diag_chan_freq_fn lookup, const void* ctx,
+                             uint16_t* out, size_t out_cap) {
+    if (!ledger || !lookup || ledger->missing_unique == 0) {
         return 0;
     }
 
@@ -88,7 +94,7 @@ nxdn_trunk_diag_collect_from(const nxdn_trunk_diag_ledger* ledger, const long in
         if ((ledger->missing_seen[byte_idx] & bit_mask) == 0) {
             continue;
         }
-        if (chan_map[ch] != 0) {
+        if (lookup(ctx, (uint16_t)ch) != 0) {
             continue;
         }
 
@@ -106,7 +112,8 @@ nxdn_trunk_diag_collect_unmapped_channels(const dsd_state* state, uint16_t* out,
     if (!state) {
         return 0;
     }
-    return nxdn_trunk_diag_collect_from(nxdn_trunk_diag_get(state), state->trunk_chan_map, out, out_cap);
+    return nxdn_trunk_diag_collect_from(nxdn_trunk_diag_get(state), nxdn_trunk_diag_dense_chan_lookup,
+                                        state->trunk_chan_map, out, out_cap);
 }
 
 void
@@ -232,15 +239,18 @@ nxdn_trunk_diag_summary_finalize(char* msg, size_t msg_cap, size_t used) {
     }
 }
 
+// Cppcheck 2.21 loses the final prototype name after a callback typedef parameter.
+// cppcheck-suppress-begin funcArgNamesDifferentUnnamed
 void
-nxdn_trunk_diag_log_summary_for(const char* chan_csv, const nxdn_trunk_diag_ledger* ledger, const long int* chan_map) {
+nxdn_trunk_diag_log_summary_for(const char* chan_csv, const nxdn_trunk_diag_ledger* ledger,
+                                nxdn_trunk_diag_chan_freq_fn lookup, const void* ctx) {
     if (!chan_csv || chan_csv[0] == '\0') {
         return;
     }
 
     uint16_t missing[16];
     const size_t cap = sizeof(missing) / sizeof(missing[0]);
-    const size_t total = nxdn_trunk_diag_collect_from(ledger, chan_map, missing, cap);
+    const size_t total = nxdn_trunk_diag_collect_from(ledger, lookup, ctx, missing, cap);
     if (total == 0) {
         return;
     }
@@ -262,11 +272,13 @@ nxdn_trunk_diag_log_summary_for(const char* chan_csv, const nxdn_trunk_diag_ledg
     LOG_INFO("NOTICE: %s", msg);
 }
 
+// cppcheck-suppress-end funcArgNamesDifferentUnnamed
+
 void
 nxdn_trunk_diag_log_summary(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return;
     }
     nxdn_trunk_diag_log_summary_for(nxdn_trunk_diag_chan_map_path(opts, state), nxdn_trunk_diag_get(state),
-                                    state->trunk_chan_map);
+                                    nxdn_trunk_diag_dense_chan_lookup, state->trunk_chan_map);
 }

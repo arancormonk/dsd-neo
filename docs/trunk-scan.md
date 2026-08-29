@@ -59,7 +59,9 @@ Column behavior:
 
 Target list limits and validation:
 
-- No target-count limit; bounded only by memory.
+- No fixed target-count limit. Each parked target reserves a snapshot of decoder state (~80 KB), and the list is
+  capped by a 256 MB budget for those snapshots - a few thousand targets. A CSV past the cap is rejected while
+  parsing, with an error naming the budget.
 - Blank rows are skipped.
 - Every data row must contain the seven fields above.
 - The header may have optional columns after `notes`, but the first seven header names must match the required prefix.

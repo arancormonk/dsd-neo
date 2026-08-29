@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -33,6 +34,10 @@ enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
     DSD_TRUNK_CHAN_MAP_SIZE = 0xFFFF,
+    /* Scan-list slots stored inline in dsd_state. Protocol fixed-slot writers raw-index
+     * trunk_lcn_freq[] below this; longer lists spill into the trunk_lcn_freq_ext heap
+     * tail behind dsd_state_trunk_lcn_slot(). */
+    DSD_TRUNK_LCN_EMBEDDED = 26,
     DSD_VERTEX_KS_MAP_MAX = 64,
     DSD_DMR_TG_KEY_MAP_MAX = 256,
     DSD_RTL_SYMBOL_CACHE_CAP = 512,
@@ -414,12 +419,12 @@ struct dsd_state {
     long int p25_vc_freq[2];
     long int trunk_vc_freq[2]; // generic trunk-owner voice-channel frequencies
     // Trunking LCNs and maps
-    long int trunk_lcn_freq[26];
+    long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
     long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
     uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
     uint32_t trunk_chan_map_used_count;
     uint64_t trunk_chan_map_seq;
-    /* Scan-list tail beyond the 26 embedded slots (NULL until a longer list is
+    /* Scan-list tail beyond the DSD_TRUNK_LCN_EMBEDDED inline slots (NULL until a longer list is
      * imported). dsd_state_trunk_lcn_slot() abstracts both segments. Never inside
      * a UI_SNAPSHOT_COPY_RANGE: the first range ends at trunk_lcn_freq and members
      * from trunk_chan_map on are copied explicitly. */
@@ -1392,36 +1397,51 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
 }
 
 /**
- * Address the scan-list LCN slot at index i. The first 26 slots live in the
- * embedded trunk_lcn_freq array (protocol fixed-slot writers keep raw-indexing
- * those); slots >= 26 live in the heap tail trunk_lcn_freq_ext. Callers must
- * guarantee 0 <= i < lcn_freq_count for reads, or that the index is addressable
- * (trunk_lcn_freq_ext_capacity > i - 26) for writes into the tail.
+ * Address the scan-list LCN slot at index i. The first DSD_TRUNK_LCN_EMBEDDED slots
+ * live in the embedded trunk_lcn_freq array (protocol fixed-slot writers keep
+ * raw-indexing those); higher slots live in the heap tail trunk_lcn_freq_ext. Callers
+ * must guarantee 0 <= i < lcn_freq_count for reads, or that the index is addressable
+ * (trunk_lcn_freq_ext_capacity > i - DSD_TRUNK_LCN_EMBEDDED) for writes into the tail.
  */
 static inline long int*
 dsd_state_trunk_lcn_slot(dsd_state* state, int i) {
-    return i < 26 ? &state->trunk_lcn_freq[i] : &state->trunk_lcn_freq_ext[i - 26];
+    return i < DSD_TRUNK_LCN_EMBEDDED ? &state->trunk_lcn_freq[i]
+                                      : &state->trunk_lcn_freq_ext[i - DSD_TRUNK_LCN_EMBEDDED];
 }
 
 /** Const-qualified dsd_state_trunk_lcn_slot() for read-only contexts. */
 static inline const long int*
 dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
-    return i < 26 ? &state->trunk_lcn_freq[i] : &state->trunk_lcn_freq_ext[i - 26];
+    return i < DSD_TRUNK_LCN_EMBEDDED ? &state->trunk_lcn_freq[i]
+                                      : &state->trunk_lcn_freq_ext[i - DSD_TRUNK_LCN_EMBEDDED];
 }
 
 /**
  * Ensure scan-list indices 0..count_needed-1 are addressable via
  * dsd_state_trunk_lcn_slot(): grows the heap tail by doubling and zero-fills
- * the new tail; no-op when count_needed <= 26. Returns 0 on success, -1 on
- * allocation failure (state left valid, contents preserved).
+ * the new tail; no-op when count_needed <= DSD_TRUNK_LCN_EMBEDDED. Returns 0 on
+ * success, -1 on allocation failure (state left valid, contents preserved).
  */
 int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
 
 /**
  * Free the scan-list heap tail and zero its pointer/capacity. The embedded
- * 26 slots are part of dsd_state and need no release.
+ * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
+
+/**
+ * Whether the scan list is operator-supplied rather than learned over the air.
+ *
+ * A `-C`/`-Y` channel map, or a per-target chan_csv under trunk scan, is
+ * positional: index i is LCN i+1, and an unparseable row deliberately stores 0
+ * to keep that numbering. Protocol site broadcasts must therefore neither write
+ * into such a list nor lower lcn_freq_count to the handful of slots they know
+ * about. Trunk scan rejects a global chan_in_file at init and seeds slot 0 with
+ * the target's park frequency, so under -Y a count above 1 is the only evidence
+ * a per-target map was imported.
+ */
+int dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {

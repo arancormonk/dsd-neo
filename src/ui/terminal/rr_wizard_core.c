@@ -222,9 +222,9 @@ typedef struct {
 /*
  * Matches what dsd_rr_provenance::site_ids can actually hold: 2048 bytes fits
  * 341 five-digit ids plus their commas, which is the width RadioReference
- * issues. Ids beyond the cap are ignored, which is harmless: the conventional
- * generator caps at 26 distinct frequencies and a trunked one uses only the
- * first site.
+ * issues. Ids beyond the cap are ignored, which only affects a system listing
+ * more than 341 sites: a trunked one uses only the first site, and a
+ * conventional one keeps every distinct frequency among the ids it did read.
  */
 #define RR_REFRESH_MAX_SITE_IDS 341
 

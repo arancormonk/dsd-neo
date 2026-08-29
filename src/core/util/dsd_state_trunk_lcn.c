@@ -5,16 +5,18 @@
 
 /**
  * @file
- * @brief Scan-list heap tail (slots past the 26 embedded trunk_lcn_freq[]).
+ * @brief Scan-list heap tail (slots past the embedded trunk_lcn_freq[]).
  *
  * Kept out of dsd_init.c so test targets that link individual core sources
  * (menu services, UI snapshot, trunk scan) can attach the real implementation
  * without dragging in the full initState/freeState dependency chain.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -23,10 +25,10 @@ dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
     if (!state) {
         return -1;
     }
-    if (count_needed <= 26) {
+    if (count_needed <= (size_t)DSD_TRUNK_LCN_EMBEDDED) {
         return 0;
     }
-    const size_t ext_needed = count_needed - 26;
+    const size_t ext_needed = count_needed - (size_t)DSD_TRUNK_LCN_EMBEDDED;
     if (ext_needed <= state->trunk_lcn_freq_ext_capacity) {
         return 0;
     }
@@ -60,4 +62,15 @@ dsd_state_trunk_lcn_free(dsd_state* state) {
     free(state->trunk_lcn_freq_ext);
     state->trunk_lcn_freq_ext = NULL;
     state->trunk_lcn_freq_ext_capacity = 0;
+}
+
+int
+dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state) {
+    if (opts && opts->chan_in_file[0] != '\0') {
+        return 1;
+    }
+    if (!opts || !state || opts->trunk_scan_enabled != 1) {
+        return 0;
+    }
+    return (state->lcn_freq_count > 1) ? 1 : 0;
 }

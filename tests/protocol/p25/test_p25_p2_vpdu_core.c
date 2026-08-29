@@ -681,6 +681,86 @@ run_native_sccb_zero_channel_b_case(void) {
     return rc;
 }
 
+/*
+ * SCCB-Explicit (0x69) seeds the low scan-list slots for control-channel hunting. It must only
+ * ever raise lcn_freq_count, and must leave an operator-supplied list alone: such a list is
+ * positional, so a 0 in slot 1 is an unparseable CSV row holding LCN 2's place, not a free slot.
+ */
+static int
+run_sccb_explicit_scan_list_case(int imported, int seeded_count, const char* tag) {
+    static dsd_opts opts;
+    dsd_state* state = NULL;
+    int rc = 0;
+    char label[96];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!state) {
+        return 1;
+    }
+
+    state->p25_iden_fdma[1].chan_type = 1;
+    state->p25_iden_fdma[1].chan_spac = 100;
+    state->p25_iden_fdma[1].base_freq = 851000000 / 5;
+    state->p25_iden_fdma[1].populated = 1;
+    state->p25_chan_tdma_explicit[1] = 1;
+    state->p2_rfssid = 0x02;
+    state->p2_siteid = 0x03;
+
+    if (imported) {
+        DSD_SNPRINTF(opts.chan_in_file, sizeof opts.chan_in_file, "%s", "imported.csv");
+    }
+    for (int i = 0; i < seeded_count; i++) {
+        if (dsd_state_trunk_lcn_reserve(state, (size_t)i + 1U) != 0) {
+            DSD_FPRINTF(stderr, "%s: scan-list reserve failed at %d\n", tag, i);
+            free(state);
+            return 1;
+        }
+        /* Slot 1 is the deliberate placeholder an unparseable row leaves behind. */
+        *dsd_state_trunk_lcn_slot(state, i) = (i == 1) ? 0L : (851000000L + (long)i * 12500L);
+    }
+    state->lcn_freq_count = seeded_count;
+
+    unsigned long long int MAC[24] = {0};
+    MAC[0] = 0x07; /* P1 TSBK bridge marker this decoder path requires */
+    MAC[1] = 0x69;
+    MAC[2] = 0x02; /* RFSS matches the current site */
+    MAC[3] = 0x03; /* SITE matches the current site */
+    MAC[4] = 0x10; /* CHAN-T iden 1, channel 0x00A */
+    MAC[5] = 0x0A;
+    MAC[6] = 0x10; /* CHAN-R 0x1005 (uplink) */
+    MAC[7] = 0x05;
+    MAC[8] = 0x01; /* service class */
+
+    process_MAC_VPDU(&opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC);
+
+    DSD_SNPRINTF(label, sizeof label, "%s_count_not_lowered", tag);
+    rc |= expect_true(label, state->lcn_freq_count >= seeded_count);
+    if (imported) {
+        DSD_SNPRINTF(label, sizeof label, "%s_count_preserved", tag);
+        rc |= expect_eq_long(label, state->lcn_freq_count, seeded_count);
+        int intact = 1;
+        for (int i = 0; i < seeded_count; i++) {
+            const long want = (i == 1) ? 0L : (851000000L + (long)i * 12500L);
+            if (*dsd_state_trunk_lcn_slot(state, i) != want) {
+                DSD_FPRINTF(stderr, "%s: slot %d clobbered: got %ld want %ld\n", tag, i,
+                            *dsd_state_trunk_lcn_slot(state, i), want);
+                intact = 0;
+            }
+        }
+        DSD_SNPRINTF(label, sizeof label, "%s_entries_untouched", tag);
+        rc |= expect_true(label, intact);
+    } else {
+        /* No operator list: the announced frequency still lands in the first free low slot. */
+        DSD_SNPRINTF(label, sizeof label, "%s_seeded_slot1", tag);
+        rc |= expect_eq_long(label, state->trunk_lcn_freq[1], 851000000L + 10L * 100L * 125L);
+    }
+
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
 static void
 put_iden_base(unsigned char* mac, int pos, long base_freq) {
     mac[pos + 0] = (unsigned char)((base_freq >> 24) & 0xFF);
@@ -1747,6 +1827,10 @@ run_cases(void) {
     }
 
     rc |= run_bridged_sccb_zero_channel_b_case();
+    /* A long imported map survives an SCCB-Explicit broadcast intact; a learned list is only
+     * ever extended, never truncated to the two slots this writer knows about. */
+    rc |= run_sccb_explicit_scan_list_case(1, 200, "sccb_explicit_imported");
+    rc |= run_sccb_explicit_scan_list_case(0, 5, "sccb_explicit_learned");
     rc |= run_native_sccb_zero_channel_b_case();
 
     // Case 9: SCCB candidates are site-scoped when current RFSS/SITE are known.

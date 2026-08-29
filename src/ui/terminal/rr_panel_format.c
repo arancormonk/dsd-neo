@@ -81,13 +81,16 @@ rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_sit
         return;
     }
     DSD_MEMSET(out, 0, sizeof *out);
-    long long* chosen = (long long*)calloc(site_count > 0U ? site_count : 1U, sizeof *chosen);
-    if (chosen == NULL) {
-        (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ selection unavailable ]");
-        return;
-    }
     size_t count = 0;
-    if (sites != NULL && is_selected != NULL) {
+    if (sites != NULL && is_selected != NULL && site_count > 0U) {
+        // Runs on the panel redraw path, so nothing is allocated for the empty
+        // list the screen shows before a system is loaded.
+        long long* chosen = (long long*)calloc(site_count, sizeof *chosen);
+        if (chosen == NULL) {
+            (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ selection unavailable ]");
+            (void)DSD_SNPRINTF(out->short_text, sizeof out->short_text, "[ ? ]");
+            return;
+        }
         for (size_t i = 0; i < site_count; i++) {
             if (!is_selected(user, i)) {
                 continue;
@@ -113,10 +116,13 @@ rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_sit
             chosen[count] = hz;
             count++;
         }
+        free(chosen);
     }
     out->kept = (int)count;
-    free(chosen);
     (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ %d distinct frequencies ]", out->kept);
+    /* The heading right-aligns the counter beside a ~38-column title; the full label needs a
+     * 66-column body before it fits, so narrower terminals get this instead of nothing. */
+    (void)DSD_SNPRINTF(out->short_text, sizeof out->short_text, "[ %d freqs ]", out->kept);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed

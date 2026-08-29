@@ -76,7 +76,9 @@ Notes:
   `number,number` shape.
 - Extra columns are ignored; use them for labels like "default CC".
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
-  so keep rows in the LCN order you want. The LCN list stores at most 26 frequencies.
+  so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
+  Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
+  holds that LCN's place. Frequencies learned from site broadcasts (with no list imported) are capped at 26.
 
 Example:
 
@@ -120,7 +122,9 @@ Columns:
 
 Validation notes:
 
-- No target-count limit; bounded only by memory.
+- No fixed target-count limit. Each parked target reserves a snapshot of decoder state (~80 KB), and the list is
+  capped by a 256 MB budget for those snapshots - a few thousand targets. A CSV past the cap is rejected while
+  parsing, with an error naming the budget.
 - Duplicate IDs and duplicate `(type, frequency_hz)` rows are rejected. `nxdn-conventional` and
   `nxdn48-conventional` are distinct types, so one frequency may appear once as each.
 - `chan_csv` on conventional (`dmr-conventional`/`nxdn-conventional`/`nxdn48-conventional`) rows is rejected.

@@ -4900,17 +4900,10 @@ next_lcn_freq(dsd_state* state, long* out_freq) {
 
 static int
 p25_has_user_lcn_list(const dsd_opts* opts, const dsd_state* state) {
-    if (opts && opts->chan_in_file[0] != '\0') {
-        return 1;
-    }
-    if (!opts || !state || opts->trunk_scan_enabled != 1) {
-        return 0;
-    }
-
     // Trunk-scan seeds entry 0 with the target CC. Additional entries mean a
     // per-target chan_csv was imported; learned grant caches only populate the
     // sparse channel map and must not disable current-site CC candidate hunts.
-    return (state->lcn_freq_count > 1) ? 1 : 0;
+    return dsd_state_trunk_lcn_user_list_present(opts, state);
 }
 
 static int

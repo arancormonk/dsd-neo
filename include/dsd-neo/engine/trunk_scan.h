@@ -25,7 +25,22 @@ enum {
     DSD_TRUNK_SCAN_DWELL_MAX_MS = 600000,
     DSD_TRUNK_SCAN_IDLE_DWELL_DEFAULT_MS = 3000,
     DSD_TRUNK_SCAN_ACTIVITY_HOLD_DEFAULT_MS = 1200,
+    /* Ceiling on the memory the parked-target snapshots may occupy. See
+     * dsd_trunk_scan_max_targets(). */
+    DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024,
 };
+
+/**
+ * @brief Largest number of trunk scan targets that fits in the target memory budget.
+ *
+ * There is no target-count limit as such: each parked target reserves a snapshot of decoder
+ * state, and the cap is DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES divided by that snapshot's
+ * size, so it tracks the struct instead of being a constant that goes stale. Enforced while the
+ * targets CSV is parsed - an unbounded row count would otherwise ask for a single allocation
+ * large enough that Linux overcommit grants it and the process is killed while faulting the
+ * pages in, rather than failing with a message the operator can act on.
+ */
+size_t dsd_trunk_scan_max_targets(void);
 
 typedef enum {
     DSD_TRUNK_SCAN_TARGET_P25_TRUNK = 0,

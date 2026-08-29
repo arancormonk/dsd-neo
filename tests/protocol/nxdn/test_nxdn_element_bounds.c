@@ -1137,6 +1137,11 @@ run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, int trunk_ena
     rc |= expect_int(label, (int)state->p25_cc_freq, (int)(expect_adopt ? cc_freq : seeded_p25_cc));
     DSD_SNPRINTF(label, sizeof label, "%s-trunk-cc", tag);
     rc |= expect_int(label, (int)state->trunk_cc_freq, (int)(expect_adopt ? cc_freq : seeded_trunk_cc));
+    /* Adoption seeds slot 0, so it may only raise lcn_freq_count - never assign it down over an
+     * operator-supplied list that is longer than the one slot this writer knows about. */
+    DSD_SNPRINTF(label, sizeof label, "%s-lcn-count", tag);
+    rc |= expect_int(label, state->lcn_freq_count,
+                     seeded_lcn_count > 1 ? seeded_lcn_count : (expect_adopt ? 1 : seeded_lcn_count));
 
     set_parked_scan_target_ctx(0);
     free(state);
@@ -1164,6 +1169,12 @@ test_cch_dfa_control_channel_adoption_pinning(void) {
     rc |= run_cch_dfa_adoption_case("cch-adopt-scan-p25-target", 1, 1, 1, park, park, park, 1, 0);
     /* Conventional targets run with trunk_enable == 0 and have no control channel to adopt. */
     rc |= run_cch_dfa_adoption_case("cch-adopt-scan-conventional-target", 1, 0, 0, 0, 0, 0, 0, 0);
+    /* An imported map is positional: an unparseable row 1 stores 0 on purpose to keep LCN
+     * numbering, so slot 0 alone cannot be read as "nothing imported". The list is operator
+     * intent and must survive the broadcast intact. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-placeholder-row", 0, 1, 0, 0, 0, 0, 40, 0);
+    /* A long learned list must not be truncated to the single slot this writer seeds. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-long-list", 1, 1, 0, park, park, park, 40, 0);
 
     return rc;
 }

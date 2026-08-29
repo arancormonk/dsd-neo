@@ -1026,6 +1026,45 @@ main(void) {
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("c_bcast channel frequency learned", pf0_st.trunk_chan_map[77] == 451012500L);
     rc |= expect_true("c_bcast channel frequency tracked", pf0_st.trunk_lcn_freq[0] == 451012500L);
+    rc |= expect_true("c_bcast first learned frequency sets count", pf0_st.lcn_freq_count == 1);
+
+    /* Distinct announcements append rather than writing modulo a fixed window, and a repeat of
+     * an already-tracked frequency is not appended twice. */
+    build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
+    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("c_bcast second frequency appended", pf0_st.trunk_lcn_freq[1] == 451037500L);
+    rc |= expect_true("c_bcast second frequency raises count", pf0_st.lcn_freq_count == 2);
+    build_c_bcast_chan_freq(bits, bytes, 79U, 451U, 300U);
+    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("c_bcast duplicate frequency not appended", pf0_st.lcn_freq_count == 2);
+    dsd_state_ext_free_all(&pf0_st);
+
+    /* An imported channel map is positional operator intent: a site broadcast must neither write
+     * into it nor lower lcn_freq_count to the handful of slots the broadcast knows about. Slot 1
+     * holds the deliberate 0 an unparseable CSV row leaves behind to keep LCN numbering. */
+    init_env(&pf0_opts, &pf0_st);
+    DSD_SNPRINTF(pf0_opts.chan_in_file, sizeof pf0_opts.chan_in_file, "%s", "imported.csv");
+    for (int i = 0; i < 40; i++) {
+        rc |= expect_true("imported list reserve", dsd_state_trunk_lcn_reserve(&pf0_st, (size_t)i + 1U) == 0);
+        *dsd_state_trunk_lcn_slot(&pf0_st, i) = (i == 1) ? 0L : (460000000L + (long)i * 12500L);
+    }
+    pf0_st.lcn_freq_count = 40;
+    build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
+    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("imported map still learns the channel", pf0_st.trunk_chan_map[77] == 451012500L);
+    rc |= expect_true("imported map keeps its length", pf0_st.lcn_freq_count == 40);
+    int imported_intact = 1;
+    for (int i = 0; i < 40; i++) {
+        const long want = (i == 1) ? 0L : (460000000L + (long)i * 12500L);
+        if (*dsd_state_trunk_lcn_slot(&pf0_st, i) != want) {
+            DSD_FPRINTF(stderr, "imported map slot %d clobbered: got %ld want %ld\n", i,
+                        *dsd_state_trunk_lcn_slot(&pf0_st, i), want);
+            imported_intact = 0;
+        }
+    }
+    rc |= expect_true("imported map entries untouched", imported_intact);
+    pf0_opts.chan_in_file[0] = '\0';
+    dsd_state_trunk_lcn_free(&pf0_st);
     dsd_state_ext_free_all(&pf0_st);
 
     init_env(&pf0_opts, &pf0_st);

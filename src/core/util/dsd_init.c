@@ -931,6 +931,10 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
 
     //trunking
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof(state->trunk_lcn_freq));
+    // Keep initState() idempotent with respect to the scan-list heap tail: re-initialising a
+    // state that already imported a >26-entry list would otherwise orphan the allocation, and a
+    // state that was not zero-initialised would leave reserve() calling realloc() on garbage.
+    dsd_state_trunk_lcn_free(state);
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
     state->trunk_chan_map_used_count = 0;

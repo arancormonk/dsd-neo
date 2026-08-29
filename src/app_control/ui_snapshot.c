@@ -110,20 +110,39 @@ ui_snapshot_copy_trunk_chan_map(dsd_state* dst, const dsd_state* src) {
     dst->trunk_chan_map_seq = src->trunk_chan_map_seq;
 }
 
-/* The embedded trunk_lcn_freq[26] is a plain array copied by the byte ranges
- * above; the scan-list heap tail past slot 26 needs an explicit deep copy.
+/* The heap tail must stay outside every UI_SNAPSHOT_COPY_RANGE: a raw byte copy of the
+ * pointer would alias the decoder's live buffer into g_pub/g_consume, and the next
+ * reserve() on the snapshot would realloc the decoder's memory out from under it. */
+_Static_assert(offsetof(dsd_state, trunk_lcn_freq_ext) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_lcn_freq_ext must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_freq_ext_capacity) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_lcn_freq_ext must sit before the audio_out_idx..lastsample copy range");
+/* ui_snapshot_copy_trunk_lcn_freq_ext() writes lcn_freq_count/lcn_freq_roll on its clamp
+ * paths, so the range that carries them has to be copied first or the clamp is undone. */
+_Static_assert(offsetof(dsd_state, lcn_freq_count) >= offsetof(dsd_state, p25_p2_audio_ring_count)
+                   && UI_SNAPSHOT_FIELD_END(lcn_freq_roll) <= UI_SNAPSHOT_FIELD_END(dstar_gps),
+               "lcn_freq_count/roll must ride the range copied before the scan-list tail");
+
+/* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
+ * above; the scan-list heap tail past it needs an explicit deep copy.
  * Runs after the range that carries lcn_freq_count/lcn_freq_roll so dst is
  * never left claiming more entries than its tail holds: on reserve failure the
- * count is clamped back to the 26 embedded slots and the roll restarted. */
+ * count is clamped back to the embedded slots and the roll restarted. */
 static void
 ui_snapshot_copy_trunk_lcn_freq_ext(dsd_state* dst, const dsd_state* src) {
     const int count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
-    if (count <= 26) {
+    /* A protocol writer can shrink lcn_freq_count without touching lcn_freq_roll, so the
+     * roll copied by the byte range above may point past the list the snapshot publishes.
+     * Consumers index the list by roll, so make the pair consistent here. */
+    if (dst->lcn_freq_roll > count) {
+        dst->lcn_freq_roll = 0;
+    }
+    if (count <= DSD_TRUNK_LCN_EMBEDDED) {
         return;
     }
-    const size_t ext_count = (size_t)count - 26;
+    const size_t ext_count = (size_t)count - (size_t)DSD_TRUNK_LCN_EMBEDDED;
     if (dsd_state_trunk_lcn_reserve(dst, (size_t)count) != 0) {
-        dst->lcn_freq_count = 26;
+        dst->lcn_freq_count = DSD_TRUNK_LCN_EMBEDDED;
         dst->lcn_freq_roll = 0;
         return;
     }

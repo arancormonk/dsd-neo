@@ -294,9 +294,21 @@ p25p2_sccb_implicit_channel_b_valid(int bridged_p1, int channel1, int channel2, 
     return sysclass2 != 0;
 }
 
+/*
+ * Seed the low scan-list slots with secondary control channels announced for the current site.
+ *
+ * Only ever raises lcn_freq_count: an operator-supplied list is positional and may be far longer
+ * than the three slots this touches, so assigning the count here would discard the rest of it.
+ * Such a list is left alone entirely - a deliberate 0 placeholder holding an LCN position is not
+ * a free slot.
+ */
 static void
-p25p2_seed_secondary_lcn_fallback(dsd_state* state, int rfssid, int siteid, const long* freqs, int count) {
+p25p2_seed_secondary_lcn_fallback(const dsd_opts* opts, dsd_state* state, int rfssid, int siteid, const long* freqs,
+                                  int count) {
     if (!state || !freqs || count <= 0 || !p25p2_sccb_matches_current_site(state, rfssid, siteid)) {
+        return;
+    }
+    if (dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return;
     }
 
@@ -2953,7 +2965,7 @@ p25p2_vpdu_iter_block_34(p25p2_vpdu_ctx* ctx) {
         const long scc_freqs[2] = {freq1, freq2};
 
         //place the cc freq into the list at index 0 if 0 is empty so we can hunt for rotating CCs without user LCN list
-        p25p2_seed_secondary_lcn_fallback(state, rfssid, siteid, scc_freqs, channel2_valid ? 2 : 1);
+        p25p2_seed_secondary_lcn_fallback(opts, state, rfssid, siteid, scc_freqs, channel2_valid ? 2 : 1);
     }
 
     if (len_b < 0) {
@@ -4039,13 +4051,8 @@ p25p2_vpdu_iter_block_53(p25p2_vpdu_ctx* ctx) {
         long int sccf = process_channel_to_freq(opts, state, channelt);
         (void)process_channel_to_freq(opts, state, channelr);
         // Add to CC candidate list for hunting
-        if (sccf > 0 && p25p2_sccb_matches_current_site(state, rfssid, siteid) && state->trunk_lcn_freq[1] == 0) {
-            state->trunk_lcn_freq[1] = sccf;
-            state->lcn_freq_count = 2;
-        } else if (sccf > 0 && p25p2_sccb_matches_current_site(state, rfssid, siteid) && state->trunk_lcn_freq[2] == 0
-                   && sccf != state->trunk_lcn_freq[1]) {
-            state->trunk_lcn_freq[2] = sccf;
-            state->lcn_freq_count = 3;
+        if (sccf > 0) {
+            p25p2_seed_secondary_lcn_fallback(opts, state, rfssid, siteid, &sccf, 1);
         }
         (void)p25_announce_secondary_cc_channel(opts, state, (uint16_t)channelt, (uint8_t)rfssid, (uint8_t)siteid,
                                                 (uint8_t)sysclass);

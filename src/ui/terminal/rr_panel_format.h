@@ -20,10 +20,11 @@
 #include <dsd-neo/runtime/radioreference_import.h>
 
 typedef struct {
-    int kept;       /* distinct usable frequencies kept, no cap */
-    int empty;      /* selected sites whose first usable frequency is 0 */
-    int duplicates; /* selected sites repeating an already-kept frequency */
-    char text[40];  /* "[ 3 distinct frequencies ]" */
+    int kept;            /* distinct usable frequencies kept, no cap */
+    int empty;           /* selected sites whose first usable frequency is 0 */
+    int duplicates;      /* selected sites repeating an already-kept frequency */
+    char text[40];       /* "[ 3 distinct frequencies ]" */
+    char short_text[16]; /* "[ 3 freqs ]" - for a heading too narrow for text */
 } RrPanelCounter;
 
 typedef int (*rr_panel_site_selected_fn)(const void* user, size_t index);

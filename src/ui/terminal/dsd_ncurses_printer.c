@@ -848,7 +848,12 @@ static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
         printw("| Scan Mode: ");
-        if (state->lcn_freq_roll != 0) {
+        // lcn_freq_roll is advanced past the entry just tuned, so the displayed slot is roll - 1.
+        // Bound it by lcn_freq_count the way every other scan-list consumer does: a protocol writer
+        // that shrinks the count (nxdn_element.c, p25p2_vpdu.c, dmr_csbk.c) leaves roll pointing
+        // past the end, and slots >= 26 resolve into the heap tail, which is only as long as the
+        // count that reserved it.
+        if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
             printw(" Frequency: %.06lf MHz",
                    (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
         }

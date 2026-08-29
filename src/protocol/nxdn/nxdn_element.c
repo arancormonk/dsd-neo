@@ -1707,8 +1707,11 @@ nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t ch
  */
 static int
 nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
+    // Tested by count, not by trunk_lcn_freq[0]: an imported map is positional, so an
+    // unparseable row 1 deliberately stores 0 to keep LCN numbering, and reading slot 0
+    // alone would mistake that whole list for "nothing imported".
     if (opts->trunk_scan_enabled != 1) {
-        return state->trunk_lcn_freq[0] != 0;
+        return state->lcn_freq_count > 0;
     }
 
     // Only the parked target's own control channel may move, and only an nxdn-trunk target has one
@@ -1723,11 +1726,35 @@ nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
     if (opts->trunk_enable != 1 || dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL) {
         return 1;
     }
-    if (state->trunk_lcn_freq[0] == 0) {
+    if (state->lcn_freq_count == 0) {
         return 0;
     }
     // More entries than the single seeded slot mean a per-target chan_csv supplied real LCNs.
     return (state->lcn_freq_count > 1 || state->p25_cc_freq == 0) ? 1 : 0;
+}
+
+/*
+ * Follow the control channel a CCH_INFO element announces, unless the operator pinned it.
+ */
+static void
+nxdn_cch_info_adopt_control_channel(const dsd_opts* opts, dsd_state* state, long int freq1) {
+    if (freq1 == 0 || nxdn_cc_is_operator_pinned(opts, state)) {
+        return;
+    }
+    const long int previous_cc = state->trunk_cc_freq;
+    state->trunk_lcn_freq[0] = freq1;
+    state->p25_cc_freq = freq1;
+    state->trunk_cc_freq = freq1;
+    // Raise, never assign: reaching here means no operator list is present, but the count can
+    // still be above 1 from learned entries that must not be discarded.
+    if (state->lcn_freq_count < 1) {
+        state->lcn_freq_count = 1;
+    }
+    // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the park
+    // frequency has been corrected the adoption is idempotent.
+    if (previous_cc != 0 && previous_cc != freq1) {
+        LOG_INFO("NOTICE: NXDN trunking: site control channel is %.6lf MHz; following it\n", (double)freq1 / 1000000.0);
+    }
 }
 
 static int
@@ -1777,19 +1804,7 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
 
     const long int freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
     nxdn_channel_to_frequency(opts, state, IFN1);
-    if (freq1 != 0 && !nxdn_cc_is_operator_pinned(opts, state)) {
-        const long int previous_cc = state->trunk_cc_freq;
-        state->trunk_lcn_freq[0] = freq1;
-        state->p25_cc_freq = freq1;
-        state->trunk_cc_freq = freq1;
-        state->lcn_freq_count = 1;
-        // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the
-        // park frequency has been corrected the adoption is idempotent.
-        if (previous_cc != 0 && previous_cc != freq1) {
-            LOG_INFO("NOTICE: NXDN trunking: site control channel is %.6lf MHz; following it\n",
-                     (double)freq1 / 1000000.0);
-        }
-    }
+    nxdn_cch_info_adopt_control_channel(opts, state, freq1);
 
     return 1;
 }

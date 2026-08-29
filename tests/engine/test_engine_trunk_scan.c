@@ -718,6 +718,7 @@ make_runtime_targets(const char* body, char* out_path, size_t out_sz, char* out_
 static void
 reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_scan_enabled = 1;
@@ -982,7 +983,7 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     }
 
     state.p25_iden_fdma[1].base_freq = 12345;
-    state.trunk_chan_map[99] = 851012500;
+    dsd_state_set_trunk_chan_freq(&state, 99U, 851012500);
     state.dmr_rest_channel = 4;
     state.dmr_lcn_trust[4] = 2;
     seed_target0_p25_state(&state);
@@ -1002,7 +1003,7 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     test_rc |= expect_empty_target_p25_state(&state);
 
     state.p25_iden_fdma[1].base_freq = 99999;
-    state.trunk_chan_map[99] = 852012500;
+    dsd_state_set_trunk_chan_freq(&state, 99U, 852012500);
     state.dmr_rest_channel = 8;
     state.dmr_lcn_trust[4] = 0;
     state.dmr_lcn_trust[8] = 2;
@@ -1020,6 +1021,277 @@ test_coordinator_idle_rotation_and_state_restore(void) {
         test_rc = 1;
     }
     test_rc |= expect_target0_p25_state(&state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A per-target scan list longer than the embedded slots lives in dsd_state's heap tail, so
+ * the snapshot has to carry that tail across a rotation and hand it back intact. Nothing
+ * else in the suite drives trunk_scan_snapshot_lcn_ext_reserve() or the bounded restore. */
+static int
+test_coordinator_preserves_long_lcn_list_across_rotation(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "long lcn list scan init failed err=%s\n", err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    enum { LONG_LCN_COUNT = 40 };
+
+    if (dsd_state_trunk_lcn_reserve(&state, (size_t)LONG_LCN_COUNT) != 0) {
+        DSD_FPRINTF(stderr, "could not reserve a %d-entry scan list\n", (int)LONG_LCN_COUNT);
+        test_rc = 1;
+    } else {
+        for (int i = 0; i < LONG_LCN_COUNT; i++) {
+            *dsd_state_trunk_lcn_slot(&state, i) = 851000000L + 12500L * (long)i;
+        }
+        state.lcn_freq_count = LONG_LCN_COUNT;
+        state.lcn_freq_roll = 30;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "long lcn list scan did not rotate to target 1\n");
+        test_rc = 1;
+    }
+    if (state.lcn_freq_count > DSD_TRUNK_LCN_EMBEDDED) {
+        DSD_FPRINTF(stderr, "target 0's scan list leaked into target 1 (count=%d)\n", state.lcn_freq_count);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "long lcn list scan did not rotate back to target 0\n");
+        test_rc = 1;
+    }
+    if (state.lcn_freq_count != LONG_LCN_COUNT || state.lcn_freq_roll != 30) {
+        DSD_FPRINTF(stderr, "scan list was truncated across the rotation: count=%d roll=%d\n", state.lcn_freq_count,
+                    state.lcn_freq_roll);
+        test_rc = 1;
+    } else {
+        for (int i = 0; i < LONG_LCN_COUNT; i++) {
+            const long want = 851000000L + 12500L * (long)i;
+            if (*dsd_state_trunk_lcn_slot(&state, i) != want) {
+                DSD_FPRINTF(stderr, "scan list slot %d restored as %ld, want %ld\n", i,
+                            *dsd_state_trunk_lcn_slot(&state, i), want);
+                test_rc = 1;
+                break;
+            }
+        }
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_trunk_lcn_free(&state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * Write a targets CSV of @p rows generated rows. Streamed rather than formatted into a buffer:
+ * a budget-sized list is far past write_targets_file()'s 8 KB body limit.
+ */
+static int
+write_generated_targets_file(const char* dir, size_t rows, char* out_path, size_t out_sz) {
+    if (dsd_test_path_join(out_path, out_sz, dir, "targets.csv") != 0) {
+        return -1;
+    }
+    FILE* fp = dsd_fopen_private(out_path, "wb");
+    if (!fp) {
+        return -1;
+    }
+    int rc = (fputs(k_header, fp) >= 0) ? 0 : -1;
+    for (size_t i = 0; rc == 0 && i < rows; i++) {
+        if (DSD_FPRINTF(fp, "t%zu,p25-trunk,%lu,,250,,\n", i, 851000000UL + (unsigned long)(i * 12500U)) < 0) {
+            rc = -1;
+        }
+    }
+    if (fclose(fp) != 0) {
+        rc = -1;
+    }
+    return rc;
+}
+
+/*
+ * The target count is bounded by a memory budget rather than a fixed limit. One row past the
+ * derived cap must be rejected while parsing, with an error naming the budget - not accepted into
+ * an allocation that overcommit grants and the OOM killer later reclaims. Exactly the cap must
+ * still load: the budget bounds the list, it does not shrink it.
+ */
+static int
+test_targets_csv_rejects_rows_past_the_memory_budget(void) {
+    const size_t max = dsd_trunk_scan_max_targets();
+    if (max == 0U || max > 100000U) {
+        DSD_FPRINTF(stderr, "implausible trunk scan target cap %zu\n", max);
+        return 1;
+    }
+
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+
+    int test_rc = 0;
+    char err[256] = {0};
+
+    if (write_generated_targets_file(dir, max + 1U, target_path, sizeof target_path) != 0) {
+        DSD_FPRINTF(stderr, "could not write a %zu-row targets CSV\n", max + 1U);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_trunk_scan_target_list over = {0};
+    if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &over, err, sizeof err) == 0) {
+        DSD_FPRINTF(stderr, "a %zu-row targets CSV was accepted over a cap of %zu\n", max + 1U, max);
+        test_rc = 1;
+    } else if (strstr(err, "budget") == NULL) {
+        DSD_FPRINTF(stderr, "budget rejection did not explain itself: %s\n", err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&over);
+
+    if (write_generated_targets_file(dir, max, target_path, sizeof target_path) != 0) {
+        DSD_FPRINTF(stderr, "could not write a %zu-row targets CSV\n", max);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    err[0] = '\0';
+    dsd_trunk_scan_target_list at_cap = {0};
+    if (dsd_trunk_scan_load_targets_csv(target_path, &opts, &at_cap, err, sizeof err) != 0 || at_cap.count != max) {
+        DSD_FPRINTF(stderr, "a targets CSV exactly at the cap (%zu) was refused: %s\n", max, err);
+        test_rc = 1;
+    }
+    dsd_trunk_scan_target_list_reset(&at_cap);
+
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * The parked-target snapshot stores the channel map sparsely, indexed through
+ * state->trunk_chan_map_used[]. A map far larger than the old dense copy's practical working set
+ * must survive a rotation entry for entry, and must not leak into the next target.
+ */
+static int
+test_coordinator_preserves_large_chan_map_across_rotation(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "large chan map scan init failed err=%s\n", err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    /* Channels are deliberately non-contiguous and not in ascending insertion order, so the
+     * snapshot cannot pass by accident: it has to carry the channel numbers, not just a run. */
+    enum { CHAN_COUNT = 300 };
+
+#define TARGET0_CHAN(i) ((uint32_t)(((CHAN_COUNT - 1 - (i)) * 7) + 3))
+#define TARGET0_FREQ(i) (851000000L + 12500L * (long)(i))
+
+    for (int i = 0; i < CHAN_COUNT; i++) {
+        dsd_state_set_trunk_chan_freq(&state, TARGET0_CHAN(i), TARGET0_FREQ(i));
+    }
+    if (state.trunk_chan_map_used_count != (uint32_t)CHAN_COUNT) {
+        DSD_FPRINTF(stderr, "seeded %u mapped channels, want %d\n", state.trunk_chan_map_used_count, (int)CHAN_COUNT);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "large chan map scan did not rotate to target 1\n");
+        test_rc = 1;
+    }
+    if (state.trunk_chan_map_used_count != 0) {
+        DSD_FPRINTF(stderr, "target 0's channel map leaked into target 1 (%u entries)\n",
+                    state.trunk_chan_map_used_count);
+        test_rc = 1;
+    }
+    for (int i = 0; i < CHAN_COUNT; i++) {
+        if (state.trunk_chan_map[TARGET0_CHAN(i)] != 0) {
+            DSD_FPRINTF(stderr, "channel %u still mapped on target 1\n", TARGET0_CHAN(i));
+            test_rc = 1;
+            break;
+        }
+    }
+
+    /* Give target 1 a map of its own so the restore has stale entries to clear. */
+    dsd_state_set_trunk_chan_freq(&state, 4097U, 852000000L);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "large chan map scan did not rotate back to target 0\n");
+        test_rc = 1;
+    }
+    if (state.trunk_chan_map_used_count != (uint32_t)CHAN_COUNT) {
+        DSD_FPRINTF(stderr, "channel map restored with %u entries, want %d\n", state.trunk_chan_map_used_count,
+                    (int)CHAN_COUNT);
+        test_rc = 1;
+    }
+    if (state.trunk_chan_map[4097] != 0) {
+        DSD_FPRINTF(stderr, "target 1's channel 4097 survived the rotation back to target 0\n");
+        test_rc = 1;
+    }
+    for (int i = 0; i < CHAN_COUNT; i++) {
+        if (state.trunk_chan_map[TARGET0_CHAN(i)] != TARGET0_FREQ(i)) {
+            DSD_FPRINTF(stderr, "channel %u restored as %ld, want %ld\n", TARGET0_CHAN(i),
+                        state.trunk_chan_map[TARGET0_CHAN(i)], TARGET0_FREQ(i));
+            test_rc = 1;
+            break;
+        }
+    }
+
+#undef TARGET0_CHAN
+#undef TARGET0_FREQ
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -4609,6 +4881,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
+    rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
+    rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);
+    rc |= test_targets_csv_rejects_rows_past_the_memory_budget();
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_lifecycle_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_current_rows_isolated_per_target);
