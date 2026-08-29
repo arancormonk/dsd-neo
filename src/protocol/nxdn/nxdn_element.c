@@ -1733,6 +1733,30 @@ nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
     return (state->lcn_freq_count > 1 || state->p25_cc_freq == 0) ? 1 : 0;
 }
 
+/*
+ * Follow the control channel a CCH_INFO element announces, unless the operator pinned it.
+ */
+static void
+nxdn_cch_info_adopt_control_channel(const dsd_opts* opts, dsd_state* state, long int freq1) {
+    if (freq1 == 0 || nxdn_cc_is_operator_pinned(opts, state)) {
+        return;
+    }
+    const long int previous_cc = state->trunk_cc_freq;
+    state->trunk_lcn_freq[0] = freq1;
+    state->p25_cc_freq = freq1;
+    state->trunk_cc_freq = freq1;
+    // Raise, never assign: reaching here means no operator list is present, but the count can
+    // still be above 1 from learned entries that must not be discarded.
+    if (state->lcn_freq_count < 1) {
+        state->lcn_freq_count = 1;
+    }
+    // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the park
+    // frequency has been corrected the adoption is idempotent.
+    if (previous_cc != 0 && previous_cc != freq1) {
+        LOG_INFO("NOTICE: NXDN trunking: site control channel is %.6lf MHz; following it\n", (double)freq1 / 1000000.0);
+    }
+}
+
 static int
 nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits,
                           uint32_t location_id, uint8_t channel1sts) {
@@ -1780,23 +1804,7 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
 
     const long int freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
     nxdn_channel_to_frequency(opts, state, IFN1);
-    if (freq1 != 0 && !nxdn_cc_is_operator_pinned(opts, state)) {
-        const long int previous_cc = state->trunk_cc_freq;
-        state->trunk_lcn_freq[0] = freq1;
-        state->p25_cc_freq = freq1;
-        state->trunk_cc_freq = freq1;
-        // Raise, never assign: reaching here means no operator list is present, but the
-        // count can still be above 1 from learned entries that must not be discarded.
-        if (state->lcn_freq_count < 1) {
-            state->lcn_freq_count = 1;
-        }
-        // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the
-        // park frequency has been corrected the adoption is idempotent.
-        if (previous_cc != 0 && previous_cc != freq1) {
-            LOG_INFO("NOTICE: NXDN trunking: site control channel is %.6lf MHz; following it\n",
-                     (double)freq1 / 1000000.0);
-        }
-    }
+    nxdn_cch_info_adopt_control_channel(opts, state, freq1);
 
     return 1;
 }

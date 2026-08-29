@@ -91,7 +91,15 @@ typedef struct {
     dsd_enc_lockout_entry enc_lockout_entries[DSD_ENC_LOCKOUT_MAX];
     time_t p25_aff_last_seen[256];
     time_t p25_ga_last_seen[512];
-    long int trunk_chan_map[DSD_TRUNK_CHAN_MAP_SIZE];
+    /* Sparse channel map: only the channels state->trunk_chan_map_used[] lists, held in the same
+     * ascending order, with chan_map_freq[i] the frequency for chan_map_chan[i]. Dense copies of
+     * trunk_chan_map[] and trunk_chan_map_used[] were 655 KB of the 738 KB every parked target
+     * cost, and each rotation memcpy'd all of it; real sites map a few hundred channels. Grown on
+     * demand by trunk_scan_snapshot_chan_map_reserve() and released by trunk_scan_snapshot_clear()
+     * and trunk_scan_coord_free(). trunk_chan_map_used_count is the number of valid entries. */
+    uint16_t* chan_map_chan;
+    long int* chan_map_freq;
+    size_t chan_map_capacity;
     uint32_t trunk_chan_map_used_count;
     uint32_t p25_sys_services_available;
     uint32_t p25_sys_services_supported;
@@ -136,7 +144,6 @@ typedef struct {
     uint16_t p25_patch_key[8];
     uint16_t p25_patch_wgid[8][8];
     uint16_t p25_ga_tg[512];
-    uint16_t trunk_chan_map_used[DSD_TRUNK_CHAN_MAP_SIZE];
     uint8_t p25_prot_valid;
     uint8_t p25_prot_algid;
     uint8_t p25_cc_prot_valid;
@@ -194,6 +201,18 @@ typedef struct {
     uint64_t tune_request_id;
     int tune_pending;
 } dsd_trunk_scan_target_runtime;
+
+/*
+ * Enforced while parsing, not only where the array is allocated: an unbounded row count would ask
+ * for one calloc large enough that Linux overcommit grants it and the process is OOM-killed while
+ * faulting the pages in, instead of failing with a message. It also bounds the parser's per-row
+ * duplicate scans, which are linear in the rows accepted so far.
+ */
+size_t
+dsd_trunk_scan_max_targets(void) {
+    const size_t max = (size_t)DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES / sizeof(dsd_trunk_scan_target_runtime);
+    return max > 0 ? max : 1U;
+}
 
 typedef struct {
     dsd_trunk_scan_target_runtime* targets;
@@ -663,6 +682,14 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
 
+    if (parsed->count >= dsd_trunk_scan_max_targets()) {
+        scan_set_error(parse->err, parse->err_sz,
+                       "row %u exceeds the trunk scan target budget: each target reserves %zu KB of "
+                       "decoder state, so %zu targets is the most that fits in %d MB",
+                       parse->row, sizeof(dsd_trunk_scan_target_runtime) / 1024U, dsd_trunk_scan_max_targets(),
+                       DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES / (1024 * 1024));
+        return -1;
+    }
     if (scan_target_list_reserve(parsed, parsed->count + 1) != 0) {
         scan_set_error(parse->err, parse->err_sz, "out of memory loading trunk scan targets");
         return -1;
@@ -845,9 +872,139 @@ trunk_scan_snapshot_lcn_ext_reserve(dsd_trunk_scan_snapshot* snapshot, size_t ex
     return 0;
 }
 
+/*
+ * Grow the sparse channel-map arrays to hold at least @p needed entries, doubling like
+ * trunk_scan_snapshot_lcn_ext_reserve(). Both arrays are grown together so an index is valid in
+ * either or in neither; on failure the snapshot keeps the arrays it already had.
+ */
+static int
+trunk_scan_snapshot_chan_map_reserve(dsd_trunk_scan_snapshot* snapshot, size_t needed) {
+    if (needed <= snapshot->chan_map_capacity) {
+        return 0;
+    }
+    size_t capacity = snapshot->chan_map_capacity > 0 ? snapshot->chan_map_capacity : 64;
+    while (capacity < needed) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(long int)) {
+        return -1;
+    }
+    uint16_t* chans = (uint16_t*)realloc(snapshot->chan_map_chan, capacity * sizeof *chans);
+    if (!chans) {
+        return -1;
+    }
+    snapshot->chan_map_chan = chans;
+    long int* freqs = (long int*)realloc(snapshot->chan_map_freq, capacity * sizeof *freqs);
+    if (!freqs) {
+        /* chan_map_chan already grew; capacity stays at the old value so the two arrays are
+         * never both indexed past the shorter one. */
+        return -1;
+    }
+    snapshot->chan_map_freq = freqs;
+    snapshot->chan_map_capacity = capacity;
+    return 0;
+}
+
+/*
+ * Capture state's channel map as (channel, frequency) pairs. state->trunk_chan_map_used[] is
+ * already the exact sorted set of mapped channels, so this walks it directly rather than
+ * scanning 64K slots.
+ */
+static void
+trunk_scan_save_chan_map_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* snapshot) {
+    uint32_t used = state->trunk_chan_map_used_count;
+    if (used > (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
+        used = (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    if (used > 0 && trunk_scan_snapshot_chan_map_reserve(snapshot, (size_t)used) != 0) {
+        LOG_WARN("trunk scan: could not capture %u mapped channels for the parked target; its "
+                 "channel map will be relearned\n",
+                 (unsigned int)used);
+        used = 0;
+    }
+    for (uint32_t i = 0; i < used; i++) {
+        const uint16_t chan = state->trunk_chan_map_used[i];
+        snapshot->chan_map_chan[i] = chan;
+        snapshot->chan_map_freq[i] = state->trunk_chan_map[chan];
+    }
+    snapshot->trunk_chan_map_used_count = used;
+    snapshot->trunk_chan_map_seq = state->trunk_chan_map_seq;
+}
+
+/*
+ * Reinstate a saved channel map. Only the outgoing target's mapped channels are cleared - a
+ * DSD_MEMSET of the whole 64K-entry map would cost half a megabyte on every rotation.
+ */
+static void
+trunk_scan_restore_chan_map_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot* snapshot) {
+    uint32_t stale = state->trunk_chan_map_used_count;
+    if (stale > (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
+        stale = (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (uint32_t i = 0; i < stale; i++) {
+        state->trunk_chan_map[state->trunk_chan_map_used[i]] = 0;
+    }
+
+    /* Bounded by all three of: what the snapshot claims, what it actually allocated, and what
+     * state->trunk_chan_map_used[] can hold - this loop writes into that fixed-size array. */
+    size_t used = snapshot->trunk_chan_map_used_count;
+    if (!snapshot->chan_map_chan || !snapshot->chan_map_freq) {
+        used = 0;
+    }
+    if (used > snapshot->chan_map_capacity) {
+        used = snapshot->chan_map_capacity;
+    }
+    if (used > (size_t)DSD_TRUNK_CHAN_MAP_SIZE) {
+        used = (size_t)DSD_TRUNK_CHAN_MAP_SIZE;
+    }
+    for (size_t i = 0; i < used; i++) {
+        const uint16_t chan = snapshot->chan_map_chan[i];
+        state->trunk_chan_map[chan] = snapshot->chan_map_freq[i];
+        state->trunk_chan_map_used[i] = chan;
+    }
+    state->trunk_chan_map_used_count = (uint32_t)used;
+    state->trunk_chan_map_seq = snapshot->trunk_chan_map_seq;
+}
+
+/*
+ * nxdn_trunk_diag_chan_freq_fn over a snapshot's sparse channel map. chan_map_chan[] is kept in
+ * the ascending order state->trunk_chan_map_used[] maintains, so this binary-searches it.
+ */
+static long int
+trunk_scan_snapshot_chan_lookup(const void* ctx, uint16_t channel) {
+    const dsd_trunk_scan_snapshot* snapshot = (const dsd_trunk_scan_snapshot*)ctx;
+    if (!snapshot || !snapshot->chan_map_chan || !snapshot->chan_map_freq) {
+        return 0;
+    }
+    size_t lo = 0;
+    size_t hi = snapshot->trunk_chan_map_used_count;
+    if (hi > snapshot->chan_map_capacity) {
+        hi = snapshot->chan_map_capacity;
+    }
+    while (lo < hi) {
+        const size_t mid = lo + ((hi - lo) / 2U);
+        const uint16_t at = snapshot->chan_map_chan[mid];
+        if (at == channel) {
+            return snapshot->chan_map_freq[mid];
+        }
+        if (at < channel) {
+            lo = mid + 1U;
+        } else {
+            hi = mid;
+        }
+    }
+    return 0;
+}
+
 static void
 trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     free(snapshot->trunk_lcn_freq_ext);
+    free(snapshot->chan_map_chan);
+    free(snapshot->chan_map_freq);
     DSD_MEMSET(snapshot, 0, sizeof(*snapshot));
     snapshot->dmr_mfid = -1;
     snapshot->dmr_color_code = 16;
@@ -978,10 +1135,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     } else {
         snapshot->trunk_lcn_freq_ext_count = 0;
     }
-    DSD_MEMCPY(snapshot->trunk_chan_map, state->trunk_chan_map, sizeof(snapshot->trunk_chan_map));
-    DSD_MEMCPY(snapshot->trunk_chan_map_used, state->trunk_chan_map_used, sizeof(snapshot->trunk_chan_map_used));
-    snapshot->trunk_chan_map_used_count = state->trunk_chan_map_used_count;
-    snapshot->trunk_chan_map_seq = state->trunk_chan_map_seq;
+    trunk_scan_save_chan_map_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->dmr_lcn_trust, state->dmr_lcn_trust, sizeof(snapshot->dmr_lcn_trust));
     DSD_MEMCPY(snapshot->p25_chan_tdma_explicit, state->p25_chan_tdma_explicit,
                sizeof(snapshot->p25_chan_tdma_explicit));
@@ -1012,10 +1166,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
-    DSD_MEMCPY(state->trunk_chan_map, snapshot->trunk_chan_map, sizeof(state->trunk_chan_map));
-    DSD_MEMCPY(state->trunk_chan_map_used, snapshot->trunk_chan_map_used, sizeof(state->trunk_chan_map_used));
-    state->trunk_chan_map_used_count = snapshot->trunk_chan_map_used_count;
-    state->trunk_chan_map_seq = snapshot->trunk_chan_map_seq;
+    trunk_scan_restore_chan_map_snapshot(state, snapshot);
     DSD_MEMCPY(state->dmr_lcn_trust, snapshot->dmr_lcn_trust, sizeof(state->dmr_lcn_trust));
     DSD_MEMCPY(state->p25_chan_tdma_explicit, snapshot->p25_chan_tdma_explicit, sizeof(state->p25_chan_tdma_explicit));
     state->p25_chan_iden = snapshot->p25_chan_iden;
@@ -2230,8 +2381,12 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
     }
     for (size_t i = 0; i < coord->count; i++) {
         free(coord->targets[i].snapshot.trunk_lcn_freq_ext);
+        free(coord->targets[i].snapshot.chan_map_chan);
+        free(coord->targets[i].snapshot.chan_map_freq);
     }
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
+    free(coord->scratch_snapshot.chan_map_chan);
+    free(coord->scratch_snapshot.chan_map_freq);
     free(coord->targets);
     free(coord);
 }
@@ -2286,6 +2441,13 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
     dsd_trunk_scan_coord* coord = (dsd_trunk_scan_coord*)calloc(1, sizeof(*coord));
     if (!coord) {
         scan_set_error(err, err_sz, "failed to allocate trunk scan coordinator");
+        return NULL;
+    }
+    if (list->count > dsd_trunk_scan_max_targets()) {
+        scan_set_error(err, err_sz, "%zu trunk scan targets exceed the %d MB target budget (%zu KB each; %zu maximum)",
+                       list->count, DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES / (1024 * 1024),
+                       sizeof(dsd_trunk_scan_target_runtime) / 1024U, dsd_trunk_scan_max_targets());
+        trunk_scan_coord_free(coord);
         return NULL;
     }
     /* count is what trunk_scan_coord_free() walks, so publish it only once the array
@@ -2367,7 +2529,8 @@ trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state*
         if (rt->target.type != DSD_TRUNK_SCAN_TARGET_NXDN_TRUNK) {
             continue;
         }
-        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, rt->snapshot.trunk_chan_map);
+        nxdn_trunk_diag_log_summary_for(rt->target.chan_csv, &rt->snapshot.nxdn_diag, trunk_scan_snapshot_chan_lookup,
+                                        &rt->snapshot);
     }
 }
 

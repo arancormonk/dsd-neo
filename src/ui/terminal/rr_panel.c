@@ -799,11 +799,16 @@ rr_panel_draw_heading(WINDOW* win, int body_w, const dsd_rr_system_info* info, c
     }
     RrPanelCounter counter;
     rr_panel_counter_state(sites->items, sites->count, rr_panel_core_site_selected, g_rr_panel.core, &counter);
-    const int cx = 2 + body_w - (int)strlen(counter.text);
+    const char* label = counter.text;
+    int cx = 2 + body_w - (int)strlen(label);
+    if (cx <= (int)strlen(line) + 2) {
+        label = counter.short_text;
+        cx = 2 + body_w - (int)strlen(label);
+    }
     if (cx <= (int)strlen(line) + 2) {
         return;
     }
-    mvwaddnstr(win, 2, cx, counter.text, (int)strlen(counter.text));
+    mvwaddnstr(win, 2, cx, label, (int)strlen(label));
 }
 
 static void

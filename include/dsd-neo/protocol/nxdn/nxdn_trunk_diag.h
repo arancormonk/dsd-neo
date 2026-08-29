@@ -54,9 +54,19 @@ const char* nxdn_trunk_diag_chan_map_path(const dsd_opts* opts, const dsd_state*
  *
  * Lets the scan coordinator report each parked target's own missing channels from its snapshot.
  * No-op without a channel map path or when nothing is missing.
+ *
+ * @p lookup resolves a channel number to its mapped frequency, or 0 when the channel is still
+ * unmapped, and receives @p ctx unchanged. Taking a callback rather than a dense 64K-entry array
+ * lets a caller that stores its channel map sparsely answer the question without materialising
+ * one; pass nxdn_trunk_diag_dense_chan_lookup with a `const long int*` for a dense map.
  */
+typedef long int (*nxdn_trunk_diag_chan_freq_fn)(const void* ctx, uint16_t channel);
+
+/** nxdn_trunk_diag_chan_freq_fn over a dense `const long int[DSD_TRUNK_CHAN_MAP_SIZE]` map. */
+long int nxdn_trunk_diag_dense_chan_lookup(const void* ctx, uint16_t channel);
+
 void nxdn_trunk_diag_log_summary_for(const char* chan_csv, const nxdn_trunk_diag_ledger* ledger,
-                                     const long int* chan_map);
+                                     nxdn_trunk_diag_chan_freq_fn lookup, const void* ctx);
 
 /**
  * @brief Record that a trunked NXDN channel had no known frequency mapping.

@@ -98,6 +98,9 @@ test_counter_counts_distinct_frequencies(void) {
     assert(counter.empty == 0);
     assert(counter.duplicates == 0);
     assert(strcmp(counter.text, "[ 3 distinct frequencies ]") == 0);
+    /* The heading falls back to this when the body is too narrow for the full label. */
+    assert(strcmp(counter.short_text, "[ 3 freqs ]") == 0);
+    assert(strlen(counter.short_text) < strlen(counter.text));
 }
 
 static void
@@ -115,6 +118,7 @@ test_counter_keeps_every_distinct_frequency(void) {
     rr_panel_counter_state(sites, 27, select_all, NULL, &counter);
     assert(counter.kept == 27);
     assert(strcmp(counter.text, "[ 27 distinct frequencies ]") == 0);
+    assert(strcmp(counter.short_text, "[ 27 freqs ]") == 0);
 }
 
 static void
@@ -135,6 +139,7 @@ test_counter_skips_empty_and_duplicates(void) {
     assert(counter.duplicates == 1);
     assert(counter.empty == 1);
     assert(strcmp(counter.text, "[ 2 distinct frequencies ]") == 0);
+    assert(strcmp(counter.short_text, "[ 2 freqs ]") == 0);
 }
 
 static void

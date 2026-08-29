@@ -88,6 +88,7 @@ rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_sit
         long long* chosen = (long long*)calloc(site_count, sizeof *chosen);
         if (chosen == NULL) {
             (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ selection unavailable ]");
+            (void)DSD_SNPRINTF(out->short_text, sizeof out->short_text, "[ ? ]");
             return;
         }
         for (size_t i = 0; i < site_count; i++) {
@@ -119,6 +120,9 @@ rr_panel_counter_state(const dsd_rr_site* sites, size_t site_count, rr_panel_sit
     }
     out->kept = (int)count;
     (void)DSD_SNPRINTF(out->text, sizeof out->text, "[ %d distinct frequencies ]", out->kept);
+    /* The heading right-aligns the counter beside a ~38-column title; the full label needs a
+     * 66-column body before it fits, so narrower terminals get this instead of nothing. */
+    (void)DSD_SNPRINTF(out->short_text, sizeof out->short_text, "[ %d freqs ]", out->kept);
 }
 
 // cppcheck-suppress-end funcArgNamesDifferentUnnamed
