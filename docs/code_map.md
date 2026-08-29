@@ -38,9 +38,54 @@ Generated (do not edit/commit):
 - Responsibilities:
   - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines)
   - Protocol/frame dispatch glue
+  - Trunk retune policy and bookkeeping: `src/engine/trunk_tuning.c` implements the tune-to-frequency,
+    tune-to-control-channel and return-to-control-channel requests behind
+    `include/dsd-neo/engine/trunk_tuning.h`, and `src/engine/trunk_tuning_hooks_install.c` installs them into the
+    runtime table (`include/dsd-neo/runtime/trunk_tuning_hooks.h`) so protocol state machines can retune without
+    depending on IO
+  - Single-tuner trunk scan coordinator: `src/engine/trunk_scan.c` behind
+    `include/dsd-neo/engine/trunk_scan.h` (see below)
   - Installs runtime hook tables used by DSP/frame-sync code
     (`src/engine/frame_sync_hooks_install.c`, `include/dsd-neo/runtime/frame_sync_hooks.h`)
 - Build files: `src/engine/CMakeLists.txt`
+
+Key public headers:
+
+- Decode runner and lifecycle: `include/dsd-neo/engine/engine.h`, `include/dsd-neo/engine/frame_processing.h`
+- Protocol/frame dispatch: `include/dsd-neo/engine/protocol_dispatch.h`
+- Trunk tuning policy: `include/dsd-neo/engine/trunk_tuning.h`
+- Single-tuner trunk scan: `include/dsd-neo/engine/trunk_scan.h`
+
+### Single-Tuner Trunk Scan
+
+`src/engine/trunk_scan.c` owns the coordinator that rotates one retunable receiver across the explicit targets of a
+target-list CSV (P25 trunk, DMR trunk, DMR conventional, NXDN trunk, and NXDN96/NXDN48 conventional). Operator-facing
+behavior, the CSV columns, and the CLI/config options live in `docs/trunk-scan.md`;
+`include/dsd-neo/engine/trunk_scan.h` is the whole public surface:
+
+- Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`,
+  `dsd_trunk_scan_load_targets_csv()`, `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the
+  target count is bounded by a memory budget divided by the per-target snapshot size, so the cap tracks the struct
+  instead of being a constant that goes stale.
+- Lifecycle: `dsd_engine_trunk_scan_init()`, `dsd_engine_trunk_scan_tick()`, `dsd_engine_trunk_scan_shutdown()`, all
+  driven from `src/engine/engine.c`. The coordinator hangs off `dsd_state` as the `DSD_STATE_EXT_ENGINE_TRUNK_SCAN`
+  state extension; init installs the runtime hook table below and shutdown clears it, so a build that never starts a
+  scan runs on the no-op defaults.
+- Active-target queries used by the tuning layer and protocol code: `dsd_engine_trunk_scan_active_p25_ctx()`,
+  `dsd_engine_trunk_scan_active_dmr_ctx()`, `dsd_engine_trunk_scan_active_chan_csv()`,
+  `dsd_engine_trunk_scan_active_gfsk_symbol_rate()`, `dsd_engine_trunk_scan_active_p25_cqpsk_request()`,
+  `dsd_engine_trunk_scan_saved_tuner_autogain()`, and `dsd_engine_trunk_scan_target_count()`.
+- Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()` and
+  `dsd_engine_trunk_scan_nxdn_conventional_activity()`, reached from protocol code through the runtime hooks.
+
+Every parked target keeps its own snapshot of decoder state — channel map, trunking/LCN state, call and P25 identity
+metadata, the encrypted-target lockout ledger, and the NXDN missing-channel ledger from
+`<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>` — so a channel number or learned control-channel state from one system is
+never reused on another. That is also why trunk scan rejects a global `-C` channel map and imports each target's
+`chan_csv` through throwaway options.
+
+Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
+`tests/engine/test_engine_synced_trunk_scan_tick.c` (`ENGINE_SYNCED_TRUNK_SCAN_TICK`).
 
 ## Platform
 
@@ -122,6 +167,30 @@ DSP frame-sync code may need to trigger protocol-specific actions (for example, 
 depending directly on protocol headers. The runtime provides a small hook table in
 `include/dsd-neo/runtime/frame_sync_hooks.h`; the engine installs the concrete implementations at startup in
 `src/engine/frame_sync_hooks_install.c`.
+
+### Trunk Scan Hooks (Protocol/App-Control → Runtime ← Engine)
+
+Protocol code reports to the single-tuner scan coordinator without depending on engine-owned headers, through the hook
+table in `include/dsd-neo/runtime/trunk_scan_hooks.h` (`src/runtime/trunk_scan_hooks.c`). Unlike the other tables there
+is no `*_hooks_install.c`: the coordinator's own lifetime is the installation, so `src/engine/trunk_scan.c` installs
+the implementations from `dsd_engine_trunk_scan_init()` and clears them again on shutdown.
+
+**Available hooks:**
+
+- `dsd_trunk_scan_hook_p25_ctx()` / `dsd_trunk_scan_hook_dmr_ctx()` — the parked target's trunking state machine
+  context, or NULL when trunk scan is not installed (`p25_trunk_sm.c`, `dmr_trunk_sm.c`, `nxdn_element.c`)
+- `dsd_trunk_scan_hook_tick()` — step the rotation; called from the engine decode loop
+- `dsd_trunk_scan_hook_dmr_conventional_activity()` / `dsd_trunk_scan_hook_nxdn_conventional_activity()` — report
+  decoded conventional activity so the parked target keeps its park. Pass only identity that has already cleared the
+  protocol's FEC/CRC gate; the coordinator runs it through the talkgroup policy before refreshing the hold, and ignores
+  it unless the parked target is of the matching conventional family
+- `dsd_trunk_scan_hook_active_chan_csv()` — the parked target's channel-map path, which `opts->chan_in_file` cannot
+  answer while scanning (`src/protocol/nxdn/nxdn_trunk_diag.c`)
+- `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
+  target snapshot, so a user purge is not undone by the next rotation (`src/app_control/actions/actions_trunk.c`)
+
+Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
+installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`.
 
 ## App-Control
 
@@ -235,7 +304,8 @@ Key public headers (selection):
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>`
-- NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`
+- NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`, `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`
+  (the movable missing-channel ledger and its exit summary, so trunk scan can park one per target)
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`
 - ProVoice/EDACS: `<dsd-neo/protocol/provoice/provoice_const.h>`
 
@@ -354,7 +424,10 @@ Key public headers:
 
 Additional includes of interest:
 
+- Engine: `<dsd-neo/engine/engine.h>`, `<dsd-neo/engine/frame_processing.h>`,
+  `<dsd-neo/engine/protocol_dispatch.h>`, `<dsd-neo/engine/trunk_scan.h>`, `<dsd-neo/engine/trunk_tuning.h>`
 - Runtime: `<dsd-neo/runtime/cli.h>`, `<dsd-neo/runtime/frame_sync_hooks.h>`, `<dsd-neo/runtime/telemetry.h>`,
+  `<dsd-neo/runtime/trunk_scan_hooks.h>`, `<dsd-neo/runtime/trunk_tuning_hooks.h>`,
   `<dsd-neo/runtime/radioreference.h>`, `<dsd-neo/runtime/radioreference_generate.h>`,
   `<dsd-neo/runtime/radioreference_import.h>`
 - IO: `<dsd-neo/io/rtl_stream_c.h>`, `<dsd-neo/io/rtl_stream.h>`, `<dsd-neo/io/rtl_device.h>`,
