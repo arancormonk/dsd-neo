@@ -16,6 +16,23 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/config.h"
 
+/* Every AUTO entry point enables the same decoder set; only the CLI one also resets modulation
+   and the audio layout, which the config and interactive paths own through their own keys. */
+static int
+expect_auto_enables_every_decoder(const char* label, const dsd_opts* opts) {
+    if (!(opts->frame_dstar == 1 && opts->frame_x2tdma == 1 && opts->frame_p25p1 == 1 && opts->frame_p25p2 == 1
+          && opts->frame_nxdn48 == 1 && opts->frame_nxdn96 == 1 && opts->frame_dmr == 1 && opts->frame_dpmr == 1
+          && opts->frame_provoice == 1 && opts->frame_ysf == 1 && opts->frame_m17 == 1)) {
+        DSD_FPRINTF(stderr, "%s AUTO should enable all digital frame flags\n", label);
+        return 1;
+    }
+    if (strcmp(opts->output_name, "AUTO") != 0) {
+        DSD_FPRINTF(stderr, "%s AUTO output_name mismatch: %s\n", label, opts->output_name);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_auto_profile_differences(void) {
     static dsd_opts opts = {0};
@@ -30,12 +47,12 @@ test_auto_profile_differences(void) {
         DSD_FPRINTF(stderr, "interactive AUTO apply failed\n");
         return 1;
     }
-    if (opts.frame_dstar != 0 || opts.frame_dmr != 0 || opts.pulse_digi_out_channels != 7 || state.rf_mod != 2) {
-        DSD_FPRINTF(stderr, "interactive AUTO should preserve existing mode flags/channels\n");
+    if (expect_auto_enables_every_decoder("interactive", &opts) != 0) {
         return 1;
     }
-    if (strcmp(opts.output_name, "AUTO") != 0) {
-        DSD_FPRINTF(stderr, "interactive AUTO output_name mismatch: %s\n", opts.output_name);
+    /* Audio layout and modulation stay with the caller on the non-CLI paths. */
+    if (opts.pulse_digi_out_channels != 7 || state.rf_mod != 2) {
+        DSD_FPRINTF(stderr, "interactive AUTO should preserve audio layout and modulation\n");
         return 1;
     }
 
@@ -54,14 +71,14 @@ test_auto_profile_differences(void) {
         DSD_FPRINTF(stderr, "config AUTO apply failed\n");
         return 1;
     }
-    if (!(opts.frame_p25p2 == 1 && opts.frame_nxdn48 == 1 && opts.frame_dstar == 0 && opts.frame_provoice == 0
-          && opts.pulse_digi_out_channels == 3 && state.rf_mod == 2 && state.samplesPerSymbol == 17
-          && state.symbolCenter == 7 && state.sps_hunt_idx == 3)) {
-        DSD_FPRINTF(stderr, "config AUTO should preserve initialized protocol, modulation, and timing state\n");
+    if (expect_auto_enables_every_decoder("config", &opts) != 0) {
         return 1;
     }
-    if (strcmp(opts.output_name, "AUTO") != 0) {
-        DSD_FPRINTF(stderr, "config AUTO output_name mismatch: %s\n", opts.output_name);
+    /* [mode] demod and the output keys are applied after the preset, so it must not touch
+       modulation, the audio layout, or symbol timing on the config path. */
+    if (!(opts.pulse_digi_out_channels == 3 && state.rf_mod == 2 && state.samplesPerSymbol == 17
+          && state.symbolCenter == 7 && state.sps_hunt_idx == 3)) {
+        DSD_FPRINTF(stderr, "config AUTO should preserve modulation, audio layout, and timing state\n");
         return 1;
     }
 
@@ -76,10 +93,7 @@ test_auto_profile_differences(void) {
         DSD_FPRINTF(stderr, "cli AUTO apply failed\n");
         return 1;
     }
-    if (!(opts.frame_dstar == 1 && opts.frame_x2tdma == 1 && opts.frame_p25p1 == 1 && opts.frame_p25p2 == 1
-          && opts.frame_nxdn48 == 1 && opts.frame_nxdn96 == 1 && opts.frame_dmr == 1 && opts.frame_dpmr == 1
-          && opts.frame_provoice == 1 && opts.frame_ysf == 1 && opts.frame_m17 == 1)) {
-        DSD_FPRINTF(stderr, "cli AUTO should enable all digital frame flags\n");
+    if (expect_auto_enables_every_decoder("cli", &opts) != 0) {
         return 1;
     }
     if (opts.pulse_digi_out_channels != 2 || opts.dmr_stereo != 1 || opts.dmr_mono != 0) {
@@ -482,6 +496,52 @@ test_symbol_timing_and_inference(void) {
     opts.dmr_mono = 1;
     if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AUTO) {
         DSD_FPRINTF(stderr, "mixed unsupported mono infer should return AUTO\n");
+        return 1;
+    }
+
+    /* The AUTO decoder set is now a mask a preset actually reproduces, so both spellings agree. */
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_dpmr = 1;
+    opts.frame_provoice = 1;
+    opts.frame_ysf = 1;
+    opts.frame_m17 = 1;
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AUTO
+        || dsd_infer_decode_mode_preset_exact(&opts) != DSDCFG_MODE_AUTO) {
+        DSD_FPRINTF(stderr, "all-decoder mask should infer AUTO exactly\n");
+        return 1;
+    }
+
+    /* The dsd_init default set matches no preset. The lossy spelling still answers AUTO for the
+       UI's mode label, but the exact one must say UNSET so autosave does not write `decode =
+       "auto"` for it -- reloading that would widen a default session to every decoder. */
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_dstar = 1;
+    opts.frame_x2tdma = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_p25p2 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_ysf = 1;
+    if (dsd_infer_decode_mode_preset(&opts) != DSDCFG_MODE_AUTO) {
+        DSD_FPRINTF(stderr, "init-default mask should still label as AUTO\n");
+        return 1;
+    }
+    if (dsd_infer_decode_mode_preset_exact(&opts) != DSDCFG_MODE_UNSET) {
+        DSD_FPRINTF(stderr, "init-default mask should not infer an exact preset\n");
+        return 1;
+    }
+
+    /* An exact single-preset match answers the same both ways. */
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.frame_nxdn48 = 1;
+    if (dsd_infer_decode_mode_preset_exact(&opts) != DSDCFG_MODE_NXDN48) {
+        DSD_FPRINTF(stderr, "nxdn48 mask should infer NXDN48 exactly\n");
         return 1;
     }
 

@@ -148,19 +148,27 @@ dsd_apply_decode_mode_symbol_timing(dsdneoUserDecodeMode mode, int effective_inp
 
 static void
 decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
+    /* AUTO means "hunt every digital protocol", and it means that from all three entry points.
+       The config and interactive paths used to skip this block entirely -- a behavior-preserving
+       carve-out from when their preset code was separate -- which left `decode = "auto"` and the
+       wizard's Auto decoding only the dsd_init defaults, no NXDN, dPMR, ProVoice or M17. It also
+       broke the autosave round trip: a -fa session saves as `auto` and came back narrower than it
+       went out. The audio layout and modulation below stay CLI-only, because the config path owns
+       those through [mode] demod and its output keys, and the interactive path through the wizard's
+       own answers. */
+    o->frame_dstar = 1;
+    o->frame_x2tdma = 1;
+    o->frame_p25p1 = 1;
+    o->frame_p25p2 = 1;
+    o->inverted_p2 = 0;
+    o->frame_nxdn48 = 1;
+    o->frame_nxdn96 = 1;
+    o->frame_dmr = 1;
+    o->frame_dpmr = 1;
+    o->frame_provoice = 1;
+    o->frame_ysf = 1;
+    o->frame_m17 = 1;
     if (p == DSD_DECODE_PRESET_PROFILE_CLI) {
-        o->frame_dstar = 1;
-        o->frame_x2tdma = 1;
-        o->frame_p25p1 = 1;
-        o->frame_p25p2 = 1;
-        o->inverted_p2 = 0;
-        o->frame_nxdn48 = 1;
-        o->frame_nxdn96 = 1;
-        o->frame_dmr = 1;
-        o->frame_dpmr = 1;
-        o->frame_provoice = 1;
-        o->frame_ysf = 1;
-        o->frame_m17 = 1;
         /* Cleared together, like every sibling preset does. Applied mid-session
          * (the Qt radio panel's decode chips), a preset that leaves the previous
          * one's GFSK flag set publishes mod_c4fm=1 && mod_gfsk=1 -- an opts pair
@@ -171,7 +179,9 @@ decode_mode_apply_auto(dsdDecodePresetProfile p, dsd_opts* o, dsd_state* s) {
          * frame_sync_apply_cli_mod_lock() re-derives rf_mod from these flags on
          * every pass -- so clearing mod_gfsk here would turn `-mg -fa` into a
          * permanent C4FM lock the SPS hunt is then forbidden to correct. The
-         * mid-session path clears the lock before it applies a preset. */
+         * mid-session path clears the lock before it applies a preset. On the config
+         * path the lock is set by [mode] demod, which apply_demod_config() applies
+         * after this preset, so that key wins there regardless. */
         if (!o->mod_cli_lock) {
             o->mod_c4fm = 1;
             o->mod_qpsk = 0;
@@ -638,7 +648,7 @@ dsd_apply_decode_mode_preset(dsdneoUserDecodeMode mode, dsdDecodePresetProfile p
 }
 
 dsdneoUserDecodeMode
-dsd_infer_decode_mode_preset(const dsd_opts* opts) {
+dsd_infer_decode_mode_preset_exact(const dsd_opts* opts) {
     enum {
         DSD_MODE_BIT_DSTAR = 1u << 0,
         DSD_MODE_BIT_X2TDMA = 1u << 1,
@@ -654,7 +664,7 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
     };
 
     if (!opts) {
-        return DSDCFG_MODE_AUTO;
+        return DSDCFG_MODE_UNSET;
     }
 
     if (opts->analog_only && opts->monitor_input_audio) {
@@ -682,6 +692,10 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
         unsigned mask;
         dsdneoUserDecodeMode mode;
     } map[] = {
+        {DSD_MODE_BIT_DSTAR | DSD_MODE_BIT_X2TDMA | DSD_MODE_BIT_P25P1 | DSD_MODE_BIT_P25P2 | DSD_MODE_BIT_NXDN48
+             | DSD_MODE_BIT_NXDN96 | DSD_MODE_BIT_DMR | DSD_MODE_BIT_DPMR | DSD_MODE_BIT_PROVOICE | DSD_MODE_BIT_YSF
+             | DSD_MODE_BIT_M17,
+         DSDCFG_MODE_AUTO},
         {DSD_MODE_BIT_P25P1 | DSD_MODE_BIT_P25P2 | DSD_MODE_BIT_DMR, DSDCFG_MODE_TDMA},
         {DSD_MODE_BIT_DMR, DSDCFG_MODE_DMR},
         {DSD_MODE_BIT_P25P1, DSDCFG_MODE_P25P1},
@@ -702,7 +716,13 @@ dsd_infer_decode_mode_preset(const dsd_opts* opts) {
         }
     }
 
-    return DSDCFG_MODE_AUTO;
+    return DSDCFG_MODE_UNSET;
+}
+
+dsdneoUserDecodeMode
+dsd_infer_decode_mode_preset(const dsd_opts* opts) {
+    const dsdneoUserDecodeMode mode = dsd_infer_decode_mode_preset_exact(opts);
+    return mode == DSDCFG_MODE_UNSET ? DSDCFG_MODE_AUTO : mode;
 }
 
 const char*

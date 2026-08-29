@@ -533,8 +533,12 @@ nxdn_channel_to_frequency(dsd_opts* opts, dsd_state* state, uint16_t channel) {
 
     //first, check channel map for imported value, DFA systems most likely won't need an import,
     //unless it has 'system definable' attributes
-    if (state->trunk_chan_map[channel] != 0) {
-        freq = state->trunk_chan_map[channel];
+    // trunk_chan_map holds DSD_TRUNK_CHAN_MAP_SIZE entries, so the largest uint16_t channel is one
+    // past the end; a miscorrected 16-bit outbound number reaches here unfiltered. Only the map
+    // lookup is bounded -- DFA below is arithmetic and stays valid for every channel number.
+    const long int mapped = dsd_state_trunk_chan_valid(channel) ? state->trunk_chan_map[channel] : 0;
+    if (mapped != 0) {
+        freq = mapped;
         DSD_FPRINTF(stderr, "\n  Frequency [%.6lf] MHz", (double)freq / 1000000);
         return (freq);
     }
@@ -594,8 +598,9 @@ nxdn_channel_to_frequency_quiet(dsd_state* state, uint16_t channel) {
         return 0;
     }
 
-    // First: imported/learned mapping.
-    long int freq = state->trunk_chan_map[channel];
+    // First: imported/learned mapping. Bounded because the largest uint16_t channel is one past
+    // the end of trunk_chan_map; the DFA fallback below is arithmetic and needs no bound.
+    long int freq = dsd_state_trunk_chan_valid(channel) ? state->trunk_chan_map[channel] : 0;
     if (freq != 0) {
         return freq;
     }

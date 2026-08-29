@@ -277,6 +277,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_runtime_trunk_scan_hooks
+  HEADERS_PUBLIC_RUNTIME_TRUNK_SCAN_HOOKS
+  dsd-neo/runtime/trunk_scan_hooks.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_protocol_nxdn_trunk_diag
+  HEADERS_PUBLIC_PROTOCOL_NXDN_TRUNK_DIAG
+  dsd-neo/protocol/nxdn/nxdn_trunk_diag.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_cli
   HEADERS_PUBLIC_RUNTIME_CLI
   dsd-neo/runtime/cli.h
@@ -4178,6 +4190,7 @@ add_executable(
     dsd-neo_test_engine_trunk_retune_regression
     engine/test_engine_trunk_retune_regression.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_tuning.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_retune_regression
@@ -4198,6 +4211,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
 )
 target_include_directories(
     dsd-neo_test_engine_trunk_scan

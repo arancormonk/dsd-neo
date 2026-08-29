@@ -93,8 +93,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunk_scan", "enabled", "Enable single-tuner trunk scan mode", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunk_scan", "targets_csv", "Trunk scan target list CSV file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},
     {"trunk_scan", "idle_dwell_ms", "Default idle dwell per scan target", "3000", NULL, DSDCFG_TYPE_INT, 250, 600000},
-    {"trunk_scan", "activity_hold_ms", "Default conventional DMR activity hold", "1200", NULL, DSDCFG_TYPE_INT, 250,
-     600000},
+    {"trunk_scan", "activity_hold_ms", "Default conventional DMR/NXDN activity hold", "1200", NULL, DSDCFG_TYPE_INT,
+     250, 600000},
 
     /* [logging] section */
     {"logging", "event_log", "Event history log file path", "", NULL, DSDCFG_TYPE_PATH, 0, 0},

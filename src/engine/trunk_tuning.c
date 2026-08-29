@@ -21,6 +21,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
@@ -71,13 +72,24 @@ dsd_engine_select_p25_sps_profile(dsd_state* state, int is_tdma) {
     state->sps_hunt_counter = 0;
 }
 
+/*
+ * Whether the control channel currently being followed is a P25 one.
+ *
+ * p25_cc_freq is not the answer: NXDN and EDACS trunking anchor that same field, so the
+ * frequency being set proves only that some protocol has a control channel. Everything derived
+ * from a P25 control channel -- the 4800/6000 symbol rate, the C4FM/QPSK choice, the P25 SPS
+ * hunt profile -- is wrong for those protocols, which run GFSK at their own rates.
+ */
 static int
-dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
-    if (!opts || !state || opts->trunk_enable != 1 || ted_sps <= 0) {
-        return 0;
-    }
+dsd_engine_cc_is_p25(const dsd_state* state) {
     if (dsd_engine_trunk_scan_active_p25_ctx() != NULL) {
         return 1;
+    }
+    // Under trunk scan the coordinator knows the parked target's protocol, and that beats sync
+    // history: a target that has not synced yet reads as P25 by synctype alone, because
+    // DSD_SYNC_P25P1_POS is 0.
+    if (dsd_engine_trunk_scan_target_count(state) > 0) {
+        return 0;
     }
     if (state->rf_mod == 2) {
         return 0;
@@ -90,9 +102,22 @@ dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, i
     return 1;
 }
 
+static int
+dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, int ted_sps) {
+    if (!opts || !state || opts->trunk_enable != 1 || ted_sps <= 0) {
+        return 0;
+    }
+    return dsd_engine_cc_is_p25(state);
+}
+
 static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state || state->p25_cc_freq == 0) {
+    // Skipping is safe for the other protocols rather than merely harmless: DMR and NXDN96 are
+    // already parked at 4800 sym/s with the four-level profile, and NXDN48/EDACS carry rates
+    // this function cannot express at all. An nxdn48-conventional scan target relies on that
+    // skip: the coordinator seeds its 2400 sym/s timing, and the front end gets the matching
+    // 6.25 kHz chain from dsd_engine_gfsk_cc_symbol_rate().
+    if (!opts || !state || state->p25_cc_freq == 0 || !dsd_engine_cc_is_p25(state)) {
         return;
     }
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
@@ -275,15 +300,37 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
                                                  profile, ted_sps, 0);
 }
 
+/*
+ * Four-level GFSK control/park channel. The symbol rate is a parameter because the family spans
+ * two of them: DMR and NXDN96 at 4800 sym/s in a 12.5 kHz channel, NXDN48 at 2400 sym/s in a
+ * 6.25 kHz one. dsd_rtl_channel_profile_for() owns the rate-to-filter mapping, so the front end
+ * and the SPS hunt cannot drift apart on which filter a rate wants.
+ */
 static void
-dsd_engine_prepare_dmr_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz,
-                                    int ted_sps) {
+dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* state, long int target_freq_hz, int ted_sps,
+                                     int symbol_rate_hz) {
     int retune_ted_sps = ted_sps;
     if (state->rtl_ctx) {
-        retune_ted_sps = dsd_opts_compute_sps_rate(opts, 4800, (int)rtl_stream_output_rate(state->rtl_ctx));
+        retune_ted_sps = dsd_opts_compute_sps_rate(opts, symbol_rate_hz, (int)rtl_stream_output_rate(state->rtl_ctx));
     }
-    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, 4800, 4,
-                                                 RTL_STREAM_CHANNEL_PROFILE_12K5, retune_ted_sps, 0);
+    dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)target_freq_hz, 0, symbol_rate_hz, 4,
+                                                 dsd_rtl_channel_profile_for(opts, symbol_rate_hz, 4, 2),
+                                                 retune_ted_sps, 0);
+}
+
+/*
+ * Symbol rate for a four-level GFSK retune, or 0 when this is not one.
+ *
+ * Only NXDN48 needs the coordinator's answer: every other GFSK-family target runs 4800 sym/s,
+ * which state->rf_mod == 2 already selects. Keeping the rf_mod gate for those leaves plain -T
+ * DMR/NXDN96 retune behavior byte-for-byte unchanged, including under a modulation lock.
+ */
+static int
+dsd_engine_gfsk_cc_symbol_rate(const dsd_state* state) {
+    if (dsd_engine_trunk_scan_active_gfsk_symbol_rate(state) == 2400) {
+        return 2400;
+    }
+    return (state && state->rf_mod == 2) ? 4800 : 0;
 }
 
 static void
@@ -310,9 +357,12 @@ dsd_engine_prepare_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long int
         dsd_engine_prepare_p25_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
         return;
     }
-    if (state->rf_mod == 2 && ted_sps > 0) {
-        dsd_engine_prepare_dmr_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
-        return;
+    if (ted_sps > 0) {
+        const int gfsk_rate = dsd_engine_gfsk_cc_symbol_rate(state);
+        if (gfsk_rate > 0) {
+            dsd_engine_prepare_gfsk_cc_rtl_chain(opts, state, target_freq_hz, ted_sps, gfsk_rate);
+            return;
+        }
     }
     dsd_engine_prepare_current_cc_rtl_chain(opts, state, target_freq_hz, ted_sps);
 }

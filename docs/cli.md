@@ -12,7 +12,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Levels/Audio: `-g 0|1..50`, `-n 0..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0xF`
 - Modes: `-fa | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm`
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv`, `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (P25/DMR/NXDN96/NXDN48 targets; use `-fa` for mixed lists with NXDN), `-C chan.csv`, `-G group.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]`
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -29,7 +29,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Follow DMR trunking (TCP PCM input + rigctl): `dsd-neo -fs -i tcp -U 4532 -T -C dmr_t3_chan.csv -G group.csv --frontend terminal`
 - Follow DMR trunking (RTL‑SDR): `dsd-neo -fs -i rtl:0:450M:26:-2:48:0:2 -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
 - Follow DMR trunking (SoapySDR): `dsd-neo -fs -i soapy:driver=airspy -T -C connect_plus_chan.csv -G group.csv --frontend terminal`
-- Scan several P25/DMR targets with one tuner: `dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal`
+- Scan several P25/DMR/NXDN targets with one tuner: `dsd-neo -fa -i rtl:0:851.0125M:22:0:48:0:2 --trunk-scan examples/trunk_scan_targets.csv -G examples/group.csv --frontend terminal` (`-ft` is enough when the list has no NXDN targets; `-fn` for NXDN96-only lists, `-fi` for NXDN48-only lists, `-fa` whenever both NXDN rates appear)
 - Capture RTL I/Q + metadata: `dsd-neo -i rtl:0:851.375M:22:0:48:0:2 --iq-capture p25-control.iq --frontend terminal`
 - Inspect a capture: `dsd-neo --iq-info p25-control.iq.json`
 - Replay a capture through demod: `dsd-neo --iq-replay p25-control.iq.json -f1 --frontend terminal`
@@ -290,10 +290,10 @@ Notes
 
   A detected sync locks the active rate, level count, timing, and RTL-family channel profile. Passive analog monitoring
   (`-fA`) and already-framed M17 UDP input (`-fU`) are not frame-sync hunt candidates.
-- The three Auto entry points intentionally differ: CLI `-fa` installs the complete matrix above; config
-  `decode = "auto"` preserves the protocol flags established during initialization or by the current overlay; and the
-  interactive Auto choice preserves the current candidate set. This lets configs and interactive setup retain a
-  deliberately narrowed scanner while `-fa` remains the explicit full-search preset.
+- All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
+  interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
+  layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
+  wizard's own answers. To scan a deliberately narrowed set, name the narrower preset rather than Auto.
 - In TCP PCM mode, SPS hunting still runs when no signal is present, but repeated idle `Sync: no sync` and `SPS hunt`
   console diagnostics are suppressed.
 - P25p2 on a single frequency may require `-X` (below) if MAC_SIGNAL is missing.
@@ -319,15 +319,16 @@ Notes
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders)
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
-  - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, and one-frequency DMR targets. Full guide:
-    `docs/trunk-scan.md`.
+  - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
+    (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` entries in the target CSV; global `-C` is rejected in this mode.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
     active target.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
-  - Conventional DMR activity hold: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
+  - Conventional DMR/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
+    (default `1200`).
   - Single-tuner limitation: systems not currently parked can be missed while another target is being monitored.
 - Channel map CSV: `-C <file>` (e.g., `connect_plus_chan.csv`)
 - Group list CSV (allow/block + labels, optional `priority/preempt/audio/record/stream` policy columns): `-G <file>`

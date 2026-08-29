@@ -297,6 +297,27 @@ main(void) {
         ns.nxdn_step = 99;
         rc |= expect_eq_long("nxdn dfa unknown verbose", nxdn_channel_to_frequency(&opts, &ns, 10U), 0);
         rc |= expect_eq_long("nxdn dfa unknown quiet", nxdn_channel_to_frequency_quiet(&ns, 10U), 0);
+
+        /* trunk_chan_map has DSD_TRUNK_CHAN_MAP_SIZE entries, so the largest uint16_t channel is
+         * one past the end and a miscorrected 16-bit outbound number reaches here unfiltered. The
+         * map lookup must not read past the array, while the DFA arithmetic stays valid for every
+         * channel number. Under ASan the unguarded read aborts; without it, the adjacent
+         * trunk_chan_map_used[] bytes would be returned as a bogus mapped frequency. */
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        ns.nxdn_rcn = 1;
+        ns.nxdn_base_freq = 1;
+        ns.nxdn_step = 2;
+        rc |= expect_eq_long("nxdn out-of-range channel falls through to dfa verbose",
+                             nxdn_channel_to_frequency(&opts, &ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE),
+                             100000000L + (long int)DSD_TRUNK_CHAN_MAP_SIZE * 1250L);
+        rc |= expect_eq_long("nxdn out-of-range channel falls through to dfa quiet",
+                             nxdn_channel_to_frequency_quiet(&ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE),
+                             100000000L + (long int)DSD_TRUNK_CHAN_MAP_SIZE * 1250L);
+
+        /* Without a map entry or DFA, an out-of-range channel is simply unknown. */
+        DSD_MEMSET(&ns, 0, sizeof(ns));
+        rc |= expect_eq_long("nxdn out-of-range channel unmapped quiet",
+                             nxdn_channel_to_frequency_quiet(&ns, (uint16_t)DSD_TRUNK_CHAN_MAP_SIZE), 0);
     }
 
     return rc;

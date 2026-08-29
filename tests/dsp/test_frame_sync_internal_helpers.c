@@ -1155,6 +1155,17 @@ test_decode_mode_profiles_agree_with_the_sps_hunt_table(void) {
      * they share a preset symbol timing but not a symbol rate. */
     assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN48).symbol_rate_hz == 2400);
     assert(dsd_decode_mode_profile_for(DSDCFG_MODE_NXDN96).symbol_rate_hz == 4800);
+
+    /* AUTO's whole promise is that the hunt may visit every profile, and a config file selects
+     * the same AUTO the command line does. The profile argument decides audio layout, never the
+     * decoder set, so every candidate must be reachable from the config path too. */
+    for (int profile_index = 0; profile_index < dsd_frame_sync_test_sps_hunt_profile_count(); profile_index++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        reset(&opts, &state);
+        assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_AUTO, DSD_DECODE_PRESET_PROFILE_CONFIG, &opts, &state) == 0);
+        assert(dsd_frame_sync_test_sps_hunt_profile_has_candidate(&opts, profile_index) == 1);
+    }
 }
 
 static void

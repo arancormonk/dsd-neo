@@ -226,7 +226,7 @@ interactive_configure_input_source(dsd_opts* opts, dsd_state* state, int* src) {
 static int
 interactive_choose_decode_mode(void) {
     DSD_FPRINTF(stderr, "\nWhat do you want to decode?\n");
-    DSD_FPRINTF(stderr, "  1) Auto (P25, YSF, D-STAR, X2-TDMA, DMR) [default]\n");
+    DSD_FPRINTF(stderr, "  1) Auto (all digital modes) [default]\n");
     DSD_FPRINTF(stderr, "  2) P25 Phase 1 only\n");
     DSD_FPRINTF(stderr, "  3) P25 Phase 2 only\n");
     DSD_FPRINTF(stderr, "  4) DMR\n");

@@ -34,6 +34,9 @@ jobs:
           tools/check_workflow_download_pins.sh
           tools/check_vcpkg_overlay_pins.sh
 
+      - name: Check architecture rules
+        run: tools/check_arch_rules.sh
+
   script-lint:
     name: shell/workflow lint
     runs-on: ubuntu-latest

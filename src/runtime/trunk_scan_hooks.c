@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -37,6 +38,19 @@ dsd_trunk_scan_hook_dmr_conventional_activity(const dsd_opts* opts, const dsd_st
     if (g_trunk_scan_hooks.dmr_conventional_activity) {
         g_trunk_scan_hooks.dmr_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
     }
+}
+
+void
+dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                                               uint32_t source, int is_private, int encrypted, int data_call) {
+    if (g_trunk_scan_hooks.nxdn_conventional_activity) {
+        g_trunk_scan_hooks.nxdn_conventional_activity(opts, state, target, source, is_private, encrypted, data_call);
+    }
+}
+
+const char*
+dsd_trunk_scan_hook_active_chan_csv(const dsd_state* state) {
+    return g_trunk_scan_hooks.active_chan_csv ? g_trunk_scan_hooks.active_chan_csv(state) : NULL;
 }
 
 void

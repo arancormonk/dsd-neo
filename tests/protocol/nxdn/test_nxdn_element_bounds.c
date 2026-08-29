@@ -16,6 +16,7 @@
 #include <dsd-neo/crypto/aes.h>
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1059,6 +1060,222 @@ test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency(void) {
     return rc;
 }
 
+static int g_parked_scan_ctx_marker;
+
+static void*
+parked_scan_ctx_marker(void) {
+    return &g_parked_scan_ctx_marker;
+}
+
+/*
+ * Model which scan-target context the coordinator would expose while parked: 1 = p25-trunk,
+ * 2 = dmr-trunk, 0 = anything else (nxdn-trunk or a conventional target).
+ */
+static void
+set_parked_scan_target_ctx(int parked_ctx) {
+    dsd_trunk_scan_hooks hooks = {0};
+    if (parked_ctx == 1) {
+        hooks.p25_ctx = parked_scan_ctx_marker;
+    } else if (parked_ctx == 2) {
+        hooks.dmr_ctx = parked_scan_ctx_marker;
+    }
+    dsd_trunk_scan_hooks_set(hooks);
+}
+
+/*
+ * CCH_INFO DFA control-channel adoption. The site broadcast is the authority on the outbound
+ * control channel: it must override a trunk-scan target's CSV park frequency (which is a guess),
+ * but never an operator-supplied LCN list, and never a target the coordinator shaped for another
+ * protocol.
+ */
+static int
+run_cch_dfa_adoption_case(const char* tag, int trunk_scan_enabled, int trunk_enable, int parked_ctx,
+                          long int seeded_lcn0, long int seeded_p25_cc, long int seeded_trunk_cc, int seeded_lcn_count,
+                          int expect_adopt) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[128];
+    const uint32_t location_id = (2U << 12U) | 0x021U;
+    const uint16_t ofn1 = 0x1221U;
+    const uint16_t ifn1 = 0x2332U;
+    const long int cc_freq = 852262500L;
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    reset_assignment_capture();
+
+    state->nxdn_rcn = 1;
+    g_mapped_channel = ofn1;
+    g_mapped_channel_freq = cc_freq;
+
+    opts->trunk_scan_enabled = trunk_scan_enabled;
+    opts->trunk_enable = trunk_enable;
+    set_parked_scan_target_ctx(parked_ctx);
+    state->trunk_lcn_freq[0] = seeded_lcn0;
+    state->p25_cc_freq = seeded_p25_cc;
+    state->trunk_cc_freq = seeded_trunk_cc;
+    state->lcn_freq_count = seeded_lcn_count;
+
+    set_message_type(bits, 0x1AU);
+    write_bits_u64(bits, 8U, location_id, 24U);
+    write_bits_u64(bits, 32U, 0x13U, 6U);
+    write_bits_u64(bits, 38U, 1U, 2U);
+    write_bits_u64(bits, 40U, ofn1, 16U);
+    write_bits_u64(bits, 56U, ifn1, 16U);
+
+    NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));
+
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s-lcn0", tag);
+    rc |= expect_int(label, (int)state->trunk_lcn_freq[0], (int)(expect_adopt ? cc_freq : seeded_lcn0));
+    DSD_SNPRINTF(label, sizeof label, "%s-p25-cc", tag);
+    rc |= expect_int(label, (int)state->p25_cc_freq, (int)(expect_adopt ? cc_freq : seeded_p25_cc));
+    DSD_SNPRINTF(label, sizeof label, "%s-trunk-cc", tag);
+    rc |= expect_int(label, (int)state->trunk_cc_freq, (int)(expect_adopt ? cc_freq : seeded_trunk_cc));
+
+    set_parked_scan_target_ctx(0);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_cch_dfa_control_channel_adoption_pinning(void) {
+    const long int park = 461000000L;
+    int rc = 0;
+
+    /* Plain -T with nothing learned yet: first broadcast seeds the control channel. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-unseeded", 0, 1, 0, 0, 0, 0, 0, 1);
+    /* Plain -T after adoption (or with an imported LCN list): the existing value is pinned. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-plain-pinned", 0, 1, 0, park, park, park, 1, 0);
+    /* Trunk scan parks an nxdn-trunk target on its CSV frequency: the site broadcast wins. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-park", 1, 1, 0, park, park, park, 1, 1);
+    /* A per-target chan_csv with LCN rows is operator intent: pinned even under scan. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-lcn-list", 1, 1, 0, park, park, park, 2, 0);
+    /* A dmr-trunk target keeps p25_cc_freq at 0: a stray NXDN broadcast must not retune it. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-dmr-target", 1, 1, 2, park, 0, park, 1, 0);
+    /* A p25-trunk target carries its own control channel in p25_cc_freq: a stray NXDN element
+     * decoded under -fa must not move it to an NXDN frequency. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-p25-target", 1, 1, 1, park, park, park, 1, 0);
+    /* Conventional targets run with trunk_enable == 0 and have no control channel to adopt. */
+    rc |= run_cch_dfa_adoption_case("cch-adopt-scan-conventional-target", 1, 0, 0, 0, 0, 0, 0, 0);
+
+    return rc;
+}
+
+static int g_scan_activity_calls;
+static uint32_t g_scan_activity_target;
+static uint32_t g_scan_activity_source;
+static int g_scan_activity_is_private;
+static int g_scan_activity_encrypted;
+static int g_scan_activity_data_call;
+
+static void
+capture_scan_nxdn_conventional_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                                        int is_private, int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    g_scan_activity_calls++;
+    g_scan_activity_target = target;
+    g_scan_activity_source = source;
+    g_scan_activity_is_private = is_private;
+    g_scan_activity_encrypted = encrypted;
+    g_scan_activity_data_call = data_call;
+}
+
+static void
+reset_scan_activity_capture(void) {
+    g_scan_activity_calls = 0;
+    g_scan_activity_target = 0;
+    g_scan_activity_source = 0;
+    g_scan_activity_is_private = 0;
+    g_scan_activity_encrypted = 0;
+    g_scan_activity_data_call = 0;
+
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.nxdn_conventional_activity = capture_scan_nxdn_conventional_activity;
+    dsd_trunk_scan_hooks_set(hooks);
+}
+
+/*
+ * A conventional NXDN scan target holds its park on decoded activity. Data traffic counts:
+ * SDCALL and DCALL headers are the only data elements carrying a call identity, so they are
+ * what the coordinator can run through talkgroup policy.
+ */
+static int
+run_data_header_scan_activity_case(const char* tag, uint8_t message_type, uint8_t crc_ok, uint8_t call_type,
+                                   uint8_t cipher, uint16_t source, uint16_t target, int expect_calls,
+                                   int expect_private, int expect_encrypted) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[128];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    reset_assignment_capture();
+    reset_scan_activity_capture();
+
+    set_message_type(bits, message_type);
+    write_bits_u64(bits, 16U, call_type, 3U);
+    write_bits_u64(bits, 24U, source, 16U);
+    write_bits_u64(bits, 40U, target, 16U);
+    write_bits_u64(bits, 56U, cipher, 2U);
+    write_bits_u64(bits, 68U, 2U, 4U); /* block count */
+
+    NXDN_Elements_Content_decode(opts, state, crc_ok, bits, sizeof(bits));
+
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof label, "%s-calls", tag);
+    rc |= expect_int(label, g_scan_activity_calls, expect_calls);
+    if (expect_calls > 0) {
+        DSD_SNPRINTF(label, sizeof label, "%s-target", tag);
+        rc |= expect_int(label, (int)g_scan_activity_target, (int)target);
+        DSD_SNPRINTF(label, sizeof label, "%s-source", tag);
+        rc |= expect_int(label, (int)g_scan_activity_source, (int)source);
+        DSD_SNPRINTF(label, sizeof label, "%s-private", tag);
+        rc |= expect_int(label, g_scan_activity_is_private, expect_private);
+        DSD_SNPRINTF(label, sizeof label, "%s-encrypted", tag);
+        rc |= expect_int(label, g_scan_activity_encrypted, expect_encrypted);
+        DSD_SNPRINTF(label, sizeof label, "%s-data-call", tag);
+        rc |= expect_int(label, g_scan_activity_data_call, 1);
+    }
+
+    dsd_trunk_scan_hooks_set((dsd_trunk_scan_hooks){0});
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_data_call_headers_report_conventional_scan_activity(void) {
+    int rc = 0;
+
+    /* Clear group data call over a DCALL header. */
+    rc |= run_data_header_scan_activity_case("dcall-group", 0x09U, 1U, 1U, 0U, 1234U, 5678U, 1, 0, 0);
+    /* Encrypted private data call: the header's own cipher field is the only classification. */
+    rc |= run_data_header_scan_activity_case("dcall-private-enc", 0x09U, 1U, 4U, 1U, 4321U, 8765U, 1, 1, 1);
+    /* Short data calls carry the same identity and must hold the target too. */
+    rc |= run_data_header_scan_activity_case("sdcall-group", 0x38U, 1U, 1U, 0U, 11U, 22U, 1, 0, 0);
+    /* A header the link layer could not verify must never park the coordinator. */
+    rc |= run_data_header_scan_activity_case("dcall-bad-crc", 0x09U, 0U, 1U, 0U, 1234U, 5678U, 0, 0, 0);
+    rc |= run_data_header_scan_activity_case("sdcall-bad-crc", 0x38U, 0U, 1U, 0U, 11U, 22U, 0, 0, 0);
+    /* Elements without a call identity are not activity reports. */
+    rc |= run_data_header_scan_activity_case("sdcall-iv", 0x3AU, 1U, 1U, 0U, 11U, 22U, 0, 0, 0);
+    rc |= run_data_header_scan_activity_case("dcall-data-block", 0x0BU, 1U, 1U, 0U, 11U, 22U, 0, 0, 0);
+
+    return rc;
+}
+
 static int
 test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1841,6 +2058,8 @@ main(void) {
     rc |= test_dst_id_info_complete_event();
     rc |= test_srv_info_anchors_control_channel_from_rigctl();
     rc |= test_cch_dfa_maps_secondary_channels_and_seeds_control_frequency();
+    rc |= test_cch_dfa_control_channel_adoption_pinning();
+    rc |= test_data_call_headers_report_conventional_scan_activity();
     rc |= test_adj_site_skips_disabled_entries_for_channel_and_dfa_versions();
     rc |= test_sdcall_des_data_decrypts_and_resets();
     rc |= test_dcall_aes_data_decrypts_with_manual_key_and_iv();

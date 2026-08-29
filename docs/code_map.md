@@ -286,7 +286,8 @@ Qt Quick frontend (`src/ui/qt`):
 - Platform-free by rule: it may include Qt and `include/dsd-neo/app_control/` headers, never engine/io/protocol
   internals, and never platform APIs (`QJniObject`, `<android/*.h>`). Platform specifics live behind the `DecoderHost`
   interface, implemented per host (`android/decoder_host_android.cpp` today).
-- Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions.
+- Backend code must never include Qt headers; `cmake/arch_rules.cmake` enforces both directions
+  (`tools/check_arch_rules.sh`, run by the pre-push hook and the CI guardrails job).
 
 Build files: `src/ui/CMakeLists.txt`, `src/ui/terminal/CMakeLists.txt`, `src/ui/qt/CMakeLists.txt`
 

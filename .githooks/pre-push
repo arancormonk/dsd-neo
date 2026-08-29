@@ -376,6 +376,12 @@ run_check() {
 
 run_check "CMake install(TARGETS) runtime destinations" tools/check_install_runtime_destinations.sh
 
+if command -v cmake > /dev/null 2>&1; then
+  run_check "architecture rules guardrail" tools/check_arch_rules.sh
+else
+  mark_missing_tool "cmake" "architecture rules guardrail"
+fi
+
 if command -v rg > /dev/null 2>&1; then
   run_check "secret redaction guardrail" tools/check_secret_redaction.sh
   run_check "workflow Git pin guardrail" tools/check_workflow_git_pins.sh

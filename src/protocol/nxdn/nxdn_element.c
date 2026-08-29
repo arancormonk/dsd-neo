@@ -36,7 +36,9 @@
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -97,8 +99,8 @@ static void nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const
 static void nxdn_pdu_scrambler_keystream_creation(uint8_t* ks, int lfsr, int len_bits);
 static void nxdn_lfsr128_expand_iv_from_mi64(uint64_t mi, uint8_t out[16]);
 static int nxdn_load_data_aes_key(const dsd_state* state, uint8_t key_id, uint8_t out_key[32]);
-static void nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
-static void nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
+static void nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message);
+static void nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 static int nxdn_dcall_data(dsd_opts* opts, dsd_state* state, int type, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_VCALL(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
@@ -205,6 +207,7 @@ nxdn_element_handle_idle(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
 }
 
 static void
+// cppcheck-suppress constParameterCallback -- signature is fixed by the message-type dispatch table.
 nxdn_element_handle_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     if (elements_bits < 79U) {
         DSD_FPRINTF(stderr, " SDCALL Header Too Short (%zu bits); ", elements_bits);
@@ -232,6 +235,7 @@ nxdn_element_handle_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* e
 }
 
 static void
+// cppcheck-suppress constParameterCallback -- signature is fixed by the message-type dispatch table.
 nxdn_element_handle_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     nxdn_dcall_header(opts, state, elements, elements_bits);
 }
@@ -651,10 +655,32 @@ nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+/*
+ * Report a decoded data-call header to the trunk-scan coordinator, so a parked conventional NXDN
+ * target keeps its activity hold for data traffic and not only for voice. A header is the only
+ * data element carrying a call identity; the blocks that follow it carry none.
+ *
+ * Held behind the link layer's CRC gate for the same reason the VCALL site is: an unverified
+ * header carries a garbage identity, and acting on one parks the coordinator on noise for a full
+ * activity_hold_ms. The header's own two-bit cipher field is the encryption classification --
+ * data calls have no equivalent of the voice hysteresis in nxdn_enc_class.c -- and a misread
+ * costs at most one hold refresh, because talkgroup policy exempts data calls from the
+ * encrypted-target lockout ledger.
+ */
 static void
-nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
-    UNUSED(opts);
+nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint8_t call_type, uint16_t source,
+                                      uint16_t target, uint8_t cipher) {
+    if (state->NxdnElementsContent.VCallCrcIsGood == 0U) {
+        return;
+    }
+    // call_type 4 is the individual/private call, spelled the same way as the trunked data-grant
+    // path in NXDN_decode_VCALL_ASSGN().
+    dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, target, source, (call_type == 4U) ? 1 : 0,
+                                                   (cipher != 0U) ? 1 : 0, 1);
+}
 
+static void
+nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     if (state == NULL || Message == NULL) {
         return;
     }
@@ -741,6 +767,8 @@ nxdn_sdcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
+
+    nxdn_data_header_report_scan_activity(opts, state, call_type, source, target, cipher);
 }
 
 struct nxdn_dcall_header_info {
@@ -882,9 +910,7 @@ nxdn_dcall_header_apply(dsd_state* state, const struct nxdn_dcall_header_info* i
 }
 
 static void
-nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
-    UNUSED(opts);
-
+nxdn_dcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits) {
     if (state == NULL || Message == NULL) {
         return;
     }
@@ -900,6 +926,7 @@ nxdn_dcall_header(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size
     nxdn_dcall_header_parse(&info, state, Message, message_bits);
     nxdn_dcall_header_print(&info, state);
     nxdn_dcall_header_apply(state, &info);
+    nxdn_data_header_report_scan_activity(opts, state, info.call_type, info.source, info.target, info.cipher);
 }
 
 enum { NXDN_DCALL_MAX_BITS = 24 * 128, NXDN_DCALL_MAX_BYTES = NXDN_DCALL_MAX_BITS / 8 };
@@ -1671,6 +1698,38 @@ nxdn_cch_info_channel_version(dsd_state* state, uint32_t location_id, uint8_t ch
     UNUSED(state);
 }
 
+/*
+ * Whether the operator has pinned the control channel, in which case a site broadcast must not
+ * move it. A learned or imported LCN list is operator intent; the trunk-scan coordinator's
+ * slot-0 seed is only the target CSV's park frequency, which may be a few kHz off the real
+ * outbound CC, so the broadcast is allowed to correct it. p25_has_user_lcn_list()
+ * (src/protocol/p25/p25_trunk_sm.c) draws the same line for P25.
+ */
+static int
+nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled != 1) {
+        return state->trunk_lcn_freq[0] != 0;
+    }
+
+    // Only the parked target's own control channel may move, and only an nxdn-trunk target has one
+    // this broadcast can describe. Checked before the "nothing learned yet" case below: under -fa
+    // an NXDN element decoded while parked on another target type is stray traffic (or a false
+    // sync), and adopting from it would plant a control channel on a target that has none, or move
+    // one that belongs to another protocol.
+    //   - conventional targets run with trunk_enable == 0 and have no control channel at all;
+    //   - a p25-trunk target owns the coordinator's P25 SM context and carries its control channel
+    //     in the same p25_cc_freq field this adoption would overwrite;
+    //   - a dmr-trunk target owns the DMR SM context (and keeps p25_cc_freq at 0).
+    if (opts->trunk_enable != 1 || dsd_trunk_scan_hook_p25_ctx() != NULL || dsd_trunk_scan_hook_dmr_ctx() != NULL) {
+        return 1;
+    }
+    if (state->trunk_lcn_freq[0] == 0) {
+        return 0;
+    }
+    // More entries than the single seeded slot mean a per-target chan_csv supplied real LCNs.
+    return (state->lcn_freq_count > 1 || state->p25_cc_freq == 0) ? 1 : 0;
+}
+
 static int
 nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits,
                           uint32_t location_id, uint8_t channel1sts) {
@@ -1718,11 +1777,18 @@ nxdn_cch_info_dfa_version(dsd_opts* opts, dsd_state* state, const uint8_t* Messa
 
     const long int freq1 = nxdn_channel_to_frequency(opts, state, OFN1);
     nxdn_channel_to_frequency(opts, state, IFN1);
-    if (state->trunk_lcn_freq[0] == 0 && freq1 != 0) {
+    if (freq1 != 0 && !nxdn_cc_is_operator_pinned(opts, state)) {
+        const long int previous_cc = state->trunk_cc_freq;
         state->trunk_lcn_freq[0] = freq1;
         state->p25_cc_freq = freq1;
         state->trunk_cc_freq = freq1;
         state->lcn_freq_count = 1;
+        // Announce only a real move: under trunk scan this runs on every CCH_INFO, and once the
+        // park frequency has been corrected the adoption is idempotent.
+        if (previous_cc != 0 && previous_cc != freq1) {
+            LOG_INFO("NOTICE: NXDN trunking: site control channel is %.6lf MHz; following it\n",
+                     (double)freq1 / 1000000.0);
+        }
     }
 
     return 1;
@@ -2328,6 +2394,15 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
     if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
+        // Held behind the same CRC gate as the publish below: a miscorrected VCALL carries a
+        // garbage destination_id, and letting it refresh the conventional scan hold would park
+        // the coordinator on noise for a full activity_hold_ms per corrupt burst. The encryption
+        // flag is the corroborated classification nxdn_vcall_apply_state() just applied, not the
+        // raw element field -- a lone flipped cipher_type would otherwise drop the hold mid-call
+        // under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent.
+        dsd_trunk_scan_hook_nxdn_conventional_activity(
+            opts, state, info->destination_id, info->source_unit_id,
+            nxdn_vcall_kind(info->call_type) == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, state->nxdn_cipher_type != 0U, 0);
         nxdn_vcall_publish(opts, state, info);
     }
     nxdn_vcall_run_enc_lockout(opts, state, info);
