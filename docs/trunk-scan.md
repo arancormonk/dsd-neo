@@ -207,7 +207,9 @@ During scanning:
 - `nxdn48-conventional` targets park at 2400 sym/s with the 6.25 kHz channel filter; every other GFSK-family target
   parks at 4800 sym/s with the 12.5 kHz filter. Set `modulation = gfsk` on NXDN48 rows: that pins the symbol-rate
   hunt to the 2400 profile for the whole dwell, whereas an empty or `auto` column lets the hunt rotate through the
-  other enabled rates during dead air, which also swings the channel filter.
+  other enabled rates during dead air, which also swings the channel filter. The parked target's type selects the
+  symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
+  DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
 
 Expected log messages include:

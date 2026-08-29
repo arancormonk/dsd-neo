@@ -894,6 +894,94 @@ main(void) {
     assert(g_rtl_ted_sps == 10);
     rtl_stream_clear_pending_retune_profile();
 
+    /* A global -mc lock with an empty per-target modulation column leaves rf_mod at the locked C4FM
+     * value, so the coordinator's answer is the only thing that can pick the chain for a parked
+     * DMR/NXDN96 target. Without it the retune re-queues whatever the front end already had -- after
+     * an nxdn48-conventional dwell, a 2400 sym/s 6.25 kHz chain on a 12.5 kHz channel -- and the
+     * locked SPS hunt never re-applies over it, because it only rotates among equal-timing profiles. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 0;
+    g_trunk_scan_target_count = 2;
+    g_trunk_scan_active_p25_target = 0;
+    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 2400;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    g_rtl_ted_sps = 20;
+    g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
+    assert(g_rtl_ted_sps == 10);
+    assert(g_rtl_ted_sps_override == 0);
+    /* The chain follows the parked target; the lock keeps owning symbol slicing. */
+    assert(state->rf_mod == 0);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* Same on the trunk-CC path under -mq: a parked GFSK target must not inherit the previous P25
+     * target's CQPSK demod and C4FM-family filter. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_scan_enabled = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 1;
+    g_trunk_scan_target_count = 2;
+    g_trunk_scan_active_p25_target = 0;
+    g_trunk_scan_active_gfsk_symbol_rate = 4800;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_ted_sps = 10;
+    g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 452000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_12K5);
+    assert(g_rtl_ted_sps == 10);
+    assert(state->rf_mod == 1);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* Outside trunk scan the fall-through still owns a locked non-GFSK session: the coordinator
+     * answers 0, rf_mod != 2, and the retune re-queues the front end's current chain unchanged. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->rf_mod = 0;
+    g_trunk_scan_target_count = 0;
+    g_trunk_scan_active_p25_target = 0;
+    g_trunk_scan_active_gfsk_symbol_rate = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_C4FM;
+    g_rtl_ted_sps = 8;
+    g_rtl_ted_sps_override = 0;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_scan_tune_to_freq(opts, state, 461112500, 10, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_symbol_levels == 4);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+    assert(g_rtl_ted_sps == 10);
+    rtl_stream_clear_pending_retune_profile();
+
     /* Trunk-scan RTL retunes queue the active target/global gain with the
      * demod profile so gain changes happen at the retune boundary. */
     DSD_MEMSET(opts, 0, sizeof(*opts));

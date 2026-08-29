@@ -321,14 +321,21 @@ dsd_engine_prepare_gfsk_cc_rtl_chain(const dsd_opts* opts, const dsd_state* stat
 /*
  * Symbol rate for a four-level GFSK retune, or 0 when this is not one.
  *
- * Only NXDN48 needs the coordinator's answer: every other GFSK-family target runs 4800 sym/s,
- * which state->rf_mod == 2 already selects. Keeping the rf_mod gate for those leaves plain -T
- * DMR/NXDN96 retune behavior byte-for-byte unchanged, including under a modulation lock.
+ * Under trunk scan the coordinator's parked target type is authoritative. The symbol rate and the
+ * channel filter belong to the target's channel, not to the modulation lock, which keeps owning
+ * symbol slicing through rf_mod and is left alone here. Deriving the rate from rf_mod == 2 instead
+ * loses every GFSK target whose modulation column is empty under a global -mc/-mq lock, because the
+ * coordinator then leaves rf_mod at the locked value: the retune falls through to re-queuing
+ * whatever chain the previous target left on the front end -- after an nxdn48-conventional dwell, a
+ * 2400 sym/s 6.25 kHz chain on a 12.5 kHz channel -- and a locked SPS hunt never re-applies over it,
+ * since it only rotates among equal-timing profiles. Outside trunk scan the coordinator answers 0
+ * and the rf_mod gate keeps plain -T retunes unchanged.
  */
 static int
 dsd_engine_gfsk_cc_symbol_rate(const dsd_state* state) {
-    if (dsd_engine_trunk_scan_active_gfsk_symbol_rate(state) == 2400) {
-        return 2400;
+    const int scan_rate = dsd_engine_trunk_scan_active_gfsk_symbol_rate(state);
+    if (scan_rate > 0) {
+        return scan_rate;
     }
     return (state && state->rf_mod == 2) ? 4800 : 0;
 }
