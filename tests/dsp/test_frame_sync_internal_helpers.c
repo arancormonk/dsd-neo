@@ -479,7 +479,6 @@ test_sps_hunt_budget_is_spent_in_symbols(void) {
     assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
     assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
     assert(state.sps_hunt_counter == 0);
-    assert(state.sps_hunt_consumed == 0);
 }
 
 /* Carrier no longer wipes the hunt's progress from the modulation-switch path. */

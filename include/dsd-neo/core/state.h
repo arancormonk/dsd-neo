@@ -543,15 +543,17 @@ struct dsd_state {
      * The hunt spends a symbol budget rather than counting sync attempts, because an
      * isolated sync that no protocol turns into a frame must not buy the profile more
      * time (see frame_sync_no_sync_sps_hunt()).
-     * sps_hunt_counter: symbols searched for sync since the budget was last reset
-     * sps_hunt_consumed: symbols frame handlers consumed over the same window; reaching
-     *   one no-sync pass means something is decoding here, and resets the budget
+     * sps_hunt_counter: symbols the search burned that no frame handler claimed. Symbols
+     *   spent looking for a sync count up; symbols a handler consumed on one sync are
+     *   debited back, floored at zero, so a profile carrying traffic sits at zero and a
+     *   profile matching nothing reaches its dwell. Zeroing this alone is a complete reset.
      * sps_hunt_symbolcnt_mark: dsd_state::symbolcnt as getFrameSync() last returned, so
-     *   the next call can measure what the handler consumed in between
+     *   the next call can measure what the handler consumed in between. Credit is per sync
+     *   and only counts once it reaches a frame's worth, which is what keeps the dwell
+     *   independent of how often an unproductive matcher fires.
      * sps_hunt_idx: current rate/profile index
      * (0=4800/4-level, 1=2400/4-level, 2=9600/binary, 3=6000/4-level, 4=4800/binary) */
     int sps_hunt_counter;
-    int sps_hunt_consumed;
     int sps_hunt_symbolcnt_mark;
     int sps_hunt_idx;
     int lastsynctype;

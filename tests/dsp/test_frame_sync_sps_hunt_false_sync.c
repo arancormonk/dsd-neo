@@ -335,6 +335,11 @@ drive_hunt(const HuntCase* tc) {
 
     result.final_idx = state.sps_hunt_idx;
     free_state_buffers(&state);
+    if (result.stepped != tc->expect_step) {
+        DSD_FPRINTF(stderr, "%s: gap %d, handler %d -> stepped=%d after %ld symbols (%d syncs)\n", tc->label,
+                    tc->marker_gap, tc->handler_symbols, result.stepped, g_symbols_emitted, result.syncs_seen);
+    }
+    assert(result.stepped == tc->expect_step);
     return result;
 }
 
@@ -361,6 +366,64 @@ test_false_syncs_do_not_starve_the_hunt(void) {
     const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
     assert(r.symbols_at_step >= dwell_symbols);
     assert(r.symbols_at_step < dwell_symbols * 2);
+}
+
+/* #388, the density half: an unproductive matcher that fires every few symbols must not
+ * hold the profile any longer than one that fires every few hundred. A refund that
+ * accumulates across syncs makes the dwell a function of the false-sync cadence, so a
+ * dense matcher pins the profile forever while a sparse one does not. */
+static void
+test_dense_false_syncs_do_not_starve_the_hunt(void) {
+    /* An alternating bit-sync run matches the M17 preamble at nearly every offset, so a
+     * near-zero gap is the realistic shape here, not a contrived one. These span the cliff
+     * an accumulating refund put at gap = handler cost x dwell passes (8 x 3): below it the
+     * refund outran the budget and pinned the profile for good, above it the hunt stepped
+     * normally. The dwell must not know which side of that line the cadence fell on. */
+    static const int gaps[] = {0, 8, 16, 24, 40};
+
+    for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); i++) {
+        const HuntCase tc = {
+            .label = "dense false syncs at 4800/4",
+            .marker = FALSE_SYNC_MARKER,
+            .marker_gap = gaps[i],
+            .handler_symbols = 8, /* dispatch_m17.c skipDibit(8): a preamble, never a frame */
+            .symbol_budget = 400000,
+            .expect_step = 1,
+        };
+        const HuntResult r = drive_hunt(&tc);
+
+        assert(r.syncs_seen > 10);
+        assert(r.stepped == 1);
+        assert(r.final_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+        /* The dwell the idle case gets, regardless of how often the matcher fired. */
+        const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+        assert(r.symbols_at_step >= dwell_symbols);
+        assert(r.symbols_at_step < dwell_symbols * 2);
+    }
+}
+
+/* The floor is the whole of the density fix, so state where it sits. One symbol short of a
+ * frame's worth, at the densest cadence the stream can produce, is the worst case an
+ * unproductive matcher can present -- and it still gets exactly the idle dwell. */
+static void
+test_sub_frame_consumption_never_buys_dwell(void) {
+    const HuntCase tc = {
+        .label = "sub-frame handler at the densest cadence",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 0,
+        .handler_symbols = DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS - 1,
+        .symbol_budget = 400000,
+        .expect_step = 1,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.stepped == 1);
+    assert(r.final_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    /* The budget is spent in searched symbols; symbols_at_step also counts what the
+     * handler swallowed, which at this cadence is nearly one per symbol searched. */
+    const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    assert(r.symbols_at_step >= dwell_symbols);
+    assert(r.symbols_at_step < dwell_symbols * 3);
 }
 
 /* The other side of the contract: a signal being decoded holds its profile. */
@@ -408,6 +471,8 @@ test_idle_rotation_period_is_unchanged(void) {
 int
 main(void) {
     test_false_syncs_do_not_starve_the_hunt();
+    test_dense_false_syncs_do_not_starve_the_hunt();
+    test_sub_frame_consumption_never_buys_dwell();
     test_consumed_frames_hold_the_profile();
     test_idle_rotation_period_is_unchanged();
     return 0;
