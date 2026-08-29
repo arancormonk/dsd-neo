@@ -68,6 +68,11 @@ is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
 C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
 
+`DECODE_IQ_*_AUTO_HUNT` cases assert on an `SPS hunt:` rotation line rather than a decoded payload. The `dstar` (4 s)
+and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at 48 kHz), so under `-fa` they cannot be
+expected to decode; what they can prove is that the hunt is not pinned on its starting profile, which is the defect
+those cases cover.
+
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.

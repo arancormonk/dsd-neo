@@ -43,6 +43,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1944,9 +1945,6 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
     }
 
     *lastt = 0;
-    if (state->carrier == 1) {
-        state->sps_hunt_counter = 0;
-    }
     if (opts->mod_cli_lock) {
         return;
     }
@@ -2733,6 +2731,11 @@ dsd_frame_sync_test_eval_window(dsd_opts* opts, dsd_state* state, const char* sy
 
 static void
 frame_sync_advance_sync_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
+    /* One more symbol spent looking for a sync on this profile. Unlike synctest_pos this
+     * lives in dsd_state, so returning a sync does not hand the profile a fresh budget. */
+    if (state->sps_hunt_counter < INT_MAX) {
+        state->sps_hunt_counter++;
+    }
     if (rt->synctest_pos < 10200) {
         rt->synctest_pos++;
         return;
@@ -2930,17 +2933,52 @@ frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-void
+/** @brief Symbols a profile is owed before the hunt may leave it. */
+static int
+frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) {
+    int passes = dsd_frame_sync_sps_hunt_dwell_passes(opts, state);
+    if (passes < 1) {
+        passes = 1;
+    }
+    return passes * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+}
+
+/**
+ * @brief Fold what the last frame handler consumed into the hunt's budget.
+ *
+ * Called on entry to getFrameSync(), where dsd_state::symbolcnt has advanced by exactly
+ * the symbols a protocol handler took since the previous return. A handler that consumed
+ * a whole no-sync pass is decoding something here, so the profile keeps its place; the
+ * eight dibits an unproductive sync costs never add up to that.
+ */
+static void
+frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
+    const unsigned int delta = (unsigned int)state->symbolcnt - (unsigned int)state->sps_hunt_symbolcnt_mark;
+    const unsigned int pass = (unsigned int)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    unsigned int consumed = (unsigned int)state->sps_hunt_consumed;
+    consumed = (delta >= pass || consumed >= pass - delta) ? pass : consumed + delta;
+    if (consumed >= pass) {
+        state->sps_hunt_counter = 0;
+        consumed = 0;
+    }
+    state->sps_hunt_consumed = (int)consumed;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+}
+
+/** @brief Remember where the handler starts consuming, so the next call can measure it. */
+static void
+frame_sync_sps_hunt_mark_return(dsd_state* state) {
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+}
+
+int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     const int preserve_modulation = opts->mod_cli_lock ? 1 : 0;
-    if (state->carrier != 0) {
-        return;
-    }
-    state->sps_hunt_counter++;
-    if (state->sps_hunt_counter < dsd_frame_sync_sps_hunt_dwell_passes(opts, state)) {
-        return;
+    if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
+        return 0;
     }
     state->sps_hunt_counter = 0;
+    state->sps_hunt_consumed = 0;
 
     /* Generic modulation locks retain their demodulator while rotating equal-timing protocol gates. A P25p2-specific
      * lock retains whichever P25 profile was selected explicitly by the helper or by a CC retune. This keeps a known
@@ -2954,7 +2992,9 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
                        ? state->sps_hunt_idx
                        : (preserve_modulation ? frame_sync_sps_hunt_next_index_matching_timing(opts, state)
                                               : frame_sync_sps_hunt_next_index(opts, state));
+    const int previous_idx = state->sps_hunt_idx;
     frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
+    return state->sps_hunt_idx != previous_idx;
 }
 
 double
@@ -3018,7 +3058,7 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
 
 static int
 frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt, time_t now) {
-    if (state->lastsynctype == DSD_SYNC_P25P1_NEG || rt->synctest_pos < 1800) {
+    if (state->lastsynctype == DSD_SYNC_P25P1_NEG || rt->synctest_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
         return 0;
     }
 
@@ -3027,7 +3067,7 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
         DSD_FPRINTF(stderr, "Sync: no sync\n");
     }
 
-    frame_sync_no_sync_sps_hunt(opts, state);
+    (void)frame_sync_no_sync_sps_hunt(opts, state);
     dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
     frame_sync_no_sync_try_p25_release(opts, state, now);
     dsd_frame_sync_hook_no_carrier(opts, state);
@@ -3087,6 +3127,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     const double nowm = dsd_time_now_monotonic_s();
     frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
     frame_sync_apply_cli_mod_lock(opts, state);
+    frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);
 
     frame_sync_runtime_ctx rt;
@@ -3112,6 +3153,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             int sync_type = frame_sync_eval_window(opts, state, &rt, now, nowm);
             if (sync_type != DSD_SYNC_NONE) {
                 g_unsynced_dmr_dump_symbols = 0;
+                frame_sync_sps_hunt_mark_return(state);
                 return sync_type;
             }
         }
@@ -3119,11 +3161,23 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
 
         if (dsd_exitflag_load() == 1) {
             dsd_request_shutdown(opts, state);
+            frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
 
         frame_sync_advance_sync_window(opts, state, &rt);
         if (frame_sync_handle_no_sync_timeout(opts, state, &rt, now)) {
+            frame_sync_sps_hunt_mark_return(state);
+            return -1;
+        }
+
+        /* The timeout above is the usual trigger, but it needs 1800 matchless symbols
+         * inside one call. Syncs arriving more often than that -- the permissive 4800/4
+         * matchers do, on signals belonging to another profile entirely -- would otherwise
+         * keep the hunt from ever running. The budget spans calls, so they cannot. */
+        if (frame_sync_no_sync_sps_hunt(opts, state)) {
+            dsd_frame_sync_hook_no_carrier(opts, state);
+            frame_sync_sps_hunt_mark_return(state);
             return -1;
         }
     }

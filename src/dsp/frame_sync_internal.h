@@ -11,6 +11,14 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Symbols one no-sync pass is worth.
+ *
+ * The no-sync timeout fires after this many consecutive matchless symbols, and the SPS
+ * hunt's dwell is a whole number of these (see dsd_frame_sync_sps_hunt_dwell_passes()).
+ */
+#define DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS 1800
+
 /** @brief One entry of the SPS hunt's rate/level table, indexed by dsd_state::sps_hunt_idx. */
 typedef struct {
     int symbol_rate_hz;
@@ -31,7 +39,8 @@ int frame_sync_best_nxdn_scaled_ham(const char* symbols10, int best_start);
 int frame_sync_sps_hunt_next_index(const dsd_opts* opts, const dsd_state* state);
 void frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, int preserve_modulation);
 void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* state);
-void frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
+/** @brief Step the SPS hunt if the active profile has spent its symbol budget; 1 if it moved. */
+int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);
 void frame_sync_p25_slot_activity(const dsd_opts* opts, const dsd_state* state, time_t now, double nowm,
                                   double mac_hold, double ring_hold, double dt, int* left_active, int* right_active);

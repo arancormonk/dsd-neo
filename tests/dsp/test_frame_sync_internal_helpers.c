@@ -313,7 +313,7 @@ test_sps_hunt_profile_updates_timing(void) {
     opts.frame_dstar = 1;
     opts.mod_cli_lock = 1;
     state.sps_hunt_idx = 4;
-    state.sps_hunt_counter = 100;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
     frame_sync_no_sync_sps_hunt(&opts, &state);
@@ -334,7 +334,7 @@ test_sps_hunt_profile_updates_timing(void) {
     opts.mod_gfsk = 1;
     state.rf_mod = 2;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
     state.min = -3.0f;
@@ -360,7 +360,7 @@ test_sps_hunt_profile_updates_timing(void) {
     opts.mod_c4fm = 1;
     state.rf_mod = 0;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
     state.samplesPerSymbol = 10;
     state.symbolCenter = 4;
     state.min = -3.0f;
@@ -385,7 +385,7 @@ test_sps_hunt_profile_updates_timing(void) {
     opts.mod_p25p2_profile_lock = 1;
     state.rf_mod = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
-    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
     state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 0);
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
     state.min = -3.0f;
@@ -410,7 +410,7 @@ test_sps_hunt_profile_updates_timing(void) {
     opts.mod_p25p2_profile_lock = 1;
     state.rf_mod = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
     state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 4800, 0);
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
     state.min = -3.0f;
@@ -430,7 +430,7 @@ test_sps_hunt_profile_updates_timing(void) {
     opts.mod_qpsk = 1;
     state.rf_mod = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
-    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) - 1;
+    state.sps_hunt_counter = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
     state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 0);
     state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
     frame_sync_no_sync_sps_hunt(&opts, &state);
@@ -450,6 +450,55 @@ test_sps_hunt_profile_updates_timing(void) {
     assert(state.sps_hunt_idx == 3);
     assert(state.samplesPerSymbol == 20);
     assert(state.symbolCenter == 8);
+}
+
+/*
+ * The hunt's dwell is a symbol budget that survives sync returns (issue #388). A sync that
+ * raises carrier but yields no frame used to stop the hunt outright: it blocked the step and
+ * zeroed the dwell. Only symbols a frame handler actually consumes buy the profile more time.
+ */
+static void
+test_sps_hunt_budget_is_spent_in_symbols(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.frame_dstar = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+
+    /* One symbol short of the budget the profile keeps its place. */
+    state.sps_hunt_counter = dwell - 1;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.sps_hunt_counter == dwell - 1);
+
+    /* Carrier is not a veto. An unproductive sync raises it, and the hunt still steps. */
+    state.carrier = 1;
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.sps_hunt_consumed == 0);
+}
+
+/* Carrier no longer wipes the hunt's progress from the modulation-switch path. */
+static void
+test_carrier_does_not_reset_the_hunt_budget(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_c4fm = 1;
+    state.carrier = 1;
+    state.sps_hunt_counter = 1234;
+
+    int lastt = 0;
+    for (int i = 0; i < 48; i++) {
+        frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    }
+    assert(state.sps_hunt_counter == 1234);
 }
 
 static void
@@ -1682,6 +1731,8 @@ main(void) {
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();
     test_sps_hunt_reconciles_external_timing();
+    test_sps_hunt_budget_is_spent_in_symbols();
+    test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();
     test_nxdn_variant_follows_active_profile();

@@ -299,11 +299,15 @@ Notes
 - On RTL-family FSK input the decoder's symbol timing follows the hunt profile from the moment the hunt selects it. The
   matching front-end channel profile is requested asynchronously and is applied by the demod thread on its next block,
   so the two are briefly out of step after every hunt step; decoding does not wait for the front end to catch up.
-- The hunt dwells on each candidate profile for a bounded number of buffer passes, so a full rotation over the five
-  profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
+- The hunt dwells on each candidate profile for a bounded budget of symbols searched for sync, so a full rotation over
+  the five profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
   rotation can therefore be missed entirely even though the same capture decodes under its native preset -- Auto
   converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short
   bursts. Name the narrower preset when you already know the mode and cannot afford the search.
+- What holds a profile is decoded frames, not detected syncs. The budget is spent by searching and refunded only when
+  frame handlers consume a pass worth of symbols, so a profile carrying real traffic is never rotated away from, while
+  the occasional sync that no protocol turns into a frame -- the permissive 4800/4 matchers produce these on signals
+  belonging to another profile -- neither holds the profile nor resets the dwell.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
