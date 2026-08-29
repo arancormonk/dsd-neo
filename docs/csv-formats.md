@@ -76,7 +76,7 @@ Notes:
   `number,number` shape.
 - Extra columns are ignored; use them for labels like "default CC".
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
-  so keep rows in the LCN order you want. The LCN list stores at most 26 frequencies.
+  so keep rows in the LCN order you want. The LCN list has no length limit; it is bounded only by memory.
 
 Example:
 

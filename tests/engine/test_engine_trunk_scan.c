@@ -718,6 +718,7 @@ make_runtime_targets(const char* body, char* out_path, size_t out_sz, char* out_
 static void
 reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_scan_enabled = 1;
@@ -1022,6 +1023,90 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     test_rc |= expect_target0_p25_state(&state);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A per-target scan list longer than the embedded slots lives in dsd_state's heap tail, so
+ * the snapshot has to carry that tail across a rotation and hand it back intact. Nothing
+ * else in the suite drives trunk_scan_snapshot_lcn_ext_reserve() or the bounded restore. */
+static int
+test_coordinator_preserves_long_lcn_list_across_rotation(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "long lcn list scan init failed err=%s\n", err);
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        trunk_scan_test_clear_now();
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+
+    enum { LONG_LCN_COUNT = 40 };
+
+    if (dsd_state_trunk_lcn_reserve(&state, (size_t)LONG_LCN_COUNT) != 0) {
+        DSD_FPRINTF(stderr, "could not reserve a %d-entry scan list\n", (int)LONG_LCN_COUNT);
+        test_rc = 1;
+    } else {
+        for (int i = 0; i < LONG_LCN_COUNT; i++) {
+            *dsd_state_trunk_lcn_slot(&state, i) = 851000000L + 12500L * (long)i;
+        }
+        state.lcn_freq_count = LONG_LCN_COUNT;
+        state.lcn_freq_roll = 30;
+    }
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+        DSD_FPRINTF(stderr, "long lcn list scan did not rotate to target 1\n");
+        test_rc = 1;
+    }
+    if (state.lcn_freq_count > DSD_TRUNK_LCN_EMBEDDED) {
+        DSD_FPRINTF(stderr, "target 0's scan list leaked into target 1 (count=%d)\n", state.lcn_freq_count);
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "long lcn list scan did not rotate back to target 0\n");
+        test_rc = 1;
+    }
+    if (state.lcn_freq_count != LONG_LCN_COUNT || state.lcn_freq_roll != 30) {
+        DSD_FPRINTF(stderr, "scan list was truncated across the rotation: count=%d roll=%d\n", state.lcn_freq_count,
+                    state.lcn_freq_roll);
+        test_rc = 1;
+    } else {
+        for (int i = 0; i < LONG_LCN_COUNT; i++) {
+            const long want = 851000000L + 12500L * (long)i;
+            if (*dsd_state_trunk_lcn_slot(&state, i) != want) {
+                DSD_FPRINTF(stderr, "scan list slot %d restored as %ld, want %ld\n", i,
+                            *dsd_state_trunk_lcn_slot(&state, i), want);
+                test_rc = 1;
+                break;
+            }
+        }
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_state_trunk_lcn_free(&state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -4609,6 +4694,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
+    rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_lifecycle_isolated_per_target);
     rc |= run_with_default_tune_hook(test_call_event_current_rows_isolated_per_target);

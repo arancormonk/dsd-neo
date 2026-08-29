@@ -334,7 +334,14 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  */
 static int
 chan_map_adopt(dsd_state* dst, const dsd_state* src) {
-    if (dsd_state_trunk_lcn_reserve(dst, (size_t)src->lcn_freq_count) != 0) {
+    // src is an arbitrary dsd_state*, so the sign and the tail are checked here rather
+    // than inherited from the importer: a negative count would become a huge size_t.
+    const int src_count = src->lcn_freq_count > 0 ? src->lcn_freq_count : 0;
+    if (src_count > DSD_TRUNK_LCN_EMBEDDED && src->trunk_lcn_freq_ext == NULL) {
+        LOG_ERROR("channel map adopt has no scan-list tail for %d entries\n", src_count);
+        return -1;
+    }
+    if (dsd_state_trunk_lcn_reserve(dst, (size_t)src_count) != 0) {
         LOG_ERROR("channel map adopt out of memory\n");
         return -1;
     }
@@ -342,11 +349,11 @@ chan_map_adopt(dsd_state* dst, const dsd_state* src) {
     DSD_MEMCPY(dst->trunk_chan_map_used, src->trunk_chan_map_used, sizeof dst->trunk_chan_map_used);
     dst->trunk_chan_map_used_count = src->trunk_chan_map_used_count;
     DSD_MEMCPY(dst->trunk_lcn_freq, src->trunk_lcn_freq, sizeof dst->trunk_lcn_freq);
-    if (src->lcn_freq_count > 26) {
+    if (src_count > DSD_TRUNK_LCN_EMBEDDED) {
         DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext,
-                   (size_t)(src->lcn_freq_count - 26) * sizeof(dst->trunk_lcn_freq_ext[0]));
+                   (size_t)(src_count - DSD_TRUNK_LCN_EMBEDDED) * sizeof(dst->trunk_lcn_freq_ext[0]));
     }
-    dst->lcn_freq_count = src->lcn_freq_count;
+    dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;

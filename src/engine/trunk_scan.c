@@ -78,7 +78,7 @@ typedef struct {
     long int p25_vc_freq[2];
     long int trunk_vc_freq[2];
     time_t p25_patch_last_update[8];
-    long int trunk_lcn_freq[26];
+    long int trunk_lcn_freq[DSD_TRUNK_LCN_EMBEDDED];
     long int* trunk_lcn_freq_ext;
     size_t trunk_lcn_freq_ext_count;
     size_t trunk_lcn_freq_ext_capacity;
@@ -838,6 +838,8 @@ trunk_scan_snapshot_lcn_ext_reserve(dsd_trunk_scan_snapshot* snapshot, size_t ex
     if (!ext) {
         return -1;
     }
+    DSD_MEMSET(ext + snapshot->trunk_lcn_freq_ext_capacity, 0,
+               (capacity - snapshot->trunk_lcn_freq_ext_capacity) * sizeof *ext);
     snapshot->trunk_lcn_freq_ext = ext;
     snapshot->trunk_lcn_freq_ext_capacity = capacity;
     return 0;
@@ -962,15 +964,15 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     DSD_MEMCPY(snapshot->trunk_vc_freq, state->trunk_vc_freq, sizeof(snapshot->trunk_vc_freq));
     trunk_scan_save_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(snapshot->trunk_lcn_freq, state->trunk_lcn_freq, sizeof(snapshot->trunk_lcn_freq));
-    if (state->lcn_freq_count > 26) {
-        const size_t ext_count = (size_t)state->lcn_freq_count - 26;
+    if (state->lcn_freq_count > DSD_TRUNK_LCN_EMBEDDED) {
+        const size_t ext_count = (size_t)state->lcn_freq_count - (size_t)DSD_TRUNK_LCN_EMBEDDED;
         if (trunk_scan_snapshot_lcn_ext_reserve(snapshot, ext_count) == 0) {
             DSD_MEMCPY(snapshot->trunk_lcn_freq_ext, state->trunk_lcn_freq_ext,
                        ext_count * sizeof(snapshot->trunk_lcn_freq_ext[0]));
             snapshot->trunk_lcn_freq_ext_count = ext_count;
         } else {
             /* Tail capture failed; the dmr save clamps the snapshot count to
-             * the 26 embedded slots so the snapshot stays self-consistent. */
+             * the embedded slots so the snapshot stays self-consistent. */
             snapshot->trunk_lcn_freq_ext_count = 0;
         }
     } else {
@@ -1177,8 +1179,12 @@ trunk_scan_save_dmr_snapshot(const dsd_state* state, dsd_trunk_scan_snapshot* sn
     snapshot->dmr_rest_channel = state->dmr_rest_channel;
     snapshot->lcn_freq_count = state->lcn_freq_count;
     snapshot->lcn_freq_roll = state->lcn_freq_roll;
-    if (snapshot->lcn_freq_count > 26 && snapshot->trunk_lcn_freq_ext_count == 0) {
-        snapshot->lcn_freq_count = 26;
+    /* Compare against the tail actually captured rather than testing it for 0: the clamp then
+     * holds whatever order the per-protocol savers run in, instead of depending on
+     * trunk_scan_save_p25_identity_snapshot() having refreshed ext_count first. */
+    if (snapshot->lcn_freq_count > DSD_TRUNK_LCN_EMBEDDED
+        && snapshot->trunk_lcn_freq_ext_count < (size_t)(snapshot->lcn_freq_count - DSD_TRUNK_LCN_EMBEDDED)) {
+        snapshot->lcn_freq_count = DSD_TRUNK_LCN_EMBEDDED;
         snapshot->lcn_freq_roll = 0;
     }
     snapshot->is_con_plus = state->is_con_plus;
@@ -1199,12 +1205,19 @@ trunk_scan_restore_dmr_snapshot(dsd_state* state, const dsd_trunk_scan_snapshot*
     state->dmr_rest_channel = snapshot->dmr_rest_channel;
     state->lcn_freq_roll = snapshot->lcn_freq_roll;
     state->lcn_freq_count = snapshot->lcn_freq_count;
-    if (state->lcn_freq_count > 26) {
-        if (dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count) == 0) {
+    if (state->lcn_freq_count > DSD_TRUNK_LCN_EMBEDDED) {
+        /* The tail the snapshot actually captured is authoritative, not lcn_freq_count:
+         * the save path clamps the count when the capture failed, but bounding the copy
+         * here means no save ordering can make this read past the snapshot buffer. */
+        const size_t ext_count = (size_t)state->lcn_freq_count - (size_t)DSD_TRUNK_LCN_EMBEDDED;
+        if (snapshot->trunk_lcn_freq_ext != NULL && ext_count <= snapshot->trunk_lcn_freq_ext_count
+            && dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count) == 0) {
             DSD_MEMCPY(state->trunk_lcn_freq_ext, snapshot->trunk_lcn_freq_ext,
-                       (size_t)(state->lcn_freq_count - 26) * sizeof(state->trunk_lcn_freq_ext[0]));
+                       ext_count * sizeof(state->trunk_lcn_freq_ext[0]));
         } else {
-            state->lcn_freq_count = 26;
+            LOG_WARN("WARNING: Trunk scan could not restore %d scan-list entries; keeping the first %d\n",
+                     snapshot->lcn_freq_count, (int)DSD_TRUNK_LCN_EMBEDDED);
+            state->lcn_freq_count = DSD_TRUNK_LCN_EMBEDDED;
             state->lcn_freq_roll = 0;
         }
     }
@@ -1668,7 +1681,10 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
     trunk_scan_seed_empty_snapshot(empty_snapshot, opts, state);
     double now_m = trunk_scan_now_m();
 
-    for (size_t i = 0; i < list->count; i++) {
+    /* coord->count is what coord->targets was sized to, so it -- not the caller's list --
+     * bounds the fill. */
+    const size_t build_count = list->count < coord->count ? list->count : coord->count;
+    for (size_t i = 0; i < build_count; i++) {
         dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
         rt->target = list->targets[i];
         trunk_scan_restore_snapshot(state, empty_snapshot);
@@ -2272,13 +2288,15 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
         scan_set_error(err, err_sz, "failed to allocate trunk scan coordinator");
         return NULL;
     }
-    coord->count = list->count;
+    /* count is what trunk_scan_coord_free() walks, so publish it only once the array
+     * it indexes exists. */
     coord->targets = (dsd_trunk_scan_target_runtime*)calloc(list->count, sizeof *coord->targets);
     if (!coord->targets) {
         scan_set_error(err, err_sz, "failed to allocate trunk scan targets");
-        free(coord);
+        trunk_scan_coord_free(coord);
         return NULL;
     }
+    coord->count = list->count;
     trunk_scan_capture_saved_opts(coord, opts);
     return coord;
 }

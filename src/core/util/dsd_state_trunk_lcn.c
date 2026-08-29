@@ -5,7 +5,7 @@
 
 /**
  * @file
- * @brief Scan-list heap tail (slots past the 26 embedded trunk_lcn_freq[]).
+ * @brief Scan-list heap tail (slots past the embedded trunk_lcn_freq[]).
  *
  * Kept out of dsd_init.c so test targets that link individual core sources
  * (menu services, UI snapshot, trunk scan) can attach the real implementation
@@ -23,10 +23,10 @@ dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed) {
     if (!state) {
         return -1;
     }
-    if (count_needed <= 26) {
+    if (count_needed <= (size_t)DSD_TRUNK_LCN_EMBEDDED) {
         return 0;
     }
-    const size_t ext_needed = count_needed - 26;
+    const size_t ext_needed = count_needed - (size_t)DSD_TRUNK_LCN_EMBEDDED;
     if (ext_needed <= state->trunk_lcn_freq_ext_capacity) {
         return 0;
     }

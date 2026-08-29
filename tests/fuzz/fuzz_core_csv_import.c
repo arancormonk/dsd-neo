@@ -68,6 +68,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
 
     dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
     free(state);
     free(opts);
     (void)remove(path);
