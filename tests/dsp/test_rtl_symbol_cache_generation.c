@@ -8,6 +8,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
@@ -246,6 +247,7 @@ reset_decoder_fixture(dsd_opts* opts, dsd_state* state, void* rtl_context) {
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->symboltiming = 0;
     state->rf_mod = 2;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->rtl_ctx = (struct RtlSdrContext*)rtl_context;
 }
 
@@ -412,6 +414,7 @@ main(void) {
     g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
     g_read_base = 2000.0f;
     g_read_base_step = 4.0f;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
     float nxdn_symbol = getSymbol(&opts, &state, 1);
     if (fabsf(nxdn_symbol - 2009.7778f) >= 0.01f) {
         DSD_FPRINTF(stderr, "FSK discriminator generation-change symbol %.4f\n", nxdn_symbol);
@@ -424,6 +427,50 @@ main(void) {
     assert(state.rtl_symbol_cache_channel_profile == RTL_STREAM_CHANNEL_PROFILE_6K25);
     assert(state.rtl_symbol_cache_levels == 2);
 
+    /*
+     * The SPS hunt owns discriminator timing, not the front end's published rate.
+     * A hunt step only queues its RTL profile request for the demod thread, so the
+     * published rate lags it -- and under fast I/Q replay of a fixture that fits in
+     * the output ring it never moves at all. Slicing on the lagging rate put timing
+     * back on the old profile after every hunt step, which
+     * frame_sync_ensure_enabled_sps_profile() then read as "the hunt is on the old
+     * profile", cancelling the step and pinning AUTO to 4800/4 (issue #374).
+     */
+    reset_stream_fixture();
+    reset_decoder_fixture(&opts, &state, &fake_rtl_context);
+    g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+    g_output_rate_hz = 48000U;
+    g_symbol_rate_hz = 4800;
+    g_symbol_levels = 4;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+    g_read_base = 1000.0f;
+    g_read_base_step = 4.0f;
+
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 10);
+
+    /* Hunt steps to 2400/4; the front end has not caught up (same generation, same
+       published 4800/12.5 kHz profile). Timing must follow the hunt regardless. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 20);
+    assert(state.symbolCenter == dsd_opts_symbol_center(20));
+    assert(g_symbol_rate_hz == 4800);
+
+    /* The front end catching up later changes nothing the hunt did not already ask for. */
+    g_stream_generation++;
+    g_symbol_rate_hz = 2400;
+    g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_6K25;
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 20);
+
+    /* And the reverse: a published 2400 rate must not hold timing at 2400 once the
+       hunt has rotated on to a 4800 profile. */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    (void)getSymbol(&opts, &state, 1);
+    assert(state.samplesPerSymbol == 10);
+    assert(state.symbolCenter == dsd_opts_symbol_center(10));
+
     reset_stream_fixture();
     reset_decoder_fixture(&opts, &state, &fake_rtl_context);
     g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
@@ -433,6 +480,7 @@ main(void) {
     g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_PROVOICE;
     g_read_base = 5000.0f;
     g_read_base_step = 4.0f;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
 
     g_max_read_calls = 2;
     assert(getSymbol(&opts, &state, 0) == 5000.0f);

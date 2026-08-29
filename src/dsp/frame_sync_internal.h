@@ -11,6 +11,15 @@
 extern "C" {
 #endif
 
+/** @brief One entry of the SPS hunt's rate/level table, indexed by dsd_state::sps_hunt_idx. */
+typedef struct {
+    int symbol_rate_hz;
+    int levels;
+} frame_sync_sps_profile;
+
+/** @brief The hunt profile at @p index; an out-of-range index yields the 4800/4 default. */
+const frame_sync_sps_profile* frame_sync_sps_profile_for_index(int index);
+
 void frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now);
 void frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt);
 int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);
