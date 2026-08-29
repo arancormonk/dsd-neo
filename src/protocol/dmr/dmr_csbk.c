@@ -1251,12 +1251,44 @@ dmr_cspdu_pf0_c_bcast_print_unknown_cdef(const dmr_cspdu_pf0_c_bcast_fields* f, 
     DSD_FPRINTF(stderr, " RES2: %X;", f->mbc_res2);
 }
 
+/*
+ * Ceiling on frequencies learned from site broadcasts. Held at the embedded slot count so
+ * over-the-air data can never drive a heap allocation; the reserve call below keeps the
+ * function correct if that ever changes.
+ */
+enum { DMR_CSBK_LEARNED_LCN_MAX = DSD_TRUNK_LCN_EMBEDDED };
+
+/*
+ * Remember a frequency announced by C_BCAST Chan_Freq as a control-channel hunt candidate.
+ *
+ * Appends distinct frequencies rather than writing modulo a fixed window: the scan list is no
+ * longer capped at a handful of slots, so a modular write would clobber a learned entry and
+ * assigning the count would truncate the list to the window size. An operator-supplied map is
+ * left untouched entirely - it is positional (index i is LCN i+1), so appending site-announced
+ * frequencies to it would break that numbering, and the announced channel is already recorded
+ * in the sparse channel map by the caller either way.
+ */
 static void
-dmr_cspdu_pf0_c_bcast_track_freq(dsd_state* state, long freqr) {
-    state->trunk_lcn_freq[state->lcn_freq_count++ % 25] = freqr;
-    if (state->lcn_freq_count > 25) {
-        state->lcn_freq_count = 25;
+dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long freqr) {
+    if (freqr == 0 || dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        return;
     }
+    if (state->lcn_freq_count < 0) {
+        state->lcn_freq_count = 0;
+    }
+    for (int i = 0; i < state->lcn_freq_count; i++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, i) == freqr) {
+            return;
+        }
+    }
+    if (state->lcn_freq_count >= DMR_CSBK_LEARNED_LCN_MAX) {
+        return;
+    }
+    if (dsd_state_trunk_lcn_reserve(state, (size_t)state->lcn_freq_count + 1U) != 0) {
+        return;
+    }
+    *dsd_state_trunk_lcn_slot(state, state->lcn_freq_count) = freqr;
+    state->lcn_freq_count++;
 }
 
 static void
@@ -1265,7 +1297,7 @@ dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint
         return;
     }
     dsd_state_set_trunk_chan_freq(state, (uint32_t)a_channel, freqr);
-    dmr_cspdu_pf0_c_bcast_track_freq(state, freqr);
+    dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
     const long cand[1] = {freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }

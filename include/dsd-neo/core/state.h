@@ -17,6 +17,7 @@
 #include <dsd-neo/platform/platform.h>
 
 #include <dsd-neo/core/input_level.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -1428,6 +1429,19 @@ int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
  * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
+
+/**
+ * Whether the scan list is operator-supplied rather than learned over the air.
+ *
+ * A `-C`/`-Y` channel map, or a per-target chan_csv under trunk scan, is
+ * positional: index i is LCN i+1, and an unparseable row deliberately stores 0
+ * to keep that numbering. Protocol site broadcasts must therefore neither write
+ * into such a list nor lower lcn_freq_count to the handful of slots they know
+ * about. Trunk scan rejects a global chan_in_file at init and seeds slot 0 with
+ * the target's park frequency, so under -Y a count above 1 is the only evidence
+ * a per-target map was imported.
+ */
+int dsd_state_trunk_lcn_user_list_present(const dsd_opts* opts, const dsd_state* state);
 
 static inline int
 dsd_state_minmax_window_size(int requested) {
