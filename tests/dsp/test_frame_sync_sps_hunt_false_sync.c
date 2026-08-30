@@ -243,17 +243,26 @@ init_state_buffers(dsd_state* state) {
     return 1;
 }
 
-/* AUTO (-fa): every digital candidate enabled, C4FM pinned so the run stays
- * deterministic (the hunt then rotates among equal-timing profiles). */
+/* Every digital candidate enabled, C4FM selected, timing on the 4800/4 profile: the
+ * shape both AUTO and a generic modulation lock start from. @p mod_cli_lock is the only
+ * thing separating them, and it is what decides how the hunt rotates:
+ *
+ * - 0 is `-fa`. decode_mode_apply_auto() only ever reads mod_cli_lock, so AUTO leaves the
+ *   dsd_init.c default of 0 in place. The hunt is then a plain round-robin over enabled
+ *   profiles (frame_sync_sps_hunt_next_index()) and reprograms symbol timing at each step.
+ * - 1 is `-mc` and its siblings, the only writers of the flag. The hunt is confined to
+ *   profiles whose timing already matches (frame_sync_sps_hunt_next_index_matching_timing())
+ *   and frame_sync_apply_sps_profile_timing() returns without touching samplesPerSymbol.
+ */
 static void
-init_auto_opts_state(dsd_opts* opts, dsd_state* state) {
+init_hunt_opts_state(dsd_opts* opts, dsd_state* state, int mod_cli_lock) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
 
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->wav_sample_rate = 96000;
     opts->wav_decimator = 48000;
-    opts->mod_cli_lock = 1;
+    opts->mod_cli_lock = mod_cli_lock;
     opts->mod_c4fm = 1;
     opts->msize = 1;
     opts->ssize = 128;
@@ -292,7 +301,8 @@ typedef struct {
     int handler_symbols;                                 /* symbols the "protocol handler" consumes per returned sync */
     long symbol_budget;                                  /* stop after this many symbols leave the source */
     int expect_step;                                     /* 1 = the hunt must leave its starting profile */
-    void (*configure)(dsd_opts* opts, dsd_state* state); /* optional setup on top of the AUTO defaults */
+    int mod_cli_lock;                                    /* 0 = AUTO (-fa), 1 = a generic modulation lock (-mc) */
+    void (*configure)(dsd_opts* opts, dsd_state* state); /* optional setup on top of the defaults */
 } HuntCase;
 
 typedef struct {
@@ -300,6 +310,7 @@ typedef struct {
     long symbols_at_step;
     int syncs_seen;
     int final_idx;
+    int final_sps; /* samplesPerSymbol after the step: what the profile change reprogrammed timing to */
 } HuntResult;
 
 /* The engine's shape: getFrameSync() in a loop, each sync handed to a handler that
@@ -308,9 +319,9 @@ static HuntResult
 drive_hunt(const HuntCase* tc) {
     static dsd_opts opts;
     static dsd_state state;
-    HuntResult result = {0, 0, 0, 0};
+    HuntResult result = {0, 0, 0, 0, 0};
 
-    init_auto_opts_state(&opts, &state);
+    init_hunt_opts_state(&opts, &state, tc->mod_cli_lock);
     if (tc->configure) {
         tc->configure(&opts, &state);
     }
@@ -339,6 +350,7 @@ drive_hunt(const HuntCase* tc) {
     }
 
     result.final_idx = state.sps_hunt_idx;
+    result.final_sps = state.samplesPerSymbol;
     free_state_buffers(&state);
     if (result.stepped != tc->expect_step) {
         DSD_FPRINTF(stderr, "%s: gap %d, handler %d -> stepped=%d after %ld symbols (%d syncs)\n", tc->label,
@@ -346,6 +358,22 @@ drive_hunt(const HuntCase* tc) {
     }
     assert(result.stepped == tc->expect_step);
     return result;
+}
+
+/* Timing the profiles carry at this suite's 96 kHz input, per dsd_opts_compute_sps_rate():
+ * both 4800 symbol/s profiles land on 20 samples per symbol, the 2400 one on 40. Asserting
+ * these is how a case sees that a step reprogrammed timing rather than only moving the index. */
+#define HUNT_SPS_4800 20
+#define HUNT_SPS_2400 40
+
+/* Where an unlocked (AUTO) hunt goes from the 4800/4 start: plain round-robin lands on the
+ * next enabled profile regardless of timing, and drags samplesPerSymbol with it. This is the
+ * step the -fa I/Q replay checks watch for as "SPS hunt: trying <n> sps". */
+static void
+assert_auto_stepped_to_2400_4(const HuntResult* r) {
+    assert(r->stepped == 1);
+    assert(r->final_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
+    assert(r->final_sps == HUNT_SPS_2400);
 }
 
 /* #388: isolated syncs that no handler turns into a frame must not pin the hunt. */
@@ -364,8 +392,7 @@ test_false_syncs_do_not_starve_the_hunt(void) {
     const HuntResult r = drive_hunt(&tc);
 
     assert(r.syncs_seen > 10);
-    assert(r.stepped == 1);
-    assert(r.final_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert_auto_stepped_to_2400_4(&r);
     /* The hunt owes the profile one full dwell before it may leave, and must not
      * need much more than that. */
     const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
@@ -398,8 +425,7 @@ test_dense_false_syncs_do_not_starve_the_hunt(void) {
         const HuntResult r = drive_hunt(&tc);
 
         assert(r.syncs_seen > 10);
-        assert(r.stepped == 1);
-        assert(r.final_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+        assert_auto_stepped_to_2400_4(&r);
         /* The dwell the idle case gets, regardless of how often the matcher fired. */
         const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
         assert(r.symbols_at_step >= dwell_symbols);
@@ -422,8 +448,7 @@ test_sub_frame_consumption_never_buys_dwell(void) {
     };
     const HuntResult r = drive_hunt(&tc);
 
-    assert(r.stepped == 1);
-    assert(r.final_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert_auto_stepped_to_2400_4(&r);
     /* The budget is spent in searched symbols; symbols_at_step also counts what the
      * handler swallowed, which at this cadence is nearly one per symbol searched. */
     const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
@@ -450,6 +475,7 @@ test_consumed_frames_hold_the_profile(void) {
     assert(r.syncs_seen > 50);
     assert(r.stepped == 0);
     assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
 }
 
 /* No signal at all: the rotation period is the one docs/cli.md documents. */
@@ -466,8 +492,35 @@ test_idle_rotation_period_is_unchanged(void) {
     const HuntResult r = drive_hunt(&tc);
 
     assert(r.syncs_seen == 0);
-    assert(r.stepped == 1);
+    assert_auto_stepped_to_2400_4(&r);
     /* Three no-sync passes of 1800 symbols, as before this change. */
+    const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    assert(r.symbols_at_step >= dwell_symbols);
+    assert(r.symbols_at_step < dwell_symbols + 200);
+}
+
+/* The locked half of the contract, and the other rotation the hunt has: under a generic
+ * modulation lock (-mc) frame_sync_no_sync_sps_hunt() takes the equal-timing walk instead,
+ * so from 4800/4 it reaches the only other 20-sps profile, D-STAR's 4800/2, and
+ * frame_sync_apply_sps_profile_timing() leaves samplesPerSymbol alone. Same dwell either way:
+ * the lock decides where the hunt goes, never how long it stays. */
+static void
+test_locked_modulation_rotates_within_equal_timing(void) {
+    const HuntCase tc = {
+        .label = "idle hunt under -mc",
+        .marker = "",
+        .marker_gap = 0,
+        .handler_symbols = 0,
+        .symbol_budget = 40000,
+        .expect_step = 1,
+        .mod_cli_lock = 1,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen == 0);
+    assert(r.stepped == 1);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    assert(r.final_sps == HUNT_SPS_4800);
     const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
     assert(r.symbols_at_step >= dwell_symbols);
     assert(r.symbols_at_step < dwell_symbols + 200);
@@ -541,7 +594,9 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
     const HuntResult r = drive_hunt(&tc);
     dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
 
-    assert(r.stepped == 1);
+    /* Same AUTO step the other stepping cases assert: the budget exit is a different way out
+     * of the dwell, not a different rotation. */
+    assert_auto_stepped_to_2400_4(&r);
     assert(g_vc_no_sync_order > 0);
     assert(g_release_order > g_vc_no_sync_order);
     assert(g_no_carrier_order > g_release_order);
@@ -554,6 +609,7 @@ main(void) {
     test_sub_frame_consumption_never_buys_dwell();
     test_consumed_frames_hold_the_profile();
     test_idle_rotation_period_is_unchanged();
+    test_locked_modulation_rotates_within_equal_timing();
     test_budget_exit_runs_the_no_sync_hooks();
     return 0;
 }
