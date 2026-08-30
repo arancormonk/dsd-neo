@@ -343,8 +343,16 @@ main(void) {
     state->dmr_lrrp_target[1] = 5678U;
     state->dmr_data_target_is_group[0] = 1U;
     state->dmr_data_target_is_group[1] = 1U;
+    // NXDN's CRC evidence is per-transmission: carrying it across a carrier loss would let
+    // the next channel's first noise frame stop a scan and unmute (issue #398).
+    state->nxdn_confirmed = 1;
+    state->nxdn_confirm_weak_streak = 1;
+    state->nxdn_confirm_frame_evidence = 2;
 
     noCarrier(opts, state);
+
+    rc |= expect_true("nxdn-confirmation-reset", state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0
+                                                     && state->nxdn_confirm_frame_evidence == 0);
 
     dsd_call_snapshot ended_call;
     rc |= expect_true("no-carrier retains canonical snapshot", dsd_call_state_get(state, 0U, &ended_call) == 1);

@@ -11,6 +11,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "nxdn_confirm.h"
 
 static dsd_opts g_opts;
 static dsd_state g_state;
@@ -74,6 +76,21 @@ expect_string(const char* label, const char* got, const char* want) {
     return 0;
 }
 
+/* What each stubbed channel decoder reports about its CRC, standing in for the real
+ * decoders' verdicts. A frame proves itself the same way here as on the air: one strong
+ * CRC, or two frames running of a short one (issue #398). */
+static int g_stub_sacch_ok;
+static int g_stub_scch_ok;
+static int g_stub_cac_ok;
+static int g_stub_facch_ok;
+
+static void
+nxdn_stub_note_crc(dsd_state* state, int crc_ok, nxdn_evidence evidence) {
+    if (crc_ok) {
+        nxdn_confirm_note_evidence(state, evidence);
+    }
+}
+
 static void
 reset_state(void) {
     DSD_MEMSET(&g_opts, 0, sizeof(g_opts));
@@ -92,6 +109,12 @@ reset_state(void) {
     g_pich_tch_calls = 0;
     g_voice_calls = 0;
     g_last_voice = 0;
+    /* Existing cases are about routing, not the confirmation gate: give them a frame whose
+     * FACCH checks out, which is what a real transmission looks like. */
+    g_stub_sacch_ok = 0;
+    g_stub_scch_ok = 0;
+    g_stub_cac_ok = 1;
+    g_stub_facch_ok = 1;
     DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
     DSD_MEMSET(g_dibit_reliab_stream, 255, sizeof(g_dibit_reliab_stream));
     g_dibit_stream_pos = 0U;
@@ -180,7 +203,7 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
 void
 nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
     (void)opts;
-    (void)state;
+    nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
     g_sacch_calls++;
     g_last_sacch_bit = bits[0];
     g_last_sacch_reliab = reliab[0];
@@ -192,6 +215,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     (void)state;
     (void)bits;
     (void)reliab;
+    nxdn_stub_note_crc(state, g_stub_scch_ok, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
     g_facch_part_mask |= (int)direction << 8;
 }
@@ -199,7 +223,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
 void
 nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]) {
     (void)opts;
-    (void)state;
+    nxdn_stub_note_crc(state, g_stub_cac_ok, NXDN_EVIDENCE_STRONG);
     g_cac_calls++;
     g_last_cac_bit = bits[0];
     g_last_cac_reliab = reliab[0];
@@ -208,7 +232,7 @@ nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const 
 void
 nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], const uint8_t reliab[144], uint8_t part) {
     (void)opts;
-    (void)state;
+    nxdn_stub_note_crc(state, g_stub_facch_ok, NXDN_EVIDENCE_STRONG);
     g_facch_calls++;
     g_facch_part_mask |= 1 << part;
     g_last_facch_bit = bits[0];
@@ -499,6 +523,77 @@ test_lfsr_and_scanner_state(void) {
     return rc;
 }
 
+/*
+ * Issue #398: a sync word and a LICH are weak enough that receiver noise clears both, so a
+ * frame whose body proves nothing must not stop a scan, synthesize voice, or open a
+ * recording. What it may still do is set the carrier flag and print its diagnostic line.
+ */
+static int
+test_unconfirmed_frame_is_inert(void) {
+    int rc = 0;
+
+    reset_state();
+    g_opts.scanner_mode = 1;
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = g_stub_facch_ok = 0;
+    DSD_SNPRINTF(g_opts.mbe_out_dir, sizeof(g_opts.mbe_out_dir), "%s", "mbe");
+    g_state.last_cc_sync_time = 1000;
+    g_state.last_cc_sync_time_m = 7.0;
+
+    rc |= expect_int("unconfirmed voice frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("unconfirmed synthesizes no voice", g_voice_calls, 0);
+    rc |= expect_int("unconfirmed opens no mbe file", g_opts.mbe_out_f == NULL, 1);
+    rc |= expect_int("unconfirmed leaves scanner hold", (int)g_state.last_cc_sync_time, 1000);
+    rc |= expect_int("unconfirmed leaves mono hold", g_state.last_cc_sync_time_m == 7.0, 1);
+    rc |= expect_int("unconfirmed leaves vc sync", (int)g_state.last_vc_sync_time, 0);
+
+    /* One strong CRC is proof on its own, and the frame acts normally from then on. */
+    g_stub_facch_ok = 1;
+    rc |= expect_int("confirmed voice frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("confirmed synthesizes voice", g_voice_calls, 1);
+    rc |= expect_int("confirmed opens mbe file", g_opts.mbe_out_f == stdout, 1);
+    rc |= expect_int("confirmed extends scanner hold", g_state.last_cc_sync_time > 1000, 1);
+
+    return rc;
+}
+
+/* A short CRC has to repeat before it counts: one frame is pending, two running confirm. */
+static int
+test_short_crc_confirms_only_when_repeated(void) {
+    int rc = 0;
+
+    reset_state();
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = g_stub_facch_ok = 0;
+    g_stub_sacch_ok = 1;
+
+    rc |= expect_int("first weak frame routed", route_frame(0x30U), 1);
+    rc |= expect_int("first weak frame pending", nxdn_confirm_is_confirmed(&g_state), 0);
+    rc |= expect_int("first weak frame silent", g_voice_calls, 0);
+
+    rc |= expect_int("second weak frame routed", route_frame(0x30U), 1);
+    rc |= expect_int("second weak frame confirms", nxdn_confirm_is_confirmed(&g_state), 1);
+
+    /* A frame that proves nothing breaks the streak, so weak evidence has to be consecutive. */
+    reset_state();
+    g_stub_sacch_ok = g_stub_scch_ok = g_stub_cac_ok = g_stub_facch_ok = 0;
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("streak first weak routed", route_frame(0x30U), 1);
+    g_stub_sacch_ok = 0;
+    rc |= expect_int("streak empty frame routed", route_frame(0x30U), 1);
+    g_stub_sacch_ok = 1;
+    rc |= expect_int("streak third weak routed", route_frame(0x30U), 1);
+    rc |= expect_int("broken streak stays pending", nxdn_confirm_is_confirmed(&g_state), 0);
+
+    /* The carrier going away forgets the evidence with it. */
+    reset_state();
+    g_stub_facch_ok = 1;
+    rc |= expect_int("confirming frame routed", route_frame(0x32U), 1);
+    rc |= expect_int("confirmed before reset", nxdn_confirm_is_confirmed(&g_state), 1);
+    nxdn_confirm_reset(&g_state);
+    rc |= expect_int("reset clears confirmation", nxdn_confirm_is_confirmed(&g_state), 0);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -507,6 +602,8 @@ main(void) {
     rc |= test_bad_frame_and_filter_gates();
     rc |= test_public_frame_entry_lich_collection();
     rc |= test_lfsr_and_scanner_state();
+    rc |= test_unconfirmed_frame_is_inert();
+    rc |= test_short_crc_confirms_only_when_repeated();
 
     if (rc == 0) {
         DSD_FPRINTF(stdout, "NXDN_FRAME_ROUTING: OK\n");

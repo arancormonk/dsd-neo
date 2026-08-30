@@ -46,6 +46,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 #include "nxdn_internal.h"
 
 uint8_t crc6(const uint8_t buf[], int len);
@@ -259,7 +260,10 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
 
     const int sacch_crc_ok = (crc == check);
     if (sacch_crc_ok) {
-        state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+        if (nxdn_confirm_is_confirmed(state)) {
+            state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
+        }
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
         nxdn_reset_payload_seed_if_forced(state);
@@ -297,8 +301,11 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
     nxdn_prepare_sacch_payload_seed(state, part_of_frame);
 
     if (crc == check) {
-        const int ran = nxdn_ran_from_trellis(trellis_buf);
-        state->nxdn_ran = state->nxdn_last_ran = ran;
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+        if (nxdn_confirm_is_confirmed(state)) {
+            const int ran = nxdn_ran_from_trellis(trellis_buf);
+            state->nxdn_ran = state->nxdn_last_ran = ran;
+        }
         state->nxdn_sf = sf;
         state->nxdn_part_of_frame = part_of_frame;
         state->nxdn_sacch_frame_segcrc[part_of_frame] = 0;
@@ -437,6 +444,7 @@ void
 nxdn_handle_pich_tch(const dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data,
                      uint16_t crc, uint16_t check, uint8_t lich) {
     if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         nxdn_handle_pich_tch_crc_ok(opts, state, trellis_buf, lich);
     } else if (opts->payload == 0) {
         nxdn_print_pich_tch_crc_error(lich);
@@ -500,6 +508,7 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
     const int ran = nxdn_ran_from_trellis(trellis_buf);
 
     if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->nxdn_last_ran = (unsigned int)ran;
         nxdn_print_last_ran(state);
         state->nxdn_part_of_frame = 3 - sf;
@@ -617,6 +626,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
 
     nxdn_print_last_ran(state);
     if (crc == 0) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         state->data_header_format[0] = 2;
         state->nxdn_last_ran = nxdn_ran_from_trellis(trellis_buf);
     }
@@ -723,6 +733,10 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
         state->payload_miN = 0;
     }
     if (!nxdn_sacch2_crc_ok(fields)) {
+        return;
+    }
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
+    if (!nxdn_confirm_is_confirmed(state)) {
         return;
     }
 
@@ -928,6 +942,7 @@ nxdn_decode_facch3_udch2_content(dsd_opts* opts, dsd_state* state, const struct 
     if (!nxdn_facch3_udch2_crc_ok(message)) {
         return;
     }
+    nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
 
     state->data_header_format[0] = 1;
     NXDN_Elements_Content_decode(opts, state, 1, message->bits, 160U);
@@ -1139,6 +1154,9 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
     }
 
     state->data_header_format[0] = 3;
+    if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
+    }
     if (crc == check && !duplicate) {
         NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
     }
@@ -1421,6 +1439,7 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     }
 
     if (crc == check) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
         NXDN_decode_scch(opts, state, trellis_buf, direction);
     }
 

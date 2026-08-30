@@ -6,7 +6,7 @@
 # alone ignores the exit code, which would let a crash occurring after the
 # first payload match pass silently.
 #
-# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED.
+# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED; optional NOT_EXPECTED.
 foreach(_var DSD_BIN MODE FIXTURE EXPECTED)
     if(NOT DEFINED ${_var})
         message(FATAL_ERROR "iq_decode_check: missing -D${_var}")
@@ -44,4 +44,16 @@ if(NOT "${_all}" MATCHES "${EXPECTED}")
         FATAL_ERROR
         "iq_decode_check: expected payload /${EXPECTED}/ not found in output\n${_all}"
     )
+endif()
+
+# Optional -DNOT_EXPECTED: a regex that must be absent. Reject cases pair it with an
+# EXPECTED line proving the run happened, so an empty run cannot pass by printing nothing.
+if(DEFINED NOT_EXPECTED AND NOT "${NOT_EXPECTED}" STREQUAL "")
+    if("${_all}" MATCHES "${NOT_EXPECTED}")
+        string(REGEX MATCH "${NOT_EXPECTED}" _hit "${_all}")
+        message(
+            FATAL_ERROR
+            "iq_decode_check: forbidden output /${NOT_EXPECTED}/ matched '${_hit}'\n${_all}"
+        )
+    endif()
 endif()

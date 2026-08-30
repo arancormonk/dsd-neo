@@ -35,6 +35,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
+
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -48,6 +49,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 #include "nxdn_crc.h"
 
 typedef void (*nxdn_element_handler_fn)(dsd_opts* opts, dsd_state* state, const uint8_t* elements,
@@ -183,6 +185,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
     /* Decodes the element content */
     // currently only going to run this if all four CRCs are good
     if (CrcCorrect == 1) {
+        nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
         NXDN_Elements_Content_decode(opts, state, CrcCorrect, SACCH, sizeof(SACCH));
     }
 
@@ -670,7 +673,7 @@ nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
 static void
 nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint8_t call_type, uint16_t source,
                                       uint16_t target, uint8_t cipher) {
-    if (state->NxdnElementsContent.VCallCrcIsGood == 0U) {
+    if (state->NxdnElementsContent.VCallCrcIsGood == 0U || !nxdn_confirm_is_confirmed(state)) {
         return;
     }
     // call_type 4 is the individual/private call, spelled the same way as the trunked data-grant
@@ -2408,7 +2411,8 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
-    if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
+    if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U
+        && nxdn_confirm_is_confirmed(state)) {
         // Held behind the same CRC gate as the publish below: a miscorrected VCALL carries a
         // garbage destination_id, and letting it refresh the conventional scan hold would park
         // the coordinator on noise for a full activity_hold_ms per corrupt burst. The encryption
@@ -2557,6 +2561,11 @@ nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info*
 static void
 nxdn_scch_prepare_type_d(dsd_state* state, const struct nxdn_scch_info* info) {
     DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
+    if (!nxdn_confirm_is_confirmed(state)) {
+        /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
+         * hold cannot rest on one (issue #398). */
+        return;
+    }
     state->nxdn_last_ran = info->area;
     state->last_cc_sync_time = info->now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();

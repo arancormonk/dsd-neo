@@ -2002,6 +2002,8 @@ no_carrier_reset_dmr_data_blocks(dsd_state* state) {
 
 static void
 no_carrier_reset_nxdn_alias_state(dsd_state* state) {
+    /* Evidence is per-transmission: the next carrier proves itself again (issue #398). */
+    nxdn_confirm_reset(state);
     state->nxdn_part_of_frame = 0;
     state->nxdn_ran = 0;
     state->nxdn_sf = 0;

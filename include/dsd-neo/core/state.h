@@ -647,6 +647,18 @@ struct dsd_state {
     uint8_t nxdn_cipher_class_est;     /* classification corroborated (authoritative or repeat) */
     uint8_t nxdn_cipher_class_pending; /* quarantined contradicting candidate + 1; 0 = none */
 
+    /* NXDN frame-content confirmation (src/protocol/nxdn/nxdn_confirm.c). A sync word plus
+     * a LICH is not enough to believe a frame: both are weak enough that receiver noise
+     * clears them regularly. Until the frame body passes a CRC, the decoder holds back
+     * everything a listener would read as a real transmission -- the scanner hold, voice,
+     * the RAN, the call record. See issue #398.
+     * nxdn_confirmed: this transmission has produced CRC-verified content.
+     * nxdn_confirm_weak_streak: consecutive frames carrying only short-CRC evidence.
+     * nxdn_confirm_frame_evidence: strongest nxdn_evidence seen since begin_frame(). */
+    uint8_t nxdn_confirmed;
+    uint8_t nxdn_confirm_weak_streak;
+    uint8_t nxdn_confirm_frame_evidence;
+
     NxdnElementsContent_t NxdnElementsContent;
 
     char ambe_ciphered[49];

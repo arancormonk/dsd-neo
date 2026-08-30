@@ -1283,6 +1283,7 @@ add_executable(
     dsd-neo_test_nxdn_frame_routing
     protocol/nxdn/test_nxdn_frame_routing.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_frame_routing
@@ -1291,6 +1292,19 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
 add_test(NAME NXDN_FRAME_ROUTING COMMAND dsd-neo_test_nxdn_frame_routing)
+
+add_executable(
+    dsd-neo_test_nxdn_confirm
+    protocol/nxdn/test_nxdn_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_nxdn_confirm
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+add_test(NAME NXDN_CONFIRM COMMAND dsd-neo_test_nxdn_confirm)
 
 add_executable(
     dsd-neo_test_nxdn_sync_dispatch
@@ -8948,6 +8962,31 @@ if(DSD_HAS_RADIO)
         )
     endfunction()
 
+    # Reject case: the fixture must run (expected) and must not produce a decode
+    # (not_expected). Used for receiver noise, which a decoder should ignore entirely.
+    function(
+        dsd_neo_add_iq_reject_test
+        test_name
+        fixture
+        mode
+        expected
+        not_expected
+    )
+        add_test(
+            NAME ${test_name}
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=${mode}"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
+                "-DEXPECTED=${expected}" "-DNOT_EXPECTED=${not_expected}" -P
+                "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+        )
+        set_tests_properties(
+            ${test_name}
+            PROPERTIES LABELS "iq-decode;iq-reject" TIMEOUT 120
+        )
+    endfunction()
+
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_C4FM_CC
         p25p1_c4fm_cc
@@ -9038,6 +9077,27 @@ if(DSD_HAS_RADIO)
         p25p2_cc
         "-fa -v 3"
         "SPS hunt: trying 20 sps"
+    )
+
+    # Open-squelch receiver noise, with no signal in it at all. NXDN's 10-symbol sync word
+    # and one-parity-bit LICH let noise reach the frame body often enough that the decoder
+    # used to synthesize speech from it -- 89 audio errors under -fn and 49 under -fi on
+    # this fixture before the confirmation gate (issue #398). A decoder that ignores the
+    # noise reports none, so the error count is the assertion. -fa is deliberately absent:
+    # dPMR still decodes noise there, which is filed separately.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_NXDN96_REJECT
+        noise_floor
+        -fn
+        "Total audio errors: 0"
+        "RAN [0-9]"
+    )
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_NXDN48_REJECT
+        noise_floor
+        -fi
+        "Total audio errors: 0"
+        "RAN [0-9]"
     )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the

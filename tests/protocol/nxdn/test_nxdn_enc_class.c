@@ -147,6 +147,10 @@ reset_fixture(dsd_opts* opts, dsd_state* state, Event_History_I* history) {
     state->event_history_s = history;
     opts->trunk_enable = 1;
     opts->trunk_tune_enc_calls = 0;
+    /* These cases feed VCALL element content directly. In the decoder that content arrives
+     * through a CRC that has already confirmed the transmission, which is what lets a VCALL
+     * publish at all (issue #398); the gate itself is covered by NXDN_CONFIRM. */
+    state->nxdn_confirmed = 1;
 }
 
 /* --- Hysteresis unit coverage ------------------------------------------- */

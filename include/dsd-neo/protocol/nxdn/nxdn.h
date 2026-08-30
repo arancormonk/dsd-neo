@@ -27,6 +27,14 @@ void nxdn_frame(dsd_opts* opts, dsd_state* state);
 uint8_t nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong);
 void nxdn_cipher_force(dsd_state* state, uint8_t cipher);
 void nxdn_cipher_class_reset(dsd_state* state);
+
+/**
+ * @brief Forget the CRC evidence gathered for the current NXDN transmission.
+ *
+ * Defined in src/protocol/nxdn/nxdn_confirm.c and declared here so the engine can clear it
+ * with the carrier; the rest of that module's interface is private to the protocol.
+ */
+void nxdn_confirm_reset(dsd_state* state);
 int nxdn_cipher_established_enc(const dsd_state* state);
 int nxdn_cipher_established_clear(const dsd_state* state);
 

@@ -22,6 +22,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 #include "nxdn_const_reinclude.h" // IWYU pragma: keep
 #include "nxdn_internal.h"
 
@@ -424,6 +425,18 @@ test_sacch_state_update(void) {
     state.nxdn_part_of_frame = 0;
     make_sacch_trellis(trellis, 2U, 0x15U);
 
+    /* A 6-bit CRC is not on its own evidence that this is a transmission, so an
+     * unconfirmed frame decodes without publishing a RAN (issue #398). */
+    nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("sacch-sf-unconfirmed-part", state.nxdn_part_of_frame, 1);
+    rc |= expect_int("sacch-sf-unconfirmed-ran", (int)state.nxdn_ran, 0);
+    rc |= expect_int("sacch-sf-unconfirmed-last-ran", (int)state.nxdn_last_ran, 0);
+
+    /* A second consecutive SACCH confirms the transmission, and the RAN goes out.
+     * nxdn_confirm_begin_frame() is the frame boundary nxdn_frame() supplies around each
+     * call; without it several short CRCs would count as one frame's worth of evidence. */
+    nxdn_confirm_begin_frame(&state);
+    state.nxdn_part_of_frame = 0;
     nxdn_handle_sacch(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
     rc |= expect_int("sacch-sf-good-part", state.nxdn_part_of_frame, 1);
     rc |= expect_int("sacch-sf-good-ran", (int)state.nxdn_ran, 0x15);
@@ -495,6 +508,13 @@ test_sacch2_state_update(void) {
     write_bits_msb(trellis, 8U, 2U, 0x01U);
     write_bits_msb(trellis, 10U, 9U, 0x123U);
 
+    /* First short-CRC frame: decoded, but no RAN and no call row yet (issue #398). */
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    dsd_call_snapshot unconfirmed_call;
+    rc |= expect_int("sacch2-unconfirmed-last-ran", (int)state.nxdn_last_ran, 0);
+    rc |= expect_int("sacch2-unconfirmed-canonical", dsd_call_state_get(&state, 0U, &unconfirmed_call), 0);
+
+    nxdn_confirm_begin_frame(&state);
     nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
     rc |= expect_u8_at("sacch2-good-message-type", 0U, state.nxdn_dcr_sf_message_type, 0x01U);
     rc |= expect_u8_at("sacch2-good-segcrc", 2U, state.nxdn_sacch_frame_segcrc[2], 0U);
