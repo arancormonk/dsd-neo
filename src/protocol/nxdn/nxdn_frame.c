@@ -34,6 +34,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
+
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/nxdn/nxdn_voice.h>
@@ -44,6 +45,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_confirm.h"
 
 #ifdef LIMAZULUTWEAKS
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -262,9 +264,15 @@ nxdn_apply_lich_profile(dsd_state* state, nxdn_frame_ctx* ctx) {
     return 0;
 }
 
+/**
+ * @brief Refresh the sync clock a conventional scan and the trunking SMs read.
+ *
+ * Held behind nxdn_confirm_is_confirmed(): this timestamp is what stops a `-Y` scan on a
+ * channel, and a sync word plus a LICH is not enough to believe there is a transmission
+ * here (issue #398).
+ */
 static void
 nxdn_mark_carrier_sync_active(dsd_state* state) {
-    state->carrier = 1;
     state->last_cc_sync_time = time(NULL);
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
 }
@@ -542,7 +550,11 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_
 
 static void
 nxdn_process_voice_and_mbe(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
-    if (ctx->voice) {
+    /* The LICH alone decides whether a frame claims to carry voice, and noise clears the
+     * LICH often enough that acting on that claim is what put fictional speech on a dead
+     * channel. Synthesize only once the frame body has passed a CRC; a real call confirms
+     * on its first FACCH, or within two frames of SACCH (issue #398). */
+    if (ctx->voice && nxdn_confirm_is_confirmed(state)) {
         if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
             openMbeOutFile(opts, state);
         }
@@ -608,7 +620,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
         goto END;
     }
 
-    nxdn_mark_carrier_sync_active(state);
+    state->carrier = 1;
     nxdn_print_sync_banner(opts, state, &ctx);
 
     for (int i = 0; i < 174; i++) {
@@ -626,13 +638,21 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_print_rf_channel_type(&ctx);
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
-    if (opts->scanner_mode == 1) {
-        state->last_cc_sync_time = time(NULL) + 2;
-    }
-
+    nxdn_confirm_begin_frame(state);
     nxdn_print_voice_or_data_and_sync_lfsr(state, &ctx);
     nxdn_update_sacch_mode(state, ctx.lich);
     nxdn_decode_control_channels(opts, state, &ctx);
+    nxdn_confirm_end_frame(state);
+
+    if (nxdn_confirm_is_confirmed(state)) {
+        nxdn_mark_carrier_sync_active(state);
+        if (opts->scanner_mode == 1) {
+            /* Hold the scanner a little past this frame so the gap to the next one does
+             * not read as loss of signal. */
+            state->last_cc_sync_time = time(NULL) + 2;
+        }
+    }
+
     nxdn_process_voice_and_mbe(opts, state, &ctx);
     nxdn_handle_post_voice_facch2_lfsr(state, &ctx);
 

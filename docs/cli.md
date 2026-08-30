@@ -67,6 +67,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
   - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
+  - `sql` is a power squelch in dB and is **off** when set to `0`, which is what the examples above use. The startup
+    banner then reads `SQ=-120.0dB`: −120 is the "no measurement" floor, not a threshold that was applied. Give a
+    negative value (`-60`) to actually gate on power.
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
 - SoapySDR: `-i soapy[:args[:freq[:gain[:ppm[:bw[:sql[:vol]]]]]]]`
 - TCP raw PCM16LE input (mono): `-i tcp[:host:port]` (bare `tcp` connects to `localhost:7355`; sample rate uses `-s`, default 48000)
@@ -312,6 +315,12 @@ Notes
   the permissive 4800/4 matchers produce these on signals belonging to another profile -- buys nothing however often it
   fires, and the dwell does not depend on that cadence. A handler that does swallow a frame's worth on a sync no CRC
   would accept still delays the hunt, in proportion to the symbols it took; frame sync cannot see a CRC verdict.
+- NXDN announces nothing until a frame's content checks out. Its 10-symbol sync word and one-parity-bit LICH are weak
+  enough that receiver noise clears both, so a frame that reaches the protocol layer does not by itself refresh the
+  scan hold, synthesize voice, publish a RAN, or open a call record. One CRC of 12 bits or more (FACCH, CAC, UDCH,
+  PICH/TCH, a full SACCH superframe) is proof on its own; the 6- and 7-bit CRCs on SACCH and SCCH have to repeat on
+  two consecutive frames. A real call confirms on its first FACCH, or within two frames when only SACCH is passing,
+  so the cost is at most one frame of audio at the very start of a transmission.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the
@@ -339,7 +348,8 @@ Notes
 ## Trunking & Scanning
 
 - Enable trunking (NXDN/P25/EDACS/DMR): `-T`
-- Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders)
+- Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders). For NXDN the hold is refreshed
+  only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.

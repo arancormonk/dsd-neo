@@ -1242,6 +1242,11 @@ run_data_header_scan_activity_case(const char* tag, uint8_t message_type, uint8_
     write_bits_u64(bits, 56U, cipher, 2U);
     write_bits_u64(bits, 68U, 2U, 4U); /* block count */
 
+    /* In the decoder this element content is only reached through a CRC that has already
+     * confirmed the transmission, which is what admits a data header to the scan hold
+     * (issue #398). This case is about the header fields, so start from there. */
+    state->nxdn_confirmed = 1;
+
     NXDN_Elements_Content_decode(opts, state, crc_ok, bits, sizeof(bits));
 
     char label[96];
@@ -1578,6 +1583,9 @@ test_arib_vcall_uses_shifted_fields(void) {
         free(opts);
         return 1;
     }
+    /* A VCALL publishes once its transmission is confirmed; in the decoder the CRC that
+     * carries the VCALL does that in the same frame (issue #398). */
+    state->nxdn_confirmed = 1;
     DSD_MEMSET(bits, 0, sizeof(bits));
 
     write_arib_vcall_fields(bits, 0xE1U, 0xABU, 0xA0U, 1U, 2U, 0x1234U, 0x4567U, 1U, 0x2AU);
@@ -1736,6 +1744,9 @@ test_vcall_aes_keyloader_and_iv_signal(void) {
         free(opts);
         return 1;
     }
+    /* A VCALL publishes once its transmission is confirmed; in the decoder the CRC that
+     * carries the VCALL does that in the same frame (issue #398). */
+    state->nxdn_confirmed = 1;
     DSD_MEMSET(bits, 0, sizeof(bits));
     DSD_MEMSET(iv_bits, 0, sizeof(iv_bits));
 
@@ -1786,6 +1797,9 @@ test_vcall_aes_key_flag_drives_crypto_state(void) {
         free(opts);
         return 1;
     }
+    /* A VCALL publishes once its transmission is confirmed; in the decoder the CRC that
+     * carries the VCALL does that in the same frame (issue #398). */
+    state->nxdn_confirmed = 1;
     DSD_MEMSET(bits, 0, sizeof(bits));
     write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1234U, 0x4567U, 3U, 0x13U);
 
@@ -1804,6 +1818,7 @@ test_vcall_aes_key_flag_drives_crypto_state(void) {
 
     dsd_state_ext_free_all(state);
     DSD_MEMSET(state, 0, sizeof(*state));
+    state->nxdn_confirmed = 1;
     state->R = 0xDEADBEEFU;
     state->aes_key_loaded[0] = 0;
     NXDN_Elements_Content_decode(opts, state, 1U, bits, sizeof(bits));

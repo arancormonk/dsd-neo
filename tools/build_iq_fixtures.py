@@ -142,6 +142,17 @@ DERIVED_SIMULCAST = [
     ("p25p1_cqpsk_cc_simulcast", "p25p1_cqpsk_cc", 3, 0.6, 1.5, 0.7),
 ]
 
+# Receiver noise with the squelch open -- no signal at all, which is what a scanner sits on
+# between transmissions. Protocols whose sync words are short enough for noise to reproduce
+# used to decode this into RANs and voice (issue #398), so it is committed as a reject
+# fixture. Deterministic from the seed; complex Gaussian, quantized without peak
+# normalization so sigma stays where it is set rather than being scaled up to full scale.
+#
+# name, seed, duration_s, sigma (LSB of the cu8 range)
+DERIVED_NOISE = [
+    ("noise_floor", 398, 10.0, 16.0),
+]
+
 METADATA_TEMPLATE = """{{
   "format": "dsd-neo-iq",
   "version": 1,
@@ -271,21 +282,28 @@ def remodulate(audio, deviation):
     return np.exp(1j * phase)
 
 
-def to_cu8(samples, headroom=0.9):
-    """Quantize complex baseband to interleaved unsigned 8-bit I/Q."""
+def to_cu8(samples, headroom=0.9, normalize=True):
+    """Quantize complex baseband to interleaved unsigned 8-bit I/Q.
+
+    normalize=False keeps the caller's amplitude, which matters for noise: scaling it to
+    full scale would set the level from whichever sample happened to be the largest.
+    """
     real = np.real(samples)
     imag = np.imag(samples)
-    peak = max(np.max(np.abs(real)), np.max(np.abs(imag)))
-    if peak <= 0.0:
-        peak = 1.0
+    scale = headroom
+    if normalize:
+        peak = max(np.max(np.abs(real)), np.max(np.abs(imag)))
+        if peak <= 0.0:
+            peak = 1.0
+        scale = headroom / peak
     interleaved = np.empty(len(samples) * 2)
-    interleaved[0::2] = real / peak * headroom
-    interleaved[1::2] = imag / peak * headroom
+    interleaved[0::2] = real * scale
+    interleaved[1::2] = imag * scale
     return np.clip(np.round(interleaved * 127.5 + 127.5), 0, 255).astype(np.uint8)
 
 
-def write_fixture(out_dir, name, samples):
-    payload = to_cu8(samples)
+def write_fixture(out_dir, name, samples, normalize=True):
+    payload = to_cu8(samples, normalize=normalize)
     data_name = name + ".iq"
     data_path = os.path.join(out_dir, data_name)
     with open(data_path, "wb") as handle:
@@ -318,6 +336,20 @@ def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2):
     n = np.arange(len(samples))
     rotation = np.exp(1j * (2.0 * math.pi * cfo_hz * n / SAMPLE_RATE_HZ + phase2))
     return samples + amp2 * delayed * rotation
+
+
+def build_noise(out_dir):
+    """Write the open-squelch receiver-noise fixtures (issue #398)."""
+    total = 0
+    for name, seed, duration_s, sigma_lsb in DERIVED_NOISE:
+        rng = np.random.default_rng(seed)
+        count = int(round(duration_s * SAMPLE_RATE_HZ))
+        sigma = sigma_lsb / 127.5
+        samples = rng.normal(0.0, sigma, count) + 1j * rng.normal(0.0, sigma, count)
+        written = write_fixture(out_dir, name, samples, normalize=False)
+        total += written
+        print(f"{name:28s} noise   {written // 1024:6d} KiB")
+    return total
 
 
 def build_derived(out_dir):
@@ -399,8 +431,9 @@ def main():
 
     if not args.only:
         total += build_derived(args.out)
+        total += build_noise(args.out)
     else:
-        for entry in DERIVED_SIMULCAST:
+        for entry in DERIVED_SIMULCAST + [(n,) for n, _, _, _ in DERIVED_NOISE]:
             if entry[0] in args.only:
                 raise SystemExit(f"{entry[0]} is a derived fixture; regenerate it with --derived-only")
     print(f"total {total // 1024} KiB in {args.out}")

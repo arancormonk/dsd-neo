@@ -309,6 +309,16 @@ Key public headers (selection):
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`
 - ProVoice/EDACS: `<dsd-neo/protocol/provoice/provoice_const.h>`
 
+Private per-protocol modules worth knowing about:
+
+- `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
+  before DMR decodes or unmutes it.
+- `src/protocol/nxdn/nxdn_confirm.{c,h}` — its NXDN counterpart, and for the same reason: the 10-symbol sync word and
+  one-parity-bit LICH ahead of it are weak enough that receiver noise clears both. Channel decoders report their CRC
+  verdicts to it, and `nxdn_frame.c` consults it before refreshing the scan hold or synthesizing voice, as
+  `nxdn_deperm.c`/`nxdn_element.c` do before publishing a RAN or a call. The engine clears it with the carrier through
+  `nxdn_confirm_reset()`, the one entry point exported in `<dsd-neo/protocol/nxdn/nxdn.h>`.
+
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 
 ## Third‑Party
