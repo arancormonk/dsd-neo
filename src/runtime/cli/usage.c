@@ -275,7 +275,6 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("  -F            Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");
     printf("                 Enabling on some systems could lead to bad channel assignments/site data decoding if bad "
            "or marginal signal\n");
-    printf("  -F            Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
     printf("      --show-keys  Reveal radio keys and keystream material in CLI/status output for this run.\n");
