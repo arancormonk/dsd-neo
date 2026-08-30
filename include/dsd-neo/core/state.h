@@ -544,12 +544,29 @@ struct dsd_state {
      * sps_hunt_counter: symbols the search burned that no frame handler claimed. Symbols
      *   spent looking for a sync count up; symbols a handler consumed on one sync are
      *   debited back, floored at zero, so a profile carrying traffic sits at zero and a
-     *   profile matching nothing reaches its dwell. Zeroing this alone is a complete reset.
+     *   profile matching nothing reaches its dwell. The budget belongs to the profile, so
+     *   zeroing this alone is not a complete reset: a profile change owes this and
+     *   sps_hunt_symbolcnt_mark together. frame_sync_apply_sps_hunt_profile() does both
+     *   whenever it moves the index, so its callers need not -- but it is not the only way
+     *   sps_hunt_idx moves, and the sites that assign the index directly still owe both
+     *   themselves (#394). None of them pays in full today: the app-control and engine
+     *   retune paths (svc_publish_symbol_profile(), set_cc_symbol_timing(),
+     *   dsd_engine_select_p25_sps_profile(), no_carrier_apply_p25_cc_symbolrate() and the
+     *   two trunk-scan target helpers) zero the counter and leave the anchor where it was,
+     *   which is harmless only because whatever that anchor then credits is debited from the
+     *   counter they just zeroed and floored there; the -m2/-m3/-m4 branches of the CLI 'm'
+     *   case do neither, and are benign only because they run before the first
+     *   getFrameSync().
      * sps_hunt_symbolcnt_mark: dsd_state::symbolcnt as getFrameSync() last returned, so
      *   the next call can measure what the handler consumed in between. It shares that
      *   field's unsigned wrapping type, so the difference stays exact across the counter's
      *   2^32 rollover. Credit is per sync and only counts once it reaches a frame's worth,
      *   which is what keeps the dwell independent of how often an unproductive matcher fires.
+     *   Re-anchored alongside the counter whenever frame_sync_apply_sps_hunt_profile() moves
+     *   the index, so a fresh budget is never paired with an anchor taken under the outgoing
+     *   profile. Inside getFrameSync() the mark is already current at every such call, so that
+     *   half is contract rather than repair; it is what a direct assigner would have to do for
+     *   itself.
      * sps_hunt_idx: current rate/profile index
      * (0=4800/4-level, 1=2400/4-level, 2=9600/binary, 3=6000/4-level, 4=4800/binary) */
     int sps_hunt_counter;

@@ -699,6 +699,95 @@ test_sps_hunt_reconciles_external_timing(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
 }
 
+/* #394: a profile the reconciliation adopts starts its dwell over. Before the fix it
+ * inherited whatever the outgoing profile had already spent, so an adoption landing one
+ * symbol short of the dwell was stepped away from on the very next symbol. */
+static void
+test_adopted_profile_starts_its_dwell_over(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_p25p2 = 1;
+    opts.frame_dstar = 1;
+    opts.mod_qpsk = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 48000);
+    state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
+
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    assert(dwell > 1);
+
+    /* The outgoing profile is one symbol short of stepping, and its measurement anchor sits
+     * where the handler that ran under it started consuming. */
+    state.symbolcnt = 4096U;
+    state.sps_hunt_counter = dwell - 1;
+    state.sps_hunt_symbolcnt_mark = 1024U;
+
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.sps_hunt_symbolcnt_mark == state.symbolcnt);
+
+    /* frame_sync_advance_sync_window() bills one symbol per symbol, so the adopted profile
+     * must be able to spend a whole dwell before the hunt may rotate off it. */
+    for (int spent = 1; spent < dwell; spent++) {
+        state.sps_hunt_counter++;
+        assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+        assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    }
+    state.sps_hunt_counter++;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+
+    /* A reconciliation with nothing to do is still not allowed to refund the budget: it is
+     * the same profile spending the same dwell. This one turns back at the helper's own
+     * early-out, so it pins the early-out rather than the profile_changed guard. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_p25p2 = 1;
+    opts.frame_dstar = 1;
+    state.rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_6000_4;
+    state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 6000, 48000);
+    state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
+    state.symbolcnt = 4096U;
+    state.sps_hunt_counter = dwell - 1;
+    state.sps_hunt_symbolcnt_mark = 4096U;
+
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4);
+    assert(state.sps_hunt_counter == dwell - 1);
+
+    /* The guard itself. A two-level profile whose modulation is not GFSK gets past the
+     * early-out to normalise dsd_state::rf_mod without the index moving -- the one shape that
+     * reaches the reset with profile_changed clear. Still the same profile spending the same
+     * dwell, so an unguarded reset would refund a live budget here, and re-anchoring the mark
+     * would hand that profile credit for symbols it had already been billed for. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    opts.frame_dstar = 1;
+    state.rf_mod = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.samplesPerSymbol = dsd_opts_compute_sps_rate(&opts, 4800, 48000);
+    state.symbolCenter = dsd_opts_symbol_center(state.samplesPerSymbol);
+    state.symbolcnt = 4096U;
+    state.sps_hunt_counter = dwell - 1;
+    state.sps_hunt_symbolcnt_mark = 1024U;
+
+    frame_sync_ensure_enabled_sps_profile(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+    /* Proof the call ran past the early-out rather than turning back at it. */
+    assert(state.rf_mod == 2);
+    assert(state.sps_hunt_counter == dwell - 1);
+    assert(state.sps_hunt_symbolcnt_mark == 1024U);
+}
+
 static void
 test_binary_profiles_override_unlocked_qpsk(void) {
     static dsd_opts opts;
@@ -1830,6 +1919,7 @@ main(void) {
     test_sps_hunt_skips_disabled_protocol_rates();
     test_sps_hunt_profile_updates_timing();
     test_sps_hunt_reconciles_external_timing();
+    test_adopted_profile_starts_its_dwell_over();
     test_sps_hunt_budget_is_spent_in_symbols();
     test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap();
     test_carrier_does_not_reset_the_hunt_budget();
