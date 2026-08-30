@@ -7687,6 +7687,34 @@ add_test(
     COMMAND dsd-neo_test_frame_sync_internal_helpers
 )
 
+# SPS hunt progress across sync returns: false syncs must not pin the hunt, decoded
+# frames must hold their profile (issue #388).
+add_executable(
+    dsd-neo_test_frame_sync_sps_hunt_false_sync
+    dsp/test_frame_sync_sps_hunt_false_sync.c
+)
+if(DSD_HAS_RADIO)
+    target_compile_definitions(
+        dsd-neo_test_frame_sync_sps_hunt_false_sync
+        PRIVATE USE_RADIO
+    )
+endif()
+target_include_directories(
+    dsd-neo_test_frame_sync_sps_hunt_false_sync
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_frame_sync_sps_hunt_false_sync
+    PRIVATE
+        dsd-neo_dsp_private_test_support
+        ${DSD_NEO_TEST_MATH_LIB}
+        ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME FRAME_SYNC_SPS_HUNT_FALSE_SYNC
+    COMMAND dsd-neo_test_frame_sync_sps_hunt_false_sync
+)
+
 # Frame sync level-window estimator parity with the established sync scanner.
 add_executable(
     dsd-neo_test_frame_sync_level_window
@@ -8995,6 +9023,22 @@ if(DSD_HAS_RADIO)
         "Site ID \\[02\\]\\[002\\]"
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_M17 m17 -fz "SRC: N0CALL")
+
+    # Auto must not be pinned on its starting profile by syncs no protocol turns into a
+    # frame (issue #388). Both fixtures are shorter than one full hunt rotation, so the
+    # assertion is that the hunt moves, not that the capture decodes -- see docs/testing.md.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DSTAR_AUTO_HUNT
+        dstar
+        "-fa -v 3"
+        "SPS hunt: trying 20 sps"
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P2_CC_AUTO_HUNT
+        p25p2_cc
+        "-fa -v 3"
+        "SPS hunt: trying 20 sps"
+    )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
     # shape an embedding host (Android service, GUI shell) uses. Lives here

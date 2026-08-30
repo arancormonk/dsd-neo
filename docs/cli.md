@@ -294,16 +294,24 @@ Notes
   | 3 | 6000 | 4 | P25 Phase 2 (CQPSK), X2-TDMA |
   | 4 | 4800 | 2 | D-STAR |
 
-  A detected sync locks the active rate, level count, timing, and RTL-family channel profile. Passive analog monitoring
+  A sync that a protocol turns into decoded frames locks the active rate, level count, timing, and RTL-family channel
+  profile; a sync on its own does not (see the dwell note below). Passive analog monitoring
   (`-fA`) and already-framed M17 UDP input (`-fU`) are not frame-sync hunt candidates.
 - On RTL-family FSK input the decoder's symbol timing follows the hunt profile from the moment the hunt selects it. The
   matching front-end channel profile is requested asynchronously and is applied by the demod thread on its next block,
   so the two are briefly out of step after every hunt step; decoding does not wait for the front end to catch up.
-- The hunt dwells on each candidate profile for a bounded number of buffer passes, so a full rotation over the five
-  profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
+- The hunt dwells on each candidate profile for a bounded budget of symbols searched for sync, so a full rotation over
+  the five profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
   rotation can therefore be missed entirely even though the same capture decodes under its native preset -- Auto
   converges on signals that persist, such as a control channel or a call of a few seconds, not on isolated short
   bursts. Name the narrower preset when you already know the mode and cannot afford the search.
+- What holds a profile is decoded frames, not detected syncs. The dwell is a net budget: symbols spent searching for a
+  sync count against it, and symbols a frame handler consumes are credited back. A profile carrying real traffic sits at
+  zero, because a decoded frame costs hundreds of symbols and the next sync follows within a few. Credit is counted per
+  sync, and only once a handler reaches a frame's worth of symbols, so a matcher that recognises a marker and bails --
+  the permissive 4800/4 matchers produce these on signals belonging to another profile -- buys nothing however often it
+  fires, and the dwell does not depend on that cadence. A handler that does swallow a frame's worth on a sync no CRC
+  would accept still delays the hunt, in proportion to the symbols it took; frame sync cannot see a CRC verdict.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the

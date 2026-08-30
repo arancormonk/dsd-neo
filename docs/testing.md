@@ -40,10 +40,12 @@ begins after the demodulator, this covers the DSP front end as well.
 ctest --preset dev-debug -L iq-decode --output-on-failure
 ```
 
-Each case asserts on a decoded payload field (NAC, WACN/SYS, colour code, RAN,
-callsign, site ID) rather than a sync count, so a silent framing or protocol
-regression fails the test instead of merely moving a counter. The whole set runs
-in about 7 seconds because I/Q replay defaults to `--iq-replay-rate fast`.
+Each decode case asserts on a decoded payload field (NAC, WACN/SYS, colour code,
+RAN, callsign, site ID) rather than a sync count, so a silent framing or protocol
+regression fails the test instead of merely moving a counter. The
+`DECODE_IQ_*_AUTO_HUNT` cases are the documented exception, described below. The
+whole set runs in about 7 seconds because I/Q replay defaults to
+`--iq-replay-rate fast`.
 
 Covered: P25 Phase 1 C4FM (control and voice), P25 Phase 1 CQPSK/LSM (control and
 voice, plus a two-ray simulcast-impaired control channel), P25 Phase 2, DMR
@@ -67,6 +69,11 @@ discriminator audio are integrated back into complex baseband (FM demodulation
 is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
 C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
+
+`DECODE_IQ_*_AUTO_HUNT` cases assert on an `SPS hunt:` rotation line rather than a decoded payload. The `dstar` (4 s)
+and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at 48 kHz), so under `-fa` they cannot be
+expected to decode; what they can prove is that the hunt is not pinned on its starting profile, which is the defect
+those cases cover.
 
 Known gaps and caveats:
 
