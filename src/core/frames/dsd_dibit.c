@@ -170,7 +170,8 @@ print_datascope(const dsd_opts* opts, dsd_state* state, const float* sbuf2, int 
     }
     const float scale = 32.0f / span;
     build_datascope_spectrum(sbuf2, count, scale, spectrum);
-    if (state->symbolcnt > (4800 / opts->scoperate)) {
+    /* dsd_state::symbolcnt is unsigned; the refresh period is a small positive int. */
+    if (state->symbolcnt > (uint32_t)(4800 / opts->scoperate)) {
         dsd_call_snapshot call;
         DSD_MEMSET(&call, 0, sizeof(call));
         (void)dsd_call_state_get(state, 0U, &call);

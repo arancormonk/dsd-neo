@@ -2967,23 +2967,43 @@ frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) 
  */
 static void
 frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
-    unsigned int consumed = (unsigned int)state->symbolcnt - (unsigned int)state->sps_hunt_symbolcnt_mark;
-    if (consumed > (unsigned int)INT_MAX) {
+    /* Both operands wrap at 2^32, so this modular difference stays exact when the free-running
+     * symbol counter rolls over mid-measurement. */
+    uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
+    if (consumed > (uint32_t)INT_MAX) {
         /* symbolcnt went backwards, so an unrelated subsystem zeroed it rather than a
-         * handler having consumed 4 billion symbols (nxdn_reset_after_cac_fail(),
-         * initState() on an in-process restart). Credit nothing; the mark below re-anchors
-         * the measurement on the next call. */
+         * handler having consumed 4 billion symbols: nxdn_reset_after_cac_fail(),
+         * initState() on an in-process restart, and print_datascope() on each refresh.
+         * Credit nothing; the mark below re-anchors the measurement on the next call.
+         *
+         * The datascope is the only one of the three that can zero it faster than handlers
+         * consume -- once every opts->ssize symbols after the count passes
+         * 4800/opts->scoperate, so a few hundred symbols apart -- which means an interval
+         * that really did decode a frame can straddle a reset and be credited nothing.
+         * That is accepted here rather than worked around: nothing in the tree ever sets
+         * opts->datascope to 1, so the display is unreachable and the overlap is latent,
+         * and a missed credit costs only the debit, leaving the hunt on the undebited
+         * dwell it had before #390 rather than mis-crediting anything. Wiring the
+         * datascope back to a switch means giving its reset a form this can tell apart
+         * from a rollover. */
         consumed = 0;
     }
-    if (consumed >= (unsigned int)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
+    if (consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
         /* dsd_state::sps_hunt_counter only ever counts up from zero, so this is exact.
          * Sites outside the hunt park a profile by zeroing it; the floor at zero means
          * consumption measured across such a reset cannot drive it negative. */
-        const unsigned int counter = (unsigned int)state->sps_hunt_counter;
+        const uint32_t counter = (uint32_t)state->sps_hunt_counter;
         state->sps_hunt_counter = (int)(consumed >= counter ? 0U : counter - consumed);
     }
     state->sps_hunt_symbolcnt_mark = state->symbolcnt;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+dsd_frame_sync_test_sps_hunt_note_handler_consumption(dsd_state* state) {
+    frame_sync_sps_hunt_note_handler_consumption(state);
+}
+#endif
 
 /** @brief Remember where the handler starts consuming, so the next call can measure it. */
 static void
