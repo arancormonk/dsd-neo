@@ -7,19 +7,14 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
-#include <dsd-neo/platform/sockets.h>
-#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_state_buffers.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -28,124 +23,6 @@
 
 static size_t g_symbol_index;
 static const char* g_sync_pattern = DMR_BS_DATA_SYNC;
-
-dsd_socket_t
-Connect(char* hostname, int portno) { // NOLINT(misc-use-internal-linkage)
-    (void)hostname;
-    (void)portno;
-    return (dsd_socket_t)0;
-}
-
-int
-openAudioInput(dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    return -1;
-}
-
-int
-dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    return 0;
-}
-
-void
-dsd_request_shutdown(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
-    (void)state;
-    (void)old_rate_hz;
-    (void)new_rate_hz;
-}
-
-int
-dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
-                          size_t out_size) { // NOLINT(misc-use-internal-linkage)
-    (void)timestamp;
-    (void)format;
-    return out ? DSD_SNPRINTF(out, out_size, "%s", "00:00:00") >= 0 : 0;
-}
-
-void
-printFrameInfo(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-
-void
-dsd_mark_cc_sync(dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-}
-
-void
-dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)slot;
-}
-
-void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol, const dsd_dibit_soft_t* soft) {
-    (void)opts;
-    (void)state;
-    (void)dibit;
-    (void)symbol;
-    (void)soft;
-}
-
-uint8_t
-dmr_compute_reliability(const dsd_state* st, float sym) {
-    (void)st;
-    (void)sym;
-    return 255;
-}
-
-double
-pwr_to_dB(double mean_power) { // NOLINT(misc-use-internal-linkage)
-    (void)mean_power;
-    return 0.0;
-}
-
-void
-lpf_f(dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-hpf_f(dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-pbf_f(dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)input;
-    (void)len;
-}
 
 static float
 symbol_level_for_dibit(char dibit) {
@@ -164,34 +41,6 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     float symbol = symbol_level_for_dibit(dibit);
     dsd_symbol_history_push(state, symbol);
     return symbol;
-}
-
-static void
-free_state_buffers(dsd_state* state) {
-    free(state->dibit_buf);
-    free(state->dmr_payload_buf);
-    free(state->dmr_soft_buf);
-    free(state->symbol_history);
-    state->symbol_history = NULL;
-}
-
-static int
-init_state_buffers(dsd_state* state) {
-    state->dibit_buf = (int*)calloc(1000000U, sizeof(int));
-    state->dmr_payload_buf = (int*)calloc(1000000U, sizeof(int));
-    state->dmr_soft_buf = (dsd_dibit_soft_t*)calloc(1000000U, sizeof(dsd_dibit_soft_t));
-    state->symbol_history = (float*)calloc(DSD_SYMBOL_HISTORY_SIZE, sizeof(float));
-    if (!state->dibit_buf || !state->dmr_payload_buf || !state->dmr_soft_buf || !state->symbol_history) {
-        free_state_buffers(state);
-        return 0;
-    }
-    state->dibit_buf_p = state->dibit_buf + 200;
-    state->dmr_payload_p = state->dmr_payload_buf + 200;
-    state->dmr_soft_p = state->dmr_soft_buf + 200;
-    state->symbol_history_size = DSD_SYMBOL_HISTORY_SIZE;
-    state->symbol_history_head = 0;
-    state->symbol_history_count = 0;
-    return 1;
 }
 
 typedef struct {

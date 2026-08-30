@@ -6425,12 +6425,15 @@ add_test(NAME RTL_SYMBOL_PIPELINE COMMAND dsd-neo_test_rtl_symbol_pipeline)
 add_executable(
     dsd-neo_test_frame_sync_dmr_wav_rate
     dsp/test_frame_sync_dmr_wav_rate.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
 )
 target_include_directories(
     dsd-neo_test_frame_sync_dmr_wav_rate
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
 dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_dmr_wav_rate
+  dsd-neo_test_support
   ${DSD_NEO_TEST_MATH_LIB}
   ${LIBSNDFILE_LIBRARIES}
 )
@@ -6460,6 +6463,7 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_frame_sync_p25p2_rtl
         dsp/test_frame_sync_p25p2_rtl.c
+        test_support/frame_sync_dsp_stubs.c
         ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
     )
     target_include_directories(
@@ -6468,6 +6472,7 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_p25p2_rtl
       dsd-neo_test_call_state_support
+      dsd-neo_test_support
       ${DSD_NEO_TEST_MATH_LIB}
       ${LIBSNDFILE_LIBRARIES}
     )
@@ -6476,12 +6481,18 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_frame_sync_p25p2_rtl
     )
 
-    add_executable(dsd-neo_test_frame_sync_m17 dsp/test_frame_sync_m17.c)
+    add_executable(
+        dsd-neo_test_frame_sync_m17
+        dsp/test_frame_sync_m17.c
+        test_support/frame_sync_dsp_stubs.c
+        test_support/frame_sync_dibit_stubs.c
+    )
     target_include_directories(
         dsd-neo_test_frame_sync_m17
         PRIVATE ${PROJECT_SOURCE_DIR}/include
     )
     dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_m17
+      dsd-neo_test_support
       ${DSD_NEO_TEST_MATH_LIB}
       ${LIBSNDFILE_LIBRARIES}
     )
@@ -7701,6 +7712,8 @@ add_test(NAME FRAME_SYNC_POLICY COMMAND dsd-neo_test_frame_sync_policy)
 add_executable(
     dsd-neo_test_frame_sync_internal_helpers
     dsp/test_frame_sync_internal_helpers.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
 )
 if(DSD_HAS_RADIO)
     target_compile_definitions(
@@ -7729,6 +7742,8 @@ add_test(
 add_executable(
     dsd-neo_test_frame_sync_sps_hunt_false_sync
     dsp/test_frame_sync_sps_hunt_false_sync.c
+    test_support/frame_sync_dsp_stubs.c
+    test_support/frame_sync_dibit_stubs.c
 )
 if(DSD_HAS_RADIO)
     target_compile_definitions(
@@ -7744,6 +7759,7 @@ target_link_libraries(
     dsd-neo_test_frame_sync_sps_hunt_false_sync
     PRIVATE
         dsd-neo_dsp_private_test_support
+        dsd-neo_test_support
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
 )
