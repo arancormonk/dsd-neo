@@ -174,9 +174,12 @@ run_one_on_state(dsd_opts* opts, dsd_state* state, const char* pattern, int expe
     return 0;
 }
 
+/* Frames after the first one in a chain are earned: a stream or packet that follows another
+ * needs the transmission to have produced a clean LICH or a CRC, and a BERT chain needs its
+ * PRBS9 lock (#399). A case that starts mid-chain has to stand where a real one would. */
 static int
-run_m17_sync_case(int initial_last, uint8_t initial_polarity, const char* pattern, int expected_sync,
-                  const char* label) {
+run_m17_chain_case(int initial_last, uint8_t initial_polarity, const char* pattern, int expected_sync,
+                   const char* label, int evidence, int bert_locked) {
     static dsd_opts opts;
     static dsd_state state;
     static int fake_rtl_context;
@@ -187,6 +190,8 @@ run_m17_sync_case(int initial_last, uint8_t initial_polarity, const char* patter
     }
     state.lastsynctype = initial_last;
     state.m17_polarity = initial_polarity;
+    state.m17_confirm_weak_streak = (uint8_t)(evidence ? 1 : 0);
+    state.m17_bert_locked = (uint8_t)(bert_locked ? 1 : 0);
 
     install_hooks();
     const int rc = run_one_on_state(&opts, &state, pattern, expected_sync, label);
@@ -196,44 +201,33 @@ run_m17_sync_case(int initial_last, uint8_t initial_polarity, const char* patter
 }
 
 static int
-run_m17_two_step_case(const char* first_pattern, int first_expected, const char* second_pattern, int second_expected,
-                      const char* label) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static int fake_rtl_context;
-
-    dsd_frame_sync_reset_mod_state();
-    if (!init_m17_sync_case(&opts, &state, &fake_rtl_context)) {
-        return 1;
-    }
-
-    install_hooks();
-    int rc = run_one_on_state(&opts, &state, first_pattern, first_expected, label);
-    if (rc == 0) {
-        rc = run_one_on_state(&opts, &state, second_pattern, second_expected, label);
-    }
-    clear_hooks();
-    free_state_buffers(&state);
-    return rc;
+run_m17_sync_case(int initial_last, uint8_t initial_polarity, const char* pattern, int expected_sync,
+                  const char* label) {
+    return run_m17_chain_case(initial_last, initial_polarity, pattern, expected_sync, label, 1, 1);
 }
 
 int
 main(void) {
     int rc = 0;
-    rc |= run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_LSF, DSD_SYNC_M17_LSF_POS,
-                                "M17 preamble to LSF");
+    /* The preamble candidate itself is covered in tests/dsp/test_frame_sync_internal_helpers.c,
+     * which drives one window at a time: this harness pads a pattern with a single repeated
+     * symbol, and a uniform run is within one error of both M17_BRT and M17_PKT, so a run-length
+     * pattern here would be measuring the padding. What it can pin is the chain behind the
+     * candidate. */
     rc |= run_m17_sync_case(DSD_SYNC_M17_LSF_POS, 1U, M17_STR, DSD_SYNC_M17_STR_POS, "M17 LSF to stream");
     rc |= run_m17_sync_case(DSD_SYNC_M17_LSF_POS, 1U, M17_PKT, DSD_SYNC_M17_PKT_POS, "M17 LSF to packet");
-    rc |= run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_BRT, DSD_SYNC_M17_BRT_POS,
-                                "M17 preamble to BERT");
     rc |= run_m17_sync_case(DSD_SYNC_M17_BRT_POS, 1U, M17_BRT, DSD_SYNC_M17_BRT_POS, "M17 BERT to BERT");
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_STR, DSD_SYNC_M17_STR_POS, "M17 stream to stream");
     rc |= run_m17_sync_case(DSD_SYNC_M17_PKT_POS, 1U, M17_PKT, DSD_SYNC_M17_PKT_POS, "M17 packet to packet");
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT, DSD_SYNC_M17_EOT_POS, "M17 stream to EOT");
     rc |= run_m17_sync_case(DSD_SYNC_NONE, 0U, M17_EOT, -1, "M17 rejects cold EOT");
-    rc |=
-        run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_STR, -1, "M17 rejects stream after preamble");
-    rc |=
-        run_m17_two_step_case(M17_PRE M17_PRE, DSD_SYNC_M17_PRE_POS, M17_PKT, -1, "M17 rejects packet after preamble");
+
+    /* Frames after the first in a chain are earned: a stream or packet following another needs
+     * the transmission to have produced a clean LICH or a CRC, a BERT chain needs its PRBS9
+     * lock, and a terminator needs a transmission to terminate (#399). */
+    rc |= run_m17_chain_case(DSD_SYNC_M17_STR_POS, 1U, M17_STR, -1, "M17 stream chain needs evidence", 0, 1);
+    rc |= run_m17_chain_case(DSD_SYNC_M17_PKT_POS, 1U, M17_PKT, -1, "M17 packet chain needs evidence", 0, 1);
+    rc |= run_m17_chain_case(DSD_SYNC_M17_BRT_POS, 1U, M17_BRT, -1, "M17 BERT chain needs a PRBS9 lock", 1, 0);
+    rc |= run_m17_chain_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT, -1, "M17 EOT needs a transmission to end", 0, 1);
     return rc;
 }

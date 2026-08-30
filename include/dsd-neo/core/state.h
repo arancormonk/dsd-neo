@@ -1252,6 +1252,18 @@ struct dsd_state {
     uint32_t m17_bert_errors;
     uint32_t m17_bert_resyncs;
 
+    /* M17 preamble candidate (src/dsp/dsd_frame_sync.c). A preamble is an alternating symbol
+     * run and nothing more, so matching one only latches a candidate here; the LSF or BERT sync
+     * word that must follow it within DSD_FRAME_SYNC_M17_CANDIDATE_TTL evaluations is what the
+     * decoder acts on (issue #399).
+     *
+     * m17_pre_run: consecutive windows that matched a preamble marker at either polarity.
+     * m17_pre_candidate: 0 none, 1 normal polarity, 2 inverted.
+     * m17_pre_candidate_ttl: M17 evaluations left before the candidate lapses. */
+    uint8_t m17_pre_run;
+    uint8_t m17_pre_candidate;
+    uint8_t m17_pre_candidate_ttl;
+
     /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
      * the sync chain is only an alternating symbol run, so the frame body has to prove itself
      * before the decoder acts on it (issue #399).

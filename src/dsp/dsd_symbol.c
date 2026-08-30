@@ -309,7 +309,12 @@ symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float 
         return dmr_filter(sample, state->samplesPerSymbol);
     }
     if (symbol_is_m17_sync(state->lastsynctype)) {
-        return m17_filter(sample, state->samplesPerSymbol);
+        /* M17 does not want a matched filter here. The -fz preset has always said so by clearing
+         * use_cosine_filter outright, which is a global switch: under AUTO the flag keeps its
+         * default and M17 frames were the only ones that got a filter their own preset rejects.
+         * Running m17_filter() over the payload costs the LSF its CRC and the stream its LICH,
+         * so AUTO could match M17's sync words and never decode a frame behind them (#399). */
+        return sample;
     }
     if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
         return p25_filter(sample, state->samplesPerSymbol);

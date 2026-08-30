@@ -30,6 +30,27 @@ typedef enum {
 } dsd_frame_sync_sps_profile_index;
 
 /**
+ * @brief M17 evaluations a latched preamble candidate survives without a sync word behind it.
+ *
+ * A real preamble is a 192-symbol alternating run, and the matcher refreshes the candidate on
+ * every window of it, so what this has to cover is only the gap between the last window that
+ * still reads as a preamble and the first that holds the whole 8-symbol sync word: at most
+ * eight evaluations, since the run's tail can survive about two symbols into the sync word.
+ * Twice that leaves room for a noisy junction without leaving a candidate standing long enough
+ * for an unrelated window to open a frame on it (issue #399).
+ */
+#define DSD_FRAME_SYNC_M17_CANDIDATE_TTL   8
+
+/**
+ * @brief Consecutive matching windows that make an alternating run an M17 preamble candidate.
+ *
+ * A single 8-symbol window within one error of the marker is not rare enough to act on -- noise
+ * produces them, and each one used to open the whole M17 chain. A real preamble is 192 symbols,
+ * so it offers some 180 consecutive matches and can spare these eight many times over.
+ */
+#define DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS 8
+
+/**
  * @brief Non-zero when a symbol profile's level count admits only GFSK.
  *
  * Two-level slicing is frequency-shift keying; there is no two-level C4FM or

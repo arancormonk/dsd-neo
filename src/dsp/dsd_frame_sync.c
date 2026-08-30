@@ -845,46 +845,86 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     return DSD_SYNC_NONE;
 }
 
-static int
-frame_sync_try_m17_preamble(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv) {
-    const dsd_opts* opts = ctx->opts;
+/**
+ * @brief Latch an M17 preamble as a candidate rather than accepting it as a sync.
+ *
+ * M17's preamble is `31313131` -- a pure alternating run with no structure to check. Any signal
+ * that alternates at 4800 baud presents one: D-STAR's bit sync does, and so does noise on an
+ * open squelch. Accepting it as a sync therefore said nothing about the signal, while demanding
+ * more of it -- an exact marker, or two exact markers in a row -- did not discriminate either,
+ * because doubling an alternating run leaves an alternating run. What that rule did do was
+ * reject real M17, whose markers arrive with the odd symbol error, and M17 has no other way into
+ * its sync chain: everything downstream is gated on `lastsynctype` (issue #399).
+ *
+ * So a preamble is treated as what it is -- a hint that a sync word may be about to arrive --
+ * and the decision waits for the LSF or BERT word behind it, which is eight symbols of real
+ * structure. Nothing is printed, no lock is taken and no thresholds move here; a signal that
+ * never produces the sync word costs a lapsed candidate and nothing else.
+ */
+static void
+frame_sync_note_m17_pre_candidate(frame_sync_match_ctx* ctx, int ham_pre, int ham_piv) {
     dsd_state* state = ctx->state;
-    /* An 8-symbol one-error preamble is ambiguous with several 4800/4 sync prefixes.
-     * Keep the one-error tolerance in forced M17 mode, but require the exact marker
-     * when the full profile has other candidates. D-STAR starts with an exact M17
-     * marker, so require a second marker before accepting M17 when D-STAR is enabled. */
-    const int other_4800_candidate =
-        opts->frame_p25p1 == 1 || opts->frame_dmr == 1 || opts->frame_nxdn96 == 1 || opts->frame_ysf == 1;
-    const int max_hamming = other_4800_candidate ? 0 : 1;
-    const int require_repeated_marker = opts->frame_dstar == 1;
-    const int repeated_pre = !require_repeated_marker
-                             || (frame_sync_match_window_ready(ctx, 16)
-                                 && dsd_sync_hamming_distance(ctx->synctest16, M17_PRE, 8) <= max_hamming);
-    const int repeated_piv = !require_repeated_marker
-                             || (frame_sync_match_window_ready(ctx, 16)
-                                 && dsd_sync_hamming_distance(ctx->synctest16, M17_PIV, 8) <= max_hamming);
 
-    if (ham_pre <= max_hamming && repeated_pre) {
-        state->m17_polarity = 1;
-        printFrameSync(opts, state, "+M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
-        frame_sync_set_basic_lock(ctx);
-        state->lastsynctype = DSD_SYNC_M17_PRE_POS;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_M17_PRE_POS;
+    if (ham_pre > 1 && ham_piv > 1) {
+        state->m17_pre_run = 0;
+        return;
     }
 
-    if (ham_piv <= max_hamming && repeated_piv) {
-        state->m17_polarity = 2;
-        printFrameSync(opts, state, "-M17 PREAMBLE", ctx->synctest_pos + 1, ctx->modulation);
-        frame_sync_set_basic_lock(ctx);
-        state->lastsynctype = DSD_SYNC_M17_PRE_NEG;
-        dsd_sync_warm_start_thresholds_outer_only(opts, state, 8);
-        DSD_FPRINTF(stderr, "\n");
-        return DSD_SYNC_M17_PRE_NEG;
+    /* One matching window is not a preamble. A preamble is 192 symbols of alternating outer
+     * rails, so every window across it matches -- at one polarity or the other, since the run
+     * reads as its own inversion one symbol over -- and a real transmission has some 180 of
+     * them to spare. Noise supplies a single window at this tolerance often enough to matter,
+     * and supplies eight in a row essentially never. Counting the run is what separates the two
+     * without asking any single window to be cleaner than real M17 delivers (#399). */
+    if (state->m17_pre_run < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS) {
+        state->m17_pre_run++;
+    }
+    if (state->m17_pre_run < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS) {
+        return;
     }
 
-    return DSD_SYNC_NONE;
+    /* The other half of what the old accept did here, and the half worth keeping: a run of
+     * symbols alternating between the outer rails is the best level reference M17 ever offers,
+     * and the sync word behind it cannot be sliced without it. Carrier is deliberately not
+     * raised and nothing is printed -- an alternating run is not yet a lock. */
+    state->offset = ctx->synctest_pos;
+    state->max = ((state->max) + ctx->lmax) / 2;
+    state->min = ((state->min) + ctx->lmin) / 2;
+    dsd_sync_warm_start_thresholds_outer_only(ctx->opts, state, 8);
+
+    state->m17_pre_candidate = (ham_pre <= 1) ? 1 : 2;
+    state->m17_pre_candidate_ttl = DSD_FRAME_SYNC_M17_CANDIDATE_TTL;
+}
+
+/** @brief Age a latched candidate by one evaluation, dropping it when it lapses. */
+static void
+frame_sync_age_m17_pre_candidate(dsd_state* state) {
+    if (state->m17_pre_candidate == 0) {
+        return;
+    }
+    if (state->m17_pre_candidate_ttl > 0) {
+        state->m17_pre_candidate_ttl--;
+    }
+    if (state->m17_pre_candidate_ttl == 0) {
+        state->m17_pre_candidate = 0;
+    }
+}
+
+/**
+ * @brief Whether the M17 chain in progress has produced anything that checked out.
+ *
+ * Frame sync reads the protocol layer's evidence rather than re-deriving any of it. A chain that
+ * has proved nothing is not allowed to keep extending itself frame after frame, which is how a
+ * single false sync used to occupy the profile for the rest of a capture (#399).
+ *
+ * A pending weak streak counts, not just full confirmation: a real stream whose LSF arrived too
+ * damaged to clear its CRC rebuilds the link setup from the LICH carried by six consecutive
+ * stream frames, and demanding confirmation before the second of them would stop the chain that
+ * produces it. One clean LICH is enough to earn the next frame; noise does not supply even that.
+ */
+static int
+frame_sync_m17_chain_has_evidence(const dsd_state* state) {
+    return state->m17_confirmed != 0 || state->m17_confirm_weak_streak != 0;
 }
 
 static int
@@ -900,7 +940,8 @@ frame_sync_try_m17_eot(frame_sync_match_ctx* ctx, int ham_eot, int ham_eot_inv, 
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
     const int ham = is_inverted ? ham_eot_inv : ham_eot;
-    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)) {
+    if (ham > 1 || !frame_sync_m17_eot_allowed_after(state->lastsynctype)
+        || !frame_sync_m17_chain_has_evidence(state)) {
         return DSD_SYNC_NONE;
     }
 
@@ -923,7 +964,8 @@ frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, i
     dsd_state* state = ctx->state;
 
     if (ham_pkt <= 1 && !is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS && state->lastsynctype != DSD_SYNC_M17_PKT_POS) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS
+            && !(state->lastsynctype == DSD_SYNC_M17_PKT_POS && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "+M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -934,7 +976,8 @@ frame_sync_try_m17_packet(frame_sync_match_ctx* ctx, int ham_pkt, int ham_brt, i
     }
 
     if (ham_brt <= 1 && is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG && state->lastsynctype != DSD_SYNC_M17_PKT_NEG) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG
+            && !(state->lastsynctype == DSD_SYNC_M17_PKT_NEG && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "-M17 PKT", ctx->synctest_pos + 1, ctx->modulation);
@@ -953,7 +996,8 @@ frame_sync_try_m17_stream(frame_sync_match_ctx* ctx, int ham_str, int ham_lsf, i
     dsd_state* state = ctx->state;
 
     if (ham_str <= 1 && !is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS && state->lastsynctype != DSD_SYNC_M17_STR_POS) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_POS
+            && !(state->lastsynctype == DSD_SYNC_M17_STR_POS && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "+M17 STR", ctx->synctest_pos + 1, ctx->modulation);
@@ -964,7 +1008,8 @@ frame_sync_try_m17_stream(frame_sync_match_ctx* ctx, int ham_str, int ham_lsf, i
     }
 
     if (ham_lsf <= 1 && is_inverted) {
-        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG && state->lastsynctype != DSD_SYNC_M17_STR_NEG) {
+        if (state->lastsynctype != DSD_SYNC_M17_LSF_NEG
+            && !(state->lastsynctype == DSD_SYNC_M17_STR_NEG && frame_sync_m17_chain_has_evidence(state))) {
             return DSD_SYNC_NONE;
         }
         printFrameSync(opts, state, "-M17 STR", ctx->synctest_pos + 1, ctx->modulation);
@@ -986,27 +1031,28 @@ frame_sync_accept_m17(frame_sync_match_ctx* ctx, const char* label, int synctype
     return synctype;
 }
 
-static int
-frame_sync_after_m17_preamble(const dsd_state* state, int is_inverted) {
-    return (!is_inverted && state->lastsynctype == DSD_SYNC_M17_PRE_POS)
-           || (is_inverted && state->lastsynctype == DSD_SYNC_M17_PRE_NEG);
+/**
+ * @brief Spend a candidate on the sync word that confirmed it, at the polarity that word named.
+ */
+static void
+frame_sync_consume_m17_pre_candidate(dsd_state* state, int polarity) {
+    state->m17_polarity = (uint8_t)polarity;
+    state->m17_pre_candidate = 0;
+    state->m17_pre_candidate_ttl = 0;
 }
 
 static int
 frame_sync_after_m17_bert(const dsd_state* state, int is_inverted) {
+    /* A BERT frame carries no CRC and its sync word is eight symbols, so one accepted on noise
+     * used to hand the next frame the same permission and the chain sustained itself for the
+     * rest of the capture, crowding out every other protocol on the profile. Continuing it
+     * costs a PRBS9 lock -- the one thing a real bit-error-rate test has and noise does not.
+     * The session's first frame still arrives on a preamble candidate (#399). */
+    if (state->m17_bert_locked == 0) {
+        return 0;
+    }
     return (!is_inverted && state->lastsynctype == DSD_SYNC_M17_BRT_POS)
            || (is_inverted && state->lastsynctype == DSD_SYNC_M17_BRT_NEG);
-}
-
-static int
-frame_sync_try_m17_lsf_after_preamble(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int is_inverted) {
-    const int hamming = is_inverted ? ham_str : ham_lsf;
-    if (hamming > 1) {
-        return DSD_SYNC_NONE;
-    }
-
-    return is_inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
-                       : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
 }
 
 static int
@@ -1023,27 +1069,44 @@ frame_sync_try_m17_bert_after_context(frame_sync_match_ctx* ctx, int ham_brt, in
 static int
 frame_sync_try_m17_lsf_or_bert(frame_sync_match_ctx* ctx, int ham_lsf, int ham_str, int ham_brt, int ham_pkt,
                                int is_inverted) {
-    const dsd_state* state = ctx->state;
-    const int after_preamble = frame_sync_after_m17_preamble(state, is_inverted);
-    const int after_bert = frame_sync_after_m17_bert(state, is_inverted);
-    if (!after_preamble && !after_bert) {
-        return DSD_SYNC_NONE;
-    }
+    dsd_state* state = ctx->state;
 
-    if (after_preamble) {
-        const int lsf_sync = frame_sync_try_m17_lsf_after_preamble(ctx, ham_lsf, ham_str, is_inverted);
-        if (lsf_sync != DSD_SYNC_NONE) {
-            return lsf_sync;
+    if (state->m17_pre_candidate != 0) {
+        /* An alternating run is symmetric: read one symbol later, the marker is its own
+         * inversion, so a preamble can never say which polarity the transmission has -- the old
+         * code's answer was whichever phase it happened to accept on. The sync word behind it
+         * can say, because M17_LSF and M17_STR are not shifts of each other. Try both readings
+         * and let the one that matches name the polarity the rest of the chain locks to. */
+        for (int pass = 0; pass < 2; pass++) {
+            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+            if ((inverted ? ham_str : ham_lsf) <= 1) {
+                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+                return inverted ? frame_sync_accept_m17(ctx, "-M17 LSF", DSD_SYNC_M17_LSF_NEG)
+                                : frame_sync_accept_m17(ctx, "+M17 LSF", DSD_SYNC_M17_LSF_POS);
+            }
+        }
+        for (int pass = 0; pass < 2; pass++) {
+            const int inverted = (ctx->opts->inverted_m17 == 0) ? pass : !pass;
+            if ((inverted ? ham_pkt : ham_brt) <= 1) {
+                frame_sync_consume_m17_pre_candidate(state, inverted ? 2 : 1);
+                return inverted ? frame_sync_accept_m17(ctx, "-M17 BRT", DSD_SYNC_M17_BRT_NEG)
+                                : frame_sync_accept_m17(ctx, "+M17 BRT", DSD_SYNC_M17_BRT_POS);
+            }
         }
     }
 
-    return frame_sync_try_m17_bert_after_context(ctx, ham_brt, ham_pkt, is_inverted);
+    /* A BERT session repeats its own sync word without a fresh preamble between frames. */
+    if (frame_sync_after_m17_bert(state, is_inverted)) {
+        return frame_sync_try_m17_bert_after_context(ctx, ham_brt, ham_pkt, is_inverted);
+    }
+
+    return DSD_SYNC_NONE;
 }
 
 static int
 frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
-    const dsd_state* state = ctx->state;
+    dsd_state* state = ctx->state;
     if (opts->frame_m17 != 1 || !frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
         || !frame_sync_match_window_ready(ctx, 8)) {
         return DSD_SYNC_NONE;
@@ -1058,15 +1121,19 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
     int ham_eot = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT, 8);
     int ham_eot_inv = dsd_sync_hamming_distance(ctx->synctest8, M17_EOT_INV, 8);
     int is_inverted = opts->inverted_m17;
-    if (!opts->inverted_m17 && state->m17_polarity == 2) {
-        is_inverted = 1;
+    if (!opts->inverted_m17) {
+        /* Before any frame has been accepted the polarity of the run in hand is all there is to
+         * go on, so a pending candidate speaks for it. */
+        const int polarity = state->m17_polarity != 0 ? state->m17_polarity : state->m17_pre_candidate;
+        if (polarity == 2) {
+            is_inverted = 1;
+        }
     }
 
-    int sync_type = frame_sync_try_m17_preamble(ctx, ham_pre, ham_piv);
-    if (sync_type != DSD_SYNC_NONE) {
-        return sync_type;
-    }
-    sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
+    frame_sync_age_m17_pre_candidate(state);
+    frame_sync_note_m17_pre_candidate(ctx, ham_pre, ham_piv);
+
+    int sync_type = frame_sync_try_m17_eot(ctx, ham_eot, ham_eot_inv, is_inverted);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
     }
