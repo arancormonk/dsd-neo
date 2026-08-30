@@ -502,7 +502,11 @@ struct dsd_state {
     char err_bufR[64];
     char fsubtype[16];
     char ftype[16];
-    int symbolcnt;
+    /* Free-running count of symbols getSymbol() has produced. Unsigned because it is only
+     * ever incremented and differenced modulo 2^32: a signed counter overflowed after about
+     * 5.2 days at 4800 symbols/s, which is undefined behaviour and aborts a UBSan build
+     * (#395). Readers must treat it as wrapping -- compare differences, never magnitudes. */
+    uint32_t symbolcnt;
     int symbolc;
     uint8_t symbol_replay_format;         /* DSD_SYMBOL_REPLAY_FORMAT_* */
     uint8_t symbol_replay_header_checked; /* header probe already done for current symbol file */
@@ -542,13 +546,14 @@ struct dsd_state {
      *   debited back, floored at zero, so a profile carrying traffic sits at zero and a
      *   profile matching nothing reaches its dwell. Zeroing this alone is a complete reset.
      * sps_hunt_symbolcnt_mark: dsd_state::symbolcnt as getFrameSync() last returned, so
-     *   the next call can measure what the handler consumed in between. Credit is per sync
-     *   and only counts once it reaches a frame's worth, which is what keeps the dwell
-     *   independent of how often an unproductive matcher fires.
+     *   the next call can measure what the handler consumed in between. It shares that
+     *   field's unsigned wrapping type, so the difference stays exact across the counter's
+     *   2^32 rollover. Credit is per sync and only counts once it reaches a frame's worth,
+     *   which is what keeps the dwell independent of how often an unproductive matcher fires.
      * sps_hunt_idx: current rate/profile index
      * (0=4800/4-level, 1=2400/4-level, 2=9600/binary, 3=6000/4-level, 4=4800/binary) */
     int sps_hunt_counter;
-    int sps_hunt_symbolcnt_mark;
+    uint32_t sps_hunt_symbolcnt_mark;
     int sps_hunt_idx;
     int lastsynctype;
     int lastp25type;

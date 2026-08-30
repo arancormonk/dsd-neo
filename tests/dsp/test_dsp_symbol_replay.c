@@ -234,6 +234,50 @@ test_short_file_falls_back_to_legacy_replay(void) {
     opts.symbolfile = NULL;
 }
 
+/*
+ * dsd_state::symbolcnt free-runs for the life of the process, so it reaches its type's limit
+ * after about 5.2 days at 4800 symbols/s. As a signed int that increment was undefined
+ * behaviour and aborted the asan-ubsan build (issue #395); unsigned, it wraps to zero and
+ * decoding continues. Every reader differences it modulo 2^32, so the wrap costs nothing.
+ *
+ * This case is a UBSan tripwire, and which preset runs it decides what a revert looks like.
+ * Only `ctest --preset asan-ubsan-debug` sets UBSAN_OPTIONS=halt_on_error=1 (in
+ * CMakePresets.json), so only there does the signed increment abort and fail the test; under
+ * UBSan's default options the "signed integer overflow" diagnostic prints and the binary
+ * still exits 0, which ctest reports as Passed. What catches a revert under dev-debug is the
+ * build instead: the assertions below compare the field against uint32_t values, which is a
+ * -Werror=sign-compare break once it is signed again. Do not read a dev-debug pass as having
+ * exercised the overflow.
+ */
+static void
+test_symbol_count_wraps_instead_of_overflowing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_symbol_replay_fixture(&opts, &state);
+    g_cleanup_calls = 0;
+
+    opts.symbolfile = tmpfile();
+    assert(opts.symbolfile != NULL);
+    assert(fputc(2, opts.symbolfile) != EOF);
+    assert(fputc(1, opts.symbolfile) != EOF);
+    rewind(opts.symbolfile);
+
+    /* The value that used to trap: one past INT32_MAX is where the signed increment was
+     * undefined. Unsigned, it is just another symbol. */
+    state.symbolcnt = (uint32_t)INT32_MAX;
+    assert(symbol_level_matches(getSymbol(&opts, &state, 0), 2U));
+    assert(state.symbolcnt == (uint32_t)INT32_MAX + 1U);
+
+    /* And the type's own limit rolls over to zero rather than trapping in turn. */
+    state.symbolcnt = UINT32_MAX;
+    assert(symbol_level_matches(getSymbol(&opts, &state, 0), 1U));
+    assert(state.symbolcnt == 0U);
+    assert(g_cleanup_calls == 0);
+
+    fclose(opts.symbolfile);
+    opts.symbolfile = NULL;
+}
+
 static void
 test_debug_replay_reopens_and_reprobes(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -551,6 +595,7 @@ main(void) {
     exitflag = 0;
     test_soft_symbol_replay_record();
     test_short_file_falls_back_to_legacy_replay();
+    test_symbol_count_wraps_instead_of_overflowing();
     test_debug_replay_reopens_and_reprobes();
     test_missing_symbol_file_returns_error_symbol();
     test_unsupported_soft_headers_are_rejected();

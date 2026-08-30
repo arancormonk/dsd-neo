@@ -657,7 +657,7 @@ test_cac_crc_failure_reset(void) {
     rc |= expect_int("cac-reset-last-sync", state.lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("cac-reset-carrier", state.carrier, 0);
     rc |= expect_int("cac-reset-jitter", state.jitter, -1);
-    rc |= expect_int("cac-reset-symbolcnt", state.symbolcnt, 0);
+    rc |= expect_int("cac-reset-symbolcnt", (int)state.symbolcnt, 0);
     rc |= expect_int("cac-reset-offset", state.offset, 0);
     rc |= expect_int("cac-reset-dibit-pointer", (int)(state.dibit_buf_p - state.dibit_buf), 200);
     rc |= expect_int("cac-reset-data-blocks", state.data_header_blocks[0], 1);

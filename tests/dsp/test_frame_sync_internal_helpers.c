@@ -523,6 +523,64 @@ test_sps_hunt_budget_is_spent_in_symbols(void) {
     assert(state.sps_hunt_counter == 0);
 }
 
+/*
+ * dsd_state::symbolcnt free-runs and wraps at 2^32 (issue #395). The hunt measures what a
+ * handler consumed as a modular difference against its mark, so a rollover between the mark
+ * and the next getFrameSync() entry must still yield the true symbol count -- and a reset to
+ * zero must still be recognised as "an unrelated subsystem zeroed it" and credit nothing.
+ *
+ * This is a contract test, not a regression test: it passes against the pre-#395 signed
+ * fields too, because the helper already laundered the subtraction through explicit
+ * (unsigned int) casts, which made the arithmetic modular whatever the field types were.
+ * It pins the wrap-exactness the uint32_t fields now carry on their own -- so a later widen
+ * or re-signing of either field has to keep it -- but it is not what would have caught the
+ * overflow. DSP_SYMBOL_REPLAY's test_symbol_count_wraps_instead_of_overflowing() is.
+ */
+static void
+test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* 20 symbols consumed straddling the wrap: mark at UINT32_MAX - 25, counter at
+     * UINT32_MAX - 5. That is a frame's worth, so the budget is debited by exactly 20. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 1000;
+    state.sps_hunt_symbolcnt_mark = UINT32_MAX - 25U;
+    state.symbolcnt = UINT32_MAX - 5U;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 980);
+    assert(state.sps_hunt_symbolcnt_mark == UINT32_MAX - 5U);
+
+    /* Same 20 symbols, now with the wrap falling inside the interval. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 1000;
+    state.sps_hunt_symbolcnt_mark = UINT32_MAX - 15U;
+    state.symbolcnt = 4U;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 980);
+    assert(state.sps_hunt_symbolcnt_mark == 4U);
+
+    /* A reset to zero (nxdn_reset_after_cac_fail(), initState(), print_datascope()) looks
+     * like a backwards jump and buys the profile nothing; the mark re-anchors for the next
+     * call. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 1000;
+    state.sps_hunt_symbolcnt_mark = 5000U;
+    state.symbolcnt = 0U;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 1000);
+    assert(state.sps_hunt_symbolcnt_mark == 0U);
+
+    /* The floor still applies across the wrap: 6 symbols reach the rollover and the rest land
+     * past it, one short of a frame in all, so nothing is credited. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 1000;
+    state.sps_hunt_symbolcnt_mark = UINT32_MAX - 5U;
+    state.symbolcnt = (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS - 1U - 6U;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 1000);
+}
+
 /* Carrier no longer wipes the hunt's progress from the modulation-switch path. */
 static void
 test_carrier_does_not_reset_the_hunt_budget(void) {
@@ -1773,6 +1831,7 @@ main(void) {
     test_sps_hunt_profile_updates_timing();
     test_sps_hunt_reconciles_external_timing();
     test_sps_hunt_budget_is_spent_in_symbols();
+    test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();
