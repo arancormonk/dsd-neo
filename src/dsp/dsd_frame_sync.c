@@ -2863,6 +2863,32 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
     }
 
     state->sps_hunt_idx = next_idx;
+    if (profile_changed) {
+        /* The dwell belongs to the profile, so adopting one starts its budget over. That is
+         * the defect: left alone, the incoming profile inherits whatever the outgoing one had
+         * already spent, and one that arrives a symbol short of the dwell is stepped off again
+         * on the very next symbol, because frame_sync_advance_sync_window() bills one symbol
+         * per symbol (#394).
+         *
+         * The measurement anchor moves with the budget so the pair stays consistent, not
+         * because it is stale today: every path that reaches here already has a current mark.
+         * getFrameSync() runs frame_sync_sps_hunt_note_handler_consumption() -- which
+         * re-anchors -- immediately before frame_sync_ensure_enabled_sps_profile(), and the
+         * hunt's own call site leaves getFrameSync() through frame_sync_sps_hunt_mark_return()
+         * at the same symbolcnt. A fresh budget paired with an anchor taken under the outgoing
+         * profile is what would let frame_sync_sps_hunt_note_handler_consumption() credit the
+         * new profile for symbols a handler consumed before it was selected, so the two are
+         * written together rather than left to each caller to keep in step.
+         *
+         * This sits here rather than at the call sites so it covers every path through the
+         * helper: the hunt itself (which zeroes the counter just before calling), both adopt
+         * paths in frame_sync_ensure_enabled_sps_profile(), and any future caller. The guard is
+         * load-bearing -- a call that leaves the index alone can still get past the early-out
+         * above to normalise a two-level profile's modulation, and that is the same profile
+         * spending the same dwell, so its budget must survive. */
+        state->sps_hunt_counter = 0;
+        state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    }
     if (normalize_profile_modulation) {
         state->rf_mod = profile_default_modulation;
     }
