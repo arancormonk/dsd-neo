@@ -1249,7 +1249,11 @@ rtl_set_bw(void* v) {
 void
 rtl_set_sql(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_double_async("Squelch (dB, negative)", pwr_to_dB(c->opts->rtl_squelch_level), cb_rtl_sql, c);
+    /* Offer 0 for a squelch that is off rather than pwr_to_dB()'s -120 floor:
+     * accepting the value shown must not turn a disabled squelch into a real
+     * threshold. 0 is also how the `sql` CLI field and rtl_sql spell "off". */
+    const double shown = dsd_squelch_is_off(c->opts->rtl_squelch_level) ? 0.0 : pwr_to_dB(c->opts->rtl_squelch_level);
+    ui_prompt_open_double_async("Squelch (dB; 0 = off)", shown, cb_rtl_sql, c);
 }
 
 void

@@ -10,8 +10,8 @@
 #include <dsd-neo/fec/trellis.h>
 #include <dsd-neo/fec/viterbi.h>
 #include <math.h>
-#include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -73,6 +73,53 @@ test_power_helpers(void) {
 }
 
 static void
+test_squelch_contract_helpers(void) {
+    /* A stored threshold gates nothing when it is <= 0: this is the same test every
+     * consumer makes before comparing channel power against it. */
+    assert(dsd_squelch_is_off(0.0));
+    assert(dsd_squelch_is_off(-37.5));
+    assert(!dsd_squelch_is_off(dB_to_pwr(-47.0)));
+    assert(!dsd_squelch_is_off(1.0e-30));
+
+    /* The one mapping from a user-facing `sql` setting to a stored threshold:
+     * negative is dB, 0 is off, positive is linear mean power taken as given. */
+    assert(dsd_squelch_level_from_sql(0.0) == 0.0);
+    assert(fabs(dsd_squelch_level_from_sql(-47.0) - dB_to_pwr(-47.0)) < 1.0e-12);
+    assert(fabs(pwr_to_dB(dsd_squelch_level_from_sql(-47.0)) + 47.0) < 0.001);
+    assert(fabs(dsd_squelch_level_from_sql(-250.0) - dB_to_pwr(-250.0)) < 1.0e-12);
+    assert(dsd_squelch_level_from_sql(-250.0) >= 0.0);
+    assert(dsd_squelch_level_from_sql(0.25) == 0.25);
+
+    /* Display: "off" when it gates nothing, so a reader can tell a disabled squelch
+     * from one gating at an extremely low threshold. The unit is the caller's, so a
+     * real threshold keeps each surface's existing spacing. */
+    char out[32];
+    assert(dsd_squelch_format(0.0, "dB", out, sizeof out) == 0);
+    assert(strcmp(out, "off") == 0);
+    assert(dsd_squelch_format(-1.0, " dB", out, sizeof out) == 0);
+    assert(strcmp(out, "off") == 0);
+    assert(dsd_squelch_format(dB_to_pwr(-47.0), "dB", out, sizeof out) == 0);
+    assert(strcmp(out, "-47.0dB") == 0);
+    assert(dsd_squelch_format(dB_to_pwr(-47.0), " dB", out, sizeof out) == 0);
+    assert(strcmp(out, "-47.0 dB") == 0);
+    assert(dsd_squelch_format(1.0, " dB", out, sizeof out) == 0);
+    assert(strcmp(out, "0.0 dB") == 0);
+
+    /* A threshold so low that pwr_to_dB() floors it is still a threshold, and still
+     * prints as a number: only "gates nothing" reads as off. */
+    assert(dsd_squelch_format(1.0e-30, " dB", out, sizeof out) == 0);
+    assert(strcmp(out, "-120.0 dB") == 0);
+
+    assert(dsd_squelch_format(0.0, " dB", NULL, sizeof out) == -1);
+    assert(dsd_squelch_format(0.0, " dB", out, 0U) == -1);
+
+    char tiny[4];
+    assert(dsd_squelch_format(dB_to_pwr(-47.0), " dB", tiny, sizeof tiny) == 0);
+    assert(tiny[3] == '\0');
+    assert(strcmp(tiny, "-47") == 0);
+}
+
+static void
 test_audio_filter_helpers(void) {
     static dsd_state state;
     DSD_MEMSET(&state, 0, sizeof(state));
@@ -130,6 +177,7 @@ int
 main(void) {
     test_trellis_and_viterbi_helpers();
     test_power_helpers();
+    test_squelch_contract_helpers();
     test_audio_filter_helpers();
     return 0;
 }

@@ -17,6 +17,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -400,6 +401,39 @@ test_unavailable_radio_inputs_are_rejected(void) {
 #endif
 
 static int
+expect_contains(const char* tag, const char* haystack, const char* needle) {
+    if (strstr(haystack, needle) == NULL) {
+        DSD_FPRINTF(stderr, "%s failed: %s not in [%s]\n", tag, needle, haystack);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_omits(const char* tag, const char* haystack, const char* needle) {
+    if (strstr(haystack, needle) != NULL) {
+        DSD_FPRINTF(stderr, "%s failed: %s present in [%s]\n", tag, needle, haystack);
+        return 1;
+    }
+    return 0;
+}
+
+/* Run the setup with the startup banners captured, so what the user is told about
+ * the squelch is assertable and not merely inferred from the stored value. */
+static int
+run_lifecycle_capturing_banner(dsd_opts* opts, dsd_state* state, char* buf, size_t buf_size, int* rc_out) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "engine_banner") != 0) {
+        return 1;
+    }
+    *rc_out = dsd_engine_run_with_lifecycle(opts, state, NULL);
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        return 1;
+    }
+    return dsd_test_capture_stderr_read(&cap, buf, buf_size) != 0;
+}
+
+static int
 test_rtltcp_tuning_tokens_and_bias(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
@@ -462,6 +496,21 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
+    /* An unparseable squelch token is not a request to switch the squelch off:
+     * the setting the session already had has to survive it. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24:loud:5");
+    opts->rtl_squelch_level = 0.25;
+    rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+    test_rc |= expect_true("rtltcp unparseable sql run ok", rc == 0);
+    test_rc |=
+        expect_double_near("rtltcp unparseable sql keeps previous threshold", opts->rtl_squelch_level, 0.25, 1e-12);
+    test_rc |= expect_true("rtltcp unparseable sql still parses volume", opts->rtl_volume_multiplier == 5);
+
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:short.example:7777:450M:11:bias=on");
     opts->rtl_bias_tee = 0;
     rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
@@ -487,7 +536,12 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
 
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s",
                  "soapy:driver=test,serial=ABC:450.5M:7:2:12:-33:3");
-    int rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
+    char banner[4096] = {0};
+    int rc = 0;
+    if (run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
 
     int test_rc = 0;
     test_rc |= expect_true("soapy run ok", rc == 0);
@@ -497,6 +551,26 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
                                                          && opts->rtlsdr_ppm_error == 2 && opts->rtl_dsp_bw_khz == 12
                                                          && opts->rtl_volume_multiplier == 3);
     test_rc |= expect_double_near("soapy squelch", opts->rtl_squelch_level, dB_to_pwr(-33.0), 1e-12);
+    test_rc |= expect_contains("soapy banner states the threshold", banner, "SQ=-33.0dB");
+
+    free_test_runtime(opts, state);
+
+    /* sql=0 is what every documented example uses, and it switches the squelch
+     * off. Reported as -120.0 dB it read as a threshold that had been applied,
+     * which is the confusion this case pins down. */
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=test:450.5M:7:2:12:0:3");
+    banner[0] = '\0';
+    if (run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc) != 0) {
+        free_test_runtime(opts, state);
+        return 1;
+    }
+    test_rc |= expect_true("soapy disabled-squelch run ok", rc == 0);
+    test_rc |= expect_true("soapy sql=0 stores no threshold", opts->rtl_squelch_level == 0.0);
+    test_rc |= expect_contains("soapy banner names a disabled squelch", banner, "SQ=off");
+    test_rc |= expect_omits("soapy banner does not invent a threshold", banner, "SQ=-120");
 
     free_test_runtime(opts, state);
     return test_rc;

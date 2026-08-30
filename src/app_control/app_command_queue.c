@@ -19,6 +19,7 @@
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -1157,7 +1158,12 @@ ui_cmd_handle_rtl_set_sql_db(dsd_opts* opts, dsd_state* state, const struct dsd_
         int rc = svc_rtl_set_sql_db(opts, d);
         result = ui_cmd_apply_status_from_service_rc(rc);
         if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL squelch -> %.1f dB", d);
+            /* Report the threshold that was stored rather than the number that was
+             * asked for: a request of 0 dB switches the squelch off, and echoing
+             * "0.0 dB" would describe a gate at full scale instead. */
+            char sql[24];
+            (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
+            ui_set_toast(state, 3, "Applied: RTL squelch -> %s", sql);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: squelch control not available on active backend");
         } else {
@@ -1945,14 +1951,13 @@ apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_bw_khz) {
         opts->rtl_dsp_bw_khz = cfg->rtl_bw_khz;
     }
-    if (cfg->rtl_sql) {
-        double sql = (double)cfg->rtl_sql;
-        if (sql > 1.0) {
-            sql /= (32768.0 * 32768.0);
-        }
-        opts->rtl_squelch_level = sql;
-        rtl_stream_set_channel_squelch((float)sql);
-    }
+    /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
+     * same way: negative is decibels, 0 is off. Storing the raw integer put a
+     * -50 dB request in as a power of -50, which switches the squelch off.
+     * Unlike the sibling keys below, 0 is a real value here rather than "key
+     * omitted", so this applies unconditionally — as the startup loader does. */
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
+    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
     if (cfg->rtl_gain) {
         opts->rtl_gain_value = cfg->rtl_gain;
     }

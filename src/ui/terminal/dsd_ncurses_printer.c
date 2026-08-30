@@ -367,7 +367,9 @@ ui_render_rtl_input_source(dsd_opts* opts, dsd_state* state) {
         ui_print_rtl_gain_field(opts);
         printw(" Mon: %iX;", opts->rtl_volume_multiplier);
         ui_print_rtl_ppm_field(opts);
-        printw(" SQL: %.1f dB;", pwr_to_dB(opts->rtl_squelch_level));
+        char sql[24];
+        (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
+        printw(" SQL: %s;", sql);
         printw(" DSP-BW: %i kHz;", opts->rtl_dsp_bw_khz);
         printw(" FRQ: %i;", opts->rtlsdr_center_freq);
         ui_print_rtl_auto_ppm_status();
@@ -566,7 +568,11 @@ ui_render_m17_encoder_status(const dsd_opts* opts, const dsd_state* state) {
             printw("  |");
         }
         if (opts->audio_in_type != AUDIO_IN_RTL && state->m17_vox == 1) {
-            printw(" SQL: %.1f : %.1f dB;", pwr_to_dB(opts->rtl_pwr), pwr_to_dB(opts->rtl_squelch_level));
+            /* Measured power then threshold: the first is always a reading, the
+             * second says "off" when it is not gating. */
+            char vox_sql[24];
+            (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", vox_sql, sizeof vox_sql);
+            printw(" SQL: %.1f : %s;", pwr_to_dB(opts->rtl_pwr), vox_sql);
         }
         printw("\n");
     }

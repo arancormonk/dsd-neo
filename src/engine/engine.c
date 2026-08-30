@@ -500,11 +500,13 @@ dsd_engine_setup_parse_sql_token_or_default(const char* token, double fallback) 
         return fallback;
     }
     double sq_val = 0.0;
-    (void)dsd_parse_double_arg(token, &sq_val);
-    if (sq_val < 0.0) {
-        return dB_to_pwr(sq_val);
+    if (dsd_parse_double_arg(token, &sq_val) != 0) {
+        /* A token that is not a number says nothing about the squelch. Treating a
+         * failed parse as the zero left in sq_val switched the squelch off, which
+         * is a setting the user never asked for. */
+        return fallback;
     }
-    return sq_val;
+    return dsd_squelch_level_from_sql(sq_val);
 }
 
 static void
@@ -799,9 +801,11 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
         LOG_INFO("NOTICE: : default device args\n");
     }
     if (tuning_applied) {
-        LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%.1fdB VOL=%d\n",
-                 opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
-                 pwr_to_dB(opts->rtl_squelch_level), opts->rtl_volume_multiplier);
+        char sql[24];
+        (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", sql, sizeof sql);
+        LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d\n",
+                 opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
+                 opts->rtl_volume_multiplier);
     }
     opts->rtltcp_enabled = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -963,9 +967,11 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
     if (opts->rtl_volume_multiplier > 3 || opts->rtl_volume_multiplier < 0) {
         opts->rtl_volume_multiplier = 1;
     }
-    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%.1fdB VOL=%d%s\n", opts->rtl_dev_index,
-             opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz,
-             pwr_to_dB(opts->rtl_squelch_level), opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
+    char sql[24];
+    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", sql, sizeof sql);
+    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
+             opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
+             opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
     opts->audio_in_type = AUDIO_IN_RTL;
     return 1;
 #else

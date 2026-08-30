@@ -729,7 +729,11 @@ svc_rtl_set_sql_db(dsd_opts* opts, double dB) {
     if (!opts) {
         return -1;
     }
-    opts->rtl_squelch_level = dB_to_pwr(dB);
+    /* 0 dB is full scale, so as a threshold it would close the gate on every
+     * signal there is. Spending that value on "off" instead gives both UIs a way
+     * to switch the squelch off, and matches what 0 already means in the `sql`
+     * CLI field and the rtl_sql config key. */
+    opts->rtl_squelch_level = (dB >= 0.0) ? 0.0 : dsd_squelch_level_from_sql(dB);
     /* Sync the demod state for channel-based squelching */
     rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
     return 0;

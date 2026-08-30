@@ -9,7 +9,9 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/audio.h>
@@ -18,6 +20,7 @@
 #include <dsd-neo/runtime/call_alert.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <math.h>
 #include <sndfile.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -204,6 +207,23 @@ capture_command(int cmd_id, const void* payload, size_t payload_sz) {
         DSD_MEMCPY(g_cmd.data, payload, payload_sz);
     }
     g_cmd.calls++;
+    return 0;
+}
+
+double
+pwr_to_dB(double mean_power) { // NOLINT(misc-use-internal-linkage)
+    if (mean_power <= 0.0) {
+        return -120.0;
+    }
+    return 10.0 * log10(mean_power);
+}
+
+int
+dsd_app_frontend_get_metrics(dsd_frontend_metrics* out) { // NOLINT(misc-use-internal-linkage)
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof *out);
     return 0;
 }
 
@@ -470,6 +490,57 @@ dsd_audio_enumerate_devices(dsd_audio_device* inputs, dsd_audio_device* outputs,
         outputs[1] = g_audio_outputs[1];
     }
     return 0;
+}
+
+/* The RTL rows hand their prompt results to these; the rows themselves are what
+ * is under test, so the callbacks only have to exist. */
+void
+cb_rtl_dev(void* u, int ok, int i) {
+    (void)u;
+    (void)ok;
+    (void)i;
+}
+
+void
+cb_rtl_freq(void* u, int ok, int f) {
+    (void)u;
+    (void)ok;
+    (void)f;
+}
+
+void
+cb_rtl_gain(void* u, int ok, int g) {
+    (void)u;
+    (void)ok;
+    (void)g;
+}
+
+void
+cb_rtl_ppm(void* u, int ok, int p) {
+    (void)u;
+    (void)ok;
+    (void)p;
+}
+
+void
+cb_rtl_bw(void* u, int ok, int bw) {
+    (void)u;
+    (void)ok;
+    (void)bw;
+}
+
+void
+cb_rtl_sql(void* u, int ok, double dB) {
+    (void)u;
+    (void)ok;
+    (void)dB;
+}
+
+void
+cb_rtl_vol(void* u, int ok, int m) {
+    (void)u;
+    (void)ok;
+    (void)m;
 }
 
 void
@@ -1260,6 +1331,20 @@ test_additional_prompt_and_toggle_actions(void) {
     reset_capture();
     act_set_input_warn(NULL);
     rc |= expect_int("input warn env fallback", g_prompt.initial_double == 12.5, 1);
+
+    /* The squelch row has to be able to express "off". The prompt offered
+     * pwr_to_dB() of a disabled squelch, which is -120: retyping what was shown
+     * would have turned a squelch that was off into a real threshold. */
+    reset_capture();
+    opts.rtl_squelch_level = 0.0;
+    rtl_set_sql(&ctx);
+    rc |= expect_str("rtl squelch prompt", g_prompt.title, "Squelch (dB; 0 = off)");
+    rc |= expect_int("rtl squelch off prompt offers off", g_prompt.initial_double == 0.0, 1);
+
+    reset_capture();
+    opts.rtl_squelch_level = pow(10.0, -5.0);
+    rtl_set_sql(&ctx);
+    rc |= expect_int("rtl squelch prompt states a real threshold", fabs(g_prompt.initial_double - (-50.0)) < 0.001, 1);
 
 #if defined(__SSE__) || defined(__SSE2__)
     reset_capture();

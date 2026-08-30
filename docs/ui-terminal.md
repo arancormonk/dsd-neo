@@ -347,7 +347,8 @@ The input section shows a persistent advisory line when recent input-level metri
 samples measured before demodulation. The line is advisory only; DSD-neo never changes input volume, RF gain, AGC, or
 filtering automatically.
 
-The default RTL input line shows the SQL threshold but does not duplicate channel power. Enable the DSP panel when you
+The default RTL input line shows the SQL threshold, reading `off` when the squelch is disabled, but does not
+duplicate channel power. Enable the DSP panel when you
 need to inspect post-channel-filter squelch power. `RF Level` and `Squelch` are measured at different stages and are not
 expected to match exactly.
 

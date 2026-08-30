@@ -175,6 +175,7 @@ class CommandRecorder : public QObject {
     Q_INVOKABLE bool
     setSquelchDb(double db) {
         m_last_squelch_db = db;
+        m_squelch_calls++;
         return true;
     }
 
@@ -220,6 +221,7 @@ class CommandRecorder : public QObject {
         m_gain_calls = 0;
         m_last_gain_db = -1;
         m_last_squelch_db = 0.0;
+        m_squelch_calls = 0;
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
@@ -238,6 +240,12 @@ class CommandRecorder : public QObject {
     double
     lastSquelchDb() const {
         return m_last_squelch_db;
+    }
+
+    /* Lets a case assert that a step which cannot move made no request at all. */
+    Q_INVOKABLE int
+    squelchCalls() const {
+        return m_squelch_calls;
     }
 
     int
@@ -290,6 +298,7 @@ class CommandRecorder : public QObject {
     int m_gain_calls = 0;
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
+    int m_squelch_calls = 0;
     int m_last_modulation = -1;
     int m_last_decode_mode = -1;
     int m_last_ppm = 9999;
@@ -612,6 +621,11 @@ class Setup : public QObject {
     }
 
     Q_INVOKABLE int
+    squelchCalls() const {
+        return (m_commands != nullptr) ? m_commands->squelchCalls() : -1;
+    }
+
+    Q_INVOKABLE int
     lastModulation() const {
         return (m_commands != nullptr) ? m_commands->lastModulation() : -1;
     }
@@ -793,6 +807,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("modulation")] = 0;
         metrics[QStringLiteral("tunerGainDb")] = 30;
         metrics[QStringLiteral("squelchDb")] = -120.0;
+        metrics[QStringLiteral("squelchOff")] = false;
         metrics[QStringLiteral("ppm")] = 0;
         m_metrics = metrics;
         m_engine = engine;

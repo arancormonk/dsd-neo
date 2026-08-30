@@ -4,12 +4,12 @@
  */
 
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <errno.h>
 #include <limits.h>
-#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,11 +19,6 @@
 static int
 is_valid_rtl_bw_khz(int bw) {
     return (bw == 4 || bw == 6 || bw == 8 || bw == 12 || bw == 16 || bw == 24 || bw == 48);
-}
-
-static double
-local_dB_to_pwr(double dB) {
-    return pow(10.0, dB / 10.0);
 }
 
 static int
@@ -235,7 +230,7 @@ parse_soapy_optional_tail(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, doubl
         return -1;
     }
     if (rc > 0) {
-        *sql = (dv < 0.0) ? local_dB_to_pwr(dv) : dv;
+        *sql = dsd_squelch_level_from_sql(dv);
     }
 
     int iv = 0;

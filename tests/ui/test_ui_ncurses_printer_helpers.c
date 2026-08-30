@@ -237,6 +237,22 @@ pwr_to_dB(double mean_power) { // NOLINT(misc-use-internal-linkage)
     return mean_power;
 }
 
+/* Mirrors the real formatter's shape over the identity pwr_to_dB() above, so the
+ * rendered field is checkable without linking core. */
+int
+dsd_squelch_format(double mean_power, const char* unit, char* out,
+                   size_t out_size) { // NOLINT(misc-use-internal-linkage)
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    if (dsd_squelch_is_off(mean_power)) {
+        DSD_SNPRINTF(out, out_size, "off");
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%.1f%s", pwr_to_dB(mean_power), unit ? unit : "");
+    return 0;
+}
+
 const char*
 dsd_input_level_status_label(dsd_input_level_status status) { // NOLINT(misc-use-internal-linkage)
     (void)status;
@@ -581,7 +597,9 @@ test_rtl_and_soapy_input_source_rendering(void) {
     opts.rtl_volume_multiplier = 3;
     opts.rtlsdr_ppm_error = -7;
     g_requested_ppm = opts.rtlsdr_ppm_error;
-    opts.rtl_squelch_level = -37.5f;
+    /* A stored threshold is a mean power, so a real one is positive; the dB stub
+     * above is the identity, which is why this reads back as "37.5 dB". */
+    opts.rtl_squelch_level = 37.5f;
     opts.rtl_dsp_bw_khz = 24;
     opts.rtlsdr_center_freq = 851012500;
     opts.rtl_udp_port = 5555;
@@ -593,11 +611,18 @@ test_rtl_and_soapy_input_source_rendering(void) {
     assert_capture_contains(" G: 21dB;");
     assert_capture_contains(" Mon: 3X;");
     assert_capture_contains(" PPM: -7;");
-    assert_capture_contains(" SQL: -37.5 dB;");
+    assert_capture_contains(" SQL: 37.5 dB;");
     assert_capture_contains(" DSP-BW: 24 kHz;");
     assert_capture_contains(" FRQ: 851012500;");
     assert_capture_contains("| Auto PPM: Off");
     assert_capture_contains("| External RTL Tuning on UDP: 127.0.0.1:5555");
+
+    /* Squelch off is the default every documented example uses. Printed as a
+     * number it read as a threshold that had been applied. */
+    opts.rtl_squelch_level = 0.0;
+    reset_printw_capture();
+    ui_render_rtl_input_source(&opts, &state);
+    assert_capture_contains(" SQL: off;");
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.audio_in_type = AUDIO_IN_RTL;

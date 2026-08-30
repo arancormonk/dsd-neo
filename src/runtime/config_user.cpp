@@ -16,6 +16,7 @@
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
@@ -169,26 +170,6 @@ local_pwr_to_dB(double mean_power) {
         dB = -120.0;
     }
     return dB;
-}
-
-// Local helper to convert dB to linear power (avoids dependency on dsd_misc.c)
-static double
-local_dB_to_pwr(double dB) {
-    if (dB >= 0.0) {
-        return 1.0;
-    }
-    if (dB < -200.0) {
-        dB = -200.0;
-    }
-    const double k_ln10_over_10 = 2.302585092994046 / 10.0;
-    double pwr = std::exp(dB * k_ln10_over_10);
-    if (pwr < 0.0) {
-        pwr = 0.0;
-    }
-    if (pwr > 1.0) {
-        pwr = 1.0;
-    }
-    return pwr;
 }
 
 void
@@ -410,11 +391,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     opts->rtl_gain_value = gain;
     opts->rtlsdr_ppm_error = ppm;
     opts->rtl_dsp_bw_khz = bw;
-    if (sql < 0) {
-        opts->rtl_squelch_level = local_dB_to_pwr((double)sql);
-    } else {
-        opts->rtl_squelch_level = (double)sql;
-    }
+    opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
     opts->rtl_volume_multiplier = vol;
 }
 
@@ -480,7 +457,10 @@ snapshot_apply_live_rtl_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rtl_ppm = opts->rtlsdr_ppm_error;
     cfg->rtl_ppm_is_set = 1;
     cfg->rtl_bw_khz = opts->rtl_dsp_bw_khz;
-    cfg->rtl_sql = (int)local_pwr_to_dB(opts->rtl_squelch_level);
+    /* Off is a setting in its own right, and 0 is how the CLI and the config key
+     * both spell it. Rendering it through pwr_to_dB() saved -120, which reloaded
+     * as a real threshold and is outside the key's own -100..0 range. */
+    cfg->rtl_sql = dsd_squelch_is_off(opts->rtl_squelch_level) ? 0 : (int)local_pwr_to_dB(opts->rtl_squelch_level);
     cfg->rtl_volume = opts->rtl_volume_multiplier;
     if (opts->rtlsdr_center_freq > 0) {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "%u", opts->rtlsdr_center_freq);

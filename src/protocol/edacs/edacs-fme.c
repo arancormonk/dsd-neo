@@ -498,7 +498,11 @@ edacs_print_analog_status(const dsd_opts* opts, const dsd_state* state, int afs,
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
     }
-    DSD_FPRINTF(stderr, " Analog PWR: %.1f dB SQL: %.1f dB", pwr_to_dB(pwr), pwr_to_dB(sql));
+    /* The measurement is always a number; the threshold says "off" when this
+     * channel is not being gated at all (the watchdog case below). */
+    char sql_text[24];
+    (void)dsd_squelch_format(sql, " dB", sql_text, sizeof sql_text);
+    DSD_FPRINTF(stderr, " Analog PWR: %.1f dB SQL: %s", pwr_to_dB(pwr), sql_text);
 
     if (state->ea_mode == 0) {
         int a = (afs >> state->edacs_a_shift) & state->edacs_a_mask;

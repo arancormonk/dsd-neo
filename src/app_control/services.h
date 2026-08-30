@@ -182,7 +182,13 @@ int svc_rtl_set_freq(dsd_opts* opts, dsd_state* state, uint32_t hz);
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);
 /** @brief Set RTL DSP baseband bandwidth (kHz: 4,6,8,12,16,24,48), clamping and restarting if needed. */
 int svc_rtl_set_bandwidth(dsd_opts* opts, dsd_state* state, int khz);
-/** @brief Set RTL squelch threshold in dB, converting to power units. */
+/**
+ * @brief Set the RTL squelch threshold from a decibel value.
+ *
+ * Negative values are a threshold in dB. Zero or above switches the squelch off,
+ * the same meaning 0 carries in the `sql` field of an input string and in the
+ * `rtl_sql` config key; a 0 dB threshold is full scale and would never open.
+ */
 int svc_rtl_set_sql_db(dsd_opts* opts, double dB);
 /** @brief Set RTL monitor/non-symbol gain multiplier (clamped to 0–3). */
 int svc_rtl_set_volume_mult(dsd_opts* opts, int mult);

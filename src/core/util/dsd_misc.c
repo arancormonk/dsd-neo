@@ -615,3 +615,24 @@ dB_to_pwr(double dB) {
     }
     return pwr;
 }
+
+/*
+ * Render a squelch threshold for display, saying "off" when it gates nothing.
+ *
+ * Kept next to pwr_to_dB() because it is that function's display counterpart for
+ * the one case pwr_to_dB() cannot express: its -120 dB result means both "a
+ * measurement of zero" and "a threshold that was never applied", and only the
+ * caller's context separates them. For a threshold, this function does.
+ */
+int
+dsd_squelch_format(double mean_power, const char* unit, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    if (dsd_squelch_is_off(mean_power)) {
+        DSD_SNPRINTF(out, out_size, "off");
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%.1f%s", pwr_to_dB(mean_power), unit ? unit : "");
+    return 0;
+}
