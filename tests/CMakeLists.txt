@@ -1563,6 +1563,11 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/ui/terminal
 )
 target_compile_definitions(dsd-neo_test_ui_menu_services PRIVATE USE_RADIO)
+# The squelch contract's dB conversion is a header inline over exp().
+target_link_libraries(
+    dsd-neo_test_ui_menu_services
+    PRIVATE ${DSD_NEO_TEST_MATH_LIB}
+)
 add_test(NAME UI_MENU_SERVICES COMMAND dsd-neo_test_ui_menu_services)
 
 if(DSD_ENABLE_TERMINAL_UI)
@@ -1917,6 +1922,12 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/include
             ${PROJECT_SOURCE_DIR}/src/app_control
             ${PROJECT_SOURCE_DIR}/src/ui/terminal
+    )
+    # USE_RADIO so the RTL rows (squelch among them) are compiled and testable.
+    target_compile_definitions(dsd-neo_test_ui_menu_actions PRIVATE USE_RADIO)
+    target_link_libraries(
+        dsd-neo_test_ui_menu_actions
+        PRIVATE ${DSD_NEO_TEST_MATH_LIB}
     )
     add_test(NAME UI_MENU_ACTIONS COMMAND dsd-neo_test_ui_menu_actions)
 
@@ -4315,6 +4326,12 @@ set(_DSD_RUNTIME_CONFIG_APPLY_LIBS
     ${_DSD_RUNTIME_CLI_PARSE_LIBS}
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    # The RTL hot restart replaces the stream, so a config re-apply is only
+    # reachable with the stream entry points wrapped.
+    target_compile_definitions(
+        dsd-neo_test_runtime_config_apply
+        PRIVATE DSD_NEO_TEST_RTL_WRAP=1
+    )
     target_link_libraries(
         dsd-neo_test_runtime_config_apply
         PRIVATE
@@ -4323,6 +4340,12 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--end-group"
             ${LIBS}
             dsd-neo_test_support
+            "-Wl,--wrap=rtl_stream_create"
+            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_stop"
+            "-Wl,--wrap=rtl_stream_destroy"
+            "-Wl,--wrap=rtl_stream_set_channel_squelch"
+            "-Wl,--wrap=rtl_stream_output_rate"
     )
 else()
     target_link_libraries(

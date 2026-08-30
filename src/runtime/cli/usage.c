@@ -149,7 +149,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("                   Note: This is the DSP baseband used to derive capture rate;\n");
     printf("                         it is NOT the tuner IF filter.\n");
     printf("  sq   <val>    RTL-SDR Squelch Threshold (Optional)\n");
-    printf("                 (Negative = dB; Positive/Zero = linear mean power)\n");
+    printf("                 (Negative = dB; 0 = off; Positive = linear mean power)\n");
     printf("  vol  <num>    RTL-SDR Sample 'Volume' Multiplier (default = 2)(1,2,3)\n");
     printf("  bias [on|off] Enable 5V bias tee on compatible dongles (default off)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");

@@ -121,7 +121,7 @@ static const NcMenuItem RTL_MENU_ITEMS[] = {
      .on_select = rtl_set_bw},
     {.id = "rtl.sql",
      .label = "Squelch (dB)...",
-     .help = "Post-filter squelch threshold in dB; more negative opens more.",
+     .help = "Post-filter squelch threshold in dB; more negative opens more; 0 switches squelch off.",
      .on_select = rtl_set_sql},
     /* 'v' is here as well as on Input > Input volume: the key drives whichever of the
        two multipliers matches the live input type, and on RTL that is this row. */

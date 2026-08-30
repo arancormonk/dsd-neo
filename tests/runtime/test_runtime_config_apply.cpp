@@ -54,6 +54,7 @@
 
 #include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/safe_api.h"
+#include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/file_compat.h"
 #include "dsd-neo/platform/posix_compat.h"
 #include "dsd-neo/runtime/call_alert.h"
@@ -540,6 +541,114 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
     (void)remove(path);
     return rc;
 }
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* The RTL hot restart tears the stream down and builds a new one, so a config
+ * re-apply can only be exercised with the stream calls faked out. */
+/* The fake stands in for a real RtlSdrContext, so nothing may dereference it:
+ * every entry point that would is wrapped below. */
+static int g_wrap_fake_ctx = 0;
+static float g_wrap_last_channel_squelch = -1.0f;
+
+// GNU ld --wrap entry points must keep the reserved __wrap_* symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+int
+__wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
+    (void)opts;
+    if (out_ctx) {
+        *out_ctx = (RtlSdrContext*)&g_wrap_fake_ctx;
+    }
+    return 0;
+}
+
+int
+__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_stop(RtlSdrContext* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_destroy(RtlSdrContext* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+int
+__wrap_rtl_stream_set_channel_squelch(float level) {
+    g_wrap_last_channel_squelch = level;
+    return 0;
+}
+
+/* Read back off the context after a restart. Wrapped because the real one walks
+ * into the fake context, which is not an RtlSdrContext. */
+uint32_t
+__wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
+    (void)ctx;
+    return 48000U;
+}
+
+// NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
+
+/*
+ * A config re-applied mid-run carries rtl_sql in decibels, exactly as the CLI
+ * `sql` field and the startup loader do. Stored as the raw integer, a -50 dB
+ * request became a threshold of -50 mean power, which gates nothing: asking for
+ * a squelch through the config switched the squelch off instead.
+ */
+static int
+test_config_reapply_converts_rtl_squelch_from_db(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_squelch_level = 0.0;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:851375000:22:0:24:0:2");
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    cfg.rtl_device = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460.125M");
+    cfg.rtl_gain = 22;
+    cfg.rtl_bw_khz = 24;
+    cfg.rtl_sql = -50;
+    cfg.rtl_volume = 2;
+
+    g_wrap_last_channel_squelch = -1.0f;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+
+    int rc = 0;
+    rc |= expect_true("config re-apply converts rtl_sql from dB",
+                      fabs(opts->rtl_squelch_level - pow(10.0, -5.0)) < 1e-12);
+    rc |= expect_float_near("config re-apply pushes the threshold to the demod", g_wrap_last_channel_squelch,
+                            (float)pow(10.0, -5.0), 1e-9f);
+
+    /* And rtl_sql = 0 still means off, rather than "key omitted". */
+    cfg.rtl_sql = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "461.125M");
+    g_wrap_last_channel_squelch = -1.0f;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("config re-apply of rtl_sql 0 switches squelch off", opts->rtl_squelch_level == 0.0);
+    rc |= expect_float_near("config re-apply of rtl_sql 0 opens the demod gate", g_wrap_last_channel_squelch, 0.0f,
+                            1e-9f);
+
+    free_test_runtime(&runtime);
+    return rc;
+}
+#endif
 
 static int
 test_ui_command_queue_applies_fifo(void) {
@@ -2766,6 +2875,21 @@ test_ui_rtl_setting_commands_stage_without_live_restart(void) {
     rc |= expect_true("RTL setting commands leave restart staged", opts->rtl_needs_restart == 1);
     rc |= expect_true("RTL auto PPM command writes final toast", strstr(state->ui_msg, "Auto PPM -> On") != NULL);
 
+    /* Switching the squelch off has to be reportable as off. The toast echoed the
+     * number it was handed, so switching the squelch off said "-> 0.0 dB", which
+     * reads as a threshold at full scale rather than as no gating at all. */
+    double sql_off = 0.0;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_DB, &sql_off, sizeof sql_off);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("RTL squelch command accepts off", opts->rtl_squelch_level == 0.0);
+    rc |= expect_true("RTL squelch off toast names it off", strstr(state->ui_msg, "RTL squelch -> off") != NULL);
+
+    double sql_back = -55.0;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_DB, &sql_back, sizeof sql_back);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("RTL squelch toast still states a real threshold",
+                      strstr(state->ui_msg, "RTL squelch -> -55.0 dB") != NULL);
+
     free_test_runtime(&runtime);
     return rc;
 }
@@ -2819,6 +2943,9 @@ main(void) {
     rc |= test_zero_rtl_ppm_apply_updates_live_request();
     rc |= test_omitted_rtl_ppm_apply_preserves_live_request();
     rc |= test_ui_rtl_setting_commands_stage_without_live_restart();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= test_config_reapply_converts_rtl_squelch_from_db();
+#endif
 #endif
     return rc ? 1 : 0;
 }

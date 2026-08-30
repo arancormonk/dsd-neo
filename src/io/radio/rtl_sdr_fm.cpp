@@ -5327,7 +5327,9 @@ setup_initial_freq_and_rate(dsd_opts* opts) {
     }
     dongle.dev_index = opts->rtl_dev_index;
     LOG_INFO("Setting DSP baseband to %d Hz\n", rtl_dsp_bw_hz);
-    LOG_INFO("Setting RTL Power Squelch Level to %.1f dB\n", pwr_to_dB(opts->rtl_squelch_level));
+    char sql[24];
+    (void)dsd_squelch_format(opts->rtl_squelch_level, " dB", sql, sizeof sql);
+    LOG_INFO("Setting RTL Power Squelch Level to %s\n", sql);
     port = 0;
     if (opts->rtl_udp_port != 0) {
         int p = opts->rtl_udp_port;

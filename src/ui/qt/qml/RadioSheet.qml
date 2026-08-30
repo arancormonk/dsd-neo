@@ -42,6 +42,10 @@ ModalSheet {
     readonly property int gainDb: isNaN(pendingGain) ? metrics.tunerGainDb : pendingGain
     readonly property int ppm: isNaN(pendingPpm) ? metrics.ppm : pendingPpm
     readonly property real squelchDb: isNaN(pendingSquelch) ? metrics.squelchDb : pendingSquelch
+    // Off is a state of its own, not a very low threshold: squelchDb bottoms out
+    // at the -120 dB display floor either way. A pending request speaks for
+    // itself, since 0 is what the engine reads as "switch it off".
+    readonly property bool squelchOff: isNaN(pendingSquelch) ? metrics.squelchOff : pendingSquelch >= 0
 
     // 0 dB is the tuner's automatic gain, not silence — worth saying, because
     // "0" next to a signal that vanished reads as a mistake otherwise.
@@ -102,19 +106,26 @@ ModalSheet {
     /**
      * Nudge the squelch. Coarse steps: this is a threshold, not a measurement.
      *
-     * The floor is the readback's own: pwr_to_dB() clamps what comes back at
-     * -120 dB, so a step below that submits a value the display can never show
-     * and the button reads as broken while still restating the threshold.
+     * Off sits one step below the floor. The floor itself is the readback's own:
+     * pwr_to_dB() clamps what comes back at -120 dB, so a threshold below that
+     * cannot be displayed. Stepping down from the floor therefore switches the
+     * squelch off — which the engine spells 0 — rather than pinning at a value
+     * the button can no longer move, and stepping up from off lands back on the
+     * floor. Above it, -5 dB is the last real threshold, because 0 is off.
      */
     function stepSquelch(delta) {
-        var next = squelchDb + delta
-        if (next < -120)
-            next = -120
-        if (next > 0)
+        var cur = squelchOff ? -125 : squelchDb
+        var next = cur + delta
+        if (next < -120) {
+            if (squelchOff)
+                return
             next = 0
+        } else if (next > -5) {
+            next = -5
+        }
         // The reading is a float that has been through dB_to_pwr and back, so
         // "already there" is a tolerance, not an equality.
-        if (Math.abs(next - squelchDb) < 0.001)
+        if (!squelchOff && Math.abs(next - squelchDb) < 0.001)
             return
         pendingSquelch = next
         squelchTtl.restart()
@@ -218,7 +229,7 @@ ModalSheet {
                 anchors.verticalCenter: parent.verticalCenter
                 width: 74
                 horizontalAlignment: Text.AlignRight
-                text: Math.round(sheet.squelchDb) + " dB"
+                text: sheet.squelchOff ? qsTr("off") : Math.round(sheet.squelchDb) + " dB"
                 font.family: Theme.mono
                 font.pixelSize: 14
                 color: Theme.textPrimary

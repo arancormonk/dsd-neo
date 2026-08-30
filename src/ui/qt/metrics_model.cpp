@@ -189,8 +189,11 @@ MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const d
     next.tuner_gain_db = next.radio_input ? opts_snapshot->rtl_gain_value : 0;
     /* rtl_squelch_level is a mean-power threshold, not decibels — the same
      * conversion the engine's own status line uses. Publishing the raw value
-     * would put "0" on screen for a squelch of -120 dB. */
+     * would put "0" on screen for a squelch of -120 dB. A level that gates
+     * nothing is published separately, because pwr_to_dB() renders it as -120
+     * too and the panel would otherwise show a threshold that is not in force. */
     next.squelch_db = next.radio_input ? pwr_to_dB(opts_snapshot->rtl_squelch_level) : 0.0;
+    next.squelch_off = next.radio_input && dsd_squelch_is_off(opts_snapshot->rtl_squelch_level);
     next.ppm = next.radio_input ? opts_snapshot->rtlsdr_ppm_error : 0;
 }
 

@@ -13,7 +13,6 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/talkgroup_policy.h>
@@ -203,11 +202,6 @@ dsd_tg_policy_clear(dsd_state* state) {
 void
 dsd_state_ext_free_all(dsd_state* state) {
     (void)state;
-}
-
-double
-dB_to_pwr(double dB) {
-    return dB;
 }
 
 int
@@ -680,7 +674,15 @@ test_rtl_service_option_contracts(void) {
     rc |= expect_int("rtl bandwidth exact stored", opts.rtl_dsp_bw_khz, 12);
 
     rc |= expect_int("rtl squelch stores converted threshold", svc_rtl_set_sql_db(&opts, -12.5), 0);
-    rc |= expect_double("rtl squelch level stored", opts.rtl_squelch_level, -12.5);
+    rc |= expect_double("rtl squelch level stored", opts.rtl_squelch_level, pow(10.0, -1.25));
+
+    /* 0 dB is full scale: as a threshold it closes the gate forever, so it is the
+     * natural spelling of "off" and matches what 0 means in the CLI and config.
+     * Without it neither UI could switch the squelch off at all. */
+    rc |= expect_int("rtl squelch accepts zero", svc_rtl_set_sql_db(&opts, 0.0), 0);
+    rc |= expect_double("rtl squelch zero switches off", opts.rtl_squelch_level, 0.0);
+    rc |= expect_int("rtl squelch accepts positive", svc_rtl_set_sql_db(&opts, 3.0), 0);
+    rc |= expect_double("rtl squelch positive switches off", opts.rtl_squelch_level, 0.0);
     rc |= expect_int("rtl volume invalid defaults", svc_rtl_set_volume_mult(&opts, -1), 0);
     rc |= expect_int("rtl volume default stored", opts.rtl_volume_multiplier, 1);
     rc |= expect_int("rtl volume valid stored", svc_rtl_set_volume_mult(&opts, 3), 0);

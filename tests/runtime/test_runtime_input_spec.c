@@ -134,7 +134,10 @@ test_soapy_args_with_full_tuning(void) {
         free(opts);
         return 1;
     }
-    if (!(opts->rtl_squelch_level > 0.0 && opts->rtl_squelch_level < 1.0e-4)) {
+    /* The `sql` field means the same thing here as in an rtl: string: a negative
+     * value is decibels. This path had its own copy of the conversion, so the
+     * exact mapping is pinned rather than just its order of magnitude. */
+    if (fabs(opts->rtl_squelch_level - pow(10.0, -5.0)) > 1.0e-12) {
         DSD_FPRINTF(stderr, "soapy full tuning squelch expected dB->power mapping, got %.12f\n",
                     opts->rtl_squelch_level);
         free(opts);

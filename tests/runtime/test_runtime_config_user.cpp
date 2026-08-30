@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
@@ -1524,6 +1525,91 @@ test_snapshot_rtl_and_rtltcp_device_specs(void) {
     return rc;
 }
 
+/*
+ * A squelch that is off has to survive being saved and loaded again. Serialized
+ * through pwr_to_dB() it came back as rtl_sql = -120, which the loader then
+ * applied as a real threshold: the session that had no squelch acquired one, and
+ * the startup banner reported a gate that had never been asked for. -120 is also
+ * outside the schema's own -100..0 range for the key.
+ */
+/*
+ * A squelch that is off has to survive being saved and loaded again. Serialized
+ * through pwr_to_dB() it came back as rtl_sql = -120, which then reached the
+ * decoder as a real threshold: the session that had no squelch acquired one, and
+ * the startup banner reported a gate nobody asked for. -120 is also outside the
+ * schema's own -100..0 range for the key.
+ *
+ * The two input families store the setting differently. RTL and RTL-TCP render a
+ * device string that the engine parses, so the assertion there is on the `sql`
+ * field of that string; SoapySDR applies the tuning to opts directly.
+ */
+static int
+test_snapshot_disabled_squelch_roundtrips_as_off(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsdneoUserConfig snap;
+    int rc = 0;
+
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:22:-2:24:0:2");
+    opts.rtlsdr_center_freq = 851375000U;
+    opts.rtl_gain_value = 22;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtl_squelch_level = 0.0;
+    opts.rtl_volume_multiplier = 2;
+
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.rtl_sql != 0) {
+        DSD_FPRINTF(stderr, "snapshot of a disabled squelch expected rtl_sql 0, got %d\n", snap.rtl_sql);
+        rc |= 1;
+    }
+
+    dsd_apply_user_config_to_opts(&snap, &opts, &state);
+    if (strcmp(opts.audio_in_dev, "rtl:0:851375000:22:0:24:0:2") != 0) {
+        DSD_FPRINTF(stderr, "reloaded disabled squelch expected sql field 0, got %s\n", opts.audio_in_dev);
+        rc |= 1;
+    }
+
+    /* A real threshold still round-trips through decibels. */
+    reset_opts_and_state(opts, state);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:22:-2:24:-50:2");
+    opts.rtlsdr_center_freq = 851375000U;
+    opts.rtl_gain_value = 22;
+    opts.rtl_dsp_bw_khz = 24;
+    opts.rtl_squelch_level = pow(10.0, -5.0);
+    opts.rtl_volume_multiplier = 2;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (snap.rtl_sql != -50) {
+        DSD_FPRINTF(stderr, "snapshot of a -50 dB threshold expected rtl_sql -50, got %d\n", snap.rtl_sql);
+        rc |= 1;
+    }
+
+    /* SoapySDR applies the shared tuning straight to opts, so the stored
+     * threshold is assertable there without going through the engine. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=test");
+    cfg.rtl_sql = 0;
+    opts.rtl_squelch_level = 12.0; /* clobber, so the apply has to write it */
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rtl_squelch_level != 0.0) {
+        DSD_FPRINTF(stderr, "soapy apply of rtl_sql 0 expected 0.0, got %g\n", opts.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    cfg.rtl_sql = -50;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (fabs(opts.rtl_squelch_level - pow(10.0, -5.0)) > 1e-12) {
+        DSD_FPRINTF(stderr, "soapy apply of rtl_sql -50 expected 1e-5, got %g\n", opts.rtl_squelch_level);
+        rc |= 1;
+    }
+
+    return rc;
+}
+
 static int
 test_load_and_apply_rtltcp_regression(void) {
     static const char* ini = "[input]\n"
@@ -2592,6 +2678,7 @@ main(void) {
     rc |= test_snapshot_roundtrip_soapy_args();
     rc |= test_snapshot_roundtrip_zero_rtl_ppm();
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();
+    rc |= test_snapshot_disabled_squelch_roundtrips_as_off();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();

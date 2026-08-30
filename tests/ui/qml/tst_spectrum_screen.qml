@@ -650,6 +650,34 @@ Item {
             findChild(screen, "radioSquelchUp").clicked()
             verify(Math.abs(testContext.lastSquelchDb() - (-115)) < 0.001)
 
+            // A squelch that is off has to say so. Rendered as "-120 dB" there was
+            // no way to tell it from a threshold set at the display floor, and no
+            // way to ask for it back once stepped away from.
+            panel.forgetRequests()
+            testContext.setMetric("squelchOff", true)
+            tryVerify(function () { return metrics.squelchOff === true })
+            var squelchReadout = findChild(screen, "radioSquelchValue")
+            compare(squelchReadout.text, "off")
+
+            var atOff = testContext.squelchCalls()
+            findChild(screen, "radioSquelchDown").clicked()
+            compare(testContext.squelchCalls(), atOff,
+                    "a step below off asked the dongle for something")
+
+            findChild(screen, "radioSquelchUp").clicked()
+            verify(Math.abs(testContext.lastSquelchDb() - (-120)) < 0.001)
+
+            // And stepping down past the floor asks for off, rather than pinning
+            // at a threshold the user cannot get out of.
+            panel.forgetRequests()
+            testContext.setMetric("squelchOff", false)
+            tryVerify(function () { return metrics.squelchOff === false })
+            compare(squelchReadout.text, "-120 dB")
+            findChild(screen, "radioSquelchDown").clicked()
+            compare(testContext.lastSquelchDb(), 0)
+            compare(squelchReadout.text, "off")
+            panel.forgetRequests()
+
             // PPM is chosen once, by someone with no way to tell if it was right.
             findChild(screen, "radioPpmUp").clicked()
             compare(testContext.lastPpm(), 1)

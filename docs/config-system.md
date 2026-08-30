@@ -283,7 +283,7 @@ small subset is exposed as config keys for convenience (for example
 | `rtl_gain` | INT (0-49) | RTL-SDR gain in dB | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4-48) | DSP bandwidth | `48` |
-| `rtl_sql` | INT (-100-0) | Squelch level | `0` |
+| `rtl_sql` | INT (-100-0) | Squelch threshold in dB; `0` switches squelch off (a disabled squelch is saved as `0`) | `0` |
 | `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
 | `rtl_auto_ppm` | BOOL | Deprecated read alias for `auto_ppm` | `false` |

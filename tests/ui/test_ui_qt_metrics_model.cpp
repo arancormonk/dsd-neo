@@ -164,6 +164,19 @@ main(int argc, char** argv) {
      * or a -120 dB threshold renders as 0. */
     expect("gain is reported", model.tunerGainDb() == 30);
     expect("squelch is reported in dB", std::fabs(model.squelchDb() - (-120.0)) < 0.5);
+
+    /* A threshold at the display floor is still a threshold. Only a level that
+     * gates nothing is off, and the panel has to be able to tell them apart --
+     * both rendered as "-120 dB" there was no way to see which one was in force. */
+    expect("a -120 dB threshold is not off", !model.squelchOff());
+
+    opts.rtl_squelch_level = 0.0;
+    model.refresh(&opts, &state);
+    expect("a squelch that gates nothing reads as off", model.squelchOff());
+
+    opts.rtl_squelch_level = dB_to_pwr(-120.0);
+    model.refresh(&opts, &state);
+    expect("a restored threshold stops reading as off", !model.squelchOff());
     expect("c4fm reads as modulation 0", model.modulation() == 0);
 
     opts.mod_qpsk = 1;

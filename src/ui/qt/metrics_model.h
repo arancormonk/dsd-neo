@@ -75,6 +75,7 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int modulation READ modulation NOTIFY controlChanged)
     Q_PROPERTY(int tunerGainDb READ tunerGainDb NOTIFY controlChanged)
     Q_PROPERTY(double squelchDb READ squelchDb NOTIFY controlChanged)
+    Q_PROPERTY(bool squelchOff READ squelchOff NOTIFY controlChanged)
     Q_PROPERTY(int ppm READ ppm NOTIFY controlChanged)
     Q_PROPERTY(QString uiMessage READ uiMessage NOTIFY uiMessageChanged)
 
@@ -259,6 +260,18 @@ class MetricsModel : public QObject {
     double
     squelchDb() const {
         return m_view.squelch_db;
+    }
+
+    /**
+     * @brief Whether the squelch is switched off rather than set low.
+     *
+     * squelchDb() bottoms out at the -120 dB display floor, which a threshold
+     * genuinely set that low shares with a squelch that is not gating at all.
+     * The panel needs to name the second case rather than print a number for it.
+     */
+    bool
+    squelchOff() const {
+        return m_view.squelch_off;
     }
 
     /**
@@ -517,6 +530,7 @@ class MetricsModel : public QObject {
         int modulation = 0;
         int tuner_gain_db = 0;
         double squelch_db = 0.0;
+        bool squelch_off = false;
         int ppm = 0;
         bool audio_muted = false;
         qulonglong held_tg = 0;
@@ -550,7 +564,8 @@ class MetricsModel : public QObject {
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
                    && decode_mode == other.decode_mode && modulation == other.modulation
-                   && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db && ppm == other.ppm;
+                   && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db
+                   && squelch_off == other.squelch_off && ppm == other.ppm;
         }
     };
 
