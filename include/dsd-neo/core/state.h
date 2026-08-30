@@ -1252,6 +1252,17 @@ struct dsd_state {
     uint32_t m17_bert_errors;
     uint32_t m17_bert_resyncs;
 
+    /* M17 frame-content confirmation (src/protocol/m17/m17_confirm.c). The preamble that opens
+     * the sync chain is only an alternating symbol run, so the frame body has to prove itself
+     * before the decoder acts on it (issue #399).
+     *
+     * m17_confirmed: this transmission has produced CRC-verified content.
+     * m17_confirm_weak_streak: consecutive frames carrying only a clean LICH.
+     * m17_confirm_frame_evidence: strongest m17_evidence seen since begin_frame(). */
+    uint8_t m17_confirmed;
+    uint8_t m17_confirm_weak_streak;
+    uint8_t m17_confirm_frame_evidence;
+
     uint8_t m17_can; //can value that was decoded from signal
     int m17_can_en;  //can value supplied to the encoding side
     int m17_rate;    //sampling rate for audio input

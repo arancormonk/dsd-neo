@@ -5986,6 +5986,17 @@ target_link_libraries(
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
 
 add_executable(
+    dsd-neo_test_m17_confirm
+    protocol/m17/test_m17_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_m17_confirm
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+)
+add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
+
+add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
