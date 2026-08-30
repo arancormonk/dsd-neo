@@ -182,14 +182,11 @@ nxdn_alias_decode_shift_jis_fallback(const uint8_t* in, size_t in_len, size_t ef
 }
 
 static void
-nxdn_alias_log_prop_segment(const dsd_opts* opts, uint8_t block_number, uint8_t total_blocks, uint8_t crc_ok) {
+nxdn_alias_log_prop_segment(const dsd_opts* opts, uint8_t block_number, uint8_t total_blocks) {
     if (opts == NULL || opts->payload != 1) {
         return;
     }
     DSD_FPRINTF(stderr, " Alias segment %u/%u", (unsigned)block_number, (unsigned)total_blocks);
-    if (crc_ok == 0U) {
-        DSD_FPRINTF(stderr, " (CRC ERR)");
-    }
 }
 
 static void
@@ -221,14 +218,11 @@ nxdn_alias_collect_prop_alias(const dsd_state* state, uint8_t total_blocks, char
 }
 
 static void
-nxdn_alias_log_arib_segment(const dsd_opts* opts, uint8_t seg_num, uint8_t seg_total, uint8_t crc_ok) {
+nxdn_alias_log_arib_segment(const dsd_opts* opts, uint8_t seg_num, uint8_t seg_total) {
     if (opts == NULL || opts->payload != 1) {
         return;
     }
     DSD_FPRINTF(stderr, " ARIB alias segment %u/%u", (unsigned)seg_num, (unsigned)seg_total);
-    if (crc_ok == 0U) {
-        DSD_FPRINTF(stderr, " (CRC ERR)");
-    }
 }
 
 static int
@@ -352,18 +346,15 @@ nxdn_alias_reset(dsd_state* state) {
 }
 
 void
-nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
     if (state == NULL || message_bits == NULL) {
         return;
     }
 
     uint8_t block_number = (uint8_t)convert_bits_into_output(&message_bits[32U], 4U);
     uint8_t total_blocks = (uint8_t)convert_bits_into_output(&message_bits[36U], 4U);
-    nxdn_alias_log_prop_segment(opts, block_number, total_blocks, crc_ok);
+    nxdn_alias_log_prop_segment(opts, block_number, total_blocks);
 
-    if (crc_ok == 0U) {
-        return;
-    }
     if (block_number < 1U || block_number > 4U) {
         return;
     }
@@ -384,18 +375,15 @@ nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* me
 }
 
 void
-nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
     if (state == NULL || message_bits == NULL) {
         return;
     }
 
     uint8_t seg_num = (uint8_t)convert_bits_into_output(&message_bits[16U], 4U);
     uint8_t seg_total = (uint8_t)convert_bits_into_output(&message_bits[20U], 4U);
-    nxdn_alias_log_arib_segment(opts, seg_num, seg_total, crc_ok);
+    nxdn_alias_log_arib_segment(opts, seg_num, seg_total);
 
-    if (crc_ok == 0U) {
-        return;
-    }
     if (!nxdn_alias_valid_arib_segment(seg_num, seg_total)) {
         return;
     }

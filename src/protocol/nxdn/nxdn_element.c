@@ -60,7 +60,6 @@ struct nxdn_element_dispatch_entry {
     nxdn_element_handler_fn handler;
 };
 
-static uint8_t nxdn_alias_crc_ok(const dsd_state* state);
 static void nxdn_reset_data_call_state(dsd_state* state);
 static void nxdn_data_call_option_to_str(uint8_t data_call_option, char* duplex, size_t duplex_sz, char* mode,
                                          size_t mode_sz);
@@ -186,7 +185,7 @@ NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
     // currently only going to run this if all four CRCs are good
     if (CrcCorrect == 1) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
-        NXDN_Elements_Content_decode(opts, state, CrcCorrect, SACCH, sizeof(SACCH));
+        NXDN_Elements_Content_decode(opts, state, SACCH, sizeof(SACCH));
     }
 
     //reset the sacch field -- Github Issue #118
@@ -289,7 +288,7 @@ nxdn_element_handle_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " ALIAS");
     DSD_FPRINTF(stderr, "%s", KNRM);
-    nxdn_alias_decode_prop(opts, state, elements, nxdn_alias_crc_ok(state));
+    nxdn_alias_decode_prop(opts, state, elements);
 }
 
 static const char*
@@ -469,8 +468,7 @@ nxdn_element_dispatch_handler(uint8_t message_type) {
 }
 
 void
-NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
-                             size_t elements_bits) {
+NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent, size_t elements_bits) {
     enum { NXDN_ELEMENTS_MIN_MESSAGE_TYPE_BITS = 8U };
 
     if (opts == NULL || state == NULL || ElementsContent == NULL) {
@@ -503,13 +501,10 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrec
     /* Save the "Message Type" field */
     state->NxdnElementsContent.MessageType = MessageType;
 
-    /* Set the CRC state */
-    state->NxdnElementsContent.VCallCrcIsGood = CrcCorrect;
-
     nxdn_message_type(opts, state, MessageTypeExt);
 
     if (MessageTypeExt == 0xE7U) {
-        nxdn_alias_decode_arib(opts, state, ElementsContent, nxdn_alias_crc_ok(state));
+        nxdn_alias_decode_arib(opts, state, ElementsContent);
         return;
     }
 
@@ -663,17 +658,17 @@ nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
  * target keeps its activity hold for data traffic and not only for voice. A header is the only
  * data element carrying a call identity; the blocks that follow it carry none.
  *
- * Held behind the link layer's CRC gate for the same reason the VCALL site is: an unverified
- * header carries a garbage identity, and acting on one parks the coordinator on noise for a full
- * activity_hold_ms. The header's own two-bit cipher field is the encryption classification --
- * data calls have no equivalent of the voice hysteresis in nxdn_enc_class.c -- and a misread
- * costs at most one hold refresh, because talkgroup policy exempts data calls from the
- * encrypted-target lockout ledger.
+ * A header reaches here only through a channel decoder whose CRC passed, and is held behind the
+ * frame's confirmation for the same reason the VCALL site is: an unverified header carries a
+ * garbage identity, and acting on one parks the coordinator on noise for a full activity_hold_ms.
+ * The header's own two-bit cipher field is the encryption classification -- data calls have no
+ * equivalent of the voice hysteresis in nxdn_enc_class.c -- and a misread costs at most one hold
+ * refresh, because talkgroup policy exempts data calls from the encrypted-target lockout ledger.
  */
 static void
 nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint8_t call_type, uint16_t source,
                                       uint16_t target, uint8_t cipher) {
-    if (state->NxdnElementsContent.VCallCrcIsGood == 0U || !nxdn_confirm_is_confirmed(state)) {
+    if (!nxdn_confirm_is_confirmed(state)) {
         return;
     }
     // call_type 4 is the individual/private call, spelled the same way as the trunked data-grant
@@ -2318,14 +2313,13 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
 static void
 nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type == 0x01U) {
-        // Only a CRC-verified VCALL may mutate the live cipher, and even then through the
-        // classification hysteresis: trellis miscorrections that survive the short CRCs are
-        // exactly one element away from muting a clear call -- or unmuting an encrypted one --
-        // and, under lockout, permanently blocking the talkgroup.
-        if (state->NxdnElementsContent.VCallCrcIsGood != 0U) {
-            state->nxdn_key = info->key_id;
-            state->nxdn_cipher_type = nxdn_cipher_observe(state, info->cipher_type, 0);
-        }
+        // A VCALL reaches here only through a channel decoder whose CRC passed -- the element
+        // decoder is never handed unverified content -- and even then mutates the live cipher only
+        // through the classification hysteresis: trellis miscorrections that survive the short
+        // CRCs are exactly one element away from muting a clear call -- or unmuting an encrypted
+        // one -- and, under lockout, permanently blocking the talkgroup.
+        state->nxdn_key = info->key_id;
+        state->nxdn_cipher_type = nxdn_cipher_observe(state, info->cipher_type, 0);
     } else {
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
         nxdn_alias_reset(state);
@@ -2351,16 +2345,17 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         const int established_recoverable =
             nxdn_cipher_established_clear(state)
             || (nxdn_cipher_established_enc(state) && nxdn_vcall_has_key(state, (uint8_t)state->nxdn_cipher_type));
-        if (state->NxdnElementsContent.VCallCrcIsGood != 0U && established_recoverable) {
+        if (established_recoverable) {
             (void)dsd_enc_lockout_release(state, info->destination_id, is_group);
         }
         return;
     }
     // The lockout entry is permanent for the session and the synthesized disconnect drops the
-    // channel, so the lockout acts only on CRC-verified, corroborated evidence: a lone
-    // non-clear observation stays tentative (or quarantined) in the hysteresis above and must
-    // repeat -- one superframe -- before it may lock the talkgroup out.
-    if (state->NxdnElementsContent.VCallCrcIsGood == 0U || !nxdn_cipher_established_enc(state)) {
+    // channel, so the lockout acts only on corroborated evidence. The element was CRC-verified by
+    // the channel decoder that handed it over, and a lone non-clear observation stays tentative
+    // (or quarantined) in the hysteresis above and must repeat -- one superframe -- before it may
+    // lock the talkgroup out.
+    if (!nxdn_cipher_established_enc(state)) {
         return;
     }
 
@@ -2380,11 +2375,15 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
     // disconnect fires per corroborated VCALL): retrying the synthesized
     // disconnect until the trunking layer actually drops the channel is what
     // lets an already-locked target still force a release.
+    //
+    // This fabricated DISC is the one element content no CRC ever covered, and deliberately so: it
+    // exists to drive the same teardown a received DISC would -- nxdn_message_type()'s call and
+    // alias reset, and nxdn_element_handle_disc()'s return to the control channel.
     uint8_t dbits[96];
     DSD_MEMSET(dbits, 0, sizeof(dbits));
     dbits[3] = 1;
     dbits[7] = 1;
-    NXDN_Elements_Content_decode(opts, state, 1, dbits, sizeof(dbits));
+    NXDN_Elements_Content_decode(opts, state, dbits, sizeof(dbits));
 }
 
 // Release and disconnect variants that reach nxdn_vcall_process. TX_REL_EX (0x07) ends the epoch
@@ -2397,10 +2396,11 @@ nxdn_vcall_message_type_is_release(uint8_t message_type) {
 
 static void
 nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    if (info->message_type != 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U) {
-        // A CRC-verified release decoded over the air is positive end evidence -- the terminator
-        // reason lets the event layer keep an audible epoch whose call identity never decoded,
-        // where EXPLICIT reads as a retune and drops the row.
+    if (info->message_type != 0x01U) {
+        // A release reaching here was CRC-verified by the channel decoder that handed it over, so
+        // it is positive end evidence decoded over the air -- the terminator reason lets the event
+        // layer keep an audible epoch whose call identity never decoded, where EXPLICIT reads as a
+        // retune and drops the row.
         const dsd_call_end_reason reason =
             nxdn_vcall_message_type_is_release(info->message_type) ? DSD_CALL_END_TERMINATOR : DSD_CALL_END_EXPLICIT;
         if (dsd_call_state_end_ex(state, 0U, 0.0, reason) > 0) {
@@ -2411,11 +2411,11 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
-    if (info->message_type == 0x01U && state->NxdnElementsContent.VCallCrcIsGood != 0U
-        && nxdn_confirm_is_confirmed(state)) {
-        // Held behind the same CRC gate as the publish below: a miscorrected VCALL carries a
-        // garbage destination_id, and letting it refresh the conventional scan hold would park
-        // the coordinator on noise for a full activity_hold_ms per corrupt burst. The encryption
+    if (info->message_type == 0x01U && nxdn_confirm_is_confirmed(state)) {
+        // Held, like the publish below, until the frame's content has confirmed the transmission:
+        // a miscorrected VCALL carries a garbage destination_id, and letting it refresh the
+        // conventional scan hold would park the coordinator on noise for a full activity_hold_ms
+        // per corrupt burst. The encryption
         // flag is the corroborated classification nxdn_vcall_apply_state() just applied, not the
         // raw element field -- a lone flipped cipher_type would otherwise drop the hold mid-call
         // under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent.
@@ -2932,18 +2932,3 @@ NXDN_Cipher_Type_To_Str(uint8_t CipherType) {
 
     return Ptr;
 } /* End NXDN_Cipher_Type_To_Str() */
-
-static uint8_t
-nxdn_alias_crc_ok(const dsd_state* state) {
-    if (state == NULL) {
-        return 0U;
-    }
-
-    /* FACCH1/SACCH superframe CRC drives alias acceptance when available. */
-    if (!state->nxdn_sacch_non_superframe) {
-        return (uint8_t)((state->NxdnElementsContent.VCallCrcIsGood != 0U) ? 1U : 0U);
-    }
-
-    /* Standalone SACCH frames do not carry the same assembled CRC context. */
-    return 1U;
-}
