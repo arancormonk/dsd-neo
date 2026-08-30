@@ -3082,6 +3082,21 @@ frame_sync_no_sync_try_p25_release(dsd_opts* opts, dsd_state* state, time_t now)
     }
 }
 
+/**
+ * @brief The accounting every no-sync return from getFrameSync() owes, in contract order.
+ *
+ * The P25 trunk SM counts VC no-sync passes and decides releases off these, and expects
+ * the VC no-sync note before the no-carrier teardown (the ordering is asserted in
+ * tests/dsp/test_frame_sync_internal_helpers.c). Both no-sync exits -- the timeout and
+ * the SPS hunt's budget exit -- go through here so they cannot drift apart (#393).
+ */
+static void
+frame_sync_no_sync_run_hooks(dsd_opts* opts, dsd_state* state, time_t now) {
+    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
+    frame_sync_no_sync_try_p25_release(opts, state, now);
+    dsd_frame_sync_hook_no_carrier(opts, state);
+}
+
 static int
 frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt, time_t now) {
     if (state->lastsynctype == DSD_SYNC_P25P1_NEG || rt->synctest_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
@@ -3094,9 +3109,7 @@ frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_
     }
 
     (void)frame_sync_no_sync_sps_hunt(opts, state);
-    dsd_frame_sync_hook_p25_sm_vc_no_sync(opts, state);
-    frame_sync_no_sync_try_p25_release(opts, state, now);
-    dsd_frame_sync_hook_no_carrier(opts, state);
+    frame_sync_no_sync_run_hooks(opts, state, now);
     return 1;
 }
 
@@ -3204,10 +3217,13 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
          *
          * One pass is the smallest dwell frame_sync_sps_hunt_dwell_symbols() can return, so
          * the compare below is a necessary condition for the step and keeps the policy call
-         * out of the per-symbol path. */
+         * out of the per-symbol path.
+         *
+         * This is a no-sync exit like the timeout above and owes the P25 SM the same
+         * accounting, in the same order. */
         if (state->sps_hunt_counter >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS
             && frame_sync_no_sync_sps_hunt(opts, state)) {
-            dsd_frame_sync_hook_no_carrier(opts, state);
+            frame_sync_no_sync_run_hooks(opts, state, now);
             frame_sync_sps_hunt_mark_return(state);
             return -1;
         }

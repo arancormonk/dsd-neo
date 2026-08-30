@@ -28,6 +28,7 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/sockets.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -286,11 +287,12 @@ init_auto_opts_state(dsd_opts* opts, dsd_state* state) {
 
 typedef struct {
     const char* label;
-    const char* marker;  /* sync marker injected into the stream ("" = never syncs) */
-    int marker_gap;      /* filler symbols between markers */
-    int handler_symbols; /* symbols the "protocol handler" consumes per returned sync */
-    long symbol_budget;  /* stop after this many symbols leave the source */
-    int expect_step;     /* 1 = the hunt must leave its starting profile */
+    const char* marker;                                  /* sync marker injected into the stream ("" = never syncs) */
+    int marker_gap;                                      /* filler symbols between markers */
+    int handler_symbols;                                 /* symbols the "protocol handler" consumes per returned sync */
+    long symbol_budget;                                  /* stop after this many symbols leave the source */
+    int expect_step;                                     /* 1 = the hunt must leave its starting profile */
+    void (*configure)(dsd_opts* opts, dsd_state* state); /* optional setup on top of the AUTO defaults */
 } HuntCase;
 
 typedef struct {
@@ -309,6 +311,9 @@ drive_hunt(const HuntCase* tc) {
     HuntResult result = {0, 0, 0, 0};
 
     init_auto_opts_state(&opts, &state);
+    if (tc->configure) {
+        tc->configure(&opts, &state);
+    }
     if (!init_state_buffers(&state)) {
         DSD_FPRINTF(stderr, "%s: failed to allocate frame-sync state buffers\n", tc->label);
         return result;
@@ -468,6 +473,80 @@ test_idle_rotation_period_is_unchanged(void) {
     assert(r.symbols_at_step < dwell_symbols + 200);
 }
 
+/* Frame-sync hook fakes that record the order they were called in. */
+static int g_hook_order = 0;
+static int g_vc_no_sync_order = 0;
+static int g_release_order = 0;
+static int g_no_carrier_order = 0;
+
+static void
+fake_p25_sm_vc_no_sync(dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_vc_no_sync_order = ++g_hook_order;
+}
+
+static void
+fake_p25_sm_release(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_release_order = ++g_hook_order;
+}
+
+static void
+fake_no_carrier(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_no_carrier_order = ++g_hook_order;
+}
+
+/* A P25 voice channel the trunk SM has tuned, whose hangtime has already run out: the
+ * shape in which frame_sync_no_sync_try_p25_release() has a release to make. */
+static void
+configure_tuned_vc_past_hangtime(dsd_opts* opts, dsd_state* state) {
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->trunk_hangtime = 0;
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    state->p25_last_vc_tune_time = 0;
+    state->p25_last_vc_tune_time_m = 0.0;
+}
+
+/* #393: the budget exit is a no-sync exit like the timeout, so it owes the P25 SM the
+ * same accounting in the same order -- VC no-sync pass, release check, then no-carrier.
+ * Markers every 8 symbols keep the 1800-symbol timeout from ever arming, so only the
+ * budget exit can step here. */
+static void
+test_budget_exit_runs_the_no_sync_hooks(void) {
+    g_hook_order = 0;
+    g_vc_no_sync_order = 0;
+    g_release_order = 0;
+    g_no_carrier_order = 0;
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+
+    const HuntCase tc = {
+        .label = "budget exit hooks",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 0,
+        .handler_symbols = 8,
+        .symbol_budget = 40000,
+        .expect_step = 1,
+        .configure = configure_tuned_vc_past_hangtime,
+    };
+    const HuntResult r = drive_hunt(&tc);
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
+
+    assert(r.stepped == 1);
+    assert(g_vc_no_sync_order > 0);
+    assert(g_release_order > g_vc_no_sync_order);
+    assert(g_no_carrier_order > g_release_order);
+}
+
 int
 main(void) {
     test_false_syncs_do_not_starve_the_hunt();
@@ -475,6 +554,7 @@ main(void) {
     test_sub_frame_consumption_never_buys_dwell();
     test_consumed_frames_hold_the_profile();
     test_idle_rotation_period_is_unchanged();
+    test_budget_exit_runs_the_no_sync_hooks();
     return 0;
 }
 
