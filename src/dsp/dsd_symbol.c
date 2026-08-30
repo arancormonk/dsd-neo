@@ -73,7 +73,6 @@ void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, i
                                    int* r_edge);
 int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
                                         int have_sync, int symbol_span, int start_i, int* jitter_after);
-int dsd_symbol_test_is_m17_sync(int lastsynctype);
 float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
                                            int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);
@@ -287,15 +286,6 @@ symbol_timing_debug_char(const dsd_opts* opts, const dsd_state* state, int have_
     if (symbol_timing_debug_enabled(opts, state, have_sync)) {
         DSD_FPRINTF(stderr, "%c", c);
     }
-}
-
-static inline int
-symbol_is_m17_sync(int lastsynctype) {
-    return lastsynctype == DSD_SYNC_M17_STR_POS || lastsynctype == DSD_SYNC_M17_STR_NEG
-           || lastsynctype == DSD_SYNC_M17_LSF_POS || lastsynctype == DSD_SYNC_M17_LSF_NEG
-           || lastsynctype == DSD_SYNC_M17_PKT_POS || lastsynctype == DSD_SYNC_M17_PKT_NEG
-           || lastsynctype == DSD_SYNC_M17_PRE_POS || lastsynctype == DSD_SYNC_M17_PRE_NEG
-           || lastsynctype == DSD_SYNC_M17_EOT_POS || lastsynctype == DSD_SYNC_M17_EOT_NEG;
 }
 
 /* M17 is deliberately absent below. Its own preset says so -- -fz clears use_cosine_filter
@@ -555,10 +545,6 @@ dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, i
     return i;
 }
 
-int
-dsd_symbol_test_is_m17_sync(int lastsynctype) {
-    return symbol_is_m17_sync(lastsynctype);
-}
 #endif
 
 #ifdef USE_RADIO

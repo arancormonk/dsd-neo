@@ -461,11 +461,6 @@ test_symbol_helper_window_sync_and_timing_contracts(void) {
     assert(l_edge == 1);
     assert(r_edge == 1);
 
-    assert(dsd_symbol_test_is_m17_sync(DSD_SYNC_M17_STR_POS) == 1);
-    assert(dsd_symbol_test_is_m17_sync(DSD_SYNC_M17_PKT_NEG) == 1);
-    assert(dsd_symbol_test_is_m17_sync(DSD_SYNC_M17_BRT_POS) == 0);
-    assert(dsd_symbol_test_is_m17_sync(DSD_SYNC_DMR_BS_VOICE_POS) == 0);
-
     int jitter_after = 99;
     assert(dsd_symbol_test_adjust_timing_index(20, 9, 0, 8, 0, 20, 0, &jitter_after) == -1);
     assert(jitter_after == -1);

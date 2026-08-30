@@ -14,7 +14,6 @@ void dsd_symbol_test_select_window(int rf_mod, int synctype, int lastsynctype, i
                                    int* r_edge);
 int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, int rf_mod, int jitter,
                                         int have_sync, int symbol_span, int start_i, int* jitter_after);
-int dsd_symbol_test_is_m17_sync(int lastsynctype);
 float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
                                            int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);

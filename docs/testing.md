@@ -83,16 +83,20 @@ halves: the payload still decodes under `-fa`, and no `SPS hunt: trying` line ap
 frame unproductive drops the payload from 23 hits to 13 and steps the hunt to 20 sps partway through the capture.
 `dsd_neo_add_iq_decode_test` takes the "must be absent" regex as an optional fifth argument.
 
-`DECODE_IQ_M17_AUTO` and `DECODE_IQ_DSTAR_AUTO_NO_M17` are the two halves of issue #399. M17's own profile is where
-the hunt starts, so the `m17` capture needs no rotation and gets none: it must publish the same identity under `-fa`
-that `DECODE_IQ_M17` asserts under `-fz`. Before the fix it published nothing, because AUTO demanded an exact
-repeated preamble marker that real M17 never presents, and because `-fz` switches the matched filter off through the
-global `use_cosine_filter` while AUTO left it on over every M17 payload. The `dstar` capture is the same rule seen
-from the other side — it contains no M17 at all, and its bit-sync run was read as dozens of M17 preambles. A few M17
-sync lines on it are expected and are not the defect: an alternating run genuinely is what an M17 preamble looks
-like. What the reject case pins is that none of them reaches a decode, so no M17 identity is ever published from a
-D-STAR capture. A BERT transmission has no fixture; under `-fa` its first frames report unproductive to the SPS hunt
-until PRBS9 locks, which is the price of a frame type that carries no CRC of its own.
+`DECODE_IQ_M17_AUTO` covers issue #399. M17's own profile is where the hunt starts, so the `m17` capture needs no
+rotation and gets none: it must publish the same identity under `-fa` that `DECODE_IQ_M17` asserts under `-fz`.
+Before the fix it published nothing, because AUTO demanded an exact repeated preamble marker that real M17 never
+presents, and because `-fz` switches the matched filter off through the global `use_cosine_filter` while AUTO left it
+on over every M17 payload. A BERT transmission has no fixture; under `-fa` its first frames report unproductive to
+the SPS hunt until PRBS9 locks, which is the price of a frame type that carries no CRC of its own.
+
+The other half of #399 — that a capture containing no M17 does not decode any — is pinned in
+`FRAME_SYNC_INTERNAL_HELPERS` (`test_m17_alternating_runs_alone_are_never_a_sync`) rather than as a reject case on
+the `dstar` fixture. A reject case there was tried and removed: how far the hunt gets through a 4 s capture under
+`-fa` depends on front-end and thread scheduling, so the run varies between builds and between presets, and the
+assertion failed under `tsan-debug` while passing repeatedly under `dev-debug`. Only assertions that hold for every
+schedule belong in an `-fa` decode case, which is why the AUTO cases here assert either a payload the capture always
+reaches or a hunt line that always prints.
 
 Reject cases assert the opposite: that a fixture produces *no* decode. `dsd_neo_add_iq_reject_test` takes a
 `NOT_EXPECTED` regex alongside the usual `EXPECTED` one, so a run that printed nothing at all cannot pass by

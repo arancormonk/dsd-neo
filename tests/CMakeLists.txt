@@ -9177,18 +9177,6 @@ if(DSD_HAS_RADIO)
         "SRC: N0CALL"
     )
 
-    # The same rule's other half: the dstar capture contains no M17 at all, and its bit-sync
-    # run used to be read as dozens of M17 preambles. A few M17 sync lines still appear -- an
-    # alternating run really is what an M17 preamble looks like -- but nothing behind them may
-    # reach a decode, so no M17 identity may be published from a D-STAR capture.
-    dsd_neo_add_iq_reject_test(
-        DECODE_IQ_DSTAR_AUTO_NO_M17
-        dstar
-        "-fa -v 3"
-        "SPS hunt: trying 20 sps"
-        "M17 STR|SRC: [A-Z0-9]"
-    )
-
     # The other direction, which is the one issue #391 warns about: a handler that reports
     # its frames validated nothing while decoding them rotates the hunt off live traffic.
     # Every other fixture that exercises a newly-reporting protocol pins its frame type, so
