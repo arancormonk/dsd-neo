@@ -9165,6 +9165,30 @@ if(DSD_HAS_RADIO)
         "SPS hunt: trying 20 sps"
     )
 
+    # Issue #399: M17's own profile is where AUTO starts, so no rotation is needed and none
+    # is missing -- AUTO used to sit on exactly the right profile and accept nothing, because
+    # the preamble rule wanted an exact repeated marker that real M17 never presents and a
+    # matched filter M17's own preset switches off ran over every payload. The capture must
+    # publish its identity under AUTO exactly as it does under -fz.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_AUTO
+        m17
+        -fa
+        "SRC: N0CALL"
+    )
+
+    # The same rule's other half: the dstar capture contains no M17 at all, and its bit-sync
+    # run used to be read as dozens of M17 preambles. A few M17 sync lines still appear -- an
+    # alternating run really is what an M17 preamble looks like -- but nothing behind them may
+    # reach a decode, so no M17 identity may be published from a D-STAR capture.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_DSTAR_AUTO_NO_M17
+        dstar
+        "-fa -v 3"
+        "SPS hunt: trying 20 sps"
+        "M17 STR|SRC: [A-Z0-9]"
+    )
+
     # The other direction, which is the one issue #391 warns about: a handler that reports
     # its frames validated nothing while decoding them rotates the hunt off live traffic.
     # Every other fixture that exercises a newly-reporting protocol pins its frame type, so
