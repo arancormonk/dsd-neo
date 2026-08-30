@@ -958,6 +958,22 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
 }
 
+/**
+ * @brief Whether a stream frame's payload may be turned into audio.
+ *
+ * Over the air, held behind the same evidence as the call record: an unconfirmed stream is an
+ * alternating run that reached the LICH, and playing it is the audible half of the false
+ * detection (#399). The UDP/IP path does not arrive by sync search and is not gated, and data
+ * and reserved stream types still print.
+ */
+static int
+m17_stream_payload_may_play(const dsd_state* state, int update_media) {
+    if (update_media == 0 || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
+        return 1;
+    }
+    return m17_confirm_is_confirmed(state);
+}
+
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
                                      uint16_t frame_number, uint8_t* processed_payload, int update_media) {
@@ -998,11 +1014,7 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
     if (update_media != 0) {
         m17_mark_stream_media(opts, state);
     }
-    /* Over the air, hold synthesized voice behind the same evidence as the call record: an
-     * unconfirmed stream is an alternating run that reached the LICH, and playing it is the
-     * audible half of the false detection (#399). Data and reserved types still print. */
-    const int voice_dt = (state->m17_str_dt == 2U || state->m17_str_dt == 3U);
-    if (update_media == 0 || !voice_dt || m17_confirm_is_confirmed(state)) {
+    if (m17_stream_payload_may_play(state, update_media)) {
         M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
     }
     const int result = (state->m17_enc != 0U) ? M17_STREAM_ENCRYPTED_DISPATCHED : M17_STREAM_CLEAR_DISPATCHED;
