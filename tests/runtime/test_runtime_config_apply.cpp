@@ -545,6 +545,8 @@ test_output_config_without_frontend_preserves_active_frontend(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* The RTL hot restart tears the stream down and builds a new one, so a config
  * re-apply can only be exercised with the stream calls faked out. */
+/* The fake stands in for a real RtlSdrContext, so nothing may dereference it:
+ * every entry point that would is wrapped below. */
 static int g_wrap_fake_ctx = 0;
 static float g_wrap_last_channel_squelch = -1.0f;
 
@@ -581,6 +583,14 @@ int
 __wrap_rtl_stream_set_channel_squelch(float level) {
     g_wrap_last_channel_squelch = level;
     return 0;
+}
+
+/* Read back off the context after a restart. Wrapped because the real one walks
+ * into the fake context, which is not an RtlSdrContext. */
+uint32_t
+__wrap_rtl_stream_output_rate(const RtlSdrContext* ctx) {
+    (void)ctx;
+    return 48000U;
 }
 
 // NOLINTEND(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)

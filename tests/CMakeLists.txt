@@ -4345,6 +4345,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_stop"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=rtl_stream_set_channel_squelch"
+            "-Wl,--wrap=rtl_stream_output_rate"
     )
 else()
     target_link_libraries(
