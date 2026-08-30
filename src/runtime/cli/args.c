@@ -1883,7 +1883,6 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
             LOG_INFO("NOTICE: %s", KYEL);                                                                              \
             LOG_INFO("NOTICE: Relax P25 Phase 2 MAC_SIGNAL CRC Checksum Pass/Fail\n");                                 \
             LOG_INFO("NOTICE: Relax DMR RAS/CRC CSBK/DATA Pass/Fail\n");                                               \
-            LOG_INFO("NOTICE: Relax NXDN SACCH/FACCH/CAC/F2U CRC Pass/Fail\n");                                        \
             LOG_INFO("NOTICE: Relax M17 LSF/PKT CRC Pass/Fail\n");                                                     \
             LOG_INFO("NOTICE: %s", KNRM);                                                                              \
             break;                                                                                                     \

@@ -494,6 +494,64 @@ test_compatibility_short_options_use_current_facilities(void) {
     return test_rc;
 }
 
+/*
+ * -F relaxes the CRC gates that actually read the flag, and its startup notice names only those
+ * protocols. NXDN is deliberately absent: dsd-fme disabled its relaxed-CRC fallbacks in 449468f
+ * (2023-08-11) while fighting NXDN false syncs and never restored them, and nothing under
+ * src/protocol/nxdn/ reads aggressive_framesync. Announcing NXDN here sent the reporter of #398
+ * looking for a switch that does not exist, so this locks the notice to what the flag does.
+ */
+static int
+test_F_relaxes_crc_and_notice_omits_nxdn(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg_F[] = "-F";
+    char* argv[] = {arg0, arg_F, NULL};
+
+    char output[2048];
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = parse_args_capture_stderr(2, argv, opts, state, &argc_effective, &exit_rc, output, sizeof(output));
+
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected -F to continue, got rc=%d (exit_rc=%d)\n", rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->aggressive_framesync != 0 || opts->dmr_crc_relaxed_default != 1) {
+        DSD_FPRINTF(stderr, "expected -F to relax CRC gating, got aggressive=%d dmr_relaxed=%u\n",
+                    (int)opts->aggressive_framesync, (unsigned)opts->dmr_crc_relaxed_default);
+        test_rc = 1;
+    }
+
+    static const char* const announced[] = {"Relax P25 Phase 2", "Relax DMR", "Relax M17"};
+    for (size_t i = 0; i < sizeof announced / sizeof announced[0]; i++) {
+        if (strstr(output, announced[i]) == NULL) {
+            DSD_FPRINTF(stderr, "expected -F notice to contain \"%s\", got \"%s\"\n", announced[i], output);
+            test_rc = 1;
+        }
+    }
+    if (strstr(output, "NXDN") != NULL) {
+        DSD_FPRINTF(stderr, "expected -F notice to omit NXDN (the flag does nothing there), got \"%s\"\n", output);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
 static int
 expect_numeric_parse_error(const char* option, const char* value) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -6776,6 +6834,7 @@ main(void) {
     rc |= test_bootstrap_cli_file_override_ignores_config_file_rate_timing();
     rc |= test_bootstrap_cli_file_override_uses_cli_rate_for_headerless_open();
     rc |= test_bootstrap_cli_rate_override_uses_cli_rate_for_headerless_open();
+    rc |= test_F_relaxes_crc_and_notice_omits_nxdn();
     return rc;
 }
 
