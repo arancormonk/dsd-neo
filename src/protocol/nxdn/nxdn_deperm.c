@@ -267,7 +267,7 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
         nxdn_reset_payload_seed_if_forced(state);
-        NXDN_Elements_Content_decode(opts, state, 1, nsf_sacch, sizeof(nsf_sacch));
+        NXDN_Elements_Content_decode(opts, state, nsf_sacch, sizeof(nsf_sacch));
     } else {
         state->nxdn_part_of_frame = 0;
         DSD_FPRINTF(stderr, "PF X/1");
@@ -529,7 +529,7 @@ nxdn_handle_facch2_udch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis
 
     if (crc == check) {
         state->data_header_format[0] = 1;
-        NXDN_Elements_Content_decode(opts, state, 1, f2u_message_buffer, (size_t)(199 - 8 - 15));
+        NXDN_Elements_Content_decode(opts, state, f2u_message_buffer, (size_t)(199 - 8 - 15));
     }
     if (type == 0 && crc == check) {
         nxdn_print_udch_data(m_data);
@@ -637,7 +637,7 @@ nxdn_handle_cac(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, co
     nxdn_update_cac_fail_state(state, crc);
 
     if (crc == 0) {
-        NXDN_Elements_Content_decode(opts, state, 1, cac_message_buffer, sizeof(cac_message_buffer));
+        NXDN_Elements_Content_decode(opts, state, cac_message_buffer, sizeof(cac_message_buffer));
     }
     nxdn_print_cac_payload(opts, m_data);
     rotate_symbol_out_file(opts, state);
@@ -945,7 +945,7 @@ nxdn_decode_facch3_udch2_content(dsd_opts* opts, dsd_state* state, const struct 
     nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
 
     state->data_header_format[0] = 1;
-    NXDN_Elements_Content_decode(opts, state, 1, message->bits, 160U);
+    NXDN_Elements_Content_decode(opts, state, message->bits, 160U);
 }
 
 static void
@@ -1158,7 +1158,7 @@ nxdn_deperm_facch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[144], cons
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_STRONG);
     }
     if (crc == check && !duplicate) {
-        NXDN_Elements_Content_decode(opts, state, 1, trellis_buf, sizeof(trellis_buf));
+        NXDN_Elements_Content_decode(opts, state, trellis_buf, sizeof(trellis_buf));
     }
 
     if (opts->payload == 1) {
@@ -1235,10 +1235,12 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
     }
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    //End the canonical call on explicit release or disconnect signaling. CRC-verified release
-    //decoded over the air is positive end evidence -- the terminator reason lets the event layer
-    //keep an audible epoch whose call identity never decoded, where EXPLICIT reads as a retune.
-    if (state->NxdnElementsContent.VCallCrcIsGood != 0U && nxdn_message_type_resets_call(MessageType)) {
+    //End the canonical call on explicit release or disconnect signaling. A release or disconnect
+    //reaches here only through NXDN_Elements_Content_decode(), which the channel decoders hand
+    //CRC-verified content alone, so this is positive end evidence decoded over the air -- the
+    //terminator reason lets the event layer keep an audible epoch whose call identity never
+    //decoded, where EXPLICIT reads as a retune.
+    if (nxdn_message_type_resets_call(MessageType)) {
         if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }

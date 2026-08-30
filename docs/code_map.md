@@ -318,6 +318,9 @@ Private per-protocol modules worth knowing about:
   verdicts to it, and `nxdn_frame.c` consults it before refreshing the scan hold or synthesizing voice, as
   `nxdn_deperm.c`/`nxdn_element.c` do before publishing a RAN or a call. The engine clears it with the carrier through
   `nxdn_confirm_reset()`, the one entry point exported in `<dsd-neo/protocol/nxdn/nxdn.h>`.
+  `NXDN_Elements_Content_decode()` carries no CRC verdict of its own: the channel decoders in `nxdn_deperm.c` and
+  `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so the gate lives in those callers, with
+  `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish a call or refresh a scan hold.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 

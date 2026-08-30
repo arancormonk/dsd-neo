@@ -241,21 +241,15 @@ typedef struct {
     uint16_t DestinationID; /* May be a Group ID or a Unit ID */
     uint8_t CipherType;
     uint8_t KeyID;
-    uint8_t VCallCrcIsGood;
 
     /*******************************/
     /***** VCALL_IV parameters *****/
     /*******************************/
     uint8_t IV[8];
-    uint8_t VCallIvCrcIsGood;
 
     /*****************************/
     /***** Custom parameters *****/
     /*****************************/
-
-    /* Specifies if the "CipherType" and the "KeyID" parameter are valid
-   * 1 = Valid ; 0 = CRC error */
-    uint8_t CipherParameterValidity;
 
     /* Used on DES and AES encrypted frames */
     uint8_t PartOfCurrentEncryptedFrame; /* Could be 1 or 2 */

@@ -110,27 +110,24 @@ main(void) {
      * sequence arrives, which catches stale-fragment mixing regressions.
      */
     build_prop_msg(bits, 2U, 2U, "NAME");
-    nxdn_alias_decode_prop(&opts, &state, bits, 1U);
+    nxdn_alias_decode_prop(&opts, &state, bits);
     rc |= expect_str("prop-partial", state.generic_talker_alias[0], "NAME");
 
     build_prop_msg(bits, 1U, 2U, "TEST");
-    nxdn_alias_decode_prop(&opts, &state, bits, 1U);
+    nxdn_alias_decode_prop(&opts, &state, bits);
     rc |= expect_str("prop-assembled", state.generic_talker_alias[0], "TESTNAME");
 
     DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "KEEP");
-    build_prop_msg(bits, 1U, 1U, "FAIL");
-    nxdn_alias_decode_prop(&opts, &state, bits, 0U);
-    rc |= expect_str("prop-crc-gate", state.generic_talker_alias[0], "KEEP");
 
     {
         uint8_t packed[12];
         build_arib_packed_alias8(packed, "ARIBTEST", 0x84201F67U);
         build_arib_msg(bits, 1U, 2U, &packed[0]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-partial", state.generic_talker_alias[0], "KEEP");
 
         build_arib_msg(bits, 2U, 2U, &packed[6]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
     }
     rc |= expect_str("arib-assembled", state.generic_talker_alias[0], "ARIBTEST");
     rc |= expect_u8("arib-seen-reset", state.nxdn_alias_arib_seen_mask, 0U);
@@ -143,16 +140,16 @@ main(void) {
         build_arib_packed_alias8(fresh_packed, "GOOD1234", 0x51265003U);
 
         build_arib_msg(bits, 2U, 2U, stale_seg2);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-restart-stale-seed", state.generic_talker_alias[0], "BASE");
 
         build_arib_msg(bits, 1U, 2U, &fresh_packed[0]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-restart-no-mix", state.generic_talker_alias[0], "BASE");
         rc |= expect_u8("arib-restart-mask", state.nxdn_alias_arib_seen_mask, 0x01U);
 
         build_arib_msg(bits, 2U, 2U, &fresh_packed[6]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
     }
     rc |= expect_str("arib-restart-assembled", state.generic_talker_alias[0], "GOOD1234");
     rc |= expect_u8("arib-restart-reset-mask", state.nxdn_alias_arib_seen_mask, 0U);
@@ -164,11 +161,11 @@ main(void) {
         static const uint8_t total2_seg2[6] = {'A', 'S', 0x11, 0x22, 0x33, 0x44};
 
         build_arib_msg(bits, 1U, 3U, total3_seg1);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-total-mismatch-seed", state.generic_talker_alias[0], "STABLE");
 
         build_arib_msg(bits, 2U, 2U, total2_seg2);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
     }
     rc |= expect_str("arib-total-mismatch-no-mix", state.generic_talker_alias[0], "STABLE");
     rc |= expect_u8("arib-total-mismatch-mask", state.nxdn_alias_arib_seen_mask, 0x02U);
@@ -184,21 +181,21 @@ main(void) {
         build_arib_packed_alias8(fresh_packed, "FRESH222", 0x5FD0F4FDU);
 
         build_arib_msg(bits, 1U, 2U, &stale_packed[0]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-midseq-seed", state.generic_talker_alias[0], "HOLD");
 
         build_arib_msg(bits, 2U, 2U, &fresh_packed[6]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-midseq-no-mix", state.generic_talker_alias[0], "HOLD");
         rc |= expect_u8("arib-midseq-reset-mask", state.nxdn_alias_arib_seen_mask, 0U);
         rc |= expect_u8("arib-midseq-reset-total", state.nxdn_alias_arib_total_segments, 0U);
 
         build_arib_msg(bits, 1U, 2U, &fresh_packed[0]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
         rc |= expect_str("arib-midseq-clean-partial", state.generic_talker_alias[0], "HOLD");
 
         build_arib_msg(bits, 2U, 2U, &fresh_packed[6]);
-        nxdn_alias_decode_arib(&opts, &state, bits, 1U);
+        nxdn_alias_decode_arib(&opts, &state, bits);
     }
     rc |= expect_str("arib-midseq-clean-assembled", state.generic_talker_alias[0], "FRESH222");
 

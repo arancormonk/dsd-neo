@@ -31,7 +31,7 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, uint8_t CrcCorrect, const uint8_t* ElementsContent,
+void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 
 /*
@@ -48,20 +48,18 @@ nxdn_message_type(const dsd_opts* opts, dsd_state* state, uint8_t MessageType) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_arib(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
     (void)opts;
     (void)state;
     (void)message_bits;
-    (void)crc_ok;
 }
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits, uint8_t crc_ok) {
+nxdn_alias_decode_prop(const dsd_opts* opts, dsd_state* state, const uint8_t* message_bits) {
     (void)opts;
     (void)state;
     (void)message_bits;
-    (void)crc_ok;
 }
 
 void
@@ -227,7 +225,7 @@ test_vcall_enc_lockout_requires_corroboration(void) {
     // First CRC-good non-clear VCALL: classifies (and mutes) tentatively, but
     // no blocking entry and no forced disconnect.
     build_vcall(bits, 2U, 5U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 2U);
     assert(state.dmr_encL == 1);
     assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
@@ -235,32 +233,11 @@ test_vcall_enc_lockout_requires_corroboration(void) {
     // The matching repeat corroborates and the lockout acts -- in the session
     // ledger, never as a talkgroup-policy row.
     build_vcall(bits, 2U, 5U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_enc_lockout_entry ledger_entry;
     assert(dsd_enc_lockout_lookup(&state, 1234U, 1, &ledger_entry) == 1);
     assert(ledger_entry.algid == 2);
-    assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
-    assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
-    dsd_state_ext_free_all(&state);
-}
-
-static void
-test_crc_failed_vcall_mutates_nothing(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I history[2];
-    uint8_t bits[96];
-    dsd_tg_policy_lookup lookup;
-
-    reset_fixture(&opts, &state, history);
-
-    build_vcall(bits, 2U, 5U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, 0U, bits, sizeof(bits));
-    assert(state.nxdn_cipher_type == 0U);
-    assert(state.dmr_encL == 0);
-    assert(nxdn_cipher_established_enc(&state) == 0);
-    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
     assert(dsd_tg_policy_lookup_id(&state, 1234U, &lookup) == 0);
     assert(lookup.match == DSD_TG_POLICY_MATCH_NONE);
     dsd_state_ext_free_all(&state);
@@ -278,14 +255,14 @@ test_lone_contradicting_vcall_does_not_flap_established_clear(void) {
 
     // Two clear VCALLs establish the call clear.
     build_vcall(bits, 0U, 0U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 0U);
 
     // A lone corrupt VCALL claiming DES: quarantined -- audio stays open, the
     // published crypto stays clear, no blocking entry, no forced disconnect.
     build_vcall(bits, 2U, 5U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 0U);
     assert(state.dmr_encL == 0);
     assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
@@ -296,7 +273,7 @@ test_lone_contradicting_vcall_does_not_flap_established_clear(void) {
     // The repeat corroborates a real change: the classification flips and the
     // lockout acts.
     build_vcall(bits, 2U, 5U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, 1U, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(state.nxdn_cipher_type == 2U);
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 1));
     dsd_state_ext_free_all(&state);
@@ -309,7 +286,6 @@ main(void) {
     test_contradiction_of_tentative_replaces();
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
-    test_crc_failed_vcall_mutates_nothing();
     test_lone_contradicting_vcall_does_not_flap_established_clear();
     printf("NXDN enc class: OK\n");
     return 0;
