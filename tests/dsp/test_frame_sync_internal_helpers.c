@@ -163,8 +163,10 @@ reset(dsd_opts* opts, dsd_state* state) {
 
 static int g_vc_sync_hook_calls;
 static int g_vc_no_sync_hook_calls;
+static int g_release_hook_calls;
 static int g_no_carrier_hook_calls;
 static int g_vc_no_sync_hook_order;
+static int g_release_hook_order;
 static int g_no_carrier_hook_order;
 static int g_hook_order;
 
@@ -181,6 +183,14 @@ fake_p25_sm_vc_no_sync(dsd_opts* opts, const dsd_state* state) {
     (void)state;
     g_vc_no_sync_hook_calls++;
     g_vc_no_sync_hook_order = ++g_hook_order;
+}
+
+static void
+fake_p25_sm_release(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_release_hook_calls++;
+    g_release_hook_order = ++g_hook_order;
 }
 
 static void
@@ -237,6 +247,38 @@ test_p25_vc_acquisition_hooks(void) {
     assert(g_vc_no_sync_hook_calls == 1);
     assert(g_no_carrier_hook_calls == 1);
     assert(g_vc_no_sync_hook_order < g_no_carrier_hook_order);
+
+    /* An inverted P25p1 sync used to short-circuit this timeout outright, so the dwell
+     * never expired while it was the last sync seen and only the hunt's budget exit ever
+     * returned no-sync (#389). The dwell is the only gate now, and the timeout owes the
+     * P25 SM the same accounting in the same order as the other no-sync exit. */
+    reset(&opts, &state);
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.lastsynctype = DSD_SYNC_P25P1_NEG;
+    g_vc_no_sync_hook_calls = 0;
+    g_release_hook_calls = 0;
+    g_no_carrier_hook_calls = 0;
+    g_vc_no_sync_hook_order = 0;
+    g_release_hook_order = 0;
+    g_no_carrier_hook_order = 0;
+    g_hook_order = 0;
+    dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+
+    assert(dsd_frame_sync_test_handle_no_sync_timeout(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS - 1) == 0);
+    assert(g_vc_no_sync_hook_calls == 0);
+    assert(g_release_hook_calls == 0);
+    assert(g_no_carrier_hook_calls == 0);
+    assert(dsd_frame_sync_test_handle_no_sync_timeout(&opts, &state, DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) == 1);
+    assert(g_vc_no_sync_hook_calls == 1);
+    assert(g_release_hook_calls == 1);
+    assert(g_no_carrier_hook_calls == 1);
+    assert(g_vc_no_sync_hook_order < g_release_hook_order);
+    assert(g_release_hook_order < g_no_carrier_hook_order);
 
     dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
 }

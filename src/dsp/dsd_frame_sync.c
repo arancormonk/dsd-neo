@@ -3097,9 +3097,18 @@ frame_sync_no_sync_run_hooks(dsd_opts* opts, dsd_state* state, time_t now) {
     dsd_frame_sync_hook_no_carrier(opts, state);
 }
 
+/**
+ * @brief Give up on this call once a whole matchless pass has gone by.
+ *
+ * The dwell is the only gate: no protocol gets a carve-out here. A
+ * `lastsynctype == DSD_SYNC_P25P1_NEG` term used to short-circuit the whole timeout,
+ * inherited unexplained from upstream DSD, which let an inverted P25p1 sync hold off
+ * this exit -- and only this one -- until the sync window's 10200-symbol wrap fired
+ * no_carrier and cleared lastsynctype (#389).
+ */
 static int
 frame_sync_handle_no_sync_timeout(dsd_opts* opts, dsd_state* state, const frame_sync_runtime_ctx* rt, time_t now) {
-    if (state->lastsynctype == DSD_SYNC_P25P1_NEG || rt->synctest_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
+    if (rt->synctest_pos < DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS) {
         return 0;
     }
 
