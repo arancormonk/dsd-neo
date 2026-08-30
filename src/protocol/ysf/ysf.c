@@ -921,7 +921,7 @@ ysf_dispatch_payload(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info
     }
 }
 
-void
+int
 processYSF(dsd_opts* opts, dsd_state* state) {
     static uint8_t last_dt;
     static uint8_t last_fi;
@@ -936,4 +936,15 @@ processYSF(dsd_opts* opts, dsd_state* state) {
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");
+
+    /* Sticky per transmission, the shape nxdn_confirm_is_confirmed() uses. A FICH failure on
+     * its own says nothing decoded only until one FICH has passed: after that the fallback
+     * dt/fi come from a frame that did check out, ysf_dispatch_payload() lays the rest of the
+     * frame out on them, and ysf_handle_vd_type2() synthesizes and plays voice from it. A
+     * frame that produced audio must not tell the SPS hunt it validated nothing (#391).
+     * noCarrier() clears the flag with the other per-transmission YSF state. */
+    if (info.err == 0) {
+        state->ysf_fich_confirmed = 1;
+    }
+    return state->ysf_fich_confirmed != 0 ? 1 : 0;
 } //end processYSF

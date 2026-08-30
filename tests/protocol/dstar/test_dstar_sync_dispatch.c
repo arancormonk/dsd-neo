@@ -13,12 +13,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_dstar(int synctype);
-void dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state);
 
 static int header_calls;
 static int open_calls;
@@ -45,11 +46,15 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     voice_calls++;
 }
 
-void
+/* The stubbed header CRC verdict dsd_dispatch_handle_dstar() must pass through. */
+static int header_decode_result = 1;
+
+int
 processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     header_calls++;
+    return header_decode_result;
 }
 
 static void
@@ -91,7 +96,8 @@ test_voice_dispatch(void) {
         DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "out");
         state.synctype = voice_synctypes[i];
 
-        dsd_dispatch_handle_dstar(&opts, &state);
+        /* Voice stays productive: processDSTAR() has no verdict at any point (#391). */
+        assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
         assert(strcmp(state.fsubtype, " VOICE        ") == 0);
         assert(open_calls == 1);
@@ -115,7 +121,8 @@ test_header_dispatch(void) {
         DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "out");
         state.synctype = header_synctypes[i];
 
-        dsd_dispatch_handle_dstar(&opts, &state);
+        header_decode_result = 1;
+        assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
         assert(strcmp(state.fsubtype, " DATA         ") == 0);
         assert(open_calls == 0);
@@ -124,12 +131,31 @@ test_header_dispatch(void) {
     }
 }
 
+/* #391: a header whose CRC-16/X.25 failed consumed 2652 symbols and validated none of them,
+ * so the handler must say so rather than letting the SPS hunt pay for them. */
+static void
+test_failed_header_reports_unproductive(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    state.synctype = DSD_SYNC_DSTAR_HD_POS;
+    header_decode_result = 0;
+
+    assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(header_calls == 1);
+    header_decode_result = 1;
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
     test_synctype_helpers();
     test_voice_dispatch();
     test_header_dispatch();
+    test_failed_header_reports_unproductive();
     printf("DSTAR_SYNC_DISPATCH: OK\n");
     return 0;
 }

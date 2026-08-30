@@ -66,7 +66,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     DSD_FPRINTF(stderr, "\n");
 }
 
-void
+int
 processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
 
     int i;
@@ -77,6 +77,7 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         getDibitAndSoftSymbol(opts, state, &soft_symbols[i]);
     }
 
-    dstar_header_decode_soft(state, soft_symbols);
+    const int header_ok = dstar_header_decode_soft(state, soft_symbols);
     processDSTAR(opts, state);
+    return header_ok;
 }

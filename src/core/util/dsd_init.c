@@ -1045,6 +1045,7 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
+    state->ysf_fich_confirmed = 0;
 
     //DSTAR Call Strings
     set_spaces(state->dstar_txt, 8); //8 spaces

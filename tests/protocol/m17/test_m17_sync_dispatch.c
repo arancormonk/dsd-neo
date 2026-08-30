@@ -13,12 +13,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_m17(int synctype);
-void dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state);
 
 static int lsf_calls;
 static int pkt_calls;
@@ -127,6 +128,10 @@ test_synctype_names(void) {
     assert(strcmp(dsd_synctype_to_string(DSD_SYNC_M17_EOT_NEG), "M17 EOT") == 0);
 }
 
+/* Verdict of the most recent dispatch_one(), so cases can check it without threading a
+ * second return value through every caller (#391). */
+static dsd_frame_verdict last_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+
 static int
 dispatch_one(int synctype) {
     static dsd_opts opts;
@@ -136,13 +141,17 @@ dispatch_one(int synctype) {
     reset_calls();
 
     state.synctype = synctype;
-    dsd_dispatch_handle_m17(&opts, &state);
+    last_verdict = dsd_dispatch_handle_m17(&opts, &state);
     return state.lastsynctype;
 }
 
 static void
 test_preamble_dispatch(void) {
     dispatch_one(DSD_SYNC_M17_PRE_POS);
+    /* 8 dibits is below DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS, which #388 calibrated against
+     * exactly this path, so the floor already refuses it credit and the verdict stays at
+     * the default. */
+    assert(last_verdict == DSD_FRAME_VERDICT_PRODUCTIVE);
     assert(skip_calls == 1);
     assert(skipped_dibits == 8);
     assert(lsf_calls == 0);
@@ -184,6 +193,8 @@ test_payload_dispatch(void) {
     assert(str_calls == 0);
 
     dispatch_one(DSD_SYNC_M17_STR_POS);
+    /* A stream frame is a decode, whatever the payload turns out to hold. */
+    assert(last_verdict == DSD_FRAME_VERDICT_PRODUCTIVE);
     assert(skip_calls == 0);
     assert(lsf_calls == 0);
     assert(pkt_calls == 0);
@@ -199,6 +210,9 @@ test_payload_dispatch(void) {
 static void
 test_eot_dispatch(void) {
     int lastsynctype = dispatch_one(DSD_SYNC_M17_EOT_POS);
+    /* #391: the EOT marker is positive evidence, and this branch acts on it -- the same
+     * DSD_CALL_END_TERMINATOR the call state is given. The SPS hunt is told the same. */
+    assert(last_verdict == DSD_FRAME_VERDICT_PRODUCTIVE);
     assert(skip_calls == 1);
     assert(skipped_dibits == 184);
     assert(lsf_calls == 0);

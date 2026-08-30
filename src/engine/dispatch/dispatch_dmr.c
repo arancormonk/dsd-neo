@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -130,17 +131,24 @@ dsd_dispatch_matches_dmr(int synctype) {
     return DSD_SYNC_IS_DMR(synctype);
 }
 
-void
+/*
+ * Always productive. DMR's per-burst verdicts live in the colour-code lock and voice-open
+ * counters of src/protocol/dmr/dmr_confidence.c, which answer "is this transmission real"
+ * across bursts rather than "did this burst validate"; a burst that fails the lock is not
+ * the same thing as a burst that decoded nothing, and mapping one onto the other would be
+ * guesswork. Left productive until DMR grows a per-burst answer (#391).
+ */
+dsd_frame_verdict
 dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
     if (!DSD_SYNC_IS_DMR(state->synctype)) {
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     /* A standalone RC burst is a one-shot 10 ms event: decode it without
      * touching slot lights, MBE output files, or per-slot call state. */
     if (state->synctype == DSD_SYNC_DMR_RC_DATA) {
         dmrRC(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     dmr_update_branding(state);
@@ -148,11 +156,12 @@ dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
 
     if (dmr_is_voice_synctype(state->synctype)) {
         dmr_handle_voice(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
     if (dmr_is_ms_data_synctype(state->synctype)) {
         dmr_handle_ms_data(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
     dmr_handle_other_data(opts, state);
+    return DSD_FRAME_VERDICT_PRODUCTIVE;
 }

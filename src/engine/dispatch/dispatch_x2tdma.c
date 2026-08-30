@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,7 +24,11 @@ dsd_dispatch_matches_x2tdma(int synctype) {
     return DSD_SYNC_IS_X2TDMA(synctype);
 }
 
-void
+/*
+ * Always productive. Neither processX2TDMAvoice() nor processX2TDMAdata() reports a
+ * decode verdict (#391).
+ */
+dsd_frame_verdict
 dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
     state->nac = 0;
     if (opts->errorbars == 1) {
@@ -36,7 +41,7 @@ dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
         }
         DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
         processX2TDMAvoice(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     if (opts->mbe_out_f != NULL) {
@@ -50,4 +55,5 @@ dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
         && DSD_SYNC_IS_X2TDMA(call.protocol) && dsd_call_state_end(state, slot, 0.0) > 0) {
         dsd_event_sync_slot(opts, state, slot);
     }
+    return DSD_FRAME_VERDICT_PRODUCTIVE;
 }

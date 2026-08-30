@@ -32,11 +32,14 @@ enum {
 };
 
 static int g_called_handler = TEST_HANDLER_NONE;
+/* The verdict every stub reports, so one case can drive the whole table. */
+static dsd_frame_verdict g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
 
-static void
+static dsd_frame_verdict
 record_handler(int handler_id) {
     assert(g_called_handler == TEST_HANDLER_NONE);
     g_called_handler = handler_id;
+    return g_handler_verdict;
 }
 
 int
@@ -44,11 +47,11 @@ dsd_dispatch_matches_nxdn(int synctype) {
     return DSD_SYNC_IS_NXDN(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_NXDN);
+    return record_handler(TEST_HANDLER_NXDN);
 }
 
 int
@@ -56,11 +59,11 @@ dsd_dispatch_matches_dstar(int synctype) {
     return DSD_SYNC_IS_DSTAR(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_DSTAR);
+    return record_handler(TEST_HANDLER_DSTAR);
 }
 
 int
@@ -68,11 +71,11 @@ dsd_dispatch_matches_dmr(int synctype) {
     return DSD_SYNC_IS_DMR(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_DMR);
+    return record_handler(TEST_HANDLER_DMR);
 }
 
 int
@@ -80,11 +83,11 @@ dsd_dispatch_matches_x2tdma(int synctype) {
     return DSD_SYNC_IS_X2TDMA(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_X2TDMA);
+    return record_handler(TEST_HANDLER_X2TDMA);
 }
 
 int
@@ -92,11 +95,11 @@ dsd_dispatch_matches_provoice(int synctype) {
     return DSD_SYNC_IS_PROVOICE(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_provoice(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_PROVOICE);
+    return record_handler(TEST_HANDLER_PROVOICE);
 }
 
 int
@@ -104,11 +107,11 @@ dsd_dispatch_matches_edacs(int synctype) {
     return DSD_SYNC_IS_EDACS(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_edacs(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_EDACS);
+    return record_handler(TEST_HANDLER_EDACS);
 }
 
 int
@@ -116,11 +119,11 @@ dsd_dispatch_matches_ysf(int synctype) {
     return DSD_SYNC_IS_YSF(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_ysf(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_YSF);
+    return record_handler(TEST_HANDLER_YSF);
 }
 
 int
@@ -128,11 +131,11 @@ dsd_dispatch_matches_m17(int synctype) {
     return DSD_SYNC_IS_M17(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_M17);
+    return record_handler(TEST_HANDLER_M17);
 }
 
 int
@@ -140,11 +143,11 @@ dsd_dispatch_matches_p25p2(int synctype) {
     return DSD_SYNC_IS_P25P2(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_p25p2(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_P25P2);
+    return record_handler(TEST_HANDLER_P25P2);
 }
 
 int
@@ -152,11 +155,11 @@ dsd_dispatch_matches_dpmr(int synctype) {
     return DSD_SYNC_IS_DPMR(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_DPMR);
+    return record_handler(TEST_HANDLER_DPMR);
 }
 
 int
@@ -164,15 +167,15 @@ dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
-    record_handler(TEST_HANDLER_P25P1);
+    return record_handler(TEST_HANDLER_P25P1);
 }
 
 static void
-run_dispatch_case(int synctype, int expected_handler) {
+run_dispatch_case_verdict(int synctype, int expected_handler, dsd_frame_verdict verdict, int stale_verdict_in_state) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts != NULL);
@@ -181,15 +184,28 @@ run_dispatch_case(int synctype, int expected_handler) {
     state->rf_mod = 1;
     state->max = 100.0F;
     state->min = -50.0F;
+    state->sps_hunt_last_frame_verdict = stale_verdict_in_state;
     g_called_handler = TEST_HANDLER_NONE;
+    g_handler_verdict = verdict;
 
     processFrame(opts, state);
 
     assert(g_called_handler == expected_handler);
     assert(state->maxref == 80.0F);
     assert(state->minref == -40.0F);
+    /* #391: the handler's verdict, recorded where getFrameSync() reads it on its next entry.
+     * A synctype no handler claims leaves it productive -- the pre-#391 behaviour -- and
+     * either way a verdict left over from the previous frame must not survive. */
+    assert(state->sps_hunt_last_frame_verdict
+           == (expected_handler == TEST_HANDLER_NONE ? DSD_FRAME_VERDICT_PRODUCTIVE : (int)verdict));
+    g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     free(state);
     free(opts);
+}
+
+static void
+run_dispatch_case(int synctype, int expected_handler) {
+    run_dispatch_case_verdict(synctype, expected_handler, DSD_FRAME_VERDICT_PRODUCTIVE, 0);
 }
 
 static void
@@ -202,13 +218,27 @@ check_public_handler_table(void) {
     assert(dsd_protocol_handlers[11].name == NULL);
 }
 
+/* #391: the zero value is PRODUCTIVE, which is what makes the contract safe by omission --
+ * a handler with nothing to say, and a zeroed dsd_state, both read as "decoded a frame". */
+static void
+check_verdict_default_is_productive(void) {
+    _Static_assert(DSD_FRAME_VERDICT_PRODUCTIVE == 0, "PRODUCTIVE must be the zero value");
+    _Static_assert(DSD_FRAME_VERDICT_UNPRODUCTIVE != 0, "UNPRODUCTIVE must be non-zero");
+}
+
 int
 main(void) {
     check_public_handler_table();
+    check_verdict_default_is_productive();
     run_dispatch_case(DSD_SYNC_DMR_BS_VOICE_POS, TEST_HANDLER_DMR);
     run_dispatch_case(DSD_SYNC_DPMR_FS1_POS, TEST_HANDLER_DPMR);
     run_dispatch_case(DSD_SYNC_P25P1_POS, TEST_HANDLER_P25P1);
     run_dispatch_case(-1, TEST_HANDLER_NONE);
+    run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_UNPRODUCTIVE, 0);
+    /* A stale UNPRODUCTIVE must not survive a productive frame, nor a frame no handler took. */
+    run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_PRODUCTIVE,
+                              DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    run_dispatch_case_verdict(-1, TEST_HANDLER_NONE, DSD_FRAME_VERDICT_PRODUCTIVE, DSD_FRAME_VERDICT_UNPRODUCTIVE);
 
     printf("ENGINE_PROTOCOL_DISPATCH: OK\n");
     return 0;

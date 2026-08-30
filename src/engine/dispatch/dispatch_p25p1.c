@@ -9,6 +9,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/protocol/p25/p25.h>
@@ -418,9 +419,15 @@ dsd_dispatch_matches_p25p1(int synctype) {
     return DSD_SYNC_IS_P25P1(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_reset(state);
     uint8_t duid = p25p1_decode_nid_and_duid(opts, state);
     p25p1_dispatch_by_duid(opts, state, duid);
+    /* The 63-bit BCH over the NID is the one verdict this path has that covers every DUID.
+     * When it fails the DUID is invalid, p25p1_handle_unknown_duid() decodes nothing, and
+     * the 33 dibits already read validated nothing. Past that the picture is mixed --
+     * state->p25_p1_fec_ok counts TSBK and MPDU header successes only, and says nothing
+     * about HDU, LDU1/2, TDU or TDULC -- so a decoded NID is taken at its word. */
+    return duid != P25P1_DUID_INVALID ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
 }

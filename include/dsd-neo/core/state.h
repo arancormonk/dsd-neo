@@ -567,10 +567,21 @@ struct dsd_state {
      *   profile. Inside getFrameSync() the mark is already current at every such call, so that
      *   half is contract rather than repair; it is what a direct assigner would have to do for
      *   itself.
+     * sps_hunt_last_frame_verdict: what the last frame handler made of what it consumed,
+     *   as a dsd_frame_verdict (engine/protocol_dispatch.h). A field rather than a return
+     *   value because frame sync reads it at the next getFrameSync() entry, not at the
+     *   call site. Zero is DSD_FRAME_VERDICT_PRODUCTIVE, so a handler that reports nothing
+     *   -- and a zeroed dsd_state -- is credited as having decoded a frame; only a
+     *   protocol that ran a check and failed it debits nothing (#391). Strictly per frame,
+     *   so unlike the two fields above it owes a profile change nothing: processFrame()
+     *   re-stamps it on every dispatch and
+     *   frame_sync_sps_hunt_note_handler_consumption() clears it on every read, so it
+     *   cannot survive into the profile that follows.
      * sps_hunt_idx: current rate/profile index
      * (0=4800/4-level, 1=2400/4-level, 2=9600/binary, 3=6000/4-level, 4=4800/binary) */
     int sps_hunt_counter;
     uint32_t sps_hunt_symbolcnt_mark;
+    int sps_hunt_last_frame_verdict;
     int sps_hunt_idx;
     int lastsynctype;
     int lastp25type;
@@ -1206,6 +1217,11 @@ struct dsd_state {
     uint8_t ysf_dt; //data type -- VD1, VD2, Full Rate, etc.
     uint8_t ysf_fi; //frame information -- HC, CC, TC
     uint8_t ysf_cm; //group or private call
+    /* Sticky for the transmission: set once a FICH passes its Golay+CRC-16, cleared with the
+     * rest of the YSF strings on noCarrier(). A later FICH failure still lays the payload out
+     * from the previous frame's dt/fi and still synthesizes voice from it, so once one FICH
+     * has confirmed the transmission those frames are decoding, not validating nothing (#391). */
+    uint8_t ysf_fich_confirmed;
     char ysf_rm1[6];
     char ysf_rm2[6];
     char ysf_rm3[6];

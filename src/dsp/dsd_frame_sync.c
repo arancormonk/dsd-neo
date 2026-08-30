@@ -2986,13 +2986,24 @@ frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) 
  * presents, banked a refund faster than the search could spend the budget and pinned the
  * profile for good (#388).
  *
- * A handler that does consume a frame's worth on a sync no CRC would accept is still
- * credited, because frame sync cannot see a CRC verdict. What it buys is bounded by what it
- * actually took rather than the whole budget, so it delays the hunt in proportion to the
- * stream it swallowed instead of resetting it.
+ * Size alone cannot separate a decoded frame from a block skipped on a sync no CRC would
+ * accept, so a handler that ran a check and failed it says so: processFrame() leaves its
+ * dsd_frame_verdict in dsd_state::sps_hunt_last_frame_verdict, and an unproductive one is
+ * refused the debit however much it took (#391). The verdict is default-productive, so
+ * every handler that reports nothing -- DMR, M17, P25 Phase 2, dPMR, X2-TDMA, D-STAR voice
+ * and ProVoice, which is the whole of the set that does not, whether because the check it
+ * would report is per transmission rather than per frame or because it has none at any point
+ * -- still buys dwell in proportion to what it swallowed, as before.
  */
 static void
 frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
+    const int unproductive = state->sps_hunt_last_frame_verdict != 0;
+    /* One verdict answers for one handler call. processFrame() already re-stamps the field
+     * on every dispatch, so this is belt and braces for the entries no handler precedes --
+     * a no-sync return, or a frame the retune generation made undispatchable -- where a
+     * stale verdict would be read against consumption that is not the handler's. */
+    state->sps_hunt_last_frame_verdict = 0;
+
     /* Both operands wrap at 2^32, so this modular difference stays exact when the free-running
      * symbol counter rolls over mid-measurement. */
     uint32_t consumed = state->symbolcnt - state->sps_hunt_symbolcnt_mark;
@@ -3014,7 +3025,7 @@ frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
          * from a rollover. */
         consumed = 0;
     }
-    if (consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
+    if (!unproductive && consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
         /* dsd_state::sps_hunt_counter only ever counts up from zero, so this is exact.
          * Sites outside the hunt park a profile by zeroing it; the floor at zero means
          * consumption measured across such a reset cannot drive it negative. */

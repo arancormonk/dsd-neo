@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -41,7 +42,11 @@ dsd_dispatch_matches_dpmr(int synctype) {
     return DSD_SYNC_IS_DPMR(synctype);
 }
 
-void
+/*
+ * Always productive. FS1/FS3/FS4 consume nothing beyond the sync itself, and the FS2 voice
+ * path (processdPMRvoice) has no CRC or FEC verdict to report (#391).
+ */
+dsd_frame_verdict
 dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
 
     //dPMR
@@ -73,7 +78,7 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
         processdPMRvoice(opts, state);
 
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
 
     } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
         /* dPMR Frame Sync 3 */
@@ -91,4 +96,5 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         }
     }
     //dPMR
+    return DSD_FRAME_VERDICT_PRODUCTIVE;
 }

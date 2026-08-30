@@ -9,6 +9,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/m17/m17.h>
 
 #include "dsd-neo/core/opts_fwd.h"
@@ -22,11 +23,14 @@ dsd_dispatch_matches_m17(int synctype) {
     return DSD_SYNC_IS_M17(synctype);
 }
 
-void
+dsd_frame_verdict
 dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
     if (state->synctype == DSD_SYNC_M17_PRE_POS || state->synctype == DSD_SYNC_M17_PRE_NEG) {
+        /* 8 dibits is below DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS, which was calibrated against
+         * exactly this path (#388): the floor already refuses it credit, so a verdict here
+         * would be decoration. */
         skipDibit(opts, state, 8);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     if (state->synctype == DSD_SYNC_M17_EOT_POS || state->synctype == DSD_SYNC_M17_EOT_NEG) {
@@ -49,23 +53,30 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         state->m17_bert_errors = 0;
         state->m17_bert_resyncs = 0;
         state->lastsynctype = DSD_SYNC_NONE;
-        return;
+        /* The marker itself is the decode, so the SPS hunt is told the same thing the call
+         * state was told above (#391). frame_sync_try_m17_eot() only matches an EOT whose
+         * lastsynctype is an M17 LSF, STR, PKT or BRT sync, so it cannot fire on cold noise
+         * the way the permissive preamble matcher can, and clearing lastsynctype here means
+         * it fires at most once per transmission. The 184 dibits behind it are discarded,
+         * but they are the rest of a frame this profile really was carrying. */
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     if (state->synctype == DSD_SYNC_M17_LSF_POS || state->synctype == DSD_SYNC_M17_LSF_NEG) {
         processM17LSF(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     if (state->synctype == DSD_SYNC_M17_BRT_POS || state->synctype == DSD_SYNC_M17_BRT_NEG) {
         processM17BRT(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     if (state->synctype == DSD_SYNC_M17_PKT_POS || state->synctype == DSD_SYNC_M17_PKT_NEG) {
         processM17PKT(opts, state);
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
 
     processM17STR(opts, state);
+    return DSD_FRAME_VERDICT_PRODUCTIVE;
 }

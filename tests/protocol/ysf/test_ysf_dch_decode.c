@@ -795,6 +795,75 @@ test_process_ysf_bad_fich_fallback_reopens_ysf_epoch(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* #391: processYSF()'s verdict is sticky for the transmission, not per frame. A FICH failure
+ * before any FICH has held means the ~460 dibits behind it were laid out by nothing read off
+ * the air, so the SPS hunt must refuse them their dwell. After one has held, the same failure
+ * falls back to a confirmed frame's dt/fi and still synthesizes and plays voice -- a frame
+ * that produced audio must not report having validated nothing. */
+static void
+test_process_ysf_fich_verdict_is_sticky_per_transmission(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+
+    InitAllFecFunction();
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    state.synctype = DSD_SYNC_YSF_NEG;
+
+    make_fich_bits_for_vd_type1(fich_bits);
+    encode_dch_payload_to_input("VD1DST0001VD1SRC0002", 20U, dch, 176U, 9U, 0);
+
+    /* Nothing has confirmed yet, so a failed FICH validated nothing. */
+    encode_fich_input(fich_bits, 1, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    assert(processYSF(&opts, &state) == 0);
+    assert(state.ysf_fich_confirmed == 0U);
+
+    /* A FICH that holds confirms the transmission. */
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    assert(processYSF(&opts, &state) == 1);
+    assert(state.ysf_fich_confirmed == 1U);
+
+    /* The same failure as the first frame, but the fallback dt/fi now come from a frame that
+     * did check out, and the payload still reaches the vocoder. */
+    encode_fich_input(fich_bits, 1, 0, fich_input);
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    assert(processYSF(&opts, &state) == 1);
+    assert(g_process_mbe_call_count == 4);
+
+    /* The flag alone gates the verdict: cleared, the very frame that just reported productive
+     * reports unproductive again, so a new transmission cannot inherit the last one's
+     * confidence. This binary links only dsd-neo_proto_ysf, so noCarrier() -- which is what
+     * clears the flag in the running decoder -- is not reachable here; ENGINE_NO_CARRIER_RESET
+     * pins that reset against the real function. */
+    state.ysf_fich_confirmed = 0U;
+    g_dibit_stream_len = 0U;
+    g_dibit_stream_pos = 0U;
+    g_process_mbe_call_count = 0;
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+    assert(processYSF(&opts, &state) == 0);
+
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors(void) {
     static dsd_opts opts;
@@ -902,6 +971,7 @@ main(void) {
     test_process_ysf_full_rate_data_routes_fich_and_dch_state();
     test_process_ysf_vd_type1_routes_ehr_voice_and_dch_state();
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
+    test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_terminator_enriches_identity_before_call_end();
     return 0;

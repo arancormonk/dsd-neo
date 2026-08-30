@@ -26,6 +26,7 @@ void edacs_update_lcn_count(dsd_state* state, int lcn);
 void edacs_build_raw_frames(const int* edacs_bit, unsigned long long* fr_1, unsigned long long* fr_2,
                             unsigned long long* fr_3, unsigned long long* fr_4, unsigned long long* fr_5,
                             unsigned long long* fr_6);
+int edacs_frame_bch_verdict(const int* edacs_bit, unsigned long long* msg_1_ec_out, unsigned long long* msg_2_ec_out);
 unsigned long long edacs_build_symbol_register(const dsd_opts* opts, dsd_state* state, const short* analog1);
 void edacs_reset_digitize_overflow(dsd_state* state);
 int edacs_collect_analog_triplet(dsd_opts* opts, dsd_state* state, short* analog1, short* analog2, short* analog3,

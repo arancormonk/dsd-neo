@@ -13,12 +13,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_dmr(int synctype);
-void dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state);
 
 static int bs_bootstrap_calls;
 static int bs_bootstrap_stereo;

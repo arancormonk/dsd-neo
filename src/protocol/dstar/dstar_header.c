@@ -14,7 +14,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/protocol/dstar/dstar_header_utils.h"
 
-void
+int
 dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
     uint16_t soft_costs[DSD_DSTAR_HEADER_CODED_BITS];
     uint16_t soft_scrambled[DSD_DSTAR_HEADER_CODED_BITS];
@@ -95,17 +95,20 @@ dstar_header_decode_soft(dsd_state* state, const float soft_symbols[DSD_DSTAR_HE
         DSD_FPRINTF(stderr, " URGENT");
     }
 
-    if (crc_cmp == crc_ext) {
-        int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
-        dsd_call_observation observation = {
-            .protocol = protocol,
-            .slot = 0U,
-            .kind = ((uint8_t)radioheader[0] & 0x80U) != 0U ? DSD_CALL_KIND_DATA : DSD_CALL_KIND_VOICE,
-        };
-        DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", str4);
-        DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", str3);
-        DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", str2);
-        DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", str1);
-        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (crc_cmp != crc_ext) {
+        return 0;
     }
+
+    int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_HD_POS;
+    dsd_call_observation observation = {
+        .protocol = protocol,
+        .slot = 0U,
+        .kind = ((uint8_t)radioheader[0] & 0x80U) != 0U ? DSD_CALL_KIND_DATA : DSD_CALL_KIND_VOICE,
+    };
+    DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", str4);
+    DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", str3);
+    DSD_SNPRINTF(observation.route_text[0], sizeof(observation.route_text[0]), "%s", str2);
+    DSD_SNPRINTF(observation.route_text[1], sizeof(observation.route_text[1]), "%s", str1);
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    return 1;
 }
