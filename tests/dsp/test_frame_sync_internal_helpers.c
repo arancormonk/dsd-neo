@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Coverage fixtures intentionally use private-source inclusion, synthetic sentinels,
 // invalid-value negative vectors, or wrapper symbols to exercise guarded behavior.
-// NOLINTBEGIN(misc-use-internal-linkage)
 /*
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
@@ -12,10 +11,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/time_format.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/platform/posix_compat.h>
-#include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -27,133 +24,10 @@
 #include <string.h>
 #include <time.h>
 
-#include "dsd-neo/core/dibit.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_test_support.h"
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-prototypes"
-#endif
-
-dsd_socket_t
-Connect(char* hostname, int portno) { // NOLINT(misc-use-internal-linkage)
-    (void)hostname;
-    (void)portno;
-    return (dsd_socket_t)0;
-}
-
-int
-openAudioInput(dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    return -1;
-}
-
-int
-dsd_audio_reconfigure_output_for_input_policy(dsd_opts* opts) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    return 0;
-}
-
-void
-dsd_request_shutdown(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-
-void
-dsd_audio_rescale_symbol_timing(dsd_state* state, int old_rate_hz, int new_rate_hz) {
-    (void)state;
-    (void)old_rate_hz;
-    (void)new_rate_hz;
-}
-
-int
-dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, char* out,
-                          size_t out_size) { // NOLINT(misc-use-internal-linkage)
-    (void)timestamp;
-    (void)format;
-    return out ? DSD_SNPRINTF(out, out_size, "%s", "00:00:00") >= 0 : 0;
-}
-
-void
-printFrameInfo(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-}
-
-void
-dsd_mark_cc_sync(dsd_state* state) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-}
-
-void
-dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)slot;
-}
-
-void
-write_symbol_capture_record(dsd_opts* opts, dsd_state* state, int dibit, float symbol, const dsd_dibit_soft_t* soft) {
-    (void)opts;
-    (void)state;
-    (void)dibit;
-    (void)symbol;
-    (void)soft;
-}
-
-uint8_t
-dmr_compute_reliability(const dsd_state* st, float sym) {
-    (void)st;
-    (void)sym;
-    return 255;
-}
-
-double
-pwr_to_dB(double mean_power) { // NOLINT(misc-use-internal-linkage)
-    (void)mean_power;
-    return 0.0;
-}
-
-void
-lpf_f(dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-hpf_f(dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-pbf_f(dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)input;
-    (void)len;
-}
-
-void
-agsm_f(dsd_opts* opts, dsd_state* state, float* input, int len) { // NOLINT(misc-use-internal-linkage)
-    (void)opts;
-    (void)state;
-    (void)input;
-    (void)len;
-}
 
 static void
 reset(dsd_opts* opts, dsd_state* state) {
@@ -1957,8 +1831,3 @@ main(void) {
 #endif
     return 0;
 }
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic pop
-#endif
-// NOLINTEND(misc-use-internal-linkage)
