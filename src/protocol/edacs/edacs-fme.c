@@ -2012,24 +2012,19 @@ edacs_process_valid_frame(dsd_opts* opts, dsd_state* state, unsigned long long i
     edacs_print_mode_selection_hint(msg_1, msg_2);
 }
 
-void
-edacs(dsd_opts* opts, dsd_state* state) {
-    edacs_init_afs_layout(state);
-
-    char timestr[7];
-    char datestr[9];
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
-    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
-
-    int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
-    edacs_collect_bits(opts, state, edacs_bit);
-
-    // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
-    // Once tuned away from the control channel, do not decode stale control symbols as a new source identity.
-    if (opts->trunk_is_tuned == 1) {
-        goto EDACS_END;
-    }
-
+/**
+ * @brief Vote the six raw 40-bit copies and re-derive each message's 12-bit BCH.
+ *
+ * Pure: the caller's 240 collected bits in, the two error-corrected 40-bit codewords and a
+ * pass/fail out. Split out of edacs() so the trunk_is_tuned early-out, which forgoes acting
+ * on the message but has already paid for the symbols, can still report whether the frame
+ * checked out (#391).
+ *
+ * @return 1 when both voted codewords re-derived their own BCH, 0 otherwise.
+ */
+int
+edacs_frame_bch_verdict(const int* edacs_bit, unsigned long long int* msg_1_ec_out,
+                        unsigned long long int* msg_2_ec_out) {
     unsigned long long int fr_1 = 0;
     unsigned long long int fr_2 = 0;
     unsigned long long int fr_3 = 0;
@@ -2039,18 +2034,51 @@ edacs(dsd_opts* opts, dsd_state* state) {
     edacs_build_raw_frames(edacs_bit, &fr_1, &fr_2, &fr_3, &fr_4, &fr_5, &fr_6);
 
     //Take our 3 copies of the first and second message and vote them to extract the two "error-corrected" messages
-    unsigned long long int msg_1_ec = edacs_vote_frames(fr_1, fr_2, fr_3);
-    unsigned long long int msg_2_ec = edacs_vote_frames(fr_4, fr_5, fr_6);
+    const unsigned long long int msg_1_ec = edacs_vote_frames(fr_1, fr_2, fr_3);
+    const unsigned long long int msg_2_ec = edacs_vote_frames(fr_4, fr_5, fr_6);
 
-    //Get just the 28-bit message portion
-    unsigned long long int msg_1_ec_m = msg_1_ec >> 12;
-    unsigned long long int msg_2_ec_m = msg_2_ec >> 12;
+    if (msg_1_ec_out != NULL) {
+        *msg_1_ec_out = msg_1_ec;
+    }
+    if (msg_2_ec_out != NULL) {
+        *msg_2_ec_out = msg_2_ec;
+    }
 
     //Take the message and create a new crc for it. If the newly crc-ed message matches the old one, we have a good frame.
-    unsigned long long int msg_1_ec_new_bch = edacs_bch(msg_1_ec_m) & 0xFFFFFFFFFF;
-    unsigned long long int msg_2_ec_new_bch = edacs_bch(msg_2_ec_m) & 0xFFFFFFFFFF;
+    const unsigned long long int msg_1_ec_new_bch = edacs_bch(msg_1_ec >> 12) & 0xFFFFFFFFFF;
+    const unsigned long long int msg_2_ec_new_bch = edacs_bch(msg_2_ec >> 12) & 0xFFFFFFFFFF;
 
-    if (msg_1_ec != msg_1_ec_new_bch || msg_2_ec != msg_2_ec_new_bch) {
+    return (msg_1_ec == msg_1_ec_new_bch && msg_2_ec == msg_2_ec_new_bch) ? 1 : 0;
+}
+
+int
+edacs(dsd_opts* opts, dsd_state* state) {
+    edacs_init_afs_layout(state);
+    int decoded = 0;
+
+    char timestr[7];
+    char datestr[9];
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+    (void)dsd_format_local_datetime(time(NULL), DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+
+    int edacs_bit[241] = {0}; //zero out bit array and collect bits into it.
+    edacs_collect_bits(opts, state, edacs_bit);
+
+    /* Vote and check before the tuned early-out below. The 240 dibits are already read, so
+     * the vote and two BCH re-derivations cost nothing next to them, and their answer is
+     * this frame's verdict whether or not the call goes on to act on the message. Deciding
+     * not to decode must not read as the check having failed (#391). */
+    unsigned long long int msg_1_ec = 0;
+    unsigned long long int msg_2_ec = 0;
+    decoded = edacs_frame_bch_verdict(edacs_bit, &msg_1_ec, &msg_2_ec);
+
+    // If we have executed a tune to a channel, then we will forego decoding any more edacs until we return from the voice channel
+    // Once tuned away from the control channel, do not decode stale control symbols as a new source identity.
+    if (opts->trunk_is_tuned == 1) {
+        goto EDACS_END;
+    }
+
+    if (!decoded) {
         DSD_FPRINTF(stderr, " BCH FAIL ");
     } else {
         // Rename the message variables (sans BCH) at the point of use.
@@ -2068,6 +2096,11 @@ EDACS_END:
 
     //when on a CC, rotate the symbol out file every hour, if enabled
     rotate_symbol_out_file(opts, state);
+
+    /* The BCH verdict on the frame that was read, on both paths: a tuned trunk declines to
+     * act on the message, but the frame it declined to act on still either checked out or
+     * did not, and the SPS hunt is owed that answer rather than a blanket zero. */
+    return decoded;
 }
 
 void

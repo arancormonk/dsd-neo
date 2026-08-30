@@ -20,7 +20,17 @@
 extern "C" {
 #endif
 
-void nxdn_frame(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Decode one NXDN frame.
+ *
+ * @return 1 once the current transmission has produced CRC-verified content, 0 while it
+ *         has not. This is nxdn_confirm_is_confirmed(), the sticky per-transmission flag
+ *         rather than the per-frame one: a real call confirms on its first FACCH and every
+ *         frame after it answers 1, while a stream of noise clearing the weak sync word and
+ *         LICH never does. The SPS hunt refuses those frames the dwell their 182 symbols
+ *         would otherwise buy (#391).
+ */
+int nxdn_frame(dsd_opts* opts, dsd_state* state);
 
 /* Cipher-classification hysteresis for the NXDN cipher field (values 0..3).
  * Backed by dsd_state.nxdn_cipher_class*; see src/protocol/nxdn/nxdn_enc_class.c. */

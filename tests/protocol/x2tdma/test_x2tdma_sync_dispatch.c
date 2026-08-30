@@ -14,12 +14,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/x2tdma/x2tdma.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_x2tdma(int synctype);
-void dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_x2tdma(dsd_opts* opts, dsd_state* state);
 
 static int close_calls;
 static int data_calls;

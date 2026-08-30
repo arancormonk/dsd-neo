@@ -12,19 +12,24 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <stdio.h>
 
 int dsd_dispatch_matches_nxdn(int synctype);
-void dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_nxdn(dsd_opts* opts, dsd_state* state);
 
 static int frame_calls;
 
-void
+/* The stubbed CRC confirmation dsd_dispatch_handle_nxdn() must pass through. */
+static int frame_confirmed = 1;
+
+int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     frame_calls++;
+    return frame_confirmed;
 }
 
 static void
@@ -65,11 +70,28 @@ test_dispatch_calls_frame(void) {
     frame_calls = 0;
 
     state.synctype = DSD_SYNC_NXDN_POS;
-    dsd_dispatch_handle_nxdn(&opts, &state);
+    assert(dsd_dispatch_handle_nxdn(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
     state.synctype = DSD_SYNC_NXDN_NEG;
-    dsd_dispatch_handle_nxdn(&opts, &state);
+    assert(dsd_dispatch_handle_nxdn(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
     assert(frame_calls == 2);
+}
+
+/* #391: NXDN's sync word and LICH are weak enough that noise clears both (#398), so an
+ * unconfirmed frame's 182 symbols must not buy the SPS hunt's dwell. */
+static void
+test_unconfirmed_frame_reports_unproductive(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    frame_calls = 0;
+    frame_confirmed = 0;
+
+    state.synctype = DSD_SYNC_NXDN_POS;
+    assert(dsd_dispatch_handle_nxdn(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(frame_calls == 1);
+    frame_confirmed = 1;
 }
 
 int
@@ -77,6 +99,7 @@ main(void) {
     test_sync_pattern_lengths();
     test_synctype_helpers();
     test_dispatch_calls_frame();
+    test_unconfirmed_frame_reports_unproductive();
     printf("NXDN_SYNC_DISPATCH: OK\n");
     return 0;
 }

@@ -348,11 +348,16 @@ main(void) {
     state->nxdn_confirmed = 1;
     state->nxdn_confirm_weak_streak = 1;
     state->nxdn_confirm_frame_evidence = 2;
+    // YSF's FICH evidence is per-transmission the same way (issue #391): processYSF() reports
+    // productive to the SPS hunt for as long as this flag stands, so carrying it across a carrier
+    // loss would let the next channel's first FICH failure buy dwell it validated nothing for.
+    state->ysf_fich_confirmed = 1U;
 
     noCarrier(opts, state);
 
     rc |= expect_true("nxdn-confirmation-reset", state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0
                                                      && state->nxdn_confirm_frame_evidence == 0);
+    rc |= expect_true("ysf-fich-confirmation-reset", state->ysf_fich_confirmed == 0U);
 
     dsd_call_snapshot ended_call;
     rc |= expect_true("no-carrier retains canonical snapshot", dsd_call_state_get(state, 0U, &ended_call) == 1);

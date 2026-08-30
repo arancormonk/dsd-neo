@@ -37,9 +37,14 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->minref = state->min;
     }
 
+    /* Default-productive, and set before the call so an early return inside a handler
+     * cannot leave the previous frame's verdict standing. A synctype no handler claims
+     * consumed nothing, so crediting it changes nothing either way. */
+    state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
-        handler->handle_frame(opts, state);
+        state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
     }
 }
 

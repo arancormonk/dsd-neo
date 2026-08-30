@@ -602,7 +602,7 @@ nxdn_finalize_sync_reject(dsd_state* state) {
     }
 }
 
-void
+int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx ctx;
 
@@ -662,4 +662,8 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
 
 END:
     nxdn_finalize_sync_reject(state);
+    /* The sticky flag, not this frame's evidence: a confirmed transmission whose current
+     * frame happens to carry no CRC still decoded, and reporting it unproductive would let
+     * the SPS hunt rotate off a live call. */
+    return nxdn_confirm_is_confirmed(state);
 }

@@ -18,7 +18,16 @@
 extern "C" {
 #endif
 
-void edacs(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Decode one EDACS control-channel frame.
+ *
+ * @return 1 when the triple-voted 40-bit frames both re-derived their 12-bit BCH, 0 when
+ *         the BCH failed. The check runs on the collected bits before the tuned-trunk
+ *         early-out, so a frame the call declines to act on still reports the verdict it
+ *         earned rather than a blanket failure -- the SPS hunt reads this to decide
+ *         whether the 240 dibits bought any dwell (#391).
+ */
+int edacs(dsd_opts* opts, dsd_state* state);
 void eot_cc(dsd_opts* opts, dsd_state* state);
 
 #ifdef __cplusplus

@@ -17,6 +17,12 @@
  * every returned sync is "handled" by consuming symbols, exactly as a protocol dispatch
  * handler consumes dibits. What separates a false sync from a real one is how many symbols
  * the handler takes, so that is what the hunt is asked to measure.
+ *
+ * Since #391 a handler may also report a dsd_frame_verdict. processFrame() leaves it in
+ * dsd_state::sps_hunt_last_frame_verdict for the next getFrameSync() entry to read, so
+ * these cases write that field after "handling" a sync exactly as processFrame() does --
+ * and one case deliberately stops writing it, to pin that a verdict is read once and
+ * cleared rather than standing over the entries no processFrame() precedes.
  */
 
 #include <assert.h>
@@ -26,6 +32,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <stdio.h>
 #include <string.h>
@@ -145,6 +152,9 @@ typedef struct {
     const char* marker;                                  /* sync marker injected into the stream ("" = never syncs) */
     int marker_gap;                                      /* filler symbols between markers */
     int handler_symbols;                                 /* symbols the "protocol handler" consumes per returned sync */
+    int handler_unproductive;                            /* verdict the handler reports on every sync (#391) */
+    int unproductive_lead_syncs;                         /* ... plus the first N syncs, always UNPRODUCTIVE */
+    int stamp_verdict_syncs;                             /* 0 = every sync stamps a verdict; N = only the first N */
     long symbol_budget;                                  /* stop after this many symbols leave the source */
     int expect_step;                                     /* 1 = the hunt must leave its starting profile */
     int mod_cli_lock;                                    /* 0 = AUTO (-fa), 1 = a generic modulation lock (-mc) */
@@ -192,6 +202,14 @@ drive_hunt(const HuntCase* tc) {
         result.syncs_seen++;
         for (int i = 0; i < tc->handler_symbols; i++) {
             (void)getSymbol(&opts, &state, 1);
+        }
+        /* What processFrame() does with the handler's dsd_frame_verdict. stamp_verdict_syncs
+         * stops the stamping partway, which is the engine's other shape: an entry no
+         * processFrame() precedes leaves the field exactly as the last one left it. */
+        if (tc->stamp_verdict_syncs == 0 || result.syncs_seen <= tc->stamp_verdict_syncs) {
+            const int unproductive = tc->handler_unproductive || result.syncs_seen <= tc->unproductive_lead_syncs;
+            state.sps_hunt_last_frame_verdict =
+                unproductive ? DSD_FRAME_VERDICT_UNPRODUCTIVE : DSD_FRAME_VERDICT_PRODUCTIVE;
         }
     }
 
@@ -281,7 +299,11 @@ test_dense_false_syncs_do_not_starve_the_hunt(void) {
 
 /* The floor is the whole of the density fix, so state where it sits. One symbol short of a
  * frame's worth, at the densest cadence the stream can produce, is the worst case an
- * unproductive matcher can present -- and it still gets exactly the idle dwell. */
+ * unproductive matcher can present -- and it still gets exactly the idle dwell.
+ *
+ * Deliberately left on the default PRODUCTIVE verdict after #391: the floor is what stops
+ * a marker-and-bail matcher buying dwell, and it must keep doing that on its own, for the
+ * protocols that have no verdict to report. */
 static void
 test_sub_frame_consumption_never_buys_dwell(void) {
     const HuntCase tc = {
@@ -289,6 +311,7 @@ test_sub_frame_consumption_never_buys_dwell(void) {
         .marker = FALSE_SYNC_MARKER,
         .marker_gap = 0,
         .handler_symbols = DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS - 1,
+        .handler_unproductive = 0,
         .symbol_budget = 400000,
         .expect_step = 1,
     };
@@ -307,12 +330,100 @@ static void
 test_consumed_frames_hold_the_profile(void) {
     /* Same marker, same cadence -- only the handler's appetite differs. A protocol
      * reading real frames consumes far more than it searches (NXDN96 spends 182
-     * symbols per frame, P25p1 408, M17 184). */
+     * symbols per frame, P25p1 408, M17 184).
+     *
+     * On the default PRODUCTIVE verdict, which is what #391 leaves every protocol with no
+     * check of its own -- D-STAR voice, ProVoice, dPMR, X2-TDMA, P25p2, DMR. A frame's
+     * worth consumed still holds the profile for them, exactly as before. */
     const HuntCase tc = {
         .label = "decoded frames at 4800/4",
         .marker = FALSE_SYNC_MARKER,
         .marker_gap = 84,
         .handler_symbols = 400,
+        .handler_unproductive = 0,
+        .symbol_budget = 60000,
+        .expect_step = 0,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 50);
+    assert(r.stepped == 0);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
+}
+
+/* #391: the new property. Same marker, same cadence and the same frame's worth of symbols
+ * as test_consumed_frames_hold_the_profile() -- the one difference is that the handler
+ * reports it validated nothing, which is what a failed FICH CRC, a failed EDACS BCH, a
+ * failed D-STAR header CRC, a failed P25p1 NID or an unconfirmed NXDN frame say. That
+ * profile must reach its dwell like an idle one instead of being held by symbols no CRC
+ * would have accepted. */
+static void
+test_unproductive_frames_never_buy_dwell(void) {
+    const HuntCase tc = {
+        .label = "unproductive frames at 4800/4",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 84,
+        .handler_symbols = 400,
+        .handler_unproductive = 1,
+        .symbol_budget = 400000,
+        .expect_step = 1,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 10);
+    assert_auto_stepped_to_2400_4(&r);
+    /* The idle dwell, no more: an unproductive verdict buys nothing however large the
+     * block behind it was. The upper bound allows for the handler's own symbols, which
+     * leave the source without counting against the searched budget. */
+    const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    assert(r.symbols_at_step >= dwell_symbols);
+    assert(r.symbols_at_step < dwell_symbols * 6);
+}
+
+/* #391, the other half of the same rule: an unproductive lead does not condemn the
+ * transmission behind it. A transmission that starts with frames the protocol cannot yet
+ * confirm -- NXDN before its first FACCH, YSF before its first FICH CRC -- and then decodes
+ * must hold its profile from the frame it confirms on. This pins the hunt's arithmetic, not
+ * the clear: every sync here stamps a verdict of its own, as processFrame() does. */
+static void
+test_a_confirming_transmission_holds_its_profile(void) {
+    const HuntCase tc = {
+        .label = "unproductive lead, then decoded frames",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 84,
+        .handler_symbols = 400,
+        .handler_unproductive = 0,
+        .unproductive_lead_syncs = 3,
+        .symbol_budget = 60000,
+        .expect_step = 0,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 50);
+    assert(r.stepped == 0);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
+}
+
+/* #391: one verdict answers for one handler call. frame_sync_sps_hunt_note_handler_consumption()
+ * clears dsd_state::sps_hunt_last_frame_verdict as it reads it, so a verdict cannot be charged
+ * against consumption that is not the handler's -- the entries no processFrame() precedes, such
+ * as a frame live_scanner_process_synced_frames() finds undispatchable after a retune.
+ *
+ * Only the first sync stamps anything here, and it stamps UNPRODUCTIVE; every sync after it
+ * consumes a frame's worth with the field left exactly as it was. Without the clear that one
+ * verdict stands for the rest of the run, every later frame is refused its credit, and the
+ * profile that is decoding is rotated away from. */
+static void
+test_a_verdict_is_read_once_and_cleared(void) {
+    const HuntCase tc = {
+        .label = "one unproductive verdict, then unstamped frames",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 84,
+        .handler_symbols = 400,
+        .handler_unproductive = 1,
+        .stamp_verdict_syncs = 1,
         .symbol_budget = 60000,
         .expect_step = 0,
     };
@@ -454,6 +565,9 @@ main(void) {
     test_dense_false_syncs_do_not_starve_the_hunt();
     test_sub_frame_consumption_never_buys_dwell();
     test_consumed_frames_hold_the_profile();
+    test_unproductive_frames_never_buy_dwell();
+    test_a_confirming_transmission_holds_its_profile();
+    test_a_verdict_is_read_once_and_cleared();
     test_idle_rotation_period_is_unchanged();
     test_locked_modulation_rotates_within_equal_timing();
     test_budget_exit_runs_the_no_sync_hooks();

@@ -70,10 +70,18 @@ is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
 C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
 
-`DECODE_IQ_*_AUTO_HUNT` cases assert on an `SPS hunt:` rotation line rather than a decoded payload. The `dstar` (4 s)
-and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at 48 kHz), so under `-fa` they cannot be
-expected to decode; what they can prove is that the hunt is not pinned on its starting profile, which is the defect
-those cases cover.
+`DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
+decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
+48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its
+starting profile, which is the defect those cases cover.
+
+`DECODE_IQ_YSF_AUTO_HUNT` covers the opposite direction, the one issue #391 names: a handler that reports its frames
+validated nothing while decoding them rotates the hunt off live traffic. Every other fixture that exercises a
+protocol which reports a verdict pins its frame type (`-fy`, `-fh`, `-fn`, `-fi`, `-fz`), so the hunt is inactive in
+it. The `ysf` capture is 6 s — one full rotation — and decodes on the hunt's starting profile, so it can assert both
+halves: the payload still decodes under `-fa`, and no `SPS hunt: trying` line appears at all. Reporting every YSF
+frame unproductive drops the payload from 23 hits to 13 and steps the hunt to 20 sps partway through the capture.
+`dsd_neo_add_iq_decode_test` takes the "must be absent" regex as an optional fifth argument.
 
 Reject cases assert the opposite: that a fixture produces *no* decode. `dsd_neo_add_iq_reject_test` takes a
 `NOT_EXPECTED` regex alongside the usual `EXPECTED` one, so a run that printed nothing at all cannot pass by

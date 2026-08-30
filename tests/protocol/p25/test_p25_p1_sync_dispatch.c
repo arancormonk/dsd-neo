@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/io/control.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -25,7 +26,7 @@
 #include <string.h>
 
 int dsd_dispatch_matches_p25p1(int synctype);
-void dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state);
 
 static uint8_t g_test_duid = 0x3U;
 static int g_check_result = NID_OK;
@@ -302,7 +303,8 @@ test_p25p1_nid_correction_and_failure_state(void) {
     g_new_nac = 0x321;
     g_test_duid = 0x3U;
 
-    dsd_dispatch_handle_p25p1(&opts, &state);
+    /* A decoded NID is taken at its word: the BCH held, so the burst behind it counts. */
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
     assert(state.nid_corrections_total == 3U);
     assert(state.nid_parity_overrides == 1U);
@@ -317,7 +319,9 @@ test_p25p1_nid_correction_and_failure_state(void) {
     g_check_result = NID_DECODE_FAIL;
     g_test_duid = 0x5U;
 
-    dsd_dispatch_handle_p25p1(&opts, &state);
+    /* #391: the 63-bit BCH failed, the DUID is invalid and nothing is decoded past it, so
+     * the 33 dibits already read validated nothing. */
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
 
     assert(state.nid_failures_total == 1U);
     assert(state.debug_header_critical_errors == 1U);

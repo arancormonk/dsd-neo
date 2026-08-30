@@ -2154,6 +2154,7 @@ no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
     state->ysf_dt = 9;
     state->ysf_fi = 9;
     state->ysf_cm = 9;
+    state->ysf_fich_confirmed = 0;
 
     set_spaces(state->dstar_txt, 8);
     set_spaces(state->dstar_gps, 8);

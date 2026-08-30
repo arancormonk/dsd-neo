@@ -7641,6 +7641,36 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     )
 endif()
 
+# The tuned-trunk early-out must report the frame's real BCH verdict rather than the zero a
+# failed check returns (issue #391), so this drives edacs() itself over a synthetic control
+# frame with the dibit source wrapped.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_edacs_frame_verdict
+        protocol/edacs/test_edacs_frame_verdict.c
+    )
+    target_include_directories(
+        dsd-neo_test_edacs_frame_verdict
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/edacs
+    )
+    target_link_libraries(
+        dsd-neo_test_edacs_frame_verdict
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_link_options(
+        dsd-neo_test_edacs_frame_verdict
+        PRIVATE "-Wl,--wrap=get_dibit_and_analog_signal"
+    )
+    add_test(NAME EDACS_FRAME_VERDICT COMMAND dsd-neo_test_edacs_frame_verdict)
+endif()
+
 # Symbol .bin dibit→symbol mapping unit test
 add_executable(dsd-neo_test_symbol_bin_mapping dsp/test_symbol_bin_mapping.c)
 target_include_directories(
@@ -8984,15 +9014,21 @@ if(DSD_HAS_RADIO)
 
     # iq_decode_check.cmake enforces exit code 0 AND the payload regex AND the
     # absence of sanitizer reports; PASS_REGULAR_EXPRESSION alone would ignore
-    # the exit code and let a crash after the first payload match pass.
+    # the exit code and let a crash after the first payload match pass. An
+    # optional fifth argument adds a regex that must be *absent* as well, for
+    # cases where decoding the payload is only half the property.
     function(dsd_neo_add_iq_decode_test test_name fixture mode expected)
+        set(_not_expected_arg)
+        if(ARGC GREATER 4)
+            set(_not_expected_arg "-DNOT_EXPECTED=${ARGV4}")
+        endif()
         add_test(
             NAME ${test_name}
             COMMAND
                 ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
                 "-DMODE=${mode}"
                 "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/${fixture}.iq.json"
-                "-DEXPECTED=${expected}" -P
+                "-DEXPECTED=${expected}" ${_not_expected_arg} -P
                 "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
         )
         set_tests_properties(
@@ -9116,6 +9152,21 @@ if(DSD_HAS_RADIO)
         p25p2_cc
         "-fa -v 3"
         "SPS hunt: trying 20 sps"
+    )
+
+    # The other direction, which is the one issue #391 warns about: a handler that reports
+    # its frames validated nothing while decoding them rotates the hunt off live traffic.
+    # Every other fixture that exercises a newly-reporting protocol pins its frame type, so
+    # the hunt is inactive in it. The ysf capture is 6 s -- one full rotation -- and decodes
+    # on the hunt's starting profile, so under -fa the payload must still decode and the
+    # hunt must never step. Reporting every YSF frame unproductive drops the payload from 23
+    # hits to 13 and steps the hunt to 20 sps partway through the capture.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_YSF_AUTO_HUNT
+        ysf
+        -fa
+        "V/D2 RID Mode Repeater CC"
+        "SPS hunt: trying"
     )
 
     # Open-squelch receiver noise, with no signal in it at all. NXDN's 10-symbol sync word

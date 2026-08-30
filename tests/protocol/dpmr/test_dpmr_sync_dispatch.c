@@ -15,12 +15,13 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 int dsd_dispatch_matches_dpmr(int synctype);
-void dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state);
 
 static int g_close_calls;
 static int g_open_calls;

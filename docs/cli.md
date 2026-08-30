@@ -312,8 +312,13 @@ Notes
   zero, because a decoded frame costs hundreds of symbols and the next sync follows within a few. Credit is counted per
   sync, and only once a handler reaches a frame's worth of symbols, so a matcher that recognises a marker and bails --
   the permissive 4800/4 matchers produce these on signals belonging to another profile -- buys nothing however often it
-  fires, and the dwell does not depend on that cadence. A handler that does swallow a frame's worth on a sync no CRC
-  would accept still delays the hunt, in proportion to the symbols it took; frame sync cannot see a CRC verdict.
+  fires, and the dwell does not depend on that cadence. Frame sync also sees a verdict where the protocol produces one:
+  a YSF frame before the transmission's first FICH CRC has held, a failed EDACS BCH, a failed D-STAR header CRC, a
+  failed P25 Phase 1 NID, and an NXDN frame whose transmission has not yet passed a CRC all buy no dwell however many
+  symbols they consumed. Handlers that report no verdict are credited as before, and they are the majority: every DMR,
+  M17, P25 Phase 2, dPMR and X2-TDMA frame is unconditionally productive, as is every D-STAR voice and ProVoice frame,
+  which have no check at any point. A false match on any of them still delays the hunt in proportion to what it
+  swallows -- 1992 symbols for D-STAR voice and 736 for ProVoice, the two worst cases.
 - NXDN announces nothing until a frame's content checks out. Its 10-symbol sync word and one-parity-bit LICH are weak
   enough that receiver noise clears both, so a frame that reaches the protocol layer does not by itself refresh the
   scan hold, synthesize voice, publish a RAN, or open a call record. One CRC of 12 bits or more (FACCH, CAC, UDCH,

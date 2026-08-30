@@ -13,11 +13,12 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/edacs/edacs.h>
 #include <stdio.h>
 
 int dsd_dispatch_matches_edacs(int synctype);
-void dsd_dispatch_handle_edacs(dsd_opts* opts, dsd_state* state);
+dsd_frame_verdict dsd_dispatch_handle_edacs(dsd_opts* opts, dsd_state* state);
 
 static int close_calls;
 static int edacs_calls;
@@ -35,11 +36,15 @@ closeMbeOutFile(dsd_opts* opts, dsd_state* state) {
     opts->mbe_out_f = NULL;
 }
 
-void
+/* The stubbed BCH verdict dsd_dispatch_handle_edacs() must pass through. */
+static int edacs_decoded = 1;
+
+int
 edacs(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     edacs_calls++;
+    return edacs_decoded;
 }
 
 void
@@ -81,7 +86,7 @@ test_edacs_dispatch_closes_mbe_output(void) {
 
     opts.mbe_out_f = stdout;
 
-    dsd_dispatch_handle_edacs(&opts, &state);
+    assert(dsd_dispatch_handle_edacs(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
     assert(close_calls == 1);
     assert(edacs_calls == 1);
@@ -96,10 +101,27 @@ test_edacs_dispatch_without_mbe_output(void) {
     DSD_MEMSET(&state, 0, sizeof(state));
     reset_calls();
 
-    dsd_dispatch_handle_edacs(&opts, &state);
+    assert(dsd_dispatch_handle_edacs(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
     assert(close_calls == 0);
     assert(edacs_calls == 1);
+}
+
+/* #391: edacs() answers zero on the BCH failure and on the trunk_is_tuned early-out alike.
+ * Either way the 240 dibits are already gone, so the handler must refuse them the dwell. */
+static void
+test_failed_bch_reports_unproductive(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+
+    edacs_decoded = 0;
+
+    assert(dsd_dispatch_handle_edacs(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(edacs_calls == 1);
+    edacs_decoded = 1;
 }
 
 int
@@ -108,6 +130,7 @@ main(void) {
     test_synctype_helpers();
     test_edacs_dispatch_closes_mbe_output();
     test_edacs_dispatch_without_mbe_output();
+    test_failed_bch_reports_unproductive();
     printf("EDACS_SYNC_DISPATCH: OK\n");
     return 0;
 }

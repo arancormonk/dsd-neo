@@ -41,6 +41,8 @@ static int telemetry_active;
 static int watchdog_history_calls;
 static int watchdog_current_calls;
 static int header_decode_soft_calls;
+/* What the stubbed header CRC reports; processDSTAR_HD() must hand it straight back. */
+static int header_decode_soft_result = 1;
 static uint8_t captured_slow_data[DSTAR_EXPECTED_SLOW_DIBITS];
 static char captured_ambe_frame[4][24];
 static float captured_soft_symbols[DSD_DSTAR_HEADER_CODED_BITS];
@@ -153,12 +155,13 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
     watchdog_current_calls++;
 }
 
-void
+int
 dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
     (void)state;
     assert(soft_symbols != NULL);
     DSD_MEMCPY(captured_soft_symbols, soft_symbols, sizeof(captured_soft_symbols));
     header_decode_soft_calls++;
+    return header_decode_soft_result;
 }
 
 static void
@@ -235,7 +238,8 @@ test_header_process_captures_header_then_voice(void) {
     opts.pulse_digi_out_channels = 1;
     reset_counters();
 
-    processDSTAR_HD(&opts, &state);
+    header_decode_soft_result = 1;
+    assert(processDSTAR_HD(&opts, &state) == 1);
 
     assert(soft_symbol_calls == DSD_DSTAR_HEADER_CODED_BITS);
     assert(header_decode_soft_calls == 1);
@@ -244,11 +248,34 @@ test_header_process_captures_header_then_voice(void) {
     assert_voice_loop_counts(0);
 }
 
+/* #391: the header CRC is the only verdict the D-STAR data path has, and processDSTAR_HD()
+ * must report it unchanged -- it decodes the voice frame behind a failed header either way,
+ * so the caller's only way to know those 1992 symbols validated nothing is this return. */
+static void
+test_header_process_reports_the_header_crc_verdict(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    reset_counters();
+
+    header_decode_soft_result = 0;
+    assert(processDSTAR_HD(&opts, &state) == 0);
+
+    assert(header_decode_soft_calls == 1);
+    /* The voice frame is consumed regardless: that is the point of reporting the failure. */
+    assert_voice_loop_counts(0);
+    header_decode_soft_result = 1;
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
     test_voice_process_with_telemetry_attached();
     test_header_process_captures_header_then_voice();
+    test_header_process_reports_the_header_crc_verdict();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }
