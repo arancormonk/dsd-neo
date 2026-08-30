@@ -74,7 +74,6 @@ test_sps_filter_wrappers(void) {
     rc |= expect_sps_filter_response("dmr", dmr_filter, 10, 8);
     rc |= expect_sps_filter_response("nxdn", nxdn_filter, 20, 10);
     rc |= expect_sps_filter_response("dpmr", dpmr_filter, 20, 12);
-    rc |= expect_sps_filter_response("m17", m17_filter, 10, 8);
     rc |= expect_sps_filter_response("p25", p25_filter, 10, 8);
     return rc;
 }

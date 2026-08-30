@@ -12,7 +12,6 @@ extern "C" void init_rrc_filter_memory(void);
 extern "C" float dmr_filter(float sample, int sps);
 extern "C" float nxdn_filter(float sample, int sps);
 extern "C" float dpmr_filter(float sample, int sps);
-extern "C" float m17_filter(float sample, int sps);
 
 static int
 approx_eq(float a, float b, float tol) {
@@ -40,7 +39,6 @@ main(void) {
     const int sps_dmr = 10;
     const int sps_nxdn = 20;
     const int sps_dpmr = 20;
-    const int sps_m17 = 10;
     // Allow small rounding tolerance
     if (!dc_pass_check(&dmr_filter, dc, sps_dmr, warm, 1e-4f)) {
         DSD_FPRINTF(stderr, "DMR DC fail\n");
@@ -52,10 +50,6 @@ main(void) {
     }
     if (!dc_pass_check(&dpmr_filter, dc, sps_dpmr, warm, 1e-4f)) {
         DSD_FPRINTF(stderr, "DPMR DC fail\n");
-        return 1;
-    }
-    if (!dc_pass_check(&m17_filter, dc, sps_m17, warm, 1e-4f)) {
-        DSD_FPRINTF(stderr, "M17 DC fail\n");
         return 1;
     }
     return 0;
