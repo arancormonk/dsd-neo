@@ -4,26 +4,26 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/audio.h>
+#include <dsd-neo/core/audio_filters.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/io/rigctl_client.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/shutdown.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "dsd-neo/core/safe_api.h"
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-prototypes"
-#endif
 
 static uint32_t g_stream_generation = 1;
 static int g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
@@ -115,7 +115,7 @@ pbf_f(dsd_state* state, float* input, int len) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-analog_gain_f(dsd_opts* opts, dsd_state* state, float* input, int len) {
+analog_gain_f(const dsd_opts* opts, dsd_state* state, float* input, int len) {
     (void)opts;
     (void)state;
     (void)input;
@@ -569,7 +569,3 @@ main(void) {
     dsd_rtl_stream_metrics_hook_symbol_cache_pending_reset();
     return 0;
 }
-
-#if defined(__GNUC__) && !defined(__cplusplus)
-#pragma GCC diagnostic pop
-#endif
