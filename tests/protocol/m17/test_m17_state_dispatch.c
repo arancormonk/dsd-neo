@@ -32,6 +32,7 @@
 #include "dsd-neo/protocol/m17/m17_parse.h"
 #include "dsd-neo/protocol/m17/m17_tables.h"
 #include "m17_algorithms.h"
+#include "m17_confirm.h"
 #include "m17_internal.h"
 #include "test_support.h"
 
@@ -975,6 +976,9 @@ test_stream_voice_replaces_foreign_active_call(void) {
     state->synctype = DSD_SYNC_M17_STR_POS;
     state->m17_str_dt = 2U;
     state->m17_can_en = -1;
+    /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
+     * holds the call and the audio back (#399). */
+    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     err |= expect_int("late-entry M17 voice dispatches",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
                       M17_STREAM_CLEAR_DISPATCHED);
@@ -1008,6 +1012,9 @@ test_stream_voice_3200_dispatch_routes_pair_audio_to_udp(void) {
     opts->audio_out_type = 8;
     state->m17_str_dt = 2U;
     state->m17_can_en = -1;
+    /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
+     * holds the call and the audio back (#399). */
+    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -1044,6 +1051,9 @@ test_stream_voice_1600_dispatch_routes_single_audio_to_udp(void) {
     opts->audio_out_type = 8;
     state->m17_str_dt = 3U;
     state->m17_can_en = -1;
+    /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
+     * holds the call and the audio back (#399). */
+    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -1078,6 +1088,9 @@ test_stream_voice_audio_gate_suppresses_udp_when_slot_disabled(void) {
     opts->audio_out_type = 8;
     state->m17_str_dt = 2U;
     state->m17_can_en = -1;
+    /* Over the air an LSF CRC clears before the first stream frame; without that the media gate
+     * holds the call and the audio back (#399). */
+    m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
     bytes_to_bits(payload_bytes, payload_bits, sizeof(payload_bytes));
 
     int err = 0;
@@ -2203,6 +2216,87 @@ test_ip_decoder_propagates_udp_backend_failure(void) {
     return err;
 }
 
+/* An M17 preamble is only an alternating symbol run, so the frame body has to prove itself
+ * before the decoder publishes identity or plays audio (issue #399). */
+static int
+test_lsf_crc_confirms_the_transmission(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    const uint16_t type_word = m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U);
+    build_lsf_bits(lsf_bits, dst, src, type_word, NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    opts->aggressive_framesync = 1;
+
+    int err = 0;
+    err |= expect_int("a fresh transmission has proved nothing", m17_confirm_is_confirmed(state), 0);
+
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("a failing LSF CRC reports an error", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_int("a failing LSF CRC confirms nothing", m17_confirm_is_confirmed(state), 0);
+
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("a passing LSF CRC reports no error", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    err |= expect_int("a passing LSF CRC confirms the transmission", m17_confirm_is_confirmed(state), 1);
+
+    m17_confirm_reset(state);
+    err |= expect_int("reset forgets the transmission", m17_confirm_is_confirmed(state), 0);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+static int
+test_unconfirmed_stream_publishes_no_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
+    dsd_call_snapshot call;
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(payload_bits, 0, sizeof(payload_bits));
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    state->m17_str_dt = 2U;
+    state->m17_can_en = -1;
+
+    /* A stream frame whose LICH happened to clear, on a transmission that has proved nothing:
+     * this is what a false preamble chain looks like, and it must stay silent. */
+    int err = 0;
+    err |= expect_int("an unconfirmed stream still dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("an unconfirmed stream publishes no call", get_m17_call(state, &call), 0);
+
+    /* One clean LICH is not proof; two frames running are. */
+    m17_confirm_begin_frame(state);
+    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_end_frame(state);
+    err |= expect_int("one clean LICH does not open a call",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("one clean LICH publishes no call", get_m17_call(state, &call), 0);
+
+    m17_confirm_begin_frame(state);
+    m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
+    m17_confirm_end_frame(state);
+    err |= expect_int("a confirmed stream dispatches",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    err |= expect_int("a confirmed stream publishes a call", get_m17_call(state, &call), 1);
+    err |= expect_u8("a confirmed stream marks media", call.media_active, 1U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 int
 main(void) {
     int err = 0;
@@ -2221,6 +2315,8 @@ main(void) {
     err |= test_stream_signature_out_of_order_marks_sequence_error();
     err |= test_clear_signed_payload_updates_digest_and_dispatches();
     err |= test_stream_voice_replaces_foreign_active_call();
+    err |= test_lsf_crc_confirms_the_transmission();
+    err |= test_unconfirmed_stream_publishes_no_call();
 #ifdef USE_CODEC2
     err |= test_stream_voice_3200_dispatch_routes_pair_audio_to_udp();
     err |= test_stream_voice_1600_dispatch_routes_single_audio_to_udp();

@@ -18,6 +18,12 @@
 
 enum { M17_EOT_REMAINING_DIBITS = 184 };
 
+/** @brief Map a frame decoder's "did this validate anything" answer onto the hunt's verdict. */
+static dsd_frame_verdict
+m17_verdict(int validated) {
+    return validated != 0 ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
+}
+
 int
 dsd_dispatch_matches_m17(int synctype) {
     return DSD_SYNC_IS_M17(synctype);
@@ -26,9 +32,11 @@ dsd_dispatch_matches_m17(int synctype) {
 dsd_frame_verdict
 dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
     if (state->synctype == DSD_SYNC_M17_PRE_POS || state->synctype == DSD_SYNC_M17_PRE_NEG) {
-        /* 8 dibits is below DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS, which was calibrated against
-         * exactly this path (#388): the floor already refuses it credit, so a verdict here
-         * would be decoration. */
+        /* Frame sync no longer returns a bare preamble -- it latches a candidate and waits for
+         * the LSF or BRT that must follow (#399) -- so this branch is unreachable from the air.
+         * It stays for the symbol classifiers and for anything that replays a recorded synctype.
+         * 8 dibits is below DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS, so the floor refuses it credit
+         * either way (#388). */
         skipDibit(opts, state, 8);
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
@@ -53,30 +61,27 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         state->m17_bert_errors = 0;
         state->m17_bert_resyncs = 0;
         state->lastsynctype = DSD_SYNC_NONE;
-        /* The marker itself is the decode, so the SPS hunt is told the same thing the call
-         * state was told above (#391). frame_sync_try_m17_eot() only matches an EOT whose
-         * lastsynctype is an M17 LSF, STR, PKT or BRT sync, so it cannot fire on cold noise
-         * the way the permissive preamble matcher can, and clearing lastsynctype here means
-         * it fires at most once per transmission. The 184 dibits behind it are discarded,
-         * but they are the rest of a frame this profile really was carrying. */
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        /* An EOT can only be reached from an LSF, STR, PKT or BRT sync, so it inherits whatever
+         * that chain proved: a transmission that cleared a CRC really did end here, and one that
+         * never proved anything ends a chain of false syncs. Report the transmission's own
+         * verdict, then forget it -- the next carrier proves itself again (#399). */
+        const dsd_frame_verdict eot_verdict =
+            m17_confirm_is_confirmed(state) ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
+        m17_confirm_reset(state);
+        return eot_verdict;
     }
 
     if (state->synctype == DSD_SYNC_M17_LSF_POS || state->synctype == DSD_SYNC_M17_LSF_NEG) {
-        processM17LSF(opts, state);
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        return m17_verdict(processM17LSF(opts, state));
     }
 
     if (state->synctype == DSD_SYNC_M17_BRT_POS || state->synctype == DSD_SYNC_M17_BRT_NEG) {
-        processM17BRT(opts, state);
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        return m17_verdict(processM17BRT(opts, state));
     }
 
     if (state->synctype == DSD_SYNC_M17_PKT_POS || state->synctype == DSD_SYNC_M17_PKT_NEG) {
-        processM17PKT(opts, state);
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        return m17_verdict(processM17PKT(opts, state));
     }
 
-    processM17STR(opts, state);
-    return DSD_FRAME_VERDICT_PRODUCTIVE;
+    return m17_verdict(processM17STR(opts, state));
 }
