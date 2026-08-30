@@ -38,6 +38,24 @@ reset_calls(void) {
     brt_calls = 0;
 }
 
+/* What the stubbed frame decoders report back: 1 = validated something, 0 = proved nothing. */
+static int g_frame_validated = 1;
+static int g_confirmed = 1;
+static int confirm_reset_calls;
+
+void
+m17_confirm_reset(dsd_state* state) {
+    (void)state;
+    confirm_reset_calls++;
+    g_confirmed = 0;
+}
+
+int
+m17_confirm_is_confirmed(const dsd_state* state) {
+    (void)state;
+    return g_confirmed;
+}
+
 void
 skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     (void)opts;
@@ -46,32 +64,36 @@ skipDibit(dsd_opts* opts, dsd_state* state, int count) {
     skipped_dibits += count;
 }
 
-void
+int
 processM17LSF(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     lsf_calls++;
+    return g_frame_validated;
 }
 
-void
+int
 processM17PKT(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     pkt_calls++;
+    return g_frame_validated;
 }
 
-void
+int
 processM17STR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     str_calls++;
+    return g_frame_validated;
 }
 
-void
+int
 processM17BRT(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     brt_calls++;
+    return g_frame_validated;
 }
 
 static void

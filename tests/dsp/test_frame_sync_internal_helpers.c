@@ -951,54 +951,127 @@ test_locked_p25p2_c4fm_survives_sync(void) {
     assert(state.rf_mod == 0);
 }
 
+/* A preamble is only a candidate once it has run for DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS windows,
+ * so a single marker proves nothing to the matcher. Feed it the run a real one supplies. */
 static void
-test_m17_auto_preamble_disambiguation_preserves_forced_tolerance(void) {
+feed_m17_preamble_run(dsd_opts* opts, dsd_state* state, const char* marker) {
+    for (int i = 0; i < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS; i++) {
+        assert(dsd_frame_sync_test_try_protocol_matches(opts, state, marker, 8) == DSD_SYNC_NONE);
+    }
+}
+
+/* A preamble is an alternating symbol run, which any 4800-baud signal can present, so it is
+ * latched as a candidate rather than returned as a sync; the sync word that must follow it is
+ * what the decoder acts on (#399). */
+static void
+test_m17_candidate_chains_to_lsf_under_auto(void) {
     static dsd_opts opts;
     static dsd_state state;
     char one_error_preamble[9];
     DSD_MEMCPY(one_error_preamble, M17_PRE, sizeof(one_error_preamble));
     one_error_preamble[0] = one_error_preamble[0] == '1' ? '3' : '1';
 
+    /* The full AUTO candidate set -- the configuration that used to reject every real M17
+     * preamble on the air while accepting D-STAR's bit sync. */
     reset(&opts, &state);
     opts.frame_m17 = 1;
-    state.sps_hunt_idx = 0;
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_ysf = 1;
+    opts.frame_dstar = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.min = -3.0f;
     state.max = 3.0f;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, one_error_preamble, 8) == DSD_SYNC_M17_PRE_POS);
+
+    feed_m17_preamble_run(&opts, &state, one_error_preamble);
+    assert(state.m17_pre_candidate == 1);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
+    assert(state.m17_pre_candidate == 0);
+    assert(state.m17_polarity == 1);
+
+    /* An inverted run carries its LSF as the stream pattern. */
+    reset(&opts, &state);
+    opts.frame_m17 = 1;
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    opts.frame_nxdn96 = 1;
+    opts.frame_ysf = 1;
+    opts.frame_dstar = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    feed_m17_preamble_run(&opts, &state, M17_PIV);
+    assert(state.m17_pre_candidate == 2);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_STR, 8) == DSD_SYNC_M17_LSF_NEG);
+    assert(state.m17_polarity == 2);
+
+    /* A BERT frame confirms a candidate too. */
+    reset(&opts, &state);
+    opts.frame_m17 = 1;
+    opts.frame_dmr = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    feed_m17_preamble_run(&opts, &state, M17_PRE);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_BRT, 8) == DSD_SYNC_M17_BRT_POS);
+}
+
+/* The candidate is only good for the sync word that should arrive right behind the preamble
+ * run; left standing it would let an unrelated window minutes later open an M17 frame. */
+static void
+test_m17_candidate_expires_without_a_following_sync(void) {
+    static const char neutral_window[] = "00000000";
+    static dsd_opts opts;
+    static dsd_state state;
 
     reset(&opts, &state);
     opts.frame_m17 = 1;
     opts.frame_dmr = 1;
-    opts.frame_nxdn96 = 1;
-    state.sps_hunt_idx = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state.min = -3.0f;
     state.max = 3.0f;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, one_error_preamble, 8) == DSD_SYNC_NONE);
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_PRE, 8) == DSD_SYNC_M17_PRE_POS);
+
+    feed_m17_preamble_run(&opts, &state, M17_PRE);
+    assert(state.m17_pre_candidate == 1);
+    for (int i = 0; i < DSD_FRAME_SYNC_M17_CANDIDATE_TTL; i++) {
+        assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, neutral_window, 8) == DSD_SYNC_NONE);
+    }
+    assert(state.m17_pre_candidate == 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
 }
 
 static void
 test_short_m17_window_estimates_levels_without_warm_start_history(void) {
     static dsd_opts opts;
     static dsd_state state;
-    float levels[8];
+    float preamble_levels[8];
+    float lsf_levels[8];
 
     reset(&opts, &state);
     opts.frame_m17 = 1;
     opts.msize = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     for (int i = 0; i < 8; i++) {
-        levels[i] = M17_PRE[i] == '3' ? -3.0f : 3.0f;
+        preamble_levels[i] = M17_PRE[i] == '3' ? -3.0f : 3.0f;
+        lsf_levels[i] = M17_LSF[i] == '3' ? -3.0f : 3.0f;
     }
 
     assert(state.symbol_history == NULL);
-    assert(dsd_frame_sync_test_eval_window(&opts, &state, M17_PRE, levels, 8) == DSD_SYNC_M17_PRE_POS);
+    /* The run is where M17's levels come from: an alternating pair of outer rails is the best
+     * reference the protocol offers, and the sync word behind it cannot be sliced without it. */
+    for (int i = 0; i < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS; i++) {
+        assert(dsd_frame_sync_test_eval_window(&opts, &state, M17_PRE, preamble_levels, 8) == DSD_SYNC_NONE);
+    }
     assert(fabsf(state.min - (-1.5f)) < 0.0001f);
     assert(fabsf(state.max - 1.5f) < 0.0001f);
+    assert(dsd_frame_sync_test_eval_window(&opts, &state, M17_LSF, lsf_levels, 8) == DSD_SYNC_M17_LSF_POS);
 }
 
+/* D-STAR's bit sync opens with an exact M17 marker and presents doubled alternating runs, which
+ * is what used to be accepted as an M17 preamble on captures containing no M17 at all. */
 static void
-test_m17_preamble_requires_context_when_dstar_is_enabled(void) {
+test_m17_alternating_runs_alone_are_never_a_sync(void) {
     static const char* const dstar_patterns[] = {DSTAR_SYNC, INV_DSTAR_SYNC, DSTAR_HD, INV_DSTAR_HD};
     static const char repeated_pre[] = M17_PRE M17_PRE;
     static const char repeated_piv[] = M17_PIV M17_PIV;
@@ -1017,17 +1090,21 @@ test_m17_preamble_requires_context_when_dstar_is_enabled(void) {
         }
     }
 
+    /* Doubling the marker proves nothing about it: a repeated alternating run is still an
+     * alternating run, so it stays a candidate and produces no sync of its own. */
     reset(&opts, &state);
     opts.frame_m17 = 1;
     opts.frame_dstar = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, repeated_pre, 16) == DSD_SYNC_M17_PRE_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, repeated_pre, 16) == DSD_SYNC_NONE);
+    assert(state.m17_pre_candidate == 0);
 
     reset(&opts, &state);
     opts.frame_m17 = 1;
     opts.frame_dstar = 1;
     state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, repeated_piv, 16) == DSD_SYNC_M17_PRE_NEG);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, repeated_piv, 16) == DSD_SYNC_NONE);
+    assert(state.m17_pre_candidate == 0);
 }
 
 static void
@@ -1807,9 +1884,10 @@ main(void) {
     test_symbol_replay_requires_explicit_nxdn_variant();
     test_manual_p25p2_c4fm_bypasses_profile_gating();
     test_locked_p25p2_c4fm_survives_sync();
-    test_m17_auto_preamble_disambiguation_preserves_forced_tolerance();
+    test_m17_candidate_chains_to_lsf_under_auto();
+    test_m17_candidate_expires_without_a_following_sync();
     test_short_m17_window_estimates_levels_without_warm_start_history();
-    test_m17_preamble_requires_context_when_dstar_is_enabled();
+    test_m17_alternating_runs_alone_are_never_a_sync();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();
     test_hamming_helpers_find_best_patterns();

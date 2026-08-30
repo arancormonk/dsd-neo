@@ -1852,6 +1852,12 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     state->rtl_fsk_sps_den = 0;
     state->rtl_fsk_sps_accum = 0;
     state->m17_polarity = 0;
+    /* The candidate and the evidence are both per-transmission: the next carrier proves itself
+     * again (issue #399). */
+    state->m17_pre_run = 0;
+    state->m17_pre_candidate = 0;
+    state->m17_pre_candidate_ttl = 0;
+    m17_confirm_reset(state);
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);

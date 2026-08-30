@@ -47,9 +47,12 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-/* An exact doubled M17 preamble: what AUTO accepts as a preamble marker, and the
- * shape an alternating bit-sync run on any other protocol presents. */
-#define FALSE_SYNC_MARKER M17_PRE M17_PRE
+/* An alternating run long enough to latch an M17 preamble candidate, followed by the link-setup
+ * marker that spends it: what AUTO accepts on a signal that is not M17, and the shape a bit-sync
+ * run on another protocol presents. A doubled marker alone no longer syncs -- that is the point
+ * of #399 -- so the run is what makes this a false sync the hunt has to reckon with. */
+#define FALSE_SYNC_PREAMBLE_RUN M17_PRE M17_PRE M17_PRE M17_PRE M17_PRE M17_PRE M17_PRE M17_PRE M17_PRE M17_PRE
+#define FALSE_SYNC_MARKER       FALSE_SYNC_PREAMBLE_RUN M17_LSF
 
 /* Symbol source: `gap` filler symbols, then the marker, repeating. A zero-length
  * marker makes the stream pure filler (the idle case). */
@@ -249,7 +252,7 @@ test_false_syncs_do_not_starve_the_hunt(void) {
         .label = "false syncs at 4800/4",
         .marker = FALSE_SYNC_MARKER,
         .marker_gap = 284,
-        .handler_symbols = 8, /* what an M17 preamble costs: dispatch_m17.c skipDibit(8) */
+        .handler_symbols = 8, /* a handler that recognised a marker and read no frame */
         .symbol_budget = 40000,
         .expect_step = 1,
     };
@@ -282,7 +285,7 @@ test_dense_false_syncs_do_not_starve_the_hunt(void) {
             .label = "dense false syncs at 4800/4",
             .marker = FALSE_SYNC_MARKER,
             .marker_gap = gaps[i],
-            .handler_symbols = 8, /* dispatch_m17.c skipDibit(8): a preamble, never a frame */
+            .handler_symbols = 8, /* a handler that recognised a marker and read no frame */
             .symbol_budget = 400000,
             .expect_step = 1,
         };

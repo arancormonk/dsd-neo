@@ -5986,6 +5986,17 @@ target_link_libraries(
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
 
 add_executable(
+    dsd-neo_test_m17_confirm
+    protocol/m17/test_m17_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/m17/m17_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_m17_confirm
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/m17
+)
+add_test(NAME M17_CONFIRM COMMAND dsd-neo_test_m17_confirm)
+
+add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
@@ -9152,6 +9163,18 @@ if(DSD_HAS_RADIO)
         p25p2_cc
         "-fa -v 3"
         "SPS hunt: trying 20 sps"
+    )
+
+    # Issue #399: M17's own profile is where AUTO starts, so no rotation is needed and none
+    # is missing -- AUTO used to sit on exactly the right profile and accept nothing, because
+    # the preamble rule wanted an exact repeated marker that real M17 never presents and a
+    # matched filter M17's own preset switches off ran over every payload. The capture must
+    # publish its identity under AUTO exactly as it does under -fz.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_M17_AUTO
+        m17
+        -fa
+        "SRC: N0CALL"
     )
 
     # The other direction, which is the one issue #391 warns about: a handler that reports

@@ -54,6 +54,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "m17_algorithms.h"
+#include "m17_confirm.h"
 #include "m17_internal.h"
 #include "m17_rrc_taps.h"
 
@@ -936,6 +937,12 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
     if (state->m17_str_dt != 2U && state->m17_str_dt != 3U) {
         return;
     }
+    if (!m17_confirm_is_confirmed(state)) {
+        /* Nothing in this transmission has cleared a CRC yet, so there is no reason to believe
+         * the callsign or the audio behind it. Opening a call here is what put invented M17
+         * identity on screen under AUTO (#399). */
+        return;
+    }
     dsd_call_snapshot call;
     if (!(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
           && DSD_SYNC_IS_M17(call.protocol))) {
@@ -949,6 +956,22 @@ m17_mark_stream_media(const dsd_opts* opts, dsd_state* state) {
     }
     (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
     dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+}
+
+/**
+ * @brief Whether a stream frame's payload may be turned into audio.
+ *
+ * Over the air, held behind the same evidence as the call record: an unconfirmed stream is an
+ * alternating run that reached the LICH, and playing it is the audible half of the false
+ * detection (#399). The UDP/IP path does not arrive by sync search and is not gated, and data
+ * and reserved stream types still print.
+ */
+static int
+m17_stream_payload_may_play(const dsd_state* state, int update_media) {
+    if (update_media == 0 || (state->m17_str_dt != 2U && state->m17_str_dt != 3U)) {
+        return 1;
+    }
+    return m17_confirm_is_confirmed(state);
 }
 
 static int
@@ -991,7 +1014,9 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
     if (update_media != 0) {
         m17_mark_stream_media(opts, state);
     }
-    M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
+    if (m17_stream_payload_may_play(state, update_media)) {
+        M17processStreamPayloadBits(opts, state, processed_payload, payload_frame_number);
+    }
     const int result = (state->m17_enc != 0U) ? M17_STREAM_ENCRYPTED_DISPATCHED : M17_STREAM_CLEAR_DISPATCHED;
     state->m17_payload_decrypted = old_payload_decrypted;
 
@@ -1119,7 +1144,7 @@ M17prepareStream(const dsd_opts* opts, dsd_state* state, const uint8_t* m17_bits
     }
 }
 
-void
+int
 processM17STR(dsd_opts* opts, dsd_state* state) {
 
     int i;
@@ -1135,6 +1160,8 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(m17_int_bits, 0, sizeof(m17_int_bits));
     DSD_MEMSET(m17_bits, 0, sizeof(m17_bits));
     DSD_MEMSET(lich_bits, 0, sizeof(lich_bits));
+
+    m17_confirm_begin_frame(state);
 
     //load dibits into dibit buffer
     for (i = 0; i < 184; i++) {
@@ -1167,12 +1194,18 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     lich_err = m17_process_lich(state, opts, lich_bits);
 
     if (lich_err == 0) {
+        /* Six Golay(24,12) blocks clearing at once is real evidence, but not proof: extended
+         * Golay accepts enough random words that a clean LICH still turns up on noise, so it
+         * has to repeat before the decoder acts on the stream (#399). */
+        m17_confirm_note_evidence(state, M17_EVIDENCE_WEAK);
         M17prepareStream(opts, state, m17_bits);
     }
+    m17_confirm_end_frame(state);
 
     //ending linebreak
     DSD_FPRINTF(stderr, "\n");
 
+    return (lich_err == 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
 } //end processM17STR
 
 static void
@@ -1322,7 +1355,7 @@ m17_process_bert_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     }
 }
 
-void
+int
 processM17BRT(dsd_opts* opts, dsd_state* state) {
     uint8_t m17_rnd_bits[M17_PAYLOAD_BITS];
     uint8_t m17_bits[M17_PAYLOAD_BITS];
@@ -1331,18 +1364,34 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(m17_bits, 0, sizeof(m17_bits));
     DSD_MEMSET(bert_bits, 0, sizeof(bert_bits));
 
+    m17_confirm_begin_frame(state);
     m17_read_payload_randomized_bits(opts, state, m17_rnd_bits);
     m17_payload_decode_bits(m17_rnd_bits, m17_bits);
     m17_decode_bert_payload_bits(m17_bits, bert_bits);
     m17_process_bert_payload(opts, state, bert_bits);
 
+    /* A BERT frame carries no CRC, so a PRBS9 lock is the only thing here that can tell a real
+     * test transmission from the alternating run that reaches this matcher on noise (#399). */
+    const int locked = (state != NULL && state->m17_bert_locked != 0U);
+    if (locked) {
+        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    }
+    m17_confirm_end_frame(state);
+
     DSD_FPRINTF(stderr, "\n");
+
+    return (locked || m17_confirm_is_confirmed(state)) ? 1 : 0;
 }
 
 int
 m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext) {
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
+
+    if (crc_err == 0) {
+        /* A CRC-16 over the link setup is proof the preamble that led here was real (#399). */
+        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    }
 
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
         M17decodeLSF(opts, state, crc_err == 0);
@@ -1366,10 +1415,10 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     return crc_err;
 }
 
-static void
+static int
 m17_decode_lsf_soft_bits(const dsd_opts* opts, dsd_state* state, const uint16_t* m17_soft_bits) {
     if (!state || !m17_soft_bits) {
-        return;
+        return 1;
     }
 
     uint16_t m17_depunc[M17_LSF_TYPE2_BITS];
@@ -1388,11 +1437,11 @@ m17_decode_lsf_soft_bits(const dsd_opts* opts, dsd_state* state, const uint16_t*
     DSD_UNPACK_ARRAY_TO_BITS(lsf_packed, state->m17_lsf, M17_LSF_BYTES);
 
     const uint16_t crc_ext = (uint16_t)((lsf_packed[M17_LSF_LSD_BYTES] << 8) + lsf_packed[M17_LSF_LSD_BYTES + 1]);
-    (void)m17_finalize_lsf_crc(opts, state, lsf_packed, crc_ext);
+    return m17_finalize_lsf_crc(opts, state, lsf_packed, crc_ext);
 }
 
 // Decode an RF LSF using captured soft symbols.
-void
+int
 processM17LSF(dsd_opts* opts, dsd_state* state) {
     float soft_symbols[M17_PAYLOAD_SYMBOLS];
     uint16_t m17_soft_bits[M17_PAYLOAD_BITS];
@@ -1400,11 +1449,16 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(soft_symbols, 0, sizeof(soft_symbols));
     DSD_MEMSET(m17_soft_bits, 0, sizeof(m17_soft_bits));
 
+    m17_confirm_begin_frame(state);
     m17_capture_soft_symbols(opts, state, soft_symbols);
     m17_soft_bits_from_symbols(soft_symbols, state, m17_soft_bits);
-    m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
+    const int crc_err = m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
+    m17_confirm_end_frame(state);
 
     DSD_FPRINTF(stderr, "\n");
+    /* The CRC is a check this frame actually ran; a transmission already proved by earlier
+     * content keeps its verdict while it fades (#419). */
+    return (crc_err == 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
 } //end processM17LSF
 
 static void
@@ -1419,7 +1473,7 @@ m17_monitor_encoded_lsf(const dsd_opts* opts, dsd_state* state, const uint8_t* m
     for (size_t i = 0U; i < M17_PAYLOAD_BITS; i++) {
         m17_soft_bits[i] = m17_bits[i] ? 0xFFFFU : 0U;
     }
-    m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
+    (void)m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
 }
 
 /* Decode the transmitted frame through the receive path for encoded-audio monitoring and state reporting. */
@@ -3060,6 +3114,11 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     const uint16_t crc_cmp = m17_crc16(state->m17_pkt, app_len);
     const uint16_t crc_ext = (uint16_t)(((uint16_t)state->m17_pkt[app_len] << 8U) | state->m17_pkt[app_len + 1U]);
 
+    if (crc_cmp == crc_ext) {
+        /* A CRC-16 over the reassembled packet is proof the chain that carried it was real. */
+        m17_confirm_note_evidence(state, M17_EVIDENCE_STRONG);
+    }
+
     if ((crc_cmp == crc_ext || opts->aggressive_framesync == 0) && app_len > 0U) {
         decodeM17PKT(opts, state, state->m17_pkt, app_len);
     }
@@ -3073,9 +3132,11 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     m17_end_packet_call(opts, state);
 }
 
-//WIP PKT decoder - soft symbol enhanced
-void
-processM17PKT(dsd_opts* opts, dsd_state* state) {
+/* Returns non-zero when the frame carried a packet chunk the decoder could use; the four
+ * rejections below are checks this frame ran and failed, which is what the SPS hunt wants to
+ * hear about (#419). */
+static int
+m17_process_packet_frame(dsd_opts* opts, dsd_state* state) {
 
     float soft_symbols[M17_PAYLOAD_SYMBOLS];    //Raw float symbol values for soft-decision Viterbi
     uint16_t m17_soft_bits[M17_PAYLOAD_BITS];   //368 soft costs (de-interleaved and de-scrambled)
@@ -3105,7 +3166,7 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
         state->m17_pbc_ct = 0;
         DSD_FPRINTF(stderr, "\n");
-        return;
+        return 0;
     }
 
     const int ptr = m17_pkt_ptr_clamped(state->m17_pbc_ct);
@@ -3114,7 +3175,7 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
         DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
         state->m17_pbc_ct = 0;
         DSD_FPRINTF(stderr, "\n");
-        return;
+        return 0;
     }
 
     uint16_t app_len = 0U;
@@ -3125,7 +3186,7 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
             DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
             state->m17_pbc_ct = 0;
             DSD_FPRINTF(stderr, "\n");
-            return;
+            return 0;
         }
         total_with_crc = ptr + counter;
     }
@@ -3144,7 +3205,7 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
             DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
             state->m17_pbc_ct = 0;
             DSD_FPRINTF(stderr, "\n");
-            return;
+            return 0;
         }
         state->m17_pbc_ct++;
     }
@@ -3152,6 +3213,16 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
     //ending linebreak
     DSD_FPRINTF(stderr, "\n");
 
+    return 1;
+}
+
+//WIP PKT decoder - soft symbol enhanced
+int
+processM17PKT(dsd_opts* opts, dsd_state* state) {
+    m17_confirm_begin_frame(state);
+    const int decoded = m17_process_packet_frame(opts, state);
+    m17_confirm_end_frame(state);
+    return (decoded != 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
 } //end processM17PKT
 
 static const uint8_t m17_ip_ackn[4] = {0x41, 0x43, 0x4B, 0x4E};

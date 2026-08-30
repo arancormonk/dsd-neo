@@ -18,7 +18,6 @@ extern "C" {
 float dmr_filter(float sample, int samples_per_symbol);
 float nxdn_filter(float sample, int samples_per_symbol);
 float dpmr_filter(float sample, int samples_per_symbol);
-float m17_filter(float sample, int samples_per_symbol);
 float p25_filter(float sample, int samples_per_symbol);
 void init_rrc_filter_memory(void);
 
