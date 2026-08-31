@@ -41,6 +41,22 @@ extern "C" {
  * when a check the protocol ran says the signal on this profile is the protocol -- the
  * profile has re-earned its dwell, whatever the frame cost to read.
  *
+ * WITHHELD answers a third question, and it is about the engine rather than the protocol:
+ * the sync was real and the handler never got to see it. Trunked DMR skips the MS
+ * bootstrap and MS data paths outright, and a frame the retune generation makes
+ * undispatchable skips processFrame() entirely -- so the search that found the sync is
+ * charged and nothing is ever consumed to pay it back, and the hunt rotates off a channel
+ * the engine had just deliberately tuned (#392). A withheld frame makes its own search
+ * cycle budget-neutral: the charge is refunded, no more. It is not credit, because the
+ * engine's reason for declining says nothing about whether this is the right profile.
+ *
+ * That neutrality has a bounded cost in the other direction: a stream of false DMR MS
+ * syncs under trunking accrues nothing, so it cannot reach a dwell either. It stays
+ * bounded because every other protocol's false syncs still charge -- their handlers run
+ * and report UNPRODUCTIVE -- and because the undispatchable case resolves with the retune
+ * that caused it. Report WITHHELD only where the engine declined by policy, never where a
+ * handler ran and found nothing.
+ *
  * The numeric values are load-bearing. src/dsp reads the verdict out of
  * dsd_state::sps_hunt_last_frame_verdict without this header (the DSP layer includes no
  * engine headers), so frame_sync_sps_hunt_note_handler_consumption() compares against
@@ -52,6 +68,7 @@ typedef enum {
     DSD_FRAME_VERDICT_PRODUCTIVE = 0,     /**< default: assume the handler decoded a frame */
     DSD_FRAME_VERDICT_UNPRODUCTIVE = 1,   /**< consumed symbols, validated nothing */
     DSD_FRAME_VERDICT_PROFILE_PROVEN = 2, /**< a check passed: the profile re-earns its dwell */
+    DSD_FRAME_VERDICT_WITHHELD = 3,       /**< the engine declined to dispatch: budget-neutral */
 } dsd_frame_verdict;
 
 typedef struct dsd_protocol_handler {

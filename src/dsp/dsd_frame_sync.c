@@ -3043,6 +3043,12 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
          * spending the same dwell, so its budget must survive. */
         state->sps_hunt_counter = 0;
         state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+        /* The refund snapshot belongs to the budget it was taken against. This helper can run
+         * after the snapshot has been stamped for the cycle in progress -- both adopt paths in
+         * frame_sync_ensure_enabled_sps_profile() do, immediately after
+         * frame_sync_sps_hunt_note_handler_consumption() -- so leaving it would let a withheld
+         * frame refund the incoming profile to a figure the outgoing one had. */
+        state->sps_hunt_counter_at_entry = 0;
     }
     frame_sync_normalize_profile_modulation(state, normalize_profile_modulation, profile_default_modulation);
 
@@ -3164,15 +3170,26 @@ frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) 
  * dwell, and one false proof buys exactly one dwell. Values are compared as literals because
  * the DSP layer includes no engine headers; anything this does not recognise is refused
  * credit, so an unhandled verdict degrades toward rotating rather than toward pinning.
+ *
+ * A withheld frame is measured by neither rule, because the engine declined to run the
+ * handler at all: trunked DMR skips the MS paths, and a frame the retune generation makes
+ * undispatchable skips processFrame(). Consumption is zero on both, so the credit path
+ * refuses the debit at its size floor and the search that found the sync stands charged --
+ * which is what rotated the hunt off channels the engine had just tuned (#392). The cycle is
+ * made neutral instead: the counter goes back to what it was when the cycle began. Not
+ * credit, because the reason for declining is about the engine's state and says nothing
+ * about the profile; and not a reserve, because a refund can only reach the value it
+ * started from.
  */
 static void
 frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
     /* DSD_FRAME_VERDICT_* (engine/protocol_dispatch.h): 0 productive, 1 unproductive,
-     * 2 profile proven. Kept in step by FRAME_SYNC_SPS_HUNT_FALSE_SYNC, which drives this
-     * through getFrameSync() with the enumerators themselves. */
+     * 2 profile proven, 3 withheld. Kept in step by FRAME_SYNC_SPS_HUNT_FALSE_SYNC, which
+     * drives this through getFrameSync() with the enumerators themselves. */
     const int verdict = state->sps_hunt_last_frame_verdict;
     const int proven = verdict == 2;
-    const int unproductive = verdict != 0 && !proven;
+    const int withheld = verdict == 3;
+    const int unproductive = verdict != 0 && !proven && !withheld;
     /* One verdict answers for one handler call. processFrame() already re-stamps the field
      * on every dispatch, so this is belt and braces for the entries no handler precedes --
      * a no-sync return, or a frame the retune generation made undispatchable -- where a
@@ -3206,6 +3223,21 @@ frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
          * jump guard above -- both of which exist to keep consumption honest -- have no say
          * in it. */
         state->sps_hunt_counter = 0;
+    } else if (withheld) {
+        /* Hand back this cycle's search and nothing else. Charging happens only inside
+         * frame_sync_advance_sync_window(), between the snapshot below being stamped and
+         * this read, so the snapshot is exactly what the counter held before the search
+         * that produced the withheld frame.
+         *
+         * Clamped rather than assigned, because the counter can legitimately be lower than
+         * the snapshot by now: a profile change, a retune, or a trunk-scan target switch
+         * inside dsd_trunk_scan_hook_tick() can zero it in between, and the last of those
+         * can even leave this stamp landing on a different target's budget. Every one of
+         * those is a reset this has no business undoing, so the refund is only ever allowed
+         * to lower the counter -- worst case it does nothing. */
+        if (state->sps_hunt_counter > state->sps_hunt_counter_at_entry) {
+            state->sps_hunt_counter = state->sps_hunt_counter_at_entry;
+        }
     } else if (!unproductive && consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
         /* dsd_state::sps_hunt_counter only ever counts up from zero, so this is exact.
          * Sites outside the hunt park a profile by zeroing it; the floor at zero means
@@ -3214,6 +3246,7 @@ frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
         state->sps_hunt_counter = (int)(consumed >= counter ? 0U : counter - consumed);
     }
     state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->sps_hunt_counter_at_entry = state->sps_hunt_counter;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -3227,6 +3260,16 @@ dsd_frame_sync_test_sps_hunt_note_handler_consumption(dsd_state* state) {
 static void
 frame_sync_sps_hunt_mark_return(dsd_state* state) {
     state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+}
+
+void
+dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->sps_hunt_counter = 0;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->sps_hunt_counter_at_entry = 0;
 }
 
 /**
@@ -3295,8 +3338,29 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     state->sps_hunt_counter = 0;
-    /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. */
+    /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. That is
+     * true whether or not the profile then rotates, and this is the only place the flag is
+     * cleared, so it must be cleared before the hold below returns -- a probe left active
+     * across a grant would pin rf_mod against the modulation votes for the whole call. */
     state->p25_p1_mod_probe_active = 0;
+
+    /* The hunt does not get to second-guess a channel the engine chose. On a trunked voice
+     * channel the profile came from the grant that tuned it, so rotating it is wrong however
+     * the budget reads: a call fading toward the noise floor credits less than the search
+     * between its syncs burns, and reaches the dwell while it is still decoding (#392).
+     *
+     * This holds the profile, not the channel, so it returns non-zero like any other dwell
+     * expiry. The caller owes the P25 SM the same no-sync accounting either way (#393) --
+     * VC no-sync pass, release check, no-carrier -- and that accounting is the only thing
+     * that gives a dead voice channel up when false syncs keep arriving often enough to
+     * stop the in-call timeout ever arming. Suppressing it here would leave nothing to drop
+     * trunk_is_tuned, which is the flag this reads: the hold would never end.
+     *
+     * Control channels are not tuned in this sense -- the CC tune path deliberately leaves
+     * the flag alone -- so the hunt still rotates and still probes there. */
+    if (opts->trunk_enable == 1 && opts->trunk_is_tuned == 1) {
+        return 1;
+    }
     const int preserve_modulation = opts->mod_cli_lock ? 1 : 0;
 
     /* Generic modulation locks retain their demodulator while rotating equal-timing protocol gates. A P25p2-specific

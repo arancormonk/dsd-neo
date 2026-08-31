@@ -272,6 +272,94 @@ test_ms_data_routes_to_ms_data(void) {
     assert(close_right_calls == 1);
 }
 
+/* #392: trunking declines the direct-mode paths, and a declined path reads no symbols. The
+ * SPS hunt refuses consumption credit below a frame's worth, so reporting these as productive
+ * left the search that found the sync charged with nothing ever paying it back -- and the
+ * hunt rotated the profile off a channel the control channel had just granted. They report
+ * WITHHELD so the cycle comes out neutral instead. */
+static void
+test_trunked_direct_mode_paths_report_withheld(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Stereo MS voice: the default shape, since initState() sets dmr_stereo. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(ms_bootstrap_calls == 0);
+
+    /* MS data. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_MS_DATA;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(ms_data_calls == 0);
+
+    /* Mono on a non-BS sync reaches the same gate through dmr_bootstrap_mono(). */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_mono = 1;
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_WITHHELD);
+    assert(ms_bootstrap_calls == 0);
+    assert(bs_bootstrap_calls == 0);
+}
+
+/* The other direction, which is what keeps the claim narrow: wherever a burst is actually
+ * read, the verdict is productive and the profile is paid for what it read. */
+static void
+test_dispatched_dmr_paths_stay_productive(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Untrunked MS voice and MS data both run their processors. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_stereo = 1;
+    state.synctype = DSD_SYNC_DMR_MS_VOICE;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(ms_bootstrap_calls == 1);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_stereo = 1;
+    state.synctype = DSD_SYNC_DMR_MS_DATA;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(ms_data_calls == 1);
+
+    /* Base-station voice is never gated: trunked systems carry their traffic on it. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_BS_VOICE_NEG;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(bs_bootstrap_calls == 1);
+
+    /* Nor is the data-sync path every other DMR burst takes. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_calls();
+    opts.dmr_stereo = 1;
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_BS_DATA_NEG;
+    assert(dsd_dispatch_handle_dmr(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    assert(data_sync_calls == 1);
+}
+
 static void
 test_rc_routes_to_rc_handler(void) {
     static dsd_opts opts;
@@ -335,6 +423,8 @@ main(void) {
     test_ms_data_routes_to_ms_data();
     test_rc_routes_to_rc_handler();
     test_bs_data_routes_to_data_sync();
+    test_trunked_direct_mode_paths_report_withheld();
+    test_dispatched_dmr_paths_stay_productive();
     printf("DMR_SYNC_DISPATCH: OK\n");
     return 0;
 }

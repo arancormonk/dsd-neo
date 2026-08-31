@@ -23,6 +23,7 @@
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -2423,6 +2424,13 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
             dsd_trunk_tuning_frame_is_dispatchable(dispatch_generation, engine_trunk_tuning_owner_active(opts));
         if (!frame_tune_generation || frame_dispatchable) {
             processFrame(opts, state);
+        } else {
+            /* A real sync the retune generation says is stale. Nothing consumes it, so
+             * without saying so the SPS hunt is charged for the search that found it and
+             * credited nothing -- and rotates the profile off the channel the retune was
+             * tuning to, mid-retune (#392). processFrame() is what normally stamps this
+             * field, so the skip has to stamp it itself. */
+            state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
         }
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);

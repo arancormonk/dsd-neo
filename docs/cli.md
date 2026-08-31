@@ -322,6 +322,19 @@ Notes
   Handlers that report no verdict are credited as before: every DMR, P25 Phase 2, dPMR and X2-TDMA frame is
   unconditionally productive, and a false match on one of those still delays the hunt in proportion to what it
   swallows.
+- A sync the decoder deliberately declines to process costs the profile nothing either way. Trunking skips the DMR
+  direct-mode paths outright, and any frame arriving while a retune is still in flight is dropped rather than
+  dispatched; neither reads a symbol, so neither can earn credit, and the search that found the sync used to stand
+  charged with nothing to pay it back -- enough, on a trunked system, to rotate the profile off a voice channel the
+  control channel had just granted. Those searches are now refunded, so the cycle comes out neutral. It is only ever
+  a refund of that one cycle, so a stream of false matches on a declined path still cannot hold a profile that is
+  finding nothing.
+- While the tuner is parked on a trunked voice channel, the hunt holds whatever profile the grant tuned it to and
+  does not rotate. The channel and its symbol rate were chosen deliberately, so a call fading toward the noise floor
+  -- crediting less than the search between its syncs burns -- keeps its timing instead of having it changed mid-call.
+  Giving the channel up is still hangtime's decision, unchanged: when the call ends the tuner returns to the control
+  channel and the hunt resumes there. Control channels are not held this way, so Auto still searches and still
+  converges on them.
 - D-STAR voice and ProVoice prove a transmission rather than a frame, because neither has a per-frame check worth the
   name. A D-STAR superframe spends 1992 symbols and a ProVoice frame 736, and the vocoder error counts both leave
   behind are soft corrections rather than a verdict. So a CRC-16/X.25 -- the D-STAR RF header, or the header
