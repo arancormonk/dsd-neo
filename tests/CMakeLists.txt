@@ -1032,6 +1032,29 @@ target_include_directories(
 )
 add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
 
+# Conformance of the CCH pipeline against external reference vectors. Unlike the
+# bridge test above this links the real FEC, so scrambler, interleave, Hamming and
+# CRC-7 are all checked against ground truth generated outside the tree.
+add_executable(
+    dsd-neo_test_dpmr_reference_vectors
+    protocol/dpmr/test_dpmr_reference_vectors.c
+    test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_reference_vectors
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr/fixtures
+)
+target_link_libraries(dsd-neo_test_dpmr_reference_vectors PRIVATE dsd-neo_fec)
+add_test(
+    NAME DPMR_REFERENCE_VECTORS
+    COMMAND dsd-neo_test_dpmr_reference_vectors
+)
+
 add_executable(
     dsd-neo_test_ysf_frame
     protocol/ysf/test_ysf_frame.c
@@ -8972,6 +8995,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_t3_move_release
     dsd-neo_test_dmr_talker_alias_header_len
     dsd-neo_test_dmr_talker_alias_utf16
+    dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse
     dsd-neo_test_m17_protocol_names
