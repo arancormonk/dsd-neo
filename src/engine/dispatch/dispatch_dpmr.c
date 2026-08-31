@@ -11,6 +11,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -43,14 +45,64 @@ dsd_dispatch_matches_dpmr(int synctype) {
 }
 
 /*
- * Always productive. FS1/FS3/FS4 consume nothing beyond the sync itself, and the FS2 voice path
- * (processdPMRvoice) has no *sound* verdict to report (#391). Checks do run there and their
- * results reach dsd_state -- dpmr_decode_cch_frames() leaves a CCH CRC-7 in CCHDataCrcOk and a
- * Hamming(12,8) verdict in CCHDataHammingOk -- but neither can carry a verdict: the CRC-7 fails
- * on every superframe of the committed dpmr fixture, the one capture in the tree that decodes,
- * and the Hamming fallback accepts most random data. Reporting either would rotate the hunt off
- * live traffic, which is the risk direction protocol_dispatch.h names. Left productive until
- * dPMR has an integrity check that works; that is #407, and a verdict here follows from it.
+ * How long a passing CCH CRC-7 vouches for the syncs that follow it, in symbols. Two seconds at
+ * 2400 symbols/s, which is 12 superframe parts. The same wall-clock span as
+ * P25P1_NID_EVIDENCE_WINDOW_SYMBOLS, deliberately not the same constant -- that one holds a
+ * 4800-baud profile and this one a 2400-baud profile, and neither should move because the other
+ * did. Wide enough to bridge the gaps a fading carrier leaves between CRC-clean parts, narrow
+ * enough that a channel which stops proving gives the profile up within a dwell.
+ */
+#define DPMR_CCH_EVIDENCE_WINDOW_SYMBOLS 4800U
+
+/*
+ * One FS2 voice frame, and what it proved.
+ *
+ * A CCH CRC-7 covers the 41 payload bits behind all six Hamming blocks, so a passing half means
+ * the half decoded -- one chance in 128 of happening on noise, against the 44% of noise
+ * superframes the old Hamming predicate accepted (#407). That is worth a proof: at 2400 baud
+ * nothing but dPMR produces one. A frame that decodes nothing still reports PROVEN while a
+ * recent one did, because a sync arriving where dPMR was decoding a moment ago is evidence
+ * about the profile even when this frame's bits were lost. Only real passes move the window,
+ * so it cannot ratchet.
+ */
+static dsd_frame_verdict
+dpmr_handle_voice_frame(dsd_opts* opts, dsd_state* state) {
+    DSD_FPRINTF(stderr, "dPMR Frame Sync 2 ");
+
+    state->nac = 0;
+
+    /* Only once something has decoded: a sync word on its own is not a call (#407). */
+    if (dpmr_confirm_is_confirmed(state)) {
+        dsd_call_observation observation = {
+            .protocol = state->synctype,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_VOICE,
+        };
+        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+            dsd_event_sync_slot(opts, state, 0U);
+        }
+    }
+
+    if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
+        openMbeOutFile(opts, state);
+    }
+    DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
+
+    if (processdPMRvoice(opts, state) > 0) {
+        state->dpmr_cch_evidence = 1;
+        state->dpmr_cch_evidence_symbolcnt = state->symbolcnt;
+        return DSD_FRAME_VERDICT_PROFILE_PROVEN;
+    }
+    if (state->dpmr_cch_evidence != 0
+        && (uint32_t)(state->symbolcnt - state->dpmr_cch_evidence_symbolcnt) < DPMR_CCH_EVIDENCE_WINDOW_SYMBOLS) {
+        return DSD_FRAME_VERDICT_PROFILE_PROVEN;
+    }
+    return DSD_FRAME_VERDICT_UNPRODUCTIVE;
+}
+
+/*
+ * FS1/FS3/FS4 consume nothing beyond the sync itself and run no check, so they stay productive:
+ * protocol_dispatch.h reserves UNPRODUCTIVE for a check that actually ran and actually failed.
  */
 dsd_frame_verdict
 dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
@@ -65,27 +117,7 @@ dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {
         }
     } else if ((state->synctype == DSD_SYNC_DPMR_FS2_POS) || (state->synctype == DSD_SYNC_DPMR_FS2_NEG)) {
         /* dPMR Frame Sync 2 */
-        DSD_FPRINTF(stderr, "dPMR Frame Sync 2 ");
-
-        state->nac = 0;
-
-        dsd_call_observation observation = {
-            .protocol = state->synctype,
-            .slot = 0U,
-            .kind = DSD_CALL_KIND_VOICE,
-        };
-        if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
-            dsd_event_sync_slot(opts, state, 0U);
-        }
-
-        if ((opts->mbe_out_dir[0] != 0) && (opts->mbe_out_f == NULL)) {
-            openMbeOutFile(opts, state);
-        }
-        DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
-        processdPMRvoice(opts, state);
-
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
-
+        return dpmr_handle_voice_frame(opts, state);
     } else if ((state->synctype == DSD_SYNC_DPMR_FS3_POS) || (state->synctype == DSD_SYNC_DPMR_FS3_NEG)) {
         /* dPMR Frame Sync 3 */
         dpmr_end_call(opts, state, DSD_CALL_END_TERMINATOR);

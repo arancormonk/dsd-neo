@@ -674,6 +674,19 @@ init_state_vendor_crypto_defaults(dsd_state* state) {
     keyring_dmr_tg_map_reset(state);
 }
 
+/* What the current dPMR transmission has proved: whether a CCH CRC-7 has passed on it at all,
+ * and how recently, for the identity gate and the SPS hunt respectively (#407). Cleared
+ * directly rather than through dpmr_confirm_reset(): core must not call into protocol
+ * modules. */
+static void
+init_state_dpmr_confirmation(dsd_state* state) {
+    state->dpmr_confirmed = 0;
+    state->dpmr_confirm_weak_streak = 0;
+    state->dpmr_confirm_frame_evidence = 0;
+    state->dpmr_cch_evidence = 0;
+    state->dpmr_cch_evidence_symbolcnt = 0;
+}
+
 static void
 init_state_protocol_defaults_a(dsd_state* state) {
     // Initialize P25 neighbor/candidate UI helpers
@@ -719,6 +732,7 @@ init_state_protocol_defaults_a(dsd_state* state) {
     state->payload_miN = 0;
 
     state->dpmr_color_code = -1;
+    init_state_dpmr_confirmation(state);
 
     state->payload_mi = 0;
     state->payload_miR = 0;

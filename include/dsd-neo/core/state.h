@@ -842,6 +842,25 @@ struct dsd_state {
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
 
+    /* dPMR frame-content confirmation (src/protocol/dpmr/dpmr_confirm.c). The 12-symbol
+     * FS2 word matches about one noise window in 2048, and what stood behind it was not a
+     * check: identity publishing accepted a CCH whose two leading Hamming(12,8) blocks
+     * merely reported correctable, which 44% of noise superframes do. Until a CCH half
+     * passes its CRC-7 the decoder publishes no identity, no call row and no voice.
+     * See issue #407.
+     * dpmr_confirmed: this transmission has produced a CRC-verified CCH.
+     * dpmr_confirm_weak_streak: consecutive frames carrying one passing half only.
+     * dpmr_confirm_frame_evidence: strongest dpmr_evidence seen since begin_frame(). */
+    uint8_t dpmr_confirmed;
+    uint8_t dpmr_confirm_weak_streak;
+    uint8_t dpmr_confirm_frame_evidence;
+
+    /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
+     * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,
+     * so a zeroed state reads as no evidence rather than evidence at symbol zero. */
+    int dpmr_cch_evidence;
+    uint32_t dpmr_cch_evidence_symbolcnt;
+
     //new audio filter structs
     LPFilter RCFilter;
     HPFilter HRCFilter;

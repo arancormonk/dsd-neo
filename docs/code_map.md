@@ -332,6 +332,16 @@ Private per-protocol modules worth knowing about:
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
+- `src/protocol/dpmr/dpmr_confirm.{c,h}` — the same shape for dPMR, gating both audio and the hunt (issue #407). The
+  check is the CCH CRC-7, which was there all along: it covers the 41 payload bits behind all six Hamming(12,8)
+  blocks, so a passing half means the half decoded. What it replaced was `dpmr_ids_are_strong()`, which accepted a
+  CCH whose two leading Hamming blocks merely reported correctable — 13 of 16 syndromes are, so it passed 44% of
+  noise superframes. One half passing is one chance in 128 and has to repeat; both halves in one frame is one in
+  16384 and confirms outright. `processdPMRvoice()` returns how many halves passed, `dsd_dispatch_handle_dpmr()`
+  maps that to `DSD_FRAME_VERDICT_PROFILE_PROVEN` (for two seconds after the last decode) or `UNPRODUCTIVE`, and the
+  engine clears both through the exported `dpmr_confirm_reset()` in `<dsd-neo/protocol/dpmr/dpmr.h>`.
+  `tests/protocol/dpmr/fixtures` holds the CCH reference vectors that prove the pipeline decodes correct dPMR, which
+  the off-air `dpmr` capture never established.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 

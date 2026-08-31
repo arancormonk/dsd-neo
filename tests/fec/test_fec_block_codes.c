@@ -29,6 +29,71 @@ arrays_equal_u8(const unsigned char* a, const unsigned char* b, size_t n) {
     return 1;
 }
 
+/* The codewords both Hamming tests below decode: one per code, data bits first. */
+static const unsigned char k_hamming_12_8_codeword[12] = {0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1};
+static const unsigned char k_hamming_13_9_codeword[13] = {1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0};
+static const unsigned char k_hamming_15_11_codeword[15] = {1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1};
+static const unsigned char k_hamming_16_11_4_codeword[16] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0};
+
+typedef bool (*hamming_decode_fn)(unsigned char*, unsigned char*, int);
+
+/* Decode a run of codewords in one call, with a single-bit error in the last of them.
+   Correction has to land in the codeword that carried the error: indexing the flip from
+   the head of the buffer instead corrupts codeword 0 and leaves the real error standing. */
+static int
+check_hamming_run(const char* label, hamming_decode_fn decode, const unsigned char* codeword, size_t code_len,
+                  size_t data_len, size_t error_position) {
+    enum { RUN = 3 };
+
+    unsigned char clean[RUN * 16];
+    unsigned char rx[RUN * 16];
+    unsigned char dec[RUN * 11];
+
+    for (size_t ic = 0; ic < (size_t)RUN; ic++) {
+        DSD_MEMCPY(&clean[ic * code_len], codeword, code_len);
+    }
+    DSD_MEMCPY(rx, clean, code_len * (size_t)RUN);
+    rx[((size_t)(RUN - 1) * code_len) + error_position] ^= 1;
+    DSD_MEMSET(dec, 0xFF, sizeof(dec));
+
+    if (decode(rx, dec, RUN) != true) {
+        DSD_FPRINTF(stderr, "%s: a single-bit error in the last codeword was not correctable\n", label);
+        return 1;
+    }
+    if (!arrays_equal_u8(rx, clean, code_len * (size_t)RUN)) {
+        DSD_FPRINTF(stderr, "%s: correction did not land in the codeword that carried the error\n", label);
+        return 1;
+    }
+    for (size_t ic = 0; ic < (size_t)RUN; ic++) {
+        if (!arrays_equal_u8(&dec[ic * data_len], codeword, data_len)) {
+            DSD_FPRINTF(stderr, "%s: codeword %zu decoded to the wrong data\n", label, ic);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Every caller in the tree decodes one codeword at a time, so the multi-codeword path
+   these four all advertise had never been exercised. */
+static int
+test_hamming_multi_codeword(void) {
+    InitAllFecFunction();
+
+    if (check_hamming_run("Hamming (12,8)", Hamming_12_8_decode, k_hamming_12_8_codeword, 12, 8, 5) != 0) {
+        return 1;
+    }
+    if (check_hamming_run("Hamming (13,9)", Hamming_13_9_decode, k_hamming_13_9_codeword, 13, 9, 4) != 0) {
+        return 1;
+    }
+    if (check_hamming_run("Hamming (15,11)", Hamming_15_11_decode, k_hamming_15_11_codeword, 15, 11, 10) != 0) {
+        return 1;
+    }
+    if (check_hamming_run("Hamming (16,11,4)", Hamming_16_11_4_decode, k_hamming_16_11_4_codeword, 16, 11, 9) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_hamming_codes(void) {
     InitAllFecFunction();
@@ -51,14 +116,13 @@ test_hamming_codes(void) {
 
     // Hamming (12,8)
     {
-        static const unsigned char codeword[12] = {0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1};
         static const unsigned char expected[8] = {0, 1, 0, 1, 1, 0, 1, 0};
         unsigned char rx[12], dec[8];
-        DSD_MEMCPY(rx, codeword, 12);
+        DSD_MEMCPY(rx, k_hamming_12_8_codeword, 12);
         assert(Hamming_12_8_decode(rx, dec, 1) == true);
         assert(memcmp(dec, expected, 8) == 0);
         // 1-bit error
-        DSD_MEMCPY(rx, codeword, 12);
+        DSD_MEMCPY(rx, k_hamming_12_8_codeword, 12);
         rx[5] ^= 1;
         DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_12_8_decode(rx, dec, 1) == true);
@@ -68,14 +132,13 @@ test_hamming_codes(void) {
 
     // Hamming (13,9)
     {
-        static const unsigned char codeword[13] = {1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0};
         static const unsigned char expected[9] = {1, 0, 1, 0, 1, 0, 1, 0, 1};
         unsigned char rx[13], dec[9];
-        DSD_MEMCPY(rx, codeword, 13);
+        DSD_MEMCPY(rx, k_hamming_13_9_codeword, 13);
         assert(Hamming_13_9_decode(rx, dec, 1) == true);
         assert(memcmp(dec, expected, 9) == 0);
         // 1-bit error
-        DSD_MEMCPY(rx, codeword, 13);
+        DSD_MEMCPY(rx, k_hamming_13_9_codeword, 13);
         rx[4] ^= 1;
         DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_13_9_decode(rx, dec, 1) == true);
@@ -85,14 +148,13 @@ test_hamming_codes(void) {
 
     // Hamming (15,11)
     {
-        static const unsigned char codeword[15] = {1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 1, 0, 1};
         static const unsigned char expected[11] = {1, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0};
         unsigned char rx[15], dec[11];
-        DSD_MEMCPY(rx, codeword, 15);
+        DSD_MEMCPY(rx, k_hamming_15_11_codeword, 15);
         assert(Hamming_15_11_decode(rx, dec, 1) == true);
         assert(memcmp(dec, expected, 11) == 0);
         // 1-bit error
-        DSD_MEMCPY(rx, codeword, 15);
+        DSD_MEMCPY(rx, k_hamming_15_11_codeword, 15);
         rx[10] ^= 1;
         DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_15_11_decode(rx, dec, 1) == true);
@@ -102,14 +164,13 @@ test_hamming_codes(void) {
 
     // Hamming (16,11,4)
     {
-        static const unsigned char codeword[16] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0};
         static const unsigned char expected[11] = {0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0};
         unsigned char rx[16], dec[11];
-        DSD_MEMCPY(rx, codeword, 16);
+        DSD_MEMCPY(rx, k_hamming_16_11_4_codeword, 16);
         assert(Hamming_16_11_4_decode(rx, dec, 1) == true);
         assert(memcmp(dec, expected, 11) == 0);
         // 1-bit error
-        DSD_MEMCPY(rx, codeword, 16);
+        DSD_MEMCPY(rx, k_hamming_16_11_4_codeword, 16);
         rx[15] ^= 1;
         DSD_MEMSET(dec, 0, sizeof(dec));
         assert(Hamming_16_11_4_decode(rx, dec, 1) == true);
@@ -267,6 +328,9 @@ test_rs28_zero_codewords(void) {
 int
 main(void) {
     if (test_hamming_codes() != 0) {
+        return 1;
+    }
+    if (test_hamming_multi_codeword() != 0) {
         return 1;
     }
     if (test_golay_qr() != 0) {

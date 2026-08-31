@@ -289,6 +289,12 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_protocol_dpmr
+  HEADERS_PUBLIC_PROTOCOL_DPMR
+  dsd-neo/protocol/dpmr/dpmr.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_runtime_cli
   HEADERS_PUBLIC_RUNTIME_CLI
   dsd-neo/runtime/cli.h
@@ -1006,14 +1012,30 @@ target_include_directories(
 add_test(NAME DPMR_SCRAMBLER COMMAND dsd-neo_test_dpmr_scrambler)
 
 add_executable(
+    dsd-neo_test_dpmr_confirm
+    protocol/dpmr/test_dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_confirm
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
+)
+add_test(NAME DPMR_CONFIRM COMMAND dsd-neo_test_dpmr_confirm)
+
+add_executable(
     dsd-neo_test_dpmr_sync_dispatch
     protocol/dpmr/test_dpmr_sync_dispatch.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_sync_dispatch
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
 add_test(NAME DPMR_SYNC_DISPATCH COMMAND dsd-neo_test_dpmr_sync_dispatch)
 
@@ -1021,6 +1043,7 @@ add_executable(
     dsd-neo_test_dpmr_voice_bridge
     protocol/dpmr/test_dpmr_voice_bridge.c
     test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
 )
@@ -1031,6 +1054,30 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
 )
 add_test(NAME DPMR_VOICE_BRIDGE COMMAND dsd-neo_test_dpmr_voice_bridge)
+
+# Conformance of the CCH pipeline against external reference vectors. Unlike the
+# bridge test above this links the real FEC, so scrambler, interleave, Hamming and
+# CRC-7 are all checked against ground truth generated outside the tree.
+add_executable(
+    dsd-neo_test_dpmr_reference_vectors
+    protocol/dpmr/test_dpmr_reference_vectors.c
+    test_support/call_state_stubs.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_data.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_voice.c
+)
+target_include_directories(
+    dsd-neo_test_dpmr_reference_vectors
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
+        ${CMAKE_CURRENT_SOURCE_DIR}/protocol/dpmr/fixtures
+)
+target_link_libraries(dsd-neo_test_dpmr_reference_vectors PRIVATE dsd-neo_fec)
+add_test(
+    NAME DPMR_REFERENCE_VECTORS
+    COMMAND dsd-neo_test_dpmr_reference_vectors
+)
 
 add_executable(
     dsd-neo_test_ysf_frame
@@ -8972,6 +9019,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_t3_move_release
     dsd-neo_test_dmr_talker_alias_header_len
     dsd-neo_test_dmr_talker_alias_utf16
+    dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
     dsd-neo_test_m17_lsf_parse
     dsd-neo_test_m17_protocol_names
@@ -9189,7 +9237,29 @@ if(DSD_HAS_RADIO)
     )
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
-    dsd_neo_add_iq_decode_test(DECODE_IQ_DPMR dpmr -fm "Src=1601621")
+    # dPMR modulated from the CCH reference vectors, the only dPMR signal in the tree
+    # whose content is known rather than guessed (#407). Every CCH CRC-7 in it passes,
+    # so this is what a working integrity check has to be validated against. The voice
+    # payload is filler, so the run reports audio errors; the CCH is what is asserted.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DPMR_SYNTH
+        dpmr_synth
+        -fm
+        "Src=7654321"
+    )
+    # The off-air dpmr capture, which carries no recoverable CCH: its Hamming syndromes
+    # sit at the random rate and its 4FSK eye is closed, so the Src=1601621 this case
+    # used to assert was dpmr_ids_are_strong()'s Hamming fallback firing on
+    # noise-equivalent bits, not a decode (#407). It still syncs, so it still exercises
+    # the matcher and the frame reader; what it pins now is that a frame which proves
+    # nothing publishes nothing.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_DPMR_MARGINAL
+        dpmr
+        -fm
+        "dPMR Frame Sync 2"
+        "Src=[0-9]"
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_YSF
@@ -9288,6 +9358,18 @@ if(DSD_HAS_RADIO)
         -fi
         "Total audio errors: 0"
         "RAN [0-9]"
+    )
+    # dPMR's 12-symbol FS2 word clears on noise about once a second, and what stood
+    # behind it accepted 44% of what followed, so this fixture used to publish invented
+    # talkgroups and source IDs and synthesize speech from them (issue #407). The CCH
+    # CRC-7 gate leaves the syncs -- they are the matcher's business -- and takes
+    # everything a listener would read as a transmission.
+    dsd_neo_add_iq_reject_test(
+        DECODE_IQ_NOISE_FLOOR_DPMR_REJECT
+        noise_floor
+        -fm
+        "Total audio errors: 0"
+        "Src=[0-9]"
     )
 
     # Restart safety: bootstrap + engine lifecycle twice inside one process, the
