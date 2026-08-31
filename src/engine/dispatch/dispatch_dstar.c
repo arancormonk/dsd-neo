@@ -28,14 +28,12 @@ dsd_dispatch_handle_dstar(dsd_opts* opts, dsd_state* state) {
 
     if (state->synctype == DSD_SYNC_DSTAR_VOICE_POS || state->synctype == DSD_SYNC_DSTAR_VOICE_NEG) {
         DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
-        processDSTAR(opts, state);
-        /* Productive by default, and this is the hole #391 measures. processDSTAR() spends
-         * 1992 symbols with no return value, no error accumulator and no frame-count check;
-         * it overwrites state->errs/errs2 21 times and reads them never, and its only CRC
-         * (dstar_slow_data.c) is consulted on the sd_bytes[0] == 0x55 branch alone, about 1
-         * match in 256 against noise. Nothing here can honestly say "unproductive", and a
-         * threshold invented on state->errs would be the guess this contract forbids. */
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        /* 1992 symbols, the largest block any handler consumes, on the profile where D-STAR
+         * is the only candidate. processDSTAR() reports whether this transmission has proved
+         * itself: a CRC-16/X.25 on the RF header or the slow-data header rebroadcast, or a
+         * second superframe behind its own exact sync word. Until one of those lands the
+         * symbols bought nothing, and the SPS hunt is told so (#421). */
+        return processDSTAR(opts, state) != 0 ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
     }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " DATA         ");

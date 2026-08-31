@@ -121,7 +121,8 @@ test_process_voice_integer_playback(void) {
     state.edacs_tuned_lcn = 4;
     reset_counters();
 
-    processProVoice(&opts, &state);
+    /* Unconfirmed on its own: one frame proves only that its own sync word matched (#421). */
+    assert(processProVoice(&opts, &state) == 0);
 
     assert(dibit_calls == PROVOICE_EXPECTED_TOTAL_DIBITS);
     assert(mbe_calls == 4);
@@ -144,7 +145,7 @@ test_process_voice_float_playback(void) {
     state.edacs_tuned_lcn = 6;
     reset_counters();
 
-    processProVoice(&opts, &state);
+    assert(processProVoice(&opts, &state) == 0);
 
     assert(dibit_calls == PROVOICE_EXPECTED_TOTAL_DIBITS);
     assert(mbe_calls == 4);
@@ -152,10 +153,40 @@ test_process_voice_float_playback(void) {
     assert(play_fm_calls == 4);
 }
 
+/* #421: nothing inside the 736 dibits can fail a check, so a lone frame buys the 9600/2
+ * profile nothing. Two in a row -- each behind its own exact 32-symbol sync word, which noise
+ * does not supply twice before the carrier drops -- confirm the transmission. */
+static void
+test_voice_process_confirms_on_the_second_frame(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+
+    reset_counters();
+    assert(processProVoice(&opts, &state) == 0);
+    assert(state.provoice_confirm_weak_streak == 1);
+
+    reset_counters();
+    assert(processProVoice(&opts, &state) == 1);
+    assert(state.provoice_confirmed == 1);
+
+    /* Sticky: a confirmed transmission stays productive. */
+    reset_counters();
+    assert(processProVoice(&opts, &state) == 1);
+
+    /* And it clears with the carrier. */
+    provoice_confirm_reset(&state);
+    assert(state.provoice_confirmed == 0);
+    assert(state.provoice_confirm_weak_streak == 0);
+}
+
 int
 main(void) {
     test_process_voice_integer_playback();
     test_process_voice_float_playback();
+    test_voice_process_confirms_on_the_second_frame();
     printf("PROVOICE_PROCESS: OK\n");
     return 0;
 }

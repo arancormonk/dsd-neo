@@ -36,6 +36,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_convolution.h>
@@ -43,6 +44,7 @@
 #include <dsd-neo/protocol/p25/p25_crypto.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/provoice/provoice.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -1858,6 +1860,9 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     state->m17_pre_candidate = 0;
     state->m17_pre_candidate_ttl = 0;
     m17_confirm_reset(state);
+    /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
+     * cannot span the dead channel that brought us here (issue #421). */
+    provoice_confirm_reset(state);
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);
@@ -2164,6 +2169,8 @@ no_carrier_reset_ysf_and_dstar_strings(dsd_state* state) {
 
     set_spaces(state->dstar_txt, 8);
     set_spaces(state->dstar_gps, 8);
+    /* Evidence is per-transmission: the next carrier proves itself again (issue #421). */
+    dstar_confirm_reset(state);
 }
 
 // `retuned` says whether this noCarrier() pass moved the receiver before reaching here. A call still

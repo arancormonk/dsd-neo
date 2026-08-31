@@ -16,15 +16,22 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_confirm.h"
 
 //simplified DSTAR
-void
+int
 processDSTAR(dsd_opts* opts, dsd_state* state) {
     uint8_t sd[480];
     DSD_MEMSET(sd, 0, sizeof(sd));
     int i, j;
     char ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+
+    /* The superframe sits behind an exact 24-symbol sync word, which is the only thing about
+     * it that can be checked from here; a CRC-16 in the slow data below may yet prove it
+     * outright. Weak on its own, so it has to repeat -- see dstar_confirm.h. */
+    dstar_confirm_begin_frame(state);
+    dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_WEAK);
 
     //20 voice and 19 slow data frames (20th is frame sync)
     for (j = 0; j < 21; j++) {
@@ -64,6 +71,9 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     }
 
     DSD_FPRINTF(stderr, "\n");
+
+    dstar_confirm_end_frame(state);
+    return dstar_confirm_is_confirmed(state);
 }
 
 int
@@ -78,6 +88,11 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     }
 
     const int header_ok = dstar_header_decode_soft(state, soft_symbols);
-    processDSTAR(opts, state);
+    if (header_ok) {
+        /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
+         * voice superframe below belongs to. */
+        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
+    }
+    (void)processDSTAR(opts, state);
     return header_ok;
 }

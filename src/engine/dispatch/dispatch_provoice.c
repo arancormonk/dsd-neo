@@ -21,12 +21,11 @@ dsd_dispatch_matches_provoice(int synctype) {
 }
 
 /*
- * Always productive, and this one is a known hole. processProVoice() spends 736 dibits per
- * call on the same 9600/2 profile EDACS uses, with no CRC, no FEC verdict and no error
- * return -- its only failure path fires when the dibit callback fails, never on bad data.
- * A false ProVoice match therefore still buys the profile 736 symbols of dwell. Closing it
- * needs a confidence module shaped like src/protocol/nxdn/nxdn_confirm.c, not a threshold
- * on a counter nothing computes (#391).
+ * 736 dibits per call on the same 9600/2 profile EDACS uses, and nothing inside them can
+ * fail a check: no CRC, no BCH, no parity, and IMBE correction counts that never report a
+ * bad frame. So processProVoice() reports the one thing that is checkable -- that a second
+ * frame arrived behind its own exact 32-symbol sync word -- and a lone false match buys the
+ * profile nothing, the way EDACS's BCH verdict beside it already does (#421).
  */
 dsd_frame_verdict
 dsd_dispatch_handle_provoice(dsd_opts* opts, dsd_state* state) {
@@ -34,6 +33,5 @@ dsd_dispatch_handle_provoice(dsd_opts* opts, dsd_state* state) {
         openMbeOutFile(opts, state);
     }
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
-    processProVoice(opts, state);
-    return DSD_FRAME_VERDICT_PRODUCTIVE;
+    return processProVoice(opts, state) != 0 ? DSD_FRAME_VERDICT_PRODUCTIVE : DSD_FRAME_VERDICT_UNPRODUCTIVE;
 }

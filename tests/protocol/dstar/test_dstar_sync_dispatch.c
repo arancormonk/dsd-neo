@@ -39,11 +39,15 @@ openMbeOutFile(dsd_opts* opts, dsd_state* state) {
     open_calls++;
 }
 
-void
+/* The stubbed confirmation verdict dsd_dispatch_handle_dstar() must pass through. */
+static int voice_confirm_result = 1;
+
+int
 processDSTAR(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     voice_calls++;
+    return voice_confirm_result;
 }
 
 /* The stubbed header CRC verdict dsd_dispatch_handle_dstar() must pass through. */
@@ -96,7 +100,9 @@ test_voice_dispatch(void) {
         DSD_SNPRINTF(opts.mbe_out_dir, sizeof(opts.mbe_out_dir), "%s", "out");
         state.synctype = voice_synctypes[i];
 
-        /* Voice stays productive: processDSTAR() has no verdict at any point (#391). */
+        /* A confirmed transmission is productive: the superframe decoded content that
+         * proved itself, so the 1992 symbols it took are earned (#421). */
+        voice_confirm_result = 1;
         assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
 
         assert(strcmp(state.fsubtype, " VOICE        ") == 0);
@@ -131,8 +137,35 @@ test_header_dispatch(void) {
     }
 }
 
+/* #421: until a D-STAR transmission proves itself -- a CRC-16/X.25 on the RF header or the
+ * slow-data header rebroadcast, or a second superframe behind its own exact sync word -- the
+ * 1992 symbols a voice superframe consumes validated nothing, and the SPS hunt must not pay
+ * for them. This is the hole #419 left open. */
+static void
+test_unconfirmed_voice_reports_unproductive(void) {
+    static const int voice_synctypes[] = {DSD_SYNC_DSTAR_VOICE_POS, DSD_SYNC_DSTAR_VOICE_NEG};
+
+    for (size_t i = 0; i < sizeof voice_synctypes / sizeof voice_synctypes[0]; i++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_calls();
+
+        state.synctype = voice_synctypes[i];
+        voice_confirm_result = 0;
+
+        assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+        assert(voice_calls == 1);
+        assert(header_calls == 0);
+    }
+    voice_confirm_result = 1;
+}
+
 /* #391: a header whose CRC-16/X.25 failed consumed 2652 symbols and validated none of them,
- * so the handler must say so rather than letting the SPS hunt pay for them. */
+ * so the handler must say so rather than letting the SPS hunt pay for them. A header opens a
+ * transmission, so it reports its own verdict even where the voice frame behind it confirms
+ * (#421). */
 static void
 test_failed_header_reports_unproductive(void) {
     static dsd_opts opts;
@@ -143,6 +176,7 @@ test_failed_header_reports_unproductive(void) {
 
     state.synctype = DSD_SYNC_DSTAR_HD_POS;
     header_decode_result = 0;
+    voice_confirm_result = 1;
 
     assert(dsd_dispatch_handle_dstar(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
     assert(header_calls == 1);
@@ -154,6 +188,7 @@ main(void) {
     test_sync_pattern_lengths();
     test_synctype_helpers();
     test_voice_dispatch();
+    test_unconfirmed_voice_reports_unproductive();
     test_header_dispatch();
     test_failed_header_reports_unproductive();
     printf("DSTAR_SYNC_DISPATCH: OK\n");

@@ -791,6 +791,12 @@ init_state_protocol_defaults_b(dsd_state* state) {
     //NXDN, when a new IV has arrived
     state->nxdn_new_iv = 0;
 
+    /* Cleared directly rather than through provoice_confirm_reset(): core must not call into
+     * protocol modules. */
+    state->provoice_confirmed = 0;
+    state->provoice_confirm_weak_streak = 0;
+    state->provoice_confirm_frame_evidence = 0;
+
     state->p25vc = 0;
     state->payload_miP = 0;
     state->payload_miN = 0;
@@ -1052,6 +1058,11 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     //DSTAR Call Strings
     set_spaces(state->dstar_txt, 8); //8 spaces
     set_spaces(state->dstar_gps, 8); //8 spaces
+    /* Cleared directly rather than through dstar_confirm_reset(): core must not call into
+     * protocol modules. */
+    state->dstar_confirmed = 0;
+    state->dstar_confirm_weak_streak = 0;
+    state->dstar_confirm_frame_evidence = 0;
 
     //M17 Storage
     DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
