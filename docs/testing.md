@@ -142,10 +142,10 @@ default. `noise_floor` is 10 s of synthetic complex Gaussian receiver noise (see
 `python3 tools/build_iq_fixtures.py --derived-only`) with no signal in it whatsoever. The `DECODE_IQ_NOISE_FLOOR_*`
 cases assert `Total audio errors: 0`, which is the count of vocoder frames the decoder synthesized: before issue
 \#398's confirmation gate this fixture produced 89 of them under `-fn` and 49 under `-fi`, decoded from nothing.
-They deliberately do not cover `-fa`, where dPMR still decodes noise.
+They deliberately do not cover `-fa`, where how far the hunt gets is schedule-dependent.
 
 There is no `-fa` hunt case on `noise_floor`, and the measurement behind that is worth recording. Issue #391's
-remaining set — DMR, P25 Phase 2, dPMR and X2-TDMA, the handlers that report no verdict — is bounded by arithmetic
+remaining set — DMR, P25 Phase 2 and X2-TDMA, the handlers that report no verdict — is bounded by arithmetic
 rather than by a verdict, so a replay assertion cannot see it. Under `-fa` the fixture completes six rotations in its
 10 s; defeating the verdict gate in `frame_sync_sps_hunt_note_handler_consumption()` gives five, and every individual
 `SPS hunt: trying` line still prints in both. Only the rotation *count* separates them, and how far the hunt gets is
@@ -154,14 +154,16 @@ where it can be stated exactly, in `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`
 (`test_no_verdict_handlers_still_rotate_at_the_noise_cadence`): a handler consuming a dPMR FS2 frame's 372 symbols on
 the default productive verdict still reaches its dwell at the cadence that matcher reaches on noise. Both bounds are
 mutation-checked — raising the consumption past half the period, or tightening the period below twice the
-consumption, pins the profile and fails the case.
+consumption, pins the profile and fails the case. dPMR itself has since left that set, and the two cases beside it
+cover what it does now: at the real 384-symbol frame cadence, which is inside the arithmetic's reach, a carrier whose
+CCH decodes nothing still rotates, and one whose CCH decodes on three frames in four holds.
 
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
-- **dPMR** has no working integrity check to reject noise with: its CCH CRC-7 fails even on the committed `dpmr`
-  fixture, and the Hamming(12,8) fallback that carries identity publishing accepts most random data. `noise_floor`
-  under `-fm` therefore still decodes.
+- **dPMR** decodes only what its CCH CRC-7 verifies (issue #407), so the `dpmr` off-air capture publishes nothing:
+  it carries no recoverable CCH, which is why the CRC was thought to be broken. `DECODE_IQ_DPMR_MARGINAL` pins that
+  it still syncs and still publishes no identity; `DECODE_IQ_DPMR_SYNTH` is the accept case.
 - **P25 Phase 2** asserts SACCH framing only. Full payload decode needs the
   system WACN/SYSID/CC via `-X`, which the public sample does not identify.
 - Fixtures are timing-insensitive by construction. Do not add assertions that

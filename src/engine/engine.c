@@ -37,6 +37,7 @@
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
@@ -2161,6 +2162,10 @@ static void
 no_carrier_reset_call_strings_and_dpmr(dsd_opts* opts, dsd_state* state) {
     opts->dPMR_next_part_of_superframe = 0;
     DSD_MEMSET(state->dPMRVoiceFS2Frame.Version, 0, 8);
+    /* Evidence is per-transmission: the next carrier proves itself again (issue #407). */
+    dpmr_confirm_reset(state);
+    state->dpmr_cch_evidence = 0;
+    state->dpmr_cch_evidence_symbolcnt = 0;
 }
 
 static void

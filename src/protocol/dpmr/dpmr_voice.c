@@ -36,6 +36,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dpmr_confirm.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -200,9 +201,29 @@ dpmr_ids_are_strong(const dpmr_superframe_part* part) {
            && (part->crc_ok[1] || (part->hamming_ok[1][0] && part->hamming_ok[1][1]));
 }
 
+/*
+ * Report what this frame's CCH CRC-7 proved. Both halves passing is one chance in 16384
+ * and confirms at once; one half is one in 128 and has to repeat. The Hamming flags are
+ * deliberately not evidence at any strength: the CRC covers the bits they produced.
+ */
+static void
+dpmr_note_cch_evidence(dsd_state* state, const dpmr_voice_ctx_t* ctx) {
+    const int passing = (ctx->CrcOk[0] != 0U ? 1 : 0) + (ctx->CrcOk[1] != 0U ? 1 : 0);
+    if (passing == 2) {
+        dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
+    } else if (passing == 1) {
+        dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_WEAK);
+    }
+}
+
 static void
 dpmr_publish_identity_fragment(dsd_state* state, uint32_t id_value, int target) {
     char identity[8];
+    if (!dpmr_confirm_is_confirmed(state)) {
+        /* Nothing has decoded on this transmission yet, so there is no identity here to
+         * publish -- only whatever the Hamming fallback made of the bits (#407). */
+        return;
+    }
     dpmr_convert_air_interface_id(id_value, identity);
     int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
     if (!DSD_SYNC_IS_DPMR(protocol)) {
@@ -324,6 +345,11 @@ dpmr_print_scrambler_state(const dsd_opts* opts, const dsd_state* state) {
 
 void
 dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
+    if (!dpmr_confirm_is_confirmed(state)) {
+        /* Service options, colour code and emergency all come out of a CCH that has not
+         * proved itself; publishing them would put a call row on the air alone (#407). */
+        return;
+    }
     dsd_call_observation observation = {
         .protocol = state->synctype,
         .slot = 0U,
@@ -393,7 +419,7 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
     }
 }
 
-void
+int
 processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_voice_ctx_t ctx;
     dpmr_superframe_part part;
@@ -412,15 +438,27 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_read_second_cch(opts, state, &ctx);
 
     dpmr_read_tch_group(opts, state, &ctx, 4);
+
+    /* Evidence is noted before anything is published, so the frame that completes a weak
+     * streak still publishes itself rather than waiting for the next one. */
+    dpmr_confirm_begin_frame(state);
     dpmr_decode_cch_frames(state, &ctx);
+    dpmr_note_cch_evidence(state, &ctx);
+
     dpmr_extract_superframe_part(&ctx, &part);
     dpmr_update_superframe_part(opts, state, &part);
     dpmr_print_ids(state);
     dpmr_print_scrambler_state(opts, state);
     dpmr_publish_call(opts, state);
-    dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
+    if (dpmr_confirm_is_confirmed(state)) {
+        dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
+    }
     DSD_FPRINTF(stderr, "\n");
 
+    dpmr_confirm_end_frame(state);
+
+    /* How many of the two CCH halves passed their CRC-7, for the caller's verdict. */
+    return (int)((ctx.CrcOk[0] != 0U ? 1U : 0U) + (ctx.CrcOk[1] != 0U ? 1U : 0U));
 } //End processdPMRvoice()
 
 /* Scrambler used for dPMR scrambling / descrambling,

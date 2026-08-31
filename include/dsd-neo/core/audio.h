@@ -26,8 +26,14 @@
 extern "C" {
 #endif
 
-/** @brief Process one block of dPMR voice through the decoder/synth path. */
-void processdPMRvoice(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Decode one dPMR FS2 superframe part: CCH, colour code and both TCH groups.
+ *
+ * @return How many of the two CCH halves passed their CRC-7 (0, 1 or 2). The caller turns
+ *         that into a frame verdict: a passing half is the only thing dPMR can offer the
+ *         SPS hunt as proof its profile is the right one (#407).
+ */
+int processdPMRvoice(dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 1). */
 void processAudio(const dsd_opts* opts, dsd_state* state);
 /** @brief Core audio processing entry point (slot 2 / right). */

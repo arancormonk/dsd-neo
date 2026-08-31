@@ -391,24 +391,83 @@ test_unproductive_frames_never_buy_dwell(void) {
     assert(r.symbols_at_step < dwell_symbols * 6);
 }
 
-/* #391's residual, and the bound on it. Four handlers report no verdict at any point -- DMR,
- * P25 Phase 2, dPMR and X2-TDMA -- so a false match on one is credited in full, as before.
- * What stops that pinning a profile is arithmetic rather than a verdict: the symbols a handler
- * eats are symbols the search never sees, so one cycle nets (period - 2 x consumption) onto the
+/* #391's residual, and the bound on it. Three handlers still report no verdict at any point --
+ * DMR, P25 Phase 2 and X2-TDMA -- so a false match on one is credited in full, as before. What
+ * stops that pinning a profile is arithmetic rather than a verdict: the symbols a handler eats
+ * are symbols the search never sees, so one cycle nets (period - 2 x consumption) onto the
  * budget, and only a cadence tighter than twice the block it swallows can hold the profile.
  *
- * dPMR is the worst case of the four, and the only one whose matcher fires on noise at all:
- * 372 symbols read before dpmr_decode_cch_frames() runs a check (src/protocol/dpmr/dpmr_voice.c)
- * behind a single 12-symbol pattern per polarity. That puts its cliff at one sync per 744
- * symbols and its rate on sign-sliced noise at 2/2^12, one per ~2048 -- and the margin between
- * those two numbers is the whole reason the residual is a delay rather than a hold. The other
- * three sit behind 20- and 24-symbol exact matchers that noise does not reach.
+ * dPMR used to be the fourth, and the only one of them whose matcher fires on noise at all:
+ * 372 symbols read behind a single 12-symbol pattern per polarity, a cliff at one sync per 744
+ * symbols against a noise rate of 2/2^12, one per ~2048. It reports verdicts since #407, so the
+ * set that depends on this arithmetic no longer contains anything noise reaches -- the other
+ * three sit behind 20- and 24-symbol exact matchers. The bound is kept, and still driven at
+ * dPMR's numbers, because it is the only case in reach of the cliff: were a future handler to
+ * consume a frame this large behind a matcher this short, this is what would have to hold.
+ * test_a_dpmr_frame_that_proves_nothing_rotates_promptly covers what dPMR does now.
  *
- * Both cadences below are the matcher's own. Anything denser is a carrier presenting FS2 on
- * schedule, which is a dPMR signal and is meant to hold the profile -- telling those apart
- * needs the integrity check dPMR does not have, tracked as #407. The hunt's arithmetic does
- * not vary by profile, so this drives it from the harness's 4800/4 start like every case here;
- * what is modelled is dPMR's consumption and cadence, not its profile. */
+ * The hunt's arithmetic does not vary by profile, so this drives it from the harness's 4800/4
+ * start like every case here; what is modelled is consumption and cadence, not a profile. */
+/* What dPMR does now that its CCH CRC-7 carries a verdict (#407), tested where it decides
+ * something. The case below bounds the sparse cadence, where consumption alone still lets
+ * the profile go; this is the dense one, where it does not. FS2 arriving every 384 symbols
+ * is inside the 744-symbol cliff, so on the default productive verdict a stream of frames
+ * consuming 372 symbols each pins the profile outright and never rotates -- the failure
+ * mode protocol_dispatch.h's arithmetic cannot reach.
+ *
+ * That is not hypothetical: it is the committed dpmr fixture, a carrier presenting FS2
+ * whose CCH decodes nothing. Reporting UNPRODUCTIVE refuses those frames the credit their
+ * consumption would buy, and the hunt moves on at the idle rate. */
+static void
+test_a_dpmr_carrier_that_decodes_nothing_still_rotates(void) {
+    static const int cycle[] = {DSD_FRAME_VERDICT_UNPRODUCTIVE};
+    const HuntCase tc = {
+        .label = "dPMR FS2 on schedule, reporting no decode",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 384 - 88, /* the real frame period, well inside the 744-symbol cliff */
+        .handler_symbols = 372, /* a dPMR FS2 frame, read in full before the check runs */
+        .verdict_cycle = cycle,
+        .verdict_cycle_len = 1,
+        .symbol_budget = 400000,
+        .expect_step = 1,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 0);
+    assert_auto_stepped_to_2400_4(&r);
+    /* At the idle rate: nothing here bought any dwell at all. */
+    const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    assert(r.symbols_at_step >= dwell_symbols);
+    assert(r.symbols_at_step < dwell_symbols * 2);
+}
+
+/* And the direction that matters more: a real dPMR carrier presents FS2 every 384 symbols
+ * with a CCH that decodes, so the profile has to hold. A CRC that passes on one frame in
+ * four still holds it, because a proof covers the two seconds after it (#407). */
+static void
+test_a_decoding_dpmr_carrier_holds_its_profile(void) {
+    static const int cycle[] = {
+        DSD_FRAME_VERDICT_PROFILE_PROVEN,
+        DSD_FRAME_VERDICT_PROFILE_PROVEN,
+        DSD_FRAME_VERDICT_PROFILE_PROVEN,
+        DSD_FRAME_VERDICT_UNPRODUCTIVE,
+    };
+    const HuntCase tc = {
+        .label = "a dPMR carrier decoding on schedule",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 384 - 88, /* FS2 every 384 symbols, the real frame period */
+        .handler_symbols = 372,
+        .verdict_cycle = cycle,
+        .verdict_cycle_len = 4,
+        .symbol_budget = 400000,
+        .expect_step = 0,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 0);
+    assert(r.stepped == 0);
+}
+
 static void
 test_no_verdict_handlers_still_rotate_at_the_noise_cadence(void) {
     /* The marker is part of the period, so these are the cadences less its 88 symbols. */
@@ -779,6 +838,8 @@ main(void) {
     test_sub_frame_consumption_never_buys_dwell();
     test_consumed_frames_hold_the_profile();
     test_unproductive_frames_never_buy_dwell();
+    test_a_dpmr_carrier_that_decodes_nothing_still_rotates();
+    test_a_decoding_dpmr_carrier_holds_its_profile();
     test_no_verdict_handlers_still_rotate_at_the_noise_cadence();
     test_a_confirming_transmission_holds_its_profile();
     test_a_proven_verdict_holds_the_profile_through_failure_runs();

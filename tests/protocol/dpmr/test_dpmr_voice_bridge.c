@@ -200,6 +200,8 @@ test_scrambler_secret_is_not_published_as_key_id(void) {
     state.R = 0x12345ULL;
     state.dPMRVoiceFS2Frame.Version[0] = 3U;
     state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    /* Redaction, not the gate: publishing at all needs a proved transmission (#407). */
+    state.dpmr_confirmed = 1;
     dpmr_publish_call(&opts, &state);
 
     dsd_call_snapshot call;
@@ -267,6 +269,10 @@ test_superframe_part_updates_called_and_calling_ids(void) {
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
+    /* Routing, not the gate: this case is about which identity each frame-number pair
+       carries, so give it a transmission that has already proved itself. The gate is
+       covered by test_unconfirmed_superframe_part_publishes_nothing below. */
+    state.dpmr_confirmed = 1;
     const dsd_call_observation begin = {
         .protocol = DSD_SYNC_DPMR_FS2_POS,
         .slot = 0U,
@@ -331,6 +337,34 @@ test_superframe_part_updates_called_and_calling_ids(void) {
     opts.dPMR_next_part_of_superframe = 0;
     dpmr_update_superframe_part(&opts, &state, &part);
     rc |= expect_int("unknown-keeps-zero-part", opts.dPMR_next_part_of_superframe, 0);
+    return rc;
+}
+
+/* Before #407 this published a talkgroup and a source: dpmr_ids_are_strong() accepts a
+   CCH whose two leading Hamming blocks merely report correctable, which 44% of noise
+   superframes do. Without a passing CRC-7 there is nothing here to publish. */
+static int
+test_unconfirmed_superframe_part_publishes_nothing(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dpmr_superframe_part part;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    part = (dpmr_superframe_part){.frame_number = {0U, 1U},
+                                  .id_value = 1464100U,
+                                  .crc_ok = {false, false},
+                                  .hamming_ok = {{true, true}, {true, true}}};
+    dpmr_update_superframe_part(&opts, &state, &part);
+    dpmr_publish_call(&opts, &state);
+
+    dsd_call_snapshot call;
+    rc |= expect_int("unconfirmed-no-call-row", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    /* The superframe bookkeeping still advances: it tracks which half comes next, not
+       whether anything decoded. */
+    rc |= expect_int("unconfirmed-next-part-still-tracked", opts.dPMR_next_part_of_superframe, 2);
     return rc;
 }
 
@@ -431,6 +465,7 @@ main(void) {
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_superframe_part_updates_called_and_calling_ids();
+    rc |= test_unconfirmed_superframe_part_publishes_nothing();
     rc |= test_id_print_side_effects_track_valid_target_caller_and_color();
     rc |= test_id_print_side_effects_suppress_invalid_ids();
     rc |= test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice();
