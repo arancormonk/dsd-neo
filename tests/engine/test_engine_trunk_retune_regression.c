@@ -1313,6 +1313,131 @@ main(void) {
     assert(g_rtl_ted_sps == 10);
     assert(g_rtl_ted_sps_override == 0);
     assert(g_frame_sync_reset_calls == 1);
+
+    /* Issue #423: under AUTO an FDMA control channel was pinned to C4FM on every tune, so a
+     * P25p1 LSM site could never keep the CQPSK chain it had just decoded on. Once a NID has
+     * validated through that chain the return-to-CC restores it without -mq. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = 0;
+    state->p25_p1_validated_rf_mod = 1;
+    state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 6000;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_ted_sps = 8;
+    g_rtl_ted_sps_override = 8;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rf_mod == 1);
+    assert(state->samplesPerSymbol == 10);
+    assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+
+    /* The counter-case that rules out simply preserving rf_mod: a C4FM control channel with
+     * P25p2 TDMA voice channels leaves rf_mod at 1 when the grant ends, and the control channel
+     * must still come back on C4FM. Nothing validated a P25p1 NID through CQPSK here. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 0;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p2_active_slot = 0;
+    state->p25_p1_validated_rf_mod = -1;
+    state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 6000;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rf_mod == 0);
+    assert(g_rtl_cqpsk_enable == 0);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+
+    /* An explicit CLI modulation lock still owns the decision. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->mod_qpsk = 0;
+    opts->mod_cli_lock = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_freq = 851000000;
+    state->trunk_cc_freq = 851000000;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p1_validated_rf_mod = 1;
+    state->rf_mod = 1;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK;
+    g_rtl_pending_active = 0;
+    assert(dsd_engine_return_to_cc_request(opts, state, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rf_mod == 0);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_C4FM);
+
+    /* The CC-tune path stages the same decision, so a CC hunt lands on the learned chain. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p1_validated_rf_mod = 1;
+    state->lastsynctype = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_pending_active = 0;
+    g_rtl_pending_cqpsk = -1;
+    g_rtl_pending_channel_profile = -1;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(state->rf_mod == 1);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    rtl_stream_clear_pending_retune_profile();
+
+    /* A P25p1 FDMA voice grant carries no modulation of its own -- it inherits the control
+     * channel's -- so on an LSM site the voice channel reaches CQPSK too. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_enable = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->p25_cc_is_tdma = 0;
+    state->p25_p1_validated_rf_mod = 1;
+    state->p25_p2_active_slot = -1;
+    state->rf_mod = 1;
+    state->lastsynctype = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_pending_active = 0;
+    g_rtl_pending_cqpsk = -1;
+    g_rtl_pending_channel_profile = -1;
+    assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 853000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_cqpsk_enable == 1);
+    assert(g_rtl_symbol_rate_hz == 4800);
+    assert(g_rtl_channel_profile == RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    rtl_stream_clear_pending_retune_profile();
 #endif
 
     printf("ENGINE_TRUNK_RETUNE_REGRESSION: OK\n");

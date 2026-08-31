@@ -301,6 +301,7 @@ matrix_setup_fixture(matrix_fixture* fixture, const matrix_mode_case* mode) {
     fixture->state->p25_sys_is_tdma = mode->sys_is_tdma;
     fixture->state->p25_chan_tdma_explicit[mode->iden] = mode->tdma_hint;
     fixture->state->p25_vc_cqpsk_pref = -1;
+    fixture->state->p25_p1_validated_rf_mod = -1;
     fixture->state->p25_vc_cqpsk_override = -1;
     fixture->state->rf_mod = mode->initial_rf_mod;
     fixture->state->p25_p2_active_slot = -1;

@@ -4340,6 +4340,16 @@ test_active_p25_cqpsk_request_tracks_target_modulation(void) {
         DSD_FPRINTF(stderr, "active auto P25 target did not request TDMA default enable=%d\n", cqpsk_enable);
         test_rc = 1;
     }
+    /* Issue #423: an FDMA target that has decoded a P25p1 NID through the CQPSK chain keeps it
+     * across the scan rotation instead of falling back to the C4FM default. */
+    state.p25_cc_is_tdma = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    cqpsk_enable = -1;
+    if (!dsd_engine_trunk_scan_active_p25_cqpsk_request(&state, &cqpsk_enable) || cqpsk_enable != 1) {
+        DSD_FPRINTF(stderr, "active auto P25 target dropped a learned CQPSK enable=%d\n", cqpsk_enable);
+        test_rc = 1;
+    }
+    state.p25_p1_validated_rf_mod = -1;
 
     trunk_scan_test_set_now(0.78);
     dsd_engine_trunk_scan_tick(&opts, &state);

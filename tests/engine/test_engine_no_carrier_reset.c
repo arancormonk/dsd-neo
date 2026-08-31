@@ -942,10 +942,15 @@ main(void) {
     state->rf_mod = 1;
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
     state->sps_hunt_counter = 23;
+    state->p25_p1_validated_rf_mod = 1;
 
     noCarrier(opts, state);
 
     rc |= expect_true("p25-rtl-nocarrier-cc-retune", g_rtl_tune_calls == 1 && g_rtl_tune_freq == 769868750U);
+    /* Issue #423: which modulation carried the last validated P25p1 frame is system knowledge,
+     * not acquisition state, so losing the carrier must not erase it -- otherwise every fade
+     * costs an LSM control channel the chain it had already earned. */
+    rc |= expect_true("p25-rtl-nocarrier-keeps-learned-modulation", state->p25_p1_validated_rf_mod == 1);
     rc |= expect_true("p25-rtl-nocarrier-syncs-selected-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);
@@ -1585,6 +1590,7 @@ main(void) {
     rc |= expect_true("rtl-fsk-long-nosync-gap-reacquires-once", g_rtl_fsk_reacquire_requests == 1);
     rc |= expect_true("rtl-fsk-long-nosync-gap-records-request", state->rtl_fsk_reacquire_last_request_m > 0.0);
 #endif
+
     dsd_rtl_stream_metrics_hooks_set(NULL);
 #endif
 

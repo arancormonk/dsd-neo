@@ -423,6 +423,15 @@ dsd_frame_verdict
 dsd_dispatch_handle_p25p1(dsd_opts* opts, dsd_state* state) {
     p25_status_accum_reset(state);
     uint8_t duid = p25p1_decode_nid_and_duid(opts, state);
+    /* A decoded NID is the one place that knows which demodulator actually carried a P25p1
+     * frame: the sync pattern is the same on C4FM and CQPSK, so nothing earlier can tell them
+     * apart. Recording it here is what lets the trunking retunes and the SPS hunt restore a
+     * modulation the signal itself has confirmed, and what lets the frame sync stop the
+     * modulation heuristics from second-guessing a demodulator that is visibly working. */
+    if (duid != P25P1_DUID_INVALID && !opts->mod_cli_lock && (state->rf_mod == 0 || state->rf_mod == 1)) {
+        state->p25_p1_validated_rf_mod = state->rf_mod;
+        state->p25_p1_validated_symbolcnt = state->symbolcnt;
+    }
     p25p1_dispatch_by_duid(opts, state, duid);
     /* The 63-bit BCH over the NID is the one verdict this path has that covers every DUID.
      * When it fails the DUID is invalid, p25p1_handle_unknown_duid() decodes nothing, and
