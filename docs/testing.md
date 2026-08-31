@@ -133,6 +133,18 @@ cases assert `Total audio errors: 0`, which is the count of vocoder frames the d
 \#398's confirmation gate this fixture produced 89 of them under `-fn` and 49 under `-fi`, decoded from nothing.
 They deliberately do not cover `-fa`, where dPMR still decodes noise.
 
+There is no `-fa` hunt case on `noise_floor`, and the measurement behind that is worth recording. Issue #391's
+remaining set — DMR, P25 Phase 2, dPMR and X2-TDMA, the handlers that report no verdict — is bounded by arithmetic
+rather than by a verdict, so a replay assertion cannot see it. Under `-fa` the fixture completes six rotations in its
+10 s; defeating the verdict gate in `frame_sync_sps_hunt_note_handler_consumption()` gives five, and every individual
+`SPS hunt: trying` line still prints in both. Only the rotation *count* separates them, and how far the hunt gets is
+exactly the schedule-dependent quantity that got the `dstar` reject case removed above. So the property is pinned
+where it can be stated exactly, in `FRAME_SYNC_SPS_HUNT_FALSE_SYNC`
+(`test_no_verdict_handlers_still_rotate_at_the_noise_cadence`): a handler consuming a dPMR FS2 frame's 372 symbols on
+the default productive verdict still reaches its dwell at the cadence that matcher reaches on noise. Both bounds are
+mutation-checked — raising the consumption past half the period, or tightening the period below twice the
+consumption, pins the profile and fails the case.
+
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
