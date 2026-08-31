@@ -2290,12 +2290,6 @@ main(void) {
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();
-    test_sps_hunt_restores_learned_p25p1_cqpsk();
-    test_p25p1_auto_hunt_alternates_cqpsk_probe();
-    test_p25p1_probe_survives_its_dwell();
-    test_validated_p25p1_modulation_outranks_the_heuristics();
-    test_validated_cqpsk_survives_rotation_but_not_disproof();
-    test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_nxdn_variant_follows_active_profile();
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();
@@ -2312,6 +2306,12 @@ main(void) {
     test_p25_slot_activity_honors_ring_and_hangtime();
     test_hamming_helpers_find_best_patterns();
 #ifdef USE_RADIO
+    test_sps_hunt_restores_learned_p25p1_cqpsk();
+    test_p25p1_auto_hunt_alternates_cqpsk_probe();
+    test_p25p1_probe_survives_its_dwell();
+    test_validated_p25p1_modulation_outranks_the_heuristics();
+    test_validated_cqpsk_survives_rotation_but_not_disproof();
+    test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();
     test_decode_mode_profiles_agree_with_the_sps_hunt_table();
     test_rtl_p25p2_timing_reconciliation_preserves_cqpsk();
