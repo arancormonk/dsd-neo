@@ -153,6 +153,27 @@ DERIVED_NOISE = [
     ("noise_floor", 398, 10.0, 16.0),
 ]
 
+# A dPMR signal synthesized from the CCH reference vectors (issue #407).
+#
+# The one off-air dPMR recording available to this project carries no recoverable
+# CCH: its Hamming syndromes are at the random rate and its 4FSK eye is closed, so
+# nothing it produces is a decode, and no integrity check can be validated against
+# it. This fixture is modulated from tests/protocol/dpmr/fixtures, the same vectors
+# DPMR_REFERENCE_VECTORS decodes, so the tree has one dPMR sample that is correct
+# by construction: every CCH CRC-7 in it passes.
+#
+# dPMR is 4FSK at 2400 baud, symbol deviations +/-1050 Hz and +/-350 Hz
+# (ETSI TS 102 658). The dibit-to-deviation map is dsd-neo's own slicer convention
+# (src/core/frames/dsd_dibit.c): 1 -> +3, 0 -> +1, 2 -> -1, 3 -> -3.
+DPMR_SYNTH_NAME = "dpmr_synth"
+DPMR_SYNTH_SEED = 407
+DPMR_SYNTH_SYMBOL_RATE = 2400
+DPMR_SYNTH_OUTER_DEVIATION_HZ = 1050.0
+DPMR_SYNTH_LEAD_IN_S = 0.25
+DPMR_SYNTH_FRAME_REPEATS = 30
+DPMR_SYNTH_NOISE_SIGMA = 0.02
+DPMR_DIBIT_TO_LEVEL = {1: 3.0, 0: 1.0, 2: -1.0, 3: -3.0}
+
 METADATA_TEMPLATE = """{{
   "format": "dsd-neo-iq",
   "version": 1,
@@ -352,6 +373,78 @@ def build_noise(out_dir):
     return total
 
 
+def load_dpmr_reference_vectors():
+    """Import the dPMR CCH vector generator so fixture and unit test share one source."""
+    import importlib.util
+
+    path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "tests",
+        "protocol",
+        "dpmr",
+        "fixtures",
+        "generate_dpmr_reference_vectors.py",
+    )
+    spec = importlib.util.spec_from_file_location("dpmr_reference_vectors", os.path.normpath(path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def dpmr_symbol_stream(vectors):
+    """FS2 plus body dibits, alternating the two reference superframe parts."""
+    frames = [vectors.build_frame(spec) for spec in vectors.FRAME_SPECS]
+    vectors.self_check(frames)
+    fs2 = [int(char) for char in vectors.FS2_SYMBOLS]
+
+    dibits = []
+    for repeat in range(DPMR_SYNTH_FRAME_REPEATS):
+        frame = frames[repeat % len(frames)]
+        dibits += fs2
+        dibits += frame["body"]
+    return dibits
+
+
+def modulate_4fsk(dibits, rng):
+    """Continuous-phase 4FSK, one symbol at a time, with a noise lead-in.
+
+    Rectangular symbols keep the eye fully open: the point of this fixture is a
+    signal whose CCH decodes exactly, not a realistic channel. Impairment belongs
+    in derived fixtures, the way p25p1_cqpsk_cc_simulcast adds it.
+    """
+    sps = SAMPLE_RATE_HZ // DPMR_SYNTH_SYMBOL_RATE
+    if SAMPLE_RATE_HZ % DPMR_SYNTH_SYMBOL_RATE:
+        raise ValueError("dPMR symbol rate must divide the fixture sample rate")
+
+    # Outer symbols sit at +/-1050 Hz, so one level step is a third of that.
+    step_rad = 2.0 * math.pi * (DPMR_SYNTH_OUTER_DEVIATION_HZ / 3.0) / SAMPLE_RATE_HZ
+
+    lead_in = int(round(DPMR_SYNTH_LEAD_IN_S * SAMPLE_RATE_HZ))
+    freq = np.zeros(lead_in + (len(dibits) * sps))
+    for index, dibit in enumerate(dibits):
+        start = lead_in + (index * sps)
+        freq[start : start + sps] = DPMR_DIBIT_TO_LEVEL[dibit] * step_rad
+
+    samples = np.exp(1j * np.cumsum(freq))
+    samples[:lead_in] = 0.0
+    noise = rng.normal(0.0, DPMR_SYNTH_NOISE_SIGMA, len(samples)) + 1j * rng.normal(
+        0.0, DPMR_SYNTH_NOISE_SIGMA, len(samples)
+    )
+    return samples + noise
+
+
+def build_dpmr_synth(out_dir):
+    """Write the synthetic dPMR fixture built from the CCH reference vectors (#407)."""
+    vectors = load_dpmr_reference_vectors()
+    dibits = dpmr_symbol_stream(vectors)
+    rng = np.random.default_rng(DPMR_SYNTH_SEED)
+    samples = modulate_4fsk(dibits, rng)
+    written = write_fixture(out_dir, DPMR_SYNTH_NAME, samples)
+    print(f"{DPMR_SYNTH_NAME:28s} synth   {written // 1024:6d} KiB")
+    return written
+
+
 def build_derived(out_dir):
     total = 0
     for name, source, delay_samples, amp2, cfo_hz, phase2 in DERIVED_SIMULCAST:
@@ -432,8 +525,9 @@ def main():
     if not args.only:
         total += build_derived(args.out)
         total += build_noise(args.out)
+        total += build_dpmr_synth(args.out)
     else:
-        for entry in DERIVED_SIMULCAST + [(n,) for n, _, _, _ in DERIVED_NOISE]:
+        for entry in DERIVED_SIMULCAST + [(n,) for n, _, _, _ in DERIVED_NOISE] + [(DPMR_SYNTH_NAME,)]:
             if entry[0] in args.only:
                 raise SystemExit(f"{entry[0]} is a derived fixture; regenerate it with --derived-only")
     print(f"total {total // 1024} KiB in {args.out}")

@@ -9214,6 +9214,16 @@ if(DSD_HAS_RADIO)
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN48 nxdn48 -fi "Src=901")
     dsd_neo_add_iq_decode_test(DECODE_IQ_NXDN96 nxdn96 -fn "RAN 00")
     dsd_neo_add_iq_decode_test(DECODE_IQ_DPMR dpmr -fm "Src=1601621")
+    # dPMR modulated from the CCH reference vectors, the only dPMR signal in the tree
+    # whose content is known rather than guessed (#407). Every CCH CRC-7 in it passes,
+    # so this is what a working integrity check has to be validated against. The voice
+    # payload is filler, so the run reports audio errors; the CCH is what is asserted.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_DPMR_SYNTH
+        dpmr_synth
+        -fm
+        "Src=7654321"
+    )
     dsd_neo_add_iq_decode_test(DECODE_IQ_DSTAR dstar -fd "SRC: KB7WUK")
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_YSF

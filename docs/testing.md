@@ -70,6 +70,17 @@ is invertible), so those fixtures exercise the same code path but carry none of
 the original RF impairments. Where a genuine off-air I/Q recording exists (P25
 C4FM/CQPSK, NXDN48/96, dPMR) it is used directly.
 
+`dpmr_synth` is the exception to all of that: it is modulated from the CCH
+reference vectors in `tests/protocol/dpmr/fixtures`, the same vectors
+`DPMR_REFERENCE_VECTORS` decodes, as continuous-phase 4FSK at 2400 baud with
+dPMR's ±1050/±350 Hz deviations. It exists because the off-air `dpmr` recording
+carries no recoverable CCH — its Hamming syndromes sit at the random rate and its
+4FSK eye is closed — so nothing decoded from it is a decode, and no integrity
+check could be validated against it (issue #407). `dpmr_synth` is correct by
+construction: every CCH CRC-7 in it passes, and `DECODE_IQ_DPMR_SYNTH` asserts
+the identity the vectors encode. Its voice payload is deterministic filler, so
+the run reports vocoder errors; the CCH is what it pins.
+
 `DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
 decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
 48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its
