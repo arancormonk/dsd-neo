@@ -357,6 +357,17 @@ Notes
   decoding corrupted dPMR identities on captures the `-fm` preset reads cleanly. The suppression lasts one frame and
   is re-armed per FS2, so it costs a real NXDN48 signal nothing -- such a signal produces no FS2 matches at all -- and
   it does not apply to NXDN96, which lives on 4800/4 where dPMR cannot match, nor to any build with dPMR disabled.
+- The 4800/4 profile carries P25p1, DMR, NXDN96, YSF and M17 together, and the same imbalance applies there: P25p1's
+  sync is one of two exact 24-symbol patterns, while NXDN96's is the ten-symbol word above and M17's preamble is an
+  alternating run that any 4800-baud signal presents. So for the span of the frame an accepted P25p1 sync opened,
+  neither of those two can take a sync on the profile -- a false frame inside it consumes the symbols the next sync
+  needed, warm-starts the slicer from P25 payload, and takes the `lastsynctype` that keeps the C4FM threshold tracker
+  running between one P25p1 frame and the next. Under Auto that had left a P25 Phase 1 C4FM control channel decoding
+  no NAC at all where its own `-f1` preset reads 26. Two deliberate limits: the NXDN window still contributes its
+  level estimate while inside the span, because that blend is the wideband reference the CQPSK chain depends on, and
+  a sync the CQPSK chain carried closes the span rather than opening one, for the same reason. The span is re-armed
+  by every P25p1 sync, so continuous traffic stays covered, and it lapses within a fifth of a second of P25 going
+  quiet. It costs a real NXDN96 or M17 signal nothing, since neither produces P25p1 sync matches.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the

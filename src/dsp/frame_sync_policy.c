@@ -38,6 +38,21 @@ dsd_frame_sync_suppress_nxdn48_sync(const dsd_opts* opts, const dsd_state* state
 }
 
 int
+dsd_frame_sync_suppress_4800_4_for_p25p1_frame(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (opts->frame_p25p1 != 1 || state->p25_p1_c4fm_frame_valid == 0) {
+        return 0;
+    }
+    /* Modular difference, for the same reason and with the same failure direction as the FS2
+     * span above: a backwards symbolcnt jump reads as a huge forward distance and ends the
+     * suppression early rather than extending it. */
+    const uint32_t since = state->symbolcnt - state->p25_p1_c4fm_frame_symbolcnt;
+    return since < DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
+}
+
+int
 dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
         return 0;

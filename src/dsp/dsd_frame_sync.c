@@ -596,6 +596,18 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
     }
 #endif
     frame_sync_set_basic_lock(ctx);
+    /* Open the span this frame owns, or close any span still standing, according to which chain
+     * carried the sync. Only CQPSK closes it: there the NID is sliced by the QPSK chain and the
+     * NXDN matcher's blend is the wideband level tracker that chain leans on. GFSK opens it like
+     * C4FM does, because a P25p1 sync arriving under rf_mod 2 means the modulation votes have
+     * flapped off a C4FM signal -- which the loose NXDN window is itself what does here -- and
+     * that is precisely when the frame behind the sync most needs the profile to itself (#388). */
+    if (state->rf_mod == 1) {
+        state->p25_p1_c4fm_frame_valid = 0;
+    } else {
+        state->p25_p1_c4fm_frame_symbolcnt = state->symbolcnt;
+        state->p25_p1_c4fm_frame_valid = 1;
+    }
     state->dmrburstR = 17;
     state->payload_algidR = 0;
     state->dmr_stereo = 1;
@@ -1135,6 +1147,20 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
+    /* The frame an accepted P25p1 sync opened is not this matcher's to read either. An M17
+     * preamble is an alternating run, which P25 payload supplies readily, and the candidate it
+     * latches is spendable on any sync word within one error -- so the run is dropped and a
+     * candidate already in hand is aged out rather than left to spend the moment the span
+     * lapses. Unlike the NXDN window below, this one stands down completely: what it would
+     * contribute is not a blend but a hard rewrite of every threshold from eight symbols of
+     * whatever is in hand, which is worth having from a real preamble and worth nothing from
+     * P25 payload (#388). */
+    if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)) {
+        state->m17_pre_run = 0;
+        frame_sync_age_m17_pre_candidate(state);
+        return DSD_SYNC_NONE;
+    }
+
     int ham_pre = dsd_sync_hamming_distance(ctx->synctest8, M17_PRE, 8);
     int ham_piv = dsd_sync_hamming_distance(ctx->synctest8, M17_PIV, 8);
     int ham_lsf = dsd_sync_hamming_distance(ctx->synctest8, M17_LSF, 8);
@@ -1603,9 +1629,8 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
         /* Symbol captures carry no rate metadata, so an enabled variant must be unambiguous. */
         nxdn_profile_enabled = (opts->frame_nxdn48 == 1) != (opts->frame_nxdn96 == 1);
     } else {
-        /* Only the 2400/4 term yields to dPMR: that is the profile the two share, and the frame
-         * a 12-symbol FS2 opened is not this matcher's to re-open (#374). NXDN96 on 4800/4 is
-         * untouched, and so is every build with dPMR disabled. */
+        /* The 2400/4 term yields to dPMR outright: that is the profile the two share, and the
+         * frame a 12-symbol FS2 opened is not this matcher's to re-open (#374). */
         nxdn_profile_enabled =
             (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4))
             || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
@@ -1620,9 +1645,24 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
         return DSD_SYNC_NONE;
     }
 
-    state->offset = ctx->synctest_pos;
     state->max = ((state->max) + ctx->lmax) / 2;
     state->min = ((state->min) + ctx->lmin) / 2;
+
+    /* 4800/4 is the one profile where this matcher cannot simply stand down inside the frame it
+     * is intruding on. The blend above is the wideband level estimate the other protocols there
+     * lean on -- withdraw it for the span and the CQPSK voice capture stops decoding its HDU
+     * altogether -- so what the span withholds is the sync, not the levels. Refusing here rather
+     * than at the profile gate keeps the estimate flowing while denying the accept everything it
+     * costs P25p1: the symbols the handler would read, a slicer warm-started from P25 payload,
+     * the control-channel timestamp, and the lastsynctype that keeps use_symbol()'s C4FM
+     * threshold tracker engaged between one P25p1 sync and the next (#388). The offset is left
+     * alone for the same reason -- inside this span it belongs to the frame P25p1 opened. */
+    if (frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
+        && dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)) {
+        return DSD_SYNC_NONE;
+    }
+
+    state->offset = ctx->synctest_pos;
     if (state->lastsynctype == synctype) {
         frame_sync_note_cc_sync(ctx);
         dsd_sync_warm_start_thresholds_outer_only(opts, state, 10);
@@ -2642,6 +2682,13 @@ frame_sync_nxdn_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const fra
         return 24;
     }
     if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_nxdn96 == 1) {
+        /* Silent inside a P25p1 frame for the same reason the matcher is. Ten sign-sliced
+         * symbols one error from an NXDN word score 3 on the 24-symbol axis these votes are
+         * compared on, which is enough to carry the GFSK vote outright -- so P25 payload read
+         * through this window walks the demodulator off the chain that is decoding it (#388). */
+        if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)) {
+            return 24;
+        }
         return frame_sync_best_nxdn_scaled_ham(rt->synctest10, 24);
     }
     if (state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4 && opts->frame_nxdn48 == 1) {
