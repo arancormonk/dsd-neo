@@ -220,7 +220,7 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
             {
                 correctable = false;
             } else {
-                rxBits[Hamming_12_8_m_corr[syndromeI]] ^= 1; // flip bit
+                rxBits[((size_t)ic * 12u) + Hamming_12_8_m_corr[syndromeI]] ^= 1; // flip bit in this codeword
             }
         }
 
@@ -288,7 +288,7 @@ Hamming_13_9_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
                 correctable = false;
                 break;
             } else {
-                rxBits[Hamming_13_9_m_corr[syndromeI]] ^= 1; // flip bit
+                rxBits[((size_t)ic * 13u) + Hamming_13_9_m_corr[syndromeI]] ^= 1; // flip bit in this codeword
             }
         }
 
@@ -362,7 +362,7 @@ Hamming_15_11_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCo
                 correctable = false;
                 break;
             } else {
-                rxBits[Hamming_15_11_m_corr[syndromeI]] ^= 1; // flip bit
+                rxBits[((size_t)ic * 15u) + Hamming_15_11_m_corr[syndromeI]] ^= 1; // flip bit in this codeword
             }
         }
 
@@ -436,7 +436,7 @@ Hamming_16_11_4_decode(unsigned char* rxBits, unsigned char* decodedBits, int nb
                 correctable = false;
                 break;
             } else {
-                rxBits[Hamming_16_11_4_m_corr[syndromeI]] ^= 1; // flip bit
+                rxBits[((size_t)ic * 16u) + Hamming_16_11_4_m_corr[syndromeI]] ^= 1; // flip bit in this codeword
             }
         }
 
