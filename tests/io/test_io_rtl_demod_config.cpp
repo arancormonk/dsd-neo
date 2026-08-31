@@ -10,6 +10,7 @@
 #include <cstring>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/fsk_modem.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_metrics.h>
 #include <dsd-neo/io/rtl_stream_c.h>
@@ -85,7 +86,7 @@ expect_sps(const char* label, const dsd_opts& opts, int rate_hz, int override_sp
     demod.ted_sps_override = override_sps;
     output.rate = static_cast<unsigned int>(rate_hz);
 
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, &opts, &output);
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, &opts, &output, /*preserve_active_profile=*/0);
     if (demod.ted_sps != want_sps) {
         DSD_FPRINTF(stderr, "%s: got ted_sps=%d want=%d\n", label, demod.ted_sps, want_sps);
         return 1;
@@ -95,6 +96,161 @@ expect_sps(const char* label, const dsd_opts& opts, int rate_hz, int override_sp
         return 1;
     }
     return 0;
+}
+
+/*
+ * Retunes must keep the symbol profile the front end is already on (whatever the SPS hunt, the
+ * trunking engine, or the operator last published) and recompute only the timing SPS for the
+ * current output rate. Re-deriving the profile from the option flags here snapped multi-protocol
+ * runs back to 4800/4 on every hop.
+ */
+static int
+expect_preserved_profile(const char* label, const dsd_opts* opts, int rate_hz, int seed_rate, int seed_levels,
+                         int override_sps, int want_rate, int want_levels, int want_sps) {
+    static demod_state demod;
+    output_state output;
+    DSD_MEMSET(&demod, 0, sizeof(demod));
+    DSD_MEMSET(&output, 0, sizeof(output));
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.rate_out = rate_hz;
+    demod.symbol_rate_hz = seed_rate;
+    demod.symbol_levels = seed_levels;
+    demod.ted_sps_override = override_sps;
+    output.rate = static_cast<unsigned int>(rate_hz);
+
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/1);
+
+    int rc = 0;
+    rc |= expect_int_eq(label, demod.symbol_rate_hz, want_rate);
+    rc |= expect_int_eq(label, demod.symbol_levels, want_levels);
+    rc |= expect_int_eq(label, demod.ted_sps, want_sps);
+    return rc;
+}
+
+static int
+expect_retune_preserves_active_profile(void) {
+    int rc = 0;
+
+    /* Multi-protocol opts: opts_symbol_rate_hz() answers 4800 because the enabled decoders span
+     * more than one rate class, which is what -fa always looks like. */
+    static dsd_opts fa_opts;
+    DSD_MEMSET(&fa_opts, 0, sizeof(fa_opts));
+    fa_opts.frame_dmr = 1;
+    fa_opts.frame_nxdn48 = 1;
+
+    rc |= expect_preserved_profile("retune keeps hunt profile 2400/4", &fa_opts, 48000, 2400, 4, 0, 2400, 4, 20);
+    rc |= expect_preserved_profile("retune keeps hunt profile at 24 kHz", &fa_opts, 24000, 2400, 4, 0, 2400, 4, 10);
+    rc |= expect_preserved_profile("retune keeps two-level profile", &fa_opts, 48000, 4800, 2, 0, 4800, 2, 10);
+
+    static dsd_opts fa_provoice;
+    DSD_MEMSET(&fa_provoice, 0, sizeof(fa_provoice));
+    fa_provoice.frame_dmr = 1;
+    fa_provoice.frame_provoice = 1;
+    rc |= expect_preserved_profile("retune keeps ProVoice 9600/2", &fa_provoice, 48000, 9600, 2, 0, 9600, 2, 5);
+
+    /* The mod_qpsk snap to 4800 belongs to stream open only. */
+    static dsd_opts p25p1_qpsk_opts;
+    DSD_MEMSET(&p25p1_qpsk_opts, 0, sizeof(p25p1_qpsk_opts));
+    p25p1_qpsk_opts.frame_p25p1 = 1;
+    p25p1_qpsk_opts.mod_qpsk = 1;
+    rc |=
+        expect_preserved_profile("retune does not snap QPSK to 4800", &p25p1_qpsk_opts, 48000, 2400, 4, 0, 2400, 4, 20);
+
+    /* Replay RESET events reach the refresh with no opts at all. */
+    rc |= expect_preserved_profile("replay reset keeps 9600/2 without opts", NULL, 48000, 9600, 2, 0, 9600, 2, 5);
+    rc |= expect_preserved_profile("replay reset keeps 2400/4 without opts", NULL, 48000, 2400, 4, 0, 2400, 4, 20);
+
+    /* An unset profile still falls back to the opts-derived default. */
+    rc |= expect_preserved_profile("unset profile falls back to opts", &fa_opts, 48000, 0, 0, 0, 4800, 4, 10);
+    rc |=
+        expect_preserved_profile("unset profile without opts falls back to 4800/4", NULL, 48000, 0, 0, 0, 4800, 4, 10);
+
+    /* A manual TED SPS override still wins over the recomputed value. */
+    rc |= expect_preserved_profile("ted_sps override still wins", &fa_opts, 48000, 2400, 4, 8, 2400, 4, 8);
+
+    return rc;
+}
+
+/*
+ * The FSK modem only resets its DC-centering and peak-AGC estimators when its configuration
+ * actually changes, so preserving the profile across a retune also stops the needless reset.
+ */
+static int
+expect_preserved_profile_keeps_fsk_modem_config(void) {
+    static demod_state demod;
+    output_state output;
+    static dsd_opts fa_opts;
+    int rc = 0;
+
+    DSD_MEMSET(&fa_opts, 0, sizeof(fa_opts));
+    fa_opts.frame_dmr = 1;
+    fa_opts.frame_nxdn48 = 1;
+
+    for (int preserve = 0; preserve <= 1; preserve++) {
+        DSD_MEMSET(&demod, 0, sizeof(demod));
+        DSD_MEMSET(&output, 0, sizeof(output));
+        demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+        demod.rate_out = 48000;
+        demod.symbol_rate_hz = 2400;
+        demod.symbol_levels = 4;
+        demod.channel_lpf_profile = DSD_CH_LPF_PROFILE_6K25;
+        output.rate = 48000U;
+
+        dsd_fsk_modem_config cfg;
+        cfg.sample_rate_hz = 48000;
+        cfg.symbol_rate_hz = 2400;
+        cfg.levels = 4;
+        cfg.channel_profile = DSD_CH_LPF_PROFILE_6K25;
+        dsd_fsk_modem_configure(&demod.fsk_modem_state, &cfg);
+        demod.fsk_modem_state.dc_est = 0.5f;
+
+        rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, &fa_opts, &output, preserve);
+
+        if (preserve) {
+            rc |= expect_double_near("preserved profile keeps FSK modem estimators",
+                                     static_cast<double>(demod.fsk_modem_state.dc_est), 0.5, 1e-6);
+        } else {
+            rc |= expect_double_near("opts-derived profile resets FSK modem estimators",
+                                     static_cast<double>(demod.fsk_modem_state.dc_est), 0.0, 1e-6);
+        }
+    }
+    return rc;
+}
+
+/*
+ * Cover the wiring, not just the helper: run the real retune finalize path and confirm the
+ * published profile survives it.
+ */
+static int
+expect_finalize_rate_chain_preserves_profile(void) {
+    int rc = 0;
+    rtl_stream_test_finalize_profile_result result;
+
+    static dsd_opts fa_opts;
+    DSD_MEMSET(&fa_opts, 0, sizeof(fa_opts));
+    fa_opts.frame_dmr = 1;
+    fa_opts.frame_nxdn48 = 1;
+
+    DSD_MEMSET(&result, 0, sizeof(result));
+    rc |= expect_int_eq(
+        "finalize seam accepts NXDN48 profile",
+        rtl_stream_test_finalize_rate_chain_profile(&fa_opts, 48000, 2400, 4, DSD_CH_LPF_PROFILE_6K25, &result), 0);
+    rc |= expect_int_eq("retune finalize keeps 2400 sym/s", result.symbol_rate_hz, 2400);
+    rc |= expect_int_eq("retune finalize keeps four levels", result.symbol_levels, 4);
+    rc |= expect_int_eq("retune finalize keeps ted_sps 20", result.ted_sps, 20);
+    rc |= expect_int_eq("retune finalize leaves override clear", result.ted_sps_override, 0);
+    rc |= expect_int_eq("retune finalize keeps integer sps flag", result.sps_is_integer, 1);
+    rc |= expect_int_eq("retune finalize keeps channel profile", result.channel_lpf_profile, DSD_CH_LPF_PROFILE_6K25);
+
+    DSD_MEMSET(&result, 0, sizeof(result));
+    rc |= expect_int_eq(
+        "finalize seam accepts ProVoice profile without opts",
+        rtl_stream_test_finalize_rate_chain_profile(NULL, 48000, 9600, 2, DSD_CH_LPF_PROFILE_PROVOICE, &result), 0);
+    rc |= expect_int_eq("replay reset finalize keeps 9600 sym/s", result.symbol_rate_hz, 9600);
+    rc |= expect_int_eq("replay reset finalize keeps two levels", result.symbol_levels, 2);
+    rc |= expect_int_eq("replay reset finalize keeps ted_sps 5", result.ted_sps, 5);
+
+    return rc;
 }
 
 static int
@@ -1118,6 +1274,9 @@ main(void) {
     rc |= expect_rtl_metrics_exports_and_toggles();
     rc |= expect_public_control_wrapper_contracts();
     rc |= expect_fsk_snr_sps_uses_active_profile();
+    rc |= expect_retune_preserves_active_profile();
+    rc |= expect_preserved_profile_keeps_fsk_modem_config();
+    rc |= expect_finalize_rate_chain_preserves_profile();
     rc |= expect_direct_output_open_rate_uses_demod_rate();
     rc |= expect_passes_for_device_rate();
     rc |= expect_digital_resample_policy();

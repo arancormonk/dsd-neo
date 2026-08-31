@@ -85,12 +85,17 @@ void rtl_demod_maybe_update_resampler_after_rate_change(struct demod_state* demo
  * Refresh TED SPS after rate changes unless explicitly overridden by
  * runtime configuration.
  *
- * @param demod  Demodulator state.
- * @param opts   Decoder options (mode flags).
- * @param output Output state (current sink rate).
+ * @param demod                  Demodulator state.
+ * @param opts                   Decoder options (mode flags); may be NULL.
+ * @param output                 Output state (current sink rate).
+ * @param preserve_active_profile Non-zero keeps the symbol rate and level count the front end is
+ *                               already on (set by the SPS hunt, the trunking engine, or the
+ *                               operator) and recomputes only the timing SPS for the current
+ *                               output rate; zero seeds the profile from @p opts, which is the
+ *                               stream-open default.
  */
 void rtl_demod_maybe_refresh_ted_sps_after_rate_change(struct demod_state* demod, const dsd_opts* opts,
-                                                       const struct output_state* output);
+                                                       const struct output_state* output, int preserve_active_profile);
 
 /**
  * Release resources owned by the demodulator state.
