@@ -14,6 +14,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "provoice_confirm.h"
 #include "provoice_frame.h"
 
 typedef struct {
@@ -91,7 +92,7 @@ provoice_decode_imbe_pair(dsd_opts* opts, dsd_state* state, char frame1[7][24], 
     provoice_play_voice(opts, state);
 }
 
-void
+int
 processProVoice(dsd_opts* opts, dsd_state* state) {
     uint8_t raw_bits[800];
     char imbe7100_fr1[DSD_PROVOICE_IMBE_ROWS][DSD_PROVOICE_IMBE_COLS];
@@ -103,6 +104,12 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
     provoice_reader reader;
 
     DSD_MEMSET(raw_bits, 0, sizeof(raw_bits));
+
+    /* Nothing in the frame below can fail a check, so the evidence is that this one arrived
+     * behind its own exact 32-symbol sync word. Weak on its own; two in a row confirm the
+     * transmission -- see provoice_confirm.h. */
+    provoice_confirm_begin_frame(state);
+    provoice_confirm_note_evidence(state, PROVOICE_EVIDENCE_WEAK);
 
     reader.opts = opts;
     reader.state = state;
@@ -124,7 +131,8 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
 
     if (dsd_provoice_load_imbe_frame_pair(provoice_next_dibit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
         DSD_FPRINTF(stderr, "\n");
-        return;
+        provoice_confirm_end_frame(state);
+        return provoice_confirm_is_confirmed(state);
     }
     provoice_decode_imbe_pair(opts, state, imbe7100_fr1, imbe7100_fr2);
 
@@ -137,10 +145,14 @@ processProVoice(dsd_opts* opts, dsd_state* state) {
 
     if (dsd_provoice_load_imbe_frame_pair(provoice_next_dibit_callback, &reader, imbe7100_fr1, imbe7100_fr2) < 0) {
         DSD_FPRINTF(stderr, "\n");
-        return;
+        provoice_confirm_end_frame(state);
+        return provoice_confirm_is_confirmed(state);
     }
     provoice_decode_imbe_pair(opts, state, imbe7100_fr1, imbe7100_fr2);
 
     provoice_read_raw_bits(&reader, 2);
     DSD_FPRINTF(stderr, "\n");
+
+    provoice_confirm_end_frame(state);
+    return provoice_confirm_is_confirmed(state);
 }

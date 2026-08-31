@@ -890,12 +890,28 @@ add_executable(
     protocol/dstar/test_dstar_process.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/dispatch.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
 )
 target_include_directories(
     dsd-neo_test_dstar_process
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dstar
 )
 add_test(NAME DSTAR_PROCESS COMMAND dsd-neo_test_dstar_process)
+
+add_executable(
+    dsd-neo_test_dstar_confirm
+    protocol/dstar/test_dstar_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dstar/dstar_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_dstar_confirm
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/dstar
+)
+add_test(NAME DSTAR_CONFIRM COMMAND dsd-neo_test_dstar_confirm)
 
 add_executable(
     dsd-neo_test_dstar_sync_dispatch
@@ -929,6 +945,7 @@ add_executable(
     protocol/provoice/test_provoice_process.c
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_confirm.c
     ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_frame.c
 )
 target_include_directories(
@@ -938,6 +955,19 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/protocol/provoice
 )
 add_test(NAME PROVOICE_PROCESS COMMAND dsd-neo_test_provoice_process)
+
+add_executable(
+    dsd-neo_test_provoice_confirm
+    protocol/provoice/test_provoice_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/provoice/provoice_confirm.c
+)
+target_include_directories(
+    dsd-neo_test_provoice_confirm
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/provoice
+)
+add_test(NAME PROVOICE_CONFIRM COMMAND dsd-neo_test_provoice_confirm)
 
 add_executable(
     dsd-neo_test_provoice_sync_dispatch

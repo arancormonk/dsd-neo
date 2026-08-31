@@ -3141,11 +3141,13 @@ frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) 
  * Size alone cannot separate a decoded frame from a block skipped on a sync no CRC would
  * accept, so a handler that ran a check and failed it says so: processFrame() leaves its
  * dsd_frame_verdict in dsd_state::sps_hunt_last_frame_verdict, and an unproductive one is
- * refused the debit however much it took (#391). The verdict is default-productive, so
- * every handler that reports nothing -- DMR, M17, P25 Phase 2, dPMR, X2-TDMA, D-STAR voice
- * and ProVoice, which is the whole of the set that does not, whether because the check it
- * would report is per transmission rather than per frame or because it has none at any point
- * -- still buys dwell in proportion to what it swallowed, as before.
+ * refused the debit however much it took (#391). Where the check is per transmission rather
+ * than per frame the protocol reports a sticky verdict instead, so a frame that fails its own
+ * check inside a confirmed transmission still counts -- D-STAR voice and ProVoice were the
+ * last two with no verdict at any point and now confirm this way (#421). The verdict is
+ * default-productive, so every handler that still reports nothing -- DMR, P25 Phase 2, dPMR
+ * and X2-TDMA, which is the whole of the set that does not -- buys dwell in proportion to
+ * what it swallowed, as before.
  */
 static void
 frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {

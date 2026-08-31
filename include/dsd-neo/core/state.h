@@ -1169,6 +1169,18 @@ struct dsd_state {
     //edacs
     int ea_mode;
 
+    /* ProVoice frame-content confirmation (src/protocol/provoice/provoice_confirm.c). Nothing
+     * in a ProVoice frame can fail a check -- no CRC, no BCH, no parity -- so the evidence is
+     * that the stream keeps arriving: each frame sits behind its own exact 32-symbol sync
+     * word, and two in a row confirm the transmission (issues #391, #421).
+     *
+     * provoice_confirmed: this transmission has produced verified content.
+     * provoice_confirm_weak_streak: consecutive frames decoded behind their own sync word.
+     * provoice_confirm_frame_evidence: strongest provoice_evidence seen since begin_frame(). */
+    uint8_t provoice_confirmed;
+    uint8_t provoice_confirm_weak_streak;
+    uint8_t provoice_confirm_frame_evidence;
+
     unsigned short esk_mask;
     uint32_t edacs_sys_id;
     uint32_t edacs_area_code;
@@ -1250,6 +1262,19 @@ struct dsd_state {
     //DSTAR Call Strings and Info
     char dstar_txt[60];
     char dstar_gps[60];
+
+    /* D-STAR frame-content confirmation (src/protocol/dstar/dstar_confirm.c). A voice sync
+     * commits 1992 symbols, and nothing inside them is checkable on its own: the AMBE error
+     * counts are soft corrections, not a verdict. A CRC-16/X.25 -- the RF header, or the
+     * header rebroadcast in slow data -- proves the transmission; a superframe that carries
+     * only filler has to repeat instead (issues #391, #421).
+     *
+     * dstar_confirmed: this transmission has produced verified content.
+     * dstar_confirm_weak_streak: consecutive superframes carrying no check of their own.
+     * dstar_confirm_frame_evidence: strongest dstar_evidence seen since begin_frame(). */
+    uint8_t dstar_confirmed;
+    uint8_t dstar_confirm_weak_streak;
+    uint8_t dstar_confirm_frame_evidence;
 
     //M17 Storage
     uint8_t m17_lsf[360];

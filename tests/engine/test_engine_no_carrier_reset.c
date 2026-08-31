@@ -352,12 +352,27 @@ main(void) {
     // productive to the SPS hunt for as long as this flag stands, so carrying it across a carrier
     // loss would let the next channel's first FICH failure buy dwell it validated nothing for.
     state->ysf_fich_confirmed = 1U;
+    // D-STAR and ProVoice carry the same kind of evidence (issue #421). Both lean on a weak
+    // streak that only means anything while the frames stay adjacent, so carrying a streak --
+    // or a confirmation -- across a carrier loss would let the next channel's first false
+    // match buy the 1992 or 736 symbols it consumed.
+    state->dstar_confirmed = 1;
+    state->dstar_confirm_weak_streak = 1;
+    state->dstar_confirm_frame_evidence = 2;
+    state->provoice_confirmed = 1;
+    state->provoice_confirm_weak_streak = 1;
+    state->provoice_confirm_frame_evidence = 2;
 
     noCarrier(opts, state);
 
     rc |= expect_true("nxdn-confirmation-reset", state->nxdn_confirmed == 0 && state->nxdn_confirm_weak_streak == 0
                                                      && state->nxdn_confirm_frame_evidence == 0);
     rc |= expect_true("ysf-fich-confirmation-reset", state->ysf_fich_confirmed == 0U);
+    rc |= expect_true("dstar-confirmation-reset", state->dstar_confirmed == 0 && state->dstar_confirm_weak_streak == 0
+                                                      && state->dstar_confirm_frame_evidence == 0);
+    rc |= expect_true("provoice-confirmation-reset", state->provoice_confirmed == 0
+                                                         && state->provoice_confirm_weak_streak == 0
+                                                         && state->provoice_confirm_frame_evidence == 0);
 
     dsd_call_snapshot ended_call;
     rc |= expect_true("no-carrier retains canonical snapshot", dsd_call_state_get(state, 0U, &ended_call) == 1);

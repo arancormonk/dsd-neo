@@ -321,6 +321,17 @@ Private per-protocol modules worth knowing about:
   `NXDN_Elements_Content_decode()` carries no CRC verdict of its own: the channel decoders in `nxdn_deperm.c` and
   `NXDN_SACCH_Full_decode()` hand it CRC-verified content only, so the gate lives in those callers, with
   `nxdn_confirm_is_confirmed()` as the frame-level check at the sites that publish a call or refresh a scan hold.
+- `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
+  alternating symbol run. Frame handlers report `(own check || confirmed)`, `dispatch_m17.c` reports it on an EOT, and
+  `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain.
+- `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
+  answering only the SPS hunt rather than gating audio (issue #421). Neither protocol has a per-frame check: a D-STAR
+  superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
+  `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
+  `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving
+  behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
+  the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
+  `dstar_confirm_reset()`/`provoice_confirm_reset()`.
 
 Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<name>/CMakeLists.txt`
 

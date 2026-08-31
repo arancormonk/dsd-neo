@@ -18,6 +18,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_confirm.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
@@ -181,6 +182,9 @@ dstar_sd_print_header_flags(uint8_t flags) {
 static void
 dstar_sd_handle_header_format(dsd_state* state, const dstar_sd_ctx* ctx) {
     if (ctx->crc_cmp == ctx->crc_ext) {
+        /* A CRC-16/X.25 over 39 octets of rebroadcast header: proof the transmission is
+         * real, on its own (#421). */
+        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
         DSD_FPRINTF(stderr, " RPT 2: %s", ctx->str1);
         DSD_FPRINTF(stderr, " RPT 1: %s", ctx->str2);
         DSD_FPRINTF(stderr, " DST: %s", ctx->str3);
@@ -363,6 +367,9 @@ dstar_sd_handle_text_message(dsd_state* state, dstar_sd_ctx* ctx) {
 static void
 dstar_sd_handle_fixed_form(dsd_state* state, dstar_sd_ctx* ctx) {
     if (strcmp(ctx->type, "$$CRC") == 0) {
+        /* Forty exact bits behind the 0x35 type byte that selected this branch: not a
+         * checksum, but a literal noise does not produce (#421). */
+        dstar_confirm_note_evidence(state, DSTAR_EVIDENCE_STRONG);
         DSD_MEMSET(ctx->strt, 0x20, sizeof(ctx->strt));
         DSD_FPRINTF(stderr, " DATA: ");
         dstar_sd_emit_truncated_ascii(ctx->sd_bytes, ctx->strt, 0);
