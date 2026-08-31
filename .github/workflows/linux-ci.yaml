@@ -18,10 +18,15 @@ permissions:
   contents: read
 
 jobs:
+  # Runs on every event, pull requests included. The `neither` variant is the
+  # only configuration in CI that leaves USE_RADIO undefined, so it is the only
+  # job that can catch a symbol referenced from outside its `#ifdef USE_RADIO`
+  # guard — and it has to do that on the pull request, not on the push that
+  # follows it. Every variant runs ctest as well as building, because a
+  # radio-off *test* failure is invisible to a build-only job.
   backend-matrix:
     name: backend-matrix (${{ matrix.variant }})
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -99,60 +104,7 @@ jobs:
         run: |
           cmake --build --preset dev-debug -j
 
-  backend-pr:
-    name: backend-pr (both)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config git \
-            libsndfile1-dev libpulse-dev libncurses-dev \
-            libusb-1.0-0-dev libfftw3-dev libblas-dev liblapack-dev gfortran \
-            libcodec2-dev librtlsdr-dev libsoapysdr-dev libcurl4-openssl-dev libexpat1-dev
-
-      - name: Build and install mbelib-neo
-        run: |
-          set -euxo pipefail
-          source tools/ci-dependency-pins.env
-          tools/fetch-pinned-git.sh https://github.com/arancormonk/mbelib-neo "$MBELIB_NEO_SHA" /tmp/mbelib-neo
-          cmake -S /tmp/mbelib-neo -B /tmp/mbelib-neo/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
-            -DCMAKE_INSTALL_PREFIX="$HOME/.local"
-          cmake --build /tmp/mbelib-neo/build -j
-          cmake --install /tmp/mbelib-neo/build
-
-      - name: Prepare local dependency environment
-        run: |
-          {
-            echo "PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig:$HOME/.local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
-            echo "CMAKE_PREFIX_PATH=$HOME/.local:${CMAKE_PREFIX_PATH:-}"
-            echo "LD_LIBRARY_PATH=$HOME/.local/lib:$HOME/.local/lib64:${LD_LIBRARY_PATH:-}"
-          } >> "$GITHUB_ENV"
-
-      - name: Configure
-        run: |
-          set -euxo pipefail
-          log="$RUNNER_TEMP/configure-both.log"
-          cmake --preset dev-debug \
-            -DDSD_ENABLE_RTLSDR=ON \
-            -DDSD_REQUIRE_RTLSDR=ON \
-            -DDSD_ENABLE_SOAPYSDR=ON \
-            -DDSD_REQUIRE_SOAPYSDR=ON \
-            2>&1 | tee "$log"
-          grep -F "RTL-SDR backend enabled: ON (available: ON)" "$log"
-          grep -F "SoapySDR backend enabled: ON (available: ON)" "$log"
-          grep -F "Radio pipeline available: ON" "$log"
-
-      - name: Build
-        run: cmake --build --preset dev-debug -j
-
-      - name: Test
+      - name: Test (${{ matrix.variant }})
         run: ctest --preset dev-debug --output-on-failure
 
   android-shape-host:
