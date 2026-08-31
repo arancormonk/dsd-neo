@@ -3,6 +3,7 @@
 #ifndef DSD_NEO_SRC_IO_RADIO_RTL_STREAM_TEST_SUPPORT_H_
 #define DSD_NEO_SRC_IO_RADIO_RTL_STREAM_TEST_SUPPORT_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -145,6 +146,21 @@ int rtl_stream_test_tagged_retune_ownership(uint64_t owner_token, uint64_t conte
 int dsd_rtl_stream_test_retune_without_controller_rejected(void);
 int rtl_stream_test_retune_profile_gain_binding(int* out_gain_is_set, int* out_gain_tenth_db, int* out_gain_is_auto,
                                                 int* out_autogain_is_set, int* out_autogain_on);
+
+typedef struct rtl_stream_test_finalize_profile_result {
+    int symbol_rate_hz;
+    int symbol_levels;
+    int ted_sps;
+    int ted_sps_override;
+    int sps_is_integer;
+    int channel_lpf_profile;
+} rtl_stream_test_finalize_profile_result;
+
+/* Seed the published symbol profile, then run the retune finalize path with the given decoder
+ * options (NULL models a replay RESET) and report the profile the front end ended up on. */
+int rtl_stream_test_finalize_rate_chain_profile(const dsd_opts* opts, int rate_out_hz, int seed_symbol_rate_hz,
+                                                int seed_symbol_levels, int seed_channel_profile,
+                                                rtl_stream_test_finalize_profile_result* out_result);
 
 typedef struct rtl_stream_test_replay_state {
     int replay_input_eof;
