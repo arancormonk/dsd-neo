@@ -64,7 +64,9 @@ SoapySDR, and IQ replay; all four sources feed the same direct-output contracts.
 
 - `IO_RTL_DEMOD_CONFIG` validates the full mode matrix at 48 kHz and key 24 kHz
   cases, including output kind, symbol rate, level count, LPF profile, and CQPSK
-  TED SPS.
+  TED SPS. It also covers the retune finalize path, which preserves the active
+  symbol profile; deriving the profile from the enabled decoders is stream-open
+  behavior only.
 - `RTL_SYMBOL_PIPELINE` synthesizes FSK discriminator samples and CQPSK symbols
   through `full_demod()` and checks the direct-output contracts.
 - `DSP_FSK_MODEM` covers discriminator count, sign, centering, scale, and reset
