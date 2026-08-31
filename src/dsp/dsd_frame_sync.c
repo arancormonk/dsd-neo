@@ -819,6 +819,19 @@ frame_sync_try_p25p2(frame_sync_match_ctx* ctx) {
 #endif
 }
 
+/**
+ * @brief Record that an FS2 sync just opened a dPMR frame on the 2400/4 profile.
+ *
+ * The stamp is what dsd_frame_sync_suppress_nxdn48_sync() measures the frame's span from, so it
+ * is taken on every accepted FS2 -- including one arriving inside the previous frame's span,
+ * which re-arms the window rather than extending it indefinitely.
+ */
+static void
+frame_sync_note_dpmr_fs2_frame(dsd_state* state) {
+    state->dpmr_fs2_frame_symbolcnt = state->symbolcnt;
+    state->dpmr_fs2_frame_valid = 1;
+}
+
 static int
 frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     const dsd_opts* opts = ctx->opts;
@@ -830,6 +843,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
 
     if (opts->inverted_dpmr == 0 && strcmp(ctx->synctest12, DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
+        frame_sync_note_dpmr_fs2_frame(state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "+dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -841,6 +855,7 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
 
     if (opts->inverted_dpmr == 1 && strcmp(ctx->synctest12, INV_DPMR_FRAME_SYNC_2) == 0) {
         frame_sync_set_basic_lock(ctx);
+        frame_sync_note_dpmr_fs2_frame(state);
         DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
         if (opts->errorbars == 1) {
             printFrameSync(opts, state, "-dPMR ", ctx->synctest_pos + 1, ctx->modulation);
@@ -1588,9 +1603,13 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
         /* Symbol captures carry no rate metadata, so an enabled variant must be unambiguous. */
         nxdn_profile_enabled = (opts->frame_nxdn48 == 1) != (opts->frame_nxdn96 == 1);
     } else {
+        /* Only the 2400/4 term yields to dPMR: that is the profile the two share, and the frame
+         * a 12-symbol FS2 opened is not this matcher's to re-open (#374). NXDN96 on 4800/4 is
+         * untouched, and so is every build with dPMR disabled. */
         nxdn_profile_enabled =
             (opts->frame_nxdn96 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4))
-            || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4));
+            || (opts->frame_nxdn48 == 1 && frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_2400_4)
+                && !dsd_frame_sync_suppress_nxdn48_sync(opts, state));
     }
     if (!nxdn_profile_enabled || !frame_sync_match_window_ready(ctx, 10)) {
         return DSD_SYNC_NONE;

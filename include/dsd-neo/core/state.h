@@ -603,6 +603,18 @@ struct dsd_state {
      * anything -- entering GFSK needs a single vote, which is a few dozen symbols. */
     int p25_p1_mod_probe_next_qpsk;
     int p25_p1_mod_probe_active;
+    /* Where the last accepted dPMR FS2 sync sat in dsd_state::symbolcnt, and whether one has
+     * been seen at all. dPMR and NXDN48 are the two candidates on the 2400/4 profile, and their
+     * matchers are not comparable: FS2 is one exact 12-symbol pattern, while the NXDN matcher
+     * takes five variants per polarity over ten sign-sliced symbols and so fires on about 1% of
+     * arbitrary windows. The 372 dibits behind an accepted FS2 are dPMR's frame, and an NXDN
+     * accept inside them consumes symbols that frame needed and warm-starts the slicer from ten
+     * symbols of dPMR payload -- which is what left AUTO decoding corrupted dPMR identities that
+     * the native preset reads cleanly (#374). The span is read by src/dsp only, through
+     * dsd_frame_sync_suppress_nxdn48_sync(); the stamp wraps with symbolcnt and is compared as a
+     * modular difference, so a rollover mid-frame stays exact. */
+    uint32_t dpmr_fs2_frame_symbolcnt;
+    uint8_t dpmr_fs2_frame_valid;
     int lastsynctype;
     int lastp25type;
     int offset;

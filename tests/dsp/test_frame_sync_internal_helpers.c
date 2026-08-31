@@ -1018,6 +1018,74 @@ test_provoice_candidate_does_not_shadow_dstar_or_nxdn(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
 }
 
+/* dPMR's FS2 is one exact 12-symbol match against a single pattern -- 2^-12 on a sign-sliced
+ * stream -- while NXDN48 shares the profile with a matcher two orders of magnitude looser. The
+ * 372 dibits behind an accepted FS2 are dPMR's frame, so nothing weaker gets to match inside
+ * them: an NXDN accept there consumes symbols the frame needed and warm-starts the thresholds
+ * from ten symbols of another protocol's payload (#374). Same shape as the P25 suppression in
+ * dsd_frame_sync_suppress_p25_alt_sync(). */
+static void
+test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_dpmr = 1;
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 1000;
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, DPMR_FRAME_SYNC_2, 12) == DSD_SYNC_DPMR_FS2_POS);
+
+    /* Inside the frame the FS2 opened, NXDN never even latches a candidate. */
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+    state.symbolcnt = 1000 + 380;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+
+    /* Past the frame the matcher is live again, on its own two-hit terms. */
+    state.symbolcnt = 1000 + DSD_FRAME_SYNC_DPMR_FS2_FRAME_SYMBOLS;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
+/* The suppression is dPMR's frame, not a mute switch: NXDN96 lives on 4800/4 where dPMR cannot
+ * match at all, and a build with dPMR disabled must behave exactly as it did before. */
+static void
+test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_dpmr = 0;
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.dpmr_fs2_frame_symbolcnt = 1000;
+    state.dpmr_fs2_frame_valid = 1;
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+
+    reset(&opts, &state);
+    opts.frame_dpmr = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.dpmr_fs2_frame_symbolcnt = 1000;
+    state.dpmr_fs2_frame_valid = 1;
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+}
+
 static void
 test_symbol_replay_bypasses_sps_profile_gating(void) {
     static const int symbol_input_types[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
@@ -2521,6 +2589,8 @@ main(void) {
     test_m17_candidate_expires_without_a_following_sync();
     test_short_m17_window_estimates_levels_without_warm_start_history();
     test_m17_alternating_runs_alone_are_never_a_sync();
+    test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher();
+    test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();
     test_hamming_helpers_find_best_patterns();
