@@ -169,6 +169,41 @@ cmake --build --preset dev-debug -j --target dsd-neo_test_ui_qt_radio_reference_
 ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --output-on-failure
 ```
 
+#### Guards that gate which code compiles
+
+`USE_RADIO` is defined only when the radio pipeline is available — an SDR
+backend was found, or `DSD_FORCE_RADIO_PIPELINE=ON` — and it guards
+declarations, not only call sites. A test that calls a `USE_RADIO`-only helper
+from outside the guard therefore compiles wherever a backend is present and
+fails only where the symbol is absent:
+
+```
+error: implicit declaration of function 'test_...' [-Werror=implicit-function-declaration]
+```
+
+The run-time form of the same mistake is quieter. A case that asserts on a
+handler existing only under `USE_RADIO` — a queued `DSD_APP_CMD_MANUAL_TUNE`,
+say — watches the command drain with no handler in a radio-off build, so the
+expectation stops holding without anything failing to compile.
+`tests/ui/test_ui_cmd_queue.c` shows the split: validation cases that hold in
+any build stay outside the guard, cases observing a radio handler sit inside it.
+
+`backend-matrix (neither)` builds and runs ctest with both SDR backends off, on
+pull requests as well as pushes, so either mistake fails the pull request rather
+than the default branch. Reproduce that configuration locally when a change
+touches a `USE_RADIO` guard:
+
+```sh
+cmake --preset dev-debug -DDSD_ENABLE_RTLSDR=OFF -DDSD_REQUIRE_RTLSDR=OFF \
+  -DDSD_ENABLE_SOAPYSDR=OFF -DDSD_REQUIRE_SOAPYSDR=OFF
+cmake --build --preset dev-debug -j
+ctest --preset dev-debug --output-on-failure
+```
+
+Clear the `DSD_REQUIRE_*` flags alongside the `DSD_ENABLE_*` ones. Against a
+cached build tree, configure otherwise stops with
+`DSD_REQUIRE_RTLSDR=ON requires DSD_ENABLE_RTLSDR=ON.`
+
 ## Continuous Integration
 
 GitHub Actions runs tests and quality checks on pull requests, primary-branch
@@ -178,7 +213,10 @@ secret scanning, OSV scanning, repository guardrails for secret redaction and
 workflow source/download pinning, fuzz smoke tests, and install/package
 validation run where their workflows declare those events. Dependency review is
 PR-only, release tag validation is tag-only, and extended fuzzing is scheduled
-or manually dispatched.
+or manually dispatched. The backend matrix builds and tests all four
+SDR-backend combinations — `both`, `rtl_only`, `soapy_only` and `neither` — on
+pull requests as well as pushes, so the radio-off build is proven before a merge
+rather than after one.
 
 ## Regression Test Requirement
 
