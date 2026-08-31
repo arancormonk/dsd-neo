@@ -114,6 +114,22 @@ int dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const ds
 int dsd_frame_sync_sps_hunt_dwell_passes(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Give the active symbol profile a full dwell to prove itself on.
+ *
+ * For the sites that put the decoder somewhere new without going through the hunt -- a
+ * trunking grant retuning to a voice channel, say. The profile that arrives has not spent
+ * any of its own budget yet, and inheriting what the previous channel spent can retire it
+ * within symbols of the tune (#392).
+ *
+ * Resets the whole budget: the counter, the measurement anchor and the refund snapshot.
+ * Callers that assign dsd_state::sps_hunt_idx directly owe all three (#394); this is what
+ * they should call rather than zeroing the counter alone.
+ *
+ * @param state Decoder state; NULL is a no-op.
+ */
+void dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state);
+
+/**
  * @brief Return the symbol rate, in Hz, of the SPS hunt profile currently selected.
  *
  * The decoder's own timing authority on RTL-family FSK input: the front end applies

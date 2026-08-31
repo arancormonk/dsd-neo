@@ -60,9 +60,12 @@ void frame_sync_ensure_enabled_sps_profile(const dsd_opts* opts, dsd_state* stat
 /**
  * @brief Step the SPS hunt if the active profile has spent its symbol budget.
  *
- * @return 1 when the step changed the profile index or the modulation -- the caller's sync
- *         window is then stale and must be rebuilt -- and 0 when the profile still owes
- *         symbols, or when spending the budget left the timing and modulation untouched.
+ * @return 1 when the caller must take a no-sync exit: either the step changed the profile
+ *         index or the modulation -- the caller's sync window is then stale and must be
+ *         rebuilt -- or the budget expired on a trunked voice channel, where the profile is
+ *         deliberately held but the no-sync accounting is still owed (#392, #393). 0 when
+ *         the profile still owes symbols, or when spending the budget left the timing and
+ *         modulation untouched.
  */
 int frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state);
 double frame_sync_elapsed_seconds(double nowm, time_t now, double mono_stamp, time_t wall_stamp);

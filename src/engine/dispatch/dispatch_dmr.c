@@ -59,55 +59,68 @@ dmr_close_mbe_out_if_open(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-static void
+/*
+ * Trunking declines the direct-mode paths outright: a trunked system's traffic is on the
+ * channels the control channel grants, not on MS/DM. Nothing is read, so say the frame was
+ * withheld rather than let it read as a productive frame that happened to consume nothing --
+ * the SPS hunt refuses consumption credit below a frame's worth, so the search that found
+ * the sync would stand charged with nothing ever paying it back (#392).
+ */
+static dsd_frame_verdict
 dmr_bootstrap_ms_if_enabled(dsd_opts* opts, dsd_state* state) {
     dmr_open_mbe_out_if_needed(opts, state);
     if (opts->trunk_enable == 0) {
         dmrMSBootstrap(opts, state);
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
+    return DSD_FRAME_VERDICT_WITHHELD;
 }
 
-static void
+static dsd_frame_verdict
 dmr_bootstrap_mono(dsd_opts* opts, dsd_state* state) {
     if (opts->trunk_enable == 1 && DSD_SYNC_IS_DMR_BS(state->synctype)) {
         state->dmr_stereo = 1;
         dmrBSBootstrap(opts, state);
         state->dmr_stereo = 0;
-        return;
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
     state->dmr_mono_slot = 0;
     state->dmr_stereo = 0;
-    dmr_bootstrap_ms_if_enabled(opts, state);
+    return dmr_bootstrap_ms_if_enabled(opts, state);
 }
 
-static void
+static dsd_frame_verdict
 dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " VOICE        ");
     if (opts->dmr_mono == 1) {
         dmr_set_slot_lights(state);
-        dmr_bootstrap_mono(opts, state);
-        return;
+        return dmr_bootstrap_mono(opts, state);
     }
     if (opts->dmr_stereo == 0 && state->synctype < DSD_SYNC_DMR_MS_VOICE) {
         dmr_set_slot_lights(state);
-        dmr_bootstrap_ms_if_enabled(opts, state);
+        return dmr_bootstrap_ms_if_enabled(opts, state);
     }
     if (opts->dmr_stereo == 1) {
         state->dmr_stereo = 1;
         if (state->synctype >= DSD_SYNC_DMR_MS_VOICE) {
-            dmr_bootstrap_ms_if_enabled(opts, state);
-        } else {
-            dmrBSBootstrap(opts, state);
+            return dmr_bootstrap_ms_if_enabled(opts, state);
         }
+        dmrBSBootstrap(opts, state);
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
+    /* Stereo off on an MS voice sync with mono off: nothing above ran, and nothing read the
+     * frame. Productive is the status quo for a path that consumes nothing either way. */
+    return DSD_FRAME_VERDICT_PRODUCTIVE;
 }
 
-static void
+static dsd_frame_verdict
 dmr_handle_ms_data(dsd_opts* opts, dsd_state* state) {
     dmr_close_mbe_out_if_open(opts, state);
     if (opts->trunk_enable == 0) {
         dmrMSData(opts, state);
+        return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
+    return DSD_FRAME_VERDICT_WITHHELD;
 }
 
 static void
@@ -132,11 +145,16 @@ dsd_dispatch_matches_dmr(int synctype) {
 }
 
 /*
- * Always productive. DMR's per-burst verdicts live in the colour-code lock and voice-open
- * counters of src/protocol/dmr/dmr_confidence.c, which answer "is this transmission real"
- * across bursts rather than "did this burst validate"; a burst that fails the lock is not
- * the same thing as a burst that decoded nothing, and mapping one onto the other would be
- * guesswork. Left productive until DMR grows a per-burst answer (#391).
+ * Productive wherever a burst is actually read. DMR's per-burst verdicts live in the colour-
+ * code lock and voice-open counters of src/protocol/dmr/dmr_confidence.c, which answer "is
+ * this transmission real" across bursts rather than "did this burst validate"; a burst that
+ * fails the lock is not the same thing as a burst that decoded nothing, and mapping one onto
+ * the other would be guesswork. Left productive until DMR grows a per-burst answer (#391).
+ *
+ * The direct-mode paths under trunking are a different question and do have an answer: they
+ * are not a burst this decoded badly, they are a burst it was told not to decode, so they
+ * report WITHHELD (#392). That distinction is the whole of what is claimed here -- it says
+ * where the symbols went, not whether the profile is right.
  */
 dsd_frame_verdict
 dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
@@ -155,12 +173,10 @@ dsd_dispatch_handle_dmr(dsd_opts* opts, dsd_state* state) {
     state->nac = 0;
 
     if (dmr_is_voice_synctype(state->synctype)) {
-        dmr_handle_voice(opts, state);
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        return dmr_handle_voice(opts, state);
     }
     if (dmr_is_ms_data_synctype(state->synctype)) {
-        dmr_handle_ms_data(opts, state);
-        return DSD_FRAME_VERDICT_PRODUCTIVE;
+        return dmr_handle_ms_data(opts, state);
     }
     dmr_handle_other_data(opts, state);
     return DSD_FRAME_VERDICT_PRODUCTIVE;

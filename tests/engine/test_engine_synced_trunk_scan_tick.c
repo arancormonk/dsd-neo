@@ -8,6 +8,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/engine.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -29,6 +30,7 @@ static int g_get_frame_sync_calls = 0;
 static int g_outer_tick_calls = 0;
 static int g_synced_tick_calls = 0;
 static int g_process_frame_guard_failures = 0;
+static int g_withheld_verdicts = 0;
 static uint64_t g_pending_tune_request = 0U;
 static uint64_t g_failed_tune_request = 0U;
 static int g_failed_gate_seen = 0;
@@ -61,7 +63,14 @@ processFrame(dsd_opts* opts, dsd_state* state) { // NOLINT(misc-use-internal-lin
 int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
+    /* #392: a frame the retune generation makes undispatchable consumes nothing, so the
+     * skip has to tell the SPS hunt so itself -- processFrame(), which normally stamps this,
+     * never ran. Observed here because the real getFrameSync() is what reads the verdict,
+     * and it reads it once and clears it. */
+    if (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_WITHHELD) {
+        g_withheld_verdicts++;
+    }
+    state->sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     g_get_frame_sync_calls++;
     if (g_get_frame_sync_calls == 1) {
         // Frames assembled before and during an asynchronous retune must stay
@@ -156,6 +165,14 @@ main(void) {
     if (g_process_frame_guard_failures != 0) {
         DSD_FPRINTF(stderr, "frame processing did not own the SM/scan guard failures=%d\n",
                     g_process_frame_guard_failures);
+        test_rc = 1;
+    }
+    /* #392: the four syncs the gate discarded each told the SPS hunt they were withheld, so
+     * the search that found them comes out budget-neutral instead of charged. Seven syncs
+     * are returned and three are dispatched, so this is the exact complement of the count
+     * above -- a skip that stamps nothing would leave it at zero. */
+    if (g_withheld_verdicts != 4) {
+        DSD_FPRINTF(stderr, "undispatchable frames did not report a withheld verdict count=%d\n", g_withheld_verdicts);
         test_rc = 1;
     }
     if (g_outer_tick_calls == 0) {

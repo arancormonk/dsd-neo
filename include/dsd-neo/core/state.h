@@ -549,14 +549,23 @@ struct dsd_state {
      *   sps_hunt_symbolcnt_mark together. frame_sync_apply_sps_hunt_profile() does both
      *   whenever it moves the index, so its callers need not -- but it is not the only way
      *   sps_hunt_idx moves, and the sites that assign the index directly still owe both
-     *   themselves (#394). None of them pays in full today: the app-control and engine
+     *   themselves (#394). Most of them still do not: the app-control and engine
      *   retune paths (svc_publish_symbol_profile(), set_cc_symbol_timing(),
      *   dsd_engine_select_p25_sps_profile(), no_carrier_apply_p25_cc_symbolrate() and the
      *   two trunk-scan target helpers) zero the counter and leave the anchor where it was,
      *   which is harmless only because whatever that anchor then credits is debited from the
      *   counter they just zeroed and floored there; the -m2/-m3/-m4 branches of the CLI 'm'
      *   case do neither, and are benign only because they run before the first
-     *   getFrameSync().
+     *   getFrameSync(). dsd_frame_sync_sps_hunt_restart_dwell() is the one that pays in
+     *   full, and is what a new direct assigner should call.
+     * sps_hunt_counter_at_entry: sps_hunt_counter as this search cycle began, so a frame
+     *   the engine declined to dispatch can hand back exactly what that cycle's search
+     *   charged and nothing else (DSD_FRAME_VERDICT_WITHHELD, #392). Restoring to a
+     *   snapshot rather than subtracting a count keeps it exact without a second counter:
+     *   charging happens only inside frame_sync_advance_sync_window(), between this being
+     *   stamped and the verdict being read. The restore is clamped so it can only lower the
+     *   counter, which is what makes it safe against the resets that fire in between -- a
+     *   profile change, a retune, a trunk-scan target switch -- none of which this can undo.
      * sps_hunt_symbolcnt_mark: dsd_state::symbolcnt as getFrameSync() last returned, so
      *   the next call can measure what the handler consumed in between. It shares that
      *   field's unsigned wrapping type, so the difference stays exact across the counter's
@@ -573,7 +582,9 @@ struct dsd_state {
      *   call site. Zero is DSD_FRAME_VERDICT_PRODUCTIVE, so a handler that reports nothing
      *   -- and a zeroed dsd_state -- is credited as having decoded a frame; only a
      *   protocol that ran a check and failed it debits nothing (#391), and only one whose
-     *   check proves the profile restarts the dwell outright (#400). Strictly per frame,
+     *   check proves the profile restarts the dwell outright (#400). A frame the engine
+     *   declined to dispatch at all is neither, and refunds its own search instead (#392).
+     *   Strictly per frame,
      *   so unlike the two fields above it owes a profile change nothing: processFrame()
      *   re-stamps it on every dispatch and
      *   frame_sync_sps_hunt_note_handler_consumption() clears it on every read, so it
@@ -583,6 +594,7 @@ struct dsd_state {
     int sps_hunt_counter;
     uint32_t sps_hunt_symbolcnt_mark;
     int sps_hunt_last_frame_verdict;
+    int sps_hunt_counter_at_entry;
     int sps_hunt_idx;
     /* Parity toggle for the P25p1 modulation probe: which modulation the next hunt re-entry
      * into the 4800/4-level profile watches. Zero-init keeps the first re-entry on C4FM.

@@ -46,6 +46,7 @@ static long int g_last_setfreq_hz = 0;
 static bool g_setfreq_result = true;
 static bool g_setmod_result = true;
 static int g_frame_sync_reset_calls = 0;
+static int g_sps_hunt_restart_calls = 0;
 static int g_p25p2_frame_reset_calls = 0;
 static int g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 static int g_rtl_cqpsk_enable = 0;
@@ -134,6 +135,20 @@ void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_frame_sync_reset_mod_state(void) {
     g_frame_sync_reset_calls++;
+}
+
+/* Mirrors the real helper in src/dsp/dsd_frame_sync.c so the assertions below read the
+ * behavior rather than the stub. */
+void
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_frame_sync_sps_hunt_restart_dwell(dsd_state* state) {
+    g_sps_hunt_restart_calls++;
+    if (!state) {
+        return;
+    }
+    state->sps_hunt_counter = 0;
+    state->sps_hunt_symbolcnt_mark = state->symbolcnt;
+    state->sps_hunt_counter_at_entry = 0;
 }
 
 void
@@ -711,10 +726,22 @@ main(void) {
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
     assert(state->sps_hunt_counter == 17);
 
+    /* The voice-channel tune keeps the NXDN48 profile but starts its dwell over: the grant
+     * put the decoder here, so the control channel's spend is not this channel's to inherit
+     * (#392). The profile index is the invariant this case is about, and it is untouched. */
     state->sps_hunt_counter = 23;
+    state->symbolcnt = 7000U;
+    state->sps_hunt_symbolcnt_mark = 1234U;
+    state->sps_hunt_counter_at_entry = 23;
+    g_sps_hunt_restart_calls = 0;
     assert(dsd_engine_trunk_tune_to_freq_request(opts, state, 451500000, 0, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
     assert(state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_2400_4);
-    assert(state->sps_hunt_counter == 23);
+    assert(g_sps_hunt_restart_calls == 1);
+    assert(state->sps_hunt_counter == 0);
+    /* The anchor moves with the budget, so the fresh dwell is not immediately credited for
+     * symbols spent before the tune (#394). */
+    assert(state->sps_hunt_symbolcnt_mark == 7000U);
+    assert(state->sps_hunt_counter_at_entry == 0);
 
     /* Direct conventional scan retunes publish a new generation only after
      * the backend completes the target. */

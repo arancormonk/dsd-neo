@@ -587,6 +587,91 @@ fake_no_carrier(dsd_opts* opts, dsd_state* state) {
     g_no_carrier_order = ++g_hook_order;
 }
 
+/* #392: a sync the engine declined to dispatch consumes nothing, so the credit path refuses
+ * it at its size floor and the search that found it stands charged with nothing to pay it
+ * back. Trunked DMR skips the MS paths outright and a retune in flight skips processFrame()
+ * entirely, so those charges accumulated until the hunt rotated the profile off a channel
+ * the engine had just tuned. */
+static void
+test_withheld_syncs_do_not_rotate_a_profile(void) {
+    static const int withheld_only[] = {DSD_FRAME_VERDICT_WITHHELD};
+    const HuntCase tc = {
+        .label = "withheld syncs at 4800/4",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 284,
+        .handler_symbols = 0, /* the gate ran no handler, so nothing was consumed */
+        .verdict_cycle = withheld_only,
+        .verdict_cycle_len = 1,
+        .symbol_budget = 400000,
+        .expect_step = 0,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    /* Many dwells' worth of searching, every cycle of it withheld, and the profile the
+     * engine chose is still in force. */
+    assert(r.syncs_seen > 100);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
+}
+
+/* The refund is neutrality, not credit: it erases the search that produced the withheld
+ * frame and nothing else, so it cannot bank a reserve. Interleaving withheld frames with
+ * unproductive ones leaves the unproductive halves accumulating exactly as before, and a
+ * profile matching nothing is still given up -- the #388 direction this must not re-open. */
+static void
+test_withheld_syncs_do_not_hold_a_wrong_profile(void) {
+    static const int withheld_then_unproductive[] = {DSD_FRAME_VERDICT_WITHHELD, DSD_FRAME_VERDICT_UNPRODUCTIVE};
+    const HuntCase tc = {
+        .label = "withheld mixed with unproductive at 4800/4",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 284,
+        .handler_symbols = 8,
+        .verdict_cycle = withheld_then_unproductive,
+        .verdict_cycle_len = 2,
+        .symbol_budget = 400000,
+        .expect_step = 1,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 10);
+    assert_auto_stepped_to_2400_4(&r);
+}
+
+/* A trunked voice channel the engine tuned on a grant. */
+static void
+configure_tuned_vc(dsd_opts* opts, dsd_state* state) {
+    (void)state;
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+}
+
+/* #392, the other half: the profile on a tuned voice channel came with the grant that tuned
+ * it, so the hunt holds it however the budget reads. A call fading toward the noise floor
+ * credits less than the search between its syncs burns and reaches the dwell while it is
+ * still decoding; rotating there takes the channel's timing away mid-call.
+ *
+ * This is test_unproductive_frames_never_buy_dwell()'s shape with one flag changed, so what
+ * it pins is the flag and nothing else: the same stream rotates when the tuner is not parked
+ * on a voice channel. */
+static void
+test_a_tuned_voice_channel_holds_its_profile(void) {
+    const HuntCase tc = {
+        .label = "tuned VC at 4800/4",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 284,
+        .handler_symbols = 8,
+        .handler_unproductive = 1,
+        .symbol_budget = 400000,
+        .expect_step = 0,
+        .configure = configure_tuned_vc,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    assert(r.syncs_seen > 100);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
+}
+
 /* A P25 voice channel the trunk SM has tuned, whose hangtime has already run out: the
  * shape in which frame_sync_no_sync_try_p25_release() has a release to make. */
 static void
@@ -602,8 +687,13 @@ configure_tuned_vc_past_hangtime(dsd_opts* opts, dsd_state* state) {
 
 /* #393: the budget exit is a no-sync exit like the timeout, so it owes the P25 SM the
  * same accounting in the same order -- VC no-sync pass, release check, then no-carrier.
- * Markers every 8 symbols keep the 1800-symbol timeout from ever arming, so only the
- * budget exit can step here. */
+ * Markers every 8 symbols keep the 1800-symbol timeout from ever arming, so the budget
+ * exit is the only path that can run them here.
+ *
+ * #392 holds the profile on a tuned voice channel, so this no longer rotates -- but the
+ * accounting is exactly what it must not take with it. These hooks are what gives a dead
+ * voice channel up; without them nothing would clear trunk_is_tuned and the hold would
+ * never end. */
 static void
 test_budget_exit_runs_the_no_sync_hooks(void) {
     g_hook_order = 0;
@@ -622,15 +712,15 @@ test_budget_exit_runs_the_no_sync_hooks(void) {
         .marker_gap = 0,
         .handler_symbols = 8,
         .symbol_budget = 40000,
-        .expect_step = 1,
+        .expect_step = 0,
         .configure = configure_tuned_vc_past_hangtime,
     };
     const HuntResult r = drive_hunt(&tc);
     dsd_frame_sync_hooks_set((dsd_frame_sync_hooks){0});
 
-    /* Same AUTO step the other stepping cases assert: the budget exit is a different way out
-     * of the dwell, not a different rotation. */
-    assert_auto_stepped_to_2400_4(&r);
+    /* The profile the engine tuned is still the profile in force. */
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
     assert(g_vc_no_sync_order > 0);
     assert(g_release_order > g_vc_no_sync_order);
     assert(g_no_carrier_order > g_release_order);
@@ -649,6 +739,9 @@ main(void) {
     test_a_verdict_is_read_once_and_cleared();
     test_idle_rotation_period_is_unchanged();
     test_locked_modulation_rotates_within_equal_timing();
+    test_withheld_syncs_do_not_rotate_a_profile();
+    test_withheld_syncs_do_not_hold_a_wrong_profile();
+    test_a_tuned_voice_channel_holds_its_profile();
     test_budget_exit_runs_the_no_sync_hooks();
     return 0;
 }

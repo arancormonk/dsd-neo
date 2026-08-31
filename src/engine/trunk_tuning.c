@@ -415,6 +415,14 @@ dsd_engine_update_vc_tune_state(dsd_opts* opts, dsd_state* state, long int freq)
     state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
+    /* The voice channel starts its symbol profile's dwell over. Without this it inherits
+     * whatever the control channel had already spent hunting, so a grant can land on a
+     * budget that is already at its dwell and be rotated off within symbols of the tune.
+     * dsd_engine_select_p25_sps_profile() does this for the P25 retunes it handles; every
+     * other system's grants -- DMR, NXDN, EDACS -- reach here and nothing else pays it
+     * (#392). Voice channels only: a control-channel tune is the hunt's business, and
+     * handing it a fresh dwell would keep it on a profile that is finding nothing. */
+    dsd_frame_sync_sps_hunt_restart_dwell(state);
     /* Reset activity timers so noCarrier() does not immediately force a return
      * to CC before we have a chance to acquire sync on the new VC. */
     state->last_vc_sync_time = time(NULL);

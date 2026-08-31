@@ -229,6 +229,8 @@ check_verdict_default_is_productive(void) {
      * recognises 2 as the proof that restarts a dwell; renumbering here without changing it
      * there turns every proof into a refusal. */
     _Static_assert(DSD_FRAME_VERDICT_PROFILE_PROVEN == 2, "the DSP layer matches PROFILE_PROVEN as the literal 2");
+    /* #392: same rule for the verdict that makes a declined dispatch budget-neutral. */
+    _Static_assert(DSD_FRAME_VERDICT_WITHHELD == 3, "the DSP layer matches WITHHELD as the literal 3");
 }
 
 int
@@ -248,6 +250,10 @@ main(void) {
     run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
     run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_UNPRODUCTIVE,
                               DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    /* #392: and so does a withheld frame, over any verdict the frame before it left. */
+    run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_WITHHELD, 0);
+    run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_PRODUCTIVE,
+                              DSD_FRAME_VERDICT_WITHHELD);
 
     printf("ENGINE_PROTOCOL_DISPATCH: OK\n");
     return 0;

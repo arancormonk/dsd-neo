@@ -399,6 +399,61 @@ test_sps_hunt_budget_is_spent_in_symbols(void) {
 }
 
 /*
+ * Issue #392: the profile on a trunked voice channel came with the grant that tuned it, so
+ * an expired dwell holds it rather than rotating. The dwell still expired, though, and the
+ * caller is still owed its no-sync accounting (#393) -- that accounting is what gives a dead
+ * voice channel up, and suppressing it would leave nothing to clear trunk_is_tuned.
+ */
+static void
+test_sps_hunt_holds_the_profile_on_a_tuned_voice_channel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.frame_dstar = 1;
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+
+    /* The dwell expires: the profile stays, the budget restarts, and the caller is told to
+     * take its no-sync exit anyway. */
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.sps_hunt_counter == 0);
+
+    /* Restarting the budget is what keeps the caller's loop from spinning: the next call is
+     * a whole dwell away from expiring again. */
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+
+    /* A probe on trial when the grant arrived still has its verdict read. This is the only
+     * site that clears the flag, and while it is set the modulation votes cannot take the
+     * demodulator back -- leaving it latched would pin rf_mod for the whole call. */
+    state.p25_p1_mod_probe_active = 1;
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.p25_p1_mod_probe_active == 0);
+
+    /* Dropping either half of the condition hands the profile back to the hunt: a control
+     * channel is not tuned in this sense, and neither is a conventional receiver. */
+    opts.trunk_is_tuned = 0;
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.frame_dstar = 1;
+    opts.trunk_is_tuned = 1; /* stale flag with trunking off */
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_2);
+}
+
+/*
  * dsd_state::symbolcnt free-runs and wraps at 2^32 (issue #395). The hunt measures what a
  * handler consumed as a modular difference against its mark, so a rollover between the mark
  * and the next getFrameSync() entry must still yield the true symbol count -- and a reset to
@@ -503,7 +558,7 @@ test_sps_hunt_proven_verdict_restarts_the_dwell(void) {
     state.sps_hunt_counter = 5000;
     state.sps_hunt_symbolcnt_mark = 1000U;
     state.symbolcnt = 2000U;
-    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PROFILE_PROVEN + 1;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD + 1;
     dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
     assert(state.sps_hunt_counter == 5000);
 
@@ -524,6 +579,95 @@ test_sps_hunt_proven_verdict_restarts_the_dwell(void) {
     state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
     dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
     assert(state.sps_hunt_counter == 5000 - 134);
+}
+
+/*
+ * Issue #392: a frame the engine declined to dispatch consumes nothing, so the credit path
+ * refuses it at the size floor and the search that found it stands charged. The cycle is made
+ * neutral instead -- the counter goes back to where the cycle began, and no further.
+ */
+static void
+test_sps_hunt_withheld_verdict_refunds_only_its_own_cycle(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* The search charged 400 symbols on top of a budget already at 5000; the refund hands
+     * back exactly those 400, with no consumption to read. */
+    reset(&opts, &state);
+    state.sps_hunt_counter_at_entry = 5000;
+    state.sps_hunt_counter = 5400;
+    state.sps_hunt_symbolcnt_mark = 1000U;
+    state.symbolcnt = 1000U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 5000);
+    /* The snapshot follows the counter, so the next cycle refunds against this one's result
+     * rather than against a figure two cycles old. */
+    assert(state.sps_hunt_counter_at_entry == 5000);
+    assert(state.sps_hunt_symbolcnt_mark == state.symbolcnt);
+
+    /* A refund can only ever lower the counter. Something outside the hunt -- a profile
+     * change, a retune, a trunk-scan target switch -- may have zeroed it since the snapshot
+     * was taken, and none of those is this function's to undo. */
+    reset(&opts, &state);
+    state.sps_hunt_counter_at_entry = 5000;
+    state.sps_hunt_counter = 12;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 12);
+    assert(state.sps_hunt_counter_at_entry == 12);
+
+    /* One verdict answers for one handler call: the next entry finds the field cleared, so a
+     * withheld frame cannot refund a cycle it did not charge. */
+    state.sps_hunt_counter = 900;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 900);
+
+    /* Withheld beats consumption: the engine skipped the handler, so whatever the interval
+     * measures is not a frame this profile read and must not be credited as one. */
+    reset(&opts, &state);
+    state.sps_hunt_counter_at_entry = 5000;
+    state.sps_hunt_counter = 5400;
+    state.sps_hunt_symbolcnt_mark = 1000U;
+    state.symbolcnt = 3000U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_WITHHELD;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 5000);
+
+    /* Every other verdict leaves the snapshot tracking the counter too, so the cycle after a
+     * proof or a debit refunds against what that left behind. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 5000;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PROFILE_PROVEN;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.sps_hunt_counter_at_entry == 0);
+}
+
+/*
+ * The whole budget, for the sites that move the decoder without going through the hunt.
+ * Zeroing the counter alone leaves the anchor where it was, which is the #394 half-reset;
+ * a voice-channel tune owes both, plus the refund snapshot they now share a cycle with.
+ */
+static void
+test_sps_hunt_restart_dwell_resets_the_whole_budget(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    state.sps_hunt_counter = 4321;
+    state.sps_hunt_counter_at_entry = 4000;
+    state.sps_hunt_symbolcnt_mark = 11U;
+    state.symbolcnt = 90210U;
+    dsd_frame_sync_sps_hunt_restart_dwell(&state);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.sps_hunt_counter_at_entry == 0);
+    assert(state.sps_hunt_symbolcnt_mark == 90210U);
+    /* The profile itself is not the budget's business: this grants a dwell, it does not
+     * choose what spends it. */
+    assert(state.sps_hunt_idx == 0);
+
+    dsd_frame_sync_sps_hunt_restart_dwell(NULL);
 }
 
 /* Carrier no longer wipes the hunt's progress from the modulation-switch path. */
@@ -2359,6 +2503,9 @@ main(void) {
     test_sps_hunt_budget_is_spent_in_symbols();
     test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap();
     test_sps_hunt_proven_verdict_restarts_the_dwell();
+    test_sps_hunt_withheld_verdict_refunds_only_its_own_cycle();
+    test_sps_hunt_restart_dwell_resets_the_whole_budget();
+    test_sps_hunt_holds_the_profile_on_a_tuned_voice_channel();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();
