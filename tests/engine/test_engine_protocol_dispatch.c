@@ -224,6 +224,11 @@ static void
 check_verdict_default_is_productive(void) {
     _Static_assert(DSD_FRAME_VERDICT_PRODUCTIVE == 0, "PRODUCTIVE must be the zero value");
     _Static_assert(DSD_FRAME_VERDICT_UNPRODUCTIVE != 0, "UNPRODUCTIVE must be non-zero");
+    /* #400: the DSP layer includes no engine headers, so it reads these as literals out of
+     * dsd_state::sps_hunt_last_frame_verdict. frame_sync_sps_hunt_note_handler_consumption()
+     * recognises 2 as the proof that restarts a dwell; renumbering here without changing it
+     * there turns every proof into a refusal. */
+    _Static_assert(DSD_FRAME_VERDICT_PROFILE_PROVEN == 2, "the DSP layer matches PROFILE_PROVEN as the literal 2");
 }
 
 int
@@ -239,6 +244,10 @@ main(void) {
     run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_PRODUCTIVE,
                               DSD_FRAME_VERDICT_UNPRODUCTIVE);
     run_dispatch_case_verdict(-1, TEST_HANDLER_NONE, DSD_FRAME_VERDICT_PRODUCTIVE, DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    /* #400: a proof reaches frame sync intact, and does not survive the frame that made it. */
+    run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_PROFILE_PROVEN, 0);
+    run_dispatch_case_verdict(DSD_SYNC_YSF_POS, TEST_HANDLER_YSF, DSD_FRAME_VERDICT_UNPRODUCTIVE,
+                              DSD_FRAME_VERDICT_PROFILE_PROVEN);
 
     printf("ENGINE_PROTOCOL_DISPATCH: OK\n");
     return 0;

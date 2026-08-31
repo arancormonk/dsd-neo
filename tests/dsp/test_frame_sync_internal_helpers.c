@@ -12,6 +12,7 @@
 #include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -453,6 +454,76 @@ test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap(void) {
     state.symbolcnt = (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS - 1U - 6U;
     dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
     assert(state.sps_hunt_counter == 1000);
+}
+
+/*
+ * Issue #400: consumption credit is bounded by what a handler read, and a P25p1 control
+ * channel reads 134 symbols of a ~180-symbol slot, so a decoding channel can never get ahead
+ * of the failures between its frames. A handler whose own check proves the profile restarts
+ * the dwell instead of being paid for the frame.
+ */
+static void
+test_sps_hunt_proven_verdict_restarts_the_dwell(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A proof holds however little the frame cost to read, so the size floor that keeps
+     * consumption credit honest has no say in it. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 5000;
+    state.sps_hunt_symbolcnt_mark = 1000U;
+    state.symbolcnt = 1000U + (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS - 1U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PROFILE_PROVEN;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.sps_hunt_symbolcnt_mark == state.symbolcnt);
+
+    /* One verdict answers for one handler call: the next entry finds the field cleared and
+     * falls back to measuring, so a proof cannot restart a dwell it already restarted. */
+    state.sps_hunt_counter = 5000;
+    state.symbolcnt += 4U;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 5000);
+
+    /* Nor does the backwards-jump guard, which exists for the same reason. A subsystem that
+     * zeroed symbolcnt mid-measurement makes the interval unreadable; the proof does not
+     * depend on reading it. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 5000;
+    state.sps_hunt_symbolcnt_mark = 5000U;
+    state.symbolcnt = 0U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PROFILE_PROVEN;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 0);
+    assert(state.sps_hunt_symbolcnt_mark == 0U);
+
+    /* The DSP layer reads the verdict as a literal, since it includes no engine headers. A
+     * value it does not know is refused credit -- toward rotating, not toward pinning. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 5000;
+    state.sps_hunt_symbolcnt_mark = 1000U;
+    state.symbolcnt = 2000U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PROFILE_PROVEN + 1;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 5000);
+
+    /* An unproductive frame is still refused, and a productive one is still paid what it read
+     * and no more: neither path moved. */
+    reset(&opts, &state);
+    state.sps_hunt_counter = 5000;
+    state.sps_hunt_symbolcnt_mark = 1000U;
+    state.symbolcnt = 1134U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_UNPRODUCTIVE;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 5000);
+
+    reset(&opts, &state);
+    state.sps_hunt_counter = 5000;
+    state.sps_hunt_symbolcnt_mark = 1000U;
+    state.symbolcnt = 1134U;
+    state.sps_hunt_last_frame_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+    dsd_frame_sync_test_sps_hunt_note_handler_consumption(&state);
+    assert(state.sps_hunt_counter == 5000 - 134);
 }
 
 /* Carrier no longer wipes the hunt's progress from the modulation-switch path. */
@@ -2287,6 +2358,7 @@ main(void) {
     test_adopted_profile_starts_its_dwell_over();
     test_sps_hunt_budget_is_spent_in_symbols();
     test_sps_hunt_consumption_is_exact_across_the_symbolcnt_wrap();
+    test_sps_hunt_proven_verdict_restarts_the_dwell();
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();

@@ -83,6 +83,14 @@ halves: the payload still decodes under `-fa`, and no `SPS hunt: trying` line ap
 frame unproductive drops the payload from 23 hits to 13 and steps the hunt to 20 sps partway through the capture.
 `dsd_neo_add_iq_decode_test` takes the "must be absent" regex as an optional fifth argument.
 
+`DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT` covers issue #400, the same rule as the YSF case read the other way. A
+handler's credit is bounded by what it read, and P25p1 reads 33 symbols when the NID fails against 134 of a
+~180-symbol slot when a one-block TSDU decodes, so a channel that was decoding still lost the profile to the failures
+between its frames. The `p25p1_cqpsk_vc` capture is already registered under `-f1`; under `-fa` it steps to 20 sps
+partway through on `main` and finishes in dPMR, so the encrypted HDU behind those failures is a payload only the held
+profile reaches — which is what makes the assertion the fix rather than the fixture. Both halves were confirmed
+stable over repeated runs on `dev-debug`, `asan-ubsan-debug` and `tsan-debug` before the case was added.
+
 `DECODE_IQ_M17_AUTO` covers issue #399. M17's own profile is where the hunt starts, so the `m17` capture needs no
 rotation and gets none: it must publish the same identity under `-fa` that `DECODE_IQ_M17` asserts under `-fz`.
 Before the fix it published nothing, because AUTO demanded an exact repeated preamble marker that real M17 never

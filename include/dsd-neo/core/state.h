@@ -572,7 +572,8 @@ struct dsd_state {
      *   value because frame sync reads it at the next getFrameSync() entry, not at the
      *   call site. Zero is DSD_FRAME_VERDICT_PRODUCTIVE, so a handler that reports nothing
      *   -- and a zeroed dsd_state -- is credited as having decoded a frame; only a
-     *   protocol that ran a check and failed it debits nothing (#391). Strictly per frame,
+     *   protocol that ran a check and failed it debits nothing (#391), and only one whose
+     *   check proves the profile restarts the dwell outright (#400). Strictly per frame,
      *   so unlike the two fields above it owes a profile change nothing: processFrame()
      *   re-stamps it on every dispatch and
      *   frame_sync_sps_hunt_note_handler_consumption() clears it on every read, so it
@@ -949,6 +950,26 @@ struct dsd_state {
      * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
     int p25_p1_validated_rf_mod;
     uint32_t p25_p1_validated_symbolcnt;
+
+    /* That the signal on the current SPS profile is P25p1 at all, and when it last proved it:
+     * a decoded 63-bit NID BCH, whatever the DUID turned out to be. A separate stamp from the
+     * pair above rather than a reuse of it, because that pair answers a different question and
+     * is scoped to it -- it is gated on opts->mod_cli_lock and on the frame having arrived
+     * through the C4FM or CQPSK path, and a CQPSK dwell that decodes nothing withdraws it --
+     * and none of that applies to a profile that has demonstrably carried P25p1. Stamped
+     * unconditionally by every decoded NID, never by a failing one.
+     *
+     * What it buys is a bounded benefit of the doubt for the failures around a reception
+     * (dsd_dispatch_handle_p25p1()): a P25p1 sync whose NID fails inside a window of one that
+     * decoded is still evidence the profile is right, and the SPS hunt takes it as such (#400).
+     * p25_p1_nid_evidence is what opens the window, not the stamp, so a zeroed dsd_state reads
+     * as no evidence rather than as evidence at symbol zero. Acquisition state, so noCarrier()
+     * clears it: evidence is per transmission, and the next carrier proves itself again. Left
+     * alone by retunes, unlike a confirm module's flag, because a retune zeroes the hunt's
+     * budget anyway -- the most a stale window can do there is re-zero a counter already at
+     * zero, for at most the window's length. */
+    int p25_p1_nid_evidence;
+    uint32_t p25_p1_nid_evidence_symbolcnt;
 
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;

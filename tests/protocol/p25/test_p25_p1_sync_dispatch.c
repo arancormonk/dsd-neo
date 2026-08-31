@@ -303,8 +303,9 @@ test_p25p1_nid_correction_and_failure_state(void) {
     g_new_nac = 0x321;
     g_test_duid = 0x3U;
 
-    /* A decoded NID is taken at its word: the BCH held, so the burst behind it counts. */
-    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PRODUCTIVE);
+    /* A decoded NID is taken at its word: the BCH held, so the burst behind it counts -- and
+     * proves the profile carried it, whatever fraction of the slot the handler read (#400). */
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
 
     assert(state.nid_corrections_total == 3U);
     assert(state.nid_parity_overrides == 1U);
@@ -320,7 +321,8 @@ test_p25p1_nid_correction_and_failure_state(void) {
     g_test_duid = 0x5U;
 
     /* #391: the 63-bit BCH failed, the DUID is invalid and nothing is decoded past it, so
-     * the 33 dibits already read validated nothing. */
+     * the 33 dibits already read validated nothing. Nothing has decoded here to vouch for
+     * it either -- the zeroed state carries no evidence (#400). */
     assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
 
     assert(state.nid_failures_total == 1U);
@@ -491,6 +493,96 @@ test_p25p1_valid_nid_learns_modulation(void) {
     assert(state.p25_p1_validated_rf_mod == -1);
 }
 
+/*
+ * Issue #400: consumption credit is bounded by what the handler read, so a control channel
+ * decoding 134 symbols of a ~180-symbol TSDU slot loses ground on every frame it decodes and
+ * the SPS hunt rotates off it. A decoded NID proves the profile instead of paying for the
+ * frame, and vouches for the failures around it for a bounded window.
+ */
+static void
+test_p25p1_verdict_follows_the_nid_evidence_window(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A decoded NID stamps the window and proves the profile. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.symbolcnt = 5000U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence == 1);
+    assert(state.p25_p1_nid_evidence_symbolcnt == 5000U);
+
+    /* The stamp speaks for the profile, not the demodulator, so neither of the gates the
+     * modulation stamp answers to applies: a CLI modulation lock still stamps it. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence == 1);
+    assert(state.p25_p1_validated_rf_mod == -1);
+
+    /* And so does a frame that arrived through a chain the modulation stamp will not speak for. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 2;
+    state.p25_p1_validated_rf_mod = -1;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence == 1);
+    assert(state.p25_p1_validated_rf_mod == -1);
+
+    /* A failed NID inside the window is still evidence about the profile: P25p1 was decoding
+     * here a moment ago. It learns no modulation from it, and does not move the window. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.rf_mod = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = 1000U;
+    state.symbolcnt = 1000U + 9599U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(state.p25_p1_nid_evidence_symbolcnt == 1000U);
+    assert(state.p25_p1_validated_rf_mod == 1);
+
+    /* One symbol past the window it speaks only for itself again, so a channel that stops
+     * decoding stops being vouched for. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = 1000U;
+    state.symbolcnt = 1000U + 9600U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    /* The flag is what opens the window, not the stamp: a state that has never decoded a NID
+     * reads as no evidence rather than as evidence at symbol zero. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.p25_p1_nid_evidence = 0;
+    state.p25_p1_nid_evidence_symbolcnt = 0U;
+    state.symbolcnt = 12U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+
+    /* The window is measured modularly, so it stays exact across the symbol counter's rollover. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.p25_p1_nid_evidence = 1;
+    state.p25_p1_nid_evidence_symbolcnt = UINT32_MAX - 100U;
+    state.symbolcnt = 100U;
+    assert(dsd_dispatch_handle_p25p1(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -502,6 +594,7 @@ main(void) {
     test_p25p1_nac_update_guards();
     test_p25p1_mbe_output_and_resume_side_effects();
     test_p25p1_valid_nid_learns_modulation();
+    test_p25p1_verdict_follows_the_nid_evidence_window();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }
