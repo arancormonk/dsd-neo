@@ -302,6 +302,9 @@ Notes
 - On RTL-family FSK input the decoder's symbol timing follows the hunt profile from the moment the hunt selects it. The
   matching front-end channel profile is requested asynchronously and is applied by the demod thread on its next block,
   so the two are briefly out of step after every hunt step; decoding does not wait for the front end to catch up.
+- A retune -- a scanner hop, a trunking tune, or a replay RESET -- keeps the symbol profile the front end is on and
+  recomputes only the timing samples-per-symbol, and then only if the output rate changed. The profile is derived from
+  the enabled decoders at stream open only.
 - The hunt dwells on each candidate profile for a bounded budget of symbols searched for sync, so a full rotation over
   the five profiles takes roughly six seconds at 48 kHz. A transmission that starts mid-rotation and lasts less than one
   rotation can therefore be missed entirely even though the same capture decodes under its native preset -- Auto
