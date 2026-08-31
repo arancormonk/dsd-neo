@@ -3933,7 +3933,10 @@ controller_finalize_rate_chain(struct controller_state* s, const dsd_opts* opts,
         return;
     }
     s->last_applied_freq_hz.store(center_freq_hz, std::memory_order_release);
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
+    /* Retunes keep the symbol profile the front end is on; only the timing SPS follows the new
+     * output rate. Re-deriving it from the option flags here would snap a multi-protocol run back
+     * to 4800/4 on every hop, discarding whatever the SPS hunt is parked on. */
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/1);
     rtl_stream_apply_retune_profile(retune_profile, center_freq_hz);
     rtl_demod_maybe_update_resampler_after_rate_change(&demod, &output, rtl_dsp_bw_hz);
     DemodRetuneResetPlan reset_plan = demod_retune_reset_plan(reset_reason, previous_center_freq_hz, center_freq_hz,
@@ -6618,7 +6621,9 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
         return -1;
     }
     stream_open_configure_resampler_chain();
-    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output);
+    /* Stream open is the one place the profile legitimately comes from the option flags: nothing
+     * has hunted yet, and demod_apply_output_kind() just seeded the same defaults. */
+    rtl_demod_maybe_refresh_ted_sps_after_rate_change(&demod, opts, &output, /*preserve_active_profile=*/0);
     stream_open_update_output_rates();
     stream_open_log_rate_chain_summary();
     return 0;
@@ -7416,8 +7421,8 @@ rtl_stream_set_ted_sps_no_override(int sps) {
         }
     }
     rtl_stream_publish_demod_profile_snapshot();
-    /* Does NOT set ted_sps_override, allowing rate-change refresh to
-       recalculate SPS later. Use when returning to CC or switching protocols. */
+    /* Does NOT set ted_sps_override, allowing rate-change refresh to recalculate SPS later from
+       the symbol profile published above. Use when returning to CC or switching protocols. */
 }
 
 extern "C" void
@@ -9808,6 +9813,80 @@ extern "C" int
 rtl_stream_test_steady_state_watermark_enabled(const char* audio_in_dev) {
     UNUSED(audio_in_dev);
     return stream_steady_state_watermark_enabled(NULL);
+}
+
+extern "C" int
+rtl_stream_test_finalize_rate_chain_profile(const dsd_opts* opts, int rate_out_hz, int seed_symbol_rate_hz,
+                                            int seed_symbol_levels, int seed_channel_profile,
+                                            rtl_stream_test_finalize_profile_result* out_result) {
+    if (!out_result || rate_out_hz <= 0 || seed_symbol_rate_hz <= 0) {
+        return -1;
+    }
+    if (seed_symbol_levels != 2 && seed_symbol_levels != 4) {
+        return -1;
+    }
+
+    int prev_output_kind = demod.output_kind;
+    int prev_cqpsk_enable = demod.cqpsk_enable;
+    int prev_rate_in = demod.rate_in;
+    int prev_rate_out = demod.rate_out;
+    int prev_symbol_rate_hz = demod.symbol_rate_hz;
+    int prev_symbol_levels = demod.symbol_levels;
+    int prev_channel_lpf_profile = demod.channel_lpf_profile;
+    int prev_ted_sps = demod.ted_sps;
+    int prev_ted_sps_override = demod.ted_sps_override;
+    int prev_sps_is_integer = demod.sps_is_integer;
+    int prev_resamp_target_hz = demod.resamp_target_hz;
+    int prev_resamp_enabled = demod.resamp_enabled;
+    int prev_costas_reset_pending = demod.costas_reset_pending;
+    dsd_fsk_modem_state prev_fsk_modem_state = demod.fsk_modem_state;
+    unsigned int prev_output_rate = output.rate;
+    uint32_t prev_last_applied_freq_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
+    int prev_fsk_cfg_pending = g_fsk_modem_config_pending.load(std::memory_order_acquire);
+
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.cqpsk_enable = 0;
+    demod.rate_in = rate_out_hz;
+    demod.rate_out = rate_out_hz;
+    demod.resamp_target_hz = 0;
+    demod.resamp_enabled = 0;
+    demod.ted_sps_override = 0;
+    output.rate = (unsigned int)rate_out_hz;
+    /* Seed through the path the SPS hunt uses, so the front end is on a real published profile. */
+    (void)rtl_stream_set_symbol_profile(seed_symbol_rate_hz, seed_symbol_levels, seed_channel_profile);
+
+    /* Same previous/next frequency and rate keeps the reset plan on the retain-FLL path. */
+    const uint32_t center_freq_hz = 851012500U;
+    controller_finalize_rate_chain(&controller, opts, center_freq_hz, /*mark_reconfigure=*/1,
+                                   DemodRetuneResetReason::FrequencyRetune, center_freq_hz, rate_out_hz,
+                                   /*retune_profile=*/NULL);
+
+    out_result->symbol_rate_hz = demod.symbol_rate_hz;
+    out_result->symbol_levels = demod.symbol_levels;
+    out_result->ted_sps = demod.ted_sps;
+    out_result->ted_sps_override = demod.ted_sps_override;
+    out_result->sps_is_integer = demod.sps_is_integer;
+    out_result->channel_lpf_profile = demod.channel_lpf_profile;
+
+    demod.output_kind = prev_output_kind;
+    demod.cqpsk_enable = prev_cqpsk_enable;
+    demod.rate_in = prev_rate_in;
+    demod.rate_out = prev_rate_out;
+    demod.symbol_rate_hz = prev_symbol_rate_hz;
+    demod.symbol_levels = prev_symbol_levels;
+    demod.channel_lpf_profile = prev_channel_lpf_profile;
+    demod.ted_sps = prev_ted_sps;
+    demod.ted_sps_override = prev_ted_sps_override;
+    demod.sps_is_integer = prev_sps_is_integer;
+    demod.resamp_target_hz = prev_resamp_target_hz;
+    demod.resamp_enabled = prev_resamp_enabled;
+    demod.costas_reset_pending = prev_costas_reset_pending;
+    demod.fsk_modem_state = prev_fsk_modem_state;
+    output.rate = prev_output_rate;
+    controller.last_applied_freq_hz.store(prev_last_applied_freq_hz, std::memory_order_release);
+    g_fsk_modem_config_pending.store(prev_fsk_cfg_pending, std::memory_order_release);
+    rtl_stream_publish_demod_profile_snapshot();
+    return 0;
 }
 #endif
 
