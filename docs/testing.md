@@ -87,9 +87,28 @@ frame unproductive drops the payload from 23 hits to 13 and steps the hunt to 20
 handler's credit is bounded by what it read, and P25p1 reads 33 symbols when the NID fails against 134 of a
 ~180-symbol slot when a one-block TSDU decodes, so a channel that was decoding still lost the profile to the failures
 between its frames. The `p25p1_cqpsk_vc` capture is already registered under `-f1`; under `-fa` it steps to 20 sps
-partway through on `main` and finishes in dPMR, so the encrypted HDU behind those failures is a payload only the held
-profile reaches — which is what makes the assertion the fix rather than the fixture. Both halves were confirmed
-stable over repeated runs on `dev-debug`, `asan-ubsan-debug` and `tsan-debug` before the case was added.
+partway through on `main` and finishes in dPMR, so holding the profile is what the negative half of this case pins.
+Both halves were confirmed stable over repeated runs on `dev-debug`, `asan-ubsan-debug` and `tsan-debug`.
+
+Its payload assertion changed in issue #388, and the reason is worth recording: it had been
+`ALG ID: 0xC0 KEY ID: 0x3900`, which is not in this capture. The `-f1` preset emits no `0xC0` anywhere in it, reading
+three clear-voice headers (`ALG ID: 0x80 KEY ID: 0x0000`) and six `Group Voice Channel User` grants. What `-fa`
+produced was a corrupted read of one of those clear headers — the run decoded zero grants, two headers and 127 header
+errors — and the case had been asserting that artifact. Holding the 4800/4 co-tenants off the frame brings the `-fa`
+run in line with the native one (seven grants, four clear headers, irrecoverable header errors 3 → 0), so the
+assertion is now the same real payload `DECODE_IQ_P25P1_CQPSK_VOICE` asserts under `-f1`. The lesson generalizes: an
+AUTO case should assert a payload the native preset also produces, or it can end up pinning the corruption it was
+meant to catch.
+
+`DECODE_IQ_P25P1_C4FM_CC_AUTO_HUNT` covers issue #388 proper. P25 Phase 1 C4FM's own profile is where the hunt
+starts, so the `p25p1_c4fm_cc` capture needs no rotation and gets none — the failure was entirely the company 4800/4
+keeps. NXDN96's ten-symbol sync word and M17's alternating-run preamble both fire on P25 payload, and each false
+frame consumes symbols the next sync needed, warm-starts the slicer from that payload, and takes the `lastsynctype`
+that keeps the C4FM threshold tracker engaged between frames: 26 decoded NACs under `-f1` became none under `-fa`,
+every P25p1 sync reading `NAC: 000 duid:EE`. With the span guard the capture decodes 23 of those 26 under `-fa`. The
+three still missing are the frames ahead of the first accepted P25p1 sync, which is the earliest point anything can
+know P25p1 is on the channel — an evidence-based guard cannot cover its own bootstrap. The case asserts presence
+rather than a count, per the policy above, plus the absence of any hunt rotation.
 
 `DECODE_IQ_M17_AUTO` covers issue #399. M17's own profile is where the hunt starts, so the `m17` capture needs no
 rotation and gets none: it must publish the same identity under `-fa` that `DECODE_IQ_M17` asserts under `-fz`.

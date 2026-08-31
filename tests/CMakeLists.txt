@@ -9131,15 +9131,26 @@ if(DSD_HAS_RADIO)
     # here with failing NIDs between the frames that decode, and consumption credit is bounded
     # by what a handler read -- 33 symbols for a failed NID, 134 of a ~180-symbol slot for a
     # one-block TSDU -- so the budget climbed on a channel that was decoding and the hunt
-    # rotated off it. On main this capture steps to 20 sps partway through and finishes in
-    # dPMR; holding the profile decodes the encrypted HDU behind those failures instead, which
-    # is what makes the payload assertion here the fix rather than the fixture. Both hold
-    # across dev-debug, asan-ubsan-debug and tsan-debug.
+    # rotated off it. Holding the profile is what this case pins, and the negative assertion
+    # below is the half that says so.
+    #
+    # The payload assertion was "ALG ID: 0xC0 KEY ID: 0x3900" until #388. That string was a
+    # misdecode, not the capture: the native -f1 preset never emits 0xC0 anywhere in this
+    # fixture, reading three clear-voice headers (ALG ID: 0x80 KEY ID: 0x0000) and six
+    # "Group Voice Channel User" grants. Under -fa the 4800/4 co-tenants were corrupting the
+    # frames behind those syncs badly enough that the run produced zero grants, two HDUs and
+    # 127 header errors, one of which read as an encrypted header with a key id -- and that
+    # artifact was what the case had been asserting. With the co-tenants held off the frame
+    # (#388) this capture decodes under -fa what it decodes natively: seven grants, four clear
+    # headers, and irrecoverable header errors down from 3 to 0. So the assertion is now the
+    # same real payload its -f1 sibling above asserts, which is the thing a hunt that holds
+    # the profile is supposed to deliver. Both halves hold across dev-debug, asan-ubsan-debug
+    # and tsan-debug.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT
         p25p1_cqpsk_vc
         -fa
-        "ALG ID: 0xC0 KEY ID: 0x3900"
+        "Group Voice Channel User"
         "SPS hunt: trying"
     )
     # Two-ray simulcast impairment (62.5 us delay spread, -4.4 dB second ray,
@@ -9220,6 +9231,27 @@ if(DSD_HAS_RADIO)
         m17
         -fa
         "SRC: N0CALL"
+    )
+
+    # Issue #388: P25 Phase 1 C4FM on its own profile, which is where AUTO starts -- the hunt
+    # performs no rotation on this capture and needs none. What it used to fail on is the
+    # company 4800/4 keeps: NXDN96's matcher takes five variants per polarity over ten
+    # sign-sliced symbols and M17's preamble is any alternating run, so both fire on P25
+    # payload, and the frames they open consume the symbols the next sync needed, warm-start
+    # the slicer from that payload and take the lastsynctype that keeps the C4FM threshold
+    # tracker engaged. The native preset decoded 26 NACs here and AUTO decoded none, every
+    # P25p1 sync reading NAC 000 duid:EE. Holding both off the frame an accepted P25p1 sync
+    # opened brings AUTO back to 23 of those 26; the three still missing are the frames ahead
+    # of the first accepted sync, which is the earliest anything can know P25p1 is here.
+    # A presence assertion rather than a count, per the fixture policy in docs/testing.md, and
+    # the negative half pins that this capture never needs the hunt to move. Both hold across
+    # dev-debug, asan-ubsan-debug and tsan-debug.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_C4FM_CC_AUTO_HUNT
+        p25p1_c4fm_cc
+        -fa
+        "NAC/CC: 140"
+        "SPS hunt: trying"
     )
 
     # The other direction, which is the one issue #391 warns about: a handler that reports

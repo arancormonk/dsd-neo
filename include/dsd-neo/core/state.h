@@ -615,6 +615,23 @@ struct dsd_state {
      * modular difference, so a rollover mid-frame stays exact. */
     uint32_t dpmr_fs2_frame_symbolcnt;
     uint8_t dpmr_fs2_frame_valid;
+    /* The same idea one profile up, where 4800/4 carries P25p1, DMR, NXDN96, YSF and M17 at once.
+     * P25p1's sync is one of two exact 24-symbol patterns, so it fires on noise about once per
+     * 8.4 million windows; NXDN96's takes five variants per polarity over ten sign-sliced symbols
+     * and fires on roughly 1%, and M17's preamble is any alternating run at all. Inside the frame
+     * a P25p1 sync opened, those two are wrong by construction, and what they cost is measurable:
+     * on tests/fixtures/iq/p25p1_c4fm_cc.iq.json the native preset decodes 26 NIDs and AUTO
+     * decoded none, every sync reading NAC 000 duid:EE, because the false accepts consume the
+     * symbols the frame needed, warm-start the slicer from P25 payload, and clobber the
+     * lastsynctype that keeps use_symbol()'s C4FM threshold tracker engaged between syncs (#388).
+     * Stamped only when the C4FM chain carried the sync: on CQPSK the NID is sliced by the QPSK
+     * chain and the NXDN matcher's level blend is the wideband tracker that chain relies on, so a
+     * CQPSK accept clears the span instead of opening one. A GFSK vote landing mid-span leaves it
+     * standing -- the flap is what the span exists to survive. Read by src/dsp only, through
+     * dsd_frame_sync_suppress_4800_4_for_p25p1_frame(); compared as a modular difference, so a
+     * symbolcnt rollover mid-frame stays exact. */
+    uint32_t p25_p1_c4fm_frame_symbolcnt;
+    uint8_t p25_p1_c4fm_frame_valid;
     int lastsynctype;
     int lastp25type;
     int offset;

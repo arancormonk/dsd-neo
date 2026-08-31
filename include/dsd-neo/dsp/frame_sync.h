@@ -112,6 +112,14 @@ int dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* 
 int dsd_frame_sync_suppress_nxdn48_sync(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Return non-zero while a P25p1 frame the C4FM chain accepted owns the 4800/4 profile.
+ *
+ * P25p1 shares that profile with NXDN96 and M17, whose matchers are far weaker than its own
+ * exact 24-symbol sync, so the frame that sync opened is not offered to either of them (#388).
+ */
+int dsd_frame_sync_suppress_4800_4_for_p25p1_frame(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Return non-zero when TCP no-signal diagnostics should stay off the console.
  */
 int dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state);

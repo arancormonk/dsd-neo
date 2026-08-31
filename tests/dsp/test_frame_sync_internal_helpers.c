@@ -1086,6 +1086,171 @@ test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile(void) {
     assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
 }
 
+/* The 4800/4 counterpart (#388). P25p1's sync is one of two exact 24-symbol patterns; NXDN96's
+ * takes five variants per polarity over ten sign-sliced symbols. Inside the frame the stronger
+ * one opened, the weaker must not take a sync -- but it must still take its level estimate,
+ * which is the wideband reference the other protocols on the profile lean on. */
+static void
+test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 1000;
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+    assert(state.p25_p1_c4fm_frame_valid == 1);
+
+    /* Inside the frame: no sync, and -- the half that keeps use_symbol()'s C4FM threshold
+     * tracker engaged between P25p1 syncs -- no claim on lastsynctype either. */
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
+    state.symbolcnt = 1000 + 899;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
+
+    /* Past the frame the matcher is live again, on its own two-hit terms. */
+    state.symbolcnt = 1000 + DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
+/* Withholding the sync must not withhold the level estimate: the CQPSK voice capture stops
+ * decoding its headers altogether if this blend goes away for the span (#388). Driven through
+ * the window evaluator, which is the seam that carries real symbol levels. */
+static void
+test_a_suppressed_nxdn96_window_still_blends_levels(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    float fsw_levels[10];
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.msize = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    for (int i = 0; i < 10; i++) {
+        fsw_levels[i] = NXDN_FSW[i] == '3' ? -3.0f : 3.0f;
+    }
+
+    /* Arm the span by hand: the point here is what the NXDN window does inside one. */
+    state.p25_p1_c4fm_frame_symbolcnt = 0;
+    state.p25_p1_c4fm_frame_valid = 1;
+    state.symbolcnt = 100;
+    state.max = 9.0f;
+    state.min = -9.0f;
+
+    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, fsw_levels, 10) == DSD_SYNC_NONE);
+    /* Blended halfway from 9 toward the window's own outer rails, exactly as an unsuppressed
+     * hit would, while the sync itself is refused. */
+    assert(fabsf(state.max - 6.0f) < 0.0001f);
+    assert(fabsf(state.min - (-6.0f)) < 0.0001f);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+}
+
+/* CQPSK closes the span rather than opening one: there the NID is sliced by the QPSK chain, and
+ * the NXDN blend is the level reference that chain depends on. A GFSK vote landing mid-span is
+ * the flap the span exists to survive, so it leaves an armed span standing. */
+static void
+test_the_p25p1_frame_guard_is_scoped_to_the_c4fm_chain(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 1000;
+    state.rf_mod = 1;
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+    assert(state.p25_p1_c4fm_frame_valid == 0);
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+
+    /* Armed on C4FM, then flapped to GFSK: the span stands. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 1000;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+    state.rf_mod = 2;
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_P25P1_POS);
+}
+
+/* The span is P25p1's frame, not a mute switch: NXDN48 lives on 2400/4, where P25p1 cannot match
+ * at all, and a build with P25p1 disabled must behave exactly as it did before. */
+static void
+test_the_p25p1_frame_suppression_is_scoped_to_its_own_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 0;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.p25_p1_c4fm_frame_symbolcnt = 1000;
+    state.p25_p1_c4fm_frame_valid = 1;
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn48 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.p25_p1_c4fm_frame_symbolcnt = 1000;
+    state.p25_p1_c4fm_frame_valid = 1;
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+}
+
+/* The stamp wraps with symbolcnt and is compared as a modular difference. */
+static void
+test_the_p25p1_frame_guard_survives_symbolcnt_rollover(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.p25_p1_c4fm_frame_symbolcnt = UINT32_MAX - 100u;
+    state.p25_p1_c4fm_frame_valid = 1;
+
+    /* 150 symbols past the stamp, across the wrap. */
+    state.symbolcnt = 49u;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+
+    /* Past the span, still across the wrap. */
+    state.symbolcnt = (uint32_t)(UINT32_MAX - 100u + DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+}
+
 static void
 test_symbol_replay_bypasses_sps_profile_gating(void) {
     static const int symbol_input_types[] = {AUDIO_IN_SYMBOL_BIN, AUDIO_IN_SYMBOL_FLT};
@@ -1241,6 +1406,38 @@ feed_m17_preamble_run(dsd_opts* opts, dsd_state* state, const char* marker) {
     for (int i = 0; i < DSD_FRAME_SYNC_M17_PRE_RUN_SYMBOLS; i++) {
         assert(dsd_frame_sync_test_try_protocol_matches(opts, state, marker, 8) == DSD_SYNC_NONE);
     }
+}
+
+/* M17's preamble is an alternating run, which P25 payload supplies readily, so inside a P25p1
+ * frame the run is dropped rather than latched -- and a candidate already in hand is aged out
+ * rather than left to spend the moment the span lapses. */
+static void
+test_a_p25p1_frame_suppresses_m17_candidates(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_m17 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.symbolcnt = 1000;
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+
+    /* Inside the frame a full preamble run latches nothing and the sync word behind it is
+     * refused. */
+    state.symbolcnt = 1000 + 100;
+    feed_m17_preamble_run(&opts, &state, M17_PRE);
+    assert(state.m17_pre_candidate == 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
+
+    /* Past the frame the run re-earns its candidate and the word spends it. */
+    state.symbolcnt = 1000 + DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
+    feed_m17_preamble_run(&opts, &state, M17_PRE);
+    assert(state.m17_pre_candidate != 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
 }
 
 /* A preamble is an alternating symbol run, which any 4800-baud signal can present, so it is
@@ -2591,6 +2788,12 @@ main(void) {
     test_m17_alternating_runs_alone_are_never_a_sync();
     test_a_dpmr_frame_is_not_reopened_by_the_nxdn_matcher();
     test_the_dpmr_frame_suppression_is_scoped_to_its_own_profile();
+    test_a_p25p1_frame_is_not_reopened_by_the_nxdn96_matcher();
+    test_a_suppressed_nxdn96_window_still_blends_levels();
+    test_the_p25p1_frame_guard_is_scoped_to_the_c4fm_chain();
+    test_the_p25p1_frame_suppression_is_scoped_to_its_own_profile();
+    test_the_p25p1_frame_guard_survives_symbolcnt_rollover();
+    test_a_p25p1_frame_suppresses_m17_candidates();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();
     test_hamming_helpers_find_best_patterns();

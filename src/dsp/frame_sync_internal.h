@@ -47,6 +47,19 @@ extern "C" {
  */
 #define DSD_FRAME_SYNC_DPMR_FS2_FRAME_SYMBOLS       384U
 
+/**
+ * @brief Symbols an accepted P25p1 sync owns on the 4800/4 profile, sync word included.
+ *
+ * P25p1's longest frame is an LDU at 864 symbols, and the status symbols interleaved through it
+ * add about 25 more. Rounding up to 900 covers the longest frame the sync can have opened while
+ * staying short enough that a channel which has gone quiet releases the profile inside a fifth of
+ * a second. Shorter frames re-arm the span on their own next sync -- a control channel's TSDUs
+ * arrive every ~360 symbols -- so continuous traffic stays covered without the span having to
+ * name a length it cannot know at sync time (see
+ * dsd_frame_sync_suppress_4800_4_for_p25p1_frame()).
+ */
+#define DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS          900U
+
 /** @brief One entry of the SPS hunt's rate/level table, indexed by dsd_state::sps_hunt_idx. */
 typedef struct {
     int symbol_rate_hz;
