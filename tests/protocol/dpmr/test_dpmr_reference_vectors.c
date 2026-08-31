@@ -25,6 +25,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -43,8 +44,10 @@
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
 
-/* The dibit stream processdPMRvoice() reads, and how far into it we are. */
-static const uint8_t* g_dibits;
+/* The dibit stream processdPMRvoice() reads, and how far into it we are. A frame body is
+   copied in rather than pointed at: callers build one on their own stack, and nothing at
+   file scope may hold an address that outlives them. */
+static uint8_t g_dibits[sizeof(DPMR_REF_FRAMES[0].body_dibits)];
 static size_t g_dibit_count;
 static size_t g_dibit_pos;
 static size_t g_mbe_calls;
@@ -56,7 +59,7 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     if (out_analog_signal != NULL) {
         *out_analog_signal = 0;
     }
-    if (g_dibits == NULL || g_dibit_pos >= g_dibit_count) {
+    if (g_dibit_pos >= g_dibit_count) {
         return 0;
     }
     return (int)g_dibits[g_dibit_pos++];
@@ -102,6 +105,45 @@ expect_bits(const char* tag, const uint8_t* got, const uint8_t* want, size_t cou
             g_failures++;
             return;
         }
+    }
+}
+
+static int
+is_lower_hex_digit(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+}
+
+static void
+expect_commit_id(const char* tag, const char* value) {
+    const size_t length = strlen(value);
+    if (length != 40U) {
+        DSD_FPRINTF(stderr, "%s: commit id is %zu characters, want 40\n", tag, length);
+        g_failures++;
+        return;
+    }
+    for (size_t i = 0U; i < length; i++) {
+        if (!is_lower_hex_digit(value[i])) {
+            DSD_FPRINTF(stderr, "%s: commit id character %zu is not lower-case hex\n", tag, i);
+            g_failures++;
+            return;
+        }
+    }
+}
+
+/* The fixture's provenance, and the one thing it assumes about the tree it is testing. */
+static void
+test_reference_vector_metadata(void) {
+    /* The vectors are only ground truth if they say which DSDcc they were cross-derived
+       from; a regeneration that lost or truncated that is not a fixture we can trust. */
+    expect_commit_id("dsdcc-commit", DPMR_REF_DSDCC_COMMIT);
+
+    /* Every frame below is decoded as if FS2 had just been matched, so the sync the fixture
+       generated against has to be the sync dsd_frame_sync.c matches on. */
+    expect_int("fs2-sync-length", (long)strlen(DPMR_FRAME_SYNC_2), 12);
+    for (uint32_t i = 0; i < 12U; i++) {
+        char tag[64];
+        DSD_SNPRINTF(tag, sizeof(tag), "fs2-dibit-%u", i);
+        expect_int(tag, (long)(DPMR_FRAME_SYNC_2[i] - '0'), (long)DPMR_REF_FS2_DIBITS[i]);
     }
 }
 
@@ -193,19 +235,32 @@ test_hamming_decodes_the_reference_codewords(void) {
        Exactly 13 must be accepted -- the zero syndrome plus the 12 placeable single-bit
        errors -- and the remaining three refused. That 13/16 is the arithmetic behind #407:
        a random block passes about 81% of the time, so the Hamming flags carry no weight on
-       their own, and it is the CRC below that has to do the work. */
+       their own, and it is the CRC below that has to do the work.
+
+       A mixed-data codeword is the base so that where the decoder places the error is
+       observable: correcting a position below 8 shows up as a flipped data bit, and that is
+       what pins the reference syndrome-to-position table down. */
+    const dpmr_ref_hamming_vector* base = &DPMR_REF_HAMMING_VECTORS[4];
     int accepted = 0;
     for (uint32_t syndrome = 0; syndrome < 16U; syndrome++) {
         uint8_t rx[12];
         uint8_t decoded[8];
-        DSD_MEMCPY(rx, DPMR_REF_HAMMING_VECTORS[0].codeword, sizeof(rx));
+        DSD_MEMCPY(rx, base->codeword, sizeof(rx));
         for (uint32_t bit = 0; bit < 4U; bit++) {
             if ((syndrome >> (3U - bit)) & 1U) {
                 rx[8U + bit] ^= 1U;
             }
         }
+        DSD_MEMSET(decoded, 0xFF, sizeof(decoded));
         const bool correctable = Hamming_12_8_decode(rx, decoded, 1);
 
+        /* The position the reference says this syndrome names, or -1 for none. */
+        int position = -1;
+        for (uint32_t p = 0; p < 12U; p++) {
+            if (DPMR_REF_HAMMING_SYNDROME_BY_POSITION[p] == syndrome) {
+                position = (int)p;
+            }
+        }
         int want_uncorrectable = 0;
         for (int u = 0; u < 3; u++) {
             if (DPMR_REF_HAMMING_UNCORRECTABLE_SYNDROMES[u] == syndrome) {
@@ -213,11 +268,26 @@ test_hamming_decodes_the_reference_codewords(void) {
             }
         }
         char tag[64];
+        /* The two reference tables have to agree: every syndrome but zero either names a
+           position or is one of the three the code cannot place. */
+        DSD_SNPRINTF(tag, sizeof(tag), "hamming-syndrome-placeable-%u", syndrome);
+        expect_int(tag, position >= 0 ? 1 : 0, (syndrome != 0U && !want_uncorrectable) ? 1 : 0);
+
         DSD_SNPRINTF(tag, sizeof(tag), "hamming-syndrome-%u", syndrome);
         expect_int(tag, correctable ? 1 : 0, want_uncorrectable ? 0 : 1);
         if (correctable) {
             accepted++;
         }
+
+        /* And where it placed it: the named data bit flips and nothing else moves --
+           including on the syndromes it refuses, which must not corrupt the data either. */
+        uint8_t want_data[8];
+        DSD_MEMCPY(want_data, base->data, sizeof(want_data));
+        if (position >= 0 && position < 8) {
+            want_data[position] ^= 1U;
+        }
+        DSD_SNPRINTF(tag, sizeof(tag), "hamming-syndrome-corrects-%u", syndrome);
+        expect_bits(tag, decoded, want_data, sizeof(want_data));
     }
     expect_int("hamming-accepted-syndromes", accepted, 13);
 }
@@ -299,7 +369,12 @@ test_cch_stages_decode_the_reference_frames(void) {
 /* Run a full frame body through the real decoder. */
 static void
 run_frame(dsd_opts* opts, dsd_state* state, const uint8_t* body, size_t count) {
-    g_dibits = body;
+    if (count > sizeof(g_dibits)) {
+        DSD_FPRINTF(stderr, "run-frame: %zu dibits does not fit one %zu-dibit frame body\n", count, sizeof(g_dibits));
+        g_failures++;
+        return;
+    }
+    DSD_MEMCPY(g_dibits, body, count);
     g_dibit_count = count;
     g_dibit_pos = 0;
     g_mbe_calls = 0;
@@ -394,6 +469,7 @@ int
 main(void) {
     Hamming_12_8_init();
 
+    test_reference_vector_metadata();
     test_scrambler_matches_the_reference_keystream();
     test_deinterleave_matches_the_reference_permutation();
     test_hamming_decodes_the_reference_codewords();
