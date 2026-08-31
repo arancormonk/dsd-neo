@@ -1392,6 +1392,420 @@ test_rtl_p25p2_timing_reconciliation_preserves_cqpsk(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/*
+ * Issue #423: a P25p1 FDMA signal that has decoded through the CQPSK chain must keep it across
+ * a hunt rotation. Without the learned modulation the hunt normalises the 4800/4-level profile
+ * back to C4FM every time it comes back round, so an LSM control channel loses the chain it
+ * just decoded on.
+ */
+static void
+test_sps_hunt_restores_learned_p25p1_cqpsk(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    /* Rotating back into the P25p1 profile restores the learned CQPSK instead of C4FM. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.p25_p1_validated_rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.rf_mod = 2;
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    reset_fake_profile_capture();
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.rf_mod == 1);
+    assert(g_profile_cqpsk == 1);
+    assert(g_profile_rate == 4800);
+    assert(g_profile_channel == DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    /* The restored modulation gets its dwell back, or the votes evict it before the first
+     * sync of the new dwell can arrive. */
+    assert(dsd_frame_sync_test_qpsk_dwell_armed());
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+
+    /* Never validated, and validated through C4FM, both keep the C4FM default. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.rf_mod = 2;
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    assert(state.rf_mod == 0);
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    state.p25_p1_validated_rf_mod = 0;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.rf_mod = 2;
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    assert(state.rf_mod == 0);
+
+    /* A learned CQPSK never overrides a binary profile: those force GFSK. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    state.p25_p1_validated_rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_2, 0);
+    assert(state.rf_mod == 2);
+
+    /* The learned value is not consulted for a profile P25p1 does not own. */
+    reset(&opts, &state);
+    opts.frame_p25p2 = 1;
+    opts.frame_provoice = 1;
+    state.p25_p1_validated_rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_9600_2;
+    state.rf_mod = 2;
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 0);
+    assert(state.rf_mod == 0);
+
+    /* An explicit CLI modulation lock keeps its demodulator regardless. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    opts.mod_cli_lock = 1;
+    state.p25_p1_validated_rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.rf_mod = 2;
+    frame_sync_apply_sps_hunt_profile(&opts, &state, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 0);
+    assert(state.rf_mod == 2);
+}
+
+/*
+ * Issue #423: P25p1 cannot reach CQPSK by measurement -- while the chain is off the QPSK SNR
+ * estimate comes from raw un-derotated IQ and the sync-hamming candidate can only tie -- so the
+ * hunt tries it on alternate visits to the profile instead.
+ */
+static void
+test_p25p1_auto_hunt_alternates_cqpsk_probe(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.p25_p1_validated_rf_mod = -1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+
+    /* P25p1 alone is the only candidate, so every expired dwell wraps to the same profile.
+     * The first stays on C4FM, the next watches CQPSK, and it alternates from there. */
+    state.sps_hunt_counter = dwell;
+    frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(state.rf_mod == 0);
+
+    reset_fake_profile_capture();
+    state.sps_hunt_counter = dwell;
+    assert(frame_sync_no_sync_sps_hunt(&opts, &state) == 1);
+    assert(state.rf_mod == 1);
+    assert(g_profile_cqpsk == 1);
+    assert(g_profile_rate == 4800);
+    assert(g_profile_channel == DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+    assert(dsd_frame_sync_test_qpsk_dwell_armed());
+
+    /* A probe that decoded nothing hands the profile back to C4FM. */
+    state.sps_hunt_counter = dwell;
+    frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.rf_mod == 0);
+
+    state.sps_hunt_counter = dwell;
+    frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.rf_mod == 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+
+    /* An explicit modulation lock is never probed against. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.mod_cli_lock = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    for (int i = 0; i < 4; i++) {
+        state.sps_hunt_counter = dwell;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        assert(state.rf_mod == 0);
+    }
+
+    /* Only the RTL front end can be retuned into the CQPSK chain. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.audio_in_type = AUDIO_IN_WAV;
+    opts.wav_sample_rate = 48000;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    for (int i = 0; i < 4; i++) {
+        state.sps_hunt_counter = dwell;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        assert(state.rf_mod == 0);
+    }
+
+    /* Without P25p1 enabled there is nothing on this profile that wants CQPSK. */
+    reset(&opts, &state);
+    opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    for (int i = 0; i < 4; i++) {
+        state.sps_hunt_counter = dwell;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        assert(state.rf_mod != 1);
+    }
+
+    /* A dwell that expired decoded nothing, so a GFSK profile-mate has no claim on the
+     * demodulator either: the probe takes its turn from there too. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 2;
+    state.p25_p1_mod_probe_next_qpsk = 1;
+    state.sps_hunt_counter = dwell;
+    frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.rf_mod == 1);
+    assert(state.p25_p1_mod_probe_active == 1);
+}
+
+/*
+ * A trial the votes can revoke before it decodes anything is not a trial: entering GFSK takes
+ * a single vote. While a probe is on trial the modulation heuristics do not get to answer.
+ */
+static void
+test_p25p1_probe_survives_its_dwell(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+    int lastt = 24;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    state.p25_p1_mod_probe_active = 1;
+
+    /* A GFSK answer would normally take the demodulator on its first vote. */
+    set_fake_snr(-100.0, 20.0, -100.0, -100.0);
+    install_fake_snr_hooks();
+    dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 1);
+    lastt = 24;
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 1);
+
+    /* Once the trial is over the heuristics are free again. */
+    state.p25_p1_mod_probe_active = 0;
+    dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+    lastt = 24;
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 2);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/*
+ * A validated P25p1 frame is direct evidence of what the signal is; the SNR and hamming
+ * candidates are guesses. While such frames keep arriving the guesses do not get to move the
+ * demodulator -- and once they stop, they do.
+ */
+static void
+test_validated_p25p1_modulation_outranks_the_heuristics(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+    int lastt = 24;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    state.symbolcnt = 100000;
+    state.p25_p1_validated_rf_mod = 1;
+    state.p25_p1_validated_symbolcnt = state.symbolcnt;
+
+    set_fake_snr(-100.0, 20.0, -100.0, -100.0);
+    install_fake_snr_hooks();
+    dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 1);
+
+    /* Frames stopped long enough ago that the hold has lapsed. */
+    state.symbolcnt = state.p25_p1_validated_symbolcnt + DSD_FRAME_SYNC_P25P1_VALIDATED_HOLD_SYMBOLS;
+    dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+    lastt = 24;
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 2);
+
+    /* The hold speaks only for a chain that actually validated a frame: a C4FM claim says
+     * nothing about the CQPSK chain the demodulator happens to be on. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    state.symbolcnt = 100000;
+    state.p25_p1_validated_rf_mod = 0;
+    state.p25_p1_validated_symbolcnt = state.symbolcnt;
+    dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+    lastt = 24;
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 2);
+
+    /* And a zeroed state claims nothing at all. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dmr = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    dsd_frame_sync_test_set_recent_hamming(24, 24, 0);
+    lastt = 24;
+    frame_sync_maybe_auto_switch_modulation(&opts, &state, 24, &lastt);
+    assert(state.rf_mod == 2);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
+/*
+ * A claim that CQPSK works survives the hunt's tour of the other protocols' profiles, so a
+ * control channel does not have to re-earn its demodulator every time the hunt looks
+ * elsewhere. But it is a claim about a signal, not a permanent setting: a dwell that expires
+ * on the CQPSK chain having decoded nothing withdraws it.
+ */
+static void
+test_validated_cqpsk_survives_rotation_but_not_disproof(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.p25_p1_validated_rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    const int dwell = dsd_frame_sync_sps_hunt_dwell_passes(&opts, &state) * DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS;
+
+    /* The first expired dwell ran on the CQPSK chain and decoded nothing, so the claim goes. */
+    state.sps_hunt_counter = dwell;
+    frame_sync_no_sync_sps_hunt(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod != 1);
+
+    /* A claim made while the hunt is elsewhere is not disproved by that profile's dwell, and
+     * the profile comes back up on CQPSK when the rotation returns to it. */
+    reset(&opts, &state);
+    opts.frame_p25p1 = 1;
+    opts.frame_dstar = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.p25_p1_validated_rf_mod = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
+    state.rf_mod = 2;
+    for (int i = 0; i < 6; i++) {
+        state.sps_hunt_counter = dwell;
+        frame_sync_no_sync_sps_hunt(&opts, &state);
+        if (state.sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+            assert(state.rf_mod == 1);
+            assert(state.p25_p1_validated_rf_mod == 1);
+            break;
+        }
+        assert(state.p25_p1_validated_rf_mod == 1);
+    }
+}
+
+/*
+ * Issue #423: a P25p1 sync cannot claim CQPSK -- the sync word is identical on both
+ * modulations -- but while the chain is already on it must re-assert the front-end profile the
+ * way P25p2 does, so an engine retune cannot leave the two out of step.
+ */
+static void
+test_p25p1_sync_reasserts_cqpsk_demod_profile(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static int fake_rtl_context;
+
+    dsd_rtl_stream_metrics_hooks hooks = {
+        .output_rate_hz = fake_output_rate_hz,
+        .apply_demod_profile = fake_apply_demod_profile,
+    };
+
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    reset_fake_profile_capture();
+
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+    assert(state.rf_mod == 1);
+    assert(g_profile_set_calls == 1);
+    assert(g_profile_cqpsk == 1);
+    assert(g_profile_rate == 4800);
+    assert(g_profile_levels == 4);
+    assert(g_profile_channel == DSD_RTL_STREAM_CHANNEL_PROFILE_P25_CQPSK);
+
+    /* On C4FM the same sync claims nothing and pushes nothing. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 0;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    reset_fake_profile_capture();
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+    assert(state.rf_mod == 0);
+    assert(g_profile_set_calls == 0);
+
+    /* A CLI modulation lock owns the front end; the accept leaves it alone. */
+    reset(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.frame_p25p1 = 1;
+    opts.mod_cli_lock = 1;
+    opts.mod_qpsk = 1;
+    state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.rf_mod = 1;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    reset_fake_profile_capture();
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, P25P1_SYNC, 24) == DSD_SYNC_P25P1_POS);
+    assert(g_profile_set_calls == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+}
+
 static void
 test_unlocked_rtl_p25p2_sync_switches_demod_family(void) {
     static dsd_opts opts;
@@ -1876,6 +2290,12 @@ main(void) {
     test_carrier_does_not_reset_the_hunt_budget();
     test_binary_profiles_override_unlocked_qpsk();
     test_four_level_profiles_reset_inherited_modulation();
+    test_sps_hunt_restores_learned_p25p1_cqpsk();
+    test_p25p1_auto_hunt_alternates_cqpsk_probe();
+    test_p25p1_probe_survives_its_dwell();
+    test_validated_p25p1_modulation_outranks_the_heuristics();
+    test_validated_cqpsk_survives_rotation_but_not_disproof();
+    test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_nxdn_variant_follows_active_profile();
     test_bounded_symbol_history_readiness_and_wrap();
     test_provoice_candidate_does_not_shadow_dstar_or_nxdn();

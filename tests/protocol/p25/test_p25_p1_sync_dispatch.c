@@ -433,6 +433,64 @@ test_p25p1_mbe_output_and_resume_side_effects(void) {
     assert(state.lastp25type == 0);
 }
 
+/*
+ * Issue #423: a decoded NID is the only place that knows which modulation actually carried a
+ * P25p1 frame -- the sync word is identical on C4FM and CQPSK -- so it is where the trunking
+ * retunes and the SPS hunt learn what to restore.
+ */
+static void
+test_p25p1_valid_nid_learns_modulation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* A frame that decoded through the CQPSK chain stamps CQPSK. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == 1);
+
+    /* And one that decoded through C4FM stamps C4FM, so a wrong guess self-corrects. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == 0);
+
+    /* A failed NID validated nothing, so it teaches nothing. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    g_check_result = NID_DECODE_FAIL;
+    state.rf_mod = 0;
+    state.p25_p1_validated_rf_mod = 1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == 1);
+
+    /* An explicit CLI modulation lock owns the decision outright. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    opts.mod_cli_lock = 1;
+    state.rf_mod = 1;
+    state.p25_p1_validated_rf_mod = -1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == -1);
+
+    /* GFSK is not a P25p1 modulation; nothing to learn from it. */
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_stub_state();
+    state.rf_mod = 2;
+    state.p25_p1_validated_rf_mod = -1;
+    dsd_dispatch_handle_p25p1(&opts, &state);
+    assert(state.p25_p1_validated_rf_mod == -1);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -443,6 +501,7 @@ main(void) {
     test_p25p1_nid_correction_and_failure_state();
     test_p25p1_nac_update_guards();
     test_p25p1_mbe_output_and_resume_side_effects();
+    test_p25p1_valid_nid_learns_modulation();
     printf("P25_P1_SYNC_DISPATCH: OK\n");
     return 0;
 }

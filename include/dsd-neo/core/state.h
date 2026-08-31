@@ -583,6 +583,13 @@ struct dsd_state {
     uint32_t sps_hunt_symbolcnt_mark;
     int sps_hunt_last_frame_verdict;
     int sps_hunt_idx;
+    /* Parity toggle for the P25p1 modulation probe: which modulation the next hunt re-entry
+     * into the 4800/4-level profile watches. Zero-init keeps the first re-entry on C4FM.
+     * p25_p1_mod_probe_active marks the one dwell a probe is on trial for, so the modulation
+     * votes cannot take the demodulator back before the trial has had a chance to decode
+     * anything -- entering GFSK needs a single vote, which is a few dozen symbols. */
+    int p25_p1_mod_probe_next_qpsk;
+    int p25_p1_mod_probe_active;
     int lastsynctype;
     int lastp25type;
     int offset;
@@ -930,6 +937,18 @@ struct dsd_state {
      */
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
+
+    /* Which demodulator last carried a P25p1 frame whose 63-bit NID BCH decoded, and when:
+     * -1 never validated, 0 the C4FM path, 1 the CQPSK path. A validated frame is the only
+     * direct evidence of what the signal actually is -- the SNR and sync-hamming heuristics
+     * that drive the modulation votes are indirect -- so this outranks them while it is fresh.
+     * System knowledge like p25_cc_is_tdma rather than acquisition state, so
+     * dsd_frame_sync_reset_mod_state(), retunes and no-carrier resets leave it alone; only
+     * initState(), the trunk-scan per-target snapshot and a CQPSK dwell that decodes nothing
+     * reset it. Freshness is measured in symbols because the hold it feeds only applies on the
+     * fixed-rate 4800/4-level profile. Ignored whenever opts->mod_cli_lock is set. */
+    int p25_p1_validated_rf_mod;
+    uint32_t p25_p1_validated_symbolcnt;
 
     // Candidate evaluation tracking (current freq and start time in monotonic seconds)
     long p25_cc_eval_freq;

@@ -17,7 +17,13 @@ extern "C" {
  * The no-sync timeout fires after this many consecutive matchless symbols, and the SPS
  * hunt's dwell is a whole number of these (see dsd_frame_sync_sps_hunt_dwell_passes()).
  */
-#define DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS 1800
+#define DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS         1800
+
+/* How long a P25p1 frame that decoded its NID keeps the modulation heuristics off the
+ * demodulator that carried it, in symbols at 4800 sym/s (two seconds). Long enough to span the
+ * gaps between frames on a control channel, short enough that a modulation which has gone
+ * quiet is argued about again. */
+#define DSD_FRAME_SYNC_P25P1_VALIDATED_HOLD_SYMBOLS 9600U
 
 /**
  * @brief Symbols a frame handler must consume on one sync for that sync to count as a frame.
@@ -29,7 +35,7 @@ extern "C" {
  * that returns without reading a frame -- and below the 28 dibits of P25p1's TDU
  * (processTDU(), the shortest frame any protocol here decodes).
  */
-#define DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS    16
+#define DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS            16
 
 /** @brief One entry of the SPS hunt's rate/level table, indexed by dsd_state::sps_hunt_idx. */
 typedef struct {

@@ -110,6 +110,25 @@ dsd_engine_is_p25_profile_retune(const dsd_opts* opts, const dsd_state* state, i
     return dsd_engine_cc_is_p25(state);
 }
 
+/**
+ * @brief Whether an FDMA P25 control channel should come up on CQPSK.
+ *
+ * A P25p1 FDMA control channel carries no modulation hint of its own, so without this the
+ * front end is pinned to C4FM on every tune and an LSM site can never hold the CQPSK chain
+ * it just decoded on. dsd_state::p25_p1_cqpsk_learned only says 1 once a 63-bit NID BCH
+ * decoded through the CQPSK path, and an explicit -mq/-mc lock still wins.
+ */
+static int
+dsd_engine_p25_fdma_cc_wants_cqpsk(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (opts->mod_qpsk == 1) {
+        return 1;
+    }
+    return (!opts->mod_cli_lock && state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
+}
+
 static void DSD_ATTR_USED
 dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     // Skipping is safe for the other protocols rather than merely harmless: DMR and NXDN96 are
@@ -123,7 +142,7 @@ dsd_engine_apply_cc_symbol_timing(const dsd_opts* opts, dsd_state* state) {
     const int sym_rate = (state->p25_cc_is_tdma == 1) ? 6000 : 4800;
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, sym_rate, dsd_engine_current_demod_rate(opts, state));
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
-    state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : ((opts->mod_qpsk == 1) ? 1 : 0);
+    state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : dsd_engine_p25_fdma_cc_wants_cqpsk(opts, state);
     dsd_engine_select_p25_sps_profile(state, state->p25_cc_is_tdma == 1);
 }
 
@@ -287,7 +306,7 @@ dsd_engine_prepare_p25_cc_rtl_chain(const dsd_opts* opts, dsd_state* state, long
         cfg = dsd_neo_get_config();
     }
 
-    const int default_cqpsk = (state->p25_cc_is_tdma == 1 || opts->mod_qpsk == 1) ? 1 : 0;
+    const int default_cqpsk = (state->p25_cc_is_tdma == 1 || dsd_engine_p25_fdma_cc_wants_cqpsk(opts, state)) ? 1 : 0;
     int trunk_scan_cqpsk_request = 0;
     const int has_trunk_scan_cqpsk_request =
         dsd_engine_trunk_scan_active_p25_cqpsk_request(state, &trunk_scan_cqpsk_request);

@@ -894,6 +894,8 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     state->p25_sys_is_tdma = 0;
     state->p25_vc_cqpsk_pref = -1;
     state->p25_vc_cqpsk_override = -1;
+    state->p25_p1_validated_rf_mod = -1;
+    state->p25_p1_validated_symbolcnt = 0;
 
     state->use_throttle = 0;
     state->symbol_replay_next_deadline_ns = 0;

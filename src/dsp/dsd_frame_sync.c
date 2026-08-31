@@ -587,6 +587,14 @@ frame_sync_accept_p25p1(frame_sync_match_ctx* ctx, int synctype, const char* lab
                         frame_sync_p25_center_mode_t center_mode) {
     const dsd_opts* opts = ctx->opts;
     dsd_state* state = ctx->state;
+#ifdef USE_RADIO
+    /* Hold the CQPSK chain the way P25p2 does, without claiming it: a P25p1 sync word is the
+     * same on both modulations, so it can only re-assert a decision already made, never make
+     * one. Re-pushing on every sync corrects front-end drift left by an engine retune. */
+    if (!opts->mod_cli_lock && state->rf_mod == 1) {
+        rtl_maybe_apply_active_demod_profile(opts, state);
+    }
+#endif
     frame_sync_set_basic_lock(ctx);
     state->dmrburstR = 17;
     state->payload_algidR = 0;
@@ -1943,6 +1951,41 @@ frame_sync_override_want_mod_with_hamming(const dsd_opts* opts, const dsd_state*
     return want_mod;
 }
 
+/**
+ * @brief Keep the CQPSK chain while it is the one decoding P25p1 frames.
+ *
+ * Both inputs to the modulation vote are indirect: the SNR bias compares an estimate the
+ * inactive chain cannot make honestly, and the sync-hamming candidates score patterns a strong
+ * signal matches on more than one modulation. A P25p1 frame whose 63-bit NID BCH decoded is
+ * direct evidence instead -- it says this demodulator is working right now -- so while such
+ * frames keep arriving the guesses do not get to move off it.
+ *
+ * This matters because CQPSK is the side that cannot defend itself. C4FM is the profile
+ * default and what every rotation falls back to, whereas entering GFSK costs a single vote, so
+ * without a hold the chain is taken back within a few dozen symbols and an LSM control channel
+ * never gets to keep the demodulator that decodes it. The hold lapses as soon as the frames
+ * stop, so it can never strand a profile on a modulation that has gone quiet.
+ */
+static int
+frame_sync_hold_validated_p25p1_modulation(const dsd_opts* opts, const dsd_state* state, int want_mod) {
+    if (opts->frame_p25p1 != 1 || state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return want_mod;
+    }
+    /* A trial the votes can revoke before it has decoded a single frame is not a trial, so the
+     * probe's own dwell is protected whichever chain it selected. */
+    if (state->p25_p1_mod_probe_active && (state->rf_mod == 0 || state->rf_mod == 1)) {
+        return state->rf_mod;
+    }
+    if (state->rf_mod != 1 || state->p25_p1_validated_rf_mod != 1) {
+        return want_mod;
+    }
+    if ((uint32_t)(state->symbolcnt - state->p25_p1_validated_symbolcnt)
+        >= DSD_FRAME_SYNC_P25P1_VALIDATED_HOLD_SYMBOLS) {
+        return want_mod;
+    }
+    return 1;
+}
+
 static void
 frame_sync_update_mod_votes(int want_mod) {
     if (want_mod == 1) {
@@ -2019,6 +2062,7 @@ frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, 
     int want_mod = frame_sync_active_profile_modulation(opts, state);
     want_mod = frame_sync_bias_want_mod_with_snr(opts, state, want_mod);
     want_mod = frame_sync_override_want_mod_with_hamming(opts, state, want_mod);
+    want_mod = frame_sync_hold_validated_p25p1_modulation(opts, state, want_mod);
     frame_sync_update_mod_votes(want_mod);
     frame_sync_apply_mod_switch(opts, state, frame_sync_decide_mod_switch(state, want_mod));
 }
@@ -2029,6 +2073,11 @@ dsd_frame_sync_test_set_recent_hamming(int ham_c4fm, int ham_qpsk, int ham_gfsk)
     atomic_store(&g_ham_c4fm_recent, ham_c4fm);
     atomic_store(&g_ham_qpsk_recent, ham_qpsk);
     atomic_store(&g_ham_gfsk_recent, ham_gfsk);
+}
+
+int
+dsd_frame_sync_test_qpsk_dwell_armed(void) {
+    return atomic_load(&g_qpsk_dwell_enter_ms) != 0;
 }
 
 void
@@ -2913,6 +2962,45 @@ frame_sync_apply_sps_profile_timing(const dsd_opts* opts, dsd_state* state, cons
     }
 }
 
+/**
+ * @brief Modulation a profile comes up on when the hunt normalises it.
+ *
+ * Four-level profiles default to C4FM, which is the right guess for a profile the hunt has
+ * learned nothing about. Once a P25p1 NID has decoded through the CQPSK chain, though, the
+ * 4800/4-level profile has been told which modulation the signal actually uses, and rotating
+ * away and back must not throw that away -- otherwise an LSM control channel loses the chain
+ * it just decoded on every time the hunt visits another protocol's profile.
+ */
+static int
+frame_sync_sps_profile_normalized_modulation(const dsd_opts* opts, const dsd_state* state,
+                                             const frame_sync_sps_profile* profile, int profile_index) {
+    const int requested = (profile_index == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && opts->frame_p25p1 == 1
+                           && state->p25_p1_validated_rf_mod == 1)
+                              ? 1
+                              : 0;
+    return dsd_frame_sync_profile_modulation(profile->levels, requested);
+}
+
+/**
+ * @brief Adopt a profile's modulation and start the vote state over for it.
+ *
+ * The votes and hamming counters belong to the acquisition that just ended, so they are always
+ * cleared. The QPSK dwell is different: it is the grace period a modulation gets before the
+ * votes may argue with it, and clearing it under a restored CQPSK would let the SNR bias and
+ * the three-vote C4FM re-entry evict that modulation before the first sync of the new dwell
+ * could even arrive.
+ */
+static void
+frame_sync_normalize_profile_modulation(dsd_state* state, int normalize, int modulation) {
+    if (normalize) {
+        state->rf_mod = modulation;
+    }
+    dsd_frame_sync_reset_mod_state();
+    if (normalize && modulation == 1) {
+        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+    }
+}
+
 void
 frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int next_idx, int preserve_modulation) {
     if (!opts || !state || next_idx < 0 || next_idx >= DSD_FRAME_SYNC_SPS_PROFILE_COUNT) {
@@ -2921,7 +3009,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
 
     const frame_sync_sps_profile* profile = frame_sync_sps_profile_for_index(next_idx);
     const int profile_changed = next_idx != state->sps_hunt_idx;
-    const int profile_default_modulation = dsd_frame_sync_profile_modulation(profile->levels, 0);
+    const int profile_default_modulation = frame_sync_sps_profile_normalized_modulation(opts, state, profile, next_idx);
     const int normalize_profile_modulation = !preserve_modulation && !opts->mod_cli_lock
                                              && state->rf_mod != profile_default_modulation
                                              && (profile_changed || profile->levels == 2);
@@ -2956,10 +3044,7 @@ frame_sync_apply_sps_hunt_profile(const dsd_opts* opts, dsd_state* state, int ne
         state->sps_hunt_counter = 0;
         state->sps_hunt_symbolcnt_mark = state->symbolcnt;
     }
-    if (normalize_profile_modulation) {
-        state->rf_mod = profile_default_modulation;
-    }
-    dsd_frame_sync_reset_mod_state();
+    frame_sync_normalize_profile_modulation(state, normalize_profile_modulation, profile_default_modulation);
 
     if (profile_changed) {
         frame_sync_apply_sps_profile_timing(opts, state, profile);
@@ -3115,12 +3200,74 @@ frame_sync_sps_hunt_mark_return(dsd_state* state) {
     state->sps_hunt_symbolcnt_mark = state->symbolcnt;
 }
 
+/**
+ * @brief Spend alternate 4800/4-level dwells watching for P25p1 on the CQPSK chain.
+ *
+ * A P25p1 FDMA signal cannot argue its way onto CQPSK passively. Both passive routes are
+ * structurally closed: while the CQPSK chain is off the front end runs the FM discriminator, so
+ * the QPSK SNR estimate comes from a constellation ring fed raw un-derotated, un-timed IQ and
+ * never clears the entry margin; and the sync-hamming candidate scores a superset of the C4FM
+ * hypotheses, so an LSM signal -- which decodes its sync words unrotated through the
+ * discriminator -- ties rather than wins, and the override only moves on a strict improvement.
+ *
+ * So the decision is made by trying it. This runs only where a dwell has already expired with
+ * nothing productive decoded, which is exactly where the hunt was going to leave this profile
+ * anyway: a control channel that is decoding never gets here, because its handlers keep the
+ * dwell counter spent. Whichever chain then starts decoding P25p1 frames keeps the profile,
+ * because frame_sync_hold_validated_p25p1_modulation() stops the votes from arguing with it.
+ */
+static void
+frame_sync_maybe_probe_p25p1_cqpsk(const dsd_opts* opts, dsd_state* state, int preserve_modulation,
+                                   int expired_dwell_idx, int expired_dwell_rf_mod) {
+    if (preserve_modulation || opts->mod_cli_lock || opts->frame_p25p1 != 1) {
+        return;
+    }
+    if (opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return;
+    }
+    /* The dwell that just expired decoded nothing. If that dwell was this profile running on
+     * the CQPSK chain then whatever evidence put it there has been disproved, so withdraw it
+     * rather than let the restore keep handing the profile back to a chain producing nothing.
+     * This judges the dwell that ended, not the one about to start. */
+    if (expired_dwell_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4 && expired_dwell_rf_mod == 1
+        && state->p25_p1_validated_rf_mod == 1) {
+        state->p25_p1_validated_rf_mod = -1;
+    }
+    if (state->sps_hunt_idx != DSD_FRAME_SYNC_SPS_PROFILE_4800_4) {
+        return;
+    }
+    if (state->p25_p1_validated_rf_mod == 1) {
+        return;
+    }
+
+    /* Own both directions. A profile the hunt re-enters at its own index is not normalised --
+     * frame_sync_apply_sps_hunt_profile() returns early when neither the index nor a binary
+     * profile forces its hand -- so without handing the chain back here a probe that decoded
+     * nothing would keep it for good. */
+    const int probe_qpsk = state->p25_p1_mod_probe_next_qpsk ? 1 : 0;
+    state->p25_p1_mod_probe_next_qpsk = !probe_qpsk;
+    if (state->rf_mod == probe_qpsk) {
+        return;
+    }
+
+    state->rf_mod = probe_qpsk;
+    state->p25_p1_mod_probe_active = 1;
+    if (probe_qpsk) {
+        atomic_store(&g_qpsk_dwell_enter_ms, (int)(uint32_t)dsd_time_monotonic_ms());
+    }
+#ifdef USE_RADIO
+    rtl_maybe_apply_active_demod_profile(opts, state);
+#endif
+}
+
 int
 frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     if (state->sps_hunt_counter < frame_sync_sps_hunt_dwell_symbols(opts, state)) {
         return 0;
     }
     state->sps_hunt_counter = 0;
+    /* Reaching here is the trial's verdict: its dwell expired with nothing decoded. */
+    state->p25_p1_mod_probe_active = 0;
     const int preserve_modulation = opts->mod_cli_lock ? 1 : 0;
 
     /* Generic modulation locks retain their demodulator while rotating equal-timing protocol gates. A P25p2-specific
@@ -3138,6 +3285,7 @@ frame_sync_no_sync_sps_hunt(const dsd_opts* opts, dsd_state* state) {
     const int previous_idx = state->sps_hunt_idx;
     const int previous_mod = state->rf_mod;
     frame_sync_apply_sps_hunt_profile(opts, state, next_idx, preserve_modulation);
+    frame_sync_maybe_probe_p25p1_cqpsk(opts, state, preserve_modulation, previous_idx, previous_mod);
     /* A repeated binary profile is a step too: frame_sync_apply_sps_hunt_profile() normalises
      * dsd_state::rf_mod and resets the modulation vote state without the index moving, and the
      * caller's sync window -- its level ring, its min/max, its history -- was captured under the

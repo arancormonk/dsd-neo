@@ -109,6 +109,7 @@ typedef struct {
     int p25_sys_is_tdma;
     int p25_vc_cqpsk_pref;
     int p25_vc_cqpsk_override;
+    int p25_p1_validated_rf_mod;
     int p25_sm_mode;
     int nac;
     int samplesPerSymbol;
@@ -1014,6 +1015,7 @@ trunk_scan_snapshot_clear(dsd_trunk_scan_snapshot* snapshot) {
     snapshot->p25_cc_is_tdma = 2;
     snapshot->p25_vc_cqpsk_pref = -1;
     snapshot->p25_vc_cqpsk_override = -1;
+    snapshot->p25_p1_validated_rf_mod = -1;
     /* NXDN "not decoded yet" sentinels, matching initState() (src/core/util/dsd_init.c) and
      * noCarrier(): RAN 0 is a legal value, so a zeroed snapshot would publish a fabricated
      * RAN 0 for a target that has never decoded one. */
@@ -1146,6 +1148,7 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     snapshot->p25_sys_is_tdma = state->p25_sys_is_tdma;
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
+    snapshot->p25_p1_validated_rf_mod = state->p25_p1_validated_rf_mod;
     snapshot->p25_sm_mode = state->p25_sm_mode;
     snapshot->nac = state->nac;
     snapshot->samplesPerSymbol = state->samplesPerSymbol;
@@ -1176,6 +1179,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     state->p25_sys_is_tdma = snapshot->p25_sys_is_tdma;
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
+    state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;
     state->p25_sm_mode = snapshot->p25_sm_mode;
     state->nac = snapshot->nac;
     state->samplesPerSymbol = snapshot->samplesPerSymbol;
@@ -1647,7 +1651,7 @@ trunk_scan_apply_p25_target_demod(const dsd_opts* opts, dsd_state* state, const 
     } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_C4FM) {
         state->rf_mod = 0;
     } else if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO || !opts->mod_cli_lock) {
-        state->rf_mod = (state->p25_cc_is_tdma == 1) ? 1 : 0;
+        state->rf_mod = (state->p25_cc_is_tdma == 1 || state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
     }
 }
 
@@ -2594,7 +2598,7 @@ dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_
         return 1;
     }
     if (target->modulation == DSD_TRUNK_SCAN_MODULATION_AUTO) {
-        *out_enable = (state->p25_cc_is_tdma == 1) ? 1 : 0;
+        *out_enable = (state->p25_cc_is_tdma == 1 || state->p25_p1_validated_rf_mod == 1) ? 1 : 0;
         return 1;
     }
     return 0;
