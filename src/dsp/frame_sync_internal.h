@@ -37,6 +37,16 @@ extern "C" {
  */
 #define DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS            16
 
+/**
+ * @brief Symbols one dPMR FS2 frame occupies, sync word included.
+ *
+ * processdPMRvoice() reads 372 dibits behind the 12-symbol FS2 sync: two 36-dibit CCH halves,
+ * two groups of four 36-dibit AMBE frames, and the 12-dibit channel code. That span is the
+ * frame FS2 opened, and it is how long the weaker NXDN48 matcher stays off the 2400/4 profile
+ * (see dsd_frame_sync_suppress_nxdn48_sync()).
+ */
+#define DSD_FRAME_SYNC_DPMR_FS2_FRAME_SYMBOLS       384U
+
 /** @brief One entry of the SPS hunt's rate/level table, indexed by dsd_state::sps_hunt_idx. */
 typedef struct {
     int symbol_rate_hz;

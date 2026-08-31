@@ -349,6 +349,14 @@ Notes
   PICH/TCH, a full SACCH superframe) is proof on its own; the 6- and 7-bit CRCs on SACCH and SCCH have to repeat on
   two consecutive frames. A real call confirms on its first FACCH, or within two frames when only SACCH is passing,
   so the cost is at most one frame of audio at the very start of a transmission.
+- dPMR and NXDN48 share the 2400/4 profile, and their sync matchers are not comparable in strength: dPMR's Frame Sync
+  2 is a single exact 12-symbol pattern, while NXDN's takes five variants per polarity over ten symbols sliced on sign
+  alone and so fires on roughly one arbitrary window in a hundred. The 372 dibits behind an accepted FS2 are dPMR's
+  frame, so for that frame's span the NXDN48 matcher stays off the profile: an NXDN match inside it would consume
+  symbols the frame needed and warm-start the slicer thresholds from ten symbols of dPMR payload, which left Auto
+  decoding corrupted dPMR identities on captures the `-fm` preset reads cleanly. The suppression lasts one frame and
+  is re-armed per FS2, so it costs a real NXDN48 signal nothing -- such a signal produces no FS2 matches at all -- and
+  it does not apply to NXDN96, which lives on 4800/4 where dPMR cannot match, nor to any build with dPMR disabled.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the

@@ -104,6 +104,14 @@ dsd_nxdn_variant dsd_frame_sync_active_nxdn_variant(const dsd_opts* opts, const 
 int dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Return non-zero while an accepted dPMR FS2 frame owns the 2400/4 profile.
+ *
+ * dPMR and NXDN48 share that profile with matchers of very different strength, so the frame a
+ * 12-symbol FS2 opened is not offered to the looser one (#374).
+ */
+int dsd_frame_sync_suppress_nxdn48_sync(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Return non-zero when TCP no-signal diagnostics should stay off the console.
  */
 int dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state);

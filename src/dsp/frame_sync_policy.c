@@ -7,9 +7,11 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <stdint.h>
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "frame_sync_internal.h"
 
 int
 dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* state) {
@@ -17,6 +19,22 @@ dsd_frame_sync_suppress_p25_alt_sync(const dsd_opts* opts, const dsd_state* stat
         return 0;
     }
     return opts->trunk_enable == 1 && state->carrier == 1 && DSD_SYNC_IS_P25(state->lastsynctype);
+}
+
+int
+dsd_frame_sync_suppress_nxdn48_sync(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    if (opts->frame_dpmr != 1 || state->dpmr_fs2_frame_valid == 0) {
+        return 0;
+    }
+    /* Modular difference, so the span stays exact across the symbol counter's rollover. A
+     * backwards jump -- nxdn_reset_after_cac_fail() and initState() both zero symbolcnt --
+     * reads as a huge forward distance and simply ends the suppression early, which is the
+     * safe way for it to fail. */
+    const uint32_t since = state->symbolcnt - state->dpmr_fs2_frame_symbolcnt;
+    return since < DSD_FRAME_SYNC_DPMR_FS2_FRAME_SYMBOLS;
 }
 
 int
