@@ -32,10 +32,26 @@ extern "C" {
  * that consumes nothing and claims productivity costs at most the symbols it took. Report
  * UNPRODUCTIVE only from a check the protocol actually ran and actually failed -- never
  * from a threshold that guesses.
+ *
+ * PROFILE_PROVEN is the same rule in the other direction, and answers a question
+ * PRODUCTIVE cannot: consumption credit is bounded by what the handler read, so a frame
+ * that validates hard but reads a fraction of its slot still leaves the profile paying
+ * for the rest of it. A control channel decoding a one-block TSDU reads 134 of ~180
+ * symbols and can never get ahead of the failures between (#400). Report PROFILE_PROVEN
+ * when a check the protocol ran says the signal on this profile is the protocol -- the
+ * profile has re-earned its dwell, whatever the frame cost to read.
+ *
+ * The numeric values are load-bearing. src/dsp reads the verdict out of
+ * dsd_state::sps_hunt_last_frame_verdict without this header (the DSP layer includes no
+ * engine headers), so frame_sync_sps_hunt_note_handler_consumption() compares against
+ * the literals. A value it does not know is treated as UNPRODUCTIVE, which is the safe
+ * direction for the budget but not for live traffic: a new verdict owes that function a
+ * matching branch in the same change.
  */
 typedef enum {
-    DSD_FRAME_VERDICT_PRODUCTIVE = 0,   /**< default: assume the handler decoded a frame */
-    DSD_FRAME_VERDICT_UNPRODUCTIVE = 1, /**< consumed symbols, validated nothing */
+    DSD_FRAME_VERDICT_PRODUCTIVE = 0,     /**< default: assume the handler decoded a frame */
+    DSD_FRAME_VERDICT_UNPRODUCTIVE = 1,   /**< consumed symbols, validated nothing */
+    DSD_FRAME_VERDICT_PROFILE_PROVEN = 2, /**< a check passed: the profile re-earns its dwell */
 } dsd_frame_verdict;
 
 typedef struct dsd_protocol_handler {

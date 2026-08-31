@@ -1863,6 +1863,13 @@ no_carrier_reset_decode_state(dsd_state* state, int preserve_dmr_confidence) {
     /* Same rule for ProVoice: a frame proves nothing on its own, so the streak that does
      * cannot span the dead channel that brought us here (issue #421). */
     provoice_confirm_reset(state);
+    /* And for what a decoded P25p1 NID vouches for: the benefit of the doubt it lends the
+     * failures around it is evidence about a live transmission, so it cannot outlast the
+     * carrier that produced it (issue #400). p25_p1_validated_rf_mod is deliberately not
+     * cleared here -- what the signal is outlives the transmission, what it is doing does
+     * not. */
+    state->p25_p1_nid_evidence = 0;
+    state->p25_p1_nid_evidence_symbolcnt = 0;
     state->err_str[0] = '\0';
     state->err_strR[0] = '\0';
     set_spaces(state->fsubtype, 14);

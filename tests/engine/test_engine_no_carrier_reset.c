@@ -958,6 +958,8 @@ main(void) {
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_2;
     state->sps_hunt_counter = 23;
     state->p25_p1_validated_rf_mod = 1;
+    state->p25_p1_nid_evidence = 1;
+    state->p25_p1_nid_evidence_symbolcnt = 4321U;
 
     noCarrier(opts, state);
 
@@ -966,6 +968,11 @@ main(void) {
      * not acquisition state, so losing the carrier must not erase it -- otherwise every fade
      * costs an LSM control channel the chain it had already earned. */
     rc |= expect_true("p25-rtl-nocarrier-keeps-learned-modulation", state->p25_p1_validated_rf_mod == 1);
+    /* Issue #400: what a decoded NID vouches for is the other kind of thing. The benefit of the
+     * doubt it lends the failures around it is about a transmission in progress, so it cannot
+     * outlast the carrier -- the next one proves itself again. */
+    rc |= expect_true("p25-rtl-nocarrier-clears-nid-evidence",
+                      state->p25_p1_nid_evidence == 0 && state->p25_p1_nid_evidence_symbolcnt == 0U);
     rc |= expect_true("p25-rtl-nocarrier-syncs-selected-cc",
                       state->p25_cc_freq == 769868750 && state->trunk_cc_freq == 769868750);
     rc |= expect_true("p25-rtl-nocarrier-cc-profile-rate", g_rtl_symbol_rate_hz == 4800);

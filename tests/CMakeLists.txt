@@ -9127,6 +9127,21 @@ if(DSD_HAS_RADIO)
         -f1
         "Group Voice Channel User"
     )
+    # Issue #400: the same capture under -fa, where the SPS hunt is live. P25p1 syncs arrive
+    # here with failing NIDs between the frames that decode, and consumption credit is bounded
+    # by what a handler read -- 33 symbols for a failed NID, 134 of a ~180-symbol slot for a
+    # one-block TSDU -- so the budget climbed on a channel that was decoding and the hunt
+    # rotated off it. On main this capture steps to 20 sps partway through and finishes in
+    # dPMR; holding the profile decodes the encrypted HDU behind those failures instead, which
+    # is what makes the payload assertion here the fix rather than the fixture. Both hold
+    # across dev-debug, asan-ubsan-debug and tsan-debug.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_P25P1_CQPSK_VOICE_AUTO_HUNT
+        p25p1_cqpsk_vc
+        -fa
+        "ALG ID: 0xC0 KEY ID: 0x3900"
+        "SPS hunt: trying"
+    )
     # Two-ray simulcast impairment (62.5 us delay spread, -4.4 dB second ray,
     # +1.5 Hz carrier beat) derived from the clean CQPSK CC capture; exercises
     # LSM reception through beat fading and frequency-selective ISI.

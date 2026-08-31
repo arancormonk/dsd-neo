@@ -152,15 +152,17 @@ init_hunt_opts_state(dsd_opts* opts, dsd_state* state, int mod_cli_lock) {
 
 typedef struct {
     const char* label;
-    const char* marker;                                  /* sync marker injected into the stream ("" = never syncs) */
-    int marker_gap;                                      /* filler symbols between markers */
-    int handler_symbols;                                 /* symbols the "protocol handler" consumes per returned sync */
-    int handler_unproductive;                            /* verdict the handler reports on every sync (#391) */
-    int unproductive_lead_syncs;                         /* ... plus the first N syncs, always UNPRODUCTIVE */
-    int stamp_verdict_syncs;                             /* 0 = every sync stamps a verdict; N = only the first N */
-    long symbol_budget;                                  /* stop after this many symbols leave the source */
-    int expect_step;                                     /* 1 = the hunt must leave its starting profile */
-    int mod_cli_lock;                                    /* 0 = AUTO (-fa), 1 = a generic modulation lock (-mc) */
+    const char* marker;          /* sync marker injected into the stream ("" = never syncs) */
+    int marker_gap;              /* filler symbols between markers */
+    int handler_symbols;         /* symbols the "protocol handler" consumes per returned sync */
+    int handler_unproductive;    /* verdict the handler reports on every sync (#391) */
+    int unproductive_lead_syncs; /* ... plus the first N syncs, always UNPRODUCTIVE */
+    const int* verdict_cycle;    /* verdicts to report in turn, repeating; overrides the two above (#400) */
+    int verdict_cycle_len;       /* how many entries verdict_cycle has */
+    int stamp_verdict_syncs;     /* 0 = every sync stamps a verdict; N = only the first N */
+    long symbol_budget;          /* stop after this many symbols leave the source */
+    int expect_step;             /* 1 = the hunt must leave its starting profile */
+    int mod_cli_lock;            /* 0 = AUTO (-fa), 1 = a generic modulation lock (-mc) */
     void (*configure)(dsd_opts* opts, dsd_state* state); /* optional setup on top of the defaults */
 } HuntCase;
 
@@ -210,9 +212,13 @@ drive_hunt(const HuntCase* tc) {
          * stops the stamping partway, which is the engine's other shape: an entry no
          * processFrame() precedes leaves the field exactly as the last one left it. */
         if (tc->stamp_verdict_syncs == 0 || result.syncs_seen <= tc->stamp_verdict_syncs) {
-            const int unproductive = tc->handler_unproductive || result.syncs_seen <= tc->unproductive_lead_syncs;
-            state.sps_hunt_last_frame_verdict =
-                unproductive ? DSD_FRAME_VERDICT_UNPRODUCTIVE : DSD_FRAME_VERDICT_PRODUCTIVE;
+            if (tc->verdict_cycle != NULL) {
+                state.sps_hunt_last_frame_verdict = tc->verdict_cycle[(result.syncs_seen - 1) % tc->verdict_cycle_len];
+            } else {
+                const int unproductive = tc->handler_unproductive || result.syncs_seen <= tc->unproductive_lead_syncs;
+                state.sps_hunt_last_frame_verdict =
+                    unproductive ? DSD_FRAME_VERDICT_UNPRODUCTIVE : DSD_FRAME_VERDICT_PRODUCTIVE;
+            }
         }
     }
 
@@ -409,6 +415,74 @@ test_a_confirming_transmission_holds_its_profile(void) {
     assert(r.final_sps == HUNT_SPS_4800);
 }
 
+/* #400: the case consumption credit cannot express. A P25p1 control channel reads 33 symbols
+ * of a ~180-symbol slot when the NID fails and 134 when a one-block TSDU decodes -- it stops
+ * on the standard's last-block bit, not on a budget -- so every frame leaves the search
+ * holding the rest of the slot, and the floor at zero denies a decoded frame any reserve to
+ * spend on the failures between. Off-air under -fa this ran at roughly two failures per
+ * decode and rotated off a live control channel every ~30 s.
+ *
+ * The verdicts here are the ones dsd_dispatch_handle_p25p1() reports for that traffic, and
+ * they are the enumerators themselves: the DSP layer compares against literals because it
+ * includes no engine headers, so this case is also what pins the two to the same numbers. */
+static void
+test_a_proven_verdict_holds_the_profile_through_failure_runs(void) {
+    static const int cycle[] = {DSD_FRAME_VERDICT_PROFILE_PROVEN, DSD_FRAME_VERDICT_UNPRODUCTIVE,
+                                DSD_FRAME_VERDICT_UNPRODUCTIVE};
+    /* One decode per two failures, each frame reading the 33 symbols a NID costs and leaving
+     * the balance of its slot to the search. Under consumption credit alone the budget climbs
+     * ~206 symbols every three slots and reaches the dwell inside a few thousand. */
+    const HuntCase tc = {
+        .label = "one decode per two failed NIDs at 4800/4",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 120,
+        .handler_symbols = 33,
+        .verdict_cycle = cycle,
+        .verdict_cycle_len = (int)(sizeof(cycle) / sizeof(cycle[0])),
+        .symbol_budget = 400000,
+        .expect_step = 0,
+    };
+    const HuntResult r = drive_hunt(&tc);
+
+    /* Far more than the dwell's worth of symbols went by without a step, and the proofs are a
+     * small minority of them: the profile is held by what decoded, not by what it consumed. */
+    assert(r.syncs_seen > 500);
+    assert(r.stepped == 0);
+    assert(r.final_idx == DSD_FRAME_SYNC_SPS_PROFILE_4800_4);
+    assert(r.final_sps == HUNT_SPS_4800);
+}
+
+/* #400 in the direction #388 guards: a proof restarts the dwell, it does not bank one. The
+ * profile that stops proving itself must leave on the idle dwell, measured from the last
+ * proof -- which is what makes a false proof cost one dwell rather than the profile. */
+static void
+test_a_proven_verdict_buys_one_dwell_and_no_more(void) {
+    static const int cycle[] = {DSD_FRAME_VERDICT_PROFILE_PROVEN};
+    const HuntCase lead = {
+        .label = "proofs, then nothing but failures",
+        .marker = FALSE_SYNC_MARKER,
+        .marker_gap = 120,
+        .handler_symbols = 33,
+        .verdict_cycle = cycle,
+        .verdict_cycle_len = 1,
+        .stamp_verdict_syncs = 8, /* eight proofs, then every sync reads the cleared field */
+        .symbol_budget = 400000,
+        .expect_step = 1,
+    };
+    /* stamp_verdict_syncs leaves the field cleared afterwards, which reads as PRODUCTIVE --
+     * and 33 symbols is under the size floor, so nothing is credited past the eighth proof.
+     * That is the shape of a channel that goes quiet: the syncs keep arriving, nothing
+     * decodes, and the profile is given up. */
+    const HuntResult r = drive_hunt(&lead);
+
+    assert_auto_stepped_to_2400_4(&r);
+    const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+    /* Eight proofs in a row bought exactly what one would: the dwell runs from the last of
+     * them, so the step lands within a dwell of it rather than eight. */
+    assert(r.symbols_at_step >= dwell_symbols);
+    assert(r.symbols_at_step < dwell_symbols * 2);
+}
+
 /* #391: one verdict answers for one handler call. frame_sync_sps_hunt_note_handler_consumption()
  * clears dsd_state::sps_hunt_last_frame_verdict as it reads it, so a verdict cannot be charged
  * against consumption that is not the handler's -- the entries no processFrame() precedes, such
@@ -570,6 +644,8 @@ main(void) {
     test_consumed_frames_hold_the_profile();
     test_unproductive_frames_never_buy_dwell();
     test_a_confirming_transmission_holds_its_profile();
+    test_a_proven_verdict_holds_the_profile_through_failure_runs();
+    test_a_proven_verdict_buys_one_dwell_and_no_more();
     test_a_verdict_is_read_once_and_cleared();
     test_idle_rotation_period_is_unchanged();
     test_locked_modulation_rotates_within_equal_timing();

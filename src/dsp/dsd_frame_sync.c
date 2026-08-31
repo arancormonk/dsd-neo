@@ -3148,10 +3148,31 @@ frame_sync_sps_hunt_dwell_symbols(const dsd_opts* opts, const dsd_state* state) 
  * default-productive, so every handler that still reports nothing -- DMR, P25 Phase 2, dPMR
  * and X2-TDMA, which is the whole of the set that does not -- buys dwell in proportion to
  * what it swallowed, as before.
+ *
+ * Consumption credit answers "how much of this profile's time went somewhere", which is not
+ * the same question as "is this the right profile". A P25p1 control channel reads 134
+ * symbols of a ~180-symbol TSDU slot -- it stops on the standard's last-block bit, not on a
+ * budget -- so a decoded frame cannot get ahead of the slot it sat in, and the floor at zero
+ * denies it a reserve to spend on the failures between. Runs of failing NIDs then rotated
+ * the hunt off a control channel it was decoding (#400). A handler whose own check proves
+ * the profile says so with DSD_FRAME_VERDICT_PROFILE_PROVEN, and the dwell restarts outright
+ * -- the same thing a profile change does (#415), and for the same reason: this profile is
+ * starting its dwell over, not being paid for a frame.
+ *
+ * Restarting cannot re-open #388 the way an accumulator did. Zero is the floor the credit
+ * path already has, so nothing banks: holding a profile takes evidence recurring inside every
+ * dwell, and one false proof buys exactly one dwell. Values are compared as literals because
+ * the DSP layer includes no engine headers; anything this does not recognise is refused
+ * credit, so an unhandled verdict degrades toward rotating rather than toward pinning.
  */
 static void
 frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
-    const int unproductive = state->sps_hunt_last_frame_verdict != 0;
+    /* DSD_FRAME_VERDICT_* (engine/protocol_dispatch.h): 0 productive, 1 unproductive,
+     * 2 profile proven. Kept in step by FRAME_SYNC_SPS_HUNT_FALSE_SYNC, which drives this
+     * through getFrameSync() with the enumerators themselves. */
+    const int verdict = state->sps_hunt_last_frame_verdict;
+    const int proven = verdict == 2;
+    const int unproductive = verdict != 0 && !proven;
     /* One verdict answers for one handler call. processFrame() already re-stamps the field
      * on every dispatch, so this is belt and braces for the entries no handler precedes --
      * a no-sync return, or a frame the retune generation made undispatchable -- where a
@@ -3179,7 +3200,13 @@ frame_sync_sps_hunt_note_handler_consumption(dsd_state* state) {
          * from a rollover. */
         consumed = 0;
     }
-    if (!unproductive && consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
+    if (proven) {
+        /* The handler's check, not the measurement, is what carries this: a proof holds
+         * however few symbols the frame took to read, so the size floor and the backwards-
+         * jump guard above -- both of which exist to keep consumption honest -- have no say
+         * in it. */
+        state->sps_hunt_counter = 0;
+    } else if (!unproductive && consumed >= (uint32_t)DSD_FRAME_SYNC_MIN_FRAME_SYMBOLS) {
         /* dsd_state::sps_hunt_counter only ever counts up from zero, so this is exact.
          * Sites outside the hunt park a profile by zeroing it; the floor at zero means
          * consumption measured across such a reset cannot drive it negative. */
