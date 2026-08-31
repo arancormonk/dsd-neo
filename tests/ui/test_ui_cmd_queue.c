@@ -1094,7 +1094,11 @@ test_manual_tune_commands_commit_only_after_acceptance(void) {
  * Tap-to-tune is gated on the live options at drain time, not on the frontend
  * hiding the affordance, and an accepted tap tears down call state so the
  * decoder re-acquires on the new frequency instead of aging out.
+ *
+ * Every check here observes ui_cmd_handle_manual_tune(), which is compiled only
+ * with the radio pipeline -- including the refusals, which are its early returns.
  */
+#ifdef USE_RADIO
 static int
 test_manual_tune_trunking_gate_and_reacquisition(void) {
     int rc = 0;
@@ -1175,6 +1179,7 @@ test_manual_tune_trunking_gate_and_reacquisition(void) {
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     return rc;
 }
+#endif
 
 /*
  * Releasing the tuner is how a frontend says "stop moving this on your own"
@@ -1207,12 +1212,15 @@ test_tuner_release(void) {
     rc |= expect_contains("release explains itself", state.ui_msg, "Automatic tuning stopped");
     rc |= expect_int("release never touches the tuner itself", g_io_control_tune_calls, 0);
 
-    /* And it is the whole point that a tap now works where it was refused. */
+    /* And it is the whole point that a tap now works where it was refused --
+       which only means anything where the tap has a handler at all. */
+#ifdef USE_RADIO
     rc |= expect_int("tune after release queued", dsd_app_command_set_u32(DSD_APP_CMD_MANUAL_TUNE, 853125000U),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("tune after release drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("tune after release reaches the tuner", g_io_control_tune_calls, 1);
     rc |= expect_contains("tune after release reports applied", state.ui_msg, "Applied: tuned -> 853125000 Hz");
+#endif
     freeState(&state);
 
     /* Conventional scanner mode is the other owner, and a frontend cannot tell
@@ -1658,7 +1666,9 @@ main(void) {
     rc |= test_trunk_set();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
+#ifdef USE_RADIO
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
+#endif
     rc |= test_tuner_release();
 #endif
     if (rc == 0) {
