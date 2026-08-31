@@ -43,8 +43,14 @@ dsd_dispatch_matches_dpmr(int synctype) {
 }
 
 /*
- * Always productive. FS1/FS3/FS4 consume nothing beyond the sync itself, and the FS2 voice
- * path (processdPMRvoice) has no CRC or FEC verdict to report (#391).
+ * Always productive. FS1/FS3/FS4 consume nothing beyond the sync itself, and the FS2 voice path
+ * (processdPMRvoice) has no *sound* verdict to report (#391). Checks do run there and their
+ * results reach dsd_state -- dpmr_decode_cch_frames() leaves a CCH CRC-7 in CCHDataCrcOk and a
+ * Hamming(12,8) verdict in CCHDataHammingOk -- but neither can carry a verdict: the CRC-7 fails
+ * on every superframe of the committed dpmr fixture, the one capture in the tree that decodes,
+ * and the Hamming fallback accepts most random data. Reporting either would rotate the hunt off
+ * live traffic, which is the risk direction protocol_dispatch.h names. Left productive until
+ * dPMR has an integrity check that works; that is #407, and a verdict here follows from it.
  */
 dsd_frame_verdict
 dsd_dispatch_handle_dpmr(dsd_opts* opts, dsd_state* state) {

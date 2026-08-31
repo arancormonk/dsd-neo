@@ -342,8 +342,9 @@ test_consumed_frames_hold_the_profile(void) {
      * symbols per frame, P25p1 408, M17 184).
      *
      * On the default PRODUCTIVE verdict, which is what #391 leaves every protocol with no
-     * check of its own -- D-STAR voice, ProVoice, dPMR, X2-TDMA, P25p2, DMR. A frame's
-     * worth consumed still holds the profile for them, exactly as before. */
+     * check of its own -- DMR, P25 Phase 2, dPMR and X2-TDMA, since #429 gave D-STAR voice
+     * and ProVoice one. A frame's worth consumed still holds the profile for them, exactly
+     * as before. */
     const HuntCase tc = {
         .label = "decoded frames at 4800/4",
         .marker = FALSE_SYNC_MARKER,
@@ -388,6 +389,51 @@ test_unproductive_frames_never_buy_dwell(void) {
     const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
     assert(r.symbols_at_step >= dwell_symbols);
     assert(r.symbols_at_step < dwell_symbols * 6);
+}
+
+/* #391's residual, and the bound on it. Four handlers report no verdict at any point -- DMR,
+ * P25 Phase 2, dPMR and X2-TDMA -- so a false match on one is credited in full, as before.
+ * What stops that pinning a profile is arithmetic rather than a verdict: the symbols a handler
+ * eats are symbols the search never sees, so one cycle nets (period - 2 x consumption) onto the
+ * budget, and only a cadence tighter than twice the block it swallows can hold the profile.
+ *
+ * dPMR is the worst case of the four, and the only one whose matcher fires on noise at all:
+ * 372 symbols read before dpmr_decode_cch_frames() runs a check (src/protocol/dpmr/dpmr_voice.c)
+ * behind a single 12-symbol pattern per polarity. That puts its cliff at one sync per 744
+ * symbols and its rate on sign-sliced noise at 2/2^12, one per ~2048 -- and the margin between
+ * those two numbers is the whole reason the residual is a delay rather than a hold. The other
+ * three sit behind 20- and 24-symbol exact matchers that noise does not reach.
+ *
+ * Both cadences below are the matcher's own. Anything denser is a carrier presenting FS2 on
+ * schedule, which is a dPMR signal and is meant to hold the profile -- telling those apart
+ * needs the integrity check dPMR does not have, tracked as #407. The hunt's arithmetic does
+ * not vary by profile, so this drives it from the harness's 4800/4 start like every case here;
+ * what is modelled is dPMR's consumption and cadence, not its profile. */
+static void
+test_no_verdict_handlers_still_rotate_at_the_noise_cadence(void) {
+    /* The marker is part of the period, so these are the cadences less its 88 symbols. */
+    static const int gaps[] = {2048 - 88, 4096 - 88};
+
+    for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); i++) {
+        const HuntCase tc = {
+            .label = "no-verdict handler at the dPMR noise cadence",
+            .marker = FALSE_SYNC_MARKER,
+            .marker_gap = gaps[i],
+            .handler_symbols = 372,    /* a dPMR FS2 frame, read in full before any check */
+            .handler_unproductive = 0, /* the default verdict, which is what those four report */
+            .symbol_budget = 400000,
+            .expect_step = 1,
+        };
+        const HuntResult r = drive_hunt(&tc);
+
+        assert(r.syncs_seen > 0);
+        assert_auto_stepped_to_2400_4(&r);
+        /* Held longer than an idle profile, because every match is credited in full -- but
+         * bounded, which is the property #391's remaining set turns on. */
+        const long dwell_symbols = (long)DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS * 3;
+        assert(r.symbols_at_step >= dwell_symbols);
+        assert(r.symbols_at_step < dwell_symbols * 3);
+    }
 }
 
 /* #391, the other half of the same rule: an unproductive lead does not condemn the
@@ -733,6 +779,7 @@ main(void) {
     test_sub_frame_consumption_never_buys_dwell();
     test_consumed_frames_hold_the_profile();
     test_unproductive_frames_never_buy_dwell();
+    test_no_verdict_handlers_still_rotate_at_the_noise_cadence();
     test_a_confirming_transmission_holds_its_profile();
     test_a_proven_verdict_holds_the_profile_through_failure_runs();
     test_a_proven_verdict_buys_one_dwell_and_no_more();

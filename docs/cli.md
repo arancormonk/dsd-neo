@@ -321,7 +321,12 @@ Notes
   ProVoice frame whose transmission has not yet proved itself all buy no dwell however many symbols they consumed.
   Handlers that report no verdict are credited as before: every DMR, P25 Phase 2, dPMR and X2-TDMA frame is
   unconditionally productive, and a false match on one of those still delays the hunt in proportion to what it
-  swallows.
+  swallows. That delay is bounded rather than a hold, because the symbols a handler eats are symbols the search
+  never spends: a profile is held only where syncs arrive closer together than twice the block behind each one. Of
+  the four, only dPMR has a matcher noise reaches -- one 12-symbol pattern per polarity, against the 372 symbols an
+  FS2 frame reads -- so its hits would have to fall within 744 symbols to hold the profile, against the one per
+  ~2048 that noise produces. Telling that apart from a real dPMR carrier, which presents FS2 on schedule and is
+  meant to hold the profile, needs the integrity check dPMR does not yet have (issue #407).
 - A sync the decoder deliberately declines to process costs the profile nothing either way. Trunking skips the DMR
   direct-mode paths outright, and any frame arriving while a retune is still in flight is dropped rather than
   dispatched; neither reads a symbol, so neither can earn credit, and the search that found the sync used to stand
