@@ -70,9 +70,14 @@ typedef struct dsd_iq_capture_writer dsd_iq_capture_writer;
 /**
  * @brief Resolve data and metadata paths from a user path.
  *
- * If @p path ends with `.json`, it is treated as metadata path and the data
- * path is derived by stripping `.json`. Otherwise @p path is treated as the
- * data path and metadata becomes `<path>.json`.
+ * If @p path ends with `.json` (matched case-insensitively), it is treated as the
+ * metadata path and the data path is derived by stripping `.json`. Otherwise @p path
+ * is the data path and metadata becomes `<data path>.json`.
+ *
+ * A path whose final component carries no extension gains the conventional `.iq`, so
+ * `mycap` yields `mycap.iq` plus `mycap.iq.json`. A dot in a directory name does not
+ * count as an extension, and a leading dot belongs to the name (`.hidden` has none).
+ * The suffix does not vary with the sample format; that is recorded in the sidecar.
  */
 int dsd_iq_capture_derive_paths(const char* path, char* out_data_path, size_t out_data_path_size,
                                 char* out_metadata_path, size_t out_metadata_path_size, char* err_buf,

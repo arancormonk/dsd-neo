@@ -27,8 +27,15 @@ Path handling:
 
 - If the supplied capture path ends in `.json`, it is treated as metadata path and data path becomes the same name
   without `.json`.
-- Otherwise the supplied capture path is treated as data path and metadata path becomes `<path>.json`.
-- `--iq-replay` and `--iq-info` accept either metadata path or data path.
+- Otherwise the supplied capture path is the data path, and metadata path becomes `<data path>.json`.
+- If the final component of that data path carries no extension, `.iq` is added first: `--iq-capture mycap` writes
+  `mycap.iq` and `mycap.iq.json`. A dot in a directory name does not count as an extension, and a leading dot belongs
+  to the name (`.hidden` gains `.iq`). The suffix is always `.iq` regardless of `--iq-capture-format`; the sample
+  format is recorded in the sidecar.
+- `--iq-replay` and `--iq-info` accept the metadata path, the data path, or the bare name given to `--iq-capture`.
+  A bare name resolves `<name>.json` first and then `<name>.iq.json`, so captures written before `.iq` was added
+  still replay.
+- The `.json` suffix is matched case-insensitively, so `mycap.iq.JSON` is recognised as a sidecar on Windows.
 
 ## Format Notes
 

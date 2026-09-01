@@ -183,6 +183,7 @@ dsd_cli_usage_section_radio_and_encoder(void) {
     printf("      --rtl-udp-control <port>  Enable external RTL retune control on 127.0.0.1:<port>\n");
     printf("      --rtl-udp-control-bind <ipv4>  Bind RTL retune control to this numeric IPv4 address\n");
     printf("      --iq-capture <path>    Write I/Q capture data + metadata sidecar\n");
+    printf("                             (.iq is added when <path> has no extension)\n");
     printf("      --iq-capture-format <fmt>  Capture format (cu8|cf32)\n");
     printf("      --iq-capture-max-mb <n>  Capture size limit in MiB (0 = unlimited)\n");
     printf("      --iq-replay <path>     Replay I/Q capture metadata/data through RTL path (requires radio)\n");
