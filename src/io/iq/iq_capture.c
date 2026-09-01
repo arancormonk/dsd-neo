@@ -7,6 +7,7 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <errno.h>
@@ -129,6 +130,13 @@ copy_string_checked(const char* src, char* dst, size_t dst_size, char* err_buf, 
     return DSD_IQ_OK;
 }
 
+/** @brief Longest capture path handled here; matches dsd_iq_capture_config::data_path. */
+#define DSD_IQ_PATH_MAX     2048
+/** @brief Scratch room for a path plus the ".iq" default and the ".json" sidecar suffix. */
+#define DSD_IQ_PATH_SCRATCH (DSD_IQ_PATH_MAX + 16)
+
+static const char* metadata_data_basename(const char* path);
+
 static int
 has_suffix(const char* s, const char* suffix) {
     if (!s || !suffix) {
@@ -139,7 +147,27 @@ has_suffix(const char* s, const char* suffix) {
     if (s_len < suf_len) {
         return 0;
     }
-    return strcmp(s + (s_len - suf_len), suffix) == 0;
+    /* Case-insensitive: Windows filesystems preserve case without distinguishing it,
+       so "capture.iq.JSON" names the same sidecar as "capture.iq.json" and must take
+       the metadata branch rather than growing a second ".json". */
+    return dsd_strcasecmp(s + (s_len - suf_len), suffix) == 0;
+}
+
+/**
+ * @brief Report whether the final path component already carries an extension.
+ *
+ * Only the basename is inspected, so a dot in a directory name ("caps.v2/mycap")
+ * does not count. The scan starts one byte in, so a leading dot belongs to the name
+ * rather than an extension (".hidden" has none) while a trailing dot counts as one
+ * ("cap." is left alone).
+ */
+static int
+basename_has_extension(const char* path) {
+    const char* base = metadata_data_basename(path);
+    if (!base || base[0] == '\0') {
+        return 0;
+    }
+    return strchr(base + 1, '.') != NULL;
 }
 
 int
@@ -151,38 +179,43 @@ dsd_iq_capture_derive_paths(const char* path, char* out_data_path, size_t out_da
         return DSD_IQ_ERR_INVALID_ARG;
     }
 
+    size_t path_len = strlen(path);
+    if (path_len >= DSD_IQ_PATH_MAX) {
+        set_error(err_buf, err_buf_size, "capture path too long");
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+
+    /* Both in-tree callers alias `path` with one of the output buffers (see
+       capture_open_resolve_paths), so build the results in scratch space and copy them
+       out only once nothing reads `path` any more. */
+    char data_scratch[DSD_IQ_PATH_SCRATCH];
+    char meta_scratch[DSD_IQ_PATH_SCRATCH];
+
     if (has_suffix(path, ".json")) {
-        size_t meta_len = strlen(path);
-        if (meta_len + 1 > out_metadata_path_size) {
-            set_error(err_buf, err_buf_size, "metadata path too long");
+        size_t data_len = path_len - 5U;
+        if (data_len == 0) {
+            set_error(err_buf, err_buf_size, "derived data path is empty");
             return DSD_IQ_ERR_INVALID_ARG;
         }
-        DSD_MEMCPY(out_metadata_path, path, meta_len + 1);
-
-        size_t data_len = meta_len - 5U;
-        if (data_len == 0 || data_len + 1 > out_data_path_size) {
-            set_error(err_buf, err_buf_size, "derived data path too long");
-            return DSD_IQ_ERR_INVALID_ARG;
-        }
-        DSD_MEMCPY(out_data_path, path, data_len);
-        out_data_path[data_len] = '\0';
+        DSD_MEMCPY(meta_scratch, path, path_len + 1);
+        DSD_MEMCPY(data_scratch, path, data_len);
+        data_scratch[data_len] = '\0';
     } else {
-        size_t data_len = strlen(path);
-        if (data_len + 1 > out_data_path_size) {
-            set_error(err_buf, err_buf_size, "data path too long");
-            return DSD_IQ_ERR_INVALID_ARG;
-        }
-        DSD_MEMCPY(out_data_path, path, data_len + 1);
+        /* A path with no extension gets the conventional ".iq", so a capture is
+           self-describing however the name was typed. The suffix does not vary with
+           the sample format; that is recorded in the sidecar. */
+        const char* ext = basename_has_extension(path) ? "" : ".iq";
+        DSD_SNPRINTF(data_scratch, sizeof(data_scratch), "%s%s", path, ext);
+        DSD_SNPRINTF(meta_scratch, sizeof(meta_scratch), "%s%s", data_scratch, ".json");
+    }
 
-        {
-            const char* suffix = ".json";
-            size_t meta_len = data_len + strlen(suffix);
-            if (meta_len + 1 > out_metadata_path_size) {
-                set_error(err_buf, err_buf_size, "metadata path too long");
-                return DSD_IQ_ERR_INVALID_ARG;
-            }
-            DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s%s", path, suffix);
-        }
+    if (copy_string_checked(data_scratch, out_data_path, out_data_path_size, err_buf, err_buf_size, "data")
+        != DSD_IQ_OK) {
+        return DSD_IQ_ERR_INVALID_ARG;
+    }
+    if (copy_string_checked(meta_scratch, out_metadata_path, out_metadata_path_size, err_buf, err_buf_size, "metadata")
+        != DSD_IQ_OK) {
+        return DSD_IQ_ERR_INVALID_ARG;
     }
     return DSD_IQ_OK;
 }

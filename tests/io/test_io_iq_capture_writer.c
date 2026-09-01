@@ -1568,6 +1568,123 @@ test_write_failure_is_counted_and_metadata_stays_readable(void) {
 }
 #endif /* !DSD_PLATFORM_WIN_NATIVE && RLIMIT_FSIZE */
 
+/*
+ * A bare --iq-capture name must land on disk as <name>.iq / <name>.iq.json, and
+ * replay/--iq-info must find that sidecar from the bare name. Captures written
+ * before the .iq default (<name> / <name>.json) must still resolve.
+ */
+static int
+test_bare_name_roundtrip_and_legacy_resolution(void) {
+    int rc = 0;
+    char dir[256];
+    char bare[512];
+    char data_path[512];
+    char metadata_path[512];
+    char err[256];
+
+    if (mk_temp_dir(dir, sizeof(dir)) != 0) {
+        return 1;
+    }
+    path_join(bare, sizeof(bare), dir, "mycap");
+
+    rc |= expect_int("derive bare capture",
+                     dsd_iq_capture_derive_paths(bare, data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+
+    {
+        char want_data[512];
+        char want_meta[512];
+        path_join(want_data, sizeof(want_data), dir, "mycap.iq");
+        path_join(want_meta, sizeof(want_meta), dir, "mycap.iq.json");
+        rc |= expect_true("bare capture data path", strcmp(data_path, want_data) == 0);
+        rc |= expect_true("bare capture metadata path", strcmp(metadata_path, want_meta) == 0);
+    }
+
+    dsd_iq_capture_config cfg;
+    fill_base_capture_cfg(&cfg, data_path, metadata_path, DSD_IQ_FORMAT_CU8);
+
+    dsd_iq_capture_writer* writer = NULL;
+    rc |= expect_int("open bare capture", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        cleanup_capture(dir, data_path, metadata_path);
+        return rc;
+    }
+    {
+        uint8_t payload[4] = {1, 2, 3, 4};
+        rc |= expect_int("submit bare capture", dsd_iq_capture_submit(writer, payload, sizeof(payload)), DSD_IQ_OK);
+        dsd_iq_capture_final_stats stats;
+        DSD_MEMSET(&stats, 0, sizeof(stats));
+        dsd_iq_capture_close(writer, &stats);
+    }
+
+    /* The payload really landed under the .iq name, not the bare one. */
+    {
+        uint8_t got[16];
+        size_t got_n = 0;
+        uint8_t want[4] = {1, 2, 3, 4};
+        rc |= expect_int("read .iq data file", read_file_all(data_path, got, sizeof(got), &got_n), 0);
+        rc |= expect_u64("bare capture bytes", got_n, 4);
+        rc |= expect_true("bare capture payload", got_n == sizeof(want) && memcmp(got, want, sizeof(want)) == 0);
+        rc |= expect_true("bare name itself is not a file", read_file_all(bare, got, sizeof(got), &got_n) != 0);
+    }
+
+    /* The bare name the user typed still resolves, via the .iq.json fallback. */
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("resolve sidecar from bare name", dsd_iq_replay_read_metadata(bare, &meta, err, sizeof(err)),
+                         DSD_IQ_OK);
+        rc |= expect_true("bare name resolves to .iq data", strcmp(meta.data_path, data_path) == 0);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    /* So does the data path itself. */
+    {
+        dsd_iq_replay_config meta;
+        DSD_MEMSET(&meta, 0, sizeof(meta));
+        rc |= expect_int("resolve sidecar from data path",
+                         dsd_iq_replay_read_metadata(data_path, &meta, err, sizeof(err)), DSD_IQ_OK);
+        rc |= expect_true("data path resolves to .iq data", strcmp(meta.data_path, data_path) == 0);
+        dsd_iq_replay_config_clear(&meta);
+    }
+
+    cleanup_capture(NULL, data_path, metadata_path);
+
+    /* Back-compat: a pre-.iq capture pair named <name> / <name>.json. */
+    {
+        char legacy_data[512];
+        char legacy_meta[512];
+        path_join(legacy_data, sizeof(legacy_data), dir, "legacy");
+        path_join(legacy_meta, sizeof(legacy_meta), dir, "legacy.json");
+
+        dsd_iq_capture_config legacy_cfg;
+        fill_base_capture_cfg(&legacy_cfg, legacy_data, legacy_meta, DSD_IQ_FORMAT_CU8);
+
+        dsd_iq_capture_writer* legacy_writer = NULL;
+        rc |= expect_int("open legacy capture", dsd_iq_capture_open(&legacy_cfg, &legacy_writer, err, sizeof(err)),
+                         DSD_IQ_OK);
+        if (legacy_writer) {
+            uint8_t payload[4] = {5, 6, 7, 8};
+            rc |= expect_int("submit legacy capture", dsd_iq_capture_submit(legacy_writer, payload, sizeof(payload)),
+                             DSD_IQ_OK);
+            dsd_iq_capture_final_stats stats;
+            DSD_MEMSET(&stats, 0, sizeof(stats));
+            dsd_iq_capture_close(legacy_writer, &stats);
+
+            dsd_iq_replay_config meta;
+            DSD_MEMSET(&meta, 0, sizeof(meta));
+            rc |= expect_int("resolve legacy sidecar from bare name",
+                             dsd_iq_replay_read_metadata(legacy_data, &meta, err, sizeof(err)), DSD_IQ_OK);
+            rc |= expect_true("legacy bare name resolves", strcmp(meta.data_path, legacy_data) == 0);
+            dsd_iq_replay_config_clear(&meta);
+        }
+        cleanup_capture(dir, legacy_data, legacy_meta);
+    }
+
+    return rc;
+}
+
 static int
 test_public_error_contracts(void) {
     int rc = 0;
@@ -1602,6 +1719,84 @@ test_public_error_contracts(void) {
         "derive rejects tiny metadata buffer",
         dsd_iq_capture_derive_paths("capture.iq", data_path, sizeof(data_path), metadata_path, 4, err, sizeof(err)),
         DSD_IQ_ERR_INVALID_ARG);
+
+    /* A path with no extension gains the conventional ".iq" so a capture is
+       self-describing however the name was typed. */
+    rc |= expect_int("derive defaults bare name to .iq",
+                     dsd_iq_capture_derive_paths("mycap", data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive bare data path", strcmp(data_path, "mycap.iq") == 0);
+    rc |= expect_true("derive bare metadata path", strcmp(metadata_path, "mycap.iq.json") == 0);
+
+    /* An extension the caller supplied is never second-guessed. */
+    rc |= expect_int("derive keeps .iq",
+                     dsd_iq_capture_derive_paths("mycap.iq", data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive .iq data path", strcmp(data_path, "mycap.iq") == 0);
+    rc |= expect_true("derive .iq metadata path", strcmp(metadata_path, "mycap.iq.json") == 0);
+
+    rc |= expect_int("derive keeps foreign extension",
+                     dsd_iq_capture_derive_paths("mycap.cu8", data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive cu8 data path", strcmp(data_path, "mycap.cu8") == 0);
+    rc |= expect_true("derive cu8 metadata path", strcmp(metadata_path, "mycap.cu8.json") == 0);
+
+    /* A leading dot belongs to the name, not an extension. */
+    rc |= expect_int("derive treats leading dot as name",
+                     dsd_iq_capture_derive_paths(".hidden", data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive hidden data path", strcmp(data_path, ".hidden.iq") == 0);
+    rc |= expect_true("derive hidden metadata path", strcmp(metadata_path, ".hidden.iq.json") == 0);
+
+    /* A dot in a directory must not suppress the default on the file itself. */
+    rc |= expect_int("derive ignores dotted directory",
+                     dsd_iq_capture_derive_paths("caps.v2/mycap", data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive dotted dir data path", strcmp(data_path, "caps.v2/mycap.iq") == 0);
+    rc |= expect_true("derive dotted dir metadata path", strcmp(metadata_path, "caps.v2/mycap.iq.json") == 0);
+
+    /* Windows names the same sidecar case-insensitively; ".JSON" must not grow a
+       second ".json". */
+    rc |= expect_int("derive accepts uppercase json suffix",
+                     dsd_iq_capture_derive_paths("mycap.iq.JSON", data_path, sizeof(data_path), metadata_path,
+                                                 sizeof(metadata_path), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive uppercase json data path", strcmp(data_path, "mycap.iq") == 0);
+    rc |= expect_true("derive uppercase json metadata path", strcmp(metadata_path, "mycap.iq.JSON") == 0);
+
+    /* The added suffix is accounted for before the copy, not after. */
+    rc |= expect_int(
+        "derive rejects buffer too small for added suffix",
+        dsd_iq_capture_derive_paths("mycap", data_path, 6, metadata_path, sizeof(metadata_path), err, sizeof(err)),
+        DSD_IQ_ERR_INVALID_ARG);
+
+    /* capture_open_resolve_paths passes one buffer as both input and output; both
+       aliasing forms must agree with the non-aliased result. */
+    char alias_data[64];
+    char alias_meta[64];
+
+    DSD_SNPRINTF(alias_data, sizeof(alias_data), "%s", "mycap");
+    alias_meta[0] = '\0';
+    rc |= expect_int("derive alias on data buffer",
+                     dsd_iq_capture_derive_paths(alias_data, alias_data, sizeof(alias_data), alias_meta,
+                                                 sizeof(alias_meta), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive alias data result", strcmp(alias_data, "mycap.iq") == 0);
+    rc |= expect_true("derive alias data metadata result", strcmp(alias_meta, "mycap.iq.json") == 0);
+
+    DSD_SNPRINTF(alias_meta, sizeof(alias_meta), "%s", "mycap.iq.json");
+    alias_data[0] = '\0';
+    rc |= expect_int("derive alias on metadata buffer",
+                     dsd_iq_capture_derive_paths(alias_meta, alias_data, sizeof(alias_data), alias_meta,
+                                                 sizeof(alias_meta), err, sizeof(err)),
+                     DSD_IQ_OK);
+    rc |= expect_true("derive alias metadata data result", strcmp(alias_data, "mycap.iq") == 0);
+    rc |= expect_true("derive alias metadata result", strcmp(alias_meta, "mycap.iq.json") == 0);
 
     rc |= expect_int("open rejects null cfg", dsd_iq_capture_open(NULL, &writer, err, sizeof(err)),
                      DSD_IQ_ERR_INVALID_ARG);
@@ -1682,6 +1877,7 @@ main(void) {
 #if !DSD_PLATFORM_WIN_NATIVE && defined(RLIMIT_FSIZE)
     rc |= test_write_failure_is_counted_and_metadata_stays_readable();
 #endif
+    rc |= test_bare_name_roundtrip_and_legacy_resolution();
     rc |= test_public_error_contracts();
     return rc ? 1 : 0;
 }

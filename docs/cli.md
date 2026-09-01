@@ -229,7 +229,8 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 
 ## IQ Capture And Replay
 
-- `--iq-capture <path>` Capture raw I/Q plus metadata sidecar.
+- `--iq-capture <path>` Capture raw I/Q plus metadata sidecar. When `<path>` has no extension, `.iq` is added, so
+  `--iq-capture mycap` writes `mycap.iq` and `mycap.iq.json`.
 - `--iq-capture-format <cu8|cf32>` Capture format request (`cu8` default).
 - `--iq-capture-max-mb <n>` Capture byte cap in MiB (`0` unlimited).
 - `--iq-replay <path>` Replay capture metadata/data through the RTL pipeline.
