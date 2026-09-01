@@ -1155,8 +1155,13 @@ frame_sync_try_m17(frame_sync_match_ctx* ctx) {
      * lapses. Unlike the NXDN window below, this one stands down completely: what it would
      * contribute is not a blend but a hard rewrite of every threshold from eight symbols of
      * whatever is in hand, which is worth having from a real preamble and worth nothing from
-     * P25 payload (#388). */
-    if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)) {
+     * P25 payload (#388).
+     *
+     * A transmission the hunt has just stepped away from supplies the same thing: 2400-baud
+     * payload sliced at 4800 is as ready a source of alternating runs as P25's is, and it is
+     * still on air (#445). */
+    if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)
+        || dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(opts, state)) {
         state->m17_pre_run = 0;
         frame_sync_age_m17_pre_candidate(state);
         return DSD_SYNC_NONE;
@@ -1657,9 +1662,15 @@ frame_sync_try_nxdn(frame_sync_match_ctx* ctx) {
      * costs P25p1: the symbols the handler would read, a slicer warm-started from P25 payload,
      * the control-channel timestamp, and the lastsynctype that keeps use_symbol()'s C4FM
      * threshold tracker engaged between one P25p1 sync and the next (#388). The offset is left
-     * alone for the same reason -- inside this span it belongs to the frame P25p1 opened. */
+     * alone for the same reason -- inside this span it belongs to the frame P25p1 opened.
+     *
+     * The second span withholds it for a transmission proved on 2400/4 that the hunt has since
+     * stepped off, which this matcher would otherwise read at twice its rate and accept as
+     * NXDN96 (#445). The profile term above is what keeps that guard off the NXDN48 arm on
+     * 2400/4: the transmission it protects is the one it must never mute. */
     if (frame_sync_match_profile_active(ctx, DSD_FRAME_SYNC_SPS_PROFILE_4800_4)
-        && dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)) {
+        && (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)
+            || dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(opts, state))) {
         return DSD_SYNC_NONE;
     }
 
@@ -2702,8 +2713,12 @@ frame_sync_nxdn_gfsk_ham(const dsd_opts* opts, const dsd_state* state, const fra
         /* Silent inside a P25p1 frame for the same reason the matcher is. Ten sign-sliced
          * symbols one error from an NXDN word score 3 on the 24-symbol axis these votes are
          * compared on, which is enough to carry the GFSK vote outright -- so P25 payload read
-         * through this window walks the demodulator off the chain that is decoding it (#388). */
-        if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)) {
+         * through this window walks the demodulator off the chain that is decoding it (#388).
+         * Silent for a proved 2400/4 transmission too, whose payload read at 4800 supplies the
+         * same misleading score (#445). The 2400/4 branch below is left alone: there the vote
+         * is NXDN48's own, cast on the profile its transmission proved. */
+        if (dsd_frame_sync_suppress_4800_4_for_p25p1_frame(opts, state)
+            || dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(opts, state)) {
             return 24;
         }
         return frame_sync_best_nxdn_scaled_ham(rt->synctest10, 24);

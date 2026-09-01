@@ -1440,6 +1440,171 @@ test_a_p25p1_frame_suppresses_m17_candidates(void) {
     assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
 }
 
+/* Issue #445. The spans above cover a frame; this covers the gap a hunt step opens. A proof of
+ * 2400/4 says a transmission is running there, and a step onto 4800/4 offers that same signal,
+ * read at twice its rate, to two matchers weak enough to take it. Armed by hand here: what the
+ * arming site records is pinned by test_a_proven_verdict_stamps_the_profile_it_was_read_on(). */
+static void
+arm_2400_4_proof(dsd_state* state, uint32_t at_symbolcnt) {
+    const int hunt_idx = state->sps_hunt_idx;
+    const uint32_t symbolcnt = state->symbolcnt;
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state->symbolcnt = at_symbolcnt;
+    dsd_frame_sync_note_profile_proof(state);
+    state->sps_hunt_idx = hunt_idx;
+    state->symbolcnt = symbolcnt;
+}
+
+static void
+test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* NXDN96: refused, and -- as inside a P25p1 frame -- with no claim on lastsynctype. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    arm_2400_4_proof(&state, 1000);
+
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+    state.symbolcnt = 1000 + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS - 1u;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+
+    /* Once the transmission can no longer be running, the matcher is live again on its own
+     * two-hit terms. */
+    state.symbolcnt = 1000 + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+
+    /* M17: the run latches nothing and the word behind it is refused, so no candidate is left
+     * to spend the moment the span lapses. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    opts.frame_m17 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    arm_2400_4_proof(&state, 1000);
+
+    state.symbolcnt = 1000 + 100;
+    feed_m17_preamble_run(&opts, &state, M17_PRE);
+    assert(state.m17_pre_candidate == 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_NONE);
+
+    state.symbolcnt = 1000 + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS;
+    feed_m17_preamble_run(&opts, &state, M17_PRE);
+    assert(state.m17_pre_candidate != 0);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, M17_LSF, 8) == DSD_SYNC_M17_LSF_POS);
+}
+
+/* Withholding the sync must not withhold the level estimate, for the same reason as inside a
+ * P25p1 frame: the blend is the wideband reference the other protocols on 4800/4 lean on. */
+static void
+test_the_2400_4_proof_suppression_still_blends_levels(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    float fsw_levels[10];
+
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    opts.msize = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    for (int i = 0; i < 10; i++) {
+        fsw_levels[i] = NXDN_FSW[i] == '3' ? -3.0f : 3.0f;
+    }
+    arm_2400_4_proof(&state, 0);
+    state.symbolcnt = 100;
+    state.max = 9.0f;
+    state.min = -9.0f;
+
+    assert(dsd_frame_sync_test_eval_window(&opts, &state, NXDN_FSW, fsw_levels, 10) == DSD_SYNC_NONE);
+    assert(fabsf(state.max - 6.0f) < 0.0001f);
+    assert(fabsf(state.min - (-6.0f)) < 0.0001f);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+}
+
+/* The guard is scoped three ways: to the profile it protects against, to the profile it was
+ * proved on, and to builds carrying a protocol that can prove 2400/4 at all. */
+static void
+test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    /* Neither 2400/4 protocol enabled: nothing could have proved that profile, so a stamp on
+     * it says nothing and NXDN96 syncs as before. */
+    reset(&opts, &state);
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    arm_2400_4_proof(&state, 1000);
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+
+    /* A proof read on 4800/4 -- P25p1's, say -- is inert here: what this guard acts on is a
+     * transmission proved somewhere the hunt has since stepped away from. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.symbolcnt = 1000;
+    dsd_frame_sync_note_profile_proof(&state);
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+
+    /* And it never mutes the protocol whose transmission armed it: on 2400/4 itself, NXDN48
+     * syncs throughout on its own terms. */
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    arm_2400_4_proof(&state, 1000);
+    state.symbolcnt = 1000 + 100;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NXDN_POS);
+}
+
+/* The stamp wraps with symbolcnt and is compared as a modular difference. */
+static void
+test_the_2400_4_proof_suppression_survives_symbolcnt_rollover(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+
+    reset(&opts, &state);
+    opts.frame_nxdn48 = 1;
+    opts.frame_nxdn96 = 1;
+    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.min = -3.0f;
+    state.max = 3.0f;
+    arm_2400_4_proof(&state, UINT32_MAX - 100u);
+
+    state.symbolcnt = 49u;
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype != DSD_SYNC_NXDN_POS);
+
+    state.symbolcnt = (uint32_t)(UINT32_MAX - 100u + DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS);
+    assert(dsd_frame_sync_test_try_protocol_matches(&opts, &state, NXDN_FSW, 10) == DSD_SYNC_NONE);
+    assert(state.lastsynctype == DSD_SYNC_NXDN_POS);
+}
+
 /* A preamble is an alternating symbol run, which any 4800-baud signal can present, so it is
  * latched as a candidate rather than returned as a sync; the sync word that must follow it is
  * what the decoder acts on (#399). */
@@ -2794,6 +2959,10 @@ main(void) {
     test_the_p25p1_frame_suppression_is_scoped_to_its_own_profile();
     test_the_p25p1_frame_guard_survives_symbolcnt_rollover();
     test_a_p25p1_frame_suppresses_m17_candidates();
+    test_a_proven_2400_4_transmission_stands_down_the_4800_4_matchers();
+    test_the_2400_4_proof_suppression_still_blends_levels();
+    test_the_2400_4_proof_suppression_is_scoped_to_its_arming_protocols();
+    test_the_2400_4_proof_suppression_survives_symbolcnt_rollover();
     test_elapsed_seconds_prefers_monotonic_then_wall_time();
     test_p25_slot_activity_honors_ring_and_hangtime();
     test_hamming_helpers_find_best_patterns();

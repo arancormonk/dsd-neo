@@ -1037,12 +1037,14 @@ add_executable(
     test_support/call_state_stubs.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_dpmr.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dpmr/dpmr_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
 )
 target_include_directories(
     dsd-neo_test_dpmr_sync_dispatch
     PRIVATE
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_SOURCE_DIR}/src/protocol/dpmr
+        ${PROJECT_SOURCE_DIR}/src/dsp
 )
 add_test(NAME DPMR_SYNC_DISPATCH COMMAND dsd-neo_test_dpmr_sync_dispatch)
 
@@ -1394,10 +1396,11 @@ add_executable(
     dsd-neo_test_nxdn_sync_dispatch
     protocol/nxdn/test_nxdn_sync_dispatch.c
     ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_nxdn.c
+    ${PROJECT_SOURCE_DIR}/src/dsp/frame_sync_policy.c
 )
 target_include_directories(
     dsd-neo_test_nxdn_sync_dispatch
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
 add_test(NAME NXDN_SYNC_DISPATCH COMMAND dsd-neo_test_nxdn_sync_dispatch)
 
@@ -7851,7 +7854,7 @@ add_test(NAME DSP_SYNC_HAMMING COMMAND dsd-neo_test_dsp_sync_hamming)
 add_executable(dsd-neo_test_frame_sync_policy dsp/test_frame_sync_policy.c)
 target_include_directories(
     dsd-neo_test_frame_sync_policy
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
 )
 dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_policy ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME FRAME_SYNC_POLICY COMMAND dsd-neo_test_frame_sync_policy)

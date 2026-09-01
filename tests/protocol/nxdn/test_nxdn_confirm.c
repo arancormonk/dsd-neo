@@ -40,6 +40,13 @@ run_frame(dsd_state* state, int evidence) {
     nxdn_confirm_end_frame(state);
 }
 
+/** @brief One frame as run_frame(), answering what the SPS hunt reads back from it. */
+static int
+run_frame_proved(dsd_state* state, int evidence) {
+    run_frame(state, evidence);
+    return nxdn_confirm_frame_proved(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -98,12 +105,28 @@ main(void) {
     nxdn_confirm_end_frame(state);
     expect("strong evidence overrides a pending streak", nxdn_confirm_is_confirmed(state), 1);
 
+    /* What the SPS hunt reads back: which frames carried a passing CRC of their own, as
+     * opposed to which transmissions have been confirmed at some point. Only the former
+     * proves the profile the frame was read on (#445), so the two answers have to come
+     * apart on a confirmed transmission's empty frames. */
+    nxdn_confirm_reset(state);
+    expect("a fresh frame has proved nothing", nxdn_confirm_frame_proved(state), 0);
+    expect("one weak frame has not proved the profile", run_frame_proved(state, NXDN_EVIDENCE_WEAK), 0);
+    expect("the frame completing a weak streak proves it", run_frame_proved(state, NXDN_EVIDENCE_WEAK), 1);
+    expect("a confirmed transmission's empty frame proves nothing", run_frame_proved(state, 0), 0);
+    expect("a later weak frame proves it again", run_frame_proved(state, NXDN_EVIDENCE_WEAK), 1);
+
+    nxdn_confirm_reset(state);
+    expect("one strong frame proves the profile", run_frame_proved(state, NXDN_EVIDENCE_STRONG), 1);
+    expect("the frame after it proves nothing", run_frame_proved(state, 0), 0);
+
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     nxdn_confirm_reset(NULL);
     nxdn_confirm_begin_frame(NULL);
     nxdn_confirm_note_evidence(NULL, NXDN_EVIDENCE_STRONG);
     nxdn_confirm_end_frame(NULL);
     expect("null state is not confirmed", nxdn_confirm_is_confirmed(NULL), 0);
+    expect("null state has proved nothing", nxdn_confirm_frame_proved(NULL), 0);
 
     free(state);
     if (g_failures == 0) {

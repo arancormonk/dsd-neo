@@ -605,6 +605,10 @@ nxdn_finalize_sync_reject(dsd_state* state) {
 int
 nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_frame_ctx ctx;
+    /* Declared out here so every goto END path below carries the "proved nothing" answer:
+     * those bail before the frame body is read, so there is no CRC of this frame's own to
+     * report however much the transmission has proved before now (#445). */
+    int frame_proved = 0;
 
     nxdn_frame_ctx_init(&ctx);
     nxdn_collect_lich(opts, state, &ctx);
@@ -643,6 +647,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_update_sacch_mode(state, ctx.lich);
     nxdn_decode_control_channels(opts, state, &ctx);
     nxdn_confirm_end_frame(state);
+    frame_proved = nxdn_confirm_frame_proved(state);
 
     if (nxdn_confirm_is_confirmed(state)) {
         nxdn_mark_carrier_sync_active(state);
@@ -664,6 +669,11 @@ END:
     nxdn_finalize_sync_reject(state);
     /* The sticky flag, not this frame's evidence: a confirmed transmission whose current
      * frame happens to carry no CRC still decoded, and reporting it unproductive would let
-     * the SPS hunt rotate off a live call. */
-    return nxdn_confirm_is_confirmed(state);
+     * the SPS hunt rotate off a live call.
+     *
+     * This frame's own evidence is reported alongside it as the 2, because the caller needs
+     * both answers: the sticky one says the call is live, and the per-frame one is what proves
+     * the profile the frame was read on -- a standing that the syncs between transmissions must
+     * not inherit, however confirmed the last call was (#445). */
+    return frame_proved ? 2 : nxdn_confirm_is_confirmed(state);
 }

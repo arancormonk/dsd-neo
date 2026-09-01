@@ -651,6 +651,32 @@ struct dsd_state {
      * symbolcnt rollover mid-frame stays exact. */
     uint32_t p25_p1_c4fm_frame_symbolcnt;
     uint8_t p25_p1_c4fm_frame_valid;
+    /* Which SPS profile a protocol last passed a content check on, when, and whether any has
+     * been recorded at all. The two spans above cover a frame another protocol is in the middle
+     * of; this one covers the transmission a protocol has been decoding, which is the case
+     * neither of them reaches: under AUTO the hunt rotates off 2400/4 while an NXDN48 call is
+     * still on air, and by the time it comes round to 4800/4 the NXDN96 and M17 matchers there
+     * claim the transmission that never stopped (#445).
+     *
+     * The flag, not the index, says whether anything is armed -- profile index 0 is 4800/4, so a
+     * zeroed state would otherwise read as a proof on that profile at symbol zero. Protocol-blind
+     * on purpose: dPMR's CCH CRC-7 and NXDN's confirmation CRCs both prove 2400/4, and a live
+     * transmission of either faces the same claimants on the profile the hunt steps to.
+     *
+     * Written by the protocol handlers through dsd_frame_sync_note_profile_proof(), deliberately
+     * not derived from DSD_FRAME_VERDICT_PROFILE_PROVEN: that verdict restarts the hunt's dwell,
+     * and measurement on the #445 capture showed doing so for NXDN costs more decoded calls than
+     * it wins (see src/engine/dispatch/dispatch_nxdn.c). Recording the proof is separable from
+     * acting on it, and only the recording is wanted here.
+     *
+     * Not cleared with the carrier, and must not be: every step of the hunt runs noCarrier(), so
+     * clearing it there would erase the stamp exactly when the transmission it vouches for is
+     * still on air. It expires on its own instead. Read by src/dsp only, through
+     * dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(); compared as a modular difference,
+     * so a symbolcnt rollover stays exact. */
+    int profile_proof_idx;
+    uint32_t profile_proof_symbolcnt;
+    uint8_t profile_proof_valid;
     int lastsynctype;
     int lastp25type;
     int offset;

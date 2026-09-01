@@ -120,6 +120,34 @@ int dsd_frame_sync_suppress_nxdn48_sync(const dsd_opts* opts, const dsd_state* s
 int dsd_frame_sync_suppress_4800_4_for_p25p1_frame(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Record that a protocol's own content check passed on the profile now active.
+ *
+ * Called from the frame handlers, which are the only place that knows a check ran and passed.
+ * Kept separate from the SPS hunt's dwell accounting on purpose: what the hunt does with a proof
+ * and what the matchers on another profile may infer from one are different questions, and #445
+ * measured that answering the first one for NXDN costs more than it wins.
+ */
+void dsd_frame_sync_note_profile_proof(dsd_state* state);
+
+/**
+ * @brief Return non-zero while a transmission that recently proved the 2400/4 profile may still
+ *        be on air.
+ *
+ * The span above covers one frame; this covers the gap a hunt step opens. Under AUTO the hunt can
+ * rotate off 2400/4 mid-transmission, and when it reaches 4800/4 the NXDN96 and M17 matchers there
+ * are offered a 2400-baud signal read at twice its rate, which they accept (#445). While a proof of
+ * 2400/4 is recent enough that its transmission may still be running, they are not.
+ *
+ * Armed only by a handler's own passing check, so a real NXDN96 or M17 signal cannot arm it against
+ * itself: neither proves the 2400/4 profile. On symbol-file input, where the profile gate stands
+ * open because stored symbols cannot be revisited after a hunt advance, no shipped configuration
+ * reaches this -- the NXDN matcher is limited to an unambiguous variant there, and a build with
+ * neither 2400/4 protocol enabled fails the gate -- and where it is reachable by hand, withholding
+ * the weak matchers from a proved 2400/4 transmission is the same right answer as on live input.
+ */
+int dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * @brief Return non-zero when TCP no-signal diagnostics should stay off the console.
  */
 int dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state);

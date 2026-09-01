@@ -158,6 +158,29 @@ consumption, pins the profile and fails the case. dPMR itself has since left tha
 cover what it does now: at the real 384-symbol frame cadence, which is inside the arithmetic's reach, a carrier whose
 CCH decodes nothing still rotates, and one whose CCH decodes on three frames in four holds.
 
+There is no `-fa` case on `nxdn48` for issue #445 either, and for the same reason plus one of its own. The guard
+that issue added withholds the NXDN96 and M17 matchers on 4800/4 while a 2400/4 transmission has recently proved
+itself, so seeing it work in a replay needs the hunt to complete a rotation *after* a proof — and the `nxdn48`
+fixture is 6 s, about one full rotation, which is precisely the schedule-dependent regime that got the `dstar`
+reject case removed above. The change also leaves the hunt's own accounting untouched, so an `-fa` case would mostly
+re-assert rotation behaviour that did not move. The property is pinned exactly instead, in
+`FRAME_SYNC_INTERNAL_HELPERS` (the matchers stand down inside the span and are live again past it, the level blend
+still runs while the sync is withheld, the guard is scoped to its arming protocols and to the profile proved, and it
+survives the `symbolcnt` wrap) and in `FRAME_SYNC_POLICY` (the predicate's truth table and both span boundaries).
+`DECODE_IQ_NXDN48`, `DECODE_IQ_NXDN96`, `DECODE_IQ_M17` and `DECODE_IQ_M17_AUTO` are the guard that real acquisition
+still happens; none of them carries a 2400/4 proof, so they exercise the un-armed path.
+
+What that issue *did* measure is worth recording, because it says something about this suite's limits. The obvious
+root-cause fix — letting a passing NXDN CRC report `DSD_FRAME_VERDICT_PROFILE_PROVEN` so a live call holds its rate
+against rotation — makes the decoder worse, and no test here would have caught it. Restarting the dwell keeps
+`dsd_state::sps_hunt_counter` away from the budget exit in `getFrameSync()`, and that exit is what runs the no-sync
+hooks that end a call and clear the state the next one is assembled from. On the uncommitted 35 s four-channel
+NXDN48 capture from issue #373, ten rotated replays per build (`tools/replay_ab.sh`) scored 75 NXDN48 syncs and 11
+voice calls per run on `main` against 66 and 9 with the verdict change, every paired repeat worse. Single replays
+cannot see this: the same build scores anywhere from 57 to 94 NXDN48 syncs run to run under `-fa`, which is wider
+than the effect. Decode *volume* under the hunt is not covered by the `iq-decode` suite, which asks only whether a
+build still decodes.
+
 Known gaps and caveats:
 
 - **ProVoice** and **X2-TDMA** have no usable public sample and are untested here.
