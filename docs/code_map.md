@@ -225,6 +225,12 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
+- `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
+  a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
+  index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
+  sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
+  A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
+  (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
 
 Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 

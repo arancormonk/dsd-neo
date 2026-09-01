@@ -465,6 +465,38 @@ symbol_accumulate_sample(const dsd_state* state, symbol_work_ctx* work, int i, f
     }
 }
 
+/*
+ * The bands below decide which way the open-loop FSK grid slips, from the index
+ * of the first centre crossing the previous symbol produced. It is a bang-bang
+ * loop driven by one unfiltered sample index, with no averaging and no
+ * confidence, and issue #444 documents what that costs: which crossing happens
+ * to reach it moves decode quality on a real call by 3x.
+ *
+ * Everything about that is true and the constants still stand, because they were
+ * measured. Five ways of making the loop more careful were A/B'd against this
+ * code on two real NXDN48 captures (tools/replay_ab.sh, 12 rotated repeats each,
+ * errors per decoded voice frame, paired per repeat):
+ *
+ *   requiring 2 agreeing crossings before slipping   +0.94 +/- 0.21, lost sync
+ *   requiring 3                                      +2.18 +/- 0.60, lost sync
+ *   freezing the grid once a call is up              +4.43 +/- 0.68, lost sync
+ *   acting only on symbols that crossed exactly once +1.17 +/- 0.11, lost sync
+ *   widening these bands to cover the whole symbol   +1.39 +/- 0.18
+ *
+ * All five are worse, none is within noise, and a control of the unmodified code
+ * against itself came in at -0.07 +/- 0.08. The first four also decoded ~10 fewer
+ * voice frames per run, which is the mechanism: between frames this is the only
+ * thing tracking the sampling instant, so a grid it stops correcting drifts until
+ * the next sync word is missed and the call ends early. Widening the bands keeps
+ * sync and degrades quality instead, so the dead zone is not slack either.
+ *
+ * The loop is therefore at a local optimum, and the cheap directions #444 lists
+ * are spent. Making it better means replacing it with a real timing loop -- a
+ * measured phase error through a loop filter, as op25_gardner_cc() already gives
+ * the CQPSK path -- not making this one more cautious. Anything tried here needs
+ * measuring the same way, on a real capture: none of these variants is visible in
+ * the iq-decode suite, which they all pass.
+ */
 static inline void
 symbol_adjust_timing_nxdn(const dsd_state* state, int* i) {
     if ((state->jitter >= 7) && (state->jitter <= 10)) {
