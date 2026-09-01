@@ -6569,6 +6569,29 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_frame_sync_p25p2_rtl
     )
 
+    # Real frame-sync + symbol + dibit chain on the RTL sample path: the payload
+    # must decode the same whatever sub-symbol phase the grid started on.
+    add_executable(
+        dsd-neo_test_frame_sync_nxdn_fsk_phase
+        dsp/test_frame_sync_nxdn_fsk_phase.c
+        test_support/frame_sync_dsp_stubs.c
+        ${PROJECT_SOURCE_DIR}/src/core/frames/dsd_dibit.c
+    )
+    target_include_directories(
+        dsd-neo_test_frame_sync_nxdn_fsk_phase
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    dsd_neo_link_dsp_test(dsd-neo_test_frame_sync_nxdn_fsk_phase
+      dsd-neo_test_call_state_support
+      dsd-neo_test_support
+      ${DSD_NEO_TEST_MATH_LIB}
+      ${LIBSNDFILE_LIBRARIES}
+    )
+    add_test(
+        NAME FRAME_SYNC_NXDN_FSK_PHASE
+        COMMAND dsd-neo_test_frame_sync_nxdn_fsk_phase
+    )
+
     add_executable(
         dsd-neo_test_frame_sync_m17
         dsp/test_frame_sync_m17.c

@@ -163,6 +163,57 @@ test_warm_start_ideal(void) {
 }
 
 /**
+ * @brief A re-seeded slicer must not leave the crossing measured against the old one.
+ *
+ * state->jitter holds the index of the first zero crossing inside a symbol, and
+ * symbol_adjust_timing_index() slips the symbol grid by a sample on it. It is
+ * measured against center/maxref/minref -- exactly what warm-start replaces --
+ * and it is assigned only while negative, so a value left here survives the whole
+ * frame this sync opens (the slip does not run inside a frame) and is then handed
+ * to the first symbol of the next sync search. That symbol would move the grid on
+ * a crossing measured against a calibration that no longer exists (issue #404).
+ */
+static void
+test_warm_start_drops_stale_crossing(void) {
+    printf("=== test_warm_start_drops_stale_crossing ===\n");
+
+    static struct dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    static float history[64];
+
+    static struct dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    opts.msize = 64;
+
+    attach_history_fixture(&state, history, 64);
+    for (int i = 0; i < 24; i++) {
+        dsd_symbol_history_push(&state, (i % 2 == 0) ? +3.0f : -3.0f);
+    }
+
+    /* A crossing latched against the thresholds the warm-start is about to
+       replace, in the band that slips the grid. */
+    state.jitter = 9;
+
+    dsd_warm_start_result_t result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 24);
+    check_int("warm_start result", DSD_WARM_START_OK, result);
+    check_int("stale crossing dropped", -1, state.jitter);
+
+    /* A warm-start that does not re-seed anything must leave the crossing alone:
+       it is still measured against the thresholds in force. */
+    DSD_MEMSET(&state, 0, sizeof(state));
+    attach_history_fixture(&state, history, 64);
+    for (int i = 0; i < 4; i++) {
+        dsd_symbol_history_push(&state, +3.0f);
+    }
+    state.jitter = 9;
+    result = dsd_sync_warm_start_thresholds_outer_only(&opts, &state, 24);
+    check_int("no-history result", DSD_WARM_START_NO_HISTORY, result);
+    check_int("crossing kept when nothing was re-seeded", 9, state.jitter);
+
+    printf("test_warm_start_drops_stale_crossing: passed\n\n");
+}
+
+/**
  * @brief Test warm-start with DC offset.
  */
 static void
@@ -574,6 +625,7 @@ main(void) {
     test_history_basic_ops();
     test_history_wraparound();
     test_warm_start_ideal();
+    test_warm_start_drops_stale_crossing();
     test_warm_start_dc_offset();
     test_center_only_warm_start();
     test_center_only_large_bias();
