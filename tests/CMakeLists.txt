@@ -7952,6 +7952,15 @@ target_include_directories(
 dsd_neo_link_dsp_test(dsd-neo_test_symbol_timing_debug ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYMBOL_TIMING_DEBUG COMMAND dsd-neo_test_symbol_timing_debug)
 
+# Matched-filter switch-on geometry and content alignment (issue #444)
+add_executable(dsd-neo_test_matched_filter_seam dsp/test_matched_filter_seam.c)
+target_include_directories(
+    dsd-neo_test_matched_filter_seam
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_matched_filter_seam ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME MATCHED_FILTER_SEAM COMMAND dsd-neo_test_matched_filter_seam)
+
 # DMR resample-on-sync CACH re-digitization test
 add_executable(
     dsd-neo_test_dmr_resample_on_sync

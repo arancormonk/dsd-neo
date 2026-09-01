@@ -307,39 +307,46 @@ symbol_timing_debug_char(const dsd_state* state, int timing_level, char c) {
  * from a cold history the moment a sync sets lastsynctype, and its group delay lands on the very
  * payload that sync introduces: it cost the LSF its CRC and the stream its LICH, which is why
  * AUTO could match M17 sync words and never decode a frame behind them (#399). */
-static inline float
-symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample, int rtl_symbol_rate_output,
-                            int cqpsk_symbol_rate) {
+static inline dsd_sps_filter_kind
+symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl_symbol_rate_output,
+                           int cqpsk_symbol_rate) {
     if (!opts->use_cosine_filter || rtl_symbol_rate_output || cqpsk_symbol_rate) {
-        return sample;
+        return DSD_SPS_FILTER_NONE;
     }
     if (DSD_SYNC_IS_DMR_BS(state->lastsynctype) || DSD_SYNC_IS_DMR_MS(state->lastsynctype)
         || DSD_SYNC_IS_YSF(state->lastsynctype)) {
-        return dmr_filter(sample, state->samplesPerSymbol);
+        return DSD_SPS_FILTER_DMR;
     }
     if (DSD_SYNC_IS_P25P1(state->lastsynctype)) {
-        return p25_filter(sample, state->samplesPerSymbol);
+        return DSD_SPS_FILTER_P25;
     }
     if (DSD_SYNC_IS_DPMR(state->lastsynctype)) {
         if (opts->frame_dpmr == 1) {
-            return dpmr_filter(sample, state->samplesPerSymbol);
+            return DSD_SPS_FILTER_DPMR;
         }
-        return sample;
+        return DSD_SPS_FILTER_NONE;
     }
     if (DSD_SYNC_IS_NXDN(state->lastsynctype)) {
         const dsd_nxdn_variant variant = dsd_frame_sync_active_nxdn_variant(opts, state);
         if (variant == DSD_NXDN_VARIANT_48) {
-            return nxdn_filter(sample, state->samplesPerSymbol);
+            return DSD_SPS_FILTER_NXDN;
         }
         if (variant != DSD_NXDN_VARIANT_96) {
-            return sample;
+            return DSD_SPS_FILTER_NONE;
         }
         if (state->samplesPerSymbol == 8) {
-            return sample;
+            return DSD_SPS_FILTER_NONE;
         }
-        return dmr_filter(sample, state->samplesPerSymbol);
+        return DSD_SPS_FILTER_DMR;
     }
-    return sample;
+    return DSD_SPS_FILTER_NONE;
+}
+
+static inline float
+symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample, int rtl_symbol_rate_output,
+                            int cqpsk_symbol_rate) {
+    const dsd_sps_filter_kind kind = symbol_matched_filter_kind(opts, state, rtl_symbol_rate_output, cqpsk_symbol_rate);
+    return dsd_sps_filter_apply(kind, sample, state->samplesPerSymbol);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1817,6 +1824,57 @@ symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
     return 1;
 }
 
+/*
+ * The stream the grid samples changes identity when a sync names a protocol: up
+ * to that point the grid reads the raw discriminator, afterwards the matched
+ * filter's output, which describes the signal one group delay in the past. Left
+ * alone that makes the decoder re-read content it has already consumed -- 3.35
+ * symbols for NXDN48 at 20 samples per symbol, 4.5 for P25p1, and for P25p1 half
+ * a symbol of phase on top -- once per transmission, on the first frame, which
+ * is the frame that opens the call (issue #444).
+ *
+ * So hand the filter the history it missed and then pay the delay off once, by
+ * consuming that many samples and discarding what they produce: they describe
+ * positions the grid has already read. What the caller filters next is then the
+ * signal at the position it was about to read. A samples-per-symbol change is
+ * the same discontinuity by another route, because the redesign clears the
+ * filter's history.
+ */
+static int
+symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+#ifdef USE_RADIO
+    const int rtl_symbol_rate_output = work->rtl_symbol_rate_output;
+    const int cqpsk_symbol_rate = work->cqpsk_symbol_rate;
+#else
+    const int rtl_symbol_rate_output = 0;
+    const int cqpsk_symbol_rate = 0;
+#endif
+    const dsd_sps_filter_kind kind = symbol_matched_filter_kind(opts, state, rtl_symbol_rate_output, cqpsk_symbol_rate);
+    const int sps = state->samplesPerSymbol;
+    if ((int)kind == state->matched_filter_kind && sps == state->matched_filter_sps) {
+        return 1;
+    }
+
+    state->matched_filter_kind = (int)kind;
+    state->matched_filter_sps = sps;
+    if (kind == DSD_SPS_FILTER_NONE) {
+        return 1; /* Switching off costs nothing: the raw stream has no delay. */
+    }
+
+    const int delay = dsd_sps_filter_prime_from_history(kind, sps);
+    for (int j = 0; j < delay; j++) {
+        (void)dsd_sps_filter_apply(kind, work->sample, sps);
+        if (!symbol_take_sample(opts, state, work)) {
+            return 0;
+        }
+        dsd_sps_filter_note_raw(work->sample);
+    }
+    /* The crossing that was pending belonged to the stream that just ended. */
+    state->jitter = -1;
+    dsd_symbol_timing_trace_reset(state);
+    return 1;
+}
+
 /* A while loop rather than a for: the span index is not a plain counter. The
    timing nudge moves it before the first sample is taken, and a stream flush
    restarts the span from it, so every step it takes belongs in the body where
@@ -1827,6 +1885,12 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
     while (i < work->symbol_span) {
         symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
         if (!symbol_take_sample(opts, state, work)) {
+            return 0;
+        }
+        dsd_sps_filter_note_raw(work->sample);
+        /* Before the span-restart check below, so a flush the catch-up runs into
+           is handled by it rather than being swallowed here. */
+        if (!symbol_sync_matched_filter_seam(opts, state, work)) {
             return 0;
         }
 #ifdef USE_RADIO
@@ -1842,6 +1906,10 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
                 work->symbol_span = state->samplesPerSymbol;
             }
             state->jitter = -1;
+            /* The recorded raw history is from the stream that just ended, so it
+               cannot prime a filter for the one starting here. */
+            dsd_sps_filter_forget_raw();
+            dsd_sps_filter_note_raw(work->sample);
             /* Same reasoning for the timing trace: correlating a sync word across a
                stream seam would measure the flush, not the grid. */
             dsd_symbol_timing_trace_reset(state);

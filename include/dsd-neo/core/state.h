@@ -1537,6 +1537,16 @@ struct dsd_state {
      *  See dsp/symbol_timing_debug.h. */
     dsd_symbol_timing_trace timing_trace;
 
+    /** Which matched filter the symbol grid is currently reading through, and at
+     *  which samples-per-symbol, as a `dsd_sps_filter_kind`. The grid runs
+     *  unfiltered until a sync names a protocol, so this changing marks a
+     *  discontinuity in the stream the grid is sampling: the filter's group
+     *  delay has to be paid off once or the decoder re-reads content it has
+     *  already consumed (issue #444). Zero is "unfiltered", which is also the
+     *  state a cleared `lastsynctype` puts the grid back into. */
+    int matched_filter_kind;
+    int matched_filter_sps;
+
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;
     time_t input_level_last_toast_time;
