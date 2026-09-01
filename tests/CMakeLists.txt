@@ -676,6 +676,13 @@ dsd_neo_add_public_header_smoke_test(
 )
 
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_dsp_symbol_timing_debug
+  HEADERS_PUBLIC_DSP_SYMBOL_TIMING_DEBUG
+  dsd-neo/dsp/symbol_timing_debug.h
+  C
+)
+
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_io_m17_udp
   HEADERS_PUBLIC_IO_M17_UDP
   dsd-neo/io/m17_udp.h
@@ -7932,6 +7939,15 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_sync_calibration ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYNC_CALIBRATION COMMAND dsd-neo_test_sync_calibration)
+
+# Symbol-timing sub-symbol offset measurement
+add_executable(dsd-neo_test_symbol_timing_debug dsp/test_symbol_timing_debug.c)
+target_include_directories(
+    dsd-neo_test_symbol_timing_debug
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_symbol_timing_debug ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME SYMBOL_TIMING_DEBUG COMMAND dsd-neo_test_symbol_timing_debug)
 
 # DMR resample-on-sync CACH re-digitization test
 add_executable(

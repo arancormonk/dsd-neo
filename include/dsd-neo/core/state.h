@@ -226,6 +226,25 @@ typedef struct {
 
 //end new filters
 
+/**
+ * @brief Post-filter sample trace used only by the symbol-timing diagnostic.
+ *
+ * `samples` holds the samples the symbol grid consumed, in order; `spans` holds
+ * how many of them each completed symbol took, so a reader can walk real symbol
+ * boundaries rather than assume a fixed samplesPerSymbol stride (the pre-sync
+ * timing nudge makes symbols consume samplesPerSymbol +/- 1). Decoder-state setup
+ * and teardown own both buffers, as they do the symbol history's; nothing is
+ * written to them unless DSD_NEO_DEBUG_SYMBOL_TIMING is on.
+ */
+typedef struct {
+    float* samples;
+    uint8_t* spans;
+    int sample_head;
+    int sample_count;
+    int span_head;
+    int span_count;
+} dsd_symbol_timing_trace;
+
 typedef struct {
     uint8_t F1;
     uint8_t F2;
@@ -1486,6 +1505,11 @@ struct dsd_state {
     int symbol_history_size;  /**< Circular-buffer size in symbols */
     int symbol_history_head;  /**< Write index into circular buffer */
     int symbol_history_count; /**< Symbols written (for underflow check) */
+
+    /** Post-filter sample trace backing the symbol-timing diagnostic;
+     *  written only while DSD_NEO_DEBUG_SYMBOL_TIMING is on.
+     *  See dsp/symbol_timing_debug.h. */
+    dsd_symbol_timing_trace timing_trace;
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;

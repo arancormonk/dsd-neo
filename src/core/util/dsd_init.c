@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/log.h>
@@ -72,7 +73,6 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->show_keys = 0;                                 // redact radio keys/keystreams unless CLI explicitly opts in
     opts->p25_afc_status_gate_enable = 0;     // advisory by default; status-derived direction is not always reliable
     opts->frontend_display.show_channels = 0; // hide Channels section by default
-    opts->symboltiming = 0;
     opts->verbose = 2;
     opts->p25enc = 0;
     opts->p25lc = 0;
@@ -442,6 +442,23 @@ init_state_core_buffers(dsd_state* state) {
     }
     state->symbol_history_head = 0;
     state->symbol_history_count = 0;
+
+    // Post-filter sample trace for the symbol-timing diagnostic. Sized for the template the
+    // measurement correlates over plus a symbol of shift room; see dsp/symbol_timing_debug.h.
+    const size_t timing_sample_bytes = (size_t)DSD_SYMBOL_TIMING_SPAN_SAMPLES * sizeof(float);
+    const size_t timing_span_bytes = (size_t)DSD_SYMBOL_TIMING_TEMPLATE_SYMS * sizeof(uint8_t);
+    state->timing_trace.samples = dsd_aligned_alloc(64, timing_sample_bytes);
+    if (state->timing_trace.samples) {
+        DSD_MEMSET(state->timing_trace.samples, 0, timing_sample_bytes);
+    }
+    state->timing_trace.spans = dsd_aligned_alloc(64, timing_span_bytes);
+    if (state->timing_trace.spans) {
+        DSD_MEMSET(state->timing_trace.spans, 0, timing_span_bytes);
+    }
+    state->timing_trace.sample_head = 0;
+    state->timing_trace.sample_count = 0;
+    state->timing_trace.span_head = 0;
+    state->timing_trace.span_count = 0;
 
     state->repeat = 0;
 
@@ -1258,6 +1275,15 @@ freeState(dsd_state* state) {
     state->symbol_history_size = 0;
     state->symbol_history_head = 0;
     state->symbol_history_count = 0;
+
+    dsd_aligned_free(state->timing_trace.samples);
+    dsd_aligned_free(state->timing_trace.spans);
+    state->timing_trace.samples = NULL;
+    state->timing_trace.spans = NULL;
+    state->timing_trace.sample_head = 0;
+    state->timing_trace.sample_count = 0;
+    state->timing_trace.span_head = 0;
+    state->timing_trace.span_count = 0;
 
     dsd_aligned_free(state->dibit_buf);
     state->dibit_buf = NULL;
