@@ -1768,9 +1768,14 @@ symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
     return 1;
 }
 
+/* A while loop rather than a for: the span index is not a plain counter. The
+   timing nudge moves it before the first sample is taken, and a stream flush
+   restarts the span from it, so every step it takes belongs in the body where
+   it reads as one. */
 static int
 symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
-    for (int i = 0; i < work->symbol_span; i++) {
+    int i = 0;
+    while (i < work->symbol_span) {
         symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
         if (!symbol_take_sample(opts, state, work)) {
             return 0;
@@ -1806,6 +1811,7 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         symbol_update_jitter(opts, state, have_sync, i, work->sample);
         symbol_accumulate_sample(state, work, i, work->sample);
         state->lastsample = work->sample;
+        i++;
     }
     return 1;
 }
