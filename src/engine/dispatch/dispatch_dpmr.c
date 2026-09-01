@@ -10,6 +10,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <stdint.h>
@@ -91,6 +92,10 @@ dpmr_handle_voice_frame(dsd_opts* opts, dsd_state* state) {
     if (processdPMRvoice(opts, state) > 0) {
         state->dpmr_cch_evidence = 1;
         state->dpmr_cch_evidence_symbolcnt = state->symbolcnt;
+        /* The same pass, told to the matchers on the profile a hunt step lands on: dPMR is the
+         * other 2400/4 tenant, and a live dPMR transmission is offered to the weaker 4800/4
+         * matchers exactly as an NXDN48 one is (#445). */
+        dsd_frame_sync_note_profile_proof(state);
         return DSD_FRAME_VERDICT_PROFILE_PROVEN;
     }
     if (state->dpmr_cch_evidence != 0

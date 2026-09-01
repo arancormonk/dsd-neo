@@ -461,6 +461,20 @@ test_public_frame_entry_lich_collection(void) {
     rc |= expect_int("frame parity rejects sync", g_state.lastsynctype, DSD_SYNC_NONE);
     rc |= expect_int("frame parity clears carrier", g_state.carrier, 0);
 
+    /* A frame rejected at the LICH never opens a frame of its own, so the per-frame evidence
+     * it would be graded on is still whatever the last frame to reach the body left behind.
+     * It must not be able to answer 2 off that: the caller reads the 2 as proof of the profile,
+     * and a run of these would go on proving one that nothing is decoding on (#445). */
+    reset_state();
+    g_state.carrier = 1;
+    g_state.synctype = DSD_SYNC_NXDN_POS;
+    g_state.lastsynctype = DSD_SYNC_NXDN_POS;
+    g_state.nxdn_confirmed = 1;
+    g_state.nxdn_confirm_frame_evidence = 2;
+    prepare_frame_stream(0x01U, 1);
+    rc |= expect_int("frame parity cannot prove the profile", nxdn_frame(&g_opts, &g_state), 1);
+    rc |= expect_int("frame parity still consumed lich only", (int)g_dibit_stream_pos, 8);
+
     return rc;
 }
 

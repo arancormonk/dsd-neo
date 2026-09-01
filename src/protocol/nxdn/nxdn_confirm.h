@@ -63,6 +63,17 @@ void nxdn_confirm_end_frame(dsd_state* state);
 /** @brief Whether the current transmission has proved itself. */
 int nxdn_confirm_is_confirmed(const dsd_state* state);
 
+/**
+ * @brief Whether the frame just closed carried a passing CRC of its own.
+ *
+ * Narrower than nxdn_confirm_is_confirmed(), which stays true across a confirmed
+ * transmission's empty frames. The SPS hunt needs the narrower answer: only a frame that
+ * checked out itself proves the profile it was read on, or the noise syncs that follow a
+ * transmission would go on holding a profile nothing is decoding on (#445). Read it after
+ * nxdn_confirm_end_frame().
+ */
+int nxdn_confirm_frame_proved(const dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

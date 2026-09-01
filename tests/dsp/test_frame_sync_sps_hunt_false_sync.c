@@ -497,9 +497,11 @@ test_no_verdict_handlers_still_rotate_at_the_noise_cadence(void) {
 
 /* #391, the other half of the same rule: an unproductive lead does not condemn the
  * transmission behind it. A transmission that starts with frames the protocol cannot yet
- * confirm -- NXDN before its first FACCH, YSF before its first FICH CRC -- and then decodes
- * must hold its profile from the frame it confirms on. This pins the hunt's arithmetic, not
- * the clear: every sync here stamps a verdict of its own, as processFrame() does. */
+ * confirm -- YSF before its first FICH CRC -- and then decodes must hold its profile from
+ * the frame it confirms on. This pins the hunt's arithmetic, not the clear: every sync here
+ * stamps a verdict of its own, as processFrame() does. The protocols that answer a passing
+ * check with PROFILE_PROVEN rather than PRODUCTIVE -- P25p1, dPMR, and NXDN since #445 --
+ * hold their profile the stronger way, pinned by the proven cases below. */
 static void
 test_a_confirming_transmission_holds_its_profile(void) {
     const HuntCase tc = {

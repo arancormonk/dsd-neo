@@ -376,6 +376,26 @@ Notes
   a sync the CQPSK chain carried closes the span rather than opening one, for the same reason. The span is re-armed
   by every P25p1 sync, so continuous traffic stays covered, and it lapses within a fifth of a second of P25 going
   quiet. It costs a real NXDN96 or M17 signal nothing, since neither produces P25p1 sync matches.
+- A transmission the hunt has stepped away from is protected the same way, for as long as it may still be running.
+  Both spans above cover one frame, which is no help across a profile change: under Auto the hunt can rotate off
+  2400/4 while an NXDN48 call is still on air, and by the time the rotation reaches 4800/4 the NXDN96 and M17
+  matchers there are offered that same 2400-baud signal read at twice its rate -- and take it, printing frames whose
+  content is noise. So a handler that proves its profile now records which profile it proved, and while a proof of
+  2400/4 is recent enough that its transmission could still be running, those two matchers stand down on 4800/4.
+  A proof is a passing check, never a sync: dPMR's CCH CRC-7 and the NXDN confirmation CRCs above, both of which a
+  real NXDN96 or M17 signal is incapable of producing, so neither can arm this against itself. Only the frame that
+  passed the check records one, so the noise syncs that follow a transmission cannot keep the guard armed. The span
+  runs one full rotation of the hunt from the last proof -- long enough that the guard is still standing through the
+  whole of the first 4800/4 dwell it reaches, and short enough that a transmission which has genuinely ended frees the
+  profile again within a few seconds. As with the P25p1 span, the NXDN window keeps contributing its level estimate
+  throughout; what is withheld is the sync.
+- Recording that proof is deliberately all it does. Making NXDN report the profile as *proven* to the hunt, the way
+  dPMR and P25 Phase 1 do when their own checks pass, would also restart the dwell and hold the rate against
+  rotation -- which sounds like the better fix and measured worse. Restarting the dwell keeps the hunt's budget away
+  from the exit that runs the end-of-call housekeeping, and on the four-channel NXDN48 capture behind this guard that
+  cost decoded calls: ten rotated replays per build scored 75 NXDN48 syncs and 11 voice calls without it against 66
+  and 9 with, every paired repeat worse. So Auto still rotates off a live NXDN48 call exactly as before; what changed
+  is only that the matchers it rotates onto no longer claim the call while it is still running.
 - All three Auto entry points install the complete matrix above: CLI `-fa`, config `decode = "auto"`, and the
   interactive Auto choice select the same decoder set. Only `-fa` also resets the demodulator to C4FM and the audio
   layout to stereo; the config path leaves those to its `demod` and `dmr_mono` keys, and the interactive path to the

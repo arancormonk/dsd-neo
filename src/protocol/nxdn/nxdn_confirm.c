@@ -66,3 +66,8 @@ int
 nxdn_confirm_is_confirmed(const dsd_state* state) {
     return state && state->nxdn_confirmed != 0;
 }
+
+int
+nxdn_confirm_frame_proved(const dsd_state* state) {
+    return state && state->nxdn_confirmed != 0 && state->nxdn_confirm_frame_evidence != 0;
+}

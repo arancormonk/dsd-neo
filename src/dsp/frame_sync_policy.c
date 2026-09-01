@@ -52,6 +52,40 @@ dsd_frame_sync_suppress_4800_4_for_p25p1_frame(const dsd_opts* opts, const dsd_s
     return since < DSD_FRAME_SYNC_P25P1_FRAME_SYMBOLS;
 }
 
+void
+dsd_frame_sync_note_profile_proof(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    /* The index current at the call, which is the one the frame was read on: this runs from the
+     * protocol handler, inside the same getFrameSync() cycle that matched the sync. Re-stamped
+     * per proof and never extended, so a channel that stops proving releases the guard. */
+    state->profile_proof_idx = state->sps_hunt_idx;
+    state->profile_proof_symbolcnt = state->symbolcnt;
+    state->profile_proof_valid = 1;
+}
+
+int
+dsd_frame_sync_suppress_4800_4_for_2400_4_transmission(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state) {
+        return 0;
+    }
+    /* Gated on the protocols that can prove 2400/4 at all -- the pair
+     * frame_sync_sps_profile_has_candidate() names for that profile -- so a build carrying
+     * neither behaves exactly as it did before. The arming is verdict-based rather than
+     * matcher-based, so the gate is their union rather than one protocol's flag. */
+    if (opts->frame_nxdn48 != 1 && opts->frame_dpmr != 1) {
+        return 0;
+    }
+    if (state->profile_proof_valid == 0 || state->profile_proof_idx != DSD_FRAME_SYNC_SPS_PROFILE_2400_4) {
+        return 0;
+    }
+    /* Modular difference, with the same failure direction as the two spans above: a backwards
+     * symbolcnt jump reads as a huge forward distance and ends the suppression early. */
+    const uint32_t since = state->symbolcnt - state->profile_proof_symbolcnt;
+    return since < DSD_FRAME_SYNC_PROVEN_2400_4_HOLD_SYMBOLS;
+}
+
 int
 dsd_frame_sync_suppress_tcp_no_signal_console(const dsd_opts* opts, const dsd_state* state) {
     if (!opts || !state) {
