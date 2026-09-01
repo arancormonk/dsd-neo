@@ -252,7 +252,6 @@ reset_decoder_fixture(dsd_opts* opts, dsd_state* state, void* rtl_context) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->audio_in_type = AUDIO_IN_RTL;
-    opts->symboltiming = 0;
     state->rf_mod = 2;
     state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
     state->rtl_ctx = (struct RtlSdrContext*)rtl_context;
@@ -267,7 +266,6 @@ main(void) {
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     opts.audio_in_type = AUDIO_IN_RTL;
-    opts.symboltiming = 0;
     state.rf_mod = 1;
     state.rtl_ctx = (struct RtlSdrContext*)&fake_rtl_context;
 
