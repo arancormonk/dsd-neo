@@ -270,6 +270,44 @@ SDR-backend combinations — `both`, `rtl_only`, `soapy_only` and `neither` — 
 pull requests as well as pushes, so the radio-off build is proven before a merge
 rather than after one.
 
+## Decode-Quality A/B on Real Captures
+
+The `iq-decode` suite answers whether a change still decodes; it does not answer
+whether it decodes *as well*. Symbol-timing, slicer and demodulator changes need
+the second question answered, and one replay cannot answer it: decoding runs on a
+threaded pipeline, so how much of a capture gets decoded varies run to run by more
+than the effect being looked for.
+
+`tools/replay_ab.sh` replays one I/Q capture through two or more builds and
+`tools/replay_ab_report.py` reports the result:
+
+```sh
+cmake --build --preset dev-debug -j --target dsd-neo
+cp build/dev-debug/apps/dsd-cli/dsd-neo /tmp/dsd-neo.after   # and one for 'before'
+
+tools/replay_ab.sh --capture ~/captures/nxdn.json --mode -fi --reps 12 \
+    --out /tmp/ab /tmp/dsd-neo.before /tmp/dsd-neo.after
+tools/replay_ab_report.py /tmp/ab/summary.tsv
+```
+
+Reading it:
+
+- **Errors per decoded voice frame**, never the raw error total. A build that
+  loses sync decodes fewer frames and accrues fewer errors without being better,
+  so watch the `voice` column alongside the error rate.
+- **Paired per repeat.** Builds run round-robin with the order rotated each
+  repeat, because a fixed order credits the better slot to whichever build holds
+  it. The report compares within a repeat for the same reason.
+- **Run the baseline against itself first.** That control establishes the noise
+  floor for the machine and the capture; a difference smaller than it has not
+  been measured. On the captures behind issue #444 the floor was about
+  0.1 errors per voice frame over 12 repeats.
+- Keep the machine otherwise idle: `--rate realtime` is wall-clock paced, so a
+  build competing with a compile is measured under different conditions.
+
+Issue #444 is the worked example, and the comment above `symbol_adjust_timing_nxdn()`
+in `src/dsp/dsd_symbol.c` records what it ruled out.
+
 ## Regression Test Requirement
 
 At least 50% of bugs fixed in the last six months should include regression
