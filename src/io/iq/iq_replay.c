@@ -16,6 +16,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/io/iq_types.h"
 #include "dsd-neo/platform/platform.h"
+#include "dsd-neo/platform/posix_compat.h"
 
 struct dsd_iq_replay_source {
     FILE* fp;
@@ -87,7 +88,9 @@ has_suffix(const char* s, const char* suffix) {
     if (s_len < suf_len) {
         return 0;
     }
-    return strcmp(s + (s_len - suf_len), suffix) == 0;
+    /* Case-insensitive to match Windows, where "capture.iq.JSON" is the same file
+       as "capture.iq.json" and must be recognised as the sidecar. */
+    return dsd_strcasecmp(s + (s_len - suf_len), suffix) == 0;
 }
 
 static int
@@ -176,19 +179,27 @@ resolve_metadata_path(const char* path, char* out_metadata_path, size_t out_meta
     }
 
     size_t n = strlen(path);
-    if (n + 6U > out_metadata_path_size) {
+    if (n + 9U > out_metadata_path_size) {
         set_error(err_buf, err_buf_size, "metadata path too long");
         return DSD_IQ_ERR_INVALID_ARG;
     }
-    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.json", path);
 
+    /* Try the sidecar for the path exactly as given first, so captures written before
+       the ".iq" default still resolve and a data path like "mycap.iq" is found. Only
+       then try the name a bare capture now produces. */
     dsd_stat_t st;
-    if (dsd_stat_path(out_metadata_path, &st) != 0) {
-        set_error(err_buf, err_buf_size, "metadata sidecar not found for '%s' (expected '%s')", path,
-                  out_metadata_path);
-        return DSD_IQ_ERR_IO;
+    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.json", path);
+    if (dsd_stat_path(out_metadata_path, &st) == 0) {
+        return DSD_IQ_OK;
     }
-    return DSD_IQ_OK;
+    DSD_SNPRINTF(out_metadata_path, out_metadata_path_size, "%s.iq.json", path);
+    if (dsd_stat_path(out_metadata_path, &st) == 0) {
+        return DSD_IQ_OK;
+    }
+
+    set_error(err_buf, err_buf_size, "metadata sidecar not found for '%s' (tried '%s.json' and '%s.iq.json')", path,
+              path, path);
+    return DSD_IQ_ERR_IO;
 }
 
 static int
