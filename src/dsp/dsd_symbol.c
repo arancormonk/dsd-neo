@@ -30,6 +30,7 @@
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
+#include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
@@ -245,6 +246,11 @@ typedef struct {
     int symbol_span;
     int l_edge_pre;
     int r_edge_pre;
+    /* DSD_NEO_DEBUG_SYMBOL_TIMING, read once per symbol rather than per sample. */
+    int timing_level;
+    /* Samples this symbol has actually taken, which is not the span index: the
+       timing nudge moves that index and a stream flush restarts it. */
+    int timing_samples;
     unsigned int analog_out_cap;
 #ifdef USE_RADIO
     int rtl_output_kind;
@@ -270,6 +276,7 @@ symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
     }
     *work = (symbol_work_ctx){0};
     work->symbol_span = 1;
+    work->timing_level = dsd_symbol_timing_debug_level();
 #ifdef USE_RADIO
     work->rtl_symbol_levels = 4;
 #endif
@@ -279,14 +286,17 @@ symbol_work_ctx_init(symbol_work_ctx* work, const dsd_state* state) {
     work->analog_out_cap = (unsigned int)(sizeof(state->analog_out) / sizeof(state->analog_out[0]));
 }
 
+/* No have_sync term: the frame is exactly the window a timing question needs to see,
+   and gating it out is what made this trace useless to #404. lastsynctype still gates
+   it, so the pre-first-sync noise hunt stays quiet. */
 static inline int
-symbol_timing_debug_enabled(const dsd_opts* opts, const dsd_state* state, int have_sync) {
-    return opts->symboltiming == 1 && have_sync == 0 && state->lastsynctype != DSD_SYNC_NONE;
+symbol_timing_debug_enabled(const dsd_state* state, int timing_level) {
+    return timing_level >= DSD_NEO_SYMBOL_TIMING_TRACE && state->lastsynctype != DSD_SYNC_NONE;
 }
 
 static inline void
-symbol_timing_debug_char(const dsd_opts* opts, const dsd_state* state, int have_sync, char c) {
-    if (symbol_timing_debug_enabled(opts, state, have_sync)) {
+symbol_timing_debug_char(const dsd_state* state, int timing_level, char c) {
+    if (symbol_timing_debug_enabled(state, timing_level)) {
         DSD_FPRINTF(stderr, "%c", c);
     }
 }
@@ -354,41 +364,41 @@ symbol_apply_sync_clip(const dsd_state* state, int have_sync, float sample) {
 }
 
 static inline void
-symbol_jitter_above_center(const dsd_opts* opts, dsd_state* state, int have_sync, int i, float sample) {
+symbol_jitter_above_center(dsd_state* state, int timing_level, int i, float sample) {
     if (sample > (state->maxref * 1.25f)) {
         if ((state->jitter < 0) && (state->rf_mod == 1)) {
             state->jitter = i;
         }
-        symbol_timing_debug_char(opts, state, have_sync, 'O');
+        symbol_timing_debug_char(state, timing_level, 'O');
         return;
     }
-    symbol_timing_debug_char(opts, state, have_sync, '+');
+    symbol_timing_debug_char(state, timing_level, '+');
     if ((state->jitter < 0) && (state->lastsample < state->center) && (state->rf_mod != 1)) {
         state->jitter = i;
     }
 }
 
 static inline void
-symbol_jitter_below_center(const dsd_opts* opts, dsd_state* state, int have_sync, int i, float sample) {
+symbol_jitter_below_center(dsd_state* state, int timing_level, int i, float sample) {
     if (sample < (state->minref * 1.25f)) {
         if ((state->jitter < 0) && (state->rf_mod == 1)) {
             state->jitter = i;
         }
-        symbol_timing_debug_char(opts, state, have_sync, 'X');
+        symbol_timing_debug_char(state, timing_level, 'X');
         return;
     }
-    symbol_timing_debug_char(opts, state, have_sync, '-');
+    symbol_timing_debug_char(state, timing_level, '-');
     if ((state->jitter < 0) && (state->lastsample > state->center) && (state->rf_mod != 1)) {
         state->jitter = i;
     }
 }
 
 static inline void
-symbol_update_jitter(const dsd_opts* opts, dsd_state* state, int have_sync, int i, float sample) {
+symbol_update_jitter(dsd_state* state, int timing_level, int i, float sample) {
     if (sample > state->center) {
-        symbol_jitter_above_center(opts, state, have_sync, i, sample);
+        symbol_jitter_above_center(state, timing_level, i, sample);
     } else {
-        symbol_jitter_below_center(opts, state, have_sync, i, sample);
+        symbol_jitter_below_center(state, timing_level, i, sample);
     }
 }
 
@@ -1328,6 +1338,7 @@ symbol_reset_rtl_fsk_timing_if_needed(dsd_state* state, int output_rate_hz, int 
     state->rtl_fsk_sps_den = symbol_rate_hz;
     state->rtl_fsk_sps_accum = 0;
     state->jitter = -1;
+    dsd_symbol_timing_trace_reset(state);
     symbol_reset_rtl_fsk_discriminator_slicer(state);
     return 1;
 }
@@ -1585,7 +1596,7 @@ symbol_init_rtl_profile(const dsd_opts* opts, dsd_state* state, symbol_work_ctx*
 
 static int
 symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
-    if (!work->rtl_symbol_rate_output || opts->symboltiming == 1) {
+    if (!work->rtl_symbol_rate_output) {
         return 0;
     }
     if (!state->rtl_ctx) {
@@ -1621,6 +1632,12 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
     }
     opts->rtl_pwr = dsd_rtl_stream_io_hook_return_pwr(state);
     state->lastsample = work->sample;
+    /* One sample per symbol here, which the measurement recognises as a grid with no
+       sub-symbol structure to report on. */
+    if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
+        dsd_symbol_timing_trace_push_sample(state, work->sample);
+        dsd_symbol_timing_trace_push_span(state, 1);
+    }
     dsd_symbol_history_push(state, work->sample);
     state->symbolcnt++;
     symbol_maybe_publish_rtl_input_level(opts, state);
@@ -1674,8 +1691,8 @@ symbol_prepare_span(const dsd_opts* opts, dsd_state* state, symbol_work_ctx* wor
 #endif
 
 static inline void
-symbol_print_timing_line(const dsd_opts* opts, dsd_state* state, int have_sync) {
-    if (!symbol_timing_debug_enabled(opts, state, have_sync)) {
+symbol_print_timing_line(const dsd_state* state, int timing_level) {
+    if (!symbol_timing_debug_enabled(state, timing_level)) {
         return;
     }
     if (state->jitter >= 0) {
@@ -1793,6 +1810,10 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
                 work->symbol_span = state->samplesPerSymbol;
             }
             state->jitter = -1;
+            /* Same reasoning for the timing trace: correlating a sync word across a
+               stream seam would measure the flush, not the grid. */
+            dsd_symbol_timing_trace_reset(state);
+            work->timing_samples = 0;
             i = 0;
         }
 #endif
@@ -1808,25 +1829,37 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         work->sample =
             symbol_apply_matched_filter(opts, state, work->sample, rtl_symbol_rate_output, cqpsk_symbol_rate);
         work->sample = symbol_apply_sync_clip(state, have_sync, work->sample);
-        symbol_update_jitter(opts, state, have_sync, i, work->sample);
+        if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
+            dsd_symbol_timing_trace_push_sample(state, work->sample);
+            work->timing_samples++;
+        }
+        symbol_update_jitter(state, work->timing_level, i, work->sample);
         symbol_accumulate_sample(state, work, i, work->sample);
         state->lastsample = work->sample;
         i++;
     }
+    if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
+        dsd_symbol_timing_trace_push_span(state, work->timing_samples);
+    }
     return 1;
 }
 
+// apply_rtl_symbol_thresholds() writes through state in the USE_RADIO build, which is the
+// configuration this ships in; only the radio-less build could take a const pointer here.
+// cppcheck-suppress-begin constParameterPointer
 static inline float
-symbol_finalize_live_symbol(const dsd_opts* opts, dsd_state* state, int have_sync, const symbol_work_ctx* work) {
+symbol_finalize_live_symbol(dsd_state* state, const symbol_work_ctx* work) {
     float symbol = (work->count > 0) ? (work->sum / (float)work->count) : 0.0f;
 #ifdef USE_RADIO
     if (work->rtl_symbol_rate_output) {
         apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
     }
 #endif
-    symbol_print_timing_line(opts, state, have_sync);
+    symbol_print_timing_line(state, work->timing_level);
     return symbol;
 }
+
+// cppcheck-suppress-end constParameterPointer
 
 #ifndef USE_RADIO
 static inline void
@@ -1898,7 +1931,7 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) {
         return 0.0f;
     }
 
-    float symbol = symbol_finalize_live_symbol(opts, state, have_sync, &work);
+    float symbol = symbol_finalize_live_symbol(state, &work);
 
     symbol_apply_replay_overrides(opts, state, &symbol);
     return symbol_commit_symbol(opts, state, have_sync, &work, symbol);

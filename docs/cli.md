@@ -758,7 +758,27 @@ Debug (verbose/developer)
 
 - `DSD_NEO_DEBUG_SYNC=1` — verbose sync detection output
 - `DSD_NEO_DEBUG_CQPSK=1` — verbose CQPSK Gardner/Costas/FLL-band-edge state output
+- `DSD_NEO_DEBUG_SYMBOL_TIMING=1|2` — symbol-timing diagnostics on the decoder's symbol grid
 - `DSD_NEO_SYNC_WARMSTART=0` — disable sync warm-start calibration
+
+### Symbol timing (`DSD_NEO_DEBUG_SYMBOL_TIMING`)
+
+The decoder's sampling phase is fixed when a sync is acquired and held for the rest of the call, so a call decoded
+at a poor phase stays at that phase. Level `1` prints one line per accepted frame sync:
+
+```text
+SYMTIMING: sync=29 win=13113313 sps=20 jitter=-1 off=0 accum=0
+```
+
+- `sync` — accepted sync type id; `win` — the eight decided dibits the measurement correlated over
+- `sps` — `samplesPerSymbol` the grid is running; `jitter` — the latched zero-crossing index, `-1` when none
+- `off` — sub-symbol offset, in samples, between the grid's symbol boundary and the one the signal supports
+  (`0` is aligned, and `-` means the trace could not support a measurement — right after a retune, for instance)
+- `accum` — the RTL FSK fractional-sps accumulator
+
+Collect the `off` distribution over a call to see the phase the grid settled on, and compare runs to see whether it
+is stable. Level `2` additionally enables the per-sample `+ - O X` trace and the per-symbol jitter line; that is tens
+of thousands of characters per second, so prefer level `1` unless you need the within-symbol detail.
 
 ## Handy Examples
 

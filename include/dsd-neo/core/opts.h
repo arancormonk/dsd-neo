@@ -97,7 +97,6 @@ struct dsd_opts {
     int onesymbol;
     int errorbars;
     int datascope;
-    int symboltiming;
     int verbose;
     int p25enc;
     int p25lc;

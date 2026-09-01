@@ -99,6 +99,7 @@ unset_all_runtime_env(void) {
         "DSD_NEO_CQPSK_SYNC_INV",
         "DSD_NEO_CQPSK_SYNC_NEG",
         "DSD_NEO_DEBUG_CQPSK",
+        "DSD_NEO_DEBUG_SYMBOL_TIMING",
         "DSD_NEO_DEBUG_SYNC",
         "DSD_NEO_DEEMPH",
         "DSD_NEO_DISABLE_FS4_SHIFT",
@@ -884,6 +885,61 @@ test_bootstrap_debug_env(void) {
     unsetenv("DSD_NEO_NO_BOOTSTRAP");
     unsetenv("DSD_NEO_DEBUG_SYNC");
     unsetenv("DSD_NEO_DEBUG_CQPSK");
+    return 0;
+}
+
+/* A level, not a toggle: 1 is one line per accepted sync, 2 adds the per-sample trace. */
+static int
+test_symbol_timing_debug_env(void) {
+    unsetenv("DSD_NEO_DEBUG_SYMBOL_TIMING");
+    dsd_neo_config_init();
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    int rc = expect(cfg != NULL, 1400, "cfg NULL");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->debug_symbol_timing_is_set, 0, 1401, "debug_symbol_timing_is_set (default)");
+    if (rc != 0) {
+        return rc;
+    }
+    rc = expect_int_eq(cfg->debug_symbol_timing, 0, 1402, "debug_symbol_timing (default)");
+    if (rc != 0) {
+        return rc;
+    }
+
+    static const struct {
+        const char* value;
+        int expect_is_set;
+        int expect_level;
+        int code;
+    } cases[] = {
+        {"1", 1, 1, 1403},
+        {"2", 1, 2, 1404},
+        {"0", 1, 0, 1405},
+        /* Truthy words select the quiet level rather than the firehose. */
+        {"true", 1, 1, 1406},
+        {"no", 1, 0, 1407},
+        /* Out of range and unparseable values are ignored, as the CQPSK toggle does. */
+        {"3", 0, 0, 1408},
+        {"banana", 0, 0, 1409},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        setenv("DSD_NEO_DEBUG_SYMBOL_TIMING", cases[i].value, 1);
+        dsd_neo_config_init();
+        cfg = dsd_neo_get_config();
+        rc = expect_int_eq(cfg->debug_symbol_timing_is_set, cases[i].expect_is_set, cases[i].code,
+                           "debug_symbol_timing_is_set");
+        if (rc != 0) {
+            return rc;
+        }
+        rc = expect_int_eq(cfg->debug_symbol_timing, cases[i].expect_level, cases[i].code, "debug_symbol_timing");
+        if (rc != 0) {
+            return rc;
+        }
+    }
+
+    unsetenv("DSD_NEO_DEBUG_SYMBOL_TIMING");
     return 0;
 }
 
@@ -2406,6 +2462,10 @@ main(void) {
         return rc;
     }
     rc = test_bootstrap_debug_env();
+    if (rc != 0) {
+        return rc;
+    }
+    rc = test_symbol_timing_debug_env();
     if (rc != 0) {
         return rc;
     }

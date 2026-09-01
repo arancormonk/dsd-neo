@@ -113,6 +113,10 @@ extern "C" {
  *
  * Debug/advanced knobs (centralized for maintainability)
  * - DSD_NEO_DEBUG_SYNC, DSD_NEO_DEBUG_CQPSK
+ * - DSD_NEO_DEBUG_SYMBOL_TIMING
+ *     Symbol-timing diagnostics on the decoder's own symbol grid.
+ *     Values: 0 off, 1 one measurement line per accepted frame sync (sub-symbol offset,
+ *     samplesPerSymbol, jitter), 2 additionally the per-sample +/-/O/X trace. Default: 0.
  * - DSD_NEO_CQPSK, DSD_NEO_CQPSK_SYNC_INV, DSD_NEO_CQPSK_SYNC_NEG
  * - DSD_NEO_FTZ_DAZ
  * - DSD_NEO_NO_BOOTSTRAP
@@ -129,6 +133,13 @@ extern "C" {
  * Cache/path knobs
  * - DSD_NEO_CACHE_DIR, DSD_NEO_CC_CACHE
  */
+
+/* Levels for DSD_NEO_DEBUG_SYMBOL_TIMING. */
+enum {
+    DSD_NEO_SYMBOL_TIMING_OFF = 0,
+    DSD_NEO_SYMBOL_TIMING_SYNC_LINE = 1,
+    DSD_NEO_SYMBOL_TIMING_TRACE = 2,
+};
 
 typedef enum DSD_ATTR_PACKED {
     DSD_NEO_DEEMPH_UNSET = 0,
@@ -218,6 +229,10 @@ typedef struct dsdneoRuntimeConfig {
     int debug_sync_enable;
     int debug_cqpsk_is_set;
     int debug_cqpsk_enable;
+    /* Level rather than a toggle: the two things this gates differ by orders of magnitude in
+     * volume. 1 is one line per accepted sync; 2 adds a character per input sample. */
+    int debug_symbol_timing_is_set;
+    int debug_symbol_timing;
 
     /* CQPSK runtime toggles */
     int cqpsk_is_set;

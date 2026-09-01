@@ -33,6 +33,7 @@
 #include <dsd-neo/dsp/dmr_sync.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol.h>
+#include <dsd-neo/dsp/symbol_timing_debug.h>
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -1750,7 +1751,7 @@ frame_sync_try_provoice_conventional(frame_sync_match_ctx* ctx) {
 #endif
 
 static int
-frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
     int sync_type = frame_sync_try_p25p1(ctx);
     if (sync_type != DSD_SYNC_NONE) {
         return sync_type;
@@ -1802,6 +1803,22 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
     }
 
     return frame_sync_try_provoice_conventional(ctx);
+}
+
+/* Every accept the sync hunt makes passes through here, which is where the symbol-timing
+ * diagnostic measures the phase the grid settled on. The template is the trailing
+ * DSD_SYMBOL_TIMING_TEMPLATE_SYMS decided dibits rather than the matched sync word: those
+ * are inside the sync word whatever matched -- no protocol's word is shorter -- so no
+ * per-protocol window table has to be kept in step with the matchers above.
+ *
+ * In-frame resyncs a protocol handler does privately do not come through here. */
+static int
+frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
+    const int sync_type = frame_sync_try_protocol_matches_inner(ctx);
+    if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
+        dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
+    }
+    return sync_type;
 }
 
 static time_t g_p25_trunk_tick_last_tick = 0;
