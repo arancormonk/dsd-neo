@@ -35,6 +35,7 @@ static float g_read_base = 1000.0f;
 static float g_read_base_step = 0.0f;
 static int g_read_calls = 0;
 static int g_bump_generation_during_read = 0;
+static float g_read_base_after_bump = 0.0f;
 static int g_output_kind_after_bump = -1;
 static int g_symbol_rate_hz_after_bump = 0;
 static int g_symbol_levels_after_bump = 0;
@@ -172,6 +173,11 @@ fake_rtl_read(void* rtl_ctx, float* out, size_t count, int* out_got) {
             g_channel_profile = g_channel_profile_after_bump;
             g_channel_profile_after_bump = -1;
         }
+        if (g_read_base_after_bump > 0.0f) {
+            g_read_base = g_read_base_after_bump;
+            read_base = g_read_base;
+            g_read_base_after_bump = 0.0f;
+        }
         g_bump_generation_during_read = 0;
     }
     for (int i = 0; i < 4; i++) {
@@ -229,6 +235,7 @@ reset_stream_fixture(void) {
     g_read_base_step = 0.0f;
     g_read_calls = 0;
     g_bump_generation_during_read = 0;
+    g_read_base_after_bump = 0.0f;
     g_output_kind_after_bump = -1;
     g_symbol_rate_hz_after_bump = 0;
     g_symbol_levels_after_bump = 0;
@@ -551,6 +558,46 @@ main(void) {
     state.rf_mod = 1;
     assert(getSymbol(&opts, &state, 1) == 4100.0f);
     assert(g_cleanup_calls == 0);
+
+    /*
+     * Every retune and replay RESET bumps the stream generation, which flushes
+     * whatever the decoder had cached. A symbol in flight when that happens must
+     * restart on the new stream instead of averaging samples from both, so what
+     * comes out does not depend on how full the cache happened to be -- the
+     * decoder-side half of the sampling nondeterminism in issue #404.
+     */
+    float restart_symbol = 0.0f;
+    for (int prefill = 0; prefill < 3; prefill++) {
+        reset_stream_fixture();
+        reset_decoder_fixture(&opts, &state, &fake_rtl_context);
+        g_output_kind = RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR;
+        g_output_rate_hz = 48000U;
+        g_symbol_rate_hz = 4800;
+        g_symbol_levels = 4;
+        g_channel_profile = RTL_STREAM_CHANNEL_PROFILE_12K5;
+        state.rf_mod = 0;
+        g_read_base = 4000.0f;
+        g_read_base_step = 100.0f;
+
+        for (int s = 0; s < prefill; s++) {
+            (void)getSymbol(&opts, &state, 1);
+        }
+
+        g_bump_generation_during_read = 1;
+        g_read_base_after_bump = 9000.0f;
+        float symbol = getSymbol(&opts, &state, 1);
+        if (symbol < 9000.0f) {
+            DSD_FPRINTF(stderr, "generation bump at prefill %d mixed streams: symbol %.4f\n", prefill, symbol);
+        }
+        assert(symbol >= 9000.0f);
+        if (prefill == 0) {
+            restart_symbol = symbol;
+        } else if (fabsf(symbol - restart_symbol) >= 0.01f) {
+            DSD_FPRINTF(stderr, "generation bump at prefill %d gave %.4f, prefill 0 gave %.4f\n", prefill, symbol,
+                        restart_symbol);
+            assert(fabsf(symbol - restart_symbol) < 0.01f);
+        }
+    }
 
     /*
      * Read failures should surface as the existing empty-symbol path, trigger

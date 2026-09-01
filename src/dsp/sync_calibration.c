@@ -215,6 +215,14 @@ dsd_sync_warm_start_thresholds_outer_only(const dsd_opts* opts, dsd_state* state
     state->maxref = state->max * 0.80f;
     state->minref = state->min * 0.80f;
 
+    /* The pending zero crossing was measured against the thresholds just
+       replaced, so it no longer describes anything (#404). It would otherwise
+       outlive the frame this sync opens -- symbol_adjust_timing_index() does not
+       run while a frame is being read and nothing else clears it -- and slip the
+       symbol grid once the next sync search begins, on where a crossing fell
+       against a calibration and a symbol that are both long gone. */
+    state->jitter = -1;
+
     /* Pre-fill rolling buffers to skip warmup period */
     if (opts != NULL) {
         int fill_count = opts->msize;

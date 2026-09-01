@@ -252,6 +252,9 @@ typedef struct {
     int rtl_symbol_rate_output;
     int rtl_fsk_discriminator_output;
     int rtl_profile_changed;
+    /* Set when the cache handed back a discontinuity: the samples already taken
+       for this symbol came off a stream that is gone. */
+    int rtl_span_restart;
     int rtl_channel_profile;
     int rtl_symbol_rate_hz;
     int rtl_symbol_levels;
@@ -1398,6 +1401,7 @@ symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_ou
             dsd_request_shutdown(opts, state);
             return 0;
         }
+        work->rtl_span_restart = 1;
         symbol_refresh_rtl_profile(state, work);
         if (!work->rtl_fsk_discriminator_output) {
             return 0;
@@ -1764,13 +1768,34 @@ symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
     return 1;
 }
 
+/* A while loop rather than a for: the span index is not a plain counter. The
+   timing nudge moves it before the first sample is taken, and a stream flush
+   restarts the span from it, so every step it takes belongs in the body where
+   it reads as one. */
 static int
 symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
-    for (int i = 0; i < work->symbol_span; i++) {
+    int i = 0;
+    while (i < work->symbol_span) {
         symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
         if (!symbol_take_sample(opts, state, work)) {
             return 0;
         }
+#ifdef USE_RADIO
+        /* This sample opens a new stream: every retune and replay RESET bumps
+           the stream generation, which flushes whatever was cached. Averaging it
+           with what the old stream left in this symbol would make the symbol
+           depend on how full the cache happened to be when the flush landed. */
+        if (work->rtl_span_restart) {
+            work->rtl_span_restart = 0;
+            work->sum = 0.0f;
+            work->count = 0;
+            if (work->rtl_fsk_discriminator_output && state->samplesPerSymbol > 1) {
+                work->symbol_span = state->samplesPerSymbol;
+            }
+            state->jitter = -1;
+            i = 0;
+        }
+#endif
 
         symbol_process_analog_capture(opts, state, work, have_sync);
 #ifdef USE_RADIO
@@ -1786,6 +1811,7 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         symbol_update_jitter(opts, state, have_sync, i, work->sample);
         symbol_accumulate_sample(state, work, i, work->sample);
         state->lastsample = work->sample;
+        i++;
     }
     return 1;
 }
