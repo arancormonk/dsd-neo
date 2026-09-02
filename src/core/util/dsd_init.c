@@ -913,6 +913,11 @@ init_state_trunk_scan_publication(dsd_state* state) {
     DSD_MEMSET(state->trunk_scan_active_id, 0, sizeof(state->trunk_scan_active_id));
     state->trunk_scan_active_ordinal = 0;
     state->trunk_scan_target_count = 0;
+    state->lcn_scan_hold = 0;
+    state->lcn_avoid_count = 0;
+    state->trunk_scan_hold = 0;
+    state->trunk_scan_active_avoided = 0;
+    state->trunk_scan_avoided_count = 0;
 }
 
 static void
