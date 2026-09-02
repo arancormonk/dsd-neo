@@ -7294,6 +7294,33 @@ add_test(
     COMMAND dsd-neo_test_dmr_lrrp_empty_payload_type
 )
 
+# DMR LRRP: a conformant document wrapped in a short fixed envelope decodes as itself (#453)
+add_executable(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    protocol/dmr/test_dmr_lrrp_wrapped_document.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_wrapped_document
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME DMR_LRRP_WRAPPED_DOCUMENT
+    COMMAND dsd-neo_test_dmr_lrrp_wrapped_document
+)
+
 # DMR SMS/TMS UTF-16 text: surrogate pairs combine, unpaired halves become U+FFFD
 add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
@@ -9148,6 +9175,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_lrrp_time_fallback
     dsd-neo_test_dmr_lrrp_time_valid
     dsd-neo_test_dmr_lrrp_token_alignment
+    dsd-neo_test_dmr_lrrp_wrapped_document
     dsd-neo_test_dmr_pdu_utf16_text
     dsd-neo_test_dmr_relaxed_header_ip
     dsd-neo_test_dmr_t3_ann_wd_tscc
