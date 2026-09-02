@@ -626,6 +626,179 @@ test_channel_import_extends_past_26_entries(void) {
     return failed;
 }
 
+/* Names are stored by LCN row index, not by channel number: a row that took no
+ * scan-list slot stores nothing, and a 0-placeholder row keeps its name, so the
+ * name index and the slot index stay equal by construction. */
+static int
+test_channel_import_name_column_stores_names_by_row_index(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-names-XXXXXX";
+    char long_name[71];
+    char body[4096];
+    int fd = -1;
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    DSD_MEMSET(long_name, 'N', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body),
+                       "channel,frequency,name\n"
+                       "1,851000000,  Dispatch  \n"
+                       "2,notafrequency,Placeholder\n"
+                       "bad,852000000,NoSlot\n"
+                       "3,852000000,\n");
+    for (int i = 4; i <= 40; i++) {
+        if (i == 40) {
+            (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body), "%d,%ld,%s\n", i,
+                               851000000L + (long)(i - 1) * 12500L, long_name);
+        } else {
+            (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body), "%d,%ld,Row%d\n", i,
+                               851000000L + (long)(i - 1) * 12500L, i);
+        }
+    }
+    if (write_text_file(tmpl, body) != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "named channel import returned error\n");
+        failed = 1;
+    }
+    if (state->lcn_freq_count != 40) {
+        DSD_FPRINTF(stderr, "named import slot count wrong: %d\n", state->lcn_freq_count);
+        failed = 1;
+    }
+    if (strcmp(dsd_state_trunk_lcn_name_get(state, 0), "Dispatch") != 0) {
+        DSD_FPRINTF(stderr, "row 1 name not trimmed: '%s'\n", dsd_state_trunk_lcn_name_get(state, 0));
+        failed = 1;
+    }
+    // The unparseable frequency still takes its positional slot, so its name rides along.
+    if (strcmp(dsd_state_trunk_lcn_name_get(state, 1), "Placeholder") != 0) {
+        DSD_FPRINTF(stderr, "0-placeholder row lost its name: '%s'\n", dsd_state_trunk_lcn_name_get(state, 1));
+        failed = 1;
+    }
+    // 'bad,852000000,NoSlot' took no slot, so index 2 belongs to the row after it.
+    if (dsd_state_trunk_lcn_name_get(state, 2)[0] != '\0') {
+        DSD_FPRINTF(stderr, "empty name column stored something: '%s'\n", dsd_state_trunk_lcn_name_get(state, 2));
+        failed = 1;
+    }
+    if (strcmp(dsd_state_trunk_lcn_name_get(state, 3), "Row4") != 0
+        || strcmp(dsd_state_trunk_lcn_name_get(state, 26), "Row27") != 0) {
+        DSD_FPRINTF(stderr, "row-index names wrong: [3]='%s' [26]='%s'\n", dsd_state_trunk_lcn_name_get(state, 3),
+                    dsd_state_trunk_lcn_name_get(state, 26));
+        failed = 1;
+    }
+    if (strlen(dsd_state_trunk_lcn_name_get(state, 39)) != (size_t)(DSD_CHANNEL_LABEL_SIZE - 1)) {
+        DSD_FPRINTF(stderr, "long name not truncated: len=%zu\n", strlen(dsd_state_trunk_lcn_name_get(state, 39)));
+        failed = 1;
+    }
+    if (dsd_state_trunk_lcn_name_get(state, 40)[0] != '\0') {
+        DSD_FPRINTF(stderr, "name past the last row is not empty\n");
+        failed = 1;
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
+/* The channel map's extra columns have always been free-text notes -- two shipped
+ * examples put commas in theirs -- so only a header that names column 3 `name`
+ * turns it into a label. */
+static int
+test_channel_import_name_column_requires_header_opt_in(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-optin-XXXXXX";
+    int fd = -1;
+
+    static const struct {
+        const char* text;
+        int expect_stored;
+    } cases[] = {
+        // Column 3 is a note unless the header says otherwise.
+        {"channel,frequency,note\n1,851000000,Dispatch\n", 0},
+        // The opt-in ignores case and surrounding spaces.
+        {"Channel, Freq, Name \n1,851000000,Dispatch\n", 1},
+        {"CHANNEL,FREQ,NAME\n1,851000000,Dispatch\n", 1},
+        // Opted in, but the rows carry no third column.
+        {"channel,frequency,name\n1,851000000\n", 0},
+        // Opted in, but every name is blank.
+        {"channel,frequency,name\n1,851000000,\n", 0},
+    };
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_state_trunk_lcn_free(state);
+        DSD_MEMSET(state, 0, sizeof(*state));
+        if (write_text_file(tmpl, cases[i].text) != 0) {
+            failed = 1;
+            break;
+        }
+        if (csvChanImport(opts, state) != 0) {
+            DSD_FPRINTF(stderr, "opt-in case %zu import returned error\n", i);
+            failed = 1;
+            continue;
+        }
+        // Whether the column is a label or a note, the map and the scan list load the same.
+        if (state->lcn_freq_count != 1 || state->trunk_lcn_freq[0] != 851000000L
+            || state->trunk_chan_map[1] != 851000000L) {
+            DSD_FPRINTF(stderr, "opt-in case %zu changed the map/LCN load\n", i);
+            failed = 1;
+        }
+        if (cases[i].expect_stored) {
+            if (strcmp(dsd_state_trunk_lcn_name_get(state, 0), "Dispatch") != 0) {
+                DSD_FPRINTF(stderr, "opt-in case %zu did not store the name: '%s'\n", i,
+                            dsd_state_trunk_lcn_name_get(state, 0));
+                failed = 1;
+            }
+        } else if (state->trunk_lcn_name != NULL) {
+            // A file that never names a row must not pay for the store at all.
+            DSD_FPRINTF(stderr, "opt-in case %zu allocated a name store\n", i);
+            failed = 1;
+        }
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
 static int
 test_group_import_policy_and_basic_headers(void) {
     int failed = 0;
@@ -1165,6 +1338,12 @@ main(void) {
         return 1;
     }
     if (test_channel_import_extends_past_26_entries() != 0) {
+        return 1;
+    }
+    if (test_channel_import_name_column_stores_names_by_row_index() != 0) {
+        return 1;
+    }
+    if (test_channel_import_name_column_requires_header_opt_in() != 0) {
         return 1;
     }
     if (test_group_import_range_after_many_exact_rows() != 0) {

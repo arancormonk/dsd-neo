@@ -11,7 +11,8 @@ If you want known-good starting points, see `examples/` in the repository.
 - Fields are split on literal commas (`,`). Quoting/escaping is **not supported**.
   - Do not include commas inside a field.
 - Avoid blank lines and comment-only lines (they may be parsed as data).
-- Extra columns after the required ones are ignored. Use them for notes/labels.
+- Extra columns after the required ones are ignored, except where a format names an optional column by header (the
+  channel map's `name`). Use the rest for notes/labels.
 - Imported text fields are copied into fixed-size runtime buffers. Keep short fields concise; long `mode` and `name`
   values are truncated in runtime display/policy state.
 
@@ -67,6 +68,10 @@ Required columns:
 1. `channel_number` (decimal integer, `0 <= channel_number < 65535`)
 2. `frequency_hz` (integer Hz)
 
+Optional column:
+
+3. `name` (free text) - a label for the channel, shown while you listen to it.
+
 Notes:
 
 - `frequency_hz` is parsed as an integer (no `K/M/G` suffixes).
@@ -74,7 +79,17 @@ Notes:
   reach. A row outside it (including `0`) is skipped with a warning, and its slot in the LCN list below is left at 0 so
   later rows keep their LCN numbers. This is what tells a channel map apart from a decimal key list, which has the same
   `number,number` shape.
-- Extra columns are ignored; use them for labels like "default CC".
+- Extra columns are ignored; use them for labels like "default CC". Column 3 is one of them unless the header line
+  names it: a header whose third field is `name` (any capitalisation, surrounding spaces allowed) turns column 3 into
+  a channel name for every row of the file. This opt-in keeps the older maps working - two of the examples shipped in
+  `examples/` put a comma inside their third column, which a name column could not hold.
+- A `name` is trimmed of surrounding whitespace, capped at 63 characters, and must not contain a comma. It is stored
+  per row of the LCN list below, so a row whose frequency was skipped keeps its name and the rest stay aligned.
+- Where a name shows: the `-Y` conventional scanner's **Scan Mode** row, the Call Info panel, and as a prefix on the
+  event history rows recorded while that channel is tuned. Encrypted traffic that reports no talkgroup still says
+  which channel it was heard on.
+- Every column is positional, so an empty middle field is an empty frequency: `1,,851000000` is a row with no
+  frequency and is skipped, not a channel at 851 MHz.
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,
   so keep rows in the LCN order you want. An imported LCN list has no length limit; it is bounded only by memory.
   Site broadcasts never write into an imported list or shorten it - the list is positional, so a skipped row's 0
@@ -87,6 +102,14 @@ ChannelNumber(dec),frequency(Hz),note
 999,862093750,default cc
 1,863093750
 2,862093750
+```
+
+Example with names (`examples/conventional_scan_named.csv`):
+
+```csv
+channel,frequency_hz,name
+1,462562500,GMRS 1
+2,462587500,GMRS 2
 ```
 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)

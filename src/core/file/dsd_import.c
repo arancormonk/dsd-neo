@@ -203,7 +203,7 @@ parse_dec_long_strict(const char* token, long int* out) {
 }
 
 static size_t
-group_split_csv_preserve_empty(char* line, char** fields, size_t max_fields) {
+csv_split_preserve_empty(char* line, char** fields, size_t max_fields) {
     size_t count = 0;
     char* p = line;
     if (!line || !fields || max_fields == 0) {
@@ -223,7 +223,7 @@ group_split_csv_preserve_empty(char* line, char** fields, size_t max_fields) {
 }
 
 static int
-group_ascii_casecmp(const char* a, const char* b) {
+csv_ascii_casecmp(const char* a, const char* b) {
     if (!a || !b) {
         return (a == b) ? 0 : 1;
     }
@@ -343,12 +343,12 @@ group_parse_bool_field(char* token, int* out) {
     if (!p || p[0] == '\0') {
         return GROUP_PARSE_VALUE_MISSING;
     }
-    if (group_ascii_casecmp(p, "true") == 0 || group_ascii_casecmp(p, "yes") == 0 || group_ascii_casecmp(p, "on") == 0
+    if (csv_ascii_casecmp(p, "true") == 0 || csv_ascii_casecmp(p, "yes") == 0 || csv_ascii_casecmp(p, "on") == 0
         || strcmp(p, "1") == 0) {
         *out = 1;
         return GROUP_PARSE_VALUE_OK;
     }
-    if (group_ascii_casecmp(p, "false") == 0 || group_ascii_casecmp(p, "no") == 0 || group_ascii_casecmp(p, "off") == 0
+    if (csv_ascii_casecmp(p, "false") == 0 || csv_ascii_casecmp(p, "no") == 0 || csv_ascii_casecmp(p, "off") == 0
         || strcmp(p, "0") == 0) {
         *out = 0;
         return GROUP_PARSE_VALUE_OK;
@@ -407,13 +407,13 @@ group_parse_policy_header(char* header_line) {
     group_policy_header info = {0, 0, 0};
     char* fields[16];
     static const char* expected[] = {"preempt", "audio", "record", "stream", "tags"};
-    size_t field_count = group_split_csv_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
+    size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
     size_t expected_idx = 0;
 
     if (field_count < 4) {
         return info;
     }
-    if (group_ascii_casecmp(trim_ws(fields[3]), "priority") != 0) {
+    if (csv_ascii_casecmp(trim_ws(fields[3]), "priority") != 0) {
         return info;
     }
     info.policy_active = 1;
@@ -421,7 +421,7 @@ group_parse_policy_header(char* header_line) {
 
     for (size_t i = 4; i < field_count && expected_idx < (sizeof(expected) / sizeof(expected[0])); i++) {
         const char* col = trim_ws(fields[i]);
-        if (group_ascii_casecmp(col, expected[expected_idx]) == 0) {
+        if (csv_ascii_casecmp(col, expected[expected_idx]) == 0) {
             info.prefix_len++;
             expected_idx++;
             continue;
@@ -608,7 +608,7 @@ group_import_row(dsd_state* state, const char* filename, unsigned int row_count,
     dsd_tg_policy_entry entry;
     int mode_blocking = 0;
 
-    field_count = group_split_csv_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
+    field_count = csv_split_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
     if (field_count < 3) {
         LOG_WARN("WARNING: Group file '%s' row %u missing required fields; skipping.\n", filename, row_count);
         return -1;
@@ -824,25 +824,53 @@ csv_key_import_dec_apply_field(dsd_state* state, int field_count, const char* fi
     }
 }
 
-/** @brief Parse one channel row into @p state. @return 1 when a frequency loaded, -1 on allocation failure. */
+/**
+ * @brief Parse one channel row into @p state.
+ *
+ * Empty fields are preserved rather than collapsed, so `1,,851000000` reads as a
+ * blank frequency and is skipped instead of promoting column 3 into its place.
+ *
+ * @return 1 when a frequency loaded, -1 on allocation failure.
+ */
 static int
-chan_import_row(dsd_state* state, char* buffer, int* out_field_count, long int* out_chan_number) {
-    int field_count = 0;
+chan_import_row(dsd_state* state, char* buffer, int has_name_column, int* out_field_count, long int* out_chan_number) {
+    char* fields[16];
     int freq_parsed = 0;
     long int chan_number = -1;
-    char* saveptr = NULL;
+    // The row's scan-list slot is the count before it: every row that takes one
+    // appends, so the name index and the slot index stay equal by construction.
+    const int lcn_before = state->lcn_freq_count;
 
-    const char* field = dsd_strtok_r(buffer, ",", &saveptr); //seperate by comma
-    while (field) {
-        if (csv_chan_import_apply_field(state, field_count, field, &chan_number, &freq_parsed) != 0) {
+    const size_t field_count = csv_split_preserve_empty(buffer, fields, sizeof(fields) / sizeof(fields[0]));
+    for (size_t i = 0; i < field_count && i < 2; i++) {
+        if (csv_chan_import_apply_field(state, (int)i, fields[i], &chan_number, &freq_parsed) != 0) {
             return -1;
         }
-        field = dsd_strtok_r(NULL, ",", &saveptr);
-        field_count++;
     }
-    *out_field_count = field_count;
+    if (has_name_column && field_count >= 3 && state->lcn_freq_count > lcn_before) {
+        if (dsd_state_trunk_lcn_name_set(state, (size_t)lcn_before, fields[2]) != 0) {
+            LOG_ERROR("channel map import out of memory\n");
+            return -1;
+        }
+    }
+    *out_field_count = (int)field_count;
     *out_chan_number = chan_number;
     return freq_parsed;
+}
+
+/*
+ * The channel map's columns past the frequency have always been free-text notes
+ * -- two shipped examples put commas in theirs -- so column 3 is a channel name
+ * only when the header line says `name`.
+ */
+static int
+chan_header_has_name_column(char* header_line) {
+    char* fields[16];
+    const size_t field_count = csv_split_preserve_empty(header_line, fields, sizeof(fields) / sizeof(fields[0]));
+    if (field_count < 3) {
+        return 0;
+    }
+    return csv_ascii_casecmp(trim_ws(fields[2]), "name") == 0 ? 1 : 0;
 }
 
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
@@ -860,18 +888,21 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
         return -1;
     }
     int row_count = 0;
+    int has_name_column = 0;
 
     while (fgets(buffer, BSIZE, fp)) {
         int field_count = 0;
         long int chan_number = -1;
         row_count++;
         if (row_count == 1) {
+            // Split in place: the header is not needed again, and the next fgets refills the buffer.
+            has_name_column = chan_header_has_name_column(buffer);
             continue; //don't want labels
         }
         if (csv_line_is_blank(buffer)) {
             continue;
         }
-        const int freq_parsed = chan_import_row(state, buffer, &field_count, &chan_number);
+        const int freq_parsed = chan_import_row(state, buffer, has_name_column, &field_count, &chan_number);
         if (freq_parsed < 0) {
             fclose(fp);
             return -1;
