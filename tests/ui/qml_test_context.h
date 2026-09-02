@@ -776,6 +776,8 @@ class Setup : public QObject {
             const QString p = QStringLiteral("slot%1").arg(slot);
             metrics[p + QStringLiteral("CallState")] = 0;
             metrics[p + QStringLiteral("CallName")] = QString();
+            // The scan channel the slot's call was heard on; empty when not scanning.
+            metrics[p + QStringLiteral("Channel")] = QString();
             metrics[p + QStringLiteral("CallEnc")] = false;
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();

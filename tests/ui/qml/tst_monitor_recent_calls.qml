@@ -94,6 +94,32 @@ Item {
             tryVerify(function () { return !row.visible })
         }
 
+        // The hero's subline says which scan channel the call was heard on, but
+        // only when that is not already the name above it: a talkgroup-0 call is
+        // headlined by its channel, so repeating it underneath would say nothing.
+        function test_03b_the_hero_subline_names_the_channel_only_when_the_name_is_something_else() {
+            var channel = findChild(screenLoader.item, "heroChannel")
+            verify(channel !== null, "the hero channel text is missing")
+
+            testContext.setMetric("leadSlot", 1)
+            testContext.setMetric("slot1CallState", 2)
+            testContext.setMetric("slot1CallName", "Metro Fire")
+            testContext.setMetric("slot1Channel", "Fire Dispatch")
+            tryVerify(function () { return channel.visible }, 5000, "a named call does not show its channel")
+            compare(channel.text, "· Fire Dispatch")
+
+            testContext.setMetric("slot1CallName", "Fire Dispatch")
+            tryVerify(function () { return !channel.visible }, 5000, "the channel repeats the name")
+
+            testContext.setMetric("slot1Channel", "")
+            testContext.setMetric("slot1CallName", "Metro Fire")
+            tryVerify(function () { return !channel.visible }, 5000, "an empty channel still shows")
+
+            testContext.setMetric("slot1CallName", "")
+            testContext.setMetric("slot1CallState", 0)
+            testContext.setMetric("leadSlot", 0)
+        }
+
         function test_04_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen.
             tc.list.contentY = tc.list.originY + 150

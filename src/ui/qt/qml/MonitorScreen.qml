@@ -319,6 +319,7 @@ Item {
                     // above: a listed talkgroup still says which scan channel it
                     // came from.
                     Text {
+                        objectName: "heroChannel"
                         anchors.verticalCenter: parent.verticalCenter
                         visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
                         text: "· " + screen.heroChannel
