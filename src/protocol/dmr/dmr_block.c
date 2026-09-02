@@ -76,7 +76,7 @@ typedef struct {
     uint32_t source;
     uint32_t target;
     char mfid_string[20];
-    char sap_string[20];
+    char sap_string[32];
     char sddd_string[20];
     char udtf_string[20];
 } dmr_dheader_fields;
@@ -115,7 +115,7 @@ dmr_sap_string(uint8_t sap, uint8_t p_mfid) {
         case 3: return "UDP Comp";
         case 4: return "IP Based";
         case 5: return "ARP Prot";
-        case 9: return "EXTD HDR";
+        case 9: return "Proprietary Packet data"; // ETSI TS 102 361-1 table 9.31
         case 10: return "Short DT";
         case 1: return (p_mfid == 0x10) ? "Moto NET" : "Reserved";
         default: return "Reserved";
