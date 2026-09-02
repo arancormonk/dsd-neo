@@ -3524,7 +3524,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_libraries(
         dsd-neo_test_core_call_alert_history
-        PRIVATE dsd-neo_core
+        PRIVATE dsd-neo_core dsd-neo_test_support
     )
     target_link_options(
         dsd-neo_test_core_call_alert_history
@@ -3548,7 +3548,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     )
     target_link_libraries(
         dsd-neo_test_core_call_alert_history_sndfile_alt_tag
-        PRIVATE dsd-neo_core
+        PRIVATE dsd-neo_core dsd-neo_test_support
     )
     target_link_options(
         dsd-neo_test_core_call_alert_history_sndfile_alt_tag

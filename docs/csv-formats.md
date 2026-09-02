@@ -92,6 +92,8 @@ Notes:
   contain a comma. It is stored per row of the LCN list below, so a row whose frequency was skipped keeps its name and
   the rest stay aligned. A row whose *channel number* does not parse is different: it takes no LCN slot at all, so it
   stores no name either.
+- A row skipped for an unusable frequency keeps its name in the file's numbering but is never shown, because the
+  scanner parks on the frequency it is already on rather than tuning such a row.
 - Where a name shows: the `-Y` conventional scanner's **Scan Mode** row, the Call Info panel, and as a prefix on the
   event history rows recorded while that channel is tuned. Encrypted traffic that reports no talkgroup still says
   which channel it was heard on.

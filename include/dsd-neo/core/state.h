@@ -1761,10 +1761,10 @@ void dsd_state_trunk_lcn_name_free(dsd_state* state);
  * DSD_CHANNEL_LABEL_SIZE - 1 bytes without splitting a UTF-8 character, has
  * control characters replaced with spaces (so a stray tab or CR never reaches
  * the terminal), and is trimmed of leading and trailing ASCII whitespace --
- * including whatever that substitution and truncation leave at either end.
- * A NULL or blank name clears the entry,
- * allocating nothing when the store does not already reach @p index. Returns 0
- * on success, -1 on allocation failure or a NULL state.
+ * including whatever that substitution and truncation leave at either end. A
+ * NULL or blank name clears the entry, allocating nothing when the store does
+ * not already reach @p index. Returns 0 on success, -1 on allocation failure or
+ * a NULL state.
  */
 int dsd_state_trunk_lcn_name_set(dsd_state* state, size_t index, const char* name);
 

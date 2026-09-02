@@ -31,6 +31,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 _Static_assert(DSD_EVENT_HISTORY_LEN == 255, "event history ring length is pinned by consumers of the snapshot");
 _Static_assert(offsetof(Event_History_I, revision) == sizeof(Event_History) * 255U,
@@ -2310,12 +2311,14 @@ committed_history_rows(const Event_History_I* history) {
 // The scan-channel label a row carries comes from the same resolver the frontends use, so these
 // helpers arm exactly what an operator's scan leaves in state: a -Y scan list parked on a named
 // row, or a --trunk-scan rotation sitting on a named target. lcn_freq_roll is advanced past the
-// row just tuned, so the row on air is roll - 1.
+// row just tuned, so the row on air is roll - 1, and that row needs a usable frequency: the
+// scanner steps over a 0 slot without retuning, and the resolver leaves such a row unnamed.
 static int
 arm_scanner_label(dsd_state* state, dsd_opts* opts, int idx, const char* name) {
     opts->scanner_mode = 1;
     state->lcn_freq_count = idx + 2;
     state->lcn_freq_roll = idx + 1;
+    *dsd_state_trunk_lcn_slot(state, idx) = 851000000L + (12500L * idx);
     return dsd_state_trunk_lcn_name_set(state, (size_t)idx, name);
 }
 
@@ -2350,10 +2353,10 @@ test_scanner_mode_row_carries_channel_label(void) {
     static Event_History_I event_history[2];
     reset_fixture(&opts, &state, event_history);
 
-    char path[] = "/tmp/dsd-neo-label-XXXXXX";
-    int fd = mkstemp(path);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-label");
     if (fd < 0) {
-        DSD_FPRINTF(stderr, "mkstemp failed for channel label event log test\n");
+        DSD_FPRINTF(stderr, "dsd_test_mkstemp failed for channel label event log test\n");
         return 1;
     }
     close(fd);

@@ -32,7 +32,7 @@ free_test_state(dsd_state* st) {
     free(st);
 }
 
-/* A -Y scan list of three rows, the middle one named, positioned on row `roll`. */
+/* A -Y scan list of three rows, the middle and last ones named, positioned on row `roll`. */
 static int
 seed_scan_list(dsd_state* st) {
     st->lcn_freq_count = 3;
@@ -40,6 +40,9 @@ seed_scan_list(dsd_state* st) {
     st->trunk_lcn_freq[1] = 851012500L;
     st->trunk_lcn_freq[2] = 851025000L;
     if (dsd_state_trunk_lcn_name_set(st, 1, "Bravo") != 0) {
+        return 1;
+    }
+    if (dsd_state_trunk_lcn_name_set(st, 2, "Charlie") != 0) {
         return 1;
     }
     return 0;
@@ -153,6 +156,21 @@ test_scanner_row_name(void) {
     st->lcn_freq_roll = 2;
     rc |= expect_true("named row reports a label", dsd_channel_label_current(opts, st, out, sizeof(out)) == 1);
     rc |= expect_true("named row label", strcmp(out, "Bravo") == 0);
+
+    // The last row of the list is on air once roll has caught up with the count: the bound is
+    // inclusive, so this row is named like any other.
+    st->lcn_freq_roll = st->lcn_freq_count;
+    rc |= expect_true("roll at the end reports a label", dsd_channel_label_current(opts, st, out, sizeof(out)) == 1);
+    rc |= expect_true("roll at the end names the last row", strcmp(out, "Charlie") == 0);
+
+    // A row the importer kept for its numbering but could not use: the scanner parks on the
+    // frequency it is already on rather than tuning this one, so its name would credit the
+    // wrong channel for a whole hangtime.
+    st->lcn_freq_roll = 2;
+    st->trunk_lcn_freq[1] = 0L;
+    rc |= expect_true("placeholder row reports none", dsd_channel_label_current(opts, st, out, sizeof(out)) == 0);
+    rc |= expect_true("placeholder row clears out", out[0] == '\0');
+    st->trunk_lcn_freq[1] = 851012500L;
 
     // A map imported without a name column leaves no store at all.
     dsd_state_trunk_lcn_name_free(st);

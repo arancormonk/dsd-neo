@@ -265,8 +265,9 @@ dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(m
 }
 
 /* Mirrors the real resolver's contract over the name stub above, so the Call Info
- * line is checkable without linking core: the trunk-scan target wins, and only an
- * idle trunk scan lets the -Y row on air have a say. */
+ * line is checkable without linking core: the trunk-scan target wins, only an idle
+ * trunk scan lets the -Y row on air have a say, and a row whose frequency is 0 was
+ * parked over rather than tuned, so it never names anything. */
 int
 dsd_channel_label_current(const dsd_opts* opts, const dsd_state* state, char* out,
                           size_t out_sz) { // NOLINT(misc-use-internal-linkage)
@@ -279,7 +280,8 @@ dsd_channel_label_current(const dsd_opts* opts, const dsd_state* state, char* ou
     const char* label = "";
     if (opts->trunk_scan_enabled == 1 && state->trunk_scan_active_id[0] != '\0') {
         label = state->trunk_scan_active_id;
-    } else if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
+    } else if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
+               && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
         label = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
     }
     if (label[0] == '\0') {
@@ -872,6 +874,23 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Channel: Marion Speed: 2.00 sec \n");
 
+    /* The last row of the list is on air once roll has caught up with the count: the bound is
+       inclusive, so this row renders like any other. */
+    DSD_SNPRINTF(g_lcn_name_stub[1], sizeof(g_lcn_name_stub[1]), "Delaware");
+    state.lcn_freq_roll = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Channel: Delaware Speed: 2.00 sec \n");
+
+    /* A row the importer kept for its numbering but could not use: the scanner parks on the
+       frequency it is already on rather than tuning this one, so its name would credit the wrong
+       channel for a whole hangtime. The frequency field keeps printing the slot as it always has. */
+    state.trunk_lcn_freq[1] = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 0.000000 MHz Speed: 2.00 sec \n");
+    state.trunk_lcn_freq[1] = 462037500;
+
     /* Before the first tune there is no row on air, so neither field prints. */
     state.lcn_freq_roll = 0;
     reset_printw_capture();
@@ -918,6 +937,15 @@ test_trunk_scan_status_row_rendering(void) {
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
 
+    /* Half a position is no position: an ordinal with no rotation length behind it prints
+       no suffix either. */
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+    state.trunk_scan_target_count = 6;
+
     /* A stale id from an earlier run must not show once scanning is off. */
     state.trunk_scan_active_ordinal = 3;
     opts.trunk_scan_enabled = 0;
@@ -962,6 +990,7 @@ test_call_info_channel_line_rendering(void) {
     opts.scanner_mode = 1;
     state->lcn_freq_count = 2;
     state->lcn_freq_roll = 1;
+    state->trunk_lcn_freq[0] = 462012500;
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     reset_color_trace();

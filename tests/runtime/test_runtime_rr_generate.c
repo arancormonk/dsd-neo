@@ -1329,6 +1329,50 @@ test_chan_conventional_names(void) {
     dsd_rr_warning_list_free(&warnings);
 }
 
+/**
+ * @brief A repeater dropped for sharing a frequency takes its name with it.
+ *
+ * The name column is looked up through a parallel index rather than by row
+ * position, so a mis-tracked drop would slide every later name up one row and
+ * put the dropped site's description on a frequency it was never heard on.
+ */
+static void
+test_chan_conventional_duplicate_freq_names(void) {
+    dsd_rr_site_freq freqs[3];
+    freq_set(&freqs[0], 1, 151000000LL, "", NULL);
+    freq_set(&freqs[1], 1, 151000000LL, "", NULL); /* same frequency as the first site */
+    freq_set(&freqs[2], 1, 152000000LL, "", NULL);
+    dsd_rr_site sites[3];
+    site_init(&sites[0], &freqs[0], 1U);
+    site_init(&sites[1], &freqs[1], 1U);
+    site_init(&sites[2], &freqs[2], 1U);
+    (void)DSD_SNPRINTF(sites[0].descr, sizeof(sites[0].descr), "%s", "Kept Repeater");
+    (void)DSD_SNPRINTF(sites[1].descr, sizeof(sites[1].descr), "%s", "Dropped Repeater");
+    (void)DSD_SNPRINTF(sites[2].descr, sizeof(sites[2].descr), "%s", "Next Repeater");
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("duplicate-frequency list generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_CONV, sites, 3U, &text, &len, &warnings) == 0);
+
+    static const char* const k_header =
+        "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n";
+    char want[256];
+    (void)DSD_SNPRINTF(want, sizeof(want),
+                       "%s"
+                       "1,151000000,Kept Repeater\n"
+                       "2,152000000,Next Repeater\n",
+                       k_header);
+    expect_str("duplicate-frequency rows keep their own names", text, want);
+    expect("dropped repeater's name appears nowhere", text != NULL && strstr(text, "Dropped") == NULL);
+    expect("duplicate frequency warned", warned(&warnings, "share a frequency already in the list"));
+
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+}
+
 /* ------------------------------------------------------------------------- */
 /* Simulcast detection and argument validation                                */
 /* ------------------------------------------------------------------------- */
@@ -1422,6 +1466,7 @@ main(void) {
     test_chan_conventional_small();
     test_chan_conventional_truncation();
     test_chan_conventional_names();
+    test_chan_conventional_duplicate_freq_names();
     test_simulcast();
     test_chan_argument_validation();
 

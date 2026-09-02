@@ -480,8 +480,8 @@ With `--trunk-scan` the same section names the target on air and its place in th
 | Trunk Scan:  Target: county-p25 (3/6)
 ```
 
-`county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is dropped until the scanner has
-published a position. The row shows no frequency: the protocol panels below it already carry the one being decoded.
+`county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation. The row
+shows no frequency: the protocol panels below it already carry the one being decoded.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 

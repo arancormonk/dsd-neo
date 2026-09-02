@@ -877,9 +877,13 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
         // past the end, and slots >= 26 resolve into the heap tail, which is only as long as the
         // count that reserved it.
         if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
-            printw(" Frequency: %.06lf MHz",
-                   (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
-            const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+            const long int freq = *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1);
+            printw(" Frequency: %.06lf MHz", (double)freq / 1000000);
+            // A row whose frequency is 0 -- the placeholder an importer writes to keep the file's
+            // numbering -- is stepped over without a retune, so the receiver is still on the previous
+            // row for that whole hangtime and the placeholder's name would credit the wrong channel.
+            const char* name =
+                (freq != 0) ? dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1)) : "";
             if (name[0] != '\0') {
                 printw(" Channel: %s", name);
             }
