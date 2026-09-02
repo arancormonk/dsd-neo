@@ -3297,6 +3297,23 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    runtime/test_runtime_trunk_scan_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_TRUNK_SCAN_HOOKS
+    COMMAND dsd-neo_test_runtime_trunk_scan_hooks
+)
+
+add_executable(
     dsd-neo_test_runtime_trunk_cc_candidates
     runtime/test_runtime_trunk_cc_candidates.c
 )

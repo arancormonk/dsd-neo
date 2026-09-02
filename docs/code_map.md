@@ -195,6 +195,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   answer while scanning (`src/protocol/nxdn/nxdn_trunk_diag.c`)
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
   target snapshot, so a user purge is not undone by the next rotation (`src/app_control/actions/actions_trunk.c`)
+- `dsd_trunk_scan_hook_control()` — operator scan controls on the parked target list, op-coded (hold toggle, avoid the
+  active target, clear avoids, advance now); answers "unavailable" when trunk scan is not installed
+  (`src/app_control/app_command_queue.c`)
 
 Retune requests use a sibling table, `include/dsd-neo/runtime/trunk_tuning_hooks.h`, whose implementations the engine
 installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_install.c`.

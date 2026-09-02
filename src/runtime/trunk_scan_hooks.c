@@ -59,3 +59,11 @@ dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state) {
         g_trunk_scan_hooks.enc_lockout_clear_snapshots(state);
     }
 }
+
+int
+dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op) {
+    if (!g_trunk_scan_hooks.control) {
+        return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
+    }
+    return g_trunk_scan_hooks.control(opts, state, op);
+}
