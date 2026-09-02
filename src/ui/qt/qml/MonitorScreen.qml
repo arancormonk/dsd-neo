@@ -35,6 +35,10 @@ Item {
                                                       : heroSlot === 2 ? metrics.slot2CallState === 2 : false
     readonly property string heroName: heroSlot === 1 ? metrics.slot1CallName
                                                       : heroSlot === 2 ? metrics.slot2CallName : ""
+    // The scan channel the hero call was heard on (a -Y row name or a trunk-scan
+    // target id); empty when the receiver is not scanning.
+    readonly property string heroChannel: heroSlot === 1 ? metrics.slot1Channel
+                                                         : heroSlot === 2 ? metrics.slot2Channel : ""
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
@@ -306,6 +310,18 @@ Item {
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         text: "TG " + screen.heroTg + " · SRC " + screen.heroSrc
+                        font.family: Theme.mono
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
+                    }
+
+                    // Where the call was heard, when that is not already the name
+                    // above: a listed talkgroup still says which scan channel it
+                    // came from.
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
+                        text: "· " + screen.heroChannel
                         font.family: Theme.mono
                         font.pixelSize: 13
                         color: Theme.textSecondary

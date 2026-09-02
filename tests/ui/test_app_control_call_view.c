@@ -72,6 +72,14 @@ stage_group_name(Event_History_I* history, uint8_t slot, uint32_t target_id, con
     DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", name);
 }
 
+/* Stage the scan channel the slot's active epoch was heard on: the event layer
+   resolves it once per epoch onto the same index-0 row. */
+static void
+stage_channel_label(Event_History_I* history, uint8_t slot, const char* label) {
+    Event_History* item = &history[slot].Event_History_Items[0];
+    DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", label);
+}
+
 static void
 test_idle_slot_reports_none(void) {
     dsd_state* state = make_state();
@@ -360,6 +368,93 @@ test_staged_group_name_ignored_for_other_talkgroup(void) {
 }
 
 static void
+test_staged_channel_label_names_a_call_with_no_name_of_its_own(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    /* Talkgroup 0 by unit 1: the shape encrypted traffic on a conventional scan
+       list takes, and the one the hero used to caption "0". */
+    observe_group_call(state, 0U, 0U, 1U, 10.0);
+    stage_channel_label(history, 0U, "Fire Dispatch");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ACTIVE);
+    assert(strcmp(view.channel, "Fire Dispatch") == 0);
+    assert(strcmp(view.name, "Fire Dispatch") == 0);
+    /* The channel names the call; it does not pose as its talkgroup. */
+    assert(strcmp(view.tg_text, "0") == 0);
+    destroy_state(state);
+}
+
+static void
+test_staged_group_name_beats_channel_label(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 51023U, 1234567U, 10.0);
+    stage_group_name(history, 0U, 51023U, "Metro Fire Dispatch");
+    stage_channel_label(history, 0U, "Fire Dispatch");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "Metro Fire Dispatch") == 0);
+    /* The channel still rides alongside, for a surface that shows both. */
+    assert(strcmp(view.channel, "Fire Dispatch") == 0);
+    destroy_state(state);
+}
+
+static void
+test_target_text_beats_channel_label(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 0U, 0U, 10.0);
+
+    dsd_call_snapshot snapshot;
+    assert(dsd_call_state_get(state, 0U, &snapshot) == 1);
+    assert(dsd_call_state_enrich_text(state, 0U, snapshot.epoch, NULL, "DISPATCH-1", NULL, NULL, 10.05) == 1);
+    stage_channel_label(history, 0U, "Fire Dispatch");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.name, "DISPATCH-1") == 0);
+    assert(strcmp(view.channel, "Fire Dispatch") == 0);
+    destroy_state(state);
+}
+
+static void
+test_channel_label_names_an_unlisted_numeric_talkgroup(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    observe_group_call(state, 0U, 51023U, 1234567U, 10.0);
+    stage_channel_label(history, 0U, "Fire Dispatch");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    /* Same rule the call history applies: with no CSV name and no textual
+       target, the channel is the name the operator recognises, and the
+       talkgroup number stays in tg_text for the subline. */
+    assert(strcmp(view.name, "Fire Dispatch") == 0);
+    assert(strcmp(view.tg_text, "51023") == 0);
+    destroy_state(state);
+}
+
+static void
+test_channel_label_does_not_confer_identity(void) {
+    Event_History_I* history = NULL;
+    dsd_state* state = make_state_with_history(&history);
+    /* A frame that synced and no further: a label says where the tuner sat,
+       not that anyone transmitted, so the epoch still reads idle. */
+    observe_group_call(state, 0U, 0U, 0U, 10.0);
+    stage_channel_label(history, 0U, "Fire Dispatch");
+
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 10.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_IDLE);
+    assert(view.channel[0] == '\0');
+    assert(view.name[0] == '\0');
+    destroy_state(state);
+}
+
+static void
 test_staged_group_name_ignored_when_empty(void) {
     Event_History_I* history = NULL;
     dsd_state* state = make_state_with_history(&history);
@@ -567,6 +662,11 @@ main(void) {
     test_staged_group_name_used_when_target_matches();
     test_staged_group_name_ignored_for_other_talkgroup();
     test_staged_group_name_ignored_when_empty();
+    test_staged_channel_label_names_a_call_with_no_name_of_its_own();
+    test_staged_group_name_beats_channel_label();
+    test_target_text_beats_channel_label();
+    test_channel_label_names_an_unlisted_numeric_talkgroup();
+    test_channel_label_does_not_confer_identity();
     test_staged_group_name_respects_slot();
     test_staged_group_name_longer_than_identity_text_survives();
     test_call_line_state_boundaries();

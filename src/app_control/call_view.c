@@ -21,6 +21,8 @@
    panel and the Android notification alike, with nothing failing. */
 _Static_assert(sizeof(((Event_History*)0)->t_name) == DSD_APP_CALL_NAME_SIZE,
                "dsd_app_slot_call::name must match Event_History::t_name");
+_Static_assert(sizeof(((Event_History*)0)->channel_label) == DSD_APP_CALL_CHANNEL_SIZE,
+               "dsd_app_slot_call::channel must match Event_History::channel_label");
 
 /**
  * @brief Whether the call reads as encrypted over the air, including DECRYPTABLE.
@@ -89,6 +91,46 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
     return 1;
 }
 
+/**
+ * @brief Copy the scan channel label staged on the slot's active history row.
+ *
+ * The event layer resolves the label once per epoch onto the same index-0 row
+ * staged_group_name() reads, and clears that row when the epoch commits, so what is there
+ * is this epoch's own and needs no identity check: a label says where the tuner sat,
+ * which every call in the epoch shares. Left empty when the receiver is not scanning.
+ */
+static void
+staged_channel_label(const dsd_state* state, uint8_t slot, char* out, size_t out_size) {
+    if (state->event_history_s == NULL) {
+        return;
+    }
+    const Event_History* staged = &state->event_history_s[slot].Event_History_Items[0];
+    if (staged->channel_label[0] == '\0') {
+        return;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", staged->channel_label);
+}
+
+/**
+ * @brief Fill @c channel and @c name for a call the slot line is going to show.
+ *
+ * The staged row outlives a call by design and must not caption the next one, which is
+ * what the target_id comparison inside staged_group_name() guards. Below it, the order
+ * the call history applies: a textual target is a name of its own; a bare talkgroup
+ * number is not, so the scan channel the call was heard on names it -- the only name
+ * encrypted traffic on a conventional list ever gets -- and the number stays in tg_text
+ * for the subline.
+ */
+static void
+slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, dsd_app_slot_call* out) {
+    staged_channel_label(state, slot, out->channel, sizeof(out->channel));
+    if (staged_group_name(state, slot, out->tg_id, out->name, sizeof(out->name))) {
+        return;
+    }
+    const char* fallback = (call->target_text[0] == '\0' && out->channel[0] != '\0') ? out->channel : out->tg_text;
+    DSD_SNPRINTF(out->name, sizeof(out->name), "%s", fallback);
+}
+
 int
 dsd_app_call_line_state(int lookup, const dsd_call_snapshot* call, double now_m, double hold_s) {
     if (lookup <= 0 || call == NULL) {
@@ -144,11 +186,7 @@ dsd_app_slot_call_view(const dsd_state* state, uint8_t slot, double now_m, dsd_a
         DSD_SNPRINTF(out->src_text, sizeof(out->src_text), "%llu", (unsigned long long)call.ota_source_id);
     }
 
-    /* The staged row outlives a call by design and must not caption the next one, which
-       is what the target_id comparison inside staged_group_name() guards. */
-    if (!staged_group_name(state, slot, out->tg_id, out->name, sizeof(out->name))) {
-        DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->tg_text);
-    }
+    slot_call_name(state, slot, &call, out);
 
     out->enc = call_reads_encrypted(&call) ? 1U : 0U;
     if (out->enc) {
