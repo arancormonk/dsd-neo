@@ -22,6 +22,7 @@
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/history.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -850,6 +851,22 @@ ui_render_forced_key_status(const dsd_state* state, int show_keys) {
     }
 }
 
+/* Which of the rotating --trunk-scan targets the receiver is parked on. The park
+   frequency has no snapshot field of its own; the protocol header lines already
+   carry the frequency being decoded. */
+static void
+ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->trunk_scan_enabled != 1 || state->trunk_scan_active_id[0] == '\0') {
+        return;
+    }
+    printw("| Trunk Scan:  Target: %s", state->trunk_scan_active_id);
+    if (state->trunk_scan_active_ordinal != 0 && state->trunk_scan_target_count != 0) {
+        printw(" (%u/%u)", (unsigned int)state->trunk_scan_active_ordinal,
+               (unsigned int)state->trunk_scan_target_count);
+    }
+    printw("\n");
+}
+
 static void
 ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* state) {
     if (opts->scanner_mode == 1) {
@@ -862,10 +879,16 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
         if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
             printw(" Frequency: %.06lf MHz",
                    (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
+            const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+            if (name[0] != '\0') {
+                printw(" Channel: %s", name);
+            }
         }
         printw(" Speed: %.02lf sec \n",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
     }
+
+    ui_render_trunk_scan_status(opts, state);
 
     if (opts->reverse_mute == 1) {
         printw("| Reverse Mute - Muting Unencrypted Voice\n");
@@ -3078,9 +3101,27 @@ ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
     ui_render_p25_dmr_tuned_freq_line(opts, state);
 }
 
+/* The channel being listened to, spelled out at the top of Call Info. The Scan
+   Mode and Trunk Scan rows say the same thing, but they live in the Input Output
+   section, which compact view does not draw. */
+static void
+ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
+    char label[DSD_CHANNEL_LABEL_SIZE];
+    if (dsd_channel_label_current(opts, state, label, sizeof(label)) != 1) {
+        return;
+    }
+    printw("| ");
+    attron(COLOR_PAIR(4));
+    printw("Channel: %s", label);
+    ui_restore_call_info_color(state);
+    printw("\n");
+}
+
 static void
 ui_render_call_info_and_history(const dsd_opts* opts, dsd_state* state) {
     ui_print_header("Call Info");
+
+    ui_render_call_info_channel_line(opts, state);
 
     ui_render_call_info_dstar(state);
 

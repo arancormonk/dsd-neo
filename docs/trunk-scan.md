@@ -191,6 +191,8 @@ At startup DSD-neo:
 
 During scanning:
 
+- The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
+  and a `| Channel: county-p25` line at the top of Call Info, which is the one that survives compact view.
 - Idle targets rotate after their dwell time.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory

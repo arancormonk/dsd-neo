@@ -461,6 +461,38 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `[` / `]` | Event history previous/next |
 | `\\` | Toggle event history slot (or toggle M17 TX in encoder mode) |
 
+## Channel Labels
+
+While scanning, the screen says which channel you are listening to.
+
+The Input Output section names the `-Y` scan list row the receiver is parked on, right after its frequency:
+
+```
+| Scan Mode:  Frequency: 462.012500 MHz Channel: Marion Speed: 2.00 sec
+```
+
+The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
+renders exactly as it always did.
+
+With `--trunk-scan` the same section names the target on air and its place in the rotation:
+
+```
+| Trunk Scan:  Target: county-p25 (3/6)
+```
+
+`county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is dropped until the scanner has
+published a position. The row shows no frequency: the protocol panels below it already carry the one being decoded.
+
+Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
+
+```
+| Channel: county-p25
+```
+
+It carries the active `--trunk-scan` target, or the name of the `-Y` row on air when trunk scan is not running, and
+nothing at all when neither scanner is running or the row has no name. Event history rows carry the same label as a
+bracketed prefix — see "Event History Rows" below.
+
 ## Compact View
 
 Press `c` (or use Menu -> Display -> Compact view) to collapse the main screen to a scanner-style
@@ -469,7 +501,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the header banner and any transient status toast;
 - a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
   input level, output mute state, and slot on/off states;
-- the full Call Info section (per-slot TGT/SRC, active channels, tuned frequency, TG HOLD);
+- the full Call Info section (the `Channel:` line while scanning, per-slot TGT/SRC, active channels, tuned
+  frequency, TG HOLD);
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their
