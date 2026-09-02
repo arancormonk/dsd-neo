@@ -9,7 +9,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "m17_rrc_taps.h"
 
-#define FIR_MAX_TAPS          1024
+#define FIR_MAX_TAPS          DSD_SPS_FILTER_MAX_TAPS
 #define SPS_FIR_DESIGN_INTERP 0
 #define SPS_FIR_DESIGN_RRC    1
 
@@ -363,4 +363,71 @@ init_rrc_filter_memory(void) {
     reset_sps_fir(&g_fir_dmr);
     reset_sps_fir(&g_fir_nxdn);
     reset_sps_fir(&g_fir_dpmr);
+}
+
+/*
+ * The symbol grid runs on the unfiltered stream until a sync names a protocol,
+ * and on the filtered one afterwards. Those two streams are not the same signal:
+ * a symmetric FIR of L taps reports the signal (L-1)/2 samples in the past, so
+ * the moment the filter switches on the decoder would start re-reading content
+ * it has already consumed. The symbolizer pays that off at the switch (issue
+ * #444); what it needs from here is the delay, stated without disturbing a
+ * running filter, and a way to hand a filter the history it missed.
+ */
+static sps_fir*
+sps_fir_for_kind(dsd_sps_filter_kind kind) {
+    switch (kind) {
+        case DSD_SPS_FILTER_DMR: return &g_fir_dmr;
+        case DSD_SPS_FILTER_P25: return &g_fir_p25;
+        case DSD_SPS_FILTER_NXDN: return &g_fir_nxdn;
+        case DSD_SPS_FILTER_DPMR: return &g_fir_dpmr;
+        case DSD_SPS_FILTER_NONE:
+        default: return NULL;
+    }
+}
+
+static int
+sps_fir_can_design(const sps_fir* f, int samples_per_symbol) {
+    return f && f->base && f->base_len > 0 && f->base_sps > 0 && samples_per_symbol > 1;
+}
+
+float
+dsd_sps_filter_apply(dsd_sps_filter_kind kind, float sample, int samples_per_symbol) {
+    sps_fir* f = sps_fir_for_kind(kind);
+    if (!f) {
+        return sample;
+    }
+    return apply_sps_fir(f, sample, samples_per_symbol);
+}
+
+int
+dsd_sps_filter_group_delay(dsd_sps_filter_kind kind, int samples_per_symbol) {
+    const sps_fir* f = sps_fir_for_kind(kind);
+    if (!sps_fir_can_design(f, samples_per_symbol)) {
+        return 0;
+    }
+    /* The same arithmetic the design uses, so the answer matches what apply()
+       will run, without designing: that would clear a filter still in use. */
+    const int taps_len = sps_fir_compute_taps_len(f, samples_per_symbol);
+    return taps_len > 0 ? (taps_len - 1) / 2 : 0;
+}
+
+void
+dsd_sps_filter_prime(dsd_sps_filter_kind kind, float sample, int samples_per_symbol) {
+    sps_fir* f = sps_fir_for_kind(kind);
+    if (!sps_fir_can_design(f, samples_per_symbol)) {
+        return;
+    }
+    if (!f->ready || samples_per_symbol != f->last_sps) {
+        design_sps_fir(f, samples_per_symbol);
+    }
+    if (!f->ready || f->taps_len <= 0) {
+        return;
+    }
+    int head = f->head + 1;
+    if (head >= f->taps_len) {
+        head = 0;
+    }
+    f->hist[head] = sample;
+    f->head = head;
 }

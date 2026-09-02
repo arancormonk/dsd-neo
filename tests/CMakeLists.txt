@@ -3820,6 +3820,27 @@ dsd_neo_link_dsp_test(
 )
 add_test(NAME DSP_WAV_INPUT_EOF COMMAND dsd-neo_test_dsp_wav_input_eof)
 
+# The matched filter switching on, off, or to another filter must not move the
+# symbol grid's content position (issue #444); driven through getSymbol() from a WAV
+add_executable(
+    dsd-neo_test_symbol_matched_filter_seam
+    dsp/test_symbol_matched_filter_seam.c
+)
+target_include_directories(
+    dsd-neo_test_symbol_matched_filter_seam
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${LIBSNDFILE_INCLUDE_DIR}
+)
+dsd_neo_link_dsp_test(
+    dsd-neo_test_symbol_matched_filter_seam
+    dsd-neo_test_support
+    ${DSD_NEO_TEST_MATH_LIB}
+    ${LIBSNDFILE_LIBRARIES}
+)
+add_test(
+    NAME SYMBOL_MATCHED_FILTER_SEAM
+    COMMAND dsd-neo_test_symbol_matched_filter_seam
+)
+
 add_executable(dsd-neo_test_dsp_symbol_replay dsp/test_dsp_symbol_replay.c)
 target_include_directories(
     dsd-neo_test_dsp_symbol_replay
@@ -7951,6 +7972,15 @@ target_include_directories(
 )
 dsd_neo_link_dsp_test(dsd-neo_test_symbol_timing_debug ${DSD_NEO_TEST_MATH_LIB})
 add_test(NAME SYMBOL_TIMING_DEBUG COMMAND dsd-neo_test_symbol_timing_debug)
+
+# Matched-filter switch-on geometry and content alignment (issue #444)
+add_executable(dsd-neo_test_matched_filter_seam dsp/test_matched_filter_seam.c)
+target_include_directories(
+    dsd-neo_test_matched_filter_seam
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+dsd_neo_link_dsp_test(dsd-neo_test_matched_filter_seam ${DSD_NEO_TEST_MATH_LIB})
+add_test(NAME MATCHED_FILTER_SEAM COMMAND dsd-neo_test_matched_filter_seam)
 
 # DMR resample-on-sync CACH re-digitization test
 add_executable(
