@@ -178,6 +178,19 @@ Item {
             }, 5000, "the recent row does not name its channel")
         }
 
+        // A call that decoded no talkgroup is headlined by its channel, and the
+        // meta line under it does not add "TG 0" — nothing was decoded to say.
+        function test_03e_a_recent_row_names_its_channel_tg0() {
+            var name = callHistory.pushUnnamedOnChannel("TODAY", "County EMS")
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === name
+            }, 5000, "the channel-named row is not on top")
+            var row = tc.list.itemAtIndex(0)
+            verify(row.metaText.indexOf("TG 0") < 0, "the meta line still says TG 0: " + row.metaText)
+            verify(row.metaText.indexOf("County EMS") < 0, "the meta line repeats the name: " + row.metaText)
+        }
+
         function test_04_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen.
             tc.list.contentY = tc.list.originY + 150

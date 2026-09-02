@@ -437,6 +437,23 @@ class CallLogStore : public QAbstractListModel {
         return name;
     }
 
+    /**
+     * @brief Prepend a call that decoded no talkgroup, named by the scan channel it
+     * was heard on — encrypted traffic on a conventional list looks like this.
+     * @return The row's name (the channel).
+     */
+    Q_INVOKABLE QString
+    pushUnnamedOnChannel(const QString& dayLabel, const QString& channel) {
+        push(dayLabel);
+        m_rows[0].tg = 0;
+        m_rows[0].name = channel;
+        m_rows[0].channel = channel;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::TgRole, CallHistoryModel::NameRole, CallHistoryModel::ChannelRole});
+        return channel;
+    }
+
     /** @brief Prepend @p n calls, oldest first, so the list reads newest-first. */
     Q_INVOKABLE void
     pushMany(int n, const QString& dayLabel) {

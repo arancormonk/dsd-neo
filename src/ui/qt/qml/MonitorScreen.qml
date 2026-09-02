@@ -645,10 +645,19 @@ Item {
                     metaText: {
                         if (model.kind === 1)
                             return model.detail.length > 0 ? model.detail : qsTr("data message")
-                        return "TG " + model.tg
-                               + (model.enc ? " · " + qsTr("encrypted") : "")
-                               + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
-                               + (model.channel.length > 0 && model.channel !== model.name ? " · " + model.channel : "")
+                        // Same meta rules as the history row: a zero talkgroup is
+                        // not printed, the channel closes the line unless it is
+                        // already the name.
+                        var meta = []
+                        if (model.tg > 0)
+                            meta.push("TG " + model.tg)
+                        if (model.enc)
+                            meta.push(qsTr("encrypted"))
+                        if (model.durationSecs >= 0)
+                            meta.push(Util.fmtDuration(model.durationSecs))
+                        if (model.channel.length > 0 && model.channel !== model.name)
+                            meta.push(model.channel)
+                        return meta.join(" · ")
                     }
                     // ageTick forces the minute-by-minute refresh; shortAge reads
                     // the clock, which is not a binding dependency by itself.
