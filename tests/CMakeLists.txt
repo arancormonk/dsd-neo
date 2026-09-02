@@ -7250,6 +7250,33 @@ target_link_libraries(
 )
 add_test(NAME DMR_LRRP_CRC_GATING COMMAND dsd-neo_test_dmr_lrrp_crc_gating)
 
+# DMR LRRP: a zero-length message keeps its request/response label (#453)
+add_executable(
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    protocol/dmr/test_dmr_lrrp_empty_payload_type.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_empty_payload_type
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME DMR_LRRP_EMPTY_PAYLOAD_TYPE
+    COMMAND dsd-neo_test_dmr_lrrp_empty_payload_type
+)
+
 # DMR SMS/TMS UTF-16 text: surrogate pairs combine, unpaired halves become U+FFFD
 add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
@@ -9096,6 +9123,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_grant_policy
     dsd-neo_test_dmr_locn_time_fallback
     dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_empty_payload_type
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     dsd-neo_test_dmr_lrrp_position_token_precedence
     dsd-neo_test_dmr_lrrp_response_token_lengths

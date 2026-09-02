@@ -1495,15 +1495,12 @@ typedef struct {
     uint8_t lrrp_type;
 } dmr_lrrp_emit_context;
 
+// A zero-length message reaches here with an empty `best`: no details print,
+// nothing is written to the LRRP file, and the summary is chosen by the type
+// byte alone (sdrtrunk and lrrpdec.py label it the same way, #453).
 static void
 dmr_lrrp_emit_payload(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dmr_lrrp_parse_result* best,
-                      uint8_t payload_len, uint8_t pdu_crc_ok, const dmr_lrrp_emit_context* ctx) {
-    if (payload_len == 0) {
-        DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof state->dmr_lrrp_gps[slot],
-                     "LRRP SRC: %0d; Unknown Format %02X; TGT: %d;", ctx->source, ctx->lrrp_type, ctx->dest);
-        DSD_FPRINTF(stderr, "\n %s", state->dmr_lrrp_gps[slot]);
-        return;
-    }
+                      uint8_t pdu_crc_ok, const dmr_lrrp_emit_context* ctx) {
     dmr_lrrp_scaled s = dmr_lrrp_compute_scaled(best);
     DSD_FPRINTF(stderr, "%s", KYEL);
     dmr_lrrp_print_details(best, &s, pdu_crc_ok);
@@ -1563,7 +1560,7 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
         source = (uint32_t)state->dmr_lrrp_source[state->currentslot];
     }
     dmr_lrrp_emit_context emit_ctx = {source, dest, is_request, is_response, lrrp_type};
-    dmr_lrrp_emit_payload(opts, state, slot, &best, payload_len, pdu_crc_ok, &emit_ctx);
+    dmr_lrrp_emit_payload(opts, state, slot, &best, pdu_crc_ok, &emit_ctx);
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
