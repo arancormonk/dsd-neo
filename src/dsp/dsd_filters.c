@@ -446,6 +446,17 @@ dsd_sps_filter_group_delay(dsd_sps_filter_kind kind, int samples_per_symbol) {
     return taps_len > 0 ? (taps_len - 1) / 2 : 0;
 }
 
+/* One sample into the history, without computing an output. */
+static inline void
+sps_fir_push_history(sps_fir* f, float sample) {
+    int head = f->head + 1;
+    if (head >= f->taps_len) {
+        head = 0;
+    }
+    f->hist[head] = sample;
+    f->head = head;
+}
+
 void
 dsd_sps_filter_prime(dsd_sps_filter_kind kind, const float* samples, int count, int samples_per_symbol) {
     sps_fir* f = sps_fir_ready_for(kind, samples_per_symbol);
@@ -458,36 +469,31 @@ dsd_sps_filter_prime(dsd_sps_filter_kind kind, const float* samples, int count, 
         start = count - f->taps_len;
     }
     for (int n = start; n < count; n++) {
-        int head = f->head + 1;
-        if (head >= f->taps_len) {
-            head = 0;
-        }
-        f->hist[head] = samples[n];
-        f->head = head;
+        sps_fir_push_history(f, samples[n]);
     }
 }
 
 int
 dsd_sps_filter_prime_from_history(dsd_sps_filter_kind kind, int samples_per_symbol) {
-    const int taps_len = dsd_sps_filter_taps_len(kind, samples_per_symbol);
-    if (taps_len <= 0) {
+    sps_fir* f = sps_fir_ready_for(kind, samples_per_symbol);
+    if (!f) {
         return 0;
     }
-    int n = (taps_len < g_raw_count) ? taps_len : g_raw_count;
+    const int n = (f->taps_len < g_raw_count) ? f->taps_len : g_raw_count;
     int idx = g_raw_head - n;
     while (idx < 0) {
         idx += DSD_SPS_FILTER_MAX_TAPS;
     }
-    /* The ring wraps at most once across the window, so prime the two runs in
-       order rather than copying the whole thing out first. */
-    const int first = (n < DSD_SPS_FILTER_MAX_TAPS - idx) ? n : (DSD_SPS_FILTER_MAX_TAPS - idx);
-    if (first > 0) {
-        dsd_sps_filter_prime(kind, &g_raw_hist[idx], first, samples_per_symbol);
+    /* Oldest first, walking the ring. This runs once per filter switch, so the
+       wrap test per sample costs nothing worth splitting the loop for. */
+    for (int k = 0; k < n; k++) {
+        sps_fir_push_history(f, g_raw_hist[idx]);
+        idx++;
+        if (idx >= DSD_SPS_FILTER_MAX_TAPS) {
+            idx = 0;
+        }
     }
-    if (n > first) {
-        dsd_sps_filter_prime(kind, &g_raw_hist[0], n - first, samples_per_symbol);
-    }
-    return dsd_sps_filter_group_delay(kind, samples_per_symbol);
+    return (f->taps_len - 1) / 2;
 }
 
 int
