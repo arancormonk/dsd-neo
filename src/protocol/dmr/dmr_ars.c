@@ -19,6 +19,9 @@
  * the optional second header carries a refresh/session timer on success or a reason code on
  * failure. Registrations carry a length-value name field: device id, user id, password, each
  * preceded by a one octet size that may be zero when the field is unused (spec 3.4.1, 3.4.7).
+ * A device registration's optional second header carries an Event in bits 6-5 (01 initial, 10
+ * refresh) and the name field encoding in bits 4-0 (spec 3.4.1); a user registration has the
+ * same octet but its Event bits are "don't care" (spec 3.4.7).
  */
 
 #include <dsd-neo/core/state.h>
@@ -31,6 +34,11 @@
 
 #define DMR_ARS_HDR_EXT         0x80U
 #define DMR_ARS_HDR_ACK         0x40U
+
+// Second header of a registration: the Event field, bits 6-5.
+#define DMR_ARS_HDR2_EVENT      0x60U
+#define DMR_ARS_EVENT_INITIAL   0x20U
+#define DMR_ARS_EVENT_REFRESH   0x40U
 
 #define DMR_ARS_TYPE_DEV_REG    0x00U
 #define DMR_ARS_TYPE_DEV_DEREG  0x01U
@@ -120,6 +128,19 @@ dmr_ars_format_registration(const uint8_t* rec, uint16_t rec_len, uint16_t pos, 
         }
     } else {
         DSD_SNPRINTF(out, out_sz, "ARS Reg: %s; ", have_dev ? dev_id : "?");
+    }
+
+    // A first registration is a radio joining; a refresh is one keeping its entry alive. The
+    // Event lives in the optional second header and is only defined for a device registration -
+    // a user registration's Event bits are "don't care" (spec 3.4.1, 3.4.7) - and only for the
+    // two values the spec names, so anything else adds nothing to the line.
+    if (!is_user && (rec[0] & DMR_ARS_HDR_EXT) != 0U && rec_len > 1U) {
+        uint8_t event = (uint8_t)(rec[1] & DMR_ARS_HDR2_EVENT);
+        if (event == DMR_ARS_EVENT_INITIAL) {
+            dsd_strncat_s(out, out_sz, "Initial; ", 9U);
+        } else if (event == DMR_ARS_EVENT_REFRESH) {
+            dsd_strncat_s(out, out_sz, "Refresh; ", 9U);
+        }
     }
 
     if (have_pw) {

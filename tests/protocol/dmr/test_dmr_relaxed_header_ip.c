@@ -93,6 +93,15 @@ expect_contains(const char* tag, const char* got, const char* want) {
     return 0;
 }
 
+static int
+expect_lacks(const char* tag, const char* got, const char* unwanted) {
+    if (strstr(got, unwanted) != NULL) {
+        DSD_FPRINTF(stderr, "%s: expected output to lack '%s', got '%s'\n", tag, unwanted, got);
+        return 1;
+    }
+    return 0;
+}
+
 // Provide local stubs to avoid pulling full core/audio deps during link
 void
 dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
@@ -873,10 +882,10 @@ test_type1_mnis_ars_registration_prints_device_id(void) {
         return 1;
     }
 
-    rc |= expect_contains("ars-device-id", output, "ARS Reg: 1234;");
+    rc |= expect_contains("ars-device-id", output, "ARS Reg: 1234; Initial;");
     // The decoded identifier has to reach the emitted notice too, not just the live slot pane:
     // the history row is what survives past the next PDU.
-    rc |= expect_contains("ars-device-id-notice", g_datacall_last_text, "ARS Reg: 1234;");
+    rc |= expect_contains("ars-device-id-notice", g_datacall_last_text, "ARS Reg: 1234; Initial;");
     if (g_utf8_calls != 0U) {
         DSD_FPRINTF(stderr, "ars-device-id: ARS registration still rendered as text (%u utf8 calls, len %u)\n",
                     g_utf8_calls, g_utf8_last_len);
@@ -963,6 +972,28 @@ expect_ars_label(const uint8_t* msg, uint16_t len, const char* tag, const char* 
     return rc;
 }
 
+// Like expect_ars_label, but also asserts that neither registration Event word was printed: the
+// label is only defined for a device registration whose second header says 01 or 10, and must
+// not be guessed at anywhere else.
+static int
+expect_ars_label_no_event(const uint8_t* msg, uint16_t len, const char* tag, const char* expect) {
+    char output[512];
+    char gps[512];
+    int rc = 0;
+
+    if (run_ars_message_captured(msg, len, tag, output, sizeof(output), gps, sizeof(gps)) != 0) {
+        return 1;
+    }
+    rc |= expect_contains(tag, output, expect);
+    rc |= expect_contains(tag, gps, expect);
+    rc |= expect_lacks(tag, output, "Initial;");
+    rc |= expect_lacks(tag, output, "Refresh;");
+    rc |= expect_lacks(tag, gps, "Initial;");
+    rc |= expect_lacks(tag, gps, "Refresh;");
+    rc |= expect_no_text_dump(tag);
+    return rc;
+}
+
 static int
 test_ars_message_type_labels(void) {
     // Header octets carry Pri|Cntl on every real ARS message; these values are the ones seen in
@@ -984,6 +1015,17 @@ test_ars_message_type_labels(void) {
     static const uint8_t user_reg[] = {0x00, 0x0B, 0xF5, 0x20, 0x04, 0x31, 0x32, 0x33, 0x34, 0x02, 0x6A, 0x70, 0x00};
     // Device registration as a radio sends it: 0xF0 with Event 0x20 (initial), device id only.
     static const uint8_t dev_reg[] = {0x00, 0x09, 0xF0, 0x20, 0x04, 0x31, 0x32, 0x33, 0x34, 0x00, 0x00};
+    // The same registration sent when the refresh timer expires: Event 0x40 (refresh).
+    static const uint8_t dev_reg_refresh[] = {0x00, 0x09, 0xF0, 0x40, 0x04, 0x31, 0x32, 0x33, 0x34, 0x00, 0x00};
+    // The spec's own worked examples for device "11": Figure 2-2 (SU Powers On) and Figure 2-3
+    // (ARS Registration Refresh) differ only in the Event bits.
+    static const uint8_t spec_power_on[] = {0x00, 0x07, 0xF0, 0x20, 0x02, 0x31, 0x31, 0x00, 0x00};
+    static const uint8_t spec_refresh[] = {0x00, 0x07, 0xF0, 0x40, 0x02, 0x31, 0x31, 0x00, 0x00};
+    // Ext clear, so no second header: the encoding defaults to UTF-8 and there is no Event.
+    static const uint8_t dev_reg_no_ext[] = {0x00, 0x08, 0x70, 0x04, 0x31, 0x32, 0x33, 0x34, 0x00, 0x00};
+    // Event values 00 and 11 are not defined (spec 3.4.1 lists only 01 and 10).
+    static const uint8_t dev_reg_event_00[] = {0x00, 0x09, 0xF0, 0x00, 0x04, 0x31, 0x32, 0x33, 0x34, 0x00, 0x00};
+    static const uint8_t dev_reg_event_11[] = {0x00, 0x09, 0xF0, 0x60, 0x04, 0x31, 0x32, 0x33, 0x34, 0x00, 0x00};
     static const uint8_t empty[] = {0x00, 0x00};
     char output[512];
     char gps[512];
@@ -998,11 +1040,27 @@ test_ars_message_type_labels(void) {
     rc |= expect_ars_label(ack_bare, (uint16_t)sizeof(ack_bare), "ars-ack-bare", "ARS Ack: OK; refresh off;");
     rc |= expect_ars_label(user_ack_fail, (uint16_t)sizeof(user_ack_fail), "ars-user-ack-fail",
                            "ARS User Ack: FAIL - user validation failed;");
-    rc |= expect_ars_label(dev_reg, (uint16_t)sizeof(dev_reg), "ars-dev-reg", "ARS Reg: 1234;");
+    // A first registration and a periodic refresh tell a watcher different things (a radio joining
+    // versus housekeeping), so the Event bits of the second header are spelled out (issue #452).
+    rc |= expect_ars_label(dev_reg, (uint16_t)sizeof(dev_reg), "ars-dev-reg", "ARS Reg: 1234; Initial;");
+    rc |= expect_ars_label(dev_reg_refresh, (uint16_t)sizeof(dev_reg_refresh), "ars-dev-reg-refresh",
+                           "ARS Reg: 1234; Refresh;");
+    rc |=
+        expect_ars_label(spec_power_on, (uint16_t)sizeof(spec_power_on), "ars-spec-power-on", "ARS Reg: 11; Initial;");
+    rc |= expect_ars_label(spec_refresh, (uint16_t)sizeof(spec_refresh), "ars-spec-refresh", "ARS Reg: 11; Refresh;");
+    rc |= expect_ars_label_no_event(dev_reg_no_ext, (uint16_t)sizeof(dev_reg_no_ext), "ars-dev-reg-no-ext",
+                                    "ARS Reg: 1234;");
+    rc |= expect_ars_label_no_event(dev_reg_event_00, (uint16_t)sizeof(dev_reg_event_00), "ars-dev-reg-event-00",
+                                    "ARS Reg: 1234;");
+    rc |= expect_ars_label_no_event(dev_reg_event_11, (uint16_t)sizeof(dev_reg_event_11), "ars-dev-reg-event-11",
+                                    "ARS Reg: 1234;");
     // A user registration is about the user that signed in, so the user identifier leads and the
     // device it signed in from follows. Reporting the device under a "User Reg" label loses the
-    // only identity the message exists to carry.
-    rc |= expect_ars_label(user_reg, (uint16_t)sizeof(user_reg), "ars-user-reg", "ARS User Reg: jp; DEV: 1234;");
+    // only identity the message exists to carry. Its second header carries the same 0x20 as the
+    // device registration above, but there the Event bits are "don't care" (spec 3.4.7), so no
+    // Initial/Refresh word may be printed.
+    rc |=
+        expect_ars_label_no_event(user_reg, (uint16_t)sizeof(user_reg), "ars-user-reg", "ARS User Reg: jp; DEV: 1234;");
 
     if (run_ars_message_captured(empty, (uint16_t)sizeof(empty), "ars_empty", output, sizeof(output), gps, sizeof(gps))
         != 0) {

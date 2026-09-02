@@ -726,7 +726,7 @@ main(void) {
         st.currentslot = 0;
         st.dmr_lrrp_gps[0][0] = '\0';
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
-        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "ARS Reg: 1234;", "ars registration device id");
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "ARS Reg: 1234; Initial;", "ars registration device id");
     }
 
     // Case 14: UDP/4007 TMS acknowledgment and UTF-16 text take distinct state paths.
