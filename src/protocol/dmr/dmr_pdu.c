@@ -283,16 +283,19 @@ dmr_sd_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* DMR_PD
     dmr_sd_pdu_process(opts, state, len, DMR_PDU, 0U);
 }
 
-//reading ETSI, seems like these aren't compressed, just that they are preset indexed values on the radio
+// ETSI TS 102 361-3 V1.3.1 clause 7.2.4: SAID, DAID, SPID and DPID are indices into tables the
+// radio holds (7.15-7.18), not compressed values. The labels below use those tables' wording.
 static const char*
 dmr_udp_comp_src_idx_desc(uint16_t said) {
+    // Table 7.15: 0000 Radio Network, 0001 USB (Ethernet Interface) Network,
+    // 0010-1011 Reserved, 1100-1111 Manufacturer Specific.
     if (said == 0) {
         return "Radio Network";
     }
     if (said == 1) {
         return "Ethernet";
     }
-    if (said < 11) {
+    if (said < 12) {
         return "Reserved";
     }
     return "Manufacturer Specific";
@@ -300,6 +303,7 @@ dmr_udp_comp_src_idx_desc(uint16_t said) {
 
 static const char*
 dmr_udp_comp_dst_idx_desc(uint16_t daid) {
+    // Table 7.16: as 7.15 plus 0010 Group Network; 0011-1011 Reserved, 1100-1111 Manufacturer Specific.
     if (daid == 0) {
         return "Radio Network";
     }
@@ -309,21 +313,27 @@ dmr_udp_comp_dst_idx_desc(uint16_t daid) {
     if (daid == 2) {
         return "Group Network";
     }
-    if (daid < 11) {
+    if (daid < 12) {
         return "Reserved";
     }
     return "Manufacturer Specific";
 }
 
 static const char*
-dmr_udp_comp_port_idx_desc(uint16_t pid) {
-    if (pid == 1) {
+dmr_udp_comp_port_idx_desc(uint16_t idx) {
+    // Tables 7.17/7.18 (identical): 0000000 In Extended Header, 0000001 UTF-16BE Text Message
+    // (UDP 5016), 0000010 Location Interface Protocol (UDP 5017), 0000011-1011110 Reserved,
+    // 1011111-1111111 Manufacturer Specific. The field is 7 bits wide, so 95 is the boundary.
+    if (idx == 0) {
+        return "In Extended Header";
+    }
+    if (idx == 1) {
         return "UTF-16BE Text Message";
     }
-    if (pid == 2) {
+    if (idx == 2) {
         return "Location Interface Protocol";
     }
-    if (pid < 191) {
+    if (idx < 95) {
         return "Reserved";
     }
     return "Manufacturer Specific";
@@ -347,44 +357,80 @@ dmr_udp_event_category(uint16_t src_port, uint16_t dst_port) {
                : DSD_EVENT_CATEGORY_DATA;
 }
 
+enum { DMR_UDP_COMP_PORT_TEXT = 5016U, DMR_UDP_COMP_PORT_LIP = 5017U };
+
+// One SPID or DPID: the 7-bit index as sent and the UDP port it stands for. They never share a
+// variable, because a port number read from the extended header is not an index (issue #450).
+typedef struct {
+    uint16_t idx;  // 7-bit index (tables 7.17/7.18); 0 = In Extended Header
+    uint16_t port; // UDP port, meaningful only when known != 0
+    uint8_t known; // idx 1/2 (table default) or idx 0 with the extended header present
+} dmr_udp_comp_port;
+
+static void
+dmr_udp_comp_port_init(dmr_udp_comp_port* entry, uint16_t idx) {
+    DSD_MEMSET(entry, 0, sizeof(*entry));
+    entry->idx = idx;
+    // Tables 7.17/7.18 note 1: the port numbers are defaults within the radio network.
+    if (idx == 1) {
+        entry->port = DMR_UDP_COMP_PORT_TEXT;
+        entry->known = 1;
+    } else if (idx == 2) {
+        entry->port = DMR_UDP_COMP_PORT_LIP;
+        entry->known = 1;
+    }
+}
+
+// Tables 7.20/7.21: a source index of 0 puts the source port in Extended Header 1; a destination
+// index of 0 puts the destination port in Extended Header 1, or in Extended Header 2 when the source
+// port is there already. Returns the payload offset. A PDU too short for the extended headers it
+// announces leaves those ports unknown and returns len, so nothing is decoded from it.
 static uint16_t
-dmr_udp_comp_resolve_port_ptr(const uint8_t* pdu, uint16_t len, uint16_t* spid, uint16_t* dpid) {
+dmr_udp_comp_resolve_ports(const uint8_t* pdu, uint16_t len, dmr_udp_comp_port* src, dmr_udp_comp_port* dst) {
     uint16_t ptr = 5;
-    if (*spid == 0 && *dpid == 0) {
-        if (len < 9) {
-            return len;
-        }
-        *spid = (uint16_t)((pdu[5] << 8) | pdu[6]);
-        *dpid = (uint16_t)((pdu[7] << 8) | pdu[8]);
-        ptr = 9;
-    } else if (*spid == 0) {
-        if (len < 7) {
-            return len;
-        }
-        *spid = (uint16_t)((pdu[5] << 8) | pdu[6]);
-        ptr = 7;
-    } else if (*dpid == 0) {
-        if (len < 7) {
-            return len;
-        }
-        *dpid = (uint16_t)((pdu[5] << 8) | pdu[6]);
-        ptr = 7;
+    const uint16_t need = (uint16_t)(5U + (src->idx == 0 ? 2U : 0U) + (dst->idx == 0 ? 2U : 0U));
+    if (len < need) {
+        return len;
+    }
+    if (src->idx == 0) {
+        src->port = (uint16_t)((pdu[ptr] << 8) | pdu[ptr + 1]);
+        src->known = 1;
+        ptr = (uint16_t)(ptr + 2U);
+    }
+    if (dst->idx == 0) {
+        dst->port = (uint16_t)((pdu[ptr] << 8) | pdu[ptr + 1]);
+        dst->known = 1;
+        ptr = (uint16_t)(ptr + 2U);
     }
     return ptr;
 }
 
+// The index label, plus the port it resolved to when one is known. The numeric slot in the
+// output always carries the index; the port only ever appears inside this label.
+static void
+dmr_udp_comp_port_desc(const dmr_udp_comp_port* entry, char* out, size_t out_size) {
+    const char* label = dmr_udp_comp_port_idx_desc(entry->idx);
+    if (entry->known) {
+        DSD_SNPRINTF(out, out_size, "%s, UDP %u", label, (unsigned)entry->port);
+    } else if (entry->idx == 0) {
+        DSD_SNPRINTF(out, out_size, "%s, truncated", label);
+    } else {
+        DSD_SNPRINTF(out, out_size, "%s", label);
+    }
+}
+
 static int DSD_ATTR_USED
-dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t spid, uint16_t dpid, uint16_t len,
+dmr_udp_comp_decode_payload(const dsd_opts* opts, dsd_state* state, uint16_t src_port, uint16_t dst_port, uint16_t len,
                             uint16_t ptr, const uint8_t* pdu) {
     if (len <= ptr) {
         return 0;
     }
     len -= ptr;
-    if (spid == 1 || dpid == 1) {
+    if (src_port == DMR_UDP_COMP_PORT_TEXT || dst_port == DMR_UDP_COMP_PORT_TEXT) {
         utf16_to_text(state, 1, len, pdu + ptr); //assumming text starts right at the ptr value
         return 0;
     }
-    if (spid == 2 || dpid == 2) {
+    if (src_port == DMR_UDP_COMP_PORT_LIP || dst_port == DMR_UDP_COMP_PORT_LIP) {
         uint8_t bits[127 * 8];
         uint16_t decode_len = len;
         if (decode_len > 127U) {
@@ -412,36 +458,43 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     if (DMR_PDU == NULL || len < 5U) {
         return;
     }
+    uint8_t slot = (state->currentslot == 1) ? 1 : 0;
+    // ETSI TS 102 361-3 Table 7.14: the leading 16 bits are the IPv4 Identification, carried
+    // verbatim because the decompressor cannot regenerate it - not one of the index fields.
     uint16_t ipid = (uint16_t)((DMR_PDU[0] << 8) | DMR_PDU[1]);
-    uint16_t said = (uint16_t)((DMR_PDU[2] >> 4) & 0xF);
-    uint16_t daid = (uint16_t)((DMR_PDU[2] >> 0) & 0xF);
     uint8_t op1 = (uint8_t)((DMR_PDU[3] >> 7) & 1);
     uint8_t op2 = (uint8_t)((DMR_PDU[4] >> 7) & 1);
     uint8_t opcode = (uint8_t)((op1 << 1) | op2);
-    uint16_t spid = (uint16_t)((DMR_PDU[3] >> 0) & 0x7F);
-    uint16_t dpid = (uint16_t)((DMR_PDU[4] >> 0) & 0x7F);
-    uint16_t ptr = dmr_udp_comp_resolve_port_ptr(DMR_PDU, len, &spid, &dpid);
+    uint16_t said = (uint16_t)((DMR_PDU[2] >> 4) & 0xF);
+    uint16_t daid = (uint16_t)((DMR_PDU[2] >> 0) & 0xF);
+    dmr_udp_comp_port src;
+    dmr_udp_comp_port dst;
+    dmr_udp_comp_port_init(&src, (uint16_t)(DMR_PDU[3] & 0x7F));
+    dmr_udp_comp_port_init(&dst, (uint16_t)(DMR_PDU[4] & 0x7F));
+    uint16_t ptr = dmr_udp_comp_resolve_ports(DMR_PDU, len, &src, &dst);
 
     const char* src_idx_desc = dmr_udp_comp_src_idx_desc(said);
     const char* dst_idx_desc = dmr_udp_comp_dst_idx_desc(daid);
-    const char* src_port_desc = dmr_udp_comp_port_idx_desc(spid);
-    const char* dst_port_desc = dmr_udp_comp_port_idx_desc(dpid);
+    char src_port_desc[64];
+    char dst_port_desc[64];
+    dmr_udp_comp_port_desc(&src, src_port_desc, sizeof(src_port_desc));
+    dmr_udp_comp_port_desc(&dst, dst_port_desc, sizeof(dst_port_desc));
 
-    // ETSI TS 102 361-3 Table 7.14: the leading 16 bits are the IPv4 Identification, carried
-    // verbatim because the decompressor cannot regenerate it - not one of the index fields.
     DSD_FPRINTF(stderr, "\n IP ID: %04X; Opcode: %d; Src Idx: %d (%s); Dst Idx: %d (%s); ", ipid, opcode, said,
                 src_idx_desc, daid, dst_idx_desc);
-    DSD_FPRINTF(stderr, "\n Src Port Idx: %d (%s); Dst Port Idx: %d (%s); ", spid, src_port_desc, dpid, dst_port_desc);
+    DSD_FPRINTF(stderr, "\n Src Port Idx: %d (%s); Dst Port Idx: %d (%s); ", src.idx, src_port_desc, dst.idx,
+                dst_port_desc);
 
-    const int has_gps = dmr_udp_comp_decode_payload(opts, state, spid, dpid, len, ptr, DMR_PDU);
+    const uint16_t src_port = src.known ? src.port : 0U;
+    const uint16_t dst_port = dst.known ? dst.port : 0U;
+    const int has_gps = dmr_udp_comp_decode_payload(opts, state, src_port, dst_port, len, ptr, DMR_PDU);
 
-    uint8_t slot = (state->currentslot == 1) ? 1 : 0;
     char comp_string[500];
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "IP ID: %04X; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
-                 ipid, opcode, said, spid, src_idx_desc, src_port_desc, daid, dpid, dst_idx_desc, dst_port_desc);
+                 ipid, opcode, said, src.idx, src_idx_desc, src_port_desc, daid, dst.idx, dst_idx_desc, dst_port_desc);
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, said, daid);
-    const dsd_event_category category = dmr_udp_event_category(spid, dpid);
+    const dsd_event_category category = dmr_udp_event_category(src_port, dst_port);
     if (has_gps) {
         (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,
                                                              state->dmr_embedded_gps[slot]);
