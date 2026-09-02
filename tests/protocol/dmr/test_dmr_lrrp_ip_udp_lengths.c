@@ -595,11 +595,13 @@ main(void) {
         reset_spies();
         size_t plen = build_compressed_udp_utf16_text(pkt, sizeof pkt);
         st.currentslot = 1;
+        st.dmr_lrrp_source[1] = 4321;
+        st.dmr_lrrp_target[1] = 8765;
         st.event_history_s[1].Event_History_Items[0].text_message[0] = '\0';
         dmr_udp_comp_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.event_history_s[1].Event_History_Items[0].text_message, "OK",
                                 "compressed text payload");
-        if (g_datacall_calls != 1U || g_datacall_src != 1U || g_datacall_dst != 2U || g_datacall_slot != 1U) {
+        if (g_datacall_calls != 1U || g_datacall_src != 4321U || g_datacall_dst != 8765U || g_datacall_slot != 1U) {
             DSD_FPRINTF(stderr, "compressed datacall metadata mismatch calls=%u src=%u dst=%u slot=%u\n",
                         g_datacall_calls, g_datacall_src, g_datacall_dst, g_datacall_slot);
             rc |= 1;

@@ -509,7 +509,10 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     DSD_MEMSET(comp_string, 0, sizeof(comp_string));
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "IP ID: %04X; OP: %d; SRC: %d:%d (%s):(%s); DST: %d:%d (%s):(%s); ",
                  ipid, opcode, said, src.idx, src_idx_desc, src_port_desc, daid, dst.idx, dst_idx_desc, dst_port_desc);
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, said, daid);
+    // The radios on this PDU are the data header's LLIDs, as for every other DMR data notice;
+    // SAID/DAID are 4-bit network indices (tables 7.15/7.16), not radio IDs.
+    const dsd_call_observation observation = dsd_call_observation_data(
+        state->lastsynctype, slot, (uint64_t)state->dmr_lrrp_source[slot], (uint64_t)state->dmr_lrrp_target[slot]);
     const dsd_event_category category = dmr_udp_event_category(src_port, dst_port);
     if (has_gps) {
         (void)dsd_event_emit_data_notice_classified_with_gps(opts, state, slot, &observation, category, comp_string,

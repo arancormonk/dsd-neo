@@ -270,6 +270,22 @@ main(void) {
         }
     }
 
+    // T11: the notice's observation names the radios from the data header (source and
+    // target LLIDs), as every other DMR data notice does; SAID/DAID are 4-bit network
+    // indices and were being passed off as radio IDs.
+    {
+        const uint8_t pdu[] = {0x00U, 0x03U, 0x12U, 0x3FU, 0x3FU};
+        run_case(&opts, &st, pdu, sizeof pdu);
+        if (g_datacall_src != 1234U || g_datacall_dst != 5678U) {
+            DSD_FPRINTF(stderr, "t11 observation src=%u dst=%u, want the data header LLIDs 1234/5678\n", g_datacall_src,
+                        g_datacall_dst);
+            rc |= 1;
+        }
+        rc |=
+            expect_has_substr(g_datacall_text, "SRC: 1:63 (Ethernet):(Reserved); DST: 2:63 (Group Network):(Reserved);",
+                              "t11 labels unchanged");
+    }
+
     // T3: SPID 0 puts the source port in Extended Header 1 (table 7.20). The index stays
     // 0 in the numeric slot and the port is named in the label, never fed to the index table.
     {
