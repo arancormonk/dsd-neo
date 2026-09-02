@@ -1366,6 +1366,30 @@ dmr_lrrp_classify_type(uint8_t lrrp_type, uint8_t* is_request, uint8_t* is_respo
     }
 }
 
+// Some senders wrap a conformant LRRP document in a short fixed envelope
+// (#453): a leading byte dsd-neo does not classify, a counter and a few
+// constant bytes, then an ordinary document whose length byte runs exactly to
+// the end of the UDP payload. Returns the offset of that inner document, or 0
+// when the payload holds no such document within the first few bytes. The
+// exact-end check is what keeps this from firing on unrelated data.
+static size_t
+dmr_lrrp_wrapped_document_offset(const uint8_t* pdu, size_t avail) {
+    const size_t max_prefix = 8u;
+    for (size_t off = 1u; off <= max_prefix && off + 2u < avail; off++) {
+        uint8_t is_request = 0;
+        uint8_t is_response = 0;
+        dmr_lrrp_classify_type(pdu[off], &is_request, &is_response);
+        if (!is_request && !is_response) {
+            continue;
+        }
+        size_t inner_len = (size_t)pdu[off + 1u];
+        if (inner_len > 0u && off + 2u + inner_len == avail) {
+            return off;
+        }
+    }
+    return 0u;
+}
+
 static int
 dmr_lrrp_has_position_token(const uint8_t* pdu, size_t avail, size_t token_len) {
     for (size_t i = 0; i < token_len && (2u + i) < avail; i++) {
@@ -1539,6 +1563,17 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
     uint8_t is_request = 0;
     uint8_t is_response = 0;
     dmr_lrrp_classify_type(lrrp_type, &is_request, &is_response);
+    if (!is_request && !is_response) {
+        size_t off = dmr_lrrp_wrapped_document_offset(DMR_PDU, (size_t)len);
+        if (off > 0u) {
+            DSD_FPRINTF(stderr, "\n Wrapped LRRP: outer type %02X, %u byte prefix;", lrrp_type, (unsigned)off);
+            DMR_PDU += off;
+            len = (uint16_t)(len - off);
+            lrrp_type = DMR_PDU[0];
+            payload_len = DMR_PDU[1];
+            dmr_lrrp_classify_type(lrrp_type, &is_request, &is_response);
+        }
+    }
 
     dmr_lrrp_parse_result best;
     dmr_lrrp_parse_result_init(&best);
