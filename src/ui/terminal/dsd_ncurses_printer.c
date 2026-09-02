@@ -877,19 +877,23 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
         // past the end, and slots >= 26 resolve into the heap tail, which is only as long as the
         // count that reserved it.
         if (state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count) {
-            const long int freq = *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1);
-            printw(" Frequency: %.06lf MHz", (double)freq / 1000000);
-            // A row whose frequency is 0 -- the placeholder an importer writes to keep the file's
-            // numbering -- is stepped over without a retune, so the receiver is still on the previous
-            // row for that whole hangtime and the placeholder's name would credit the wrong channel.
-            const char* name =
-                (freq != 0) ? dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1)) : "";
-            if (name[0] != '\0') {
+            printw(" Frequency: %.06lf MHz",
+                   (double)*dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) / 1000000);
+        }
+        printw(" Speed: %.02lf sec",
+               opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
+        // The row's name goes last: it is the one field of operator-chosen length, so the fixed
+        // fields keep their columns and a long name is what runs off a narrow terminal. The
+        // resolver applies the placeholder-row rule (a 0 Hz row is stepped over without a retune,
+        // so its name would credit the wrong channel) and yields to an active --trunk-scan target,
+        // whose id the Trunk Scan row below and the Call Info line both carry: one screen, one answer.
+        if (dsd_channel_label_current_source(opts, state) == DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST) {
+            char name[DSD_CHANNEL_LABEL_SIZE];
+            if (dsd_channel_label_current(opts, state, name, sizeof(name)) == 1) {
                 printw(" Channel: %s", name);
             }
         }
-        printw(" Speed: %.02lf sec \n",
-               opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
+        printw(" \n");
     }
 
     ui_render_trunk_scan_status(opts, state);
@@ -3107,16 +3111,20 @@ ui_render_call_info_p25_dmr(const dsd_opts* opts, dsd_state* state) {
 
 /* The channel being listened to, spelled out at the top of Call Info. The Scan
    Mode and Trunk Scan rows say the same thing, but they live in the Input Output
-   section, which compact view does not draw. */
+   section, which compact view does not draw. The word matches the row it repeats:
+   a --trunk-scan target is a whole system, which the Trunk Scan row calls a
+   "Target", and "Channel" already means a P25/DMR channel number lower in this
+   section, so the id is not filed under it. */
 static void
 ui_render_call_info_channel_line(const dsd_opts* opts, const dsd_state* state) {
     char label[DSD_CHANNEL_LABEL_SIZE];
-    if (dsd_channel_label_current(opts, state, label, sizeof(label)) != 1) {
+    const dsd_channel_label_source source = dsd_channel_label_current_source(opts, state);
+    if (source == DSD_CHANNEL_LABEL_SOURCE_NONE || dsd_channel_label_current(opts, state, label, sizeof(label)) != 1) {
         return;
     }
     printw("| ");
     attron(COLOR_PAIR(4));
-    printw("Channel: %s", label);
+    printw("%s: %s", source == DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN ? "Target" : "Channel", label);
     ui_restore_call_info_color(state);
     printw("\n");
 }

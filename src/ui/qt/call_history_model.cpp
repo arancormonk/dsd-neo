@@ -132,26 +132,37 @@ CallHistoryModel::rowCount(const QModelIndex& parent) const {
     return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
 }
 
+namespace {
+
+/** @brief One row's value for @p role; an unknown role reads as null. */
+QVariant
+row_role_value(const CallHistoryModel::Row& row, int role) {
+    switch (role) {
+        case CallHistoryModel::NameRole: return row.name;
+        case CallHistoryModel::TgRole: return row.tg;
+        case CallHistoryModel::SrcRole: return row.src;
+        case CallHistoryModel::EncRole: return row.enc;
+        case CallHistoryModel::WhenRole: return row.when;
+        case CallHistoryModel::DurationSecsRole: return row.durationSecs;
+        case CallHistoryModel::SystemNameRole: return row.systemName;
+        case CallHistoryModel::DayLabelRole: return day_label(row.when);
+        case CallHistoryModel::TimeTextRole:
+            return QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("HH:mm"));
+        case CallHistoryModel::KindRole: return row.kind;
+        case CallHistoryModel::DetailRole: return row.detail;
+        case CallHistoryModel::ChannelRole: return row.channel;
+        default: return QVariant();
+    }
+}
+
+} // namespace
+
 QVariant
 CallHistoryModel::data(const QModelIndex& index, int role) const {
     if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
         return QVariant();
     }
-    const Row& row = m_rows.at(index.row());
-    switch (role) {
-        case NameRole: return row.name;
-        case TgRole: return row.tg;
-        case SrcRole: return row.src;
-        case EncRole: return row.enc;
-        case WhenRole: return row.when;
-        case DurationSecsRole: return row.durationSecs;
-        case SystemNameRole: return row.systemName;
-        case DayLabelRole: return day_label(row.when);
-        case TimeTextRole: return QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("HH:mm"));
-        case KindRole: return row.kind;
-        case DetailRole: return row.detail;
-        default: return QVariant();
-    }
+    return row_role_value(m_rows.at(index.row()), role);
 }
 
 QHash<int, QByteArray>
@@ -168,6 +179,7 @@ CallHistoryModel::roleNames() const {
     roles.insert(TimeTextRole, QByteArrayLiteral("timeText"));
     roles.insert(KindRole, QByteArrayLiteral("kind"));
     roles.insert(DetailRole, QByteArrayLiteral("detail"));
+    roles.insert(ChannelRole, QByteArrayLiteral("channel"));
     return roles;
 }
 
@@ -274,11 +286,13 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
     } else {
         row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
     }
-    /* The scan channel the row was heard on (a -Y row name or a trunk-scan target
-     * id) is the grouping the operator recognises, so it is the system name when
-     * known: the system filter lists each channel and a talkgroup heard on two
-     * channels stays two rows. Rows without one keep the saved-system label. */
-    row.systemName = item->channel_label[0] != '\0' ? QString::fromUtf8(item->channel_label) : sessionLabel;
+    /* The system is the saved entry this session runs, for every row alike, so
+     * the system filter keeps listing what the Home screen lists. The scan channel
+     * the row was heard on (a -Y row name or a trunk-scan target id) rides its own
+     * role: the row's meta line shows it, search matches it, and a talkgroup heard
+     * on two channels stays two rows. */
+    row.systemName = sessionLabel;
+    row.channel = QString::fromUtf8(item->channel_label);
     /* The ring stamps both ends of the transmission: event_start_time when the
      * epoch began, event_time as its last render (its end, once committed). Their
      * difference is the measured duration — never this process's ingest lag, which
@@ -377,7 +391,8 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
     // fragments commit before the ring learns the src, and refusing to absorb
     // them would leave one conversation split across two rows.
     const bool srcCompatible = existing.src == row.src || existing.src == 0 || row.src == 0;
-    if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName) {
+    if (existing.tg != row.tg || !srcCompatible || existing.systemName != row.systemName
+        || existing.channel != row.channel) {
         return false;
     }
     // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
@@ -587,6 +602,7 @@ CallHistoryModel::load() {
         row.systemName = obj.value(QLatin1String("systemName")).toString();
         row.kind = obj.value(QLatin1String("kind")).toInt(KindVoice);
         row.detail = obj.value(QLatin1String("detail")).toString();
+        row.channel = obj.value(QLatin1String("channel")).toString();
         row.slot = obj.value(QLatin1String("slot")).toInt();
         row.seq = obj.value(QLatin1String("seq")).toVariant().toULongLong();
         rows.append(row);
@@ -649,6 +665,9 @@ CallHistoryModel::rowsToJson() const {
         obj.insert(QLatin1String("kind"), row.kind);
         if (!row.detail.isEmpty()) {
             obj.insert(QLatin1String("detail"), row.detail);
+        }
+        if (!row.channel.isEmpty()) {
+            obj.insert(QLatin1String("channel"), row.channel);
         }
         obj.insert(QLatin1String("slot"), row.slot);
         obj.insert(QLatin1String("seq"), static_cast<qint64>(row.seq));

@@ -268,23 +268,43 @@ dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(m
  * line is checkable without linking core: the trunk-scan target wins, only an idle
  * trunk scan lets the -Y row on air have a say, and a row whose frequency is 0 was
  * parked over rather than tuned, so it never names anything. */
+static const char*
+stub_channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_label_source* source) {
+    *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    if (!opts || !state) {
+        return "";
+    }
+    if (opts->trunk_scan_enabled == 1 && state->trunk_scan_active_id[0] != '\0') {
+        *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
+        return state->trunk_scan_active_id;
+    }
+    if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
+        && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
+        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+        if (name[0] != '\0') {
+            *source = DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST;
+        }
+        return name;
+    }
+    return "";
+}
+
+dsd_channel_label_source
+dsd_channel_label_current_source(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    dsd_channel_label_source source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    (void)stub_channel_label_pick(opts, state, &source);
+    return source;
+}
+
 int
 dsd_channel_label_current(const dsd_opts* opts, const dsd_state* state, char* out,
                           size_t out_sz) { // NOLINT(misc-use-internal-linkage)
     if (out && out_sz > 0U) {
         out[0] = '\0';
     }
-    if (!opts || !state) {
-        return 0;
-    }
-    const char* label = "";
-    if (opts->trunk_scan_enabled == 1 && state->trunk_scan_active_id[0] != '\0') {
-        label = state->trunk_scan_active_id;
-    } else if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
-               && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
-        label = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
-    }
-    if (label[0] == '\0') {
+    dsd_channel_label_source source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    const char* label = stub_channel_label_pick(opts, state, &source);
+    if (source == DSD_CHANNEL_LABEL_SOURCE_NONE || label[0] == '\0') {
         return 0;
     }
     if (out && out_sz > 0U) {
@@ -868,11 +888,12 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
 
-    /* A named row spells the name out between the frequency and the speed. */
+    /* A named row spells the name out after the fixed fields, so the frequency and speed keep
+       their columns and only the operator-length name reaches a narrow terminal's edge. */
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Channel: Marion Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
 
     /* The last row of the list is on air once roll has caught up with the count: the bound is
        inclusive, so this row renders like any other. */
@@ -880,7 +901,7 @@ test_scanner_status_row_rendering(void) {
     state.lcn_freq_roll = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Channel: Delaware Speed: 2.00 sec \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Speed: 2.00 sec Channel: Delaware \n");
 
     /* A row the importer kept for its numbering but could not use: the scanner parks on the
        frequency it is already on rather than tuning this one, so its name would credit the wrong
@@ -960,7 +981,8 @@ test_trunk_scan_status_row_rendering(void) {
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("");
 
-    /* Both scanners on: the Scan Mode row keeps its place above the new one. */
+    /* Both scanners on: the Scan Mode row keeps its place above the new one, and drops its
+       own name while the target owns the label, so the screen never names two channels. */
     DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
     opts.scanner_mode = 1;
     opts.trunk_hangtime = 2.0f;
@@ -970,8 +992,14 @@ test_trunk_scan_status_row_rendering(void) {
     DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Channel: Marion Speed: 2.00 sec \n"
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
                           "| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    /* Between targets the -Y row's name is the answer again. */
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
 
     reset_lcn_name_stub();
 }
@@ -1005,31 +1033,32 @@ test_call_info_channel_line_rendering(void) {
     assert(strcmp(g_color_trace, "+4+3") == 0);
     state->carrier = 0;
 
-    /* A trunk-scan target outranks the conventional scan list. */
+    /* A trunk-scan target outranks the conventional scan list, and is worded the way the
+       Trunk Scan row words it: a target is a system, not a channel. */
     opts.trunk_scan_enabled = 1;
     DSD_SNPRINTF(state->trunk_scan_active_id, sizeof(state->trunk_scan_active_id), "county-p25");
     reset_printw_capture();
     ui_render_call_info_channel_line(&opts, state);
-    assert_capture_equals("| Channel: county-p25\n");
+    assert_capture_equals("| Target: county-p25\n");
 
     /* It is the first row of the section ... */
     reset_printw_capture();
     ui_render_call_info_and_history(&opts, state);
-    assert_capture_starts_with("| Channel: county-p25\n");
+    assert_capture_starts_with("| Target: county-p25\n");
 
     /* ... in compact view too, which is the view that hides the Input Output
        section carrying the Scan Mode and Trunk Scan rows. */
     opts.frontend_terminal_display.terminal_compact = 1;
     reset_printw_capture();
     ui_render_call_info_and_history(&opts, state);
-    assert_capture_starts_with("| Channel: county-p25\n");
+    assert_capture_starts_with("| Target: county-p25\n");
     opts.frontend_terminal_display.terminal_compact = 0;
 
     /* ... and it stays above the protocol rows. */
     ncurses_last_synctype = DSD_SYNC_DSTAR_VOICE_POS;
     reset_printw_capture();
     ui_render_call_info_and_history(&opts, state);
-    const char* channel_row = strstr(g_printw_capture, "| Channel: county-p25");
+    const char* channel_row = strstr(g_printw_capture, "| Target: county-p25");
     const char* dstar_row = strstr(g_printw_capture, "| RPT2:");
     assert(channel_row != NULL);
     assert(dstar_row != NULL);
@@ -1042,6 +1071,7 @@ test_call_info_channel_line_rendering(void) {
     reset_printw_capture();
     ui_render_call_info_and_history(&opts, state);
     assert(strstr(g_printw_capture, "| Channel:") == NULL);
+    assert(strstr(g_printw_capture, "| Target:") == NULL);
 
     reset_lcn_name_stub();
     dsd_state_ext_free_all(state);

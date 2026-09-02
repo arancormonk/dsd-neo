@@ -150,6 +150,8 @@ Item {
                         parts.push("SRC " + model.src)
                     if (model.detail.length > 0)
                         parts.push(model.detail)
+                    if (model.channel.length > 0 && model.channel !== model.name)
+                        parts.push(model.channel)
                     return parts.length > 0 ? parts.join(" · ") : qsTr("data message")
                 }
                 // "encrypted" states what the call was, nothing more: whether it was
@@ -162,6 +164,11 @@ Item {
                     meta += " · " + qsTr("encrypted")
                 if (model.durationSecs >= 0)
                     meta += " · " + Util.fmtDuration(model.durationSecs)
+                // Where the call was heard, when that is not already the name
+                // above it — the same rule the monitor's hero applies, so both
+                // screens answer the question the same way.
+                if (model.channel.length > 0 && model.channel !== model.name)
+                    meta += " · " + model.channel
                 return meta
             }
             rightText: model.timeText

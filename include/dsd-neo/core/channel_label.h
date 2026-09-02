@@ -24,6 +24,26 @@
 extern "C" {
 #endif
 
+/** Which scanner is naming the channel currently tuned. */
+typedef enum {
+    DSD_CHANNEL_LABEL_SOURCE_NONE = 0,       /**< No scanner is naming a channel. */
+    DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN = 1, /**< The active `--trunk-scan` target's id. */
+    DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST = 2,  /**< The name of the `-Y` scan-list row on air. */
+} dsd_channel_label_source;
+
+/**
+ * Say which scanner would name the channel currently tuned.
+ *
+ * Same precedence as dsd_channel_label_current(): the active `--trunk-scan` target
+ * outranks the `-Y` scan list. A frontend uses the answer to word the label -- a
+ * trunk-scan target is a whole system and reads as "Target", a scan-list row as
+ * "Channel" -- and to keep the two from naming the same screen differently.
+ *
+ * @return DSD_CHANNEL_LABEL_SOURCE_NONE when dsd_channel_label_current() would
+ *         report no label, else the scanner whose name it reports.
+ */
+dsd_channel_label_source dsd_channel_label_current_source(const dsd_opts* opts, const dsd_state* state);
+
 /**
  * Resolve the label for the channel currently tuned.
  *

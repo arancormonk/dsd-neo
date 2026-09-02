@@ -103,6 +103,8 @@ test_trunk_scan_target_wins(void) {
 
     rc |= expect_true("trunk scan reports a label", dsd_channel_label_current(opts, st, out, sizeof(out)) == 1);
     rc |= expect_true("trunk scan wins over -Y", strcmp(out, "county-fire") == 0);
+    rc |= expect_true("trunk scan is the source",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN);
 
     // A caller only asking whether a label exists still gets the answer.
     rc |= expect_true("NULL out still reports", dsd_channel_label_current(opts, st, NULL, sizeof(out)) == 1);
@@ -118,6 +120,15 @@ test_trunk_scan_target_wins(void) {
     st->trunk_scan_active_id[0] = '\0';
     rc |= expect_true("empty target id reports none", dsd_channel_label_current(opts, st, out, sizeof(out)) == 0);
     rc |= expect_true("empty target id clears out", out[0] == '\0');
+    rc |= expect_true("empty target id has no source",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_NONE);
+
+    // Between targets, a -Y list underneath gets its say again.
+    opts->scanner_mode = 1;
+    rc |= expect_true("between targets -Y names the channel",
+                      dsd_channel_label_current(opts, st, out, sizeof(out)) == 1 && strcmp(out, "Bravo") == 0);
+    rc |= expect_true("between targets the source is the scan list",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST);
 
     free(opts);
     free_test_state(st);
@@ -152,10 +163,14 @@ test_scanner_row_name(void) {
     st->lcn_freq_roll = 1;
     rc |= expect_true("unnamed row reports none", dsd_channel_label_current(opts, st, out, sizeof(out)) == 0);
     rc |= expect_true("unnamed row clears out", out[0] == '\0');
+    rc |= expect_true("unnamed row has no source",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_NONE);
 
     st->lcn_freq_roll = 2;
     rc |= expect_true("named row reports a label", dsd_channel_label_current(opts, st, out, sizeof(out)) == 1);
     rc |= expect_true("named row label", strcmp(out, "Bravo") == 0);
+    rc |= expect_true("named row source is the scan list",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST);
 
     // The last row of the list is on air once roll has caught up with the count: the bound is
     // inclusive, so this row is named like any other.
@@ -170,6 +185,8 @@ test_scanner_row_name(void) {
     st->trunk_lcn_freq[1] = 0L;
     rc |= expect_true("placeholder row reports none", dsd_channel_label_current(opts, st, out, sizeof(out)) == 0);
     rc |= expect_true("placeholder row clears out", out[0] == '\0');
+    rc |= expect_true("placeholder row has no source",
+                      dsd_channel_label_current_source(opts, st) == DSD_CHANNEL_LABEL_SOURCE_NONE);
     st->trunk_lcn_freq[1] = 851012500L;
 
     // A map imported without a name column leaves no store at all.

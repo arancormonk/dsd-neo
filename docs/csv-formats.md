@@ -94,9 +94,10 @@ Notes:
   stores no name either.
 - A row skipped for an unusable frequency keeps its name in the file's numbering but is never shown, because the
   scanner parks on the frequency it is already on rather than tuning such a row.
-- Where a name shows: the `-Y` conventional scanner's **Scan Mode** row, the Call Info panel, and as a prefix on the
-  event history rows recorded while that channel is tuned. Encrypted traffic that reports no talkgroup still says
-  which channel it was heard on.
+- Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
+  the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
+  traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
+  air its id is the label instead, and the Scan Mode row shows no name.
 - Every column is positional, so an empty middle field is an empty frequency: `1,,851000000` is a row with no
   frequency and is skipped, not a channel at 851 MHz.
 - For EDACS-style workflows, DSD-neo also records the `frequency_hz` values in **row order** as an LCN frequency list,

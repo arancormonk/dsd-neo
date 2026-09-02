@@ -304,25 +304,30 @@ Item {
                 }
 
                 Row {
+                    id: heroSubline
+
+                    // Bounded so the channel text at the end can elide instead of
+                    // running out of the panel.
+                    width: parent.width
                     visible: screen.heroSlot !== 0
                     spacing: 8
 
+                    // A zero id is "none decoded", not an identity: an encrypted
+                    // call on a conventional channel reports no talkgroup, and
+                    // "TG 0" under a headline that already names the channel would
+                    // only say the decoder saw nothing.
                     Text {
+                        objectName: "heroIds"
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "TG " + screen.heroTg + " · SRC " + screen.heroSrc
-                        font.family: Theme.mono
-                        font.pixelSize: 13
-                        color: Theme.textSecondary
-                    }
-
-                    // Where the call was heard, when that is not already the name
-                    // above: a listed talkgroup still says which scan channel it
-                    // came from.
-                    Text {
-                        objectName: "heroChannel"
-                        anchors.verticalCenter: parent.verticalCenter
-                        visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
-                        text: "· " + screen.heroChannel
+                        visible: text.length > 0
+                        text: {
+                            var parts = []
+                            if (screen.heroTg.length > 0 && screen.heroTg !== "0")
+                                parts.push("TG " + screen.heroTg)
+                            if (screen.heroSrc.length > 0 && screen.heroSrc !== "0")
+                                parts.push("SRC " + screen.heroSrc)
+                            return parts.join(" · ")
+                        }
                         font.family: Theme.mono
                         font.pixelSize: 13
                         color: Theme.textSecondary
@@ -345,6 +350,24 @@ Item {
                         font.family: Theme.mono
                         font.pixelSize: 11
                         color: Theme.textSubdued
+                    }
+
+                    // Where the call was heard, when that is not already the name
+                    // above: a listed talkgroup still says which scan channel it
+                    // came from. Last in the row and elided to what is left of it,
+                    // so an operator-length name never pushes the ENC tag off the
+                    // panel; x is laid out from the siblings before it, so the
+                    // width binding cannot loop.
+                    Text {
+                        objectName: "heroChannel"
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
+                        width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
+                        elide: Text.ElideRight
+                        text: "· " + screen.heroChannel
+                        font.family: Theme.mono
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
                     }
                 }
             }
@@ -625,6 +648,7 @@ Item {
                         return "TG " + model.tg
                                + (model.enc ? " · " + qsTr("encrypted") : "")
                                + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
+                               + (model.channel.length > 0 && model.channel !== model.name ? " · " + model.channel : "")
                     }
                     // ageTick forces the minute-by-minute refresh; shortAge reads
                     // the clock, which is not a binding dependency by itself.

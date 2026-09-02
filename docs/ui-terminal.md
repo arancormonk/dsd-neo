@@ -465,14 +465,15 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 
 While scanning, the screen says which channel you are listening to.
 
-The Input Output section names the `-Y` scan list row the receiver is parked on, right after its frequency:
+The Input Output section names the `-Y` scan list row the receiver is parked on, at the end of its row:
 
 ```
-| Scan Mode:  Frequency: 462.012500 MHz Channel: Marion Speed: 2.00 sec
+| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion
 ```
 
 The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
-renders exactly as it always did.
+renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
+frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
 
 With `--trunk-scan` the same section names the target on air and its place in the rotation:
 
@@ -481,17 +482,19 @@ With `--trunk-scan` the same section names the target on air and its place in th
 ```
 
 `county-p25` is the target's `id` column (see `docs/trunk-scan.md`), and `(3/6)` is its place in the rotation. The row
-shows no frequency: the protocol panels below it already carry the one being decoded.
+shows no frequency: the protocol panels below it already carry the one being decoded. While a target is on air the
+Scan Mode row above it shows no name, so the screen never names two channels at once.
 
 Call Info repeats the answer on its own first line, because compact view hides the Input Output section:
 
 ```
-| Channel: county-p25
+| Target: county-p25
 ```
 
-It carries the active `--trunk-scan` target, or the name of the `-Y` row on air when trunk scan is not running, and
-nothing at all when neither scanner is running or the row has no name. Event history rows carry the same label as a
-bracketed prefix — see "Event History Rows" below.
+It reads `Target:` for the active `--trunk-scan` target, `Channel:` for the name of the `-Y` row on air when trunk
+scan is not running, and nothing at all when neither scanner is running or the row has no name. The word matches the
+Input Output row it repeats: a target is a whole system, and "channel" already means a channel number lower in Call
+Info. Event history rows carry the same label as a bracketed prefix — see "Event History Rows" below.
 
 ## Compact View
 
@@ -501,8 +504,8 @@ layout. While active, the header shows a `Compact (c)` indicator and the frame r
 - the header banner and any transient status toast;
 - a condensed `Status` block: decoder mode, demod/symbol rate, tuner Busy/Free (when trunking), SNR meter,
   input level, output mute state, and slot on/off states;
-- the full Call Info section (the `Channel:` line while scanning, per-slot TGT/SRC, active channels, tuned
-  frequency, TG HOLD);
+- the full Call Info section (the `Channel:`/`Target:` line while scanning, per-slot TGT/SRC, active channels,
+  tuned frequency, TG HOLD);
 - the event history, which expands into the freed rows.
 
 Suppressed while compact: the Input Output section, visual aids (including any enabled visualizers — their

@@ -219,6 +219,16 @@ Item {
         // every logged call already passes. Nothing is inserted or removed, so the
         // view's own count never changes and the pin has no signal to fire on —
         // only the filter change itself can bring the log back.
+        // A history row says which scan channel it was heard on, at the end of
+        // its meta line, unless that is already the row's name.
+        function test_06b_a_row_names_the_channel_it_was_heard_on() {
+            var name = callHistory.pushOnChannel("TODAY", "Fire Dispatch")
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === name && first.metaText.indexOf(" · Fire Dispatch") > 0
+            }, 5000, "the history row does not name its channel")
+        }
+
         function test_07_a_filter_that_hides_nothing_is_still_answered_from_the_top() {
             tc.scrollBack()
 

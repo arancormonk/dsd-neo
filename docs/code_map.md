@@ -114,7 +114,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   callers for no benefit. Out-of-tree callers of `hpf()` need updating
 - API note: `<dsd-neo/core/channel_label.h>`'s `dsd_channel_label_current()` resolves the one label a frontend
   should show for the channel being listened to: the active `--trunk-scan` target id, else the name of the `-Y`
-  scan-list row the receiver is parked on. Those names come from a channel-map CSV that opts in with a `name`
+  scan-list row the receiver is parked on; `dsd_channel_label_current_source()` says which of the two it is, so a
+  frontend words it as a target or a channel and never names both at once. Those names come from a channel-map CSV that opts in with a `name`
   header column and live in a heap store beside the scan list, reached through
   `dsd_state_trunk_lcn_name_get()`/`_set()`/`_reserve()`/`_free()` in `src/core/util/dsd_state_trunk_lcn.c` and
   released by `dsd_state_trunk_lcn_free()`

@@ -205,9 +205,9 @@ test_channel_labelled_tg0_row_is_logged(void) {
 }
 
 /* The emitter renders a labelled notice as "[label] summary"; the history shows
- * the label in the system column, so the name must be the bare summary. Only the
- * row's own label is stripped: a summary that happens to start with a bracket
- * keeps it. */
+ * the label on the row's meta line from its channel role, so the name must be
+ * the bare summary. Only the row's own label is stripped: a summary that happens
+ * to start with a bracket keeps it. */
 void
 test_labelled_notice_name_drops_its_own_channel_prefix(void) {
     resetStorage();
@@ -220,9 +220,9 @@ test_labelled_notice_name_drops_its_own_channel_prefix(void) {
     expect("labelled notice name is the bare summary",
            model.count() == 1
                && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("LRRP position"));
-    expect("labelled notice carries its channel as the system name",
+    expect("labelled notice carries its channel in the channel role",
            model.count() == 1
-               && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString() == QStringLiteral("SiteA"));
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString() == QStringLiteral("SiteA"));
 
     ring.commitNotice(0, when + 5, "2026-04-30 00:00:05 [Not a label] SMS from 1234");
     model.refresh(ring.state);
@@ -232,11 +232,12 @@ test_labelled_notice_name_drops_its_own_channel_prefix(void) {
                       == QStringLiteral("[Not a label] SMS from 1234"));
 }
 
-/* The scan channel a row was heard on is its system name when known, so the
- * system filter and row merging tell scan channels and trunk-scan targets apart;
- * rows without one keep the session's saved-system label. */
+/* The scan channel a row was heard on rides its own role. The system stays the
+ * saved entry the session runs, for labelled and unlabelled rows alike, so the
+ * "All systems" pill keeps offering what the Home screen lists and never a
+ * channel name; and a talkgroup heard on two channels stays two rows. */
 void
-test_channel_label_is_the_system_name(void) {
+test_channel_label_is_its_own_role(void) {
     resetStorage();
     RingFixture ring;
     CallHistoryModel model;
@@ -244,20 +245,25 @@ test_channel_label_is_the_system_name(void) {
     const time_t when = 1754500250;
     ring.commit(0, 4001, 100, when, when + 3, "", "", "Fire Dispatch");
     model.refresh(ring.state);
-    expect("labelled row uses the channel as its system name",
+    expect("labelled row carries the channel",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::ChannelRole).toString()
+                      == QStringLiteral("Fire Dispatch"));
+    expect("labelled row keeps the session as its system",
            model.count() == 1
                && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString()
-                      == QStringLiteral("Fire Dispatch"));
+                      == QStringLiteral("Scan list"));
 
     ring.commit(0, 4002, 101, when + 10, when + 12);
     model.refresh(ring.state);
+    expect("unlabelled row has no channel",
+           model.count() == 2 && model.data(model.index(0), CallHistoryModel::ChannelRole).toString().isEmpty());
     expect("unlabelled row keeps the session label",
            model.count() == 2
                && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString()
                       == QStringLiteral("Scan list"));
     const QStringList labels = model.systemLabels();
-    expect("system filter lists the channel and the session",
-           labels.contains(QStringLiteral("Fire Dispatch")) && labels.contains(QStringLiteral("Scan list")));
+    expect("system filter lists only the session", labels == QStringList{QStringLiteral("Scan list")});
 
     /* The same talkgroup and unit heard on another channel is another row. */
     ring.commit(0, 4001, 100, when + 20, when + 22, "", "", "PD Tac");
@@ -363,7 +369,7 @@ main(int argc, char** argv) {
     test_alias_only_row_is_logged();
     test_channel_labelled_tg0_row_is_logged();
     test_labelled_notice_name_drops_its_own_channel_prefix();
-    test_channel_label_is_the_system_name();
+    test_channel_label_is_its_own_role();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();
