@@ -15,6 +15,10 @@
  *
  * State is therefore retained across records in the fuzz input, and the superframe
  * invariant is asserted after every operation rather than at the end.
+ *
+ * The data header SAP is seeded and mutable too: it selects which decoder a completed
+ * PDU is handed to (IP, compressed UDP/IPv4, short data, MNIS, unknown), so without it
+ * none of those parsers is reachable from this target (#450).
  */
 
 #include <dsd-neo/core/events.h>
@@ -77,6 +81,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     state->currentslot = slot;
     state->data_byte_ctr[slot] = (uint16_t)(((uint16_t)data[1] << 8) | data[2]);
     state->data_header_valid[slot] = (uint8_t)(data[3] & 0x01U);
+    state->data_header_sap[slot] = (uint8_t)((data[3] >> 1) & 0x0FU);
     state->data_header_blocks[slot] = (uint8_t)(data[4] % 128U);
     state->data_block_counter[slot] = (uint8_t)(data[5] % 128U);
     state->data_conf_data[slot] = (uint8_t)(data[6] & 0x01U);
@@ -98,6 +103,9 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         if ((op[0] & 0x10U) != 0U) {
             state->data_header_format[slot] = (uint8_t)(op[4] % 16U);
+        }
+        if ((op[0] & 0x08U) != 0U) {
+            state->data_header_sap[slot] = (uint8_t)((op[3] >> 1) & 0x0FU);
         }
 
         const uint8_t block_len = (uint8_t)(op[5] % 25U);

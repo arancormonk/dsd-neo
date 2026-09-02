@@ -452,34 +452,15 @@ build_compressed_udp_utf16_text(uint8_t* out, size_t cap) {
     }
     DSD_MEMSET(out, 0, cap);
     out[0] = 0x12;
-    out[1] = 0x34;                  // compressed IP ID
-    out[2] = 0x12;                  // SAID=Ethernet, DAID=Group Network
-    out[3] = (uint8_t)(0x80U | 1U); // opcode bit + SPID=UTF-16BE text
-    out[4] = 63U;                   // DPID=reserved 7-bit index
+    out[1] = 0x34; // compressed IP ID
+    out[2] = 0x12; // SAID=Ethernet, DAID=Group Network
+    out[3] = 1U;   // opcode MSB clear (table 7.19 defines 00 only) + SPID=UTF-16BE text
+    out[4] = 63U;  // DPID=reserved 7-bit index
     out[5] = 0x00;
     out[6] = 'O';
     out[7] = 0x00;
     out[8] = 'K';
     return 9U;
-}
-
-static size_t
-build_compressed_udp_lip_with_extended_src_port(uint8_t* out, size_t cap) {
-    if (cap < 10U) {
-        return 0;
-    }
-    DSD_MEMSET(out, 0, cap);
-    out[0] = 0x00;
-    out[1] = 0x7B;
-    out[2] = 0xB0; // SAID=manufacturer-specific, DAID=radio network
-    out[3] = 0x00; // SPID extended at byte 5
-    out[4] = 0x03; // DPID=reserved; SPID extension below selects LIP
-    out[5] = 0x00;
-    out[6] = 0x02; // SPID=Location Interface Protocol
-    out[7] = 0xA5;
-    out[8] = 0x5A;
-    out[9] = 0xC3;
-    return 10U;
 }
 
 static size_t
@@ -614,11 +595,13 @@ main(void) {
         reset_spies();
         size_t plen = build_compressed_udp_utf16_text(pkt, sizeof pkt);
         st.currentslot = 1;
+        st.dmr_lrrp_source[1] = 4321;
+        st.dmr_lrrp_target[1] = 8765;
         st.event_history_s[1].Event_History_Items[0].text_message[0] = '\0';
         dmr_udp_comp_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.event_history_s[1].Event_History_Items[0].text_message, "OK",
                                 "compressed text payload");
-        if (g_datacall_calls != 1U || g_datacall_src != 1U || g_datacall_dst != 2U || g_datacall_slot != 1U) {
+        if (g_datacall_calls != 1U || g_datacall_src != 4321U || g_datacall_dst != 8765U || g_datacall_slot != 1U) {
             DSD_FPRINTF(stderr, "compressed datacall metadata mismatch calls=%u src=%u dst=%u slot=%u\n",
                         g_datacall_calls, g_datacall_src, g_datacall_dst, g_datacall_slot);
             rc |= 1;
@@ -631,20 +614,8 @@ main(void) {
         rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "compressed text category");
     }
 
-    // Case 8: compressed UDP with an extended source port should dispatch bounded LIP bits once.
-    {
-        reset_spies();
-        size_t plen = build_compressed_udp_lip_with_extended_src_port(pkt, sizeof pkt);
-        st.currentslot = 0;
-        dmr_udp_comp_pdu(&opts, &st, (uint16_t)plen, pkt);
-        if (g_lip_calls != 1U) {
-            DSD_FPRINTF(stderr, "compressed LIP dispatch count mismatch: %u\n", g_lip_calls);
-            rc |= 1;
-        }
-        rc |= expect_has_substr(g_datacall_text, "SRC: 11:2", "compressed extended source summary");
-        rc |= expect_has_substr(g_datacall_gps, "41.500000", "compressed LIP event GPS");
-        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "compressed LIP category");
-    }
+    // Case 8 (extended source port selects LIP) moved to test_dmr_udp_comp_header.c, which
+    // pins the ETSI port tables directly (#450).
 
     // Case 9: compressed UDP classifies supported control services at either endpoint.
     {

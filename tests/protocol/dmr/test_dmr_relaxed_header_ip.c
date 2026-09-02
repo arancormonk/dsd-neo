@@ -1304,12 +1304,15 @@ test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
     assert(g_decode_ip_calls == 0U);
     assert(g_udp_comp_calls == 0U);
 
+    // TS 102 361-1 table 9.31 makes SAP 2 TCP/IP header compression, for which TS 102 361-3
+    // defines no compressed header (clause 7.2 is UDP/IPv4 only), so it must not reach the UDP
+    // decoder; it gets an explicit "not decoded" notice instead (#450).
     run_type1_pdu_for_sap(2U, block);
-    assert(g_udp_comp_calls == 1U);
-    assert(g_udp_comp_last_len == 20U);
-    assert(g_udp_comp_first_byte == 0x83U);
+    assert(g_udp_comp_calls == 0U);
     assert(g_decode_ip_calls == 0U);
     assert(g_sd_pdu_calls == 0U);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "SAP 2") != NULL);
 
     run_type1_pdu_for_sap(3U, block);
     assert(g_udp_comp_calls == 1U);
@@ -1422,6 +1425,46 @@ test_data_header_prints_fsn_and_final_flag(void) {
 
     rc |= expect_contains("unconfirmed-fsn-final", output, "FINAL 1 (FINAL) - BLOCKS 03 - PAD 00 - FSN 9");
     rc |= expect_contains("confirmed-fsn-final", output, "FINAL 1 (FINAL) - BLOCKS 04 - PAD 00 - S 1 - NS 5 - FSN 10");
+    return rc;
+}
+
+// ETSI TS 102 361-1 table 9.31: SAP 1001 is "Proprietary Packet data". The header line
+// used to label it "EXTD HDR", which names nothing in the table.
+static int
+test_data_header_labels_proprietary_packet_data_sap(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    char output[2048];
+    dsd_test_capture_stderr cap;
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    state.currentslot = 0;
+    opts.aggressive_framesync = 1;
+
+    if (dsd_test_capture_stderr_begin(&cap, "dmr_header_sap9_label") != 0) {
+        return 1;
+    }
+
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_bits(bits, 4, 2U, 4); // DPF=2, unconfirmed delivery
+    set_bits(bits, 8, 9U, 4); // SAP=9, proprietary packet data
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 65, 1U, 7); // blocks to follow
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, output, sizeof(output)) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+
+    rc |= expect_contains("sap9-label", output, "SAP 09 [Proprietary Packet data]");
     return rc;
 }
 
@@ -1863,6 +1906,7 @@ main(int argc, char** argv) {
     test_type1_encrypted_notice_reports_missing_key();
     test_type2_rejects_out_of_bounds_aggregate_length();
     int rc = test_data_header_prints_fsn_and_final_flag();
+    rc |= test_data_header_labels_proprietary_packet_data_sap();
     rc |= test_data_header_reports_conventional_scan_activity();
     rc |= test_type1_mnis_ars_registration_prints_device_id();
     rc |= test_type1_mnis_ars_fallback_dump_is_bounded();
