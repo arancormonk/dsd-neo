@@ -1377,19 +1377,40 @@ dmr_lrrp_has_position_token(const uint8_t* pdu, size_t avail, size_t token_len) 
     return 0;
 }
 
+// Walk the token stream from each of the first few prefix offsets and keep the
+// best-scoring parse; `penalty` is subtracted from every candidate of this walk.
 static void
-dmr_lrrp_parse_best_response(const uint8_t* pdu, size_t avail, size_t token_len, dmr_lrrp_parse_result* best) {
+dmr_lrrp_parse_best_response_over(const uint8_t* pdu, size_t avail, size_t token_len, int penalty,
+                                  dmr_lrrp_parse_result* best, int* best_score) {
     const size_t max_skip = 6u;
-    int best_score = -1000000;
     for (size_t skip = 0; skip <= max_skip && skip <= token_len; skip++) {
         dmr_lrrp_parse_result cur;
         dmr_lrrp_parse_result_init(&cur);
         dmr_lrrp_parse_response_tokens(pdu, avail, 2u + skip, token_len - skip, &cur);
-        int score = dmr_lrrp_parse_score(&cur, skip);
-        if (score > best_score) {
-            best_score = score;
+        int score = dmr_lrrp_parse_score(&cur, skip) - penalty;
+        if (score > *best_score) {
+            *best_score = score;
             *best = cur;
         }
+    }
+}
+
+// Some senders put a length byte on a response that under-counts the tokens
+// behind it (#453). The declared length is trusted first; when the UDP payload
+// runs past it, the bytes up to the payload end are tried as a second candidate
+// carrying this penalty. It outweighs anything but a new position (+1000) or a
+// timestamp plus speed plus heading (+200), and unknown bytes cost the second
+// candidate a point each, so a conformant message never changes its decode
+// and junk past the declared length never buys a position.
+static const int DMR_LRRP_LENGTH_OVERRIDE_PENALTY = 100;
+
+static void
+dmr_lrrp_parse_best_response(const uint8_t* pdu, size_t avail, size_t token_len, size_t token_avail,
+                             dmr_lrrp_parse_result* best) {
+    int best_score = -1000000;
+    dmr_lrrp_parse_best_response_over(pdu, avail, token_len, 0, best, &best_score);
+    if (token_avail > token_len) {
+        dmr_lrrp_parse_best_response_over(pdu, avail, token_avail, DMR_LRRP_LENGTH_OVERRIDE_PENALTY, best, &best_score);
     }
 }
 
@@ -1554,7 +1575,7 @@ dmr_lrrp(const dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, 
         want_response_parse = dmr_lrrp_has_position_token(DMR_PDU, avail, token_len);
     }
     if (want_response_parse) {
-        dmr_lrrp_parse_best_response(DMR_PDU, avail, token_len, &best);
+        dmr_lrrp_parse_best_response(DMR_PDU, avail, token_len, is_response ? token_avail : token_len, &best);
     }
     if (!source) {
         source = (uint32_t)state->dmr_lrrp_source[state->currentslot];

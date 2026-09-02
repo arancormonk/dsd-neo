@@ -7277,6 +7277,33 @@ add_test(
     COMMAND dsd-neo_test_dmr_lrrp_empty_payload_type
 )
 
+# DMR LRRP: bytes past an under-counting length byte are a penalised second candidate (#453)
+add_executable(
+    dsd-neo_test_dmr_lrrp_declared_length_fallback
+    protocol/dmr/test_dmr_lrrp_declared_length_fallback.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_declared_length_fallback
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_lrrp_declared_length_fallback
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(
+    dsd-neo_test_dmr_lrrp_declared_length_fallback
+    PRIVATE dsd-neo_platform
+)
+add_test(
+    NAME DMR_LRRP_DECLARED_LENGTH_FALLBACK
+    COMMAND dsd-neo_test_dmr_lrrp_declared_length_fallback
+)
+
 # DMR SMS/TMS UTF-16 text: surrogate pairs combine, unpaired halves become U+FFFD
 add_executable(
     dsd-neo_test_dmr_pdu_utf16_text
@@ -9123,6 +9150,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_grant_policy
     dsd-neo_test_dmr_locn_time_fallback
     dsd-neo_test_dmr_lrrp_crc_gating
+    dsd-neo_test_dmr_lrrp_declared_length_fallback
     dsd-neo_test_dmr_lrrp_empty_payload_type
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
     dsd-neo_test_dmr_lrrp_position_token_precedence
