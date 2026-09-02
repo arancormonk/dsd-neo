@@ -906,6 +906,15 @@ init_state_p25p1_nid_learning(dsd_state* state) {
     state->p25_p1_nid_evidence_symbolcnt = 0;
 }
 
+/* Trunk-scan publication for the frontends. Reset here so a re-initialised state
+ * cannot keep advertising the target the previous run was parked on. */
+static void
+init_state_trunk_scan_publication(dsd_state* state) {
+    DSD_MEMSET(state->trunk_scan_active_id, 0, sizeof(state->trunk_scan_active_id));
+    state->trunk_scan_active_ordinal = 0;
+    state->trunk_scan_target_count = 0;
+}
+
 static void
 init_state_p25_and_trunk_defaults(dsd_state* state) {
     //P2 variables
@@ -990,6 +999,7 @@ init_state_p25_and_trunk_defaults(dsd_state* state) {
     // state that already imported a >26-entry list would otherwise orphan the allocation, and a
     // state that was not zero-initialised would leave reserve() calling realloc() on garbage.
     dsd_state_trunk_lcn_free(state);
+    init_state_trunk_scan_publication(state);
     DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof(state->trunk_chan_map_used));
     state->trunk_chan_map_used_count = 0;

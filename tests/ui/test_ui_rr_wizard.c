@@ -1223,8 +1223,8 @@ test_conventional_plan(void) {
     if (p->chan_csv_text != NULL) {
         expect("conv: chan csv body",
                strcmp(p->chan_csv_text,
-                      "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete "
-                      "this line)\n1,451275000\n2,464525000\n")
+                      "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete "
+                      "this line)\n1,451275000,Marion\n2,464525000,North Liberty\n")
                    == 0);
     }
     expect("conv: scanning warning",
@@ -2182,20 +2182,20 @@ test_import_now_keeps_files_when_apply_is_rejected(void) {
  */
 
 static const char* const k_chan_header =
-    "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n";
+    "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n";
 
 /* Stored order "36085,36087" wins over wire order. */
 static const char* const k_b1_want =
-    "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
-    "1,443125000\n"
-    "2,146755000\n";
+    "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n"
+    "1,443125000,Creston\n"
+    "2,146755000,Waukee\n";
 
 /* Stored order "999999,36087,36085": the vanished id is skipped and the
  * survivors keep their stored order. */
 static const char* const k_b2_want =
-    "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
-    "1,146755000\n"
-    "2,443125000\n";
+    "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n"
+    "1,146755000,Waukee\n"
+    "2,443125000,Creston\n";
 
 static const char* const k_msg_no_provenance =
     "This file does not record which system it came from. Import it again to refresh it.";

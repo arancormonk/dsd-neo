@@ -47,6 +47,8 @@ class MetricsModel : public QObject {
     Q_PROPERTY(int slot2CallState READ slot2CallState NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1CallName READ slot1CallName NOTIFY slot1Changed)
     Q_PROPERTY(QString slot2CallName READ slot2CallName NOTIFY slot2Changed)
+    Q_PROPERTY(QString slot1Channel READ slot1Channel NOTIFY slot1Changed)
+    Q_PROPERTY(QString slot2Channel READ slot2Channel NOTIFY slot2Changed)
     Q_PROPERTY(QString slot1TgText READ slot1TgText NOTIFY slot1Changed)
     Q_PROPERTY(QString slot2TgText READ slot2TgText NOTIFY slot2Changed)
     Q_PROPERTY(qulonglong slot1TgId READ slot1TgId NOTIFY slot1Changed)
@@ -328,6 +330,17 @@ class MetricsModel : public QObject {
         return m_view.slot_call[1].name;
     }
 
+    /** @brief The scan channel the slot's call was heard on; empty when not scanning. */
+    const QString&
+    slot1Channel() const {
+        return m_view.slot_call[0].channel;
+    }
+
+    const QString&
+    slot2Channel() const {
+        return m_view.slot_call[1].channel;
+    }
+
     const QString&
     slot1TgText() const {
         return m_view.slot_call[0].tg_text;
@@ -500,6 +513,7 @@ class MetricsModel : public QObject {
         QString name;
         QString tg_text;
         QString src_text;
+        QString channel;      // scan channel the call was heard on, empty when not scanning
         QString enc_text;     // "ALG 84 · KID 0001", empty when clear or unlearned
         qulonglong tg_id = 0; // numeric talkgroup, 0 when the call has none
         bool enc = false;
@@ -508,7 +522,7 @@ class MetricsModel : public QObject {
         bool
         operator==(const SlotCall& other) const {
             return state == other.state && name == other.name && tg_text == other.tg_text && src_text == other.src_text
-                   && enc_text == other.enc_text && tg_id == other.tg_id && enc == other.enc
+                   && channel == other.channel && enc_text == other.enc_text && tg_id == other.tg_id && enc == other.enc
                    && seconds == other.seconds;
         }
     };

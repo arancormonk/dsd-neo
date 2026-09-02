@@ -302,6 +302,59 @@ test_chan_frequency_bounds(void) {
     return failed;
 }
 
+/* The optional name column is a label, not a row the counters treat differently:
+ * a named row still stands or falls on its frequency. */
+static int
+test_chan_counts_with_name_column(void) {
+    char tmpl[] = "dsd-neo-test-validate-chan-name-XXXXXX";
+    if (write_temp_csv(tmpl, "channel,frequency_hz,name\n"
+                             "1,851000000,Dispatch\n"
+                             "2,notafreq,Ops\n"
+                             "3,852000000,Fireground\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_chan_file(tmpl, &v) != 0) {
+        DSD_FPRINTF(stderr, "chan validate failed on a named file\n");
+        failed = 1;
+    }
+    if (v.accepted != 2U || v.skipped != 1U || v.total != 3U) {
+        DSD_FPRINTF(stderr, "chan name-column counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(tmpl);
+    return failed;
+}
+
+/* Empty fields are kept rather than collapsed, so column 2 of `1,,851000000` is
+ * the (blank) frequency and the row is skipped. Collapsing them used to promote
+ * the third column into the frequency's place and silently load a shifted row. */
+static int
+test_chan_empty_frequency_field_is_skipped(void) {
+    char tmpl[] = "dsd-neo-test-validate-chan-empty-XXXXXX";
+    if (write_temp_csv(tmpl, "channel_number,frequency_hz\n"
+                             "1,,851000000\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_chan_file(tmpl, &v) != 0) {
+        DSD_FPRINTF(stderr, "chan validate failed on an empty-field file\n");
+        failed = 1;
+    }
+    if (v.accepted != 0U || v.skipped != 1U || v.total != 1U) {
+        DSD_FPRINTF(stderr, "chan empty-field counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(tmpl);
+    return failed;
+}
+
 int
 main(void) {
     if (test_missing_file_fails() != 0) {
@@ -320,6 +373,12 @@ main(void) {
         return 1;
     }
     if (test_chan_counts_mixed_rows() != 0) {
+        return 1;
+    }
+    if (test_chan_counts_with_name_column() != 0) {
+        return 1;
+    }
+    if (test_chan_empty_frequency_field_is_skipped() != 0) {
         return 1;
     }
     if (test_key_dec_counts_mixed_rows() != 0) {

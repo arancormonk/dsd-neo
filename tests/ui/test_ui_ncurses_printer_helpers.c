@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <curses.h>
 #include <dsd-neo/app_control/history.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
@@ -79,6 +80,18 @@ static void
 assert_capture_contains(const char* needle) {
     assert(needle != NULL);
     assert(strstr(g_printw_capture, needle) != NULL);
+}
+
+static void
+assert_capture_equals(const char* expected) {
+    assert(expected != NULL);
+    assert(strcmp(g_printw_capture, expected) == 0);
+}
+
+static void
+assert_capture_starts_with(const char* prefix) {
+    assert(prefix != NULL);
+    assert(strncmp(g_printw_capture, prefix, strlen(prefix)) == 0);
 }
 
 int
@@ -228,6 +241,74 @@ dsd_tg_policy_lookup_label(const dsd_state* state, uint32_t id, char* mode, size
     }
     if (name && name_sz > 0U) {
         DSD_SNPRINTF(name, name_sz, "Dispatch");
+    }
+    return 1;
+}
+
+/* Scan-list row names. The real store lives in core, which this target does not
+ * link, so a small table stands in for it: an unset row reports "", exactly as
+ * dsd_state_trunk_lcn_name_get() does. */
+static char g_lcn_name_stub[8][DSD_CHANNEL_LABEL_SIZE];
+
+static void
+reset_lcn_name_stub(void) {
+    DSD_MEMSET(g_lcn_name_stub, 0, sizeof(g_lcn_name_stub));
+}
+
+const char*
+dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    if (index >= sizeof(g_lcn_name_stub) / sizeof(g_lcn_name_stub[0])) {
+        return "";
+    }
+    return g_lcn_name_stub[index];
+}
+
+/* Mirrors the real resolver's contract over the name stub above, so the Call Info
+ * line is checkable without linking core: the trunk-scan target wins, only an idle
+ * trunk scan lets the -Y row on air have a say, and a row whose frequency is 0 was
+ * parked over rather than tuned, so it never names anything. */
+static const char*
+stub_channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_label_source* source) {
+    *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    if (!opts || !state) {
+        return "";
+    }
+    if (opts->trunk_scan_enabled == 1 && state->trunk_scan_active_id[0] != '\0') {
+        *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
+        return state->trunk_scan_active_id;
+    }
+    if (opts->scanner_mode == 1 && state->lcn_freq_roll > 0 && state->lcn_freq_roll <= state->lcn_freq_count
+        && *dsd_state_trunk_lcn_slot_const(state, state->lcn_freq_roll - 1) != 0) {
+        const char* name = dsd_state_trunk_lcn_name_get(state, (size_t)(state->lcn_freq_roll - 1));
+        if (name[0] != '\0') {
+            *source = DSD_CHANNEL_LABEL_SOURCE_SCAN_LIST;
+        }
+        return name;
+    }
+    return "";
+}
+
+dsd_channel_label_source
+dsd_channel_label_current_source(const dsd_opts* opts, const dsd_state* state) { // NOLINT(misc-use-internal-linkage)
+    dsd_channel_label_source source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    (void)stub_channel_label_pick(opts, state, &source);
+    return source;
+}
+
+int
+dsd_channel_label_current(const dsd_opts* opts, const dsd_state* state, char* out,
+                          size_t out_sz) { // NOLINT(misc-use-internal-linkage)
+    if (out && out_sz > 0U) {
+        out[0] = '\0';
+    }
+    dsd_channel_label_source source = DSD_CHANNEL_LABEL_SOURCE_NONE;
+    const char* label = stub_channel_label_pick(opts, state, &source);
+    if (source == DSD_CHANNEL_LABEL_SOURCE_NONE || label[0] == '\0') {
+        return 0;
+    }
+    if (out && out_sz > 0U) {
+        DSD_SNPRINTF(out, out_sz, "%s", label);
     }
     return 1;
 }
@@ -785,6 +866,216 @@ test_compact_status_section_rendering(void) {
     ui_render_compact_status_section(&opts, &state, 42);
     assert(strstr(g_printw_capture, "In [") == NULL);
     assert_capture_contains("[QPSK]");
+}
+
+static void
+test_scanner_status_row_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+    state.trunk_lcn_freq[1] = 462037500;
+
+    /* An unnamed row keeps the row byte-identical to what it has always been. */
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n");
+
+    /* A named row spells the name out after the fixed fields, so the frequency and speed keep
+       their columns and only the operator-length name reaches a narrow terminal's edge. */
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
+
+    /* The last row of the list is on air once roll has caught up with the count: the bound is
+       inclusive, so this row renders like any other. */
+    DSD_SNPRINTF(g_lcn_name_stub[1], sizeof(g_lcn_name_stub[1]), "Delaware");
+    state.lcn_freq_roll = 2;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.037500 MHz Speed: 2.00 sec Channel: Delaware \n");
+
+    /* A row the importer kept for its numbering but could not use: the scanner parks on the
+       frequency it is already on rather than tuning this one, so its name would credit the wrong
+       channel for a whole hangtime. The frequency field keeps printing the slot as it always has. */
+    state.trunk_lcn_freq[1] = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 0.000000 MHz Speed: 2.00 sec \n");
+    state.trunk_lcn_freq[1] = 462037500;
+
+    /* Before the first tune there is no row on air, so neither field prints. */
+    state.lcn_freq_roll = 0;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Speed: 2.00 sec \n");
+
+    /* A roll left past a shrunken count must not reach into the stale tail. */
+    DSD_SNPRINTF(g_lcn_name_stub[2], sizeof(g_lcn_name_stub[2]), "Ghost");
+    state.lcn_freq_roll = 3;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Speed: 2.00 sec \n");
+
+    /* No -Y list, no row at all. */
+    opts.scanner_mode = 0;
+    state.lcn_freq_roll = 1;
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("");
+
+    reset_lcn_name_stub();
+}
+
+static void
+test_trunk_scan_status_row_rendering(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    reset_lcn_name_stub();
+
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 6;
+
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    /* No position published yet: name the target without inventing an "n of m". */
+    state.trunk_scan_active_ordinal = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+
+    /* Half a position is no position: an ordinal with no rotation length behind it prints
+       no suffix either. */
+    state.trunk_scan_active_ordinal = 3;
+    state.trunk_scan_target_count = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("| Trunk Scan:  Target: county-p25\n");
+    state.trunk_scan_target_count = 6;
+
+    /* A stale id from an earlier run must not show once scanning is off. */
+    state.trunk_scan_active_ordinal = 3;
+    opts.trunk_scan_enabled = 0;
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("");
+
+    /* Enabled but between targets: nothing is on air to name. */
+    opts.trunk_scan_enabled = 1;
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
+    reset_printw_capture();
+    ui_render_trunk_scan_status(&opts, &state);
+    assert_capture_equals("");
+
+    /* Both scanners on: the Scan Mode row keeps its place above the new one, and drops its
+       own name while the target owns the label, so the screen never names two channels. */
+    DSD_SNPRINTF(state.trunk_scan_active_id, sizeof(state.trunk_scan_active_id), "county-p25");
+    opts.scanner_mode = 1;
+    opts.trunk_hangtime = 2.0f;
+    state.lcn_freq_count = 1;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 462012500;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec \n"
+                          "| Trunk Scan:  Target: county-p25 (3/6)\n");
+
+    /* Between targets the -Y row's name is the answer again. */
+    DSD_MEMSET(state.trunk_scan_active_id, 0, sizeof(state.trunk_scan_active_id));
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
+
+    reset_lcn_name_stub();
+}
+
+static void
+test_call_info_channel_line_rendering(void) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    reset_lcn_name_stub();
+    ncurses_last_synctype = DSD_SYNC_NONE;
+
+    /* -Y scan list: the row on air names the line, printed in the Call Info
+       colour, with the section colour restored before the newline. */
+    opts.scanner_mode = 1;
+    state->lcn_freq_count = 2;
+    state->lcn_freq_roll = 1;
+    state->trunk_lcn_freq[0] = 462012500;
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
+    reset_printw_capture();
+    reset_color_trace();
+    ui_render_call_info_channel_line(&opts, state);
+    assert_capture_equals("| Channel: Marion\n");
+    assert(strcmp(g_color_trace, "+4+4") == 0);
+
+    /* Carrier up: the restore hands back to the carrier pair, not to cyan. */
+    state->carrier = 1;
+    reset_color_trace();
+    ui_render_call_info_channel_line(&opts, state);
+    assert(strcmp(g_color_trace, "+4+3") == 0);
+    state->carrier = 0;
+
+    /* A trunk-scan target outranks the conventional scan list, and is worded the way the
+       Trunk Scan row words it: a target is a system, not a channel. */
+    opts.trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state->trunk_scan_active_id, sizeof(state->trunk_scan_active_id), "county-p25");
+    reset_printw_capture();
+    ui_render_call_info_channel_line(&opts, state);
+    assert_capture_equals("| Target: county-p25\n");
+
+    /* It is the first row of the section ... */
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert_capture_starts_with("| Target: county-p25\n");
+
+    /* ... in compact view too, which is the view that hides the Input Output
+       section carrying the Scan Mode and Trunk Scan rows. */
+    opts.frontend_terminal_display.terminal_compact = 1;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert_capture_starts_with("| Target: county-p25\n");
+    opts.frontend_terminal_display.terminal_compact = 0;
+
+    /* ... and it stays above the protocol rows. */
+    ncurses_last_synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    const char* channel_row = strstr(g_printw_capture, "| Target: county-p25");
+    const char* dstar_row = strstr(g_printw_capture, "| RPT2:");
+    assert(channel_row != NULL);
+    assert(dstar_row != NULL);
+    assert(channel_row < dstar_row);
+    ncurses_last_synctype = DSD_SYNC_NONE;
+
+    /* Neither scanner running: no line, and no empty label either. */
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 0;
+    reset_printw_capture();
+    ui_render_call_info_and_history(&opts, state);
+    assert(strstr(g_printw_capture, "| Channel:") == NULL);
+    assert(strstr(g_printw_capture, "| Target:") == NULL);
+
+    reset_lcn_name_stub();
+    dsd_state_ext_free_all(state);
+    free(state);
 }
 
 static void
@@ -1483,6 +1774,9 @@ main(void) {
     test_demod_symbol_rate_helpers();
     test_input_level_policy();
     test_compact_status_section_rendering();
+    test_scanner_status_row_rendering();
+    test_trunk_scan_status_row_rendering();
+    test_call_info_channel_line_rendering();
     test_history_and_sort_helpers();
     test_history_color_pair_policy();
     test_history_viewport_helpers();

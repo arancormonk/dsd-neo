@@ -331,6 +331,7 @@ class CallLogStore : public QAbstractListModel {
         QString timeText;
         int kind = CallHistoryModel::KindVoice;
         QString detail;
+        QString channel;
     };
 
     int
@@ -380,6 +381,7 @@ class CallLogStore : public QAbstractListModel {
             case CallHistoryModel::TimeTextRole: return row.timeText;
             case CallHistoryModel::KindRole: return row.kind;
             case CallHistoryModel::DetailRole: return row.detail;
+            case CallHistoryModel::ChannelRole: return row.channel;
             default: return {};
         }
     }
@@ -396,7 +398,8 @@ class CallLogStore : public QAbstractListModel {
                 {CallHistoryModel::DayLabelRole, "dayLabel"},
                 {CallHistoryModel::TimeTextRole, "timeText"},
                 {CallHistoryModel::KindRole, "kind"},
-                {CallHistoryModel::DetailRole, "detail"}};
+                {CallHistoryModel::DetailRole, "detail"},
+                {CallHistoryModel::ChannelRole, "channel"}};
     }
 
     /**
@@ -419,6 +422,36 @@ class CallLogStore : public QAbstractListModel {
         endInsertRows();
         Q_EMIT countChanged();
         return row.name;
+    }
+
+    /**
+     * @brief Prepend one clear voice call heard on scan channel @p channel.
+     * @return The row's name, so a test can find that one row.
+     */
+    Q_INVOKABLE QString
+    pushOnChannel(const QString& dayLabel, const QString& channel) {
+        const QString name = push(dayLabel);
+        m_rows[0].channel = channel;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::ChannelRole});
+        return name;
+    }
+
+    /**
+     * @brief Prepend a call that decoded no talkgroup, named by the scan channel it
+     * was heard on — encrypted traffic on a conventional list looks like this.
+     * @return The row's name (the channel).
+     */
+    Q_INVOKABLE QString
+    pushUnnamedOnChannel(const QString& dayLabel, const QString& channel) {
+        push(dayLabel);
+        m_rows[0].tg = 0;
+        m_rows[0].name = channel;
+        m_rows[0].channel = channel;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::TgRole, CallHistoryModel::NameRole, CallHistoryModel::ChannelRole});
+        return channel;
     }
 
     /** @brief Prepend @p n calls, oldest first, so the list reads newest-first. */
@@ -776,6 +809,8 @@ class Setup : public QObject {
             const QString p = QStringLiteral("slot%1").arg(slot);
             metrics[p + QStringLiteral("CallState")] = 0;
             metrics[p + QStringLiteral("CallName")] = QString();
+            // The scan channel the slot's call was heard on; empty when not scanning.
+            metrics[p + QStringLiteral("Channel")] = QString();
             metrics[p + QStringLiteral("CallEnc")] = false;
             metrics[p + QStringLiteral("CallSeconds")] = 0;
             metrics[p + QStringLiteral("TgText")] = QString();

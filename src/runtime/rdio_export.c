@@ -592,6 +592,12 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, dsd_rdio_meta_fields
         out->talkgroup_tag = event->t_name;
     } else if (event->tgt_str[0] != '\0') {
         out->talkgroup_tag = event->tgt_str;
+    } else if (event->channel_label[0] != '\0') {
+        // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the
+        // receiver was parked on a named channel. That name is what the operator would recognise
+        // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:
+        // dsd_rdio_write_trunk_recorder_meta() skips those outright.
+        out->talkgroup_tag = event->channel_label;
     } else {
         out->talkgroup_tag = event->gi ? "PRIVATE" : "GROUP";
     }

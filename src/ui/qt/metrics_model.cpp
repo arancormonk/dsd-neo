@@ -78,6 +78,7 @@ MetricsModel::slotCallView(const dsd_state* snapshot, quint8 slot, double now_m)
     out.tg_id = static_cast<qulonglong>(view.tg_id);
     out.src_text = QString::fromUtf8(view.src_text);
     out.name = QString::fromUtf8(view.name);
+    out.channel = QString::fromUtf8(view.channel);
     out.enc = view.enc != 0U;
     if (out.enc) {
         out.enc_text = slot_enc_text(view.algid, view.kid);

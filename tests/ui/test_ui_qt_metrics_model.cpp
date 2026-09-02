@@ -309,6 +309,29 @@ main(int argc, char** argv) {
         g_stub_channel_bandwidth_hz = 0;
     }
 
+    /* A call with no name of its own on a named scan channel: the hero must show
+     * the channel, the way the call history already does, and expose it on its own
+     * so the panel can also show it beside a call that has a name. */
+    {
+        dsd_call_observation unnamed = {};
+        unnamed.protocol = DSD_SYNC_NXDN_POS;
+        unnamed.slot = 0U;
+        unnamed.kind = DSD_CALL_KIND_GROUP_VOICE;
+        unnamed.ota_target_id = 0U;
+        unnamed.ota_source_id = 1U;
+        unnamed.observed_m = 50.0;
+        expect("a tg-0 call opens", dsd_call_state_observe(&state, &unnamed, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        expect("the state carries an event ring", state.event_history_s != nullptr);
+        if (state.event_history_s != nullptr) {
+            Event_History* staged = &state.event_history_s[0].Event_History_Items[0];
+            DSD_SNPRINTF(staged->channel_label, sizeof(staged->channel_label), "%s", "Fire Dispatch");
+            model.refresh(&opts, &state);
+            expect("the slot exposes its scan channel", model.slot1Channel() == QStringLiteral("Fire Dispatch"));
+            expect("a nameless call is named by its channel", model.slot1CallName() == QStringLiteral("Fire Dispatch"));
+            expect("the talkgroup text stays the number", model.slot1TgText() == QStringLiteral("0"));
+        }
+    }
+
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

@@ -1539,6 +1539,39 @@ trunk_scan_get(const dsd_state* state) {
     return DSD_STATE_EXT_GET_AS(dsd_trunk_scan_coord, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
 }
 
+/* The published id is the target id verbatim, so the two buffers have to agree. */
+_Static_assert(sizeof(((dsd_trunk_scan_target*)0)->id) <= DSD_CHANNEL_LABEL_SIZE,
+               "a trunk scan target id must fit the published channel label");
+
+/* Take the published label back down. The coordinator is not the owner of dsd_state, so the
+ * sites that detach it -- shutdown, and initState for a fresh run -- clear the publication;
+ * trunk_scan_free() gets no state pointer and cannot. */
+static void
+trunk_scan_clear_published_target(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    state->trunk_scan_active_id[0] = '\0';
+    state->trunk_scan_active_ordinal = 0U;
+    state->trunk_scan_target_count = 0U;
+}
+
+/* Publish which target the receiver is parked on, for the frontends that label the channel
+ * being heard. Written on the decoder thread beside every other dsd_state field, so it
+ * reaches the UI through the snapshot rather than through the coordinator. */
+static void
+trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* coord) {
+    if (!state || !coord || coord->active >= coord->count) {
+        trunk_scan_clear_published_target(state);
+        return;
+    }
+    const size_t ordinal = coord->active + 1U;
+    DSD_SNPRINTF(state->trunk_scan_active_id, sizeof state->trunk_scan_active_id, "%s",
+                 coord->targets[coord->active].target.id);
+    state->trunk_scan_active_ordinal = (uint16_t)(ordinal > UINT16_MAX ? UINT16_MAX : ordinal);
+    state->trunk_scan_target_count = (uint16_t)(coord->count > UINT16_MAX ? UINT16_MAX : coord->count);
+}
+
 // A user purge clears the live ledger; every parked target keeps its own copy,
 // so scrub those as well or the next target switch restores entries the user
 // just forgot. The key epoch is global and intentionally untouched.
@@ -1820,6 +1853,10 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
     DSD_SNPRINTF(tmp_opts->chan_in_file, sizeof tmp_opts->chan_in_file, "%s", target->chan_csv);
     tmp_opts->chan_in_file[sizeof tmp_opts->chan_in_file - 1] = '\0';
     int import_rc = csvChanImport(tmp_opts, state);
+    /* A chan_csv `name` column is accepted but never shown under trunk scan: the per-target
+     * snapshot carries the positional scan list and not the names, so a kept name would end
+     * up over the next target's list. Drop them before that can happen. */
+    dsd_state_trunk_lcn_name_free(state);
     free(tmp_opts);
     if (import_rc != 0) {
         scan_set_error(err, err_sz, "failed to import chan_csv '%s' for trunk scan target '%s'", target->chan_csv,
@@ -1923,6 +1960,9 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     }
 
     coord->active = next;
+    /* Before the retune, not after: a retune that fails still leaves the receiver parked
+     * here until the caller decides otherwise, and the label has to say so. */
+    trunk_scan_publish_active_target(state, coord);
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
@@ -1999,6 +2039,10 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     }
 
     coord->active = original_active;
+    /* The loop above published every target it tried, and the last one it tried is not
+     * necessarily this one -- the original is skipped when its own retry cooldown is still
+     * running. Republish, or the label names a target the receiver never reached. */
+    trunk_scan_publish_active_target(state, coord);
     trunk_scan_restore_snapshot(state, original_snapshot);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active].target);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
@@ -2547,6 +2591,7 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
     trunk_scan_log_nxdn_diag_summaries(coord, state);
     trunk_scan_restore_saved_opts(opts, coord);
     trunk_scan_uninstall_runtime_hooks(coord);
+    trunk_scan_clear_published_target(state);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);
 }
 
