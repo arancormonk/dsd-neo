@@ -1645,7 +1645,8 @@ add_executable(
     # svc_clear_keys() drops the DMR TG->key ID map through keyring_dmr_tg_map_reset().
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring.c
     ${PROJECT_SOURCE_DIR}/src/core/vocoder/keyring_dmr_tg_map.c
-    # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail.
+    # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail and the
+    # per-row name store beside it.
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
 )
 target_include_directories(
