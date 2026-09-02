@@ -1165,9 +1165,9 @@ test_chan_conventional_small(void) {
     expect("conventional generated",
            dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_CONV, sites.items, 2U, &text, &len, &warnings) == 0);
     expect_str("conventional scan list", text,
-               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
-               "1,451275000\n"
-               "2,464525000\n");
+               "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n"
+               "1,451275000,Marion\n"
+               "2,464525000,North Liberty\n");
     expect("conventional never seeds 999", strstr(text, "999,") == NULL);
     expect("scan source warned", warned(&warnings, "RTL-SDR or a rigctl-controlled radio"));
 
@@ -1240,7 +1240,7 @@ test_chan_conventional_truncation(void) {
         }
     }
     expect_size("conventional emits 33 rows plus header", rows, 34U);
-    expect("conventional first row", text != NULL && strstr(text, "\n1,146755000\n") != NULL);
+    expect("conventional first row", text != NULL && strstr(text, "\n1,146755000,Waukee\n") != NULL);
     expect("conventional has a 33rd row", text != NULL && strstr(text, "\n33,") != NULL);
 
     dsd_csv_validation counts;
@@ -1253,6 +1253,80 @@ test_chan_conventional_truncation(void) {
     free(text);
     dsd_rr_warning_list_free(&warnings);
     dsd_rr_site_list_free(&sites);
+}
+
+/**
+ * @brief The conventional third column is the site description, sanitized and
+ *        capped exactly like a talkgroup name; the trunked header is untouched.
+ */
+static void
+test_chan_conventional_names(void) {
+    dsd_rr_site_freq freqs[3];
+    freq_set(&freqs[0], 1, 151000000LL, "", NULL);
+    freq_set(&freqs[1], 1, 152000000LL, "", NULL);
+    freq_set(&freqs[2], 1, 153000000LL, "", NULL);
+    dsd_rr_site sites[3];
+    site_init(&sites[0], &freqs[0], 1U);
+    site_init(&sites[1], &freqs[1], 1U);
+    site_init(&sites[2], &freqs[2], 1U);
+    (void)DSD_SNPRINTF(sites[0].descr, sizeof(sites[0].descr), "%s", "Fire, EMS\tDispatch\x01");
+    /* sites[1].descr is left empty by site_init(): an empty name must fall back
+     * to the two-column row, never a trailing empty field. */
+    char sixty_as[61];
+    DSD_MEMSET(sixty_as, 'A', sizeof(sixty_as) - 1U);
+    sixty_as[sizeof(sixty_as) - 1U] = '\0';
+    (void)DSD_SNPRINTF(sites[2].descr, sizeof(sites[2].descr), "%s", sixty_as);
+
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("conventional names generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_CONV, sites, 3U, &text, &len, &warnings) == 0);
+
+    static const char* const k_header =
+        "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n";
+    expect("conventional names header", text != NULL && strncmp(text, k_header, strlen(k_header)) == 0);
+
+    char want_49_as[50];
+    DSD_MEMSET(want_49_as, 'A', sizeof(want_49_as) - 1U);
+    want_49_as[sizeof(want_49_as) - 1U] = '\0';
+    char want[256];
+    (void)DSD_SNPRINTF(want, sizeof(want),
+                       "%s"
+                       "1,151000000,Fire/ EMS Dispatch\n"
+                       "2,152000000\n"
+                       "3,153000000,%s\n",
+                       k_header, want_49_as);
+    expect_str("conventional names rows", text, want);
+    expect("shortened name warned", warned(&warnings, "shortened to the 49-byte import limit"));
+
+    dsd_csv_validation counts;
+    DSD_MEMSET(&counts, 0, sizeof(counts));
+    if (text != NULL && validate_generated(text, 0, &counts) == 0) {
+        /* The importer's name column is opt-in on the header text and never
+         * gates a row: this is itself the "does not break import" check. */
+        expect_counts("conventional names round-trip", &counts, 3U, 0U);
+    }
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* Trunked output keeps the old two-field header; a per-repeater name has
+     * nowhere trunked to come from and must never leak in as a third column. */
+    dsd_rr_site_freq p25_freq;
+    freq_set(&p25_freq, 1, 851012500LL, "d", NULL);
+    dsd_rr_site p25_site;
+    site_init(&p25_site, &p25_freq, 1U);
+    (void)DSD_SNPRINTF(p25_site.descr, sizeof(p25_site.descr), "%s", "Should never appear");
+    text = NULL;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("trunked control generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_P25, &p25_site, 1U, &text, &len, &warnings) == 0);
+    expect_str("trunked header and rows unaffected", text,
+               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+               "1,851012500\n");
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1347,6 +1421,7 @@ main(void) {
     test_chan_edacs_fixture();
     test_chan_conventional_small();
     test_chan_conventional_truncation();
+    test_chan_conventional_names();
     test_simulcast();
     test_chan_argument_validation();
 
