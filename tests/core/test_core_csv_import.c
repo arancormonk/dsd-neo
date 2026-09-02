@@ -722,6 +722,86 @@ test_channel_import_name_column_stores_names_by_row_index(void) {
     return failed;
 }
 
+/* Names reach a terminal and a fixed-size buffer: a control byte becomes a space
+ * and is then trimmed like any other padding, and the byte cap never cuts a
+ * UTF-8 sequence in half. */
+static int
+test_channel_import_name_column_sanitizes_names(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    char tmpl[] = "dsd-neo-test-channel-sanitize-XXXXXX";
+    // 61 ASCII bytes then a 3-byte euro sign: the 63-byte cap lands inside it.
+    char utf8_name[65];
+    char body[512];
+    int fd = -1;
+
+    if (!opts || !state) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    fd = dsd_mkstemp(tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+    (void)dsd_close(fd);
+
+    DSD_MEMSET(utf8_name, 'A', 61);
+    DSD_MEMCPY(utf8_name + 61, "\xE2\x82\xAC", 3);
+    utf8_name[64] = '\0';
+
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body, sizeof(body),
+                       "channel,frequency,name\n"
+                       "1,851000000,\x01"
+                       "Dispatch\n"
+                       "2,851012500,Ops\tTwo\n"
+                       "3,851025000,%s\n",
+                       utf8_name);
+    if (write_text_file(tmpl, body) != 0) {
+        (void)remove(tmpl);
+        free(opts);
+        free_test_state(state);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "sanitising channel import returned error\n");
+        failed = 1;
+    }
+    // A leading control byte becomes a space, and the trim that follows removes it.
+    if (strcmp(dsd_state_trunk_lcn_name_get(state, 0), "Dispatch") != 0) {
+        DSD_FPRINTF(stderr, "leading control byte left in place: '%s'\n", dsd_state_trunk_lcn_name_get(state, 0));
+        failed = 1;
+    }
+    if (strcmp(dsd_state_trunk_lcn_name_get(state, 1), "Ops Two") != 0) {
+        DSD_FPRINTF(stderr, "interior tab not replaced: '%s'\n", dsd_state_trunk_lcn_name_get(state, 1));
+        failed = 1;
+    }
+    {
+        const char* stored = dsd_state_trunk_lcn_name_get(state, 2);
+        const size_t stored_len = strlen(stored);
+        if (stored_len != 61 || strspn(stored, "A") != stored_len) {
+            DSD_FPRINTF(stderr, "utf-8 name not cut at a character boundary: len=%zu '%s'\n", stored_len, stored);
+            failed = 1;
+        }
+        // Belt and braces: whatever the length, the last byte must start a character.
+        if (stored_len == 0 || ((unsigned char)stored[stored_len - 1] & 0xC0U) == 0x80U) {
+            DSD_FPRINTF(stderr, "stored name ends on a UTF-8 continuation byte\n");
+            failed = 1;
+        }
+    }
+
+    (void)remove(tmpl);
+    free(opts);
+    free_test_state(state);
+    return failed;
+}
+
 /* The channel map's extra columns have always been free-text notes -- two shipped
  * examples put commas in theirs -- so only a header that names column 3 `name`
  * turns it into a label. */
@@ -1344,6 +1424,9 @@ main(void) {
         return 1;
     }
     if (test_channel_import_name_column_requires_header_opt_in() != 0) {
+        return 1;
+    }
+    if (test_channel_import_name_column_sanitizes_names() != 0) {
         return 1;
     }
     if (test_group_import_range_after_many_exact_rows() != 0) {

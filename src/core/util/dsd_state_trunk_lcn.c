@@ -101,10 +101,35 @@ trunk_lcn_name_is_space(unsigned char c) {
 }
 
 /*
- * Render one CSV name into a zero-filled entry-sized buffer: outer ASCII
- * whitespace dropped (CSV fields arrive padded, and the last column still
- * carries the line ending), interior control characters replaced with spaces so
- * a tab or a stray CR never reaches printw(), and the result truncated to fit.
+ * Drop ASCII whitespace from both ends of the first @p len bytes of @p out and
+ * zero-fill what that gives up, leaving the kept text at the front.
+ */
+static void
+trunk_lcn_name_trim_in_place(char* out, size_t len) {
+    size_t start = 0;
+    size_t end = len;
+    while (start < end && trunk_lcn_name_is_space((unsigned char)out[start])) {
+        start++;
+    }
+    while (end > start && trunk_lcn_name_is_space((unsigned char)out[end - 1])) {
+        end--;
+    }
+    const size_t kept = end - start;
+    if (start > 0) {
+        DSD_MEMMOVE(out, out + start, kept);
+    }
+    DSD_MEMSET(out + kept, 0, len - kept);
+}
+
+/*
+ * Render one CSV name into a zero-filled entry-sized buffer: the padding the
+ * file carried (CSV spacing, the line ending) dropped before it can spend the
+ * budget, the rest truncated to fit, and control characters replaced with
+ * spaces so a tab or a stray CR never reaches printw().
+ *
+ * Substitution runs before the final trim, not after: a leading control byte
+ * ("\x01Dispatch") would otherwise be stored as a leading space, and a
+ * truncation landing just after an interior control byte as a trailing one.
  */
 static void
 trunk_lcn_name_sanitize(const char* name, char* out, size_t out_sz) {
@@ -123,10 +148,17 @@ trunk_lcn_name_sanitize(const char* name, char* out, size_t out_sz) {
     }
     if (len > out_sz - 1) {
         len = out_sz - 1;
+        /* The cap is a byte count, so it can land inside a multi-byte character.
+           Back off to a character start: a half-written UTF-8 sequence is not
+           memory-unsafe, but it renders as garbage wherever the name is shown. */
+        while (len > 0 && (p[len] & 0xC0U) == 0x80U) {
+            len--;
+        }
     }
     for (size_t i = 0; i < len; i++) {
         out[i] = (p[i] < 0x20U || p[i] == 0x7FU) ? ' ' : (char)p[i];
     }
+    trunk_lcn_name_trim_in_place(out, len);
 }
 
 int

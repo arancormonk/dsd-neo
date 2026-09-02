@@ -83,8 +83,10 @@ Notes:
   names it: a header whose third field is `name` (any capitalisation, surrounding spaces allowed) turns column 3 into
   a channel name for every row of the file. This opt-in keeps the older maps working - two of the examples shipped in
   `examples/` put a comma inside their third column, which a name column could not hold.
-- A `name` is trimmed of surrounding whitespace, capped at 63 characters, and must not contain a comma. It is stored
-  per row of the LCN list below, so a row whose frequency was skipped keeps its name and the rest stay aligned.
+- A `name` is trimmed of surrounding whitespace, capped at 63 bytes (never splitting a UTF-8 character), and must not
+  contain a comma. It is stored per row of the LCN list below, so a row whose frequency was skipped keeps its name and
+  the rest stay aligned. A row whose *channel number* does not parse is different: it takes no LCN slot at all, so it
+  stores no name either.
 - Where a name shows: the `-Y` conventional scanner's **Scan Mode** row, the Call Info panel, and as a prefix on the
   event history rows recorded while that channel is tuned. Encrypted traffic that reports no talkgroup still says
   which channel it was heard on.
