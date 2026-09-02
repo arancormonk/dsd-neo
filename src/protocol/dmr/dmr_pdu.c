@@ -465,6 +465,22 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     uint8_t op1 = (uint8_t)((DMR_PDU[3] >> 7) & 1);
     uint8_t op2 = (uint8_t)((DMR_PDU[4] >> 7) & 1);
     uint8_t opcode = (uint8_t)((op1 << 1) | op2);
+    if (opcode != 0) {
+        // ETSI TS 102 361-3 V1.3.1 table 7.19 defines only 00 (UDP/IPv4 Header Compression). The other
+        // three values have no published layout, so nothing after the IP ID is read; the IP ID is kept
+        // so retransmissions of the same datagram can still be correlated. Live Motorola systems do
+        // send these (9 of 573 compressed PDUs in issue #450), and reading them as the 00 layout
+        // produced index labels and a payload offset that meant nothing.
+        DSD_FPRINTF(stderr, "\n IP ID: %04X; Opcode: %d; Reserved Header Compression Opcode; header not decoded; ",
+                    ipid, opcode);
+        char reserved_string[128];
+        DSD_SNPRINTF(reserved_string, sizeof(reserved_string),
+                     "IP ID: %04X; OP: %d; Reserved Header Compression Opcode; header not decoded; ", ipid, opcode);
+        const dsd_call_observation observation = dsd_call_observation_data(
+            state->lastsynctype, slot, (uint64_t)state->dmr_lrrp_source[slot], (uint64_t)state->dmr_lrrp_target[slot]);
+        (void)dsd_event_emit_data_notice(opts, state, slot, &observation, reserved_string);
+        return;
+    }
     uint16_t said = (uint16_t)((DMR_PDU[2] >> 4) & 0xF);
     uint16_t daid = (uint16_t)((DMR_PDU[2] >> 0) & 0xF);
     dmr_udp_comp_port src;

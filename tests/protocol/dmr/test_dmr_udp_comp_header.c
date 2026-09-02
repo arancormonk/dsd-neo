@@ -154,6 +154,15 @@ expect_no_substr(const char* buf, const char* needle, const char* tag) {
 }
 
 static int
+expect_str_eq(const char* buf, const char* want, const char* tag) {
+    if (!buf || strcmp(buf, want) != 0) {
+        DSD_FPRINTF(stderr, "%s: got '%s' want '%s'\n", tag, buf ? buf : "(null)", want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_category(dsd_event_category got, dsd_event_category want, const char* tag) {
     if (got != want) {
         DSD_FPRINTF(stderr, "%s: category got %d want %d\n", tag, (int)got, (int)want);
@@ -333,6 +342,49 @@ main(void) {
         rc |= expect_has_substr(g_datacall_text, "DST: 0:0 (Radio Network):(In Extended Header, UDP 5016);",
                                 "t8 extended destination");
         rc |= expect_count(g_lip_calls, 0U, "t8 no LIP");
+    }
+
+    // T9: table 7.19 defines opcode 00 only. A reserved opcode has no published layout, so
+    // nothing after the IP ID is interpreted: one notice naming the opcode, no field labels,
+    // no payload decode, and the observation carries the data header's LLIDs.
+    {
+        // Opcode 01 with SPID 1: would be UTF-16BE text under the 00 layout.
+        const uint8_t op1[] = {0x12U, 0x34U, 0x12U, 0x01U, 0xBFU, 0x00U, 'O', 0x00U, 'K'};
+        run_case(&opts, &st, op1, sizeof op1);
+        rc |= expect_count(g_datacall_calls, 1U, "t9 op1 single notice");
+        rc |= expect_str_eq(g_datacall_text,
+                            "IP ID: 1234; OP: 1; Reserved Header Compression Opcode; header not decoded; ",
+                            "t9 op1 notice");
+        if (staged_text(&st)[0] != '\0') {
+            DSD_FPRINTF(stderr, "t9 op1 decoded text '%s' from a reserved layout\n", staged_text(&st));
+            rc |= 1;
+        }
+        if (g_datacall_src != 1234U || g_datacall_dst != 5678U) {
+            DSD_FPRINTF(stderr, "t9 op1 observation src=%u dst=%u, want the data header LLIDs 1234/5678\n",
+                        g_datacall_src, g_datacall_dst);
+            rc |= 1;
+        }
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "t9 op1 category");
+
+        // Opcode 10, the shape logged on a live Motorola system in issue #450: SAID/DAID 11,
+        // SPID 118, DPID 119 if read as the 00 layout.
+        const uint8_t op2[] = {0x01U, 0x02U, 0xBBU, 0xF6U, 0x77U};
+        run_case(&opts, &st, op2, sizeof op2);
+        rc |= expect_count(g_datacall_calls, 1U, "t9 op2 single notice");
+        rc |= expect_has_substr(g_datacall_text, "OP: 2; Reserved Header Compression Opcode", "t9 op2 notice");
+        rc |= expect_no_substr(g_datacall_text, "SRC:", "t9 op2 no source label");
+        rc |= expect_no_substr(g_datacall_text, "DST:", "t9 op2 no destination label");
+        rc |= expect_no_substr(g_datacall_text, "Manufacturer Specific", "t9 op2 no index label");
+
+        // Opcode 11 with SPID 2: would be LIP under the 00 layout.
+        const uint8_t op3[] = {0x00U, 0x7BU, 0x10U, 0x82U, 0xBFU, 0xA5U, 0x5AU, 0xC3U};
+        run_case(&opts, &st, op3, sizeof op3);
+        rc |= expect_has_substr(g_datacall_text, "OP: 3; Reserved Header Compression Opcode", "t9 op3 notice");
+        rc |= expect_count(g_lip_calls, 0U, "t9 op3 no LIP");
+        if (g_datacall_gps[0] != '\0') {
+            DSD_FPRINTF(stderr, "t9 op3 produced gps '%s' from a reserved layout\n", g_datacall_gps);
+            rc |= 1;
+        }
     }
 
     // T10: a PDU too short for the extended header it announces still emits one notice,

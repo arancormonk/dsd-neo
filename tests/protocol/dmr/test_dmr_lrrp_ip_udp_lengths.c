@@ -452,10 +452,10 @@ build_compressed_udp_utf16_text(uint8_t* out, size_t cap) {
     }
     DSD_MEMSET(out, 0, cap);
     out[0] = 0x12;
-    out[1] = 0x34;                  // compressed IP ID
-    out[2] = 0x12;                  // SAID=Ethernet, DAID=Group Network
-    out[3] = (uint8_t)(0x80U | 1U); // opcode bit + SPID=UTF-16BE text
-    out[4] = 63U;                   // DPID=reserved 7-bit index
+    out[1] = 0x34; // compressed IP ID
+    out[2] = 0x12; // SAID=Ethernet, DAID=Group Network
+    out[3] = 1U;   // opcode MSB clear (table 7.19 defines 00 only) + SPID=UTF-16BE text
+    out[4] = 63U;  // DPID=reserved 7-bit index
     out[5] = 0x00;
     out[6] = 'O';
     out[7] = 0x00;
