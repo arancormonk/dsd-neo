@@ -99,6 +99,18 @@ struct RingFixture {
         return item;
     }
 
+    /** Commit a data notice the way dsd_event_emit_data_notice() does: the
+     *  emitter's rendered line (timestamp, optional "[label] " prefix, summary)
+     *  in event_string and the channel label the row was stamped with. */
+    Event_History*
+    commitNotice(int slot, time_t when, const char* event_string, const char* channel_label = "") {
+        Event_History* item = commit(slot, 0, 0, when, when);
+        item->category = DSD_EVENT_CATEGORY_DATA;
+        DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s", event_string);
+        DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
+        return item;
+    }
+
     /** A staged-row render: bumps revision only, exactly like the core. */
     void
     stagedRender(int slot) {
@@ -190,6 +202,67 @@ test_channel_labelled_tg0_row_is_logged(void) {
     ring.commit(0, 0, 0, when + 20, when + 23, "", "", "PD Tac");
     model.refresh(ring.state);
     expect("a second channel keeps its own row", model.count() == 2);
+}
+
+/* The emitter renders a labelled notice as "[label] summary"; the history shows
+ * the label in the system column, so the name must be the bare summary. Only the
+ * row's own label is stripped: a summary that happens to start with a bracket
+ * keeps it. */
+void
+test_labelled_notice_name_drops_its_own_channel_prefix(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500250;
+    ring.commitNotice(0, when, "2026-04-30 00:00:00 [SiteA] LRRP position", "SiteA");
+    model.refresh(ring.state);
+    expect("labelled notice is logged", model.count() == 1);
+    expect("labelled notice name is the bare summary",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("LRRP position"));
+    expect("labelled notice carries its channel as the system name",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString() == QStringLiteral("SiteA"));
+
+    ring.commitNotice(0, when + 5, "2026-04-30 00:00:05 [Not a label] SMS from 1234");
+    model.refresh(ring.state);
+    expect("a bracket that is not the row's label survives",
+           model.count() == 2
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString()
+                      == QStringLiteral("[Not a label] SMS from 1234"));
+}
+
+/* The scan channel a row was heard on is its system name when known, so the
+ * system filter and row merging tell scan channels and trunk-scan targets apart;
+ * rows without one keep the session's saved-system label. */
+void
+test_channel_label_is_the_system_name(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    model.setSessionLabel(QStringLiteral("Scan list"));
+    const time_t when = 1754500250;
+    ring.commit(0, 4001, 100, when, when + 3, "", "", "Fire Dispatch");
+    model.refresh(ring.state);
+    expect("labelled row uses the channel as its system name",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString()
+                      == QStringLiteral("Fire Dispatch"));
+
+    ring.commit(0, 4002, 101, when + 10, when + 12);
+    model.refresh(ring.state);
+    expect("unlabelled row keeps the session label",
+           model.count() == 2
+               && model.data(model.index(0), CallHistoryModel::SystemNameRole).toString()
+                      == QStringLiteral("Scan list"));
+    const QStringList labels = model.systemLabels();
+    expect("system filter lists the channel and the session",
+           labels.contains(QStringLiteral("Fire Dispatch")) && labels.contains(QStringLiteral("Scan list")));
+
+    /* The same talkgroup and unit heard on another channel is another row. */
+    ring.commit(0, 4001, 100, when + 20, when + 22, "", "", "PD Tac");
+    model.refresh(ring.state);
+    expect("a different channel keeps the same talkgroup on its own row", model.count() == 3);
 }
 
 void
@@ -289,6 +362,8 @@ main(int argc, char** argv) {
     test_textual_targets_stay_distinct();
     test_alias_only_row_is_logged();
     test_channel_labelled_tg0_row_is_logged();
+    test_labelled_notice_name_drops_its_own_channel_prefix();
+    test_channel_label_is_the_system_name();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();

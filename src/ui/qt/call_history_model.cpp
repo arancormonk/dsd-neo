@@ -223,12 +223,21 @@ ring_item_display_kind(const Event_History* item) {
     return CallHistoryModel::KindNotice;
 }
 
-/** @brief The notice text minus the "YYYY-MM-DD HH:MM:SS " prefix the emitter stamps. */
+/** @brief The notice text minus the "YYYY-MM-DD HH:MM:SS " prefix the emitter stamps,
+ *  and minus the "[label] " the emitter adds for the scan channel the row was heard on.
+ *  That label rides the row's own channel_label (and the system column), so only that
+ *  exact prefix is removed: a summary that merely starts with a bracket keeps it. */
 QString
 notice_summary(const Event_History* item) {
     static const QRegularExpression datePrefix(QStringLiteral("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2} "));
-    QString text = QString::fromUtf8(item->event_string);
-    return text.remove(datePrefix).trimmed();
+    QString text = QString::fromUtf8(item->event_string).remove(datePrefix);
+    if (item->channel_label[0] != '\0') {
+        const QString labelPrefix = QLatin1Char('[') + QString::fromUtf8(item->channel_label) + QLatin1String("] ");
+        if (text.startsWith(labelPrefix)) {
+            text.remove(0, labelPrefix.size());
+        }
+    }
+    return text.trimmed();
 }
 
 /** @brief One committed ring item as a display row. */
@@ -265,7 +274,11 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
     } else {
         row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
     }
-    row.systemName = sessionLabel;
+    /* The scan channel the row was heard on (a -Y row name or a trunk-scan target
+     * id) is the grouping the operator recognises, so it is the system name when
+     * known: the system filter lists each channel and a talkgroup heard on two
+     * channels stays two rows. Rows without one keep the saved-system label. */
+    row.systemName = item->channel_label[0] != '\0' ? QString::fromUtf8(item->channel_label) : sessionLabel;
     /* The ring stamps both ends of the transmission: event_start_time when the
      * epoch began, event_time as its last render (its end, once committed). Their
      * difference is the measured duration — never this process's ingest lag, which
