@@ -1546,6 +1546,7 @@ struct dsd_state {
      *  state a cleared `lastsynctype` puts the grid back into. */
     int matched_filter_kind;
     int matched_filter_sps;
+    int matched_filter_delay;
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;

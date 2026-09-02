@@ -225,6 +225,13 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - `symbol_timing_debug.c`: measures the sub-symbol offset the decoder's symbol grid settled on and reports it once
   per accepted frame sync, behind `DSD_NEO_DEBUG_SYMBOL_TIMING` (see `docs/cli.md`). The sample trace it correlates
   over is filled by `dsd_symbol.c` and owned by decoder-state setup/teardown in `src/core/util/dsd_init.c`.
+- `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
+  wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
+  discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
+  signal one group delay in the past — 67 samples for NXDN48 at 20 samples per symbol. `dsd_symbol.c` therefore
+  primes the filter from the raw history it missed and consumes that delay once at the switch, so the grid neither
+  re-reads content it has already consumed nor sees a half-window transient (#444). `MATCHED_FILTER_SEAM` pins the
+  geometry that makes the delay knowable and the alignment that follows from paying it.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how

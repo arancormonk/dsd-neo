@@ -1855,14 +1855,27 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, symbol_work_ct
         return 1;
     }
 
+    const int previous_delay = state->matched_filter_delay;
     state->matched_filter_kind = (int)kind;
     state->matched_filter_sps = sps;
     if (kind == DSD_SPS_FILTER_NONE) {
+        state->matched_filter_delay = 0;
         return 1; /* Switching off costs nothing: the raw stream has no delay. */
     }
 
     const int delay = dsd_sps_filter_prime_from_history(kind, sps);
-    for (int j = 0; j < delay; j++) {
+    state->matched_filter_delay = delay;
+    /* Only the change in delay is owed. Coming from the raw stream that is the
+       whole of it; between two filters, which is what AUTO does when the sync it
+       last accepted changes protocol, it is the difference. A filter that
+       reports the signal less far back than the one before it cannot be paid at
+       all -- that would mean un-reading samples -- so it is left to the loop
+       below to work off. */
+    int catch_up = delay - previous_delay;
+    if (catch_up < 0) {
+        catch_up = 0;
+    }
+    for (int j = 0; j < catch_up; j++) {
         (void)dsd_sps_filter_apply(kind, work->sample, sps);
         if (!symbol_take_sample(opts, state, work)) {
             return 0;

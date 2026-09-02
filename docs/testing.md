@@ -328,8 +328,19 @@ Reading it:
 - Keep the machine otherwise idle: `--rate realtime` is wall-clock paced, so a
   build competing with a compile is measured under different conditions.
 
+- **A change can improve quality and decode fewer frames at once.** Paying off
+  the matched filter's group delay took errors per voice frame from 3.59 to 2.79
+  on `fiNXDN` (12 repeats, 12/12) while decoding about five fewer voice frames a
+  run. Total errors fell 27% against 6% fewer frames, so the per-frame gain is
+  real rather than an artefact of decoding less; report both numbers and say so.
+
 Issue #444 is the worked example, and the comment above `symbol_adjust_timing_nxdn()`
-in `src/dsp/dsd_symbol.c` records what it ruled out.
+in `src/dsp/dsd_symbol.c` records what it ruled out. A closed timing loop was
+built and measured against that slip as part of the same issue and is not in the
+tree: on `fiNXDN` it was worth about 0.18 errors per voice frame, but the anchor
+it measures its phase against had to differ per protocol to work at all -- the
+window centroid for NXDN48, the span edge for DMR, each breaking the other -- so
+it replaced one fragile constant with two.
 
 ## Regression Test Requirement
 
