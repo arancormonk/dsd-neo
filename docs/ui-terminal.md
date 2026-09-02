@@ -487,5 +487,8 @@ and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050
 the question a bare `TGT: 00000000` row cannot, which is where encrypted traffic was heard. Data
 notices (SMS, LRRP, registrations) carry the same prefix. A receiver that is not scanning a named
 channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
-prefix survives into the compact row. The label is fixed when the transmission's first row renders,
-so a call that outlives a scan step keeps the channel it was actually heard on.
+prefix survives into the compact row. The channel is resolved once, when the transmission's first
+row renders, so a call that outlives a scan step keeps the channel it was actually heard on — and a
+call heard on a scan-list row with no name stays unlabelled rather than picking up the name of the
+next channel. The bracketed name is for reading, not for parsing: a channel name may itself contain
+`]`.

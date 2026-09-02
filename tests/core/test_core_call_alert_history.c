@@ -369,8 +369,8 @@ event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
            && memcmp(lhs->t_mode, rhs->t_mode, sizeof lhs->t_mode) == 0
            && memcmp(lhs->s_mode, rhs->s_mode, sizeof lhs->s_mode) == 0
            && memcmp(lhs->channel_label, rhs->channel_label, sizeof lhs->channel_label) == 0
-           && lhs->channel == rhs->channel && lhs->event_time == rhs->event_time
-           && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
+           && lhs->channel_label_resolved == rhs->channel_label_resolved && lhs->channel == rhs->channel
+           && lhs->event_time == rhs->event_time && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
            && memcmp(lhs->sysid_string, rhs->sysid_string, sizeof lhs->sysid_string) == 0
            && memcmp(lhs->alias, rhs->alias, sizeof lhs->alias) == 0
            && memcmp(lhs->gps_s, rhs->gps_s, sizeof lhs->gps_s) == 0
@@ -2597,6 +2597,91 @@ test_channel_label_does_not_rescue_identityless_row(void) {
     return rc;
 }
 
+// An unnamed scan-list row resolves to no label, and that is an answer, not a missing one: the
+// epoch must not go on asking. A -Y list with only some rows named is the ordinary case, so
+// without the resolved verdict the finalize pass relabels a call heard on an unnamed channel with
+// whichever channel the scanner has since hopped to.
+static int
+test_unnamed_channel_epoch_is_not_relabelled_by_a_hop(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    // Parked on row 0, which has no name; row 1 does.
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 3;
+    state.lcn_freq_roll = 1;
+    int rc = expect_int("named scan list row stores", dsd_state_trunk_lcn_name_set(&state, 1U, "PD Tac"), 0);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    state.lcn_freq_roll = 2;
+
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("unnamed channel commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_int("unnamed channel leaves the label empty", committed->channel_label[0], '\0');
+    rc |= expect_no_substr("unnamed channel row renders no prefix at all", committed->event_string, "[");
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The merge's other direction. A row whose epoch already answered "no label" keeps that answer
+// when a reacquired segment merges in, even though the segment resolved a name of its own -- by
+// then the scanner has rolled on, and the segment's channel is not where the transmission was
+// heard. The complementary fill -- a blank retained row taking the segment's label -- is
+// unreachable from here: every rendered row carries a resolved verdict, so that arm only ever
+// serves a row a protocol staged directly without rendering it.
+static int
+test_unlabelled_row_is_not_relabelled_by_a_reacquired_segment(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    // Nothing named on air for the first segment.
+    opts.scanner_mode = 1;
+    state.lcn_freq_count = 3;
+    state.lcn_freq_roll = 1;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    int rc = expect_int("first segment is unlabelled", event_history[0].Event_History_Items[1].channel_label[0], '\0');
+
+    // The scanner rolls onto a named channel before the transmission resumes.
+    rc |= expect_int("named scan list row stores", dsd_state_trunk_lcn_name_set(&state, 1U, "PD Tac"), 0);
+    state.lcn_freq_roll = 2;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("reacquisition commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("merged row carries the late source", merged->event_string, "SRC: 00000201;");
+    rc |= expect_int("merged row keeps its empty label", merged->channel_label[0], '\0');
+    rc |= expect_no_substr("merged row renders no prefix at all", merged->event_string, "[");
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 // Data notices name their channel too, resolved live: the PDU decodes while the receiver is still
 // tuned to the channel that carried it.
 static int
@@ -4746,6 +4831,8 @@ main(void) {
     rc |= test_unlabelled_row_string_is_unchanged();
     rc |= test_channel_label_survives_push_and_merge();
     rc |= test_channel_label_is_frozen_at_first_render();
+    rc |= test_unnamed_channel_epoch_is_not_relabelled_by_a_hop();
+    rc |= test_unlabelled_row_is_not_relabelled_by_a_reacquired_segment();
     rc |= test_channel_label_does_not_rescue_identityless_row();
     rc |= test_data_notice_carries_channel_label();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();

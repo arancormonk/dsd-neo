@@ -164,9 +164,14 @@ typedef struct {
     char t_mode[200];   //mode, or A,B,D,DE from csv group import file
     char s_mode[200];   //mode, or A,B,D,DE from csv group import file
     // Name of the scan channel this transmission was heard on, or "" when the receiver was not
-    // scanning a named channel. Stamped once per call epoch and rendered as a bracketed prefix
-    // between the row's timestamp and its protocol token.
+    // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
+    // rendered as a bracketed prefix between the row's timestamp and its protocol token.
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    // Whether channel_label above has been resolved for this row. An unnamed channel resolves to
+    // an empty label, which is an answer and not a missing one -- a -Y list with only some rows
+    // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
+    // of the same epoch would stamp whichever channel the scanner has since hopped to.
+    uint8_t channel_label_resolved;
     uint32_t channel;  // If this occurs on a trunking channel, which channel
     time_t event_time; //time event occurred
     // Wall-clock time the transmission this row describes began, or 0 when unknown.

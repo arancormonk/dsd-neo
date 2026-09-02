@@ -86,6 +86,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].t_mode[0] = '\0';
         event_struct->Event_History_Items[i].s_mode[0] = '\0';
         event_struct->Event_History_Items[i].channel_label[0] = '\0';
+        event_struct->Event_History_Items[i].channel_label_resolved = 0;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
         event_struct->Event_History_Items[i].event_start_time = 0;
@@ -147,6 +148,8 @@ push_event_history(Event_History_I* event_struct) {
         copy_str_field(event_struct->Event_History_Items[i].channel_label,
                        event_struct->Event_History_Items[i - 1].channel_label,
                        sizeof event_struct->Event_History_Items[i].channel_label);
+        event_struct->Event_History_Items[i].channel_label_resolved =
+            event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
         event_struct->Event_History_Items[i].event_start_time =
@@ -590,6 +593,20 @@ watchdog_event_merge_system_identity(Event_History* retained, const Event_Histor
     watchdog_event_merge_text(retained->sysid_string, staged->sysid_string, sizeof(retained->sysid_string));
 }
 
+// The channel label merges on the resolved verdict, not on emptiness. A reacquired segment is the
+// same transmission on the same channel, so the first segment's answer is the one of record --
+// including "no name here", since the scanner may well have rolled on to a named channel by the
+// time the segment merges. Only a row that never answered the question -- one a protocol staged
+// directly rather than rendering -- takes the segment's.
+static void
+watchdog_event_merge_channel_label(Event_History* retained, const Event_History* staged) {
+    if (retained->channel_label_resolved != 0U || staged->channel_label_resolved == 0U) {
+        return;
+    }
+    DSD_SNPRINTF(retained->channel_label, sizeof(retained->channel_label), "%s", staged->channel_label);
+    retained->channel_label_resolved = 1U;
+}
+
 // Scalar identity a later segment may only fill in, never overwrite: the first segment that
 // decoded a value is as authoritative as any later one.
 static void
@@ -632,10 +649,7 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     watchdog_event_merge_text(retained->s_name, staged->s_name, sizeof(retained->s_name));
     watchdog_event_merge_text(retained->t_mode, staged->t_mode, sizeof(retained->t_mode));
     watchdog_event_merge_text(retained->s_mode, staged->s_mode, sizeof(retained->s_mode));
-    // A reacquired segment is the same transmission on the same channel, so the first segment's
-    // label is the one of record -- the scanner may well have rolled on to another channel by the
-    // time the segment merges. Fill-if-blank only, like every other identity field here.
-    watchdog_event_merge_text(retained->channel_label, staged->channel_label, sizeof(retained->channel_label));
+    watchdog_event_merge_channel_label(retained, staged);
 }
 
 // Fold the staged row into the row already in history: this is the same transmission, and
@@ -938,6 +952,7 @@ typedef struct {
     char t_mode[200];
     char s_mode[200];
     char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    uint8_t channel_label_resolved;
     uint16_t svc_opts;
     uint8_t subtype;
     /* Live decoder inputs the builders below still need. Captured alongside the committed row
@@ -1228,20 +1243,30 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
     }
 }
 
-// The scan channel this epoch is being heard on. Sticky: once a render resolves a label the staged
-// row keeps it, and later renders copy it back rather than asking again. Under -Y the scanner
-// advances lcn_freq_roll before the call ends and the row is rendered once more on the finalize
-// pass, so re-resolving would relabel a finished transmission with a channel it was never heard
-// on. The staged row is cleared between epochs -- retire_staged_row(), history_authoritative() and
-// finalize_ended() all init it -- so a non-empty label is always this epoch's own.
+// The scan channel this epoch is being heard on, asked exactly once: the epoch's first render
+// resolves it and every later render of that epoch copies the staged row's answer back. Under -Y
+// the scanner advances lcn_freq_roll before the call ends and the row is rendered once more on the
+// finalize pass, so asking again would relabel a finished transmission with a channel it was never
+// heard on. The staged row is cleared between epochs -- retire_staged_row(),
+// history_authoritative() and finalize_ended() all init it -- so a resolved answer is always this
+// epoch's own.
+//
+// The verdict is carried by its own flag rather than inferred from a non-empty label, because an
+// unnamed scan-list row resolves to an empty label and that is an answer too: a -Y list with only
+// some rows named is the ordinary case, and keying on emptiness would leave those epochs asking
+// again on every render. It is not inferred from event_start_time either -- that is stamped only
+// when opts->playfiles == 0 and the call's elapsed is valid, so it is absent on exactly the paths
+// that would then silently re-resolve.
 static void
 watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state* state, const Event_History* staged,
                                           watchdog_event_current_ctx* ctx) {
-    if (staged != NULL && staged->channel_label[0] != '\0') {
+    if (staged != NULL && staged->channel_label_resolved != 0U) {
         DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", staged->channel_label);
+        ctx->channel_label_resolved = 1U;
         return;
     }
     (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
+    ctx->channel_label_resolved = 1U;
 }
 
 static void
@@ -1296,6 +1321,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(item->t_mode, sizeof(item->t_mode), "%s", ctx->t_mode);
     DSD_SNPRINTF(item->s_mode, sizeof(item->s_mode), "%s", ctx->s_mode);
     DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", ctx->channel_label);
+    item->channel_label_resolved = ctx->channel_label_resolved;
     (void)state;
     (void)slot;
 }
@@ -1502,6 +1528,10 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
 // "YYYY-MM-DD HH:MM:SS " prefix that watchdog_event_row_datetime() and the frontends
 // (app_control/ui_history.c) both key on stays exactly where it was. An unlabelled row gets the
 // unchanged sys_string back and renders byte for byte what it always did.
+//
+// The bracket is display only. A channel name is operator-supplied and may itself contain ']', so
+// the prefix is not delimited unambiguously and nothing may parse it back out; a consumer that
+// wants the label reads Event_History::channel_label.
 static const char*
 watchdog_event_sys_label(const char* label, const char* sys_string, char* buf, size_t buf_sz) {
     if (label == NULL || label[0] == '\0' || buf == NULL || buf_sz == 0) {
@@ -1613,6 +1643,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->t_mode, sizeof(ctx->t_mode), "%s", item->t_mode);
     DSD_SNPRINTF(ctx->s_mode, sizeof(ctx->s_mode), "%s", item->s_mode);
     DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", item->channel_label);
+    ctx->channel_label_resolved = item->channel_label_resolved;
     ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
     ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
 }
@@ -2297,8 +2328,10 @@ dsd_event_clear_data_payload(Event_History* item) {
 
 // A notice line, with the scan channel it was heard on when there is one. Same shape as a voice
 // row: the label sits between the 20-character timestamp prefix and the notice text, so a frontend
-// parsing that prefix is unaffected. dsd_event_emit_system_notice() and watchdog_event_status()
-// deliberately do not use this -- neither describes traffic heard on a channel.
+// parsing that prefix is unaffected, and the bracket is display only for the same reason it is on
+// a voice row -- a channel name may contain ']', so read channel_label rather than parsing this.
+// dsd_event_emit_system_notice() and watchdog_event_status() deliberately do not use this --
+// neither describes traffic heard on a channel.
 static void
 watchdog_event_render_notice_line(const char* datestr, const char* timestr, const char* label, const char* notice,
                                   char* out, size_t out_sz) {
@@ -2346,8 +2379,10 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     item->target_id = observation->ota_target_id <= UINT32_MAX ? (uint32_t)observation->ota_target_id : 0U;
     item->channel = observation->channel;
     // Resolved live rather than from a staged row: unlike a voice epoch, a notice is rendered
-    // exactly once, and the PDU it reports decoded while the receiver was still tuned here.
+    // exactly once, and the PDU it reports decoded while the receiver was still tuned here. The
+    // question is answered either way, empty label included, so the row says so.
     (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
+    item->channel_label_resolved = 1U;
     item->event_time = time(NULL);
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
