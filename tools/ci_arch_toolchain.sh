@@ -13,6 +13,8 @@ Environment:
   CI_ARCH_EXTRA_PACKAGES     Extra pacman packages to install before running.
   CI_ARCH_IWYU_SHA           Expected include-what-you-use commit SHA.
   CI_ARCH_TOOLCHAIN_PREFIX   Container path for cached Arch-only tools.
+  CI_ARCH_PULL_ATTEMPTS      Image pull attempts before giving up (default: 5).
+  CI_ARCH_PULL_BACKOFF_S     Seconds before the first retry, doubled each time (default: 5).
 USAGE
 }
 
@@ -92,6 +94,29 @@ for name in GITHUB_EVENT_NAME CPPCHECK_BUILD_DIR; do
     ENV_ARGS+=(--env "$name=${!name}")
   fi
 done
+
+# Pull the image up front, with a short backoff. Docker Hub answers a manifest fetch with
+# a transient 5xx often enough that an implicit pull inside `docker run` has failed a
+# job whose only step is this wrapper, and a manual re-run was the only recovery. A
+# flake now costs seconds; a real outage still fails, after the attempt budget, with the
+# registry's own message on stderr.
+pull_image() {
+  local attempts="${CI_ARCH_PULL_ATTEMPTS:-5}"
+  local delay="${CI_ARCH_PULL_BACKOFF_S:-5}"
+  local attempt=1
+  while ! docker pull --quiet "$IMAGE"; do
+    if ((attempt >= attempts)); then
+      echo "docker pull $IMAGE failed after $attempt attempts." >&2
+      return 1
+    fi
+    echo "docker pull $IMAGE failed (attempt $attempt/$attempts); retrying in ${delay}s." >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
+pull_image
 
 docker run --rm \
   --volume "$ROOT_DIR:/workspace" \

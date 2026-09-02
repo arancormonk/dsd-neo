@@ -32,6 +32,23 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_support INTERFACE dsd-neo_platform)
 
+# Shell tools under tools/ run CI on our behalf; the ones with retry or give-up
+# logic get a bash-driven test that fakes the program they wrap. Bash only: the
+# scripts themselves are bash, so nothing is lost by skipping them where it is
+# missing.
+if(NOT WIN32)
+    find_program(DSD_NEO_BASH_EXECUTABLE bash)
+    if(DSD_NEO_BASH_EXECUTABLE)
+        add_test(
+            NAME TOOLS_CI_ARCH_TOOLCHAIN_PULL_RETRY
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_arch_toolchain_pull_retry.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
+    endif()
+endif()
+
 add_library(
     dsd-neo_test_call_state_support
     STATIC
