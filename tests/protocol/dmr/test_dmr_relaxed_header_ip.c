@@ -1246,12 +1246,15 @@ test_crc_valid_type1_pdu_dispatches_short_data_and_udp_saps(void) {
     assert(g_decode_ip_calls == 0U);
     assert(g_udp_comp_calls == 0U);
 
+    // TS 102 361-1 table 9.31 makes SAP 2 TCP/IP header compression, for which TS 102 361-3
+    // defines no compressed header (clause 7.2 is UDP/IPv4 only), so it must not reach the UDP
+    // decoder; it gets an explicit "not decoded" notice instead (#450).
     run_type1_pdu_for_sap(2U, block);
-    assert(g_udp_comp_calls == 1U);
-    assert(g_udp_comp_last_len == 20U);
-    assert(g_udp_comp_first_byte == 0x83U);
+    assert(g_udp_comp_calls == 0U);
     assert(g_decode_ip_calls == 0U);
     assert(g_sd_pdu_calls == 0U);
+    assert(g_datacall_calls == 1U);
+    assert(strstr(g_datacall_last_text, "SAP 2") != NULL);
 
     run_type1_pdu_for_sap(3U, block);
     assert(g_udp_comp_calls == 1U);
