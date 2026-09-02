@@ -76,7 +76,7 @@ typedef struct {
     uint32_t source;
     uint32_t target;
     char mfid_string[20];
-    char sap_string[20];
+    char sap_string[32];
     char sddd_string[20];
     char udtf_string[20];
 } dmr_dheader_fields;
@@ -115,7 +115,7 @@ dmr_sap_string(uint8_t sap, uint8_t p_mfid) {
         case 3: return "UDP Comp";
         case 4: return "IP Based";
         case 5: return "ARP Prot";
-        case 9: return "EXTD HDR";
+        case 9: return "Proprietary Packet data"; // ETSI TS 102 361-1 table 9.31
         case 10: return "Short DT";
         case 1: return (p_mfid == 0x10) ? "Moto NET" : "Reserved";
         default: return "Reserved";
@@ -1355,7 +1355,7 @@ dmr_block_type1_handle_mnis(dmr_block_assembler_ctx* ctx) {
 }
 
 static void
-dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
+dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx, const char* reason) {
     char unk_str[200];
     int safe_slot = (ctx->slot == 0 || ctx->slot == 1) ? ctx->slot : 0;
     unsigned long long source = 0;
@@ -1365,7 +1365,7 @@ dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
         target = ctx->state->dmr_lrrp_target[safe_slot];
     }
     DSD_MEMSET(unk_str, 0, sizeof(unk_str));
-    DSD_SNPRINTF(unk_str, sizeof(unk_str), "DATA TGT: %lld; SRC: %lld; Unknown PDU Format;", target, source);
+    DSD_SNPRINTF(unk_str, sizeof(unk_str), "DATA TGT: %lld; SRC: %lld; %s", target, source, reason);
     const dsd_call_observation observation =
         dsd_call_observation_data(ctx->state->lastsynctype, (uint8_t)safe_slot, source, target);
     (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, (uint8_t)safe_slot, &observation, unk_str);
@@ -1374,7 +1374,7 @@ dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx) {
 static void
 dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     if (ctx->slot > 1) {
-        dmr_block_type1_handle_unknown_pdu(ctx);
+        dmr_block_type1_handle_unknown_pdu(ctx, "Unknown PDU Format;");
         return;
     }
 
@@ -1386,12 +1386,17 @@ dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     } else if (sap == 10) {
         dmr_sd_pdu_process(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot],
                            (uint8_t)(ctx->crc_correct != 0U));
-    } else if (sap == 2 || sap == 3) {
+    } else if (sap == 3) {
         dmr_udp_comp_pdu(ctx->opts, ctx->state, len, ctx->state->dmr_pdu_sf[ctx->slot]);
+    } else if (sap == 2) {
+        // ETSI TS 102 361-1 table 9.31: SAP 0010 is TCP/IP header compression. TS 102 361-3 clause
+        // 7.2 defines a compressed header for UDP/IPv4 only, so there is no layout to decode this
+        // with; reading it as the UDP one produced index labels that meant nothing (#450).
+        dmr_block_type1_handle_unknown_pdu(ctx, "TCP/IP header compression (SAP 2) not decoded;");
     } else if (sap == 1 && ctx->state->dmr_pdu_sf[ctx->slot][1] == 0x10) {
         dmr_block_type1_handle_mnis(ctx);
     } else {
-        dmr_block_type1_handle_unknown_pdu(ctx);
+        dmr_block_type1_handle_unknown_pdu(ctx, "Unknown PDU Format;");
     }
 }
 

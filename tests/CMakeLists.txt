@@ -7300,6 +7300,26 @@ add_test(
     COMMAND dsd-neo_test_dmr_lrrp_ip_udp_lengths
 )
 
+# DMR UDP/IPv4 compressed header: index tables 7.15-7.18, extended ports, opcode gate (#450)
+add_executable(
+    dsd-neo_test_dmr_udp_comp_header
+    protocol/dmr/test_dmr_udp_comp_header.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_udp_comp_header
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_udp_comp_header
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(dsd-neo_test_dmr_udp_comp_header PRIVATE dsd-neo_platform)
+add_test(NAME DMR_UDP_COMP_HEADER COMMAND dsd-neo_test_dmr_udp_comp_header)
+
 # DMR LRRP: coordinate formula comparison (RadioReference vs ok-dmrlib vs dsd-neo)
 add_executable(
     dsd-neo_test_dmr_lrrp_coordinate_formulas
@@ -9090,6 +9110,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_t3_force_release
     dsd-neo_test_dmr_t3_move_release
     dsd-neo_test_dmr_talker_alias_header_len
+    dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_dmr_talker_alias_utf16
     dsd-neo_test_dpmr_reference_vectors
     dsd-neo_test_dpmr_voice_bridge
