@@ -245,6 +245,36 @@ typedef struct {
     int span_count;
 } dsd_symbol_timing_trace;
 
+/** Raw samples the symbol grid keeps behind it: enough to prime the longest
+ *  matched filter (DSD_SPS_FILTER_MAX_TAPS) after a switch-off has handed back
+ *  the samples the previous filter still had in flight. */
+#define DSD_MATCHED_FILTER_HISTORY 2048
+
+/**
+ * The matched filter the symbol grid is reading through, and what it takes to
+ * change it without moving the grid (issue #444).
+ *
+ * The grid reads the raw discriminator until a sync names a protocol and the
+ * filter's output afterwards, which describes the signal one group delay in the
+ * past. A change of `kind` or `sps` is therefore a discontinuity in the content
+ * the grid samples, and `src/dsp/dsd_symbol.c` pays for it here: a filter
+ * switching on is primed from `raw` and fed its delay's worth of samples whose
+ * outputs are discarded; one switching off hands back the samples it still had
+ * in flight, which the grid re-reads from `raw` (`replay` of them) before live
+ * input resumes. Zeroed by initState() and again by
+ * dsd_symbol_matched_filter_reset() alongside init_rrc_filter_memory(), since a
+ * cleared filter with this saying it is primed would be the transient all over.
+ */
+typedef struct {
+    int kind;  /**< A dsd_sps_filter_kind; an int because core does not see dsp headers. 0 is unfiltered. */
+    int sps;   /**< Samples per symbol `kind` was designed for. */
+    int delay; /**< Group delay of `kind` at `sps`, in samples; 0 when unfiltered. */
+    float raw[DSD_MATCHED_FILTER_HISTORY]; /**< Raw samples the grid consumed, newest last; a ring. */
+    int raw_head;                          /**< Next write index into `raw`. */
+    int raw_count;                         /**< Samples held, saturating at the ring size. */
+    int replay;                            /**< Samples still to be re-read from `raw` before live input. */
+} dsd_matched_filter_seam;
+
 typedef struct {
     uint8_t F1;
     uint8_t F2;
@@ -1537,16 +1567,9 @@ struct dsd_state {
      *  See dsp/symbol_timing_debug.h. */
     dsd_symbol_timing_trace timing_trace;
 
-    /** Which matched filter the symbol grid is currently reading through, and at
-     *  which samples-per-symbol, as a `dsd_sps_filter_kind`. The grid runs
-     *  unfiltered until a sync names a protocol, so this changing marks a
-     *  discontinuity in the stream the grid is sampling: the filter's group
-     *  delay has to be paid off once or the decoder re-reads content it has
-     *  already consumed (issue #444). Zero is "unfiltered", which is also the
-     *  state a cleared `lastsynctype` puts the grid back into. */
-    int matched_filter_kind;
-    int matched_filter_sps;
-    int matched_filter_delay;
+    /** The matched filter the symbol grid reads through and the raw history a
+     *  switch is paid from; see dsd_matched_filter_seam. */
+    dsd_matched_filter_seam matched_filter;
 
     // Advisory-only input level health for ncurses/status snapshots.
     dsd_input_level_snapshot input_level;

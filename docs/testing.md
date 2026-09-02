@@ -328,11 +328,26 @@ Reading it:
 - Keep the machine otherwise idle: `--rate realtime` is wall-clock paced, so a
   build competing with a compile is measured under different conditions.
 
-- **A change can improve quality and decode fewer frames at once.** Paying off
-  the matched filter's group delay took errors per voice frame from 3.59 to 2.79
-  on `fiNXDN` (12 repeats, 12/12) while decoding about five fewer voice frames a
-  run. Total errors fell 27% against 6% fewer frames, so the per-frame gain is
-  real rather than an artefact of decoding less; report both numbers and say so.
+- **When the frame count moves, match payloads before calling it quality.**
+  Paying off the matched filter's group delay at every switch took errors per
+  voice frame from 3.63 to 2.34 on `fiNXDN` (12 repeats, 12/12), with total
+  errors down 41% and 9% fewer voice frames a run. That ratio alone does not say
+  which frames changed. Matching the AMBE payloads in `-Z` logs of the two
+  builds did: every subframe both builds decoded carried the same errors, and
+  the errors that went away sat in frames only `main` produced -- the first
+  frame after each switch-on, read from rewound samples, at four errors per
+  subframe against under one for the rest. The frame count fell because those
+  frames were never real decodes. Report both numbers, and say where the
+  difference sits. The same run is the one quoted in PR #454, so the two do not
+  drift apart.
+
+- **A unit test cannot see a call-order bug in its caller.** The first cut of
+  that seam recorded the sample in hand before priming from the history and then
+  fed it again, so every switch-on read one sample twice for a window; the
+  filter test passed because it primed in the right order itself. The property
+  has to be checked where the order is decided, which is why
+  `SYMBOL_MATCHED_FILTER_SEAM` drives `getSymbol()` rather than the filter
+  module.
 
 Issue #444 is the worked example, and the comment above `symbol_adjust_timing_nxdn()`
 in `src/dsp/dsd_symbol.c` records what it ruled out. A closed timing loop was

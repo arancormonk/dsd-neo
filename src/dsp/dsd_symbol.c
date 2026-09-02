@@ -251,6 +251,12 @@ typedef struct {
     /* Samples this symbol has actually taken, which is not the span index: the
        timing nudge moves that index and a stream flush restarts it. */
     int timing_samples;
+    /* The matched filter this sample goes through, a dsd_sps_filter_kind,
+       decided once per sample by the seam so the switch and the filtering agree. */
+    int matched_filter_kind;
+    /* Set when the sample came back out of the seam's raw history rather than
+       from the input: it is already recorded there and already captured. */
+    int sample_replayed;
     unsigned int analog_out_cap;
 #ifdef USE_RADIO
     int rtl_output_kind;
@@ -347,6 +353,62 @@ symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float 
                             int cqpsk_symbol_rate) {
     const dsd_sps_filter_kind kind = symbol_matched_filter_kind(opts, state, rtl_symbol_rate_output, cqpsk_symbol_rate);
     return dsd_sps_filter_apply(kind, sample, state->samplesPerSymbol);
+}
+
+/* The raw history the seam works from: samples the grid consumed, newest last. */
+static inline void
+seam_note_raw(dsd_matched_filter_seam* seam, float sample) {
+    seam->raw[seam->raw_head] = sample;
+    seam->raw_head = (seam->raw_head + 1) % DSD_MATCHED_FILTER_HISTORY;
+    if (seam->raw_count < DSD_MATCHED_FILTER_HISTORY) {
+        seam->raw_count++;
+    }
+}
+
+/* The sample recorded @p back samples ago; 1 is the newest. */
+static inline float
+seam_raw_at(const dsd_matched_filter_seam* seam, int back) {
+    int idx = seam->raw_head - back;
+    while (idx < 0) {
+        idx += DSD_MATCHED_FILTER_HISTORY;
+    }
+    return seam->raw[idx];
+}
+
+/* Across a stream discontinuity: the history describes a transmission that is
+   gone, and nothing from it is owed back. */
+static inline void
+seam_forget(dsd_matched_filter_seam* seam) {
+    DSD_MEMSET(seam->raw, 0, sizeof(seam->raw));
+    seam->raw_head = 0;
+    seam->raw_count = 0;
+    seam->replay = 0;
+}
+
+/* Hand @p kind the newest history it can use, leaving out the newest @p skip
+   samples, so its first real output is computed from signal rather than from
+   whatever the previous transmission left in it. */
+static void
+seam_prime(const dsd_matched_filter_seam* seam, dsd_sps_filter_kind kind, int sps, int skip, int delay) {
+    if (kind == DSD_SPS_FILTER_NONE) {
+        return;
+    }
+    const int taps = 2 * delay + 1;
+    int n = seam->raw_count - skip;
+    if (n > taps) {
+        n = taps;
+    }
+    for (int back = skip + n; back > skip; back--) {
+        dsd_sps_filter_prime(kind, seam_raw_at(seam, back), sps);
+    }
+}
+
+void
+dsd_symbol_matched_filter_reset(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    DSD_MEMSET(&state->matched_filter, 0, sizeof(state->matched_filter));
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -1594,6 +1656,16 @@ symbol_take_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     if (symbol_stop_after_shutdown(&work->sample)) {
         return 0;
     }
+    /* Samples a matched-filter switch handed back are read again, oldest first,
+       before live input resumes. */
+    dsd_matched_filter_seam* seam = &state->matched_filter;
+    if (seam->replay > 0) {
+        work->sample = seam_raw_at(seam, seam->replay);
+        seam->replay--;
+        work->sample_replayed = 1;
+        return 1;
+    }
+    work->sample_replayed = 0;
     if (dsd_pcm_input_uses_staged_resampler(opts) && opts->input_upsample_pos < opts->input_upsample_len) {
         work->sample = opts->input_upsample_buf[opts->input_upsample_pos++];
         return 1;
@@ -1824,24 +1896,43 @@ symbol_process_symbol_flt_input(dsd_opts* opts, float* symbol_out) {
     return 1;
 }
 
+/* Take the next sample and, when it is live rather than handed back, record it. */
+static int
+symbol_take_sample_into_history(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+    if (!symbol_take_sample(opts, state, work)) {
+        return 0;
+    }
+    if (!work->sample_replayed) {
+        seam_note_raw(&state->matched_filter, work->sample);
+    }
+    return 1;
+}
+
 /*
  * The stream the grid samples changes identity when a sync names a protocol: up
  * to that point the grid reads the raw discriminator, afterwards the matched
  * filter's output, which describes the signal one group delay in the past. Left
  * alone that makes the decoder re-read content it has already consumed -- 3.35
  * symbols for NXDN48 at 20 samples per symbol, 4.5 for P25p1, and for P25p1 half
- * a symbol of phase on top -- once per transmission, on the first frame, which
- * is the frame that opens the call (issue #444).
+ * a symbol of phase on top -- at every accept, which noCarrier makes roughly
+ * once per frame rather than once per call (issue #444). Switching back is the
+ * mirror image: the samples the filter still had in flight would be skipped.
  *
- * So hand the filter the history it missed and then pay the delay off once, by
- * consuming that many samples and discarding what they produce: they describe
- * positions the grid has already read. What the caller filters next is then the
- * signal at the position it was about to read. A samples-per-symbol change is
- * the same discontinuity by another route, because the redesign clears the
- * filter's history.
+ * So treat every switch as a move of the content position and pay it off in
+ * samples. On the stream it is leaving, the sample in hand would have produced
+ * the position after the last one read; the new stream puts a different
+ * position under that same sample, and the difference is either consumed (a
+ * longer delay: prime the filter with the history it missed, then feed it that
+ * many samples and discard what they produce, since those describe positions
+ * already read) or handed back (a shorter delay, or none: re-read that many
+ * samples from the history through the new filter before live input resumes).
+ * Only the change in delay is owed, so between two filters, which is what AUTO
+ * does when the sync it accepts changes protocol, it is their difference. A
+ * samples-per-symbol change is the same discontinuity by another route, because
+ * the redesign clears the filter's history.
  */
 static int
-symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
+symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, int have_sync, symbol_work_ctx* work) {
 #ifdef USE_RADIO
     const int rtl_symbol_rate_output = work->rtl_symbol_rate_output;
     const int cqpsk_symbol_rate = work->cqpsk_symbol_rate;
@@ -1850,37 +1941,46 @@ symbol_sync_matched_filter_seam(dsd_opts* opts, dsd_state* state, symbol_work_ct
     const int cqpsk_symbol_rate = 0;
 #endif
     const dsd_sps_filter_kind kind = symbol_matched_filter_kind(opts, state, rtl_symbol_rate_output, cqpsk_symbol_rate);
+    work->matched_filter_kind = (int)kind;
+    dsd_matched_filter_seam* seam = &state->matched_filter;
     const int sps = state->samplesPerSymbol;
-    if ((int)kind == state->matched_filter_kind && sps == state->matched_filter_sps) {
+    if ((int)kind == seam->kind && sps == seam->sps) {
         return 1;
     }
 
-    const int previous_delay = state->matched_filter_delay;
-    state->matched_filter_kind = (int)kind;
-    state->matched_filter_sps = sps;
-    if (kind == DSD_SPS_FILTER_NONE) {
-        state->matched_filter_delay = 0;
-        return 1; /* Switching off costs nothing: the raw stream has no delay. */
-    }
+    const int previous_delay = seam->delay;
+    const int delay = dsd_sps_filter_group_delay(kind, sps);
+    seam->kind = (int)kind;
+    seam->sps = sps;
+    seam->delay = delay;
 
-    const int delay = dsd_sps_filter_prime_from_history(kind, sps);
-    state->matched_filter_delay = delay;
-    /* Only the change in delay is owed. Coming from the raw stream that is the
-       whole of it; between two filters, which is what AUTO does when the sync it
-       last accepted changes protocol, it is the difference. A filter that
-       reports the signal less far back than the one before it cannot be paid at
-       all -- that would mean un-reading samples -- so it is left to the loop
-       below to work off. */
-    int catch_up = delay - previous_delay;
-    if (catch_up < 0) {
-        catch_up = 0;
-    }
-    for (int j = 0; j < catch_up; j++) {
-        (void)dsd_sps_filter_apply(kind, work->sample, sps);
+    /* The sample in hand is the newest the history holds, unless a hand-back is
+       still being read out, in which case those come after it. */
+    const int newer_than_in_hand = seam->replay;
+    if (delay < previous_delay) {
+        int rewind = previous_delay - delay;
+        const int held_before_in_hand = seam->raw_count - newer_than_in_hand - 1;
+        if (rewind > held_before_in_hand) {
+            rewind = held_before_in_hand > 0 ? held_before_in_hand : 0;
+        }
+        seam->replay = newer_than_in_hand + 1 + rewind;
+        seam_prime(seam, kind, sps, seam->replay, delay);
+        /* The oldest handed-back sample replaces the one in hand, which is read
+           again in its turn. */
         if (!symbol_take_sample(opts, state, work)) {
             return 0;
         }
-        dsd_sps_filter_note_raw(work->sample);
+    } else {
+        seam_prime(seam, kind, sps, newer_than_in_hand + 1, delay);
+        for (int owed = delay - previous_delay; owed > 0; owed--) {
+            (void)dsd_sps_filter_apply(kind, work->sample, sps);
+            if (!work->sample_replayed) {
+                symbol_process_analog_capture(opts, state, work, have_sync);
+            }
+            if (!symbol_take_sample_into_history(opts, state, work)) {
+                return 0;
+            }
+        }
     }
     /* The crossing that was pending belonged to the stream that just ended. */
     state->jitter = -1;
@@ -1897,13 +1997,12 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
     int i = 0;
     while (i < work->symbol_span) {
         symbol_adjust_timing_index(state, have_sync, work->symbol_span, &i);
-        if (!symbol_take_sample(opts, state, work)) {
+        if (!symbol_take_sample_into_history(opts, state, work)) {
             return 0;
         }
-        dsd_sps_filter_note_raw(work->sample);
         /* Before the span-restart check below, so a flush the catch-up runs into
            is handled by it rather than being swallowed here. */
-        if (!symbol_sync_matched_filter_seam(opts, state, work)) {
+        if (!symbol_sync_matched_filter_seam(opts, state, have_sync, work)) {
             return 0;
         }
 #ifdef USE_RADIO
@@ -1921,8 +2020,8 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
             state->jitter = -1;
             /* The recorded raw history is from the stream that just ended, so it
                cannot prime a filter for the one starting here. */
-            dsd_sps_filter_forget_raw();
-            dsd_sps_filter_note_raw(work->sample);
+            seam_forget(&state->matched_filter);
+            seam_note_raw(&state->matched_filter, work->sample);
             /* Same reasoning for the timing trace: correlating a sync word across a
                stream seam would measure the flush, not the grid. */
             dsd_symbol_timing_trace_reset(state);
@@ -1931,16 +2030,11 @@ symbol_process_live_samples(dsd_opts* opts, dsd_state* state, int have_sync, sym
         }
 #endif
 
-        symbol_process_analog_capture(opts, state, work, have_sync);
-#ifdef USE_RADIO
-        int rtl_symbol_rate_output = work->rtl_symbol_rate_output;
-        int cqpsk_symbol_rate = work->cqpsk_symbol_rate;
-#else
-        int rtl_symbol_rate_output = 0;
-        int cqpsk_symbol_rate = 0;
-#endif
+        if (!work->sample_replayed) {
+            symbol_process_analog_capture(opts, state, work, have_sync);
+        }
         work->sample =
-            symbol_apply_matched_filter(opts, state, work->sample, rtl_symbol_rate_output, cqpsk_symbol_rate);
+            dsd_sps_filter_apply((dsd_sps_filter_kind)work->matched_filter_kind, work->sample, state->samplesPerSymbol);
         work->sample = symbol_apply_sync_clip(state, have_sync, work->sample);
         if (work->timing_level >= DSD_NEO_SYMBOL_TIMING_SYNC_LINE) {
             dsd_symbol_timing_trace_push_sample(state, work->sample);

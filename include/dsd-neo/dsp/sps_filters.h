@@ -45,57 +45,28 @@ void init_rrc_filter_memory(void);
 float dsd_sps_filter_apply(dsd_sps_filter_kind kind, float sample, int samples_per_symbol);
 
 /**
- * @brief Tap count @p kind uses at @p samples_per_symbol, designing it if needed.
- * @return Taps, or 0 when the filter cannot be designed for that rate.
- */
-int dsd_sps_filter_taps_len(dsd_sps_filter_kind kind, int samples_per_symbol);
-
-/**
  * @brief Group delay of @p kind at @p samples_per_symbol, in samples.
  *
- * The taps are symmetric and odd-length, so this is exactly `(taps - 1) / 2`:
+ * The taps are symmetric and odd in length, so this is exactly `(taps - 1) / 2`:
  * the filter's output when sample n has just been fed describes the signal at
- * n - delay.
+ * n - delay. A query only: it neither designs nor disturbs a running filter, so
+ * the symbolizer can ask about the filter it is switching to while the one it
+ * is leaving still runs.
  *
  * @return Delay in samples, or 0 when the filter is inactive at that rate.
  */
 int dsd_sps_filter_group_delay(dsd_sps_filter_kind kind, int samples_per_symbol);
 
 /**
- * @brief Push @p count samples through @p kind's history, discarding the output.
+ * @brief Push one sample into @p kind's history without computing an output.
  *
- * Used to hand a filter the samples that ran past while it was switched off, so
- * its first real output is computed from signal rather than from whatever the
- * previous transmission left behind.
+ * How a filter switching on mid-stream is handed the samples that ran past
+ * while it was off, oldest first, so its first real output is computed from
+ * signal rather than from whatever the previous transmission left behind.
+ * Designs the filter for @p samples_per_symbol if it is not already; a no-op
+ * for NONE.
  */
-void dsd_sps_filter_prime(dsd_sps_filter_kind kind, const float* samples, int count, int samples_per_symbol);
-
-/**
- * @brief Record one raw, unfiltered sample the symbol grid has consumed.
- *
- * Kept so a filter switching on mid-stream can be primed with the history it
- * missed. Cheap enough to call per sample.
- */
-void dsd_sps_filter_note_raw(float sample);
-
-/** @brief Drop the recorded raw history, e.g. across a stream discontinuity. */
-void dsd_sps_filter_forget_raw(void);
-
-/**
- * @brief Prime @p kind from the recorded raw history and report its delay.
- *
- * The caller must then push @p delay further samples through the filter and
- * discard the outputs: those describe positions the grid has already read.
- *
- * @return The filter's group delay in samples, or 0 when it is inactive.
- */
-int dsd_sps_filter_prime_from_history(dsd_sps_filter_kind kind, int samples_per_symbol);
-
-/**
- * @brief Copy @p kind's designed taps at @p samples_per_symbol into @p out.
- * @return Taps written, or 0 when they do not fit or the filter is inactive.
- */
-int dsd_sps_filter_copy_taps(dsd_sps_filter_kind kind, int samples_per_symbol, float* out, int cap);
+void dsd_sps_filter_prime(dsd_sps_filter_kind kind, float sample, int samples_per_symbol);
 
 #ifdef __cplusplus
 }

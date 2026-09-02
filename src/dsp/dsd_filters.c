@@ -357,48 +357,22 @@ p25_filter(float sample, int samples_per_symbol) {
     return apply_sps_fir(&g_fir_p25, sample, samples_per_symbol);
 }
 
-/*
- * Raw samples the symbolizer has already consumed, newest last. A filter that
- * switches on mid-stream is handed these so its first output is computed from
- * signal rather than from the previous transmission's tail.
- */
-static float g_raw_hist[DSD_SPS_FILTER_MAX_TAPS];
-static int g_raw_head;  /* next write index */
-static int g_raw_count; /* samples held, saturating at the ring size */
-
 void
 init_rrc_filter_memory(void) {
     reset_sps_fir(&g_fir_p25);
     reset_sps_fir(&g_fir_dmr);
     reset_sps_fir(&g_fir_nxdn);
     reset_sps_fir(&g_fir_dpmr);
-    dsd_sps_filter_forget_raw();
-}
-
-void
-dsd_sps_filter_note_raw(float sample) {
-    g_raw_hist[g_raw_head] = sample;
-    g_raw_head = (g_raw_head + 1) % DSD_SPS_FILTER_MAX_TAPS;
-    if (g_raw_count < DSD_SPS_FILTER_MAX_TAPS) {
-        g_raw_count++;
-    }
-}
-
-void
-dsd_sps_filter_forget_raw(void) {
-    DSD_MEMSET(g_raw_hist, 0, sizeof(g_raw_hist));
-    g_raw_head = 0;
-    g_raw_count = 0;
 }
 
 /*
  * The symbol grid runs on the unfiltered stream until a sync names a protocol,
  * and on the filtered one afterwards. Those two streams are not the same signal:
- * a symmetric FIR of L taps reports the signal L/2 samples in the past, so the
- * moment the filter switches on the decoder starts re-reading content it has
- * already consumed. The helpers below let the symbolizer hand the filter the
- * history it missed and then pay off that delay once, so the switch costs
- * neither a transient nor a rewind (issue #444).
+ * a symmetric FIR of L taps reports the signal (L-1)/2 samples in the past, so
+ * the moment the filter switches on the decoder would start re-reading content
+ * it has already consumed. The symbolizer pays that off at the switch (issue
+ * #444); what it needs from here is the delay, stated without disturbing a
+ * running filter, and a way to hand a filter the history it missed.
  */
 static sps_fir*
 sps_fir_for_kind(dsd_sps_filter_kind kind) {
@@ -412,17 +386,9 @@ sps_fir_for_kind(dsd_sps_filter_kind kind) {
     }
 }
 
-/* Design on demand so callers can ask about geometry before any sample flows. */
-static sps_fir*
-sps_fir_ready_for(dsd_sps_filter_kind kind, int samples_per_symbol) {
-    sps_fir* f = sps_fir_for_kind(kind);
-    if (!f || samples_per_symbol <= 1) {
-        return NULL;
-    }
-    if (!f->ready || samples_per_symbol != f->last_sps) {
-        design_sps_fir(f, samples_per_symbol);
-    }
-    return (f->ready && f->taps_len > 0) ? f : NULL;
+static int
+sps_fir_can_design(const sps_fir* f, int samples_per_symbol) {
+    return f && f->base && f->base_len > 0 && f->base_sps > 0 && samples_per_symbol > 1;
 }
 
 float
@@ -435,73 +401,33 @@ dsd_sps_filter_apply(dsd_sps_filter_kind kind, float sample, int samples_per_sym
 }
 
 int
-dsd_sps_filter_taps_len(dsd_sps_filter_kind kind, int samples_per_symbol) {
-    const sps_fir* f = sps_fir_ready_for(kind, samples_per_symbol);
-    return f ? f->taps_len : 0;
-}
-
-int
 dsd_sps_filter_group_delay(dsd_sps_filter_kind kind, int samples_per_symbol) {
-    const int taps_len = dsd_sps_filter_taps_len(kind, samples_per_symbol);
+    const sps_fir* f = sps_fir_for_kind(kind);
+    if (!sps_fir_can_design(f, samples_per_symbol)) {
+        return 0;
+    }
+    /* The same arithmetic the design uses, so the answer matches what apply()
+       will run, without designing: that would clear a filter still in use. */
+    const int taps_len = sps_fir_compute_taps_len(f, samples_per_symbol);
     return taps_len > 0 ? (taps_len - 1) / 2 : 0;
 }
 
-/* One sample into the history, without computing an output. */
-static inline void
-sps_fir_push_history(sps_fir* f, float sample) {
+void
+dsd_sps_filter_prime(dsd_sps_filter_kind kind, float sample, int samples_per_symbol) {
+    sps_fir* f = sps_fir_for_kind(kind);
+    if (!sps_fir_can_design(f, samples_per_symbol)) {
+        return;
+    }
+    if (!f->ready || samples_per_symbol != f->last_sps) {
+        design_sps_fir(f, samples_per_symbol);
+    }
+    if (!f->ready || f->taps_len <= 0) {
+        return;
+    }
     int head = f->head + 1;
     if (head >= f->taps_len) {
         head = 0;
     }
     f->hist[head] = sample;
     f->head = head;
-}
-
-void
-dsd_sps_filter_prime(dsd_sps_filter_kind kind, const float* samples, int count, int samples_per_symbol) {
-    sps_fir* f = sps_fir_ready_for(kind, samples_per_symbol);
-    if (!f || !samples || count <= 0) {
-        return;
-    }
-    /* Only the newest taps_len samples can still be in the window. */
-    int start = 0;
-    if (count > f->taps_len) {
-        start = count - f->taps_len;
-    }
-    for (int n = start; n < count; n++) {
-        sps_fir_push_history(f, samples[n]);
-    }
-}
-
-int
-dsd_sps_filter_prime_from_history(dsd_sps_filter_kind kind, int samples_per_symbol) {
-    sps_fir* f = sps_fir_ready_for(kind, samples_per_symbol);
-    if (!f) {
-        return 0;
-    }
-    const int n = (f->taps_len < g_raw_count) ? f->taps_len : g_raw_count;
-    int idx = g_raw_head - n;
-    while (idx < 0) {
-        idx += DSD_SPS_FILTER_MAX_TAPS;
-    }
-    /* Oldest first, walking the ring. This runs once per filter switch, so the
-       wrap test per sample costs nothing worth splitting the loop for. */
-    for (int k = 0; k < n; k++) {
-        sps_fir_push_history(f, g_raw_hist[idx]);
-        idx++;
-        if (idx >= DSD_SPS_FILTER_MAX_TAPS) {
-            idx = 0;
-        }
-    }
-    return (f->taps_len - 1) / 2;
-}
-
-int
-dsd_sps_filter_copy_taps(dsd_sps_filter_kind kind, int samples_per_symbol, float* out, int cap) {
-    const sps_fir* f = sps_fir_ready_for(kind, samples_per_symbol);
-    if (!f || !out || cap < f->taps_len) {
-        return 0;
-    }
-    DSD_MEMCPY(out, f->taps, (size_t)f->taps_len * sizeof(float));
-    return f->taps_len;
 }

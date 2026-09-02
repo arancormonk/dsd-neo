@@ -21,6 +21,7 @@
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sps_filters.h>
+#include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
@@ -2850,6 +2851,7 @@ dsd_engine_run_with_lifecycle(dsd_opts* opts, dsd_state* state, const dsd_engine
     reset_device_io_caches();
     dsd_bootstrap_enable_ftz_daz_if_enabled();
     init_rrc_filter_memory();
+    dsd_symbol_matched_filter_reset(state);
     InitAllFecFunction();
     CNXDNConvolution_init();
 

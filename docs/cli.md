@@ -784,9 +784,9 @@ Debug (verbose/developer)
 ### Symbol timing (`DSD_NEO_DEBUG_SYMBOL_TIMING`)
 
 The decoder's sampling phase is fixed when a sync is acquired and held for the rest of the call, so a call decoded
-at a poor phase stays at that phase. The matched filter switching on at that same accept no longer moves the phase
-with it (#444), so `off` describes the grid rather than the switch. Level `1` prints one line per accepted frame
-sync:
+at a poor phase stays at that phase. The matched filter switching on at that accept, or off at the end of the
+call, no longer moves the phase with it (#444), so `off` describes the grid rather than the switch. Level `1`
+prints one line per accepted frame sync:
 
 ```text
 SYMTIMING: sync=29 win=13113313 sps=20 jitter=-1 off=0 accum=0

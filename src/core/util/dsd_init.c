@@ -460,6 +460,9 @@ init_state_core_buffers(dsd_state* state) {
     state->timing_trace.span_head = 0;
     state->timing_trace.span_count = 0;
 
+    // The matched filter the symbol grid reads through starts as "none", with no history behind it.
+    DSD_MEMSET(&state->matched_filter, 0, sizeof(state->matched_filter));
+
     state->repeat = 0;
 
     // RTL-SDR stream context (initialized to NULL; lifecycle managed by caller)
@@ -1284,6 +1287,9 @@ freeState(dsd_state* state) {
     state->timing_trace.sample_count = 0;
     state->timing_trace.span_head = 0;
     state->timing_trace.span_count = 0;
+
+    // The matched filter the symbol grid reads through starts as "none", with no history behind it.
+    DSD_MEMSET(&state->matched_filter, 0, sizeof(state->matched_filter));
 
     dsd_aligned_free(state->dibit_buf);
     state->dibit_buf = NULL;

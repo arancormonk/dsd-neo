@@ -228,10 +228,16 @@ installs from `src/engine/trunk_tuning.c` in `src/engine/trunk_tuning_hooks_inst
 - `dsd_filters.c` owns the per-protocol matched filters, selected by kind rather than by calling one of four
   wrappers, because the symbol grid has to know when the stream it samples changes identity. It reads the raw
   discriminator until a sync names a protocol and the filter's output afterwards, and that output describes the
-  signal one group delay in the past — 67 samples for NXDN48 at 20 samples per symbol. `dsd_symbol.c` therefore
-  primes the filter from the raw history it missed and consumes that delay once at the switch, so the grid neither
-  re-reads content it has already consumed nor sees a half-window transient (#444). `MATCHED_FILTER_SEAM` pins the
-  geometry that makes the delay knowable and the alignment that follows from paying it.
+  signal one group delay in the past — 67 samples for NXDN48 at 20 samples per symbol. What the filter module
+  promises the symbolizer is small: the delay, stated without disturbing a running filter, and a way to push
+  history into a filter without reading an output. `MATCHED_FILTER_SEAM` pins that promise.
+- `dsd_symbol.c` pays for every switch so the grid does not move. It keeps the raw samples it has consumed
+  (`dsd_state::matched_filter`, see `core/state.h`); a filter switching on is primed from that history and fed its
+  delay's worth of samples whose outputs are discarded, one switching off hands back the samples it still had in
+  flight, which the grid re-reads before live input resumes, and between two filters only the difference in delay
+  is owed. Without that the switch-on rewound the grid by a third of a symbol on NXDN48 and half a symbol on
+  P25p1 roughly once per frame, and the switch-off skipped the same (#444). `SYMBOL_MATCHED_FILTER_SEAM` drives
+  `getSymbol()` across each kind of switch and checks the content position never moves.
 - `dsd_symbol.c` owns the open-loop FSK symbol grid. Only the inter-frame sync search moves it, by a whole sample at
   a time, on the first zero crossing latched in the previous symbol — a bang-bang loop on one unfiltered sample
   index, and between frames the only thing tracking the sampling instant across a call. Issue #444 documents how
