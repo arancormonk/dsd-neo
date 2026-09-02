@@ -30,6 +30,11 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 
+/* Buffer size for a human-readable channel label. Sized to hold a trunk-scan
+ * target id (dsd_trunk_scan_target.id[64]) unchanged; a channel-map CSV name is
+ * truncated to 63 characters plus the terminator. */
+#define DSD_CHANNEL_LABEL_SIZE 64
+
 enum DSD_ATTR_PACKED {
     DSD_P25_P2_AUDIO_RING_DEPTH = 4,
     DSD_P25_MAC_FRAGMENT_MAX_OCTETS = 256,
@@ -158,8 +163,17 @@ typedef struct {
     char s_name[200];   //same as above, but if loaded from a src value and not tg value
     char t_mode[200];   //mode, or A,B,D,DE from csv group import file
     char s_mode[200];   //mode, or A,B,D,DE from csv group import file
-    uint32_t channel;   // If this occurs on a trunking channel, which channel
-    time_t event_time;  //time event occurred
+    // Name of the scan channel this transmission was heard on, or "" when the receiver was not
+    // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
+    // rendered as a bracketed prefix between the row's timestamp and its protocol token.
+    char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    // Whether channel_label above has been resolved for this row. An unnamed channel resolves to
+    // an empty label, which is an answer and not a missing one -- a -Y list with only some rows
+    // named is ordinary -- so the emptiness alone cannot serve as "ask again", or a later render
+    // of the same epoch would stamp whichever channel the scanner has since hopped to.
+    uint8_t channel_label_resolved;
+    uint32_t channel;  // If this occurs on a trunking channel, which channel
+    time_t event_time; //time event occurred
     // Wall-clock time the transmission this row describes began, or 0 when unknown.
     // event_time is restamped as last-activity on every render pass, so by commit it
     // reads as the call's end; the pair is what gives a frontend a real duration.
@@ -473,6 +487,14 @@ struct dsd_state {
      * from trunk_chan_map on are copied explicitly. */
     long int* trunk_lcn_freq_ext;
     size_t trunk_lcn_freq_ext_capacity;
+    /* Optional operator-supplied name per scan-list row, indexed by LCN row index the
+     * way dsd_state_trunk_lcn_slot() indexes the frequencies. NULL until a channel-map
+     * CSV opts in with a `name` header column, and shorter than the list when only the
+     * first rows are named -- read it through dsd_state_trunk_lcn_name_get(). Never
+     * inside a UI_SNAPSHOT_COPY_RANGE, for the same reason as trunk_lcn_freq_ext above:
+     * a byte copy of the pointer would alias the decoder's buffer into the snapshot. */
+    char (*trunk_lcn_name)[DSD_CHANNEL_LABEL_SIZE];
+    size_t trunk_lcn_name_capacity;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -1577,6 +1599,12 @@ struct dsd_state {
     dsd_input_level_status input_level_last_toast_status;
     dsd_input_level_source input_level_last_toast_source;
 
+    /* Which --trunk-scan target the receiver is parked on, published for the frontends.
+     * Zeroed while trunk scan is off or before the first target is selected. */
+    char trunk_scan_active_id[DSD_CHANNEL_LABEL_SIZE];
+    uint16_t trunk_scan_active_ordinal; /**< 1-based position in the target list; 0 = none */
+    uint16_t trunk_scan_target_count;   /**< Targets in the list, for an "n of m" readout */
+
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];
 
@@ -1712,10 +1740,39 @@ dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
 int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
 
 /**
- * Free the scan-list heap tail and zero its pointer/capacity. The embedded
- * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
+ * Free the scan-list heap tail and the per-row name store, and zero their
+ * pointers/capacities. The embedded DSD_TRUNK_LCN_EMBEDDED slots are part of
+ * dsd_state and need no release.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
+
+/**
+ * Ensure name-store indices 0..count-1 are addressable: grows by doubling and
+ * zero-fills the new entries. Returns 0 on success, -1 on allocation failure
+ * (state left valid, existing names preserved).
+ */
+int dsd_state_trunk_lcn_name_reserve(dsd_state* state, size_t count);
+
+/** Free the per-row name store and zero its pointer/capacity. */
+void dsd_state_trunk_lcn_name_free(dsd_state* state);
+
+/**
+ * Store the name of scan-list row @p index. The name is truncated to
+ * DSD_CHANNEL_LABEL_SIZE - 1 bytes without splitting a UTF-8 character, has
+ * control characters replaced with spaces (so a stray tab or CR never reaches
+ * the terminal), and is trimmed of leading and trailing ASCII whitespace --
+ * including whatever that substitution and truncation leave at either end. A
+ * NULL or blank name clears the entry, allocating nothing when the store does
+ * not already reach @p index. Returns 0 on success, -1 on allocation failure or
+ * a NULL state.
+ */
+int dsd_state_trunk_lcn_name_set(dsd_state* state, size_t index, const char* name);
+
+/**
+ * Name of scan-list row @p index, or "" when the row is unnamed, the store is
+ * shorter than @p index, or no name column was ever imported. Never NULL.
+ */
+const char* dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index);
 
 /**
  * Whether the scan list is operator-supplied rather than learned over the air.

@@ -94,6 +94,103 @@ Item {
             tryVerify(function () { return !row.visible })
         }
 
+        // The hero's subline says which scan channel the call was heard on, but
+        // only when that is not already the name above it: a talkgroup-0 call is
+        // headlined by its channel, so repeating it underneath would say nothing.
+        function test_03b_the_hero_subline_names_the_channel_only_when_the_name_is_something_else() {
+            var channel = findChild(screenLoader.item, "heroChannel")
+            verify(channel !== null, "the hero channel text is missing")
+
+            testContext.setMetric("leadSlot", 1)
+            testContext.setMetric("slot1CallState", 2)
+            testContext.setMetric("slot1CallName", "Metro Fire")
+            testContext.setMetric("slot1Channel", "Fire Dispatch")
+            tryVerify(function () { return channel.visible }, 5000, "a named call does not show its channel")
+            compare(channel.text, "· Fire Dispatch")
+
+            testContext.setMetric("slot1CallName", "Fire Dispatch")
+            tryVerify(function () { return !channel.visible }, 5000, "the channel repeats the name")
+
+            testContext.setMetric("slot1Channel", "")
+            testContext.setMetric("slot1CallName", "Metro Fire")
+            tryVerify(function () { return !channel.visible }, 5000, "an empty channel still shows")
+
+            testContext.setMetric("slot1CallName", "")
+            testContext.setMetric("slot1CallState", 0)
+            testContext.setMetric("leadSlot", 0)
+        }
+
+        // A zero talkgroup is "none decoded": the hero headline is already the
+        // channel for such a call, and a subline reading "TG 0" under it would
+        // only say the decoder saw nothing. The source still shows when known.
+        function test_03c_the_hero_subline_hides_a_zero_talkgroup() {
+            var ids = findChild(screenLoader.item, "heroIds")
+            verify(ids !== null, "the hero ids text is missing")
+
+            testContext.setMetric("leadSlot", 1)
+            testContext.setMetric("slot1CallState", 2)
+            testContext.setMetric("slot1TgText", "4001")
+            testContext.setMetric("slot1SrcText", "7001")
+            tryVerify(function () { return ids.text === "TG 4001 · SRC 7001" }, 5000, "a decoded call names both ids")
+
+            testContext.setMetric("slot1TgText", "0")
+            tryVerify(function () { return ids.text === "SRC 7001" }, 5000, "a zero talkgroup still prints")
+
+            testContext.setMetric("slot1SrcText", "0")
+            tryVerify(function () { return !ids.visible }, 5000, "an id-less call keeps an empty subline")
+
+            testContext.setMetric("slot1TgText", "")
+            testContext.setMetric("slot1SrcText", "")
+            testContext.setMetric("slot1CallState", 0)
+            testContext.setMetric("leadSlot", 0)
+        }
+
+        // A name longer than the panel is cut, not spilled: the channel is the
+        // last thing on the subline and elides to the room that is left.
+        function test_03d_a_long_channel_name_elides_inside_the_panel() {
+            var channel = findChild(screenLoader.item, "heroChannel")
+            verify(channel !== null, "the hero channel text is missing")
+
+            testContext.setMetric("leadSlot", 1)
+            testContext.setMetric("slot1CallState", 2)
+            testContext.setMetric("slot1CallName", "Metro Fire")
+            testContext.setMetric("slot1TgText", "4001")
+            testContext.setMetric("slot1SrcText", "7001")
+            testContext.setMetric("slot1Channel", "County Fire and Rescue Dispatch North Zone Simulcast Alternate")
+            tryVerify(function () { return channel.visible && channel.truncated }, 5000, "a long name is not elided")
+            verify(channel.x + channel.width <= channel.parent.width + 0.5, "the channel runs past the subline")
+
+            testContext.setMetric("slot1Channel", "")
+            testContext.setMetric("slot1TgText", "")
+            testContext.setMetric("slot1SrcText", "")
+            testContext.setMetric("slot1CallName", "")
+            testContext.setMetric("slot1CallState", 0)
+            testContext.setMetric("leadSlot", 0)
+        }
+
+        // The recent-calls row answers "where was this heard" the way the hero
+        // does: the channel closes the meta line when it is not already the name.
+        function test_03e_a_recent_row_names_its_channel() {
+            var name = callHistory.pushOnChannel("TODAY", "Fire Dispatch")
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === name && first.metaText.indexOf(" · Fire Dispatch") > 0
+            }, 5000, "the recent row does not name its channel")
+        }
+
+        // A call that decoded no talkgroup is headlined by its channel, and the
+        // meta line under it does not add "TG 0" — nothing was decoded to say.
+        function test_03e_a_recent_row_names_its_channel_tg0() {
+            var name = callHistory.pushUnnamedOnChannel("TODAY", "County EMS")
+            tryVerify(function () {
+                var first = tc.list.itemAtIndex(0)
+                return first !== null && first.name === name
+            }, 5000, "the channel-named row is not on top")
+            var row = tc.list.itemAtIndex(0)
+            verify(row.metaText.indexOf("TG 0") < 0, "the meta line still says TG 0: " + row.metaText)
+            verify(row.metaText.indexOf("County EMS") < 0, "the meta line repeats the name: " + row.metaText)
+        }
+
         function test_04_scrolling_back_holds_the_reader_place() {
             // The pane is short, so scroll by a couple of rows rather than a screen.
             tc.list.contentY = tc.list.originY + 150

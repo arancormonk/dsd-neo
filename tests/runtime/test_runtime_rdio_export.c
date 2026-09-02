@@ -1296,6 +1296,80 @@ test_sidecar_private_fallback_and_malformed_wav_duration(void) {
     return rc;
 }
 
+// A row heard while scanning a named channel has a name even when nothing else does: an encrypted
+// call on a conventional list decodes no talkgroup at all, and "GROUP" tells the operator nothing
+// the sidecar does not already say. The channel label is the last fallback before that default.
+static int
+test_sidecar_channel_label_fallback(void) {
+    char dir_template[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_label")) {
+        DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (dsd_test_path_join(wav_path, sizeof(wav_path), dir_template, "label.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "label.json") != 0) {
+        DSD_FPRINTF(stderr, "path join failed\n");
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    FILE* fp = dsd_fopen_private(wav_path, "wb");
+    if (!fp) {
+        DSD_FPRINTF(stderr, "fopen(%s) failed: %s\n", wav_path, strerror(errno));
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+    if (fwrite("RIFF\012\0\0\0WAVE", 1, 12, fp) != 12U || fclose(fp) != 0) {
+        DSD_FPRINTF(stderr, "failed writing malformed wav fixture\n");
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    Event_History_I hist;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&hist, 0, sizeof(hist));
+    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts.rdio_system_id = 7;
+    hist.Event_History_Items[0].event_time = (time_t)1700000600;
+    // A numeric talkgroup with no name of its own -- an encrypted call, or one with no CSV entry.
+    // The exporter skips a row whose talkgroup is zero outright, so the label is a fallback for
+    // the nameless row rather than for the identity-less one.
+    hist.Event_History_Items[0].target_id = 77;
+    DSD_SNPRINTF(hist.Event_History_Items[0].channel_label, sizeof(hist.Event_History_Items[0].channel_label), "%s",
+                 "Fire Dispatch");
+
+    if (dsd_rdio_export_call(&opts, &hist, wav_path) != 0) {
+        DSD_FPRINTF(stderr, "export failed for channel label sidecar\n");
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    char body[4096];
+    if (read_file(json_path, body, sizeof(body)) != 0) {
+        DSD_FPRINTF(stderr, "failed reading channel label sidecar %s\n", json_path);
+        (void)remove(wav_path);
+        remove_empty_dir(dir_template);
+        return 1;
+    }
+
+    int rc = 0;
+    if (!strstr(body, "\"talkgroup_tag\": \"Fire Dispatch\"")) {
+        DSD_FPRINTF(stderr, "channel label fallback tag missing\n%s\n", body);
+        rc = 1;
+    }
+
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir_template);
+    return rc;
+}
+
 static int
 test_api_shutdown_drains_queue(void) {
 #ifndef USE_CURL
@@ -1596,6 +1670,7 @@ main(void) {
     rc |= test_missing_talkgroup_rejects_sidecar();
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
+    rc |= test_sidecar_channel_label_fallback();
     rc |= test_api_shutdown_drains_queue();
     rc |= test_api_delete_after_successful_upload();
     rc |= test_api_upload_does_not_follow_redirect();

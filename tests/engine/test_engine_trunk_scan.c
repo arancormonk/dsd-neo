@@ -213,16 +213,26 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         }
         *comma = '\0';
         char* freq_text = comma + 1;
-        char* freq_end = freq_text;
-        while (*freq_end && *freq_end != '\r' && *freq_end != '\n') {
-            freq_end++;
+        /* The optional third column the real importer reads as a row name. This stub keeps
+         * no scan-list rows, so every name it sees lands in row 0: enough to prove the store
+         * was allocated, which is what the trunk-scan import then has to release. */
+        char* name_text = strchr(freq_text, ',');
+        if (name_text) {
+            *name_text++ = '\0';
         }
-        *freq_end = '\0';
+        char* tail = name_text ? name_text : freq_text;
+        while (*tail && *tail != '\r' && *tail != '\n') {
+            tail++;
+        }
+        *tail = '\0';
         uint32_t channel = 0;
         long freq = 0;
         if (dsd_parse_uint32_strict(line, 10, 0xFFFFU, &channel) == 0
             && dsd_parse_long_strict(freq_text, 10, 0L, LONG_MAX, &freq) == 0) {
             dsd_state_set_trunk_chan_freq(state, channel, freq);
+            if (name_text && name_text[0] != '\0') {
+                (void)dsd_state_trunk_lcn_name_set(state, 0U, name_text);
+            }
         }
     }
     (void)fclose(fp);
@@ -378,6 +388,14 @@ test_parser_valid_mixed_targets_and_relative_chan_csv(void) {
             || list.targets[0].dwell_ms != 3000 || list.targets[0].activity_hold_ms != 1200
             || !strstr(list.targets[0].chan_csv, "chan.csv")) {
             DSD_FPRINTF(stderr, "parser target 0 mismatch\n");
+            test_rc = 1;
+        }
+        /* The id is what the coordinator publishes as the channel label, so the parser
+         * owes it verbatim rather than just "some non-empty string". */
+        if (strcmp(list.targets[0].id, "p25") != 0 || strcmp(list.targets[1].id, "dmr") != 0
+            || strcmp(list.targets[2].id, "conv") != 0) {
+            DSD_FPRINTF(stderr, "parser target ids mismatch: '%s' '%s' '%s'\n", list.targets[0].id, list.targets[1].id,
+                        list.targets[2].id);
             test_rc = 1;
         }
         if (list.targets[1].dwell_ms != 500 || list.targets[1].activity_hold_ms != 1500) {
@@ -1025,6 +1043,114 @@ test_coordinator_idle_rotation_and_state_restore(void) {
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Compare the whole publication at once: an id that survives a rotation with a stale ordinal
+ * beside it is as wrong as a stale id. */
+static int
+expect_published_target(const dsd_state* state, const char* stage, const char* id, unsigned ordinal, unsigned count) {
+    if (strcmp(state->trunk_scan_active_id, id) != 0 || state->trunk_scan_active_ordinal != ordinal
+        || state->trunk_scan_target_count != count) {
+        DSD_FPRINTF(stderr, "published target after %s: '%s' %u of %u, want '%s' %u of %u\n", stage,
+                    state->trunk_scan_active_id, (unsigned)state->trunk_scan_active_ordinal,
+                    (unsigned)state->trunk_scan_target_count, id, ordinal, count);
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * The frontends label the channel being heard from the coordinator's publication in
+ * dsd_state rather than by reaching into the coordinator, so the rotation has to keep
+ * id/ordinal/count in step with the target actually on air, and shutdown has to take the
+ * label back down rather than leave the last target's name on screen.
+ */
+static int
+test_coordinator_publishes_active_target_label(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "publish scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "init", "a", 1U, 2U);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_published_target(&state, "rotation to b", "b", 2U, 2U);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_published_target(&state, "rotation back to a", "a", 1U, 2U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_published_target(&state, "shutdown", "", 0U, 0U);
+
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * A target's chan_csv may carry a name column, and the importer stores it. Trunk scan has
+ * to drop it: the per-target snapshot carries the positional scan list but no names, so the
+ * next target's list would land under the previous target's names.
+ */
+static int
+test_target_chan_csv_names_are_discarded(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency,name\n1,851012500,Dispatch\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file(dir, "a,p25-trunk,851000000,chan.csv,250,,\n", target_path, sizeof target_path) != 0) {
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "chan_csv name scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (state.trunk_lcn_name != NULL) {
+        DSD_FPRINTF(stderr, "trunk scan kept a chan_csv name store: row 0 = '%s'\n",
+                    dsd_state_trunk_lcn_name_get(&state, 0U));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, chan_path);
     return test_rc;
 }
 
@@ -4639,6 +4765,58 @@ test_scan_does_not_retune_active_target_while_alternates_cool_down(void) {
     return test_rc;
 }
 
+/*
+ * trunk_scan_advance() puts the original target back when every candidate retune fails, and
+ * the last thing tried was an alternate: publishing only from the switch would leave that
+ * alternate's id on screen while the receiver sits on the target it never left. Two failures
+ * at init drive exactly that -- target "a" fails and starts cooling, the advance tries "b"
+ * and it fails too, and "a" is then skipped by its own cooldown, so the restore is the only
+ * thing that can put "a" back.
+ */
+static int
+test_failed_alternate_retune_republishes_restored_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,p25-trunk,851000000,,250,,\n"
+                             "b,p25-trunk,852000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = counting_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    g_counting_tune_to_cc_calls = 0;
+    g_counting_tune_to_cc_failures_remaining = 2;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "failed alternate scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || g_counting_tune_to_cc_calls != 2) {
+        DSD_FPRINTF(stderr, "failed alternate did not restore target 0: active=%zu calls=%d\n",
+                    dsd_engine_trunk_scan_active_index(&state), g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    test_rc |= expect_published_target(&state, "failed alternate retune", "a", 1U, 2U);
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 test_dmr_targets_pass_sps_to_retune_paths(void) {
     char dir[DSD_TEST_PATH_MAX];
@@ -4890,6 +5068,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_coordinator_publishes_active_target_label);
+    rc |= run_with_default_tune_hook(test_target_chan_csv_names_are_discarded);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);
@@ -4942,6 +5122,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_single_target_retune_failure_retries_after_cooldown);
     rc |= run_with_default_tune_hook(test_retune_failure_cooldown);
     rc |= run_with_default_tune_hook(test_scan_does_not_retune_active_target_while_alternates_cool_down);
+    rc |= run_with_default_tune_hook(test_failed_alternate_retune_republishes_restored_target);
     rc |= run_with_default_tune_hook(test_dmr_targets_pass_sps_to_retune_paths);
     rc |= run_with_default_tune_hook(test_init_failure_restores_saved_trunk_opts);
     rc |= run_with_default_tune_hook(test_trunk_scan_rejects_fixed_input_without_tuner);

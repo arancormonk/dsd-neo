@@ -73,6 +73,12 @@ enum {
      * characters on its way to the hero panel.
      */
     DSD_APP_CALL_NAME_SIZE = 200,
+    /**
+     * Width of @c channel: the scan channel label the event layer stamps on history rows
+     * (@c Event_History::channel_label, sized by @c DSD_CHANNEL_LABEL_SIZE in core). Copied
+     * here for the same reason as @c DSD_APP_CALL_NAME_SIZE and pinned by a static assert.
+     */
+    DSD_APP_CALL_CHANNEL_SIZE = 64,
 };
 
 /**
@@ -83,10 +89,21 @@ enum {
  */
 typedef struct {
     int state; /**< One of the DSD_APP_CALL_LINE_* values. */
-    /** CSV-imported group name when one is staged for this talkgroup, else @c tg_text. */
+    /**
+     * What to headline the call as, in the order the call history uses: the CSV-imported
+     * group name staged for this talkgroup, else a textual target, else the scan channel
+     * the call was heard on (@c channel), else @c tg_text.
+     */
     char name[DSD_APP_CALL_NAME_SIZE];
     char tg_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char src_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    /**
+     * The scan channel the epoch was heard on: the @c -Y row name or the trunk-scan target
+     * id, as staged on the slot's active history row. Empty when the receiver is not
+     * scanning. Carried separately from @c name so a surface can show it beside a call
+     * that has a name of its own.
+     */
+    char channel[DSD_APP_CALL_CHANNEL_SIZE];
     uint64_t tg_id;      /**< OTA target when one decoded, else the policy-resolved id. */
     uint32_t elapsed_ms; /**< Since the epoch started; frozen at the end for ENDED. */
     uint16_t kid;

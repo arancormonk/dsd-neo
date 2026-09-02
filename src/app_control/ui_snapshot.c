@@ -122,6 +122,17 @@ _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_freq_ext_capacity) <= offsetof(ds
 _Static_assert(offsetof(dsd_state, lcn_freq_count) >= offsetof(dsd_state, p25_p2_audio_ring_count)
                    && UI_SNAPSHOT_FIELD_END(lcn_freq_roll) <= UI_SNAPSHOT_FIELD_END(dstar_gps),
                "lcn_freq_count/roll must ride the range copied before the scan-list tail");
+/* The per-row name store is a second heap allocation with the same hazard, and it sits
+ * beside the tail so one pair of bounds covers both. */
+_Static_assert(offsetof(dsd_state, trunk_lcn_name) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_lcn_name must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_name_capacity) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_lcn_name must sit before the audio_out_idx..lastsample copy range");
+/* The trunk-scan publication is plain inline bytes, so unlike the two stores above it wants
+ * to be inside a copy range -- left out of one it would silently never reach the UI. */
+_Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_target_count) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "trunk_scan_active_id..trunk_scan_target_count must ride the vertex_ks_count..ui_msg range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.
@@ -149,6 +160,33 @@ ui_snapshot_copy_trunk_lcn_freq_ext(dsd_state* dst, const dsd_state* src) {
     DSD_MEMCPY(dst->trunk_lcn_freq_ext, src->trunk_lcn_freq_ext, ext_count * sizeof(dst->trunk_lcn_freq_ext[0]));
 }
 
+/* The optional per-row names are a separate heap allocation and need their own deep copy.
+ * Runs after the tail copy above so it reads the clamped lcn_freq_count and never publishes
+ * a name for a row the snapshot does not carry; the store is shorter than the list whenever
+ * only the leading rows were named, so the source capacity bounds it too. */
+static void
+ui_snapshot_copy_trunk_lcn_name(dsd_state* dst, const dsd_state* src) {
+    const int count = dst->lcn_freq_count > 0 ? dst->lcn_freq_count : 0;
+    size_t copy_count = (size_t)count;
+    if (copy_count > src->trunk_lcn_name_capacity) {
+        copy_count = src->trunk_lcn_name_capacity;
+    }
+    /* Nothing to publish: drop dst's store rather than leaving it, so a map the operator
+     * cleared does not keep showing the names it used to have. */
+    if (src->trunk_lcn_name == NULL || copy_count == 0 || dsd_state_trunk_lcn_name_reserve(dst, copy_count) != 0) {
+        dsd_state_trunk_lcn_name_free(dst);
+        return;
+    }
+    DSD_MEMCPY(dst->trunk_lcn_name, src->trunk_lcn_name, copy_count * sizeof(dst->trunk_lcn_name[0]));
+    /* dst keeps whatever capacity a longer previous map grew it to, so clear the entries
+     * past the copy: a reader that walks the store by capacity would otherwise find the
+     * old map's names sitting past the end of the new one. */
+    if (dst->trunk_lcn_name_capacity > copy_count) {
+        DSD_MEMSET(dst->trunk_lcn_name[copy_count], 0,
+                   (dst->trunk_lcn_name_capacity - copy_count) * sizeof(dst->trunk_lcn_name[0]));
+    }
+}
+
 static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
@@ -164,6 +202,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, octet_counter, p25_p2_audio_allowed);
     UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_audio_ring_count, dstar_gps);
     ui_snapshot_copy_trunk_lcn_freq_ext(dst, src);
+    ui_snapshot_copy_trunk_lcn_name(dst, src);
     UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
 }

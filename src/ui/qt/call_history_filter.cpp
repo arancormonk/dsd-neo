@@ -28,13 +28,14 @@ kind_accepts(int filterKind, bool voice, bool enc) {
     }
 }
 
-/** @brief Case-insensitive search over identity and payload text. */
+/** @brief Case-insensitive search over identity, payload text and the scan channel heard on. */
 bool
 text_matches(const QAbstractItemModel* source, const QModelIndex& idx, const QString& text) {
     return source->data(idx, CallHistoryModel::NameRole).toString().contains(text, Qt::CaseInsensitive)
            || source->data(idx, CallHistoryModel::TgRole).toString().contains(text)
            || source->data(idx, CallHistoryModel::SrcRole).toString().contains(text)
-           || source->data(idx, CallHistoryModel::DetailRole).toString().contains(text, Qt::CaseInsensitive);
+           || source->data(idx, CallHistoryModel::DetailRole).toString().contains(text, Qt::CaseInsensitive)
+           || source->data(idx, CallHistoryModel::ChannelRole).toString().contains(text, Qt::CaseInsensitive);
 }
 
 } // namespace

@@ -35,6 +35,10 @@ Item {
                                                       : heroSlot === 2 ? metrics.slot2CallState === 2 : false
     readonly property string heroName: heroSlot === 1 ? metrics.slot1CallName
                                                       : heroSlot === 2 ? metrics.slot2CallName : ""
+    // The scan channel the hero call was heard on (a -Y row name or a trunk-scan
+    // target id); empty when the receiver is not scanning.
+    readonly property string heroChannel: heroSlot === 1 ? metrics.slot1Channel
+                                                         : heroSlot === 2 ? metrics.slot2Channel : ""
     readonly property string heroTg: heroSlot === 1 ? metrics.slot1TgText : heroSlot === 2 ? metrics.slot2TgText : ""
     readonly property string heroSrc: heroSlot === 1 ? metrics.slot1SrcText : heroSlot === 2 ? metrics.slot2SrcText : ""
     readonly property double heroTgId: heroSlot === 1 ? metrics.slot1TgId : heroSlot === 2 ? metrics.slot2TgId : 0
@@ -300,12 +304,30 @@ Item {
                 }
 
                 Row {
+                    id: heroSubline
+
+                    // Bounded so the channel text at the end can elide instead of
+                    // running out of the panel.
+                    width: parent.width
                     visible: screen.heroSlot !== 0
                     spacing: 8
 
+                    // A zero id is "none decoded", not an identity: an encrypted
+                    // call on a conventional channel reports no talkgroup, and
+                    // "TG 0" under a headline that already names the channel would
+                    // only say the decoder saw nothing.
                     Text {
+                        objectName: "heroIds"
                         anchors.verticalCenter: parent.verticalCenter
-                        text: "TG " + screen.heroTg + " · SRC " + screen.heroSrc
+                        visible: text.length > 0
+                        text: {
+                            var parts = []
+                            if (screen.heroTg.length > 0 && screen.heroTg !== "0")
+                                parts.push("TG " + screen.heroTg)
+                            if (screen.heroSrc.length > 0 && screen.heroSrc !== "0")
+                                parts.push("SRC " + screen.heroSrc)
+                            return parts.join(" · ")
+                        }
                         font.family: Theme.mono
                         font.pixelSize: 13
                         color: Theme.textSecondary
@@ -328,6 +350,24 @@ Item {
                         font.family: Theme.mono
                         font.pixelSize: 11
                         color: Theme.textSubdued
+                    }
+
+                    // Where the call was heard, when that is not already the name
+                    // above: a listed talkgroup still says which scan channel it
+                    // came from. Last in the row and elided to what is left of it,
+                    // so an operator-length name never pushes the ENC tag off the
+                    // panel; x is laid out from the siblings before it, so the
+                    // width binding cannot loop.
+                    Text {
+                        objectName: "heroChannel"
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroName
+                        width: Math.max(0, Math.min(implicitWidth, heroSubline.width - x))
+                        elide: Text.ElideRight
+                        text: "· " + screen.heroChannel
+                        font.family: Theme.mono
+                        font.pixelSize: 13
+                        color: Theme.textSecondary
                     }
                 }
             }
@@ -605,9 +645,19 @@ Item {
                     metaText: {
                         if (model.kind === 1)
                             return model.detail.length > 0 ? model.detail : qsTr("data message")
-                        return "TG " + model.tg
-                               + (model.enc ? " · " + qsTr("encrypted") : "")
-                               + (model.durationSecs >= 0 ? " · " + Util.fmtDuration(model.durationSecs) : "")
+                        // Same meta rules as the history row: a zero talkgroup is
+                        // not printed, the channel closes the line unless it is
+                        // already the name.
+                        var meta = []
+                        if (model.tg > 0)
+                            meta.push("TG " + model.tg)
+                        if (model.enc)
+                            meta.push(qsTr("encrypted"))
+                        if (model.durationSecs >= 0)
+                            meta.push(Util.fmtDuration(model.durationSecs))
+                        if (model.channel.length > 0 && model.channel !== model.name)
+                            meta.push(model.channel)
+                        return meta.join(" · ")
                     }
                     // ageTick forces the minute-by-minute refresh; shortAge reads
                     // the clock, which is not a binding dependency by itself.

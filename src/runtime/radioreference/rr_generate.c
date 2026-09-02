@@ -32,36 +32,49 @@
 /* Human-facing only: both importers discard physical line 1 without looking at
  * it. The group header stays at three columns so it can never be mistaken for a
  * policy header, whose 4th field would have to read "priority". */
-#define RR_GROUP_HEADER    "DEC,Mode,Name (generated from RadioReference)\n"
-#define RR_CHAN_HEADER     "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+#define RR_GROUP_HEADER "DEC,Mode,Name (generated from RadioReference)\n"
+#define RR_CHAN_HEADER  "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
 
-/* dsd_tg_policy_entry::name is char[50]. */
-#define RR_NAME_MAX        49U
+/* The importer's opt-in for the channel map's name column is the header's
+ * third field, trimmed and compared case-insensitively, reading exactly
+ * "name" (chan_header_has_name_column() in dsd_import.c); the generator note
+ * moves to a fourth field so it is never mistaken for one. Trunked systems
+ * have no per-channel name to offer (see dsd_rr_site_freq below), so they keep
+ * RR_CHAN_HEADER and its "default cc" note is never read as a name. */
+#define RR_CHAN_CONV_HEADER                                                                                            \
+    "ChannelNumber(dec),frequency(Hz),name,(generated from RadioReference; do not delete this line)\n"
+
+/* dsd_tg_policy_entry::name is char[50]: the shared cap for every RR label the
+ * generator writes, talkgroup names and conventional repeater names alike, so
+ * there is one sanitiser and one cap rather than a second one per label kind.
+ * A 49-byte name already pushes the terminal's Scan Mode row past 80 columns,
+ * which is a reason to leave the cap alone, not to raise it. */
+#define RR_NAME_MAX           49U
 
 /* csv_chan_import_apply_field() returns before both the map write and the LCN
  * append when column 1 is < 0 or >= 0xFFFF, so such a row contributes nothing. */
-#define RR_CHAN_NUMBER_MAX 65534L
+#define RR_CHAN_NUMBER_MAX    65534L
 
 /* csv_chan_freq_plausible(): anything outside this is dropped by the importer. */
-#define RR_FREQ_MIN_HZ     100000LL
-#define RR_FREQ_MAX_HZ     6000000000LL
+#define RR_FREQ_MIN_HZ        100000LL
+#define RR_FREQ_MAX_HZ        6000000000LL
 
 /* EDACS indexes the runtime's scan list as lcn - 1 with lcn < 26, so only the
  * first 25 slots are reachable for EDACS. The list itself is heap-backed and
  * unbounded; scanner mode rolls over 0..lcn_freq_count-1. */
-#define RR_EDACS_LCN_MAX   25U
+#define RR_EDACS_LCN_MAX      25U
 
 /* Connect Plus LCNs are 4 bits (dmr_csbk.c); Tier III channel numbers are 12
  * bits with 0 and 0xFFF reserved, so 1..4094 is usable. */
-#define RR_CONPLUS_LCN_MAX 15L
-#define RR_TIER3_CHAN_MAX  4094L
+#define RR_CONPLUS_LCN_MAX    15L
+#define RR_TIER3_CHAN_MAX     4094L
 
 /* Capacity Plus and XPT expand RR LCN n into LSNs 2n-1 and 2n. */
-#define RR_LSN_SOURCE_MAX  (RR_CHAN_NUMBER_MAX / 2L)
+#define RR_LSN_SOURCE_MAX     (RR_CHAN_NUMBER_MAX / 2L)
 
 /* Convention only - nothing special-cases 999. Its effects are trunk_chan_map[999]
  * and the CC taking positional slot 0 of the LCN list. */
-#define RR_DEFAULT_CC_CHAN 999L
+#define RR_DEFAULT_CC_CHAN    999L
 
 /* A P25 lcn small enough to be a row index is not a (iden << 12) | chan grant
  * identifier. Real RR data is always in that range, so the verbatim branch below
@@ -142,7 +155,11 @@ rr_text_free(rr_text* text) {
  * @param text    Buffer.
  * @param chan    Column 1. Callers guarantee [0, RR_CHAN_NUMBER_MAX].
  * @param freq_hz Column 2. 0 is the deliberate placeholder for a known gap.
- * @param note    Optional third column; ignored by the importer, read by humans.
+ * @param note    Optional third column. Under RR_CHAN_HEADER it is a free-text
+ *                note the importer ignores; under RR_CHAN_CONV_HEADER it is
+ *                the sanitized repeater name the importer stores. NULL omits
+ *                the column entirely rather than writing it empty, which is
+ *                what an unnamed row under either header must do.
  */
 static void
 rr_text_chan_row(rr_text* text, long chan, long long freq_hz, const char* note) {
@@ -1022,6 +1039,12 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
     }
 }
 
+/* Defined below beside rr_collapse_label(): sanitizes free text into a name
+ * column exactly the way rr_group_emit() sanitizes a talkgroup name. Forward
+ * declared here because a conventional row picks its name this early, while
+ * the shared label helpers live down in the Group CSV section. */
+static int rr_sanitize_name(const char* in, char* out, size_t out_sz);
+
 /**
  * @brief Emit a conventional scanner list.
  *
@@ -1029,7 +1052,9 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
  * repeater on one frequency, and lcn is 1 on every one of them. The file is the
  * positional frequency list scanner mode walks, so column 1 is the selection
  * order, never RR's lcn - duplicate column-1 values would overwrite each other
- * in trunk_chan_map[].
+ * in trunk_chan_map[]. Column 3 is that repeater's RR site description,
+ * sanitized and capped like a talkgroup name; a row whose name sanitizes away
+ * to nothing is written with no third column at all, never a trailing comma.
  *
  * @param sites      Selected repeaters, in selection order.
  * @param site_count Number of repeaters.
@@ -1039,8 +1064,15 @@ rr_chan_edacs(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warni
  */
 static int
 rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text, dsd_rr_warning_list* warnings) {
-    long long* chosen = (long long*)calloc(site_count > 0U ? site_count : 1U, sizeof *chosen);
-    if (!chosen) {
+    const size_t cap = site_count > 0U ? site_count : 1U;
+    long long* chosen = (long long*)calloc(cap, sizeof *chosen);
+    /* Parallel to `chosen`: chosen_site[k] is the index into `sites` that
+     * contributed chosen[k], so the name column can be looked up after
+     * duplicates and empties have been filtered out. */
+    size_t* chosen_site = (size_t*)calloc(cap, sizeof *chosen_site);
+    if (!chosen || !chosen_site) {
+        free(chosen);
+        free(chosen_site);
         rr_warn(warnings, "could not allocate the scan list");
         return -1;
     }
@@ -1066,6 +1098,7 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
             continue;
         }
         chosen[count] = freq_hz;
+        chosen_site[count] = i;
         count++;
     }
 
@@ -1088,15 +1121,25 @@ rr_chan_conventional(const dsd_rr_site* sites, size_t site_count, rr_text* text,
      * already on at every hangtime expiry, which is pure churn. */
     if (count < 2U) {
         free(chosen);
+        free(chosen_site);
         return 0;
     }
 
+    size_t shortened = 0;
     for (size_t i = 0; i < count; i++) {
-        rr_text_chan_row(text, (long)(i + 1U), chosen[i], NULL);
+        char name[RR_NAME_MAX + 1U] = {0};
+        shortened += (size_t)rr_sanitize_name(sites[chosen_site[i]].descr, name, sizeof(name));
+        rr_text_chan_row(text, (long)(i + 1U), chosen[i], name[0] != '\0' ? name : NULL);
+    }
+    if (shortened > 0U) {
+        (void)DSD_SNPRINTF(msg, sizeof(msg), "%zu repeater name(s) were shortened to the 49-byte import limit.",
+                           shortened);
+        rr_warn(warnings, msg);
     }
     rr_warn(warnings, "Scanning across repeaters needs an RTL-SDR or a rigctl-controlled radio; on any other input the "
                       "session stays on the first frequency.");
     free(chosen);
+    free(chosen_site);
     return 0;
 }
 
@@ -1137,12 +1180,13 @@ dsd_rr_generate_chan_csv(dsd_rr_protocol protocol, const dsd_rr_site* sites, siz
         return -1;
     }
 
+    const int conventional = dsd_rr_protocol_is_conventional(protocol);
     rr_text text = {NULL, 0U, 0U, 0};
-    rr_text_add(&text, RR_CHAN_HEADER);
+    rr_text_add(&text, conventional ? RR_CHAN_CONV_HEADER : RR_CHAN_HEADER);
     const size_t header_len = text.len;
 
     int rc;
-    if (dsd_rr_protocol_is_conventional(protocol)) {
+    if (conventional) {
         rc = rr_chan_conventional(sites, site_count, &text, warnings);
     } else {
         if (site_count > 1U) {

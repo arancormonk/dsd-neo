@@ -150,19 +150,31 @@ Item {
                         parts.push("SRC " + model.src)
                     if (model.detail.length > 0)
                         parts.push(model.detail)
+                    if (model.channel.length > 0 && model.channel !== model.name)
+                        parts.push(model.channel)
                     return parts.length > 0 ? parts.join(" · ") : qsTr("data message")
                 }
                 // "encrypted" states what the call was, nothing more: whether it was
                 // skipped depended on the lockout toggle and loaded keys at the time,
                 // which a logged row does not know. The duration is measured either way.
-                var meta = "TG " + model.tg
+                // A zero talkgroup is "none decoded", not an identity — the same
+                // rule the monitor's hero applies — so it is not printed under a
+                // row that the scan channel already names.
+                var meta = []
+                if (model.tg > 0)
+                    meta.push("TG " + model.tg)
                 if (model.src > 0)
-                    meta += " · SRC " + model.src
+                    meta.push("SRC " + model.src)
                 if (model.enc)
-                    meta += " · " + qsTr("encrypted")
+                    meta.push(qsTr("encrypted"))
                 if (model.durationSecs >= 0)
-                    meta += " · " + Util.fmtDuration(model.durationSecs)
-                return meta
+                    meta.push(Util.fmtDuration(model.durationSecs))
+                // Where the call was heard, when that is not already the name
+                // above it — again the hero's rule, so both screens answer the
+                // question the same way.
+                if (model.channel.length > 0 && model.channel !== model.name)
+                    meta.push(model.channel)
+                return meta.join(" · ")
             }
             rightText: model.timeText
             enc: model.enc
