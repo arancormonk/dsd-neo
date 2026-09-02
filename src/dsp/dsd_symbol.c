@@ -348,13 +348,6 @@ symbol_matched_filter_kind(const dsd_opts* opts, const dsd_state* state, int rtl
     return DSD_SPS_FILTER_NONE;
 }
 
-static inline float
-symbol_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample, int rtl_symbol_rate_output,
-                            int cqpsk_symbol_rate) {
-    const dsd_sps_filter_kind kind = symbol_matched_filter_kind(opts, state, rtl_symbol_rate_output, cqpsk_symbol_rate);
-    return dsd_sps_filter_apply(kind, sample, state->samplesPerSymbol);
-}
-
 /* The raw history the seam works from: samples the grid consumed, newest last. */
 static inline void
 seam_note_raw(dsd_matched_filter_seam* seam, float sample) {
@@ -375,8 +368,9 @@ seam_raw_at(const dsd_matched_filter_seam* seam, int back) {
     return seam->raw[idx];
 }
 
+#ifdef USE_RADIO
 /* Across a stream discontinuity: the history describes a transmission that is
-   gone, and nothing from it is owed back. */
+   gone, and nothing from it is owed back. Only the radio stream has seams. */
 static inline void
 seam_forget(dsd_matched_filter_seam* seam) {
     DSD_MEMSET(seam->raw, 0, sizeof(seam->raw));
@@ -384,6 +378,7 @@ seam_forget(dsd_matched_filter_seam* seam) {
     seam->raw_count = 0;
     seam->replay = 0;
 }
+#endif
 
 /* Hand @p kind the newest history it can use, leaving out the newest @p skip
    samples, so its first real output is computed from signal rather than from
@@ -415,7 +410,8 @@ dsd_symbol_matched_filter_reset(dsd_state* state) {
 float
 dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
                                      int rtl_symbol_rate_output, int cqpsk_symbol_rate) {
-    return symbol_apply_matched_filter(opts, state, sample, rtl_symbol_rate_output, cqpsk_symbol_rate);
+    const dsd_sps_filter_kind kind = symbol_matched_filter_kind(opts, state, rtl_symbol_rate_output, cqpsk_symbol_rate);
+    return dsd_sps_filter_apply(kind, sample, state->samplesPerSymbol);
 }
 #endif
 
