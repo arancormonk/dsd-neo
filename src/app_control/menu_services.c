@@ -369,6 +369,10 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
     src->trunk_lcn_name_capacity = 0;
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
+    // Session avoids and the scan hold index rows that no longer exist.
+    dsd_state_trunk_lcn_avoid_free(dst);
+    dst->lcn_avoid_count = 0;
+    dst->lcn_scan_hold = 0;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
     dst->trunk_chan_map_seq++;
     return 0;
@@ -427,10 +431,12 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
     state->trunk_chan_map_used_count = 0;
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
-    // Releases the per-row name store along with the scan-list heap tail.
+    // Releases the per-row name and avoid stores along with the scan-list heap tail.
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;
+    state->lcn_avoid_count = 0;
+    state->lcn_scan_hold = 0;
     // Provenance goes with the map, exactly as in chan_map_adopt(): a surviving
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.

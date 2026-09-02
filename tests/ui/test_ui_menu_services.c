@@ -847,6 +847,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     // only the new CSV asserts. lcn_freq_roll indexes the replaced LCN list.
     state.dmr_lcn_trust[201] = 2;
     state.lcn_freq_roll = 1;
+    // Session avoids and the scan hold index the rows being replaced, so they go too.
+    state.lcn_scan_hold = 1;
+    rc |= expect_int("adopt: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 0U, 1), 0);
     g_chan_import_count = 1;
     g_chan_import_chan[0] = 401;
     g_chan_import_freq[0] = 880000000L;
@@ -854,6 +857,9 @@ test_channel_map_reimport_replaces_previous_map(void) {
     rc |= expect_int("adopt ok", svc_import_channel_map(&opts, &state, "c.csv"), 0);
     rc |= expect_int("adopt clears stale lcn trust", (int)state.dmr_lcn_trust[201], 0);
     rc |= expect_int("adopt restarts the lcn roll", state.lcn_freq_roll, 0);
+    rc |= expect_int("adopt releases the scan hold", state.lcn_scan_hold, 0);
+    rc |= expect_int("adopt drops session avoids", (int)state.lcn_avoid_count, 0);
+    rc |= expect_int("adopt releases the avoid store", (int)(state.trunk_lcn_avoid == NULL), 1);
     // A named file after a nameless one repopulates the store the nameless one released.
     rc |= expect_str("later named import repopulates", dsd_state_trunk_lcn_name_get(&state, 0U), "Repeater 1");
     g_chan_import_name[0] = NULL;
@@ -925,6 +931,8 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     rc |= expect_str("clear: seed import stores the name", dsd_state_trunk_lcn_name_get(&state, 0U), "Dispatch");
     state.dmr_lcn_trust[101] = 2;
     state.lcn_freq_roll = 1;
+    state.lcn_scan_hold = 1;
+    rc |= expect_int("clear: seed avoid", dsd_state_trunk_lcn_avoid_set(&state, 1U, 1), 0);
     const unsigned int seq_before = state.trunk_chan_map_seq;
 
     rc |= expect_int("chan map clear ok", svc_clear_channel_map(&opts, &state), 0);
@@ -935,6 +943,9 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     rc |= expect_int("chan map clear restarts the lcn roll", state.lcn_freq_roll, 0);
     // The names belong to the rows that just went away, so they go with them.
     rc |= expect_int("chan map clear releases the name store", (int)(state.trunk_lcn_name == NULL), 1);
+    rc |= expect_int("chan map clear releases the scan hold", state.lcn_scan_hold, 0);
+    rc |= expect_int("chan map clear drops session avoids", (int)state.lcn_avoid_count, 0);
+    rc |= expect_int("chan map clear releases the avoid store", (int)(state.trunk_lcn_avoid == NULL), 1);
     // Provenance goes with the map for the same reason it does on an adopt: a
     // surviving trust byte authorizes an off-CC tune to a frequency now gone.
     rc |= expect_int("chan map clear drops lcn trust", (int)state.dmr_lcn_trust[101], 0);

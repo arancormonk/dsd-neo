@@ -44,6 +44,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <limits.h>
 #include <sndfile.h>
@@ -1879,7 +1880,8 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
     long freq = 0;
     for (int examined = 0; examined < count; examined++) {
         freq = *dsd_state_trunk_lcn_slot(state, next);
-        if (freq != 0 && (next == 0 || *dsd_state_trunk_lcn_slot(state, next - 1) != freq)) {
+        if (freq != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)next)
+            && (next == 0 || *dsd_state_trunk_lcn_slot(state, next - 1) != freq)) {
             break;
         }
         next++;
@@ -2322,6 +2324,9 @@ static const int k_ui_cmd_action_ids[] = {
     DSD_APP_CMD_TRUNK_TOGGLE,
     DSD_APP_CMD_SCANNER_TOGGLE,
     DSD_APP_CMD_TUNER_RELEASE,
+    DSD_APP_CMD_SCAN_HOLD_TOGGLE,
+    DSD_APP_CMD_SCAN_AVOID,
+    DSD_APP_CMD_SCAN_AVOID_CLEAR,
     DSD_APP_CMD_PAYLOAD_TOGGLE,
     DSD_APP_CMD_P25_GA_TOGGLE,
     DSD_APP_CMD_LPF_TOGGLE,
@@ -3597,6 +3602,126 @@ apply_cmd_provoice_m17(dsd_opts* opts, dsd_state* state, const struct dsd_app_co
     }
 }
 
+/*
+ * On-the-fly scan controls (#380). Whichever scanner owns the tuner gets the command:
+ * --trunk-scan hands it to the coordinator through the control hook, -Y acts on the
+ * scan list here, and with neither running the command is accepted and declined with
+ * a status message rather than left unhandled.
+ */
+static int
+scan_control_tuner_present(const dsd_opts* opts) {
+    return opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL;
+}
+
+static void
+apply_manual_scan_hold_toggle(dsd_state* state) {
+    state->lcn_scan_hold = state->lcn_scan_hold ? 0U : 1U;
+    if (!state->lcn_scan_hold) {
+        // The rotation left the dwell timer alone while held; give the row a full hangtime
+        // now rather than hopping on the very next no-carrier pass.
+        mark_cc_sync(state, 1);
+    }
+    ui_set_toast(state, 3, "Scan hold %s", state->lcn_scan_hold ? "on" : "off");
+}
+
+static void
+apply_manual_scan_avoid(dsd_opts* opts, dsd_state* state) {
+    const int count = state->lcn_freq_count;
+    const int roll = state->lcn_freq_roll;
+    if (count <= 0 || roll < 1 || roll > count) {
+        ui_set_toast(state, 3, "No scan channel on air to avoid");
+        return;
+    }
+    if (dsd_state_trunk_lcn_usable_count(state) <= 1) {
+        ui_set_toast(state, 3, "Cannot avoid the last usable scan channel");
+        return;
+    }
+    const int row = roll - 1;
+    const long freq = *dsd_state_trunk_lcn_slot(state, row);
+    if (dsd_state_trunk_lcn_avoid_set(state, (size_t)row, 1) != 0) {
+        ui_set_toast(state, 3, "Failed: scan avoid out of memory");
+        return;
+    }
+    ui_set_toast(state, 3, "Avoiding %.4f MHz (%u avoided)", (double)freq / 1000000.0,
+                 (unsigned)state->lcn_avoid_count);
+    if (scan_control_tuner_present(opts)) {
+        (void)apply_manual_lcn_cycle(opts, state);
+    }
+}
+
+static void
+apply_manual_scan_avoid_clear(dsd_state* state) {
+    const int cleared = dsd_state_trunk_lcn_avoid_clear(state);
+    ui_set_toast(state, 3, "Cleared %d scan avoid%s", cleared, cleared == 1 ? "" : "s");
+}
+
+static void
+apply_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    const int rc = dsd_trunk_scan_hook_control(opts, state, op);
+    if (rc == DSD_TRUNK_SCAN_CONTROL_BUSY) {
+        ui_set_toast(state, 3, "Trunk scan busy; try again");
+        return;
+    }
+    if (rc == DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE) {
+        ui_set_toast(state, 3, "Trunk scan is not running");
+        return;
+    }
+    switch (op) {
+        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE:
+            if (rc >= 0) {
+                ui_set_toast(state, 3, "Trunk scan hold %s", rc ? "on" : "off");
+            }
+            break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE:
+            if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
+                ui_set_toast(state, 3, "Cannot avoid the last usable trunk scan target");
+            } else {
+                ui_set_toast(state, 3, "Avoiding target %s (%u avoided)", state->trunk_scan_active_id,
+                             (unsigned)state->trunk_scan_avoided_count);
+            }
+            break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR:
+            if (rc >= 0) {
+                ui_set_toast(state, 3, "Cleared %d trunk scan avoid%s", rc, rc == 1 ? "" : "s");
+            }
+            break;
+        case DSD_TRUNK_SCAN_CONTROL_ADVANCE:
+            if (rc == DSD_TRUNK_SCAN_CONTROL_REFUSED) {
+                ui_set_toast(state, 3, "Trunk scan has only one target");
+            }
+            break;
+        default: break;
+    }
+}
+
+static int
+apply_cmd_scan_controls(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    int op;
+    switch (c->id) {
+        case DSD_APP_CMD_SCAN_HOLD_TOGGLE: op = DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE; break;
+        case DSD_APP_CMD_SCAN_AVOID: op = DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE; break;
+        case DSD_APP_CMD_SCAN_AVOID_CLEAR: op = DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR; break;
+        default: return 0;
+    }
+    if (!state) {
+        return 1;
+    }
+    if (opts->trunk_scan_enabled == 1) {
+        apply_trunk_scan_control(opts, state, op);
+        return 1;
+    }
+    if (opts->scanner_mode != 1) {
+        ui_set_toast(state, 3, "Not scanning: hold/avoid need -Y or --trunk-scan");
+        return 1;
+    }
+    switch (op) {
+        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: apply_manual_scan_hold_toggle(state); break;
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: apply_manual_scan_avoid(opts, state); break;
+        default: apply_manual_scan_avoid_clear(state); break;
+    }
+    return 1;
+}
+
 static int
 apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     if (c->id != DSD_APP_CMD_CHANNEL_CYCLE) {
@@ -3838,9 +3963,9 @@ apply_cmd_misc_config(dsd_opts* opts, dsd_state* state, const struct dsd_app_com
 static int
 apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const dsd_app_command_handler_fn k_command_groups[] = {
-        apply_cmd_basic_a,       apply_cmd_slot_controls,    apply_cmd_payload_filters, apply_cmd_constellation,
-        apply_cmd_eye_spectrum,  apply_cmd_trunk_controls,   apply_cmd_lockout_slot,    apply_cmd_provoice_m17,
-        apply_cmd_channel_cycle, apply_cmd_capture_playback, apply_cmd_misc_config,
+        apply_cmd_basic_a,       apply_cmd_slot_controls,  apply_cmd_payload_filters,  apply_cmd_constellation,
+        apply_cmd_eye_spectrum,  apply_cmd_trunk_controls, apply_cmd_lockout_slot,     apply_cmd_provoice_m17,
+        apply_cmd_scan_controls, apply_cmd_channel_cycle,  apply_cmd_capture_playback, apply_cmd_misc_config,
     };
     if (!c) {
         return UI_CMD_APPLY_INVALID_PAYLOAD;
