@@ -208,7 +208,10 @@ Windows console runs:
   those captures are migrated or their support window ends. Neither stored format carries the NXDN symbol rate, so NXDN
   capture replay requires `-fi` or `-fn` instead of `-fa`.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
-- `-J <file>` Append event log output
+- `-J <file>` Append event log output. While scanning a `-Y` list or rotating `--trunk-scan` targets, each
+  line names the channel it was heard on in brackets between the timestamp and the protocol token
+  (`2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: ...`); lines from a receiver that is not scanning a named
+  channel are unchanged.
 - `--frame-log <file>` Append frame-level one-line timestamped traces
 - `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces. Grant traces identify initial
   assignments versus updates; post-call stale-update handling reports guard, validation-probe, and activity outcomes.

@@ -13,6 +13,7 @@
 
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
@@ -84,6 +85,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].s_name[0] = '\0';
         event_struct->Event_History_Items[i].t_mode[0] = '\0';
         event_struct->Event_History_Items[i].s_mode[0] = '\0';
+        event_struct->Event_History_Items[i].channel_label[0] = '\0';
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].event_time = 0;
         event_struct->Event_History_Items[i].event_start_time = 0;
@@ -142,6 +144,9 @@ push_event_history(Event_History_I* event_struct) {
                        sizeof event_struct->Event_History_Items[i].t_mode);
         copy_str_field(event_struct->Event_History_Items[i].s_mode, event_struct->Event_History_Items[i - 1].s_mode,
                        sizeof event_struct->Event_History_Items[i].s_mode);
+        copy_str_field(event_struct->Event_History_Items[i].channel_label,
+                       event_struct->Event_History_Items[i - 1].channel_label,
+                       sizeof event_struct->Event_History_Items[i].channel_label);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].event_time = event_struct->Event_History_Items[i - 1].event_time;
         event_struct->Event_History_Items[i].event_start_time =
@@ -277,6 +282,9 @@ watchdog_event_row_records_crypto(const Event_History* item) {
 // rescue check only -- it can keep a row, never doom one: renderer-built rows copy these fields
 // from the canonical snapshot, whose named_call verdict is the authoritative gate, so a field
 // this list misses costs nothing as long as the canonical helper counts it.
+// Deliberately not extended with channel_label: the label says where the receiver was pointing,
+// never who the call was. Counting it would rescue every stray-sync noise epoch a scanning
+// receiver opens, which is exactly what the identity gate below exists to drop.
 static int
 watchdog_event_row_names_call(const Event_History* item) {
     return item->target_id != 0U || item->source_id != 0U || item->src_str[0] != '\0' || item->tgt_str[0] != '\0';
@@ -624,6 +632,10 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     watchdog_event_merge_text(retained->s_name, staged->s_name, sizeof(retained->s_name));
     watchdog_event_merge_text(retained->t_mode, staged->t_mode, sizeof(retained->t_mode));
     watchdog_event_merge_text(retained->s_mode, staged->s_mode, sizeof(retained->s_mode));
+    // A reacquired segment is the same transmission on the same channel, so the first segment's
+    // label is the one of record -- the scanner may well have rolled on to another channel by the
+    // time the segment merges. Fill-if-blank only, like every other identity field here.
+    watchdog_event_merge_text(retained->channel_label, staged->channel_label, sizeof(retained->channel_label));
 }
 
 // Fold the staged row into the row already in history: this is the same transmission, and
@@ -925,6 +937,7 @@ typedef struct {
     char s_name[200];
     char t_mode[200];
     char s_mode[200];
+    char channel_label[DSD_CHANNEL_LABEL_SIZE];
     uint16_t svc_opts;
     uint8_t subtype;
     /* Live decoder inputs the builders below still need. Captured alongside the committed row
@@ -1215,6 +1228,22 @@ watchdog_event_current_load_labels(const dsd_state* state, watchdog_event_curren
     }
 }
 
+// The scan channel this epoch is being heard on. Sticky: once a render resolves a label the staged
+// row keeps it, and later renders copy it back rather than asking again. Under -Y the scanner
+// advances lcn_freq_roll before the call ends and the row is rendered once more on the finalize
+// pass, so re-resolving would relabel a finished transmission with a channel it was never heard
+// on. The staged row is cleared between epochs -- retire_staged_row(), history_authoritative() and
+// finalize_ended() all init it -- so a non-empty label is always this epoch's own.
+static void
+watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state* state, const Event_History* staged,
+                                          watchdog_event_current_ctx* ctx) {
+    if (staged != NULL && staged->channel_label[0] != '\0') {
+        DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", staged->channel_label);
+        return;
+    }
+    (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
+}
+
 static void
 watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8_t slot, Event_History* item,
                                    const watchdog_event_current_ctx* ctx, time_t now) {
@@ -1266,6 +1295,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", ctx->s_name);
     DSD_SNPRINTF(item->t_mode, sizeof(item->t_mode), "%s", ctx->t_mode);
     DSD_SNPRINTF(item->s_mode, sizeof(item->s_mode), "%s", ctx->s_mode);
+    DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", ctx->channel_label);
     (void)state;
     (void)slot;
 }
@@ -1466,6 +1496,21 @@ watchdog_event_current_build_event_nxdn(const watchdog_event_current_ctx* ctx, c
     watchdog_event_append_call_kind(ctx, event_string, event_size);
 }
 
+// The scan channel a row was heard on, folded into the protocol token every builder renders
+// third: "2026-04-30 00:00:00 [Fire Dispatch] P25p1 TGT: ...". Done here rather than in the eight
+// builders so there is one place it can be wrong, and done after the timestamp so the 20-character
+// "YYYY-MM-DD HH:MM:SS " prefix that watchdog_event_row_datetime() and the frontends
+// (app_control/ui_history.c) both key on stays exactly where it was. An unlabelled row gets the
+// unchanged sys_string back and renders byte for byte what it always did.
+static const char*
+watchdog_event_sys_label(const char* label, const char* sys_string, char* buf, size_t buf_sz) {
+    if (label == NULL || label[0] == '\0' || buf == NULL || buf_sz == 0) {
+        return sys_string;
+    }
+    DSD_SNPRINTF(buf, buf_sz, "[%s] %s", label, sys_string != NULL ? sys_string : "");
+    return buf;
+}
+
 // Every builder renders purely from ctx -- the identity and metadata copied off the call or the
 // row, plus the render env captured with it. Nothing here reads live decoder state, so the same
 // ctx always produces the same string no matter when it is rebuilt.
@@ -1473,22 +1518,24 @@ static void
 watchdog_event_current_build_event_string(const watchdog_event_current_ctx* ctx, const char* datestr,
                                           const char* timestr, const char* sys_string, char* event_string,
                                           size_t event_size) {
+    char sys_label[DSD_CHANNEL_LABEL_SIZE + 32];
+    const char* sys = watchdog_event_sys_label(ctx->channel_label, sys_string, sys_label, sizeof(sys_label));
     if (DSD_SYNC_IS_YSF(ctx->protocol) || DSD_SYNC_IS_DSTAR(ctx->protocol)) {
-        watchdog_event_current_build_event_text_ids(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_text_ids(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_M17(ctx->protocol)) {
-        watchdog_event_current_build_event_m17(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_m17(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_DPMR(ctx->protocol)) {
-        watchdog_event_current_build_event_dpmr(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_dpmr(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_EDACS(ctx->protocol)) {
-        watchdog_event_current_build_event_edacs(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_edacs(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_DMR(ctx->protocol)) {
-        watchdog_event_current_build_event_dmr(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_dmr(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_P25(ctx->protocol)) {
-        watchdog_event_current_build_event_p25(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_p25(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_X2TDMA(ctx->protocol)) {
-        watchdog_event_current_build_event_x2tdma(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_x2tdma(ctx, datestr, timestr, sys, event_string, event_size);
     } else if (DSD_SYNC_IS_NXDN(ctx->protocol)) {
-        watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys_string, event_string, event_size);
+        watchdog_event_current_build_event_nxdn(ctx, datestr, timestr, sys, event_string, event_size);
     }
 }
 
@@ -1565,6 +1612,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->s_name, sizeof(ctx->s_name), "%s", item->s_name);
     DSD_SNPRINTF(ctx->t_mode, sizeof(ctx->t_mode), "%s", item->t_mode);
     DSD_SNPRINTF(ctx->s_mode, sizeof(ctx->s_mode), "%s", item->s_mode);
+    DSD_SNPRINTF(ctx->channel_label, sizeof(ctx->channel_label), "%s", item->channel_label);
     ctx->t_name_loaded = item->t_name[0] != '\0' ? 1U : 0U;
     ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
 }
@@ -1790,6 +1838,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
 
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(state, &ctx);
+    watchdog_event_current_load_channel_label(opts, state, &candidate, &ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
 
@@ -2246,6 +2295,20 @@ dsd_event_clear_data_payload(Event_History* item) {
     item->text_message[0] = '\0';
 }
 
+// A notice line, with the scan channel it was heard on when there is one. Same shape as a voice
+// row: the label sits between the 20-character timestamp prefix and the notice text, so a frontend
+// parsing that prefix is unaffected. dsd_event_emit_system_notice() and watchdog_event_status()
+// deliberately do not use this -- neither describes traffic heard on a channel.
+static void
+watchdog_event_render_notice_line(const char* datestr, const char* timestr, const char* label, const char* notice,
+                                  char* out, size_t out_sz) {
+    if (label != NULL && label[0] != '\0') {
+        DSD_SNPRINTF(out, out_sz, "%s %s [%s] %s", datestr, timestr, label, notice);
+        return;
+    }
+    DSD_SNPRINTF(out, out_sz, "%s %s %s", datestr, timestr, notice);
+}
+
 static int
 dsd_event_data_notice_args_valid(const dsd_opts* opts, const dsd_state* state, uint8_t slot,
                                  const dsd_call_observation* observation, dsd_event_category category,
@@ -2282,6 +2345,9 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     item->source_id = observation->ota_source_id <= UINT32_MAX ? (uint32_t)observation->ota_source_id : 0U;
     item->target_id = observation->ota_target_id <= UINT32_MAX ? (uint32_t)observation->ota_target_id : 0U;
     item->channel = observation->channel;
+    // Resolved live rather than from a staged row: unlike a voice epoch, a notice is rendered
+    // exactly once, and the PDU it reports decoded while the receiver was still tuned here.
+    (void)dsd_channel_label_current(opts, state, item->channel_label, sizeof(item->channel_label));
     item->event_time = time(NULL);
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
@@ -2296,7 +2362,8 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     char datestr[11];
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
-    DSD_SNPRINTF(item->event_string, sizeof(item->event_string), "%s %s %s", datestr, timestr, notice);
+    watchdog_event_render_notice_line(datestr, timestr, item->channel_label, notice, item->event_string,
+                                      sizeof(item->event_string));
 
     write_event_to_log_file(opts, state, slot, 0U, item->event_string);
     push_event_history(event_struct);

@@ -478,3 +478,14 @@ toggles are remembered and restored when leaving compact; switching one on while
 Channels list. The condensed Status block also omits the Voice Error counters and the `CRC/(RAS)` decoder
 indicator from the full Audio Decode section — leave compact view to inspect those. The setting is
 session-only and is not persisted to the config file.
+
+## Event History Rows
+
+While scanning, an event history row names the channel it was heard on: the channel name from a
+`-Y` scan list, or the active `--trunk-scan` target's id, in brackets between the row's timestamp
+and its protocol token — `2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; ...`. It answers
+the question a bare `TGT: 00000000` row cannot, which is where encrypted traffic was heard. Data
+notices (SMS, LRRP, registrations) carry the same prefix. A receiver that is not scanning a named
+channel renders exactly what it always did, and Short mode (`h`) still drops only the date, so the
+prefix survives into the compact row. The label is fixed when the transmission's first row renders,
+so a call that outlives a scan step keeps the channel it was actually heard on.

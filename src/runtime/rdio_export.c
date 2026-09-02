@@ -592,6 +592,10 @@ dsd_rdio_meta_fields_from_event(const Event_History* event, dsd_rdio_meta_fields
         out->talkgroup_tag = event->t_name;
     } else if (event->tgt_str[0] != '\0') {
         out->talkgroup_tag = event->tgt_str;
+    } else if (event->channel_label[0] != '\0') {
+        // Nothing named the talkgroup, but the receiver was parked on a named channel while the
+        // call ran. That name is what the operator would recognise the upload by; "GROUP" is not.
+        out->talkgroup_tag = event->channel_label;
     } else {
         out->talkgroup_tag = event->gi ? "PRIVATE" : "GROUP";
     }

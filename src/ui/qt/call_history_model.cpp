@@ -204,9 +204,12 @@ int
 ring_item_display_kind(const Event_History* item) {
     if (item->category == DSD_EVENT_CATEGORY_VOICE) {
         // Any nameable target will do: a numeric talkgroup, a textual target
-        // (M17/D-STAR callsigns), or an imported label alone — a row whose only
-        // identity is its CSV name is still a call the operator heard.
-        if (item->target_id == 0U && item->tgt_str[0] == '\0' && item->t_name[0] == '\0') {
+        // (M17/D-STAR callsigns), an imported label alone — a row whose only
+        // identity is its CSV name is still a call the operator heard — or the
+        // scan channel it was heard on, which is the only name encrypted
+        // traffic on a conventional list ever gets.
+        if (item->target_id == 0U && item->tgt_str[0] == '\0' && item->t_name[0] == '\0'
+            && item->channel_label[0] == '\0') {
             return -1;
         }
         return CallHistoryModel::KindVoice;
@@ -255,6 +258,10 @@ row_from_item(const Event_History* item, const QString& sessionLabel, int slot, 
         row.name = QString::fromUtf8(item->t_name);
     } else if (item->tgt_str[0] != '\0') {
         row.name = QString::fromUtf8(item->tgt_str);
+    } else if (item->channel_label[0] != '\0') {
+        /* No identity of its own: the channel it was heard on is what the
+         * operator recognises it by, and "Talkgroup 0" is not. */
+        row.name = QString::fromUtf8(item->channel_label);
     } else {
         row.name = QStringLiteral("Talkgroup %1").arg(row.tg);
     }

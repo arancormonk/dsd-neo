@@ -163,8 +163,12 @@ typedef struct {
     char s_name[200];   //same as above, but if loaded from a src value and not tg value
     char t_mode[200];   //mode, or A,B,D,DE from csv group import file
     char s_mode[200];   //mode, or A,B,D,DE from csv group import file
-    uint32_t channel;   // If this occurs on a trunking channel, which channel
-    time_t event_time;  //time event occurred
+    // Name of the scan channel this transmission was heard on, or "" when the receiver was not
+    // scanning a named channel. Stamped once per call epoch and rendered as a bracketed prefix
+    // between the row's timestamp and its protocol token.
+    char channel_label[DSD_CHANNEL_LABEL_SIZE];
+    uint32_t channel;  // If this occurs on a trunking channel, which channel
+    time_t event_time; //time event occurred
     // Wall-clock time the transmission this row describes began, or 0 when unknown.
     // event_time is restamped as last-activity on every render pass, so by commit it
     // reads as the call's end; the pair is what gives a frontend a real duration.

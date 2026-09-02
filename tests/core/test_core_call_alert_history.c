@@ -367,8 +367,10 @@ event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
            && memcmp(lhs->t_name, rhs->t_name, sizeof lhs->t_name) == 0
            && memcmp(lhs->s_name, rhs->s_name, sizeof lhs->s_name) == 0
            && memcmp(lhs->t_mode, rhs->t_mode, sizeof lhs->t_mode) == 0
-           && memcmp(lhs->s_mode, rhs->s_mode, sizeof lhs->s_mode) == 0 && lhs->channel == rhs->channel
-           && lhs->event_time == rhs->event_time && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
+           && memcmp(lhs->s_mode, rhs->s_mode, sizeof lhs->s_mode) == 0
+           && memcmp(lhs->channel_label, rhs->channel_label, sizeof lhs->channel_label) == 0
+           && lhs->channel == rhs->channel && lhs->event_time == rhs->event_time
+           && memcmp(lhs->pdu, rhs->pdu, sizeof lhs->pdu) == 0
            && memcmp(lhs->sysid_string, rhs->sysid_string, sizeof lhs->sysid_string) == 0
            && memcmp(lhs->alias, rhs->alias, sizeof lhs->alias) == 0
            && memcmp(lhs->gps_s, rhs->gps_s, sizeof lhs->gps_s) == 0
@@ -2303,6 +2305,324 @@ committed_history_rows(const Event_History_I* history) {
         }
     }
     return rows;
+}
+
+// The scan-channel label a row carries comes from the same resolver the frontends use, so these
+// helpers arm exactly what an operator's scan leaves in state: a -Y scan list parked on a named
+// row, or a --trunk-scan rotation sitting on a named target. lcn_freq_roll is advanced past the
+// row just tuned, so the row on air is roll - 1.
+static int
+arm_scanner_label(dsd_state* state, dsd_opts* opts, int idx, const char* name) {
+    opts->scanner_mode = 1;
+    state->lcn_freq_count = idx + 2;
+    state->lcn_freq_roll = idx + 1;
+    return dsd_state_trunk_lcn_name_set(state, (size_t)idx, name);
+}
+
+// The published ordinal and target count feed a frontend's "n of m" readout, not the label, so
+// arming the id alone is the whole of what a row's label depends on.
+static void
+arm_trunk_scan_label(dsd_state* state, dsd_opts* opts, const char* id) {
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(state->trunk_scan_active_id, sizeof state->trunk_scan_active_id, "%s", id);
+}
+
+// Read back everything an event log holds, or return -1. The caller owns the path.
+static int
+read_event_log(const char* path, char* out, size_t out_sz) {
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        return -1;
+    }
+    size_t n = fread(out, 1U, out_sz - 1U, f);
+    fclose(f);
+    out[n] = '\0';
+    return 0;
+}
+
+// Scanning a -Y list, the operator has to be able to tell which channel a row was heard on. The
+// label renders between the timestamp and the protocol token, so the 20-character timestamp
+// prefix every frontend parses stays exactly where it was, and the -J event log carries it too.
+static int
+test_scanner_mode_row_carries_channel_label(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    char path[] = "/tmp/dsd-neo-label-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "mkstemp failed for channel label event log test\n");
+        return 1;
+    }
+    close(fd);
+    remove(path);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+
+    int rc = expect_int("scan list name stores", arm_scanner_label(&state, &opts, 0, "Fire Dispatch"), 0);
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.nac = 0x293;
+    state.p2_wacn = 0x45564U;
+    state.p2_sysid = 0x006U;
+    state.p2_rfssid = 10U;
+    state.p2_siteid = 10U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_str_eq("scanner row keeps the channel label", item->channel_label, "Fire Dispatch");
+    rc |= expect_str_eq("scanner row renders the label after the timestamp", item->event_string,
+                        "2026-04-30 00:00:00 [Fire Dispatch] TEST TGT: 00050061; SRC: 05790062; NAC: 293; "
+                        "NET_STS: 45564:006:10.10; Group; ");
+
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    char log[4096];
+    if (read_event_log(path, log, sizeof log) != 0) {
+        DSD_FPRINTF(stderr, "channel label event log was not created\n");
+        rc = 1;
+    } else {
+        rc |= expect_has_substr("event log line carries the label", log,
+                                "2026-04-30 00:00:00 [Fire Dispatch] TEST TGT: 00050061;");
+    }
+    remove(path);
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Rotating --trunk-scan targets, the label is the target's own id.
+static int
+test_trunk_scan_row_carries_target_id(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    arm_trunk_scan_label(&state, &opts, "SiteA");
+
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 7U;
+    state.dmr_t3_syscode = 0xABCU;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 123456U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = expect_str_eq("trunk scan row keeps the target id", item->channel_label, "SiteA");
+    rc |= expect_has_substr("trunk scan row renders the target id", item->event_string,
+                            "2026-04-30 00:00:00 [SiteA] TEST TGT: 00050061; SRC: 00123456; CC: 07; SYS: ABC;");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The channel label and the CSV talkgroup labels answer different questions -- where the call was
+// heard, and who it was -- so a row that has both shows both.
+static int
+test_channel_label_coexists_with_policy_label(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = expect_int("scan list name stores", arm_scanner_label(&state, &opts, 0, "Fire Dispatch"), 0);
+    rc |= expect_int("policy label appends", append_policy_label(&state, 50061U, "D", "Dispatch"), 0);
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.nac = 0x293;
+    state.p2_wacn = 0x45564U;
+    state.p2_sysid = 0x006U;
+    state.p2_rfssid = 10U;
+    state.p2_siteid = 10U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    rc |= expect_has_substr("labelled row keeps the channel prefix", item->event_string, "[Fire Dispatch] TEST TGT:");
+    rc |= expect_has_substr("labelled row keeps the policy label", item->event_string, "TName: Dispatch; Mode: D;");
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The label is an addition, not a reshuffle: a receiver that is not scanning a named channel must
+// render exactly the string it rendered before, byte for byte.
+static int
+test_unlabelled_row_string_is_unchanged(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    state.lastsynctype = DSD_SYNC_P25P2_POS;
+    state.nac = 0x293;
+    state.p2_wacn = 0x45564U;
+    state.p2_sysid = 0x006U;
+    state.p2_rfssid = 10U;
+    state.p2_siteid = 10U;
+    assert(observe_test_call(&state, 0U, DSD_SYNC_P25P2_POS, DSD_CALL_KIND_GROUP_VOICE, 50061U, 5790062U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+    int rc = expect_int("unlabelled row carries no label", item->channel_label[0], '\0');
+    rc |= expect_str_eq("unlabelled row string is unchanged", item->event_string,
+                        "2026-04-30 00:00:00 TEST TGT: 00050061; SRC: 05790062; NAC: 293; "
+                        "NET_STS: 45564:006:10.10; Group; ");
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A reacquired segment is the same transmission on the same channel, so the label survives both
+// the ring shift that an interleaved notice causes and the merge that folds the segment in -- even
+// though the scanner has already rolled on to the next channel by then.
+static int
+test_channel_label_survives_push_and_merge(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = expect_int("scan list name stores", arm_scanner_label(&state, &opts, 0, "Fire Dispatch"), 0);
+
+    // Late entry: the first segment knows the talkgroup only.
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 0U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("first segment is labelled", event_history[0].Event_History_Items[1].event_string,
+                            "[Fire Dispatch] TEST");
+
+    // A system notice shifts the whole ring: the committed voice row moves to index 2.
+    assert(dsd_event_emit_system_notice(&opts, &state, 0U, "System notice;") == 0);
+
+    // The scanner rolls on while the transmission is still flapping.
+    rc |= expect_int("next scan list name stores", dsd_state_trunk_lcn_name_set(&state, 1U, "PD Tac"), 0);
+    state.lcn_freq_count = 3;
+    state.lcn_freq_roll = 2;
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_CONTINUE)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    assert(end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* merged = &event_history[0].Event_History_Items[2];
+    rc |= expect_int("notice plus merged voice leave two rows", committed_history_rows(&event_history[0]), 2);
+    rc |= expect_has_substr("merged row carries the late source", merged->event_string, "SRC: 00000201;");
+    rc |= expect_str_eq("shifted row keeps its label", merged->channel_label, "Fire Dispatch");
+    rc |= expect_has_substr("merged row re-renders the original label", merged->event_string, "[Fire Dispatch] TEST");
+    rc |= expect_no_substr("merged row does not adopt the new channel", merged->event_string, "[PD Tac]");
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// The label is stamped once per call epoch, on the epoch's first render. Under -Y the scanner
+// advances lcn_freq_roll before the call ends, and the row is rendered once more on the finalize
+// pass; re-resolving there would relabel a committed row with a channel it was never heard on.
+static int
+test_channel_label_is_frozen_at_first_render(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = expect_int("scan list name stores", arm_scanner_label(&state, &opts, 0, "Fire Dispatch"), 0);
+
+    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 100U, 201U, 0U, 0U,
+                             DSD_CALL_BOUNDARY_BEGIN)
+           == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    rc |= expect_int("next scan list name stores", dsd_state_trunk_lcn_name_set(&state, 1U, "PD Tac"), 0);
+    state.lcn_freq_count = 3;
+    state.lcn_freq_roll = 2;
+
+    assert(end_test_call(&state, 0U, DSD_CALL_END_EXPLICIT) == 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("frozen label commits one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_str_eq("committed row keeps the label it was heard on", committed->channel_label, "Fire Dispatch");
+    rc |= expect_has_substr("finalize pass does not relabel the row", committed->event_string, "[Fire Dispatch] TEST");
+    rc |= expect_no_substr("finalize pass does not adopt the new channel", committed->event_string, "[PD Tac]");
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// A label says where the receiver was pointing, never who the call was: an identity-less voice
+// epoch is still noise and must still be dropped. Rescuing it would put the stray-sync rows the
+// identity gate was added to suppress straight back into history on every scanning receiver.
+static int
+test_channel_label_does_not_rescue_identityless_row(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    int rc = expect_int("scan list name stores", arm_scanner_label(&state, &opts, 0, "Fire Dispatch"), 0);
+    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state.dmr_color_code = 13;
+
+    rc |= expect_int("provisional call starts epoch",
+                     observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_VOICE, 0U, 0U, 0U, 0U,
+                                       DSD_CALL_BOUNDARY_BEGIN),
+                     1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_has_substr("labelled zero-identity row is staged",
+                            state.event_history_s[0].Event_History_Items[0].event_string, "[Fire Dispatch] TEST");
+    rc |= expect_int("sync loss ends the epoch", end_test_call(&state, 0U, DSD_CALL_END_SYNC_LOSS), 1);
+    dsd_event_sync_slot(&opts, &state, 0U);
+    rc |= expect_int("a label does not rescue an identity-less row", committed_history_rows(&event_history[0]), 0);
+
+    dsd_state_trunk_lcn_name_free(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+// Data notices name their channel too, resolved live: the PDU decodes while the receiver is still
+// tuned to the channel that carried it.
+static int
+test_data_notice_carries_channel_label(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+    arm_trunk_scan_label(&state, &opts, "SiteA");
+
+    assert(emit_test_data_notice(&opts, &state, 1234U, 5678U, "NMEA SRC: 1234; TGT: 5678;", 0U) == 0);
+
+    const Event_History* committed = &event_history[0].Event_History_Items[1];
+    int rc = expect_str_eq("data notice keeps the channel label", committed->channel_label, "SiteA");
+    rc |= expect_str_eq("data notice renders the label after the timestamp", committed->event_string,
+                        "2026-04-30 00:00:00 [SiteA] NMEA SRC: 1234; TGT: 5678;");
+
+    reset_fixture(&opts, &state, event_history);
+    assert(emit_test_data_notice(&opts, &state, 1234U, 5678U, "NMEA SRC: 1234; TGT: 5678;", 0U) == 0);
+    const Event_History* unlabelled = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("unlabelled data notice carries no label", unlabelled->channel_label[0], '\0');
+    rc |= expect_str_eq("unlabelled data notice string is unchanged", unlabelled->event_string,
+                        "2026-04-30 00:00:00 NMEA SRC: 1234; TGT: 5678;");
+
+    dsd_state_ext_free_all(&state);
+    return rc;
 }
 
 // Sync loss ends the canonical call mid-transmission; the next burst that decodes reopens the
@@ -4420,6 +4740,14 @@ main(void) {
     rc |= test_nxdn_current_includes_channel_encryption_and_policy_labels();
     rc |= test_edacs_ea_mode_current_event_and_unknown_lid();
     rc |= test_p25_and_dmr_current_append_security_flags();
+    rc |= test_scanner_mode_row_carries_channel_label();
+    rc |= test_trunk_scan_row_carries_target_id();
+    rc |= test_channel_label_coexists_with_policy_label();
+    rc |= test_unlabelled_row_string_is_unchanged();
+    rc |= test_channel_label_survives_push_and_merge();
+    rc |= test_channel_label_is_frozen_at_first_render();
+    rc |= test_channel_label_does_not_rescue_identityless_row();
+    rc |= test_data_notice_carries_channel_label();
     rc |= test_canonical_call_lifecycle_is_epoch_driven();
     rc |= test_canonical_voice_category_is_protocol_neutral();
     rc |= test_provisional_voice_identity_does_not_commit_zero_row();

@@ -79,7 +79,7 @@ struct RingFixture {
     /** Commit a row the way push_event_history() does: shift, fill index 1. */
     Event_History*
     commit(int slot, uint32_t tg, uint32_t src, time_t start, time_t end, const char* tgt_str = "",
-           const char* t_name = "") {
+           const char* t_name = "", const char* channel_label = "") {
         Event_History_I* ring = &rings[slot];
         DSD_MEMMOVE(&ring->Event_History_Items[2], &ring->Event_History_Items[1],
                     sizeof(Event_History) * (DSD_EVENT_HISTORY_LEN - 2));
@@ -92,6 +92,7 @@ struct RingFixture {
         item->event_time = end;
         DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", tgt_str);
         DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", t_name);
+        DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", channel_label);
         ring->push_seq++;
         ring->commit_rev++;
         ring->revision++;
@@ -161,6 +162,34 @@ test_alias_only_row_is_logged(void) {
            model.count() == 1
                && model.data(model.index(0), CallHistoryModel::NameRole).toString()
                       == QStringLiteral("County Dispatch"));
+}
+
+/* Encrypted traffic on a scanned conventional list decodes no talkgroup at
+ * all: tg 0, no textual target, no CSV name. Dropping those rows is right for
+ * a stray sync, but wrong once the channel the call was heard on names it —
+ * that name is the whole answer to "what was that?". */
+void
+test_channel_labelled_tg0_row_is_logged(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500250;
+    ring.commit(0, 0, 0, when, when + 3, "", "", "Fire Dispatch");
+    model.refresh(ring.state);
+    expect("channel-labelled tg0 row is logged", model.count() == 1);
+    expect("channel-labelled row is named from the channel",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("Fire Dispatch"));
+
+    /* Nothing names this one at all — still the noise row the drop exists for. */
+    ring.commit(0, 0, 0, when + 10, when + 12);
+    model.refresh(ring.state);
+    expect("unlabelled tg0 row is still dropped", model.count() == 1);
+
+    /* A different channel is a different call, tg 0 on both notwithstanding. */
+    ring.commit(0, 0, 0, when + 20, when + 23, "", "", "PD Tac");
+    model.refresh(ring.state);
+    expect("a second channel keeps its own row", model.count() == 2);
 }
 
 void
@@ -259,6 +288,7 @@ main(int argc, char** argv) {
     test_two_slots_same_second_same_talkgroup();
     test_textual_targets_stay_distinct();
     test_alias_only_row_is_logged();
+    test_channel_labelled_tg0_row_is_logged();
     test_reacquisition_merge_updates_in_place();
     test_ring_walk_gated_on_commit_rev();
     test_relaunch_does_not_reingest();
