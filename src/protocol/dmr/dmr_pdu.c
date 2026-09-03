@@ -59,19 +59,32 @@ convert_hex_to_dec(uint16_t input) {
 
 static void
 utf16_text_emit_scalar(uint32_t scalar) {
-    if (!dsd_unicode_scalar_is_control(scalar) && scalar != 0x040DU) { // If not a linebreak or terminal commmands
+    if (!dsd_unicode_scalar_is_control(scalar)) { // If not a linebreak or terminal commmands
         dsd_unicode_fput_scalar(scalar, stderr);
     } else if (scalar == 0U) { // If padding (0 could also indicate end of text terminator?)
         DSD_FPRINTF(stderr, "_");
-    } else if (scalar == 0x040DU) { //Ѝ or 0x040D may be ETLF
-        DSD_FPRINTF(stderr, " / ");
     } else {
         DSD_FPRINTF(stderr, "-");
     }
 }
 
-void
-utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+// The event text is rendered as UTF-8 by the ncurses UI, the Qt model and the event log, so the
+// scalar goes in encoded rather than truncated to its low octet (issue #466). Control characters,
+// padding included, stay out: the log prints one line per event.
+static void
+utf16_text_collect_scalar(dsd_state* state, uint8_t slot, uint32_t scalar) {
+    if (dsd_unicode_scalar_is_control(scalar)) {
+        return;
+    }
+    char utf8[DSD_UTF8_MAX_BYTES + 1];
+    if (dsd_utf8_encode_scalar(scalar, utf8, sizeof utf8) > 0U) {
+        dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
+                   sizeof state->event_history_s[slot].Event_History_Items[0].text_message, utf8);
+    }
+}
+
+static void
+utf16_text_render(dsd_state* state, uint8_t wr, int little_endian, uint16_t len, const uint8_t* input) {
     uint8_t slot = state->currentslot;
     // Only opened when wr says so, and closed under the same condition a loop
     // later. A zeroed guard makes the close a no-op instead of a read of an
@@ -83,37 +96,32 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
                      sizeof(state->event_history_s[slot].Event_History_Items[0].text_message), "%s",
                      ""); //full text string
     }
-    // The octets are UTF-16BE. Pairs are combined and unpaired halves shown as U+FFFD before
-    // anything reaches stderr, so the C runtime never sees a code unit it cannot encode
-    // (issue #358).
+    // Pairs are combined and unpaired halves shown as U+FFFD before anything reaches stderr, so
+    // the C runtime never sees a code unit it cannot encode (issue #358).
     dsd_utf16_decoder decoder;
     uint32_t scalars[DSD_UTF16_MAX_SCALARS_PER_UNIT];
     dsd_utf16_decoder_reset(&decoder);
     for (uint16_t i = 0; (uint16_t)(i + 1U) < len; i += 2) {
-        uint16_t ch16 = (uint16_t)input[i + 0];
-        ch16 <<= 8;
-        ch16 |= (uint16_t)input[i + 1];
+        uint16_t ch16;
+        if (little_endian) {
+            ch16 = (uint16_t)((uint16_t)input[i + 1] << 8 | (uint16_t)input[i + 0]);
+        } else {
+            ch16 = (uint16_t)((uint16_t)input[i + 0] << 8 | (uint16_t)input[i + 1]);
+        }
 
         size_t n = dsd_utf16_decoder_push(&decoder, ch16, scalars, DSD_UTF16_MAX_SCALARS_PER_UNIT);
         for (size_t k = 0; k < n; k++) {
             utf16_text_emit_scalar(scalars[k]);
-        }
-
-        //convert to ascii range (will break eastern langauge, but can't do much about that right now)
-        char c[2];
-        c[0] = (char)input[i + 1];
-        c[1] = 0;
-
-        //short version (disabled)
-
-        //this is the long version, complete message for logging purposes
-        if (wr == 1 && input[i] == 0 && input[i + 1] < 0x7F && input[i + 1] >= 0x20) {
-            dsd_append(state->event_history_s[slot].Event_History_Items[0].text_message,
-                       sizeof state->event_history_s[slot].Event_History_Items[0].text_message, c);
+            if (wr == 1) {
+                utf16_text_collect_scalar(state, slot, scalars[k]);
+            }
         }
     }
     if (dsd_utf16_decoder_finish(&decoder, scalars, 1U) > 0U) {
         utf16_text_emit_scalar(scalars[0]);
+        if (wr == 1) {
+            utf16_text_collect_scalar(state, slot, scalars[0]);
+        }
     }
 
     //add elipses to indicate this is possibly truncated
@@ -123,6 +131,16 @@ utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) 
         dsd_event_history_mark_dirty(&state->event_history_s[slot]);
         dsd_event_history_transaction_end(&transaction);
     }
+}
+
+void
+utf16_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+    utf16_text_render(state, wr, 0, len, input);
+}
+
+void
+utf16le_to_text(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input) {
+    utf16_text_render(state, wr, 1, len, input);
 }
 
 void
@@ -572,85 +590,80 @@ decode_ip_pdu_tms_truncated(dsd_state* state, uint8_t slot, uint32_t src24, uint
     return -1;
 }
 
+// Motorola TMS over UDP 4007, as the MOTOTRBO Text Messaging ADK Guide describes the text and as
+// Moto.Net, TRBO-NET and node-dmr-lib build the packet (sdrtrunk agrees on the encoding):
+//   0..1  length, big-endian, of every octet that follows it
+//   2     header: 0x80 extension present, 0x40 ack requested, 0x20 reserved, 0x10 system, and the
+//         message type in the low bits (0 simple text, 0x1F ack)
+//   3     address length; that many octets of address follow when non-zero
+//   then  header-extension octets while the header says so, each with bit 7 set while another
+//         follows (8F 04 on every capture seen: a sequence number and an encoding octet)
+//   then  the text, UCS-2 little-endian, an optional subject line and CR LF ahead of the body
+// The text is located from that layout rather than by backing up from the end of the header,
+// which only lined up for ASCII (issue #466).
 static int DSD_ATTR_USED
 decode_ip_pdu_parse_udp_tms_address(dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
-                                    uint16_t payload_len, uint8_t* payload, int* tms_ptr) {
+                                    uint16_t payload_len, const uint8_t* payload, size_t* tms_ptr) {
+    if (*tms_ptr >= (size_t)payload_len) {
+        return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
+    }
     uint8_t tms_adl = payload[(*tms_ptr)++];
     if (tms_adl == 0) {
         return 0;
     }
-
-    (*tms_ptr)--;
-    if (tms_adl < 4U || (size_t)(*tms_ptr) + (size_t)tms_adl >= (size_t)payload_len) {
+    if (*tms_ptr + (size_t)tms_adl > (size_t)payload_len) {
         return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
     }
-    payload[*tms_ptr] = 0;
     DSD_FPRINTF(stderr, "Address Len: %d; Address: ", tms_adl);
-    utf16_to_text(state, 1, tms_adl - 4, payload + *tms_ptr);
-    payload[*tms_ptr] = tms_adl;
+    // dsd-fme found four octets past the address text on every capture it had, and no public
+    // source parses this field, so the text is still taken as adl - 4 octets: the same characters
+    // as before for ASCII, now read as the UCS-2 LE they are.
+    if (tms_adl > 4U) {
+        utf16le_to_text(state, 1, (uint16_t)(tms_adl - 4U), payload + *tms_ptr);
+    }
     *tms_ptr += tms_adl;
-    *tms_ptr += 1;
     DSD_FPRINTF(stderr, "; ");
     return 0;
 }
 
 static int DSD_ATTR_USED
 decode_ip_pdu_skip_udp_tms_extensions(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24,
-                                      uint32_t dst24, uint16_t payload_len, const uint8_t* payload, int* tms_ptr) {
-    if ((size_t)*tms_ptr >= (size_t)payload_len) {
-        return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
-    }
-
-    uint8_t tms_more = payload[*tms_ptr] >> 7;
-    while (tms_more) {
-        if ((size_t)*tms_ptr >= (size_t)payload_len) {
+                                      uint32_t dst24, uint16_t payload_len, const uint8_t* payload, size_t* tms_ptr) {
+    uint8_t tms_more;
+    do {
+        if (*tms_ptr >= (size_t)payload_len) {
             return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
         }
-        uint8_t tms_b1 = payload[(*tms_ptr)++];
+        uint8_t tms_ext = payload[(*tms_ptr)++];
         if (opts->payload == 1) {
-            if ((size_t)*tms_ptr >= (size_t)payload_len) {
-                return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
-            }
-            uint8_t tms_b2 = payload[*tms_ptr];
-            DSD_FPRINTF(stderr, "B1: %02X; B2: %02X; ", tms_b1, tms_b2);
+            DSD_FPRINTF(stderr, "EXT: %02X; ", tms_ext);
         }
-        tms_more = tms_b1 >> 7;
-        if (tms_more) {
-            if ((size_t)*tms_ptr >= (size_t)payload_len) {
-                return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
-            }
-            (*tms_ptr)++;
-        }
-    }
+        tms_more = tms_ext & 0x80U;
+    } while (tms_more);
     return 0;
 }
 
+// The text runs from tms_ptr to the end of what the length field covers, clamped to the octets
+// the UDP payload actually holds; an odd trailing octet is dropped rather than read as a unit.
 static int DSD_ATTR_USED
 decode_ip_pdu_prepare_tms_text_span(dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
-                                    uint16_t payload_len, int* tms_ptr, int* tms_len) {
-    if ((*tms_ptr % 2) == 0) {
-        (*tms_ptr)++;
-    }
-    if (*tms_len > 3) {
-        int consumed = *tms_ptr - 3;
-        if (consumed >= *tms_len) {
-            return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
-        }
-        *tms_len -= consumed;
-    }
-    *tms_ptr -= 2;
-    if (*tms_ptr < 0 || (size_t)*tms_ptr >= (size_t)payload_len) {
+                                    uint16_t payload_len, size_t tms_ptr, int tms_len, size_t* text_len) {
+    size_t consumed = tms_ptr - 2U; // octets of header after the length field
+    if (tms_ptr >= (size_t)payload_len || tms_len <= 0 || (size_t)tms_len <= consumed) {
         return decode_ip_pdu_tms_truncated(state, slot, src24, dst24);
     }
-    if ((size_t)*tms_len > ((size_t)payload_len - (size_t)*tms_ptr)) {
-        *tms_len = (int)((size_t)payload_len - (size_t)*tms_ptr);
+    size_t span = (size_t)tms_len - consumed;
+    size_t available = (size_t)payload_len - tms_ptr;
+    if (span > available) {
+        span = available;
     }
+    *text_len = span & ~(size_t)1U;
     return 0;
 }
 
 static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
-                             uint16_t payload_len, uint8_t* payload) {
+                             uint16_t payload_len, const uint8_t* payload) {
     int tms_len = 0;
     if (payload_len >= 2) {
         tms_len = (payload[0] << 8) | payload[1];
@@ -662,14 +675,17 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
         return;
     }
 
-    int tms_ptr = 2;
+    size_t tms_ptr = 2;
     uint8_t tms_hdr = payload[tms_ptr++];
     uint8_t tms_ack = (tms_hdr >> 0) & 0xF;
     if (opts->payload == 1) {
         DSD_FPRINTF(stderr, "HDR: %02X; ", tms_hdr);
     }
-    if (decode_ip_pdu_parse_udp_tms_address(state, slot, src24, dst24, payload_len, payload, &tms_ptr) != 0
-        || decode_ip_pdu_skip_udp_tms_extensions(opts, state, slot, src24, dst24, payload_len, payload, &tms_ptr)
+    if (decode_ip_pdu_parse_udp_tms_address(state, slot, src24, dst24, payload_len, payload, &tms_ptr) != 0) {
+        return;
+    }
+    if ((tms_hdr & 0x80U) != 0U
+        && decode_ip_pdu_skip_udp_tms_extensions(opts, state, slot, src24, dst24, payload_len, payload, &tms_ptr)
                != 0) {
         return;
     }
@@ -681,17 +697,15 @@ decode_ip_pdu_handle_udp_tms(const dsd_opts* opts, dsd_state* state, uint8_t slo
         return;
     }
 
-    if (decode_ip_pdu_prepare_tms_text_span(state, slot, src24, dst24, payload_len, &tms_ptr, &tms_len) != 0) {
+    size_t text_len = 0;
+    if (decode_ip_pdu_prepare_tms_text_span(state, slot, src24, dst24, payload_len, tms_ptr, tms_len, &text_len) != 0) {
         return;
     }
-    uint8_t temp = payload[tms_ptr];
-    payload[tms_ptr] = 0;
     if (opts->payload == 1) {
-        DSD_FPRINTF(stderr, "Ptr: %d; Len: %d;", tms_ptr, tms_len);
+        DSD_FPRINTF(stderr, "Ptr: %u; Len: %u;", (unsigned)tms_ptr, (unsigned)text_len);
     }
     DSD_FPRINTF(stderr, "\n Text: ");
-    utf16_to_text(state, 1, tms_len, payload + tms_ptr);
-    payload[tms_ptr] = temp;
+    utf16le_to_text(state, 1, (uint16_t)text_len, payload + tms_ptr);
 }
 
 static void DSD_ATTR_USED

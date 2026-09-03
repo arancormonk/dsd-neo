@@ -7408,6 +7408,27 @@ target_link_libraries(
 )
 add_test(NAME DMR_PDU_UTF16_TEXT COMMAND dsd-neo_test_dmr_pdu_utf16_text)
 
+# DMR TMS (UDP 4007): UCS-2 LE text located from the header, event text kept as UTF-8 (#466)
+add_executable(
+    dsd-neo_test_dmr_tms_utf16le
+    protocol/dmr/test_dmr_tms_utf16le.c
+    test_support/data_event_gps_shim.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ars.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_pdu.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_text.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_tms_utf16le
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_include_directories(
+    dsd-neo_test_dmr_tms_utf16le
+    SYSTEM
+    PRIVATE ${_PUBLIC_INCLUDES}
+)
+target_link_libraries(dsd-neo_test_dmr_tms_utf16le PRIVATE dsd-neo_test_support)
+add_test(NAME DMR_TMS_UTF16LE COMMAND dsd-neo_test_dmr_tms_utf16le)
+
 # DMR LRRP: IP/UDP header lengths (IHL/UDP len) must bound LRRP payload
 add_executable(
     dsd-neo_test_dmr_lrrp_ip_udp_lengths
@@ -9240,6 +9261,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_dmr_lrrp_token_alignment
     dsd-neo_test_dmr_lrrp_wrapped_document
     dsd-neo_test_dmr_pdu_utf16_text
+    dsd-neo_test_dmr_tms_utf16le
     dsd-neo_test_dmr_relaxed_header_ip
     dsd-neo_test_dmr_t3_ann_wd_tscc
     dsd-neo_test_dmr_t3_cmove
