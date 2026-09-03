@@ -19,13 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "csv_parse_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
-
-#define BSIZE               999
-#define CSV_IMPORT_PATH_MAX 2048
 
 static int
 csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* out_index) {
@@ -39,205 +37,6 @@ csv_rkey_index(unsigned long long keynumber, unsigned long long offset, size_t* 
     }
     *out_index = (size_t)(keynumber + offset);
     return 1;
-}
-
-static FILE*
-csv_open_user_read_file(const char* label, const char* requested, char* resolved, size_t resolved_size) {
-    if (!label || !requested || requested[0] == '\0' || !resolved || resolved_size == 0) {
-        LOG_ERROR("CSV import path is missing.\n");
-        return NULL;
-    }
-
-    FILE* fp = dsd_path_fopen_user_read_file(requested, resolved, resolved_size);
-    if (fp == NULL) {
-        LOG_ERROR("Unable to open %s '%s'\n", label, requested);
-        return NULL;
-    }
-    return fp;
-}
-
-static inline void
-trim_eol(char* s) {
-    if (!s) {
-        return;
-    }
-    size_t n = strlen(s);
-    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) {
-        s[--n] = '\0';
-    }
-}
-
-static int
-is_ascii_space(unsigned char c) {
-    return (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v');
-}
-
-/*
- * A blank line is filler, not a data row. Editors and several exporters leave a
- * trailing empty line; counting it would make the dry-run validators report a
- * clean file as "N rows skipped" (and the group importer warn about it).
- */
-static int
-csv_line_is_blank(const char* s) {
-    if (!s) {
-        return 1;
-    }
-    for (const unsigned char* p = (const unsigned char*)s; *p != '\0'; p++) {
-        if (!is_ascii_space(*p)) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-static char*
-trim_ws(char* s) {
-    if (s == NULL) {
-        return NULL;
-    }
-    size_t start = 0;
-    size_t len = strlen(s);
-    while (start < len && is_ascii_space((unsigned char)s[start])) {
-        start++;
-    }
-    while (len > start && is_ascii_space((unsigned char)s[len - 1])) {
-        s[--len] = '\0';
-    }
-    return s + start;
-}
-
-static const char*
-skip_ascii_space(const char* token) {
-    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
-        token++;
-    }
-    return token;
-}
-
-static int
-parse_hex_u64_strict(const char* token, unsigned long long* out) {
-    if (token == NULL || out == NULL) {
-        return 0;
-    }
-
-    token = skip_ascii_space(token);
-    if (token[0] == '0' && (token[1] == 'x' || token[1] == 'X')) {
-        token += 2;
-    }
-
-    const unsigned char* p = (const unsigned char*)token;
-    const unsigned char* end = p;
-    while (*end != '\0' && !is_ascii_space(*end)) {
-        end++;
-    }
-    p = end;
-    while (*p != '\0') {
-        if (is_ascii_space(*p)) {
-            p++;
-            continue;
-        }
-        return 0;
-    }
-
-    uint64_t parsed = 0U;
-    if (dsd_parse_hex_u64_n(token, (size_t)(end - (const unsigned char*)token), &parsed) != 0) {
-        return 0;
-    }
-    *out = (unsigned long long)parsed;
-    return 1;
-}
-
-static int
-parse_dec_u64_strict(const char* token, unsigned long long* out) {
-    char* end = NULL;
-    unsigned long long v = 0ULL;
-    if (token == NULL || out == NULL) {
-        return 0;
-    }
-    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
-        token++;
-    }
-    if (*token == '\0' || *token == '-' || *token == '+') {
-        return 0;
-    }
-    errno = 0;
-    v = strtoull(token, &end, 10);
-    if (errno != 0 || end == token) {
-        return 0;
-    }
-    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
-        end++;
-    }
-    if (*end != '\0') {
-        return 0;
-    }
-    *out = v;
-    return 1;
-}
-
-static int
-parse_dec_long_strict(const char* token, long int* out) {
-    char* end = NULL;
-    long int v = 0;
-    if (token == NULL || out == NULL) {
-        return 0;
-    }
-    while (*token != '\0' && is_ascii_space((unsigned char)*token)) {
-        token++;
-    }
-    if (*token == '\0') {
-        return 0;
-    }
-    errno = 0;
-    v = strtol(token, &end, 10);
-    if (errno != 0 || end == token) {
-        return 0;
-    }
-    while (*end != '\0' && is_ascii_space((unsigned char)*end)) {
-        end++;
-    }
-    if (*end != '\0') {
-        return 0;
-    }
-    *out = v;
-    return 1;
-}
-
-static size_t
-csv_split_preserve_empty(char* line, char** fields, size_t max_fields) {
-    size_t count = 0;
-    char* p = line;
-    if (!line || !fields || max_fields == 0) {
-        return 0;
-    }
-    fields[count++] = p;
-    while (*p != '\0') {
-        if (*p == ',') {
-            *p = '\0';
-            if (count < max_fields) {
-                fields[count++] = p + 1;
-            }
-        }
-        p++;
-    }
-    return count;
-}
-
-static int
-csv_ascii_casecmp(const char* a, const char* b) {
-    if (!a || !b) {
-        return (a == b) ? 0 : 1;
-    }
-    while (*a && *b) {
-        unsigned char ca = (unsigned char)tolower((unsigned char)*a);
-        unsigned char cb = (unsigned char)tolower((unsigned char)*b);
-        if (ca != cb) {
-            return (int)ca - (int)cb;
-        }
-        a++;
-        b++;
-    }
-    return (int)(unsigned char)*a - (int)(unsigned char)*b;
 }
 
 static int
@@ -720,6 +519,47 @@ csv_chan_freq_plausible(long int freq) {
     return hz >= CSV_CHAN_FREQ_MIN_HZ && hz <= CSV_CHAN_FREQ_MAX_HZ;
 }
 
+/*
+ * The key column takes three spellings of one 16-bit key: plain decimal (the
+ * historical form), 0x-prefixed hex (what the P25 UI prints, "Active Ch: 2A46"),
+ * and <iden>-<chan> -- identifier 0-15, a dash, decimal channel 0-4095 -- the
+ * way DSDPlus writes the same channel (2-2630), packed as (iden << 12) | chan.
+ * Anything else returns 0 and the caller skips the row, as it always has: the
+ * decimal key list that shares this row shape never puts a dash or 0x in its id
+ * column, so the content classification above is unchanged.
+ */
+static int
+csv_chan_parse_key(const char* token, long int* out) {
+    const char* p = skip_ascii_space(token);
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        unsigned long long hex = 0ULL;
+        if (!parse_hex_u64_strict(p, &hex) || hex > 0xFFFFULL) {
+            return 0;
+        }
+        *out = (long int)hex;
+        return 1;
+    }
+    const char* dash = strchr(p, '-');
+    if (dash != NULL && dash != p) {
+        char iden_s[4];
+        const size_t iden_len = (size_t)(dash - p);
+        if (iden_len >= sizeof iden_s) {
+            return 0;
+        }
+        DSD_MEMCPY(iden_s, p, iden_len);
+        iden_s[iden_len] = '\0';
+        unsigned long long iden = 0ULL;
+        unsigned long long chan = 0ULL;
+        if (!parse_dec_u64_strict(iden_s, &iden) || iden > 15ULL || !parse_dec_u64_strict(dash + 1, &chan)
+            || chan > 0xFFFULL) {
+            return 0;
+        }
+        *out = (long int)((iden << 12) | chan);
+        return 1;
+    }
+    return parse_dec_long_strict(p, out);
+}
+
 static int
 csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
                             int* freq_parsed) {
@@ -728,7 +568,7 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
     }
     if (field_count == 0) {
         long int parsed_chan = 0;
-        if (parse_dec_long_strict(field, &parsed_chan)) {
+        if (csv_chan_parse_key(field, &parsed_chan)) {
             *chan_number = parsed_chan;
         } else {
             *chan_number = -1;

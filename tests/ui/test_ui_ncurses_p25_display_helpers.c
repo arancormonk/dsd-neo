@@ -142,6 +142,18 @@ p25_iden_vu_bandwidth_hz(uint8_t bw_vu) { // NOLINT(misc-use-internal-linkage)
     return 0;
 }
 
+/* The key form only: the real helper (P25_FREQUENCY tests) adds the TDMA
+ * FDMA/slot tail, which needs an IDEN table this test does not build. */
+void
+p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out,
+                       size_t outsz) { // NOLINT(misc-use-internal-linkage)
+    (void)state;
+    (void)slot_hint;
+    if (out && outsz > 0) {
+        DSD_SNPRINTF(out, outsz, " (%d-%d)", (chan >> 12) & 0xF, chan & 0xFFF);
+    }
+}
+
 size_t
 p25_format_adjacent_cfva(uint8_t cfva, char* out, size_t out_len) { // NOLINT(misc-use-internal-linkage)
     const char* text = (cfva & 0x2U) ? "current" : "last known";
@@ -496,7 +508,8 @@ run_neighbor_helper_cases(void) {
     state.p25_secondary_cc_entries[0].ssc = 0xA0;
     state.p25_secondary_cc_entries[0].last_seen = 180;
     assert(ui_format_secondary_cc_line(&state, 0, (time_t)200, line, sizeof(line)) > 0);
-    assert(strstr(line, "853.012500 MHz [C] CH:1234 R:004 S:005 SSC:A0 age:20s") != NULL);
+    // #403: the channel key (<iden>-<chan>) rides beside the raw hex.
+    assert(strstr(line, "853.012500 MHz [C] CH:1234 (1-564) R:004 S:005 SSC:A0 age:20s") != NULL);
 
     return 0;
 }

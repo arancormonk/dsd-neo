@@ -355,13 +355,17 @@ process_channel_to_freq_trace(const dsd_opts* opts, dsd_state* state, int channe
     return p25_channel_to_freq_impl(opts, state, channel, P25_FREQ_MODE_AUTO, trace);
 }
 
-// Format a short suffix describing the FDMA-equivalent channel and slot for a
-// given P25 channel index. Intended to reduce confusion when Phase 2 TDMA uses
-// 6.25 kHz channel numbering (e.g., 0x0148) while the Learned Channels list is
-// keyed by the 12.5 kHz FDMA channel (e.g., 0x00A4).
+// Format the suffix printed after a four-hex-digit P25 channel ("Active Ch: 2A46%s").
 //
-// Example output (for TDMA): " (FDMA 00A4 S1)"
-// For FDMA (denom==1) the suffix is empty to avoid noise.
+// It always starts with the channel as <iden>-<chan> -- identifier, dash, decimal
+// 12-bit channel, the notation DSDPlus uses and the channel-map CSV accepts as a
+// key -- so a line from the event history can be pasted into a -C map as-is.
+// For a TDMA identifier it adds the FDMA-equivalent channel and slot, since Phase 2
+// grants use 6.25 kHz channel numbering (e.g. 0x0148) while the Learned Channels
+// list is keyed by the 12.5 kHz FDMA channel (e.g. 0x00A4).
+//
+// Example output: " (0-328) (FDMA 00A4 S1)" for TDMA, " (2-2630)" for FDMA.
+// The widest output is 25 bytes; call sites use 32-byte buffers.
 void
 p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, char* out, size_t outsz) {
     if (!out || outsz == 0) {
@@ -369,12 +373,13 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     }
     out[0] = '\0';
 
-    if (!state) {
-        return;
-    }
-
     int iden = (chan >> 12) & 0xF;
     int raw = chan & 0xFFF;
+
+    const int key_len = DSD_SNPRINTF(out, outsz, " (%d-%d)", iden, raw);
+    if (key_len < 0 || (size_t)key_len >= outsz || !state) {
+        return;
+    }
 
     int use_tdma_denom = 0;
     const p25_iden_entry_t* entry = p25_select_iden_entry(state, iden, P25_FREQ_MODE_AUTO, &use_tdma_denom);
@@ -392,7 +397,7 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     }
 
     if (denom <= 1) {
-        // FDMA: nothing to add
+        // FDMA: the key is the whole story
         return;
     }
 
@@ -405,7 +410,7 @@ p25_format_chan_suffix(const dsd_state* state, uint16_t chan, int slot_hint, cha
     // Print only the 12-bit channel index for FDMA to match the Learned list
     // (which commonly shows values like 00A4), and include slot.
     // Display slots as 1-based (S1/S2) to match UI conventions
-    DSD_SNPRINTF(out, outsz, " (FDMA %04X S%d)", fdma & 0xFFF, slot + 1);
+    DSD_SNPRINTF(out + key_len, outsz - (size_t)key_len, " (FDMA %04X S%d)", fdma & 0xFFF, slot + 1);
 }
 
 void
@@ -450,13 +455,20 @@ p25_update_system_identity(dsd_state* state, unsigned long long wacn, unsigned l
         return 0;
     }
 
-    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && (state->p2_wacn != wacn || state->p2_sysid != sysid)) {
+    const int changed = (state->p2_wacn != wacn || state->p2_sysid != sysid);
+    if ((state->p2_wacn != 0 || state->p2_sysid != 0) && changed) {
         p25_reset_iden_tables(state);
         p25_reset_system_metadata(state);
         p25_invalidate_chan_map(state);
     }
     state->p2_wacn = wacn;
     state->p2_sysid = sysid;
+    // The user band plan outlives the wipe: re-seed the empty slots with the rows that apply
+    // to the system just identified (also on the first learn, which resets nothing but is
+    // when rows that name a WACN/SYS become applicable).
+    if (changed) {
+        (void)dsd_state_p25_bandplan_seed(state);
+    }
     return 1;
 }
 

@@ -313,8 +313,12 @@ ui_format_secondary_cc_line(const dsd_state* state, int idx, time_t now, char* o
     if (age < 0) {
         age = 0;
     }
-    return DSD_SNPRINTF(out, out_len, "%.6lf MHz%s CH:%04X R:%03u S:%03u SSC:%02X age:%lds",
-                        (double)entry->freq / 1000000.0, in_cands ? " [C]" : "", entry->channel, entry->rfss,
+    // #403: the <iden>-<chan> key beside the raw hex, the form the band plan and
+    // the Learned list use.
+    char key[32];
+    p25_format_chan_suffix(state, (uint16_t)entry->channel, -1, key, sizeof key);
+    return DSD_SNPRINTF(out, out_len, "%.6lf MHz%s CH:%04X%s R:%03u S:%03u SSC:%02X age:%lds",
+                        (double)entry->freq / 1000000.0, in_cands ? " [C]" : "", entry->channel, key, entry->rfss,
                         entry->site, entry->ssc, age);
 }
 
