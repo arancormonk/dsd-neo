@@ -64,6 +64,10 @@ typedef struct {
     dsd_trunk_scan_target_type type;
     uint32_t frequency_hz;
     char chan_csv[1024];
+    /* Per-target key files, resolved relative to the targets CSV at parse time.
+     * Loaded into the target's key set at init; empty means the global keys. */
+    char keys_hex_csv[1024];
+    char keys_dec_csv[1024];
     int dwell_ms;
     int activity_hold_ms;
     dsd_trunk_scan_modulation modulation;

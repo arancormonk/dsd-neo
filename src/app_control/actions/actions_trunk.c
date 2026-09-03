@@ -16,6 +16,7 @@
 #include "../command_dispatch.h"
 
 #include "dsd-neo/app_control/commands.h"
+#include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -55,6 +56,8 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
         // Scanner mode is the other automatic owner of the tuner, and
         // ui_handle_scanner_toggle clears trunking for the same reason: whichever
         // one was asked for last is the one driving, not both at once.
+        // Leaving -Y hands the foreground keyring back to the globals.
+        dsd_scan_keys_leave(state);
         opts->scanner_mode = 0;
     }
     return 1;
@@ -63,9 +66,12 @@ ui_handle_trunk_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_comma
 static int
 ui_handle_scanner_toggle(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
+    const int was_scanner = opts->scanner_mode ? 1 : 0;
     opts->scanner_mode = opts->scanner_mode ? 0 : 1;
     opts->trunk_enable = 0;
-    (void)state;
+    if (was_scanner) {
+        dsd_scan_keys_leave(state);
+    }
     return 1;
 }
 

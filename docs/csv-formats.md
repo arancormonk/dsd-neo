@@ -94,6 +94,18 @@ Notes:
   stores no name either.
 - A row skipped for an unusable frequency keeps its name in the file's numbering but is never shown, because the
   scanner parks on the frequency it is already on rather than tuning such a row.
+- Two more optional columns carry per-row keys for the `-Y` scanner: `keys_hex_csv` (loaded like `-K`) and
+  `keys_dec_csv` (loaded like `-k`). They opt in by header name at any column position past the frequency (like
+  `name`, matched case-insensitively); a duplicated key header rejects the file. A row may fill both columns;
+  they load into one per-row key set.
+- Each key cell names a key file path, resolved relative to the channel map. Blank cells store nothing, and a row
+  whose channel number does not parse takes no slot and stores nothing. Paths cannot contain commas: the splitter
+  does no quote handling.
+- Row keys take effect only under `-Y`: hopping onto a keyed row installs its set, hopping back onto an unkeyed
+  row restores the global keys. Under plain trunking `-C` they are stored but never applied (one warning); under
+  trunk-scan per-target `chan_csv` they are discarded, like `name`.
+- Validation opens the key files, so an unloadable key path fails validation. The Qt/Android picker flow (which
+  copies files) does not support per-row key files.
 - Where a name shows: the end of the `-Y` conventional scanner's **Scan Mode** row, a `Channel:` line at the top of
   the Call Info panel, and as a prefix on the event history rows recorded while that channel is tuned. Encrypted
   traffic that reports no talkgroup still says which channel it was heard on. While a `--trunk-scan` target is on
@@ -120,6 +132,15 @@ Example with names (`examples/conventional_scan_named.csv`):
 channel,frequency_hz,name
 1,462562500,GMRS 1
 2,462587500,GMRS 2
+```
+
+Example with per-row keys (`examples/conventional_scan_keyed.csv`):
+
+```csv
+channel,frequency_hz,name,keys_hex_csv,keys_dec_csv
+1,462562500,System A,multi_key_hex.csv,
+2,462587500,System B,,multi_key.csv
+3,462612500,Shared,,
 ```
 
 ## Trunk Scan Target CSV (`--trunk-scan <file>` / `[trunk_scan] targets_csv`)
@@ -152,6 +173,8 @@ Columns:
 | `notes` | No | Ignored. Use for local notes. |
 | `modulation` | No | Per-target demod hint. Empty preserves global/default handling. `auto` uses target defaults and overrides global `-m` locks for that target. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | Per-target RTL-family tuner gain. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. Ignored for non-RTL retuning paths. |
+| `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to this CSV. A row may fill both key columns; they load into one per-target key set. Empty uses the global keys. |
+| `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to this CSV. Empty uses the global keys. |
 
 Validation notes:
 
@@ -252,6 +275,8 @@ Notes:
 - The value is stored as a 40-bit quantity (higher bits are discarded).
 - If `key_id` exceeds 16 bits, it is truncated to 24 bits and hashed down to 16 bits for storage.
 - Extra columns are ignored.
+- A channel-map row (`keys_dec_csv`) or trunk-scan target (`keys_dec_csv`) can name a file in this format to
+  override the global keyring on that row or target; see the Channel Map and Trunk Scan Target sections above.
 
 Example:
 
@@ -280,6 +305,8 @@ Notes:
 
 - Each `valueN` is parsed as a hex integer. For long keys, DSD-neo stores the additional parts at internal offsets.
 - Extra columns beyond these are ignored.
+- A channel-map row (`keys_hex_csv`) or trunk-scan target (`keys_hex_csv`) can name a file in this format to
+  override the global keyring on that row or target; see the Channel Map and Trunk Scan Target sections above.
 
 Example:
 

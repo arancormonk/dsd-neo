@@ -133,6 +133,12 @@ _Static_assert(offsetof(dsd_state, trunk_lcn_avoid) >= UI_SNAPSHOT_FIELD_END(tru
                "trunk_lcn_avoid must sit after the dibit_buf..trunk_lcn_freq copy range");
 _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_avoid_capacity) <= offsetof(dsd_state, audio_out_idx),
                "trunk_lcn_avoid must sit before the audio_out_idx..lastsample copy range");
+/* The per-row key store is a fourth heap allocation with the same hazard, and the scan
+ * key swap state beside it is deliberately never deep-copied (key material). */
+_Static_assert(offsetof(dsd_state, trunk_lcn_keys) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_lcn_keys must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(scan_keys_active_set) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_lcn_keys..scan_keys_active_set must sit before the audio_out_idx..lastsample copy range");
 /* The trunk-scan publication and the scan hold/avoid scalars are plain inline bytes, so
  * unlike the stores above they want to be inside a copy range -- left out of one they
  * would silently never reach the UI. */

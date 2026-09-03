@@ -9,6 +9,7 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/safe_api.h"
 
 void
@@ -355,6 +356,62 @@ test_chan_empty_frequency_field_is_skipped(void) {
     return failed;
 }
 
+/* Key columns ride along without moving the counters: a keyed row still stands
+ * or falls on its frequency, and validation opens the key files, so an
+ * unloadable key path fails validation the way it fails the import. */
+static int
+test_chan_counts_with_key_columns(void) {
+    char key_tmpl[] = "dsd-neo-test-validate-rowkey-XXXXXX";
+    char tmpl[] = "dsd-neo-test-validate-chan-keys-XXXXXX";
+    char body[1024];
+    if (write_temp_csv(key_tmpl, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        return 1;
+    }
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body),
+                       "channel,frequency_hz,keys_hex_csv\n"
+                       "1,851000000,%s\n"
+                       "2,notafreq,%s\n"
+                       "3,852000000,\n",
+                       key_tmpl, key_tmpl);
+    if (write_temp_csv(tmpl, body) != 0) {
+        (void)remove(key_tmpl);
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_chan_file(tmpl, &v) != 0) {
+        DSD_FPRINTF(stderr, "chan validate failed on a keyed file\n");
+        failed = 1;
+    }
+    if (v.accepted != 2U || v.skipped != 1U || v.total != 3U) {
+        DSD_FPRINTF(stderr, "chan key-column counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(key_tmpl);
+    (void)remove(tmpl);
+    return failed;
+}
+
+static int
+test_chan_key_column_bad_path_fails(void) {
+    char tmpl[] = "dsd-neo-test-validate-chan-badkey-XXXXXX";
+    if (write_temp_csv(tmpl, "channel,frequency_hz,keys_hex_csv\n"
+                             "1,851000000,dsd-neo-test-validate-missing-dir/missing.csv\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_chan_file(tmpl, &v) == 0) {
+        DSD_FPRINTF(stderr, "chan validate accepted an unloadable key path\n");
+        failed = 1;
+    }
+    (void)remove(tmpl);
+    return failed;
+}
+
 int
 main(void) {
     if (test_missing_file_fails() != 0) {
@@ -379,6 +436,12 @@ main(void) {
         return 1;
     }
     if (test_chan_empty_frequency_field_is_skipped() != 0) {
+        return 1;
+    }
+    if (test_chan_counts_with_key_columns() != 0) {
+        return 1;
+    }
+    if (test_chan_key_column_bad_path_fails() != 0) {
         return 1;
     }
     if (test_key_dec_counts_mixed_rows() != 0) {

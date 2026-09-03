@@ -68,6 +68,7 @@
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/dibit.h"
+#include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -320,6 +321,7 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
             return -1;
         }
         LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
+        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
     }
     return 0;
 }
@@ -1353,6 +1355,9 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
         }
     }
     state->lcn_freq_roll++;
+    if (freq != 0) {
+        dsd_scan_row_keys_apply(state, state->lcn_freq_roll - 1);
+    }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     // A zero entry parks on the current frequency rather than retuning, so it is not a hop.

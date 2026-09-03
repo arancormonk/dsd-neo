@@ -10,8 +10,10 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -29,6 +31,7 @@
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "services.h"
 
@@ -150,6 +153,9 @@ static uint32_t g_chan_import_chan[4];
 static long int g_chan_import_freq[4];
 /* Per-row names, NULL for a row the file leaves unnamed. */
 static const char* g_chan_import_name[4];
+/* Per-row key seed: set entries load a one-slot key set into the row. */
+static int g_chan_import_has_key[4];
+static unsigned long long g_chan_import_key[4];
 /* A name stored with no row to go with it, so the refused-adopt path can be driven with a
  * name store live in the throwaway import state: the service still owes exactly one free of
  * it and no change to the live map. */
@@ -172,6 +178,20 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         if (g_chan_import_name[i] != NULL) {
             (void)dsd_state_trunk_lcn_name_set(state, row, g_chan_import_name[i]);
         }
+        if (g_chan_import_has_key[i]) {
+            dsd_key_set ks;
+            DSD_MEMSET(&ks, 0, sizeof(ks));
+            ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+            if (ks.entries != NULL) {
+                ks.count = 1U;
+                ks.present = 1;
+                ks.keyloader = 1;
+                ks.entries[0].index = 9U;
+                ks.entries[0].value = g_chan_import_key[i];
+                ks.entries[0].loaded = 1U;
+                (void)dsd_state_trunk_lcn_keys_set(state, row, &ks);
+            }
+        }
     }
     return 0;
 }
@@ -189,6 +209,24 @@ int
 csvKeyImportHex(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    return g_key_import_result;
+}
+
+int
+csvKeyImportHexPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats) {
+    (void)path;
+    (void)show_keys;
+    (void)state;
+    (void)stats;
+    return g_key_import_result;
+}
+
+int
+csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats) {
+    (void)path;
+    (void)show_keys;
+    (void)state;
+    (void)stats;
     return g_key_import_result;
 }
 
@@ -988,6 +1026,60 @@ test_clear_services_unload_what_the_importers_loaded(void) {
     return rc;
 }
 
+/*
+ * Adopt moves the per-row key store with the map; a keyless reimport drops it.
+ * Clearing the map leaves -Y, so it restores the globals the parked row set
+ * shadowed first.
+ */
+static int
+test_channel_map_keys_adopt_and_clear(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+
+    g_chan_import_result = 0;
+    g_chan_import_count = 1;
+    g_chan_import_chan[0] = 101;
+    g_chan_import_freq[0] = 851000000L;
+    g_chan_import_name[0] = NULL;
+    g_chan_import_has_key[0] = 1;
+    g_chan_import_key[0] = 0xBEEFULL;
+    rc |= expect_int("keyed map import ok", svc_import_channel_map(&opts, &state, "a.csv"), 0);
+    rc |= expect_int("adopt keeps the row key set", (int)(dsd_state_trunk_lcn_keys_get(&state, 0U) != NULL), 1);
+    rc |= expect_int("adopt reports a keyed store", dsd_state_trunk_lcn_keys_present(&state), 1);
+
+    g_chan_import_has_key[0] = 0;
+    rc |= expect_int("keyless reimport ok", svc_import_channel_map(&opts, &state, "b.csv"), 0);
+    rc |= expect_int("keyless reimport drops the key store", (int)(state.trunk_lcn_keys == NULL), 1);
+    rc |= expect_int("keyless reimport reads back empty", (int)(dsd_state_trunk_lcn_keys_get(&state, 0U) == NULL), 1);
+
+    // Park on a keyed row, then clear: the live keyring must show the globals again.
+    g_chan_import_has_key[0] = 1;
+    rc |= expect_int("keyed map reimport ok", svc_import_channel_map(&opts, &state, "c.csv"), 0);
+    state.keyloader = 0;
+    state.K = 0xBEEFULL;
+    state.rkey_array[3] = 111ULL;
+    state.rkey_array_loaded[3] = 1U;
+    rc |= expect_int("parking on the keyed row installs it",
+                     dsd_scan_keys_enter(&state, dsd_state_trunk_lcn_keys_get(&state, 0U)), 1);
+    rc |= expect_ull("parked row key live", state.rkey_array[9], 0xBEEFULL);
+    rc |= expect_int("clear ok", svc_clear_channel_map(&opts, &state), 0);
+    rc |= expect_int("clear leaves the swap", (int)state.scan_keys_active_set, 0);
+    rc |= expect_int("clear restores keyloader", state.keyloader, 0);
+    rc |= expect_ull("clear restores scalar K", state.K, 0xBEEFULL);
+    rc |= expect_ull("clear restores the global slot", state.rkey_array[3], 111ULL);
+    rc |= expect_ull("clear drops the row slot", state.rkey_array[9], 0ULL);
+    rc |= expect_int("clear releases the key store", (int)(state.trunk_lcn_keys == NULL), 1);
+
+    g_chan_import_result = -1;
+    g_chan_import_has_key[0] = 0;
+    g_chan_import_key[0] = 0ULL;
+    dsd_state_trunk_lcn_free(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1001,6 +1093,7 @@ main(void) {
 #endif
     rc |= test_file_network_and_import_failure_contracts();
     rc |= test_channel_map_reimport_replaces_previous_map();
+    rc |= test_channel_map_keys_adopt_and_clear();
     rc |= test_key_import_arms_keyloader();
     rc |= test_clear_services_unload_what_the_importers_loaded();
     return rc ? 1 : 0;

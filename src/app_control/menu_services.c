@@ -8,6 +8,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -29,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/dibit.h"
+#include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -367,6 +369,13 @@ chan_map_adopt(dsd_state* dst, dsd_state* src) {
     dst->trunk_lcn_name_capacity = src->trunk_lcn_name_capacity;
     src->trunk_lcn_name = NULL;
     src->trunk_lcn_name_capacity = 0;
+    // The per-row key store moves with the map the same way: the next hop
+    // re-applies from the new store, so no leave is needed here.
+    dsd_state_trunk_lcn_keys_free(dst);
+    dst->trunk_lcn_keys = src->trunk_lcn_keys;
+    dst->trunk_lcn_keys_capacity = src->trunk_lcn_keys_capacity;
+    src->trunk_lcn_keys = NULL;
+    src->trunk_lcn_keys_capacity = 0;
     dst->lcn_freq_count = src_count;
     dst->lcn_freq_roll = 0;
     // Session avoids and the scan hold index rows that no longer exist.
@@ -410,6 +419,9 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (import_rc == 0 && mapped_any) {
         adopt_rc = chan_map_adopt(state, imported);
     }
+    if (import_rc == 0 && mapped_any && adopt_rc == 0) {
+        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
+    }
     dsd_state_ext_free_all(imported);
     dsd_state_trunk_lcn_free(imported);
     free(imported);
@@ -431,7 +443,9 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->trunk_chan_map_used, 0, sizeof state->trunk_chan_map_used);
     state->trunk_chan_map_used_count = 0;
     DSD_MEMSET(state->trunk_lcn_freq, 0, sizeof state->trunk_lcn_freq);
-    // Releases the per-row name and avoid stores along with the scan-list heap tail.
+    // Releases the per-row name, avoid and key stores along with the scan-list heap tail.
+    // Clearing the map leaves -Y: hand the foreground keyring back to the globals first.
+    dsd_scan_keys_leave(state);
     dsd_state_trunk_lcn_free(state);
     state->lcn_freq_count = 0;
     state->lcn_freq_roll = 0;

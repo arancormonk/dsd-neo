@@ -37,6 +37,7 @@
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/enc_lockout.h"
+#include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -193,6 +194,9 @@ typedef struct {
 typedef struct {
     dsd_trunk_scan_target target;
     dsd_trunk_scan_snapshot snapshot;
+    /* Static per-target key configuration, loaded at init. Not part of the
+     * snapshot: the switch applies it through the scan key swap instead. */
+    dsd_key_set keys;
     p25_sm_ctx_t p25_ctx;
     dmr_sm_ctx_t dmr_ctx;
     double parked_since_m;
@@ -499,6 +503,8 @@ typedef struct {
     int default_hold_ms;
     int modulation_idx;
     int rtl_gain_idx;
+    int keys_hex_idx;
+    int keys_dec_idx;
     unsigned int row;
     char* err;
     size_t err_sz;
@@ -650,6 +656,8 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
 
     const char* modulation_s = scan_optional_field(fields, field_count, parse->modulation_idx);
     const char* rtl_gain_s = scan_optional_field(fields, field_count, parse->rtl_gain_idx);
+    const char* keys_hex_s = scan_optional_field(fields, field_count, parse->keys_hex_idx);
+    const char* keys_dec_s = scan_optional_field(fields, field_count, parse->keys_dec_idx);
 
     dsd_trunk_scan_target target;
     DSD_MEMSET(&target, 0, sizeof(target));
@@ -675,6 +683,20 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
             scan_set_error(parse->err, parse->err_sz, "row %u chan_csv path is too long or invalid", parse->row);
             return -1;
         }
+    }
+    if (keys_hex_s[0] != '\0'
+        && dsd_path_resolve_relative_to_file(parse->resolved_path, keys_hex_s, target.keys_hex_csv,
+                                             sizeof target.keys_hex_csv)
+               != 0) {
+        scan_set_error(parse->err, parse->err_sz, "row %u keys_hex_csv path is too long or invalid", parse->row);
+        return -1;
+    }
+    if (keys_dec_s[0] != '\0'
+        && dsd_path_resolve_relative_to_file(parse->resolved_path, keys_dec_s, target.keys_dec_csv,
+                                             sizeof target.keys_dec_csv)
+               != 0) {
+        scan_set_error(parse->err, parse->err_sz, "row %u keys_dec_csv path is too long or invalid", parse->row);
+        return -1;
     }
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
         scan_set_error(parse->err, parse->err_sz, "row %u has invalid dwell_ms '%s'", parse->row, dwell_s);
@@ -732,6 +754,8 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
 
     parse->modulation_idx = -1;
     parse->rtl_gain_idx = -1;
+    parse->keys_hex_idx = -1;
+    parse->keys_dec_idx = -1;
     for (size_t i = DSD_TRUNK_SCAN_REQUIRED_CSV_FIELDS; i < field_count; i++) {
         const char* name = scan_unquote(fields[i]);
         if (strcmp(name, "modulation") == 0) {
@@ -746,6 +770,18 @@ scan_read_target_csv_header(FILE* fp, char* line, size_t line_sz, dsd_trunk_scan
                 return -1;
             }
             parse->rtl_gain_idx = (int)i;
+        } else if (strcmp(name, "keys_hex_csv") == 0) {
+            if (parse->keys_hex_idx >= 0) {
+                scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates 'keys_hex_csv'");
+                return -1;
+            }
+            parse->keys_hex_idx = (int)i;
+        } else if (strcmp(name, "keys_dec_csv") == 0) {
+            if (parse->keys_dec_idx >= 0) {
+                scan_set_error(parse->err, parse->err_sz, "trunk scan target CSV header duplicates 'keys_dec_csv'");
+                return -1;
+            }
+            parse->keys_dec_idx = (int)i;
         }
     }
     return 0;
@@ -1875,6 +1911,9 @@ trunk_scan_import_target_chan_csv(const dsd_opts* opts, dsd_state* state, const 
      * snapshot carries the positional scan list and not the names, so a kept name would end
      * up over the next target's list. Drop them before that can happen. */
     dsd_state_trunk_lcn_name_free(state);
+    /* Per-row key columns are likewise discarded: keys arrive per trunk-scan target, not
+     * per chan_csv row, and a kept set would install on the wrong target's hop. */
+    dsd_state_trunk_lcn_keys_free(state);
     free(tmp_opts);
     if (import_rc != 0) {
         scan_set_error(err, err_sz, "failed to import chan_csv '%s' for trunk scan target '%s'", target->chan_csv,
@@ -1903,6 +1942,18 @@ trunk_scan_build_target_runtime(dsd_trunk_scan_coord* coord, dsd_opts* opts, dsd
         trunk_scan_seed_target_state(state, &rt->target, now_m);
         if (trunk_scan_import_target_chan_csv(opts, state, &rt->target, err, err_sz) != 0) {
             return -1;
+        }
+        if (rt->target.keys_hex_csv[0] != '\0' || rt->target.keys_dec_csv[0] != '\0') {
+            const char* key_src =
+                rt->target.keys_hex_csv[0] != '\0' ? rt->target.keys_hex_csv : rt->target.keys_dec_csv;
+            if (dsd_key_set_load_csv(&rt->keys, rt->target.keys_hex_csv[0] != '\0' ? rt->target.keys_hex_csv : NULL,
+                                     rt->target.keys_dec_csv[0] != '\0' ? rt->target.keys_dec_csv : NULL,
+                                     opts->show_keys)
+                != 0) {
+                scan_set_error(err, err_sz, "failed to import keys for trunk scan target '%s' from '%s'", rt->target.id,
+                               key_src);
+                return -1;
+            }
         }
         p25_sm_init_ctx(&rt->p25_ctx, opts, state);
         dmr_sm_init_ctx(&rt->dmr_ctx, opts, state);
@@ -1968,6 +2019,24 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     return dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
 }
 
+/*
+ * Per-target keys ride the scan key swap: a keyed target installs its set, an
+ * unkeyed one hands the foreground keyring back to the globals. Trunk scan
+ * never bumps the lockout key epoch -- every target carries its own lockout
+ * ledger snapshot, so no global invalidation is owed on a switch.
+ */
+static void
+trunk_scan_apply_target_keys(dsd_state* state, const dsd_trunk_scan_target_runtime* rt) {
+    if (!state || !rt) {
+        return;
+    }
+    if (rt->keys.present) {
+        (void)dsd_scan_keys_enter(state, &rt->keys);
+    } else {
+        dsd_scan_keys_leave(state);
+    }
+}
+
 static int
 trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, size_t next, int save_current) {
     if (!coord || next >= coord->count) {
@@ -1984,6 +2053,7 @@ trunk_scan_switch_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coo
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
     trunk_scan_restore_target_snapshot(coord, state, rt);
     trunk_scan_apply_target_opts(opts, coord, &rt->target);
+    trunk_scan_apply_target_keys(state, rt);
     trunk_scan_apply_target_demod(opts, state, &rt->target);
     trunk_scan_sync_active_sm_mode(state, rt);
 
@@ -2079,6 +2149,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_publish_active_target(state, coord);
     trunk_scan_restore_snapshot(state, original_snapshot);
     trunk_scan_apply_target_opts(opts, coord, &coord->targets[coord->active].target);
+    trunk_scan_apply_target_keys(state, &coord->targets[coord->active]);
     trunk_scan_apply_target_demod(opts, state, &coord->targets[coord->active].target);
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
 }
@@ -2551,6 +2622,7 @@ trunk_scan_coord_free(dsd_trunk_scan_coord* coord) {
         free(coord->targets[i].snapshot.trunk_lcn_freq_ext);
         free(coord->targets[i].snapshot.chan_map_chan);
         free(coord->targets[i].snapshot.chan_map_freq);
+        dsd_key_set_free(&coord->targets[i].keys);
     }
     free(coord->scratch_snapshot.trunk_lcn_freq_ext);
     free(coord->scratch_snapshot.chan_map_chan);
@@ -2636,7 +2708,9 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
  * captured, release the coordinator and its snapshots, and drop the target
  * list's owned storage. */
 static void
-trunk_scan_init_release(dsd_opts* opts, dsd_trunk_scan_coord* coord, dsd_trunk_scan_target_list* list) {
+trunk_scan_init_release(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord,
+                        dsd_trunk_scan_target_list* list) {
+    dsd_scan_keys_leave(state);
     trunk_scan_restore_saved_opts(opts, coord);
     trunk_scan_coord_free(coord);
     dsd_trunk_scan_target_list_reset(list);
@@ -2665,12 +2739,12 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     }
 
     if (trunk_scan_build_target_runtime(coord, opts, state, &list, err, err_sz) != 0) {
-        trunk_scan_init_release(opts, coord, &list);
+        trunk_scan_init_release(opts, state, coord, &list);
         return -1;
     }
 
     if (dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, coord, trunk_scan_free) != 0) {
-        trunk_scan_init_release(opts, coord, &list);
+        trunk_scan_init_release(opts, state, coord, &list);
         scan_set_error(err, err_sz, "failed to attach trunk scan coordinator");
         return -1;
     }
@@ -2710,6 +2784,7 @@ dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state) {
         return;
     }
     trunk_scan_log_nxdn_diag_summaries(coord, state);
+    dsd_scan_keys_leave(state);
     trunk_scan_restore_saved_opts(opts, coord);
     trunk_scan_uninstall_runtime_hooks(coord);
     trunk_scan_clear_published_target(state);

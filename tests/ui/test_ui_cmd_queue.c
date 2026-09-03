@@ -12,6 +12,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../src/app_control/commands_internal.h"
@@ -1861,6 +1863,90 @@ test_scan_hold_avoid_commands(void) {
     return rc;
 }
 
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Per-row keys through the command queue: a channel cycle onto a keyed row
+ * installs its set, a runtime key import while parked lands in the globals
+ * and survives the next leave, and scanner toggle off restores the baseline.
+ */
+static int
+test_scan_row_keys_commands(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* hex_csv = "ui_cmd_queue_rowkey_hex.csv";
+    static const unsigned char hex_data[] = "key id(hex),key value (hex)\n0007,0000000000001234\n";
+
+    init_test_context(&opts, &state);
+    remove(hex_csv);
+    rc |= expect_int("rowkey hex file written", write_file_bytes(hex_csv, hex_data, sizeof(hex_data) - 1U), 0);
+
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    state.keyloader = 0;
+    state.K = 0xBEEFULL;
+    {
+        dsd_key_set ks;
+        DSD_MEMSET(&ks, 0, sizeof(ks));
+        ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+        if (ks.entries == NULL) {
+            remove(hex_csv);
+            freeState(&state);
+            return 1;
+        }
+        ks.count = 1U;
+        ks.present = 1;
+        ks.keyloader = 1;
+        ks.entries[0].index = 9U;
+        ks.entries[0].value = 999ULL;
+        ks.entries[0].loaded = 1U;
+        if (dsd_state_trunk_lcn_keys_set(&state, 1U, &ks) != 0) {
+            remove(hex_csv);
+            freeState(&state);
+            return 1;
+        }
+    }
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    rc |= expect_int("keyed cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("keyed cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("keyed cycle tunes the keyed row", g_io_control_tune_freq == 858000000L);
+    rc |= expect_u64("keyed cycle installs the row set", state.rkey_array[9], 999ULL);
+    rc |= expect_int("keyed cycle arms keyloader", state.keyloader, 1);
+
+    // A runtime import while parked edits the globals underneath the row set.
+    post_string(DSD_APP_CMD_IMPORT_KEYS_HEX, hex_csv);
+    rc |= expect_int("parked key import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_u64("parked import keeps the row set live", state.rkey_array[9], 999ULL);
+    dsd_scan_keys_leave(&state);
+    rc |= expect_u64("parked import survives the leave", state.rkey_array[7], 0x1234ULL);
+    rc |= expect_int("parked import arms the baseline", state.keyloader, 1);
+    rc |= expect_u64("leave drops the row slot", state.rkey_array[9], 0ULL);
+
+    // Scanner toggle off hands the foreground keyring back to the globals.
+    rc |= expect_int("repark installs again", dsd_scan_keys_enter(&state, dsd_state_trunk_lcn_keys_get(&state, 1U)), 1);
+    opts.scanner_mode = 1;
+    rc |= expect_int("scanner toggle queued", dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scanner toggle leaves scanner mode", opts.scanner_mode, 0);
+    rc |= expect_int("scanner toggle leaves the swap", (int)state.scan_keys_active_set, 0);
+    rc |= expect_u64("scanner toggle restores the imported slot", state.rkey_array[7], 0x1234ULL);
+    rc |= expect_u64("scanner toggle drops the row slot", state.rkey_array[9], 0ULL);
+
+    remove(hex_csv);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    freeState(&state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -1881,6 +1967,7 @@ main(void) {
 #endif
     rc |= test_tuner_release();
     rc |= test_scan_hold_avoid_commands();
+    rc |= test_scan_row_keys_commands();
 #endif
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");
