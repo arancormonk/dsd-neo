@@ -731,7 +731,8 @@ decode_ip_pdu_handle_udp_vtx_tms(const dsd_opts* opts, dsd_state* state, uint8_t
 
 // Some systems carry LRRP on a UDP port outside the registered set, which the dispatch below drops
 // as an unknown port (#453). The extra ports are looked up at run time from what the site supplied,
-// so no second port table is compiled in and the registered services keep their own dispatch.
+// so no second port table is compiled in. The lookup runs only for a port neither dispatch table
+// claims, so mapping a registered service port (say 4007) leaves that service's decoder in charge.
 static int
 decode_ip_pdu_udp_port_is_lrrp(const dsd_opts* opts, uint16_t port) {
     int count = opts->lrrp_extra_port_count;
@@ -860,15 +861,15 @@ decode_ip_pdu_handle_udp_service_ext(const dsd_opts* opts, dsd_state* state, uin
 static void DSD_ATTR_USED
 decode_ip_pdu_handle_udp_service(dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t src24, uint32_t dst24,
                                  uint16_t port, uint16_t payload_len, uint8_t* payload, const uint8_t* input) {
-    if (decode_ip_pdu_udp_port_is_lrrp(opts, port)) {
-        // Dispatched as the registered location port, so a mapped port cannot drift away from 4001.
-        (void)decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, 4001U, payload_len, payload);
-        return;
-    }
     if (decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, port, payload_len, payload)) {
         return;
     }
     if (decode_ip_pdu_handle_udp_service_ext(opts, state, slot, src24, dst24, port, payload_len, payload, input)) {
+        return;
+    }
+    if (decode_ip_pdu_udp_port_is_lrrp(opts, port)) {
+        // Dispatched as the registered location port, so a mapped port cannot drift away from 4001.
+        (void)decode_ip_pdu_handle_udp_service_core(opts, state, slot, src24, dst24, 4001U, payload_len, payload);
         return;
     }
     DSD_SNPRINTF(state->dmr_lrrp_gps[slot], sizeof(state->dmr_lrrp_gps[slot]),

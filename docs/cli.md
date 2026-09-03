@@ -229,7 +229,9 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
 - `-L <file>` Append LRRP (location) data
 - `--lrrp-extra-port <n>` Also decode UDP port `<n>` as LRRP. Repeatable, at most 8 ports.
   The registered location port 4001 is always decoded; this adds ports a system uses
-  instead of it, which would otherwise be reported as `Unknown UDP Port`.
+  instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder
+  already recognises (4005 ARS, 4007 TMS, and so on) keep their own service; the mapping
+  only applies to ports that would otherwise be unknown.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, unmute encrypted audio
 

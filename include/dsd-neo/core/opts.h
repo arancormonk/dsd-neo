@@ -14,9 +14,6 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
-/* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-port. */
-#define DSD_LRRP_EXTRA_PORT_MAX 8
-
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
@@ -32,6 +29,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+/* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-extra-port. */
+#define DSD_LRRP_EXTRA_PORT_MAX 8
 
 /**
  * @brief Audio input source types.

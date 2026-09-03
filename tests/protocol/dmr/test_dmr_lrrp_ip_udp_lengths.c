@@ -848,6 +848,17 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "LRRP SRC:", "registered port unaffected");
 
+        // A mapping on a port the dispatch already owns leaves that service in charge.
+        reset_spies();
+        opts.lrrp_extra_ports[0] = 4007U;
+        opts.lrrp_extra_port_count = 1;
+        const uint8_t tms_ack[] = {0x00, 0x05, 0x01, 0x00, 0x00};
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4007U, tms_ack, sizeof tms_ack);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Acknowledgment;", "registered service keeps its dispatch");
+        rc |= expect_lacks_substr(st.dmr_lrrp_gps[0], "LRRP SRC:", "registered service is not remapped");
+
         opts.lrrp_extra_port_count = 0;
     }
 
