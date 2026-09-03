@@ -81,6 +81,7 @@ Item {
     // run inverted against the live session.
     readonly property bool muted: metrics ? metrics.audioMuted : false
     readonly property bool holding: metrics ? metrics.heldTg > 0 : false
+    readonly property bool scanHeld: metrics ? metrics.scanHold : false
 
     onHeroNameChanged: heroText.requestPaint()
 
@@ -424,6 +425,49 @@ Item {
             }
         }
 
+        // Actions on the scan rotation (#380): the -Y list or the trunk-scan
+        // targets, whichever is running. Gated on the rotation, not on the
+        // tuner gate: plain trunking owns the tuner too and has nothing to hold
+        // or avoid at channel scope. Hold reads the engine back like Hold TG
+        // does, and the engine's refusals ("Cannot avoid the last usable scan
+        // channel") arrive through uiMessage below.
+        Row {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "scanControlsRow"
+
+            width: parent.width
+            spacing: 10
+            visible: metrics.scanRotationActive
+
+            OutlineButton {
+                objectName: "scanHoldButton"
+
+                width: (parent.width - 20) / 3
+                text: screen.scanHeld ? qsTr("Release scan") : qsTr("Hold scan")
+                enabled: decoderHost.running
+                border.color: screen.scanHeld ? Theme.cyan : Theme.controlBorder
+                onClicked: commands.toggleScanHold()
+            }
+
+            OutlineButton {
+                objectName: "scanAvoidButton"
+
+                width: (parent.width - 20) / 3
+                text: qsTr("Avoid")
+                enabled: decoderHost.running
+                onClicked: commands.avoidCurrentChannel()
+            }
+
+            OutlineButton {
+                objectName: "scanNextButton"
+
+                width: (parent.width - 20) / 3
+                text: qsTr("Next")
+                enabled: decoderHost.running
+                onClicked: commands.nextChannel()
+            }
+        }
+
         // The engine's answer to the last command ("Output: Muted", "Output:
         // open failed") — without it a tap that failed inside the engine reads
         // as a button that did nothing.
@@ -609,6 +653,47 @@ Item {
                 font.family: Theme.mono
                 font.pixelSize: 11
                 color: Theme.magenta
+            }
+        }
+
+        // Why the scan stopped moving (#380): channels or targets the operator
+        // avoided for the session, with the way to put them back. Hidden at zero
+        // and outside any rotation, so an idle session never carries a 0. The
+        // [avoided] marker is the trunk-scan fallback: every alternate failed to
+        // retune and the receiver stayed on a target that was avoided.
+        Row {
+            // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
+            objectName: "scanAvoidRow"
+
+            spacing: 8
+            visible: metrics.scanAvoidCount > 0
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: metrics.scanTargetAvoided ? qsTr("SCAN AVOIDS [avoided]") : qsTr("SCAN AVOIDS")
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.textSubdued
+            }
+
+            Text {
+                objectName: "scanAvoidValue"
+
+                anchors.verticalCenter: parent.verticalCenter
+                text: metrics.scanAvoidCount.toString()
+                font.family: Theme.mono
+                font.pixelSize: 11
+                color: Theme.cyan
+            }
+
+            OutlineButton {
+                objectName: "scanAvoidClearButton"
+
+                width: 72
+                implicitHeight: 28
+                text: qsTr("Clear")
+                enabled: decoderHost.running
+                onClicked: commands.clearScanAvoids()
             }
         }
 
