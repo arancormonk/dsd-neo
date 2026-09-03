@@ -201,6 +201,7 @@ typedef struct {
     double last_allowed_activity_m;
     uint64_t tune_request_id;
     int tune_pending;
+    int avoided; /* operator avoid for the session: skipped by the rotation (#380) */
 } dsd_trunk_scan_target_runtime;
 
 /*
@@ -220,6 +221,7 @@ typedef struct {
     dsd_trunk_scan_snapshot scratch_snapshot;
     size_t count;
     size_t active;
+    int hold_active; /* operator hold: the idle dwell never expires while set (#380) */
     int saved_trunk_enable;
     int saved_trunk_is_tuned;
     int saved_mod_c4fm;
@@ -1554,6 +1556,18 @@ trunk_scan_clear_published_target(dsd_state* state) {
     state->trunk_scan_active_id[0] = '\0';
     state->trunk_scan_active_ordinal = 0U;
     state->trunk_scan_target_count = 0U;
+    state->trunk_scan_hold = 0U;
+    state->trunk_scan_active_avoided = 0U;
+    state->trunk_scan_avoided_count = 0U;
+}
+
+static size_t
+trunk_scan_avoided_count(const dsd_trunk_scan_coord* coord) {
+    size_t avoided = 0;
+    for (size_t i = 0; i < coord->count; i++) {
+        avoided += coord->targets[i].avoided ? 1U : 0U;
+    }
+    return avoided;
 }
 
 /* Publish which target the receiver is parked on, for the frontends that label the channel
@@ -1570,6 +1584,10 @@ trunk_scan_publish_active_target(dsd_state* state, const dsd_trunk_scan_coord* c
                  coord->targets[coord->active].target.id);
     state->trunk_scan_active_ordinal = (uint16_t)(ordinal > UINT16_MAX ? UINT16_MAX : ordinal);
     state->trunk_scan_target_count = (uint16_t)(coord->count > UINT16_MAX ? UINT16_MAX : coord->count);
+    const size_t avoided = trunk_scan_avoided_count(coord);
+    state->trunk_scan_hold = coord->hold_active ? 1U : 0U;
+    state->trunk_scan_active_avoided = coord->targets[coord->active].avoided ? 1U : 0U;
+    state->trunk_scan_avoided_count = (uint16_t)(avoided > UINT16_MAX ? UINT16_MAX : avoided);
 }
 
 // A user purge clears the live ledger; every parked target keeps its own copy,
@@ -2020,6 +2038,7 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     size_t original_active = coord->active;
     int save_current = 1;
     int attempted_alternate_retune = 0;
+    int tried = 0;
 
     for (size_t attempts = 0; attempts < coord->count; attempts++) {
         size_t next = (original_active + 1U + attempts) % coord->count;
@@ -2029,6 +2048,13 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
         if (coord->targets[next].retry_until_m > now_m) {
             continue;
         }
+        /* An operator avoid is for the session, not a cooldown. The original is not
+         * exempt: when every alternate fails the receiver stays on it and the
+         * publication says so. */
+        if (coord->targets[next].avoided && next != original_active) {
+            continue;
+        }
+        tried = 1;
         if (trunk_scan_switch_to(opts, state, coord, next, save_current) == 0) {
             return;
         }
@@ -2039,6 +2065,14 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     }
 
     coord->active = original_active;
+    if (!tried) {
+        /* Nothing was eligible (every alternate avoided or cooling down): the receiver
+         * never left, so there is nothing to restore. Re-arm the dwell rather than
+         * re-running this walk on every tick until something changes. */
+        coord->targets[original_active].idle_since_m = now_m;
+        trunk_scan_publish_active_target(state, coord);
+        return;
+    }
     /* The loop above published every target it tried, and the last one it tried is not
      * necessarily this one -- the original is skipped when its own retry cooldown is still
      * running. Republish, or the label names a target the receiver never reached. */
@@ -2049,9 +2083,14 @@ trunk_scan_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     trunk_scan_sync_active_sm_mode(state, &coord->targets[coord->active]);
 }
 
+/* A single-target list has nowhere else to go, and a held target is not allowed to go
+ * anywhere: both retry the parked target in place once its cooldown ends. */
 static void
 trunk_scan_retry_active_if_due(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, double now_m) {
-    if (!coord || coord->count != 1 || coord->active >= coord->count) {
+    if (!coord || coord->active >= coord->count) {
+        return;
+    }
+    if (coord->count != 1 && !coord->hold_active) {
         return;
     }
     const dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
@@ -2279,7 +2318,7 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
         return;
     }
     if (pending_status < 0) {
-        if (coord->count > 1) {
+        if (coord->count > 1 && !coord->hold_active) {
             trunk_scan_advance(opts, state, coord);
         }
         return;
@@ -2288,6 +2327,13 @@ trunk_scan_tick_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* c
     rt = &coord->targets[coord->active];
     trunk_scan_tick_active_target_sm(opts, state, rt);
     if (trunk_scan_active_is_held(opts, coord)) {
+        rt->idle_since_m = -1.0;
+        return;
+    }
+    /* The operator hold only suspends the idle dwell: the state machine above keeps
+     * following calls on the held system. Disarming the dwell here means a release
+     * re-arms it on the next tick and the target gets a full dwell before rotation. */
+    if (coord->hold_active) {
         rt->idle_since_m = -1.0;
         return;
     }
@@ -2312,6 +2358,80 @@ dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state) {
     }
     trunk_scan_tick_locked(opts, state, coord);
     p25_sm_tick_guard_leave();
+}
+
+static size_t
+trunk_scan_usable_count(const dsd_trunk_scan_coord* coord) {
+    return coord->count - trunk_scan_avoided_count(coord);
+}
+
+/* Advance under the same guard the tick takes: trunk_scan_switch_to() drives the P25 SM.
+ * Returns 0 when the receiver moved, 1 when it stayed. */
+static int
+trunk_scan_control_advance_locked(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const size_t original = coord->active;
+    trunk_scan_advance(opts, state, coord);
+    return coord->active != original ? 0 : 1;
+}
+
+static int
+trunk_scan_control_hold_toggle(dsd_state* state, dsd_trunk_scan_coord* coord) {
+    coord->hold_active = coord->hold_active ? 0 : 1;
+    trunk_scan_publish_active_target(state, coord);
+    return coord->hold_active;
+}
+
+static int
+trunk_scan_control_avoid_clear(dsd_state* state, dsd_trunk_scan_coord* coord) {
+    const size_t cleared = trunk_scan_avoided_count(coord);
+    for (size_t i = 0; i < coord->count; i++) {
+        coord->targets[i].avoided = 0;
+    }
+    trunk_scan_publish_active_target(state, coord);
+    return cleared > INT_MAX ? INT_MAX : (int)cleared;
+}
+
+static int
+trunk_scan_control_avoid_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    if (trunk_scan_usable_count(coord) <= 1) {
+        return DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        return DSD_TRUNK_SCAN_CONTROL_BUSY;
+    }
+    coord->targets[coord->active].avoided = 1;
+    const int rc = trunk_scan_control_advance_locked(opts, state, coord);
+    trunk_scan_publish_active_target(state, coord);
+    p25_sm_tick_guard_leave();
+    return rc;
+}
+
+static int
+trunk_scan_control_advance(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
+    if (coord->count < 2) {
+        return DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    }
+    if (!p25_sm_tick_guard_try_enter()) {
+        return DSD_TRUNK_SCAN_CONTROL_BUSY;
+    }
+    const int rc = trunk_scan_control_advance_locked(opts, state, coord);
+    p25_sm_tick_guard_leave();
+    return rc;
+}
+
+int
+dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    dsd_trunk_scan_coord* coord = trunk_scan_get(state);
+    if (!opts || !state || !coord || coord->count == 0 || coord->active >= coord->count) {
+        return DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE;
+    }
+    switch (op) {
+        case DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE: return trunk_scan_control_hold_toggle(state, coord);
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR: return trunk_scan_control_avoid_clear(state, coord);
+        case DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE: return trunk_scan_control_avoid_active(opts, state, coord);
+        case DSD_TRUNK_SCAN_CONTROL_ADVANCE: return trunk_scan_control_advance(opts, state, coord);
+        default: return DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    }
 }
 
 void*
@@ -2456,6 +2576,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.nxdn_conventional_activity = dsd_engine_trunk_scan_nxdn_conventional_activity;
     hooks.active_chan_csv = dsd_engine_trunk_scan_active_chan_csv;
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
+    hooks.control = dsd_engine_trunk_scan_control;
     dsd_trunk_scan_hooks_set(hooks);
 }
 
