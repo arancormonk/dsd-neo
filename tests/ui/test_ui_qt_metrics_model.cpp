@@ -242,6 +242,16 @@ main(int argc, char** argv) {
     state.trunk_scan_hold = 1;
     model.refresh(&opts, &state);
     expect("trunk scan hold on", model.scanHold());
+    /* Both flags set: --trunk-scan owns the tuner and the routing prefers it, so the
+     * view reads the coordinator's fields, not the scan list's. */
+    opts.scanner_mode = 1;
+    state.trunk_scan_hold = 0;
+    model.refresh(&opts, &state);
+    expect("co-active rotations still count as one", model.scanRotationActive());
+    expect("co-active hold reads the coordinator's flag", !model.scanHold());
+    expect("co-active avoids read the coordinator's count", model.scanAvoidCount() == 7);
+    expect("co-active avoided fallback comes from trunk scan", model.scanTargetAvoided());
+    opts.scanner_mode = 0;
     opts.trunk_scan_enabled = 0;
     state.lcn_scan_hold = 0;
     state.lcn_avoid_count = 0;

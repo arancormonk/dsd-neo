@@ -719,6 +719,7 @@ main(void) {
     state->lcn_scan_hold = 1;
     state->lcn_freq_roll = 5;
     state->last_cc_sync_time = time(NULL) - 11;
+    const time_t held_dwell_started = state->last_cc_sync_time;
     g_rtl_tune_calls = 0;
     dsd_call_observation held_call = {0};
     held_call.protocol = DSD_SYNC_NXDN_POS;
@@ -734,6 +735,9 @@ main(void) {
     dsd_call_snapshot held_snapshot;
     rc |= expect_true("scanner-hold-no-retune", g_rtl_tune_calls == 0);
     rc |= expect_true("scanner-hold-keeps-roll", state->lcn_freq_roll == 5);
+    // The dwell timer is left alone under hold: the release command restarts it, so the row gets a
+    // full hangtime then rather than hopping the instant the hold comes off.
+    rc |= expect_true("scanner-hold-leaves-dwell-alone", state->last_cc_sync_time == held_dwell_started);
     rc |= expect_true("scanner-hold-retains-snapshot", dsd_call_state_get(state, 0U, &held_snapshot) == 1);
     rc |= expect_true("scanner-hold-ends-call-as-sync-loss",
                       held_snapshot.phase == DSD_CALL_PHASE_ENDED

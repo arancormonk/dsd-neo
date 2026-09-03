@@ -126,9 +126,9 @@ Item {
             testContext.setMetric("scanAvoidCount", 2)
             tryVerify(function () { return badge.visible })
             compare(value.text, "2")
-            testContext.setMetric("scanAvoidCount", 0)
-            tryVerify(function () { return !badge.visible })
 
+            // Clear is clicked while the badge is showing: a hidden button still
+            // emits clicked(), so a click at count 0 would prove nothing.
             testContext.resetCommands()
             hold.clicked()
             avoid.clicked()
@@ -139,6 +139,17 @@ Item {
             compare(testContext.nextChannelCalls(), 1)
             compare(testContext.scanAvoidClearCalls(), 1)
 
+            // Leaving scanner mode does not clear session avoids, so the count
+            // outlives the rotation. The badge must follow the rotation, not the
+            // count, or an idle session shows a Clear for a scan that is not running.
+            testContext.setMetric("scanRotationActive", false)
+            tryVerify(function () { return !row.visible })
+            tryVerify(function () { return !badge.visible })
+            testContext.setMetric("scanRotationActive", true)
+            tryVerify(function () { return badge.visible })
+
+            testContext.setMetric("scanAvoidCount", 0)
+            tryVerify(function () { return !badge.visible })
             testContext.setMetric("scanRotationActive", false)
             tryVerify(function () { return !row.visible })
         }

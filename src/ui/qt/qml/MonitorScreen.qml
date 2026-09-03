@@ -666,7 +666,7 @@ Item {
             objectName: "scanAvoidRow"
 
             spacing: 8
-            visible: metrics.scanAvoidCount > 0
+            visible: metrics.scanRotationActive && metrics.scanAvoidCount > 0
 
             Text {
                 anchors.verticalCenter: parent.verticalCenter
