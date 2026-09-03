@@ -17,7 +17,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
-typedef struct p25_bandplan_row p25_bandplan_row_t;
+struct p25_bandplan_row;
 
 #ifdef __cplusplus
 extern "C" {
@@ -48,7 +48,7 @@ int csvP25BandplanImport(const dsd_opts* opts, dsd_state* state);
  * import format, through a private temp file and atomic replace. Refuses an
  * empty list. Returns 0 on success, -1 otherwise.
  */
-int csvP25BandplanExportRows(const char* path, const p25_bandplan_row_t* rows, int count);
+int csvP25BandplanExportRows(const char* path, const struct p25_bandplan_row* rows, int count);
 
 #ifdef __cplusplus
 }

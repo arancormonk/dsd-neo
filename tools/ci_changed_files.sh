@@ -116,33 +116,45 @@ escape_rg() {
   printf '%s' "$1" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g'
 }
 
+# Expand a changed header to the translation units that include it directly,
+# sampled per language and per top-level tree (src, apps, tests, examples) so
+# each tree contributes up to MAX_TUS_PER_HEADER_PER_LANGUAGE files. A single
+# alphabetical cut across the whole repository let the first five src/ includers
+# fill the quota, and a verdict that only renders in a tests/ TU (IWYU judges a
+# header by the includer it is analysed from) then surfaced on main after the
+# merge (#471, the IWYU failure on main after the merge).
+HEADER_INCLUDER_ROOTS=(src apps tests examples)
+
 collect_header_includers() {
   local pattern="$1"
-  local c_file=""
-  local cxx_file=""
-  local c_matches=()
-  local cxx_matches=()
+  local root=""
+  local f=""
+  local matches=()
 
-  mapfile -t c_matches < <(
-    rg -l --glob '!src/third_party/**' \
-      -g'*.c' \
-      "$pattern" src apps tests examples 2> /dev/null |
-      sort |
-      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
-  )
-  mapfile -t cxx_matches < <(
-    rg -l --glob '!src/third_party/**' \
-      -g'*.cc' -g'*.cpp' -g'*.cxx' \
-      "$pattern" src apps tests examples 2> /dev/null |
-      sort |
-      head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
-  )
-
-  for c_file in "${c_matches[@]}"; do
-    printf '%s\n' "$c_file"
-  done
-  for cxx_file in "${cxx_matches[@]}"; do
-    printf '%s\n' "$cxx_file"
+  for root in "${HEADER_INCLUDER_ROOTS[@]}"; do
+    if [[ ! -d "$root" ]]; then
+      continue
+    fi
+    mapfile -t matches < <(
+      rg -l --glob '!src/third_party/**' \
+        -g'*.c' \
+        "$pattern" "$root" 2> /dev/null |
+        sort |
+        head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+    )
+    for f in "${matches[@]}"; do
+      printf '%s\n' "$f"
+    done
+    mapfile -t matches < <(
+      rg -l --glob '!src/third_party/**' \
+        -g'*.cc' -g'*.cpp' -g'*.cxx' \
+        "$pattern" "$root" 2> /dev/null |
+        sort |
+        head -n "$MAX_TUS_PER_HEADER_PER_LANGUAGE" || true
+    )
+    for f in "${matches[@]}"; do
+      printf '%s\n' "$f"
+    done
   done
 }
 
