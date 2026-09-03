@@ -3730,7 +3730,14 @@ apply_cmd_channel_cycle(dsd_opts* opts, dsd_state* state, const struct dsd_app_c
     if (!state) {
         return 1;
     }
-    if (opts->use_rigctl == 1 || opts->audio_in_type == AUDIO_IN_RTL) {
+    // Under --trunk-scan "next" means the next target. Walking the parked target's own
+    // LCN list here would retune under the coordinator's feet and be snapshotted as if
+    // the target had moved itself.
+    if (opts->trunk_scan_enabled == 1) {
+        apply_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+        return 1;
+    }
+    if (scan_control_tuner_present(opts)) {
         return apply_manual_channel_cycle(opts, state);
     }
     return 1;

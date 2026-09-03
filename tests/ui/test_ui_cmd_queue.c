@@ -1804,6 +1804,25 @@ test_scan_hold_avoid_commands(void) {
     rc |= expect_int("trunk-scan busy hold drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_contains("trunk-scan busy toast", state.ui_msg, "busy");
     rc |= expect_int("trunk-scan controls all reached hook", g_scan_control_calls, 5);
+    /* Next channel means next target here, not a walk of the parked target's LCN list. */
+    state.lcn_freq_count = 2;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    state.lcn_freq_roll = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    g_scan_control_result = 0;
+    rc |= expect_int("trunk-scan cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk-scan cycle op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    rc |= expect_int("trunk-scan cycle reached hook", g_scan_control_calls, 6);
+    rc |= expect_int("trunk-scan cycle leaves the LCN roll", state.lcn_freq_roll, 1);
+    rc |= expect_int("trunk-scan cycle does not raw tune", g_io_control_tune_calls, 0);
+    g_scan_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    rc |= expect_int("trunk-scan refused cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan refused cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("trunk-scan refused cycle toast", state.ui_msg, "only one target");
     dsd_trunk_scan_hooks none = {0};
     dsd_trunk_scan_hooks_set(none);
     freeState(&state);
