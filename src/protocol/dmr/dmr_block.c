@@ -324,6 +324,8 @@ dmr_dheader_handle_response(dsd_opts* opts, dsd_state* state, uint8_t slot, cons
     DSD_MEMSET(summary, 0, sizeof(summary));
     dmr_dheader_format_response(summary, sizeof(summary), f);
     state->dmr_lrrp_gps[slot][0] = '\0';
+    // TS 102 361-1 table 9.13: a SACK appends Blocks To Follow C_RDATA blocks of retry flags.
+    state->data_header_blocks[slot] = f->bf;
     DSD_FPRINTF(stderr, "\n %s", summary);
     const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, slot, f->source, f->target);
     (void)dsd_event_emit_data_notice_classified(opts, state, slot, &observation, DSD_EVENT_CATEGORY_CONTROL, summary);
@@ -554,6 +556,20 @@ dmr_dheader_handle_by_format(dsd_opts* opts, dsd_state* state, uint8_t dheader[]
     }
 }
 
+// A proprietary header (dpf 15) is a second header, and a response header with nothing to
+// follow (an ACK or NACK) is complete in itself; arming the assembler for either would hand
+// the next stray continuation block to a payload parser.
+static uint8_t
+dmr_dheader_arms_assembler(const dmr_dheader_fields* f) {
+    if (f->dpf == 15) {
+        return 0;
+    }
+    if (f->dpf == 1 && f->bf == 0) {
+        return 0;
+    }
+    return 1;
+}
+
 //hopefully a more simplified (or logical) version...once you get past all the variables
 void
 dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader_bits[], uint32_t CRCCorrect,
@@ -604,7 +620,7 @@ dmr_dheader(dsd_opts* opts, dsd_state* state, uint8_t dheader[], uint8_t dheader
     dmr_dheader_set_strings(&f);
     dmr_dheader_handle_by_format(opts, state, dheader, dheader_bits, slot, &f);
     dmr_dheader_sanitize_blocks(state, slot);
-    if (f.dpf != 15) {
+    if (dmr_dheader_arms_assembler(&f)) {
         state->data_header_valid[slot] = 1;
     }
     if (f.dpf != 1 && f.dpf != 15) {
@@ -1371,10 +1387,55 @@ dmr_block_type1_handle_unknown_pdu(dmr_block_assembler_ctx* ctx, const char* rea
     (void)dsd_event_emit_data_notice(ctx->opts, ctx->state, (uint8_t)safe_slot, &observation, unk_str);
 }
 
+// TS 102 361-1 clause 8.2.2.3 / table 9.14: the blocks after a response header (dpf 1) are
+// C_RDATA, selective-retry flags followed by the packet CRC32. Figure 8.17 numbers the flags
+// LSB first within each octet, one per DBSN; a cleared flag asks for that block again, and
+// flags past the packet's last block are set. One block carries 64 flags, two carry 127. The
+// SAP in that header names the service being acknowledged, not the format of these blocks, so
+// they must never reach the SAP payload decoders (#450).
+static void
+dmr_block_type1_handle_response_data(dmr_block_assembler_ctx* ctx) {
+    char text[1024];
+    const uint8_t* pdu = ctx->state->dmr_pdu_sf[ctx->slot];
+    uint16_t bytes = ctx->state->data_byte_ctr[ctx->slot];
+    const uint16_t cap = (uint16_t)sizeof(ctx->state->dmr_pdu_sf[ctx->slot]);
+    if (bytes > cap) {
+        bytes = cap;
+    }
+    bytes = (bytes >= 4U) ? (uint16_t)(bytes - 4U) : 0U;
+    unsigned flags = (unsigned)bytes * 8U;
+    if (flags > 127U) {
+        flags = 127U;
+    }
+    unsigned long long source = ctx->state->dmr_lrrp_source[ctx->slot];
+    unsigned long long target = ctx->state->dmr_lrrp_target[ctx->slot];
+    DSD_SNPRINTF(text, sizeof(text), "Response Packet Data; TGT: %llu; SRC: %llu; ", target, source);
+    unsigned retries = 0;
+    for (unsigned n = 0; n < flags; n++) {
+        if (((pdu[n / 8U] >> (n % 8U)) & 1U) != 0U) {
+            continue;
+        }
+        char item[16];
+        DSD_SNPRINTF(item, sizeof(item), "%s%u", (retries == 0) ? "Retry DBSN: " : ", ", n);
+        dsd_append(text, sizeof(text), item);
+        retries++;
+    }
+    dsd_append(text, sizeof(text), (retries == 0) ? "No Retry Requested;" : ";");
+    DSD_FPRINTF(stderr, "\n %s", text);
+    const dsd_call_observation observation =
+        dsd_call_observation_data(ctx->state->lastsynctype, ctx->slot, source, target);
+    (void)dsd_event_emit_data_notice_classified(ctx->opts, ctx->state, ctx->slot, &observation,
+                                                DSD_EVENT_CATEGORY_CONTROL, text);
+}
+
 static void
 dmr_block_type1_handle_sap(dmr_block_assembler_ctx* ctx) {
     if (ctx->slot > 1) {
         dmr_block_type1_handle_unknown_pdu(ctx, "Unknown PDU Format;");
+        return;
+    }
+    if (ctx->state->data_header_format[ctx->slot] == 1U) {
+        dmr_block_type1_handle_response_data(ctx);
         return;
     }
 

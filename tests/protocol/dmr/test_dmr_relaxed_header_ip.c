@@ -1664,7 +1664,8 @@ check_response_header_event(uint8_t r_class, uint8_t r_type, uint8_t status, con
     (void)remove(cap.path);
 
     assert(state.data_header_format[1] == 1);
-    assert(state.data_header_valid[1] == 1);
+    // Blocks To Follow is 0 here, so nothing is coming and the assembler stays disarmed.
+    assert(state.data_header_valid[1] == 0);
     assert(state.data_header_sap[1] == 4);
     assert(strcmp(state.dmr_lrrp_gps[1], "") == 0);
     assert(g_datacall_calls == 1U);
@@ -1755,6 +1756,149 @@ test_response_header_event_acceptance_gates(void) {
     assert(g_datacall_calls == 1U);
     assert(g_datacall_last_category == DSD_EVENT_CATEGORY_CONTROL);
     assert(strcmp(state.dmr_lrrp_gps[0], "") == 0);
+}
+
+static void
+set_sack_response_header_bits(uint8_t bits[196], uint8_t sap, uint8_t blocks_to_follow) {
+    DSD_MEMSET(bits, 0, 196U);
+    set_bits(bits, 4, 1U, 4); // DPF=1, response packet
+    set_bits(bits, 8, sap, 4);
+    set_bits(bits, 16, 0x000123U, 24);
+    set_bits(bits, 40, 0x000456U, 24);
+    set_bits(bits, 65, blocks_to_follow, 7);
+    set_bits(bits, 72, 2U, 2); // SACK class
+    set_bits(bits, 74, 0U, 3);
+    set_bits(bits, 77, 3U, 3);
+}
+
+// A response packet (dpf 1) is followed by C_RDATA retry flags (TS 102 361-1 clause 8.2.2.3,
+// table 9.14), not by a payload of the header's SAP. The assembler dispatched those blocks by
+// SAP anyway, so a SACK under SAP 3 was read as a compressed UDP/IPv4 header (#450).
+static int
+run_sack_response_with_data_block(uint8_t sap, const uint8_t flags[8], const char* cap_tag, char* output,
+                                  size_t output_sz, dsd_state* state_out) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    dsd_test_capture_stderr cap;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    uint8_t block[12];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(history, 0, sizeof(history));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    DSD_MEMSET(block, 0, sizeof(block));
+    opts.aggressive_framesync = 1;
+    state.event_history_s = history;
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    set_sack_response_header_bits(bits, sap, 1U);
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    if (state.data_header_format[0] != 1U || state.data_header_sap[0] != sap || state.data_header_blocks[0] != 1U
+        || state.data_header_valid[0] != 1U) {
+        DSD_FPRINTF(stderr, "%s: header state fmt %u sap %u blocks %u valid %u\n", cap_tag,
+                    (unsigned)state.data_header_format[0], (unsigned)state.data_header_sap[0],
+                    (unsigned)state.data_header_blocks[0], (unsigned)state.data_header_valid[0]);
+        return 1;
+    }
+    reset_datacall_spy();
+    DSD_MEMCPY(block, flags, 8U);
+    append_type1_crc32(block, sizeof(block));
+    if (dsd_test_capture_stderr_begin(&cap, cap_tag) != 0) {
+        return 1;
+    }
+    dmr_block_assembler(&opts, &state, block, (uint8_t)sizeof(block), 0, 1);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, output, output_sz) != 0) {
+        (void)remove(cap.path);
+        return 1;
+    }
+    (void)remove(cap.path);
+    if (state_out != NULL) {
+        DSD_MEMCPY(state_out, &state, sizeof(*state_out));
+    }
+    return 0;
+}
+
+static int
+test_response_packet_data_is_not_dispatched_by_sap(void) {
+    // Figure 8.17: octet n carries flags 8n+7 .. 8n, MSB first. A cleared flag asks for a retry.
+    static const uint8_t flags[8] = {0xFBU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
+    static const uint8_t saps[] = {3U, 4U, 10U};
+    static dsd_state state_copy;
+    char output[2048];
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(saps) / sizeof(saps[0]); i++) {
+        char tag[48];
+        DSD_SNPRINTF(tag, sizeof(tag), "dmr_sack_rdata_sap%u", (unsigned)saps[i]);
+        if (run_sack_response_with_data_block(saps[i], flags, tag, output, sizeof(output), &state_copy) != 0) {
+            return 1;
+        }
+        if (g_udp_comp_calls != 0U || g_decode_ip_calls != 0U || g_sd_pdu_calls != 0U) {
+            DSD_FPRINTF(stderr, "%s: C_RDATA reached a SAP decoder (udp %u ip %u sd %u)\n", tag, g_udp_comp_calls,
+                        g_decode_ip_calls, g_sd_pdu_calls);
+            rc = 1;
+        }
+        rc |= expect_contains(tag, output, "Retry DBSN: 2;");
+        if (g_datacall_calls != 1U || g_datacall_last_category != DSD_EVENT_CATEGORY_CONTROL) {
+            DSD_FPRINTF(stderr, "%s: expected one control notice, got %u (category %d)\n", tag, g_datacall_calls,
+                        (int)g_datacall_last_category);
+            rc = 1;
+        }
+        rc |= expect_contains(tag, g_datacall_last_text, "Retry DBSN: 2;");
+        if (g_datacall_last_src != 0x000456U || g_datacall_last_dst != 0x000123U) {
+            DSD_FPRINTF(stderr, "%s: notice attributed to src %u dst %u\n", tag, g_datacall_last_src,
+                        g_datacall_last_dst);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+// Every flag set means nothing is to be retried, and the notice says so rather than listing
+// nothing.
+static int
+test_response_packet_data_all_received(void) {
+    static const uint8_t flags[8] = {0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU};
+    char output[2048];
+    if (run_sack_response_with_data_block(3U, flags, "dmr_sack_rdata_none", output, sizeof(output), NULL) != 0) {
+        return 1;
+    }
+    int rc = expect_contains("sack-none", output, "No Retry Requested;");
+    rc |= expect_lacks("sack-none", output, "Retry DBSN");
+    return rc;
+}
+
+// The response header's Blocks To Follow field (table 9.13) sizes the C_RDATA that follows; it
+// used to be ignored, so a two-block SACK completed after its first block.
+static void
+test_response_header_blocks_to_follow_sets_block_count(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t dheader[12];
+    uint8_t bits[196];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(dheader, 0, sizeof(dheader));
+    opts.aggressive_framesync = 1;
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    set_sack_response_header_bits(bits, 3U, 2U);
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(state.data_header_blocks[0] == 2U);
+    assert(state.data_header_valid[0] == 1U);
+    // An ACK carries no data blocks, so the header must not leave the assembler waiting for one:
+    // a stray continuation block would otherwise be read as retry flags.
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    set_response_header_bits(bits);
+    reset_datacall_spy();
+    dmr_dheader(&opts, &state, dheader, bits, /*CRCCorrect=*/1, /*IrrecoverableErrors=*/0);
+    assert(g_datacall_calls == 1U);
+    assert(state.data_header_valid[0] == 0U);
 }
 
 static void
@@ -1919,6 +2063,9 @@ main(int argc, char** argv) {
     test_irrecoverable_header_resets_data_state();
     rc |= test_response_headers_emit_control_events();
     test_response_header_event_acceptance_gates();
+    rc |= test_response_packet_data_is_not_dispatched_by_sap();
+    rc |= test_response_packet_data_all_received();
+    test_response_header_blocks_to_follow_sets_block_count();
     test_short_data_defined_sets_blocks_and_confirmed_flag();
     test_short_data_raw_padding_and_packet_poc_isolation();
     test_motorola_encryption_header_updates_payload_state();
