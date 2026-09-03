@@ -343,6 +343,19 @@ main(void) {
     assert(g_cap.id == DSD_APP_CMD_TRUNK_ENC_TOGGLE);
     assert(g_cap.n == 0);
 
+    /* On-the-fly scan controls: hold and avoid the channel/target on air. */
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SCAN_HOLD) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_SCAN_HOLD_TOGGLE);
+    assert(g_cap.n == 0);
+
+    cap_reset();
+    assert(dsd_terminal_handle_input(opts, state, DSD_KEY_SCAN_AVOID) == 1);
+    assert(g_cap.calls == 1);
+    assert(g_cap.id == DSD_APP_CMD_SCAN_AVOID);
+    assert(g_cap.n == 0);
+
     /* Enter opens the menu only when the M17 encoder is not active. */
     cap_reset();
     opts->m17encoder = 0;
