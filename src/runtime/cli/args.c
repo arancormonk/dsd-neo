@@ -640,7 +640,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-replay=", 12) == 0) {                                                               \
-            iq_replay_cli = argv[i] + 18;                                                                              \
+            iq_replay_cli = argv[i] + 12;                                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--iq-replay-rate") == 0) {                                                                \

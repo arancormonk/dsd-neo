@@ -4237,6 +4237,65 @@ test_iq_info_missing_value_returns_error(void) {
 }
 
 static int
+test_iq_replay_equals_form_keeps_full_path(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    // The "--iq-replay=<path>" spelling must hand the parser the whole path; a wrong prefix
+    // length here silently drops the first characters of the file name.
+    char arg0[] = "dsd-neo";
+    char arg1[1100];
+    DSD_SNPRINTF(arg1, sizeof arg1, "--iq-replay=%s", metadata_path);
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+
+#ifdef USE_RADIO
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    } else if (!opts->iq_replay_requested || strcmp(opts->iq_replay_path, metadata_path) != 0) {
+        DSD_FPRINTF(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
+        test_rc = 1;
+    }
+#else
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected no-radio iq replay parse error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+#endif
+
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_rtl_udp_control_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -6800,6 +6859,7 @@ main(void) {
     rc |= test_rtl_udp_control_rejects_malformed_numeric_binds();
     rc |= test_rtl_udp_control_port_too_large_returns_error();
     rc |= test_rtl_udp_control_bind_missing_value_returns_error();
+    rc |= test_iq_replay_equals_form_keeps_full_path();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key();
     rc |= test_dmr_csi_ee72_long_option_parse();
