@@ -262,6 +262,8 @@ init_opts_runtime_and_network_defaults(dsd_opts* opts) {
     opts->audio_out_type = 0;
 
     opts->lrrp_file_output = 0;
+    opts->lrrp_extra_port_count = 0;
+    DSD_MEMSET(opts->lrrp_extra_ports, 0, sizeof(opts->lrrp_extra_ports));
 
     opts->dmr_mute_encL = 1;
     opts->dmr_mute_encR = 1;

@@ -14,6 +14,9 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_OPTS_H_H
 
+/* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-port. */
+#define DSD_LRRP_EXTRA_PORT_MAX 8
+
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/platform/platform.h>
@@ -270,6 +273,7 @@ struct dsd_opts {
     short int dmr_mono; //select the DMR single-slot decoder and mono audio path
     short int dmr_stereo;
     short int lrrp_file_output;
+    short int lrrp_extra_port_count; //number of entries used in lrrp_extra_ports
     short int dmr_mute_encL;
     short int dmr_mute_encR;
     short int aggressive_framesync;
@@ -318,6 +322,7 @@ struct dsd_opts {
     char wav_out_file_raw[1024];
     char symbol_out_file[1024];
     char lrrp_out_file[1024];
+    uint16_t lrrp_extra_ports[DSD_LRRP_EXTRA_PORT_MAX]; //site-mapped UDP ports decoded as LRRP
     char event_out_file[1024];
     char frame_log_file[1024];
     char p25_sm_log_file[1024];

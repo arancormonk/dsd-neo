@@ -167,6 +167,38 @@ cli_parse_decimal_u64(const char* in, uint64_t* out) {
     return 1;
 }
 
+/*
+ * Record one extra UDP port to route onto the LRRP decoder. The option repeats, so a site with
+ * more than one location port lists them all; the table is small and fixed so a typo cannot grow
+ * it without bound. Returns 0 and reports the reason when the value cannot be accepted.
+ */
+static int
+cli_add_lrrp_extra_port(dsd_opts* opts, const char* value, int* out_exit_rc) {
+    unsigned long parsed_port = 0;
+    if (!cli_parse_decimal_u32(value, &parsed_port)) {
+        LOG_ERROR("Invalid --lrrp-extra-port value \"%s\" (expected decimal port)\n", value);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (parsed_port == 0UL || parsed_port > 65535UL) {
+        LOG_ERROR("Invalid --lrrp-extra-port value \"%s\" (expected port 1..65535)\n", value);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (opts->lrrp_extra_port_count >= DSD_LRRP_EXTRA_PORT_MAX) {
+        LOG_ERROR("Too many --lrrp-extra-port values (at most %d)\n", DSD_LRRP_EXTRA_PORT_MAX);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    for (int i = 0; i < opts->lrrp_extra_port_count; i++) {
+        if (opts->lrrp_extra_ports[i] == (uint16_t)parsed_port) {
+            return 1;
+        }
+    }
+    opts->lrrp_extra_ports[opts->lrrp_extra_port_count++] = (uint16_t)parsed_port;
+    return 1;
+}
+
 static int
 cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
@@ -455,6 +487,25 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
         }                                                                                                              \
+        if (strcmp(argv[i], "--lrrp-extra-port") == 0) {                                                               \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--lrrp-extra-port requires a port value\n");                                                \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            const char* lrrp_extra_port_arg = DSD_PARSE_ARGS_NEXT_ARG();                                               \
+            if (!cli_add_lrrp_extra_port(opts, lrrp_extra_port_arg, out_exit_rc)) {                                    \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            arg_advance = 2;                                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--lrrp-extra-port=", 18) == 0) {                                                         \
+            if (!cli_add_lrrp_extra_port(opts, argv[i] + 18, out_exit_rc)) {                                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
             opts->rtltcp_autotune = 1;                                                                                 \
             dsd_setenv("DSD_NEO_TCP_AUTOTUNE", "1", 1);                                                                \
@@ -588,7 +639,7 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--iq-replay=", 12) == 0) {                                                               \
-            iq_replay_cli = argv[i] + 12;                                                                              \
+            iq_replay_cli = argv[i] + 18;                                                                              \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--iq-replay-rate") == 0) {                                                                \

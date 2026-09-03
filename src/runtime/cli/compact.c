@@ -108,13 +108,11 @@ static const char* const k_skip_exact_next_nonnull[] = {
 };
 
 static const char* const k_skip_exact_next_nonopt[] = {
-    "--rtl-udp-control",
-    "--rtl-udp-control-bind",
-    "--config",
-    "--validate-config",
+    "--lrrp-extra-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config", "--validate-config",
 };
 
 static const char* const k_skip_prefix[] = {
+    "--lrrp-extra-port=",
     "--rtl-udp-control=",
     "--rtl-udp-control-bind=",
     "--iq-capture=",
