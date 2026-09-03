@@ -8,7 +8,6 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
-#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>

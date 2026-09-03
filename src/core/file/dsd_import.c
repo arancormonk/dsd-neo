@@ -890,6 +890,47 @@ chan_parse_header(char* header_line, chan_header_cols* out) {
 }
 
 /**
+ * @brief Load the key files named by a row's key cells into that row's key set.
+ *
+ * Paths resolve against the map file, so a map and its key files relocate as a
+ * unit. Key paths cannot contain commas: the splitter does no quote handling.
+ *
+ * @return 0 when the row named no key file or its keys loaded, -1 on an unusable
+ *         path, a load failure or allocation failure.
+ */
+static int
+chan_import_row_keys(dsd_state* state, char** fields, size_t field_count, const chan_header_cols* cols,
+                     const char* base_path, int row_number, int show_keys, size_t slot) {
+    const char* hex_cell = chan_key_cell(fields, field_count, cols->keys_hex_idx);
+    const char* dec_cell = chan_key_cell(fields, field_count, cols->keys_dec_idx);
+    const int have_hex = (hex_cell != NULL && hex_cell[0] != '\0');
+    const int have_dec = (dec_cell != NULL && dec_cell[0] != '\0');
+    if (!have_hex && !have_dec) {
+        return 0;
+    }
+    char hex_path[CSV_IMPORT_PATH_MAX] = "";
+    char dec_path[CSV_IMPORT_PATH_MAX] = "";
+    if (chan_resolve_key_cell(base_path, hex_cell, hex_path, sizeof(hex_path), row_number) != 0
+        || chan_resolve_key_cell(base_path, dec_cell, dec_path, sizeof(dec_path), row_number) != 0) {
+        return -1;
+    }
+    dsd_key_set ks;
+    DSD_MEMSET(&ks, 0, sizeof(ks));
+    if (dsd_key_set_load_csv(&ks, have_hex ? hex_path : NULL, have_dec ? dec_path : NULL, show_keys) != 0) {
+        char row_text[32] = "?";
+        (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
+        LOG_ERROR("channel map file '%s' row %s: failed to load row key file\n", base_path, row_text);
+        return -1;
+    }
+    if (dsd_state_trunk_lcn_keys_set(state, slot, &ks) != 0) {
+        dsd_key_set_free(&ks);
+        LOG_ERROR("channel map import out of memory\n");
+        return -1;
+    }
+    return 0;
+}
+
+/**
  * @brief Parse one channel row into @p state.
  *
  * Empty fields are preserved rather than collapsed, so `1,,851000000` reads as a
@@ -925,35 +966,38 @@ chan_import_row(dsd_state* state, char* buffer, const chan_header_cols* cols, co
         }
     }
     if ((cols->keys_hex_idx >= 0 || cols->keys_dec_idx >= 0) && state->lcn_freq_count > lcn_before) {
-        const char* hex_cell = chan_key_cell(fields, field_count, cols->keys_hex_idx);
-        const char* dec_cell = chan_key_cell(fields, field_count, cols->keys_dec_idx);
-        if ((hex_cell && hex_cell[0] != '\0') || (dec_cell && dec_cell[0] != '\0')) {
-            char hex_path[CSV_IMPORT_PATH_MAX] = "";
-            char dec_path[CSV_IMPORT_PATH_MAX] = "";
-            if (chan_resolve_key_cell(base_path, hex_cell, hex_path, sizeof(hex_path), row_number) != 0
-                || chan_resolve_key_cell(base_path, dec_cell, dec_path, sizeof(dec_path), row_number) != 0) {
-                return -1;
-            }
-            dsd_key_set ks;
-            DSD_MEMSET(&ks, 0, sizeof(ks));
-            if (dsd_key_set_load_csv(&ks, hex_cell && hex_cell[0] != '\0' ? hex_path : NULL,
-                                     dec_cell && dec_cell[0] != '\0' ? dec_path : NULL, show_keys)
-                != 0) {
-                char row_text[32] = "?";
-                (void)DSD_SNPRINTF(row_text, sizeof(row_text), "%d", row_number);
-                LOG_ERROR("channel map file '%s' row %s: failed to load row key file\n", base_path, row_text);
-                return -1;
-            }
-            if (dsd_state_trunk_lcn_keys_set(state, (size_t)lcn_before, &ks) != 0) {
-                dsd_key_set_free(&ks);
-                LOG_ERROR("channel map import out of memory\n");
-                return -1;
-            }
+        if (chan_import_row_keys(state, fields, field_count, cols, base_path, row_number, show_keys, (size_t)lcn_before)
+            != 0) {
+            return -1;
         }
     }
     *out_field_count = (int)field_count;
     *out_chan_number = chan_number;
     return freq_parsed;
+}
+
+/*
+ * Report one parsed channel row: a dry run only wants the counters, so it never
+ * echoes rows through the process-global logger for an import that never happened.
+ */
+static void
+chan_import_row_report(const dsd_state* state, dsd_csv_validation* stats, const char* filename, int row_count,
+                       int freq_parsed, int field_count, long int chan_number) {
+    if (stats) {
+        stats->total++;
+        stats->accepted += (freq_parsed ? 1U : 0U);
+        return;
+    }
+    if (!freq_parsed) {
+        // Say so rather than echoing the map slot, which still holds
+        // whatever was there before this row failed to land.
+        LOG_WARN("WARNING: Channel map file '%s' row %d has no usable frequency; skipping.\n", filename, row_count);
+        return;
+    }
+    if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
+        LOG_INFO("Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
+    }
+    LOG_INFO("\n");
 }
 
 /* stats may be NULL; when set, counts data rows so a dry run can report them. */
@@ -997,24 +1041,7 @@ chan_import_stats(const char* chan_file_path, dsd_state* state, dsd_csv_validati
             fclose(fp);
             return -1;
         }
-        if (stats) {
-            // A dry run exists to produce the three counters; echoing every row
-            // through the process-global logger would put thousands of records
-            // on the caller's thread for an import that never happened.
-            stats->total++;
-            stats->accepted += (freq_parsed ? 1U : 0U);
-            continue;
-        }
-        if (!freq_parsed) {
-            // Say so rather than echoing the map slot, which still holds
-            // whatever was there before this row failed to land.
-            LOG_WARN("WARNING: Channel map file '%s' row %d has no usable frequency; skipping.\n", filename, row_count);
-            continue;
-        }
-        if (field_count >= 2 && chan_number >= 0 && chan_number < 0xFFFF) {
-            LOG_INFO("Channel [%05ld] [%09ld]", chan_number, state->trunk_chan_map[chan_number]);
-        }
-        LOG_INFO("\n");
+        chan_import_row_report(state, stats, filename, row_count, freq_parsed, field_count, chan_number);
     }
     fclose(fp);
     return 0;

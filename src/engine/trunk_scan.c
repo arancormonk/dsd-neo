@@ -641,6 +641,41 @@ scan_target_list_reserve(dsd_trunk_scan_target_list* list, size_t needed) {
     return 0;
 }
 
+/*
+ * Resolve the row's file references -- the trunking channel map and the per-row key CSVs -- against
+ * the directory holding the target CSV itself, so a target list stays relocatable as a unit.
+ */
+static int
+scan_parse_target_paths(dsd_trunk_scan_target* target, const dsd_trunk_scan_row_parse* parse, const char* chan_csv,
+                        const char* keys_hex_s, const char* keys_dec_s) {
+    if (chan_csv[0] != '\0') {
+        if (trunk_scan_type_is_conventional(target->type)) {
+            scan_set_error(parse->err, parse->err_sz, "row %u sets chan_csv for a conventional target", parse->row);
+            return -1;
+        }
+        if (dsd_path_resolve_relative_to_file(parse->resolved_path, chan_csv, target->chan_csv, sizeof target->chan_csv)
+            != 0) {
+            scan_set_error(parse->err, parse->err_sz, "row %u chan_csv path is too long or invalid", parse->row);
+            return -1;
+        }
+    }
+    if (keys_hex_s[0] != '\0'
+        && dsd_path_resolve_relative_to_file(parse->resolved_path, keys_hex_s, target->keys_hex_csv,
+                                             sizeof target->keys_hex_csv)
+               != 0) {
+        scan_set_error(parse->err, parse->err_sz, "row %u keys_hex_csv path is too long or invalid", parse->row);
+        return -1;
+    }
+    if (keys_dec_s[0] != '\0'
+        && dsd_path_resolve_relative_to_file(parse->resolved_path, keys_dec_s, target->keys_dec_csv,
+                                             sizeof target->keys_dec_csv)
+               != 0) {
+        scan_set_error(parse->err, parse->err_sz, "row %u keys_dec_csv path is too long or invalid", parse->row);
+        return -1;
+    }
+    return 0;
+}
+
 static int
 scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_trunk_scan_row_parse* parse) {
     char* fields[DSD_TRUNK_SCAN_MAX_CSV_FIELDS] = {0};
@@ -673,29 +708,7 @@ scan_parse_target_row(char* line, dsd_trunk_scan_target_list* parsed, const dsd_
         return -1;
     }
 
-    if (chan_csv[0] != '\0') {
-        if (trunk_scan_type_is_conventional(target.type)) {
-            scan_set_error(parse->err, parse->err_sz, "row %u sets chan_csv for a conventional target", parse->row);
-            return -1;
-        }
-        if (dsd_path_resolve_relative_to_file(parse->resolved_path, chan_csv, target.chan_csv, sizeof target.chan_csv)
-            != 0) {
-            scan_set_error(parse->err, parse->err_sz, "row %u chan_csv path is too long or invalid", parse->row);
-            return -1;
-        }
-    }
-    if (keys_hex_s[0] != '\0'
-        && dsd_path_resolve_relative_to_file(parse->resolved_path, keys_hex_s, target.keys_hex_csv,
-                                             sizeof target.keys_hex_csv)
-               != 0) {
-        scan_set_error(parse->err, parse->err_sz, "row %u keys_hex_csv path is too long or invalid", parse->row);
-        return -1;
-    }
-    if (keys_dec_s[0] != '\0'
-        && dsd_path_resolve_relative_to_file(parse->resolved_path, keys_dec_s, target.keys_dec_csv,
-                                             sizeof target.keys_dec_csv)
-               != 0) {
-        scan_set_error(parse->err, parse->err_sz, "row %u keys_dec_csv path is too long or invalid", parse->row);
+    if (scan_parse_target_paths(&target, parse, chan_csv, keys_hex_s, keys_dec_s) != 0) {
         return -1;
     }
     if (scan_parse_ms_field(dwell_s, parse->default_dwell_ms, &target.dwell_ms) != 0) {
