@@ -208,10 +208,22 @@ Windows console runs:
   those captures are migrated or their support window ends. Neither stored format carries the NXDN symbol rate, so NXDN
   capture replay requires `-fi` or `-fn` instead of `-fa`.
 - `-d <dir>` Save raw MBE vocoder frames in this folder
-- `-J <file>` Append event log output. While scanning a `-Y` list or rotating `--trunk-scan` targets, each
-  line names the channel it was heard on in brackets between the timestamp and the protocol token
-  (`2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: ...`); lines from a receiver that is not scanning a named
-  channel are unchanged.
+- `-J <file>` Append event log output. Every line starts with a `YYYY-MM-DD HH:MM:SS` stamp, so the file
+  filters, sorts and splits by time with ordinary line tools. An event's detail lines (`Text:` for a decoded
+  text message, `Talker Alias:`, `GPS:`, `DSD-neo:` for a decoder notice) follow its line and repeat that
+  event's own stamp rather than reading the clock again; a voice transmission reacquired after a sync loss
+  appends a `Reacquired:` continuation carrying the stamp of the row it extends. While scanning a `-Y` list
+  or rotating `--trunk-scan` targets, each line names the channel it was heard on in brackets between the
+  timestamp and the protocol token; lines from a receiver that is not scanning a named channel are unchanged.
+
+  ```text
+  2026-04-30 09:12:04 [Fire Dispatch] P25p1 TGT: 00050061; SRC: 00001234;
+  2026-04-30 09:12:04 Talker Alias: ENGINE 12
+  2026-04-30 09:12:11 TMS SRC: 1234; DST: 42; Slot 1;
+  2026-04-30 09:12:11 Text: MEET AT THE NORTH GATE
+  2026-04-30 09:12:20 DMR TGT: 00000100; SRC: 00000000; Slot 1;
+  2026-04-30 09:12:20 Reacquired: DMR TGT: 00000100; SRC: 00004321; Slot 1;
+  ```
 - `--frame-log <file>` Append frame-level one-line timestamped traces
 - `--p25-sm-log <file>` Append P25 state-machine health and frequency-decision traces. Grant traces identify initial
   assignments versus updates; post-call stale-update handling reports guard, validation-probe, and activity outcomes.

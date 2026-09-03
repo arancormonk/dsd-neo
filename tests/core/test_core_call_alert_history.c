@@ -355,6 +355,30 @@ expect_str_eq(const char* label, const char* got, const char* want) {
     return 0;
 }
 
+// Every line of a -J event log starts with the row's "YYYY-MM-DD HH:MM:SS" stamp (#469): the
+// detail lines and a reacquired continuation included, so line-oriented tooling never meets an
+// undated line.
+static int
+expect_every_line_stamped(const char* label, const char* buf, const char* stamp) {
+    const size_t stamp_len = strlen(stamp);
+    int lines = 0;
+    for (const char* line = buf; line != NULL && *line != '\0';) {
+        const char* end = strchr(line, '\n');
+        const size_t len = end != NULL ? (size_t)(end - line) : strlen(line);
+        if (len > 0 && (len < stamp_len || strncmp(line, stamp, stamp_len) != 0)) {
+            DSD_FPRINTF(stderr, "%s: line without stamp '%.*s'\n", label, (int)len, line);
+            return 1;
+        }
+        lines++;
+        line = end != NULL ? end + 1 : NULL;
+    }
+    if (lines == 0) {
+        DSD_FPRINTF(stderr, "%s: log is empty\n", label);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 event_history_item_equal(const Event_History* lhs, const Event_History* rhs) {
     return lhs->write == rhs->write && lhs->color_pair == rhs->color_pair && lhs->severity == rhs->severity
@@ -1172,11 +1196,61 @@ test_event_log_writes_optional_metadata_lines(void) {
     buf[n] = '\0';
 
     int rc = 0;
-    rc |= expect_has_substr("event log main line", buf, "TEST EVENT; Slot 2;");
-    rc |= expect_has_substr("event log text", buf, "hello text");
-    rc |= expect_has_substr("event log alias", buf, "Talker Alias: Unit 7");
-    rc |= expect_has_substr("event log gps", buf, "GPS: 41.500000 -87.250000");
-    rc |= expect_has_substr("event log internal", buf, "DSD-neo: status detail");
+    rc |= expect_has_substr("event log main line", buf, "2026-04-30 00:00:00 TEST EVENT; Slot 2;");
+    rc |= expect_has_substr("event log text", buf, "\n2026-04-30 00:00:00 Text: hello text \n");
+    rc |= expect_has_substr("event log alias", buf, "\n2026-04-30 00:00:00 Talker Alias: Unit 7 \n");
+    rc |= expect_has_substr("event log gps", buf, "\n2026-04-30 00:00:00 GPS: 41.500000 -87.250000 \n");
+    rc |= expect_has_substr("event log internal", buf, "\n2026-04-30 00:00:00 DSD-neo: status detail \n");
+    rc |= expect_every_line_stamped("event log detail lines carry the header's stamp", buf, "2026-04-30 00:00:00 ");
+    return rc;
+}
+
+// A rendered line with no parseable prefix, on a row with no stamp of its own, has nothing to
+// stamp the detail lines with. They keep their pre-#469 shape -- a leading space and the label --
+// rather than an invented time.
+static int
+test_event_log_unstamped_row_keeps_bare_detail_lines(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I event_history[2];
+    reset_fixture(&opts, &state, event_history);
+
+    char path[] = "/tmp/dsd-neo-events-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "mkstemp failed for unstamped event log test\n");
+        return 1;
+    }
+    close(fd);
+    remove(path);
+    DSD_SNPRINTF(opts.event_out_file, sizeof opts.event_out_file, "%s", path);
+
+    Event_History* row = &state.event_history_s[1].Event_History_Items[0];
+    row->event_time = 0;
+    row->event_string[0] = '\0';
+    DSD_SNPRINTF(row->text_message, sizeof row->text_message, "%s", "hello text");
+    DSD_SNPRINTF(row->alias, sizeof row->alias, "%s", "Unit 7");
+
+    char event_string[] = "TEST EVENT;";
+    write_event_to_log_file(&opts, &state, 1, 1, event_string);
+
+    FILE* f = fopen(path, "rb");
+    if (f == NULL) {
+        remove(path);
+        DSD_FPRINTF(stderr, "unstamped event log was not created\n");
+        return 1;
+    }
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    remove(path);
+    buf[n] = '\0';
+
+    int rc = 0;
+    rc |= expect_has_substr("unstamped main line", buf, "TEST EVENT; Slot 2;");
+    rc |= expect_has_substr("unstamped text line keeps its label", buf, "\n Text: hello text \n");
+    rc |= expect_has_substr("unstamped alias line keeps its shape", buf, "\n Talker Alias: Unit 7 \n");
+    rc |= expect_no_substr("no time is invented for an unstamped row", buf, "2026-04-30");
     return rc;
 }
 
@@ -3924,6 +3998,8 @@ test_merge_logs_continuation_only_when_render_changes(void) {
     int rc = expect_int("merged transmission commits one row", committed_history_rows(&event_history[0]), 1);
     rc |= expect_has_substr("first segment logged its own line", buf, "SRC: 00000000;");
     rc |= expect_has_substr("continuation reports the learned source", buf, " Reacquired: ");
+    rc |= expect_has_substr("continuation marker follows the row's stamp", buf, "\n2026-04-30 00:00:00 Reacquired: ");
+    rc |= expect_every_line_stamped("continuation log lines all start with the stamp", buf, "2026-04-30 00:00:00 ");
     rc |= expect_int("only the informative merge logs a continuation", reacquired_lines, 1);
     dsd_state_ext_free_all(&state);
     return rc;
@@ -4047,8 +4123,9 @@ test_merge_logs_metadata_the_segment_added(void) {
     buf[n] = '\0';
 
     int rc = expect_int("metadata-only merge commits one row", committed_history_rows(&event_history[0]), 1);
-    rc |= expect_has_substr("merged alias reaches the log", buf, " Talker Alias: UNIT 12 FIRE");
-    rc |= expect_has_substr("merged gps reaches the log", buf, " GPS: lat 3.0 lon 4.0");
+    rc |= expect_has_substr("merged alias reaches the log", buf, "\n2026-04-30 00:00:00 Talker Alias: UNIT 12 FIRE \n");
+    rc |= expect_has_substr("merged gps reaches the log", buf, "\n2026-04-30 00:00:00 GPS: lat 3.0 lon 4.0 \n");
+    rc |= expect_every_line_stamped("detail-only continuation carries the row's stamp", buf, "2026-04-30 00:00:00 ");
     rc |= expect_str_eq("merged row keeps the alias", event_history[0].Event_History_Items[1].alias, "UNIT 12 FIRE");
     dsd_state_ext_free_all(&state);
     return rc;
@@ -4822,6 +4899,7 @@ main(void) {
     rc |= test_p25_event_string_keeps_full_prefix_after_sprintf_hardening();
     rc |= test_source_less_current_event_updates_history_metadata();
     rc |= test_event_log_writes_optional_metadata_lines();
+    rc |= test_event_log_unstamped_row_keeps_bare_detail_lines();
     rc |= test_source_transition_rotates_slot_wav_files();
     rc |= test_ysf_current_sanitizes_ids_and_text_message();
     rc |= test_m17_dstar_dpmr_current_strings();

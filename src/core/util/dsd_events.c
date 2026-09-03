@@ -188,13 +188,119 @@ typedef struct {
     uint8_t internal;
 } watchdog_event_merge_added;
 
+static int
+watchdog_event_char_is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+// Width of the "YYYY-MM-DD HH:MM:SS" prefix every builder emits, without the space that follows it.
+enum { k_watchdog_event_stamp_len = 19 };
+
+// Parse the "YYYY-MM-DD HH:MM:SS" prefix at the head of `s` (at most `cap` readable bytes) into
+// datestr (11 bytes) and timestr (9 bytes). Returns non-zero when the prefix is present and
+// well-formed. Every builder emits it, so this is the one place its shape is known: the log
+// writer and the merge re-render both recover a row's stamp through it.
+static int
+watchdog_event_parse_datetime_prefix(const char* s, size_t cap, char* datestr, char* timestr) {
+    // Separators at offsets 4, 7, 10, 13, 16; digits everywhere else.
+    static const char k_separators[k_watchdog_event_stamp_len] = {0,   0, 0, 0,   '-', 0, 0,   '-', 0, 0,
+                                                                  ' ', 0, 0, ':', 0,   0, ':', 0,   0};
+    if (s == NULL || strnlen(s, cap) < (size_t)k_watchdog_event_stamp_len) {
+        return 0;
+    }
+    for (size_t i = 0; i < (size_t)k_watchdog_event_stamp_len; i++) {
+        if (k_separators[i] != 0 ? s[i] != k_separators[i] : !watchdog_event_char_is_digit(s[i])) {
+            return 0;
+        }
+    }
+    DSD_SNPRINTF(datestr, 11U, "%s", s);
+    DSD_SNPRINTF(timestr, 9U, "%s", s + 11);
+    return 1;
+}
+
+static int watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t datestr_size, char* timestr,
+                                       size_t timestr_size);
+
+static void
+watchdog_event_write_log_detail(FILE* event_log_file, const char* stamp, const char* label, const char* value,
+                                uint8_t wanted) {
+    if (wanted == 0U) {
+        return;
+    }
+    // Unstamped, the line keeps its leading space so it still reads as a continuation.
+    DSD_FPRINTF(event_log_file, "%s %s%s \n", stamp, label, value);
+}
+
+// Which detail lines this entry writes: the caller's selection, else every non-empty field.
+static watchdog_event_merge_added
+watchdog_event_log_details_wanted(const Event_History* row, const watchdog_event_merge_added* selection) {
+    if (selection != NULL) {
+        return *selection;
+    }
+    watchdog_event_merge_added wanted;
+    wanted.alias = row->alias[0] != '\0' ? 1U : 0U;
+    wanted.gps = row->gps_s[0] != '\0' ? 1U : 0U;
+    wanted.text_message = row->text_message[0] != '\0' ? 1U : 0U;
+    wanted.internal = row->internal_str[0] != '\0' ? 1U : 0U;
+    return wanted;
+}
+
+// The stamp every line of the entry carries. Returns 2 when it came from the rendered line, 1
+// when it came from the row, 0 when neither offers one (stamp is then empty).
+static int
+watchdog_event_log_entry_stamp(const char* event_string, const Event_History* row, char* stamp, size_t stamp_size) {
+    char datestr[11];
+    char timestr[9];
+    stamp[0] = '\0';
+    if (event_string != NULL
+        && watchdog_event_parse_datetime_prefix(event_string, strlen(event_string), datestr, timestr)) {
+        DSD_SNPRINTF(stamp, stamp_size, "%s %s", datestr, timestr);
+        return 2;
+    }
+    if (watchdog_event_row_datetime(row, datestr, sizeof datestr, timestr, sizeof timestr)) {
+        DSD_SNPRINTF(stamp, stamp_size, "%s %s", datestr, timestr);
+        return 1;
+    }
+    return 0;
+}
+
+static void
+watchdog_event_write_log_rendered_line(FILE* event_log_file, const char* stamp, int stamped_from_line,
+                                       const char* prefix, const char* event_string, uint8_t slot, uint8_t swrite) {
+    if (stamped_from_line && prefix != NULL) {
+        // The marker follows the stamp so the continuation line filters and sorts with the row
+        // it extends.
+        const char* rest = event_string + k_watchdog_event_stamp_len;
+        if (*rest == ' ') {
+            rest++;
+        }
+        DSD_FPRINTF(event_log_file, "%s %s%s ", stamp, prefix, rest);
+    } else if (prefix != NULL) {
+        DSD_FPRINTF(event_log_file, " %s%s ", prefix, event_string);
+    } else {
+        DSD_FPRINTF(event_log_file, "%s ", event_string);
+    }
+    if (swrite == 1) {
+        DSD_FPRINTF(event_log_file, "Slot %d; ", slot + 1);
+    }
+    DSD_FPRINTF(event_log_file, "\n");
+}
+
 // One event-log entry: the rendered line, then whichever optional detail lines apply. A row's
 // first commit and a reacquired segment's continuation are the same entry shape, so they share
 // one writer and the log format keeps a single source of truth.
 //
+// Every line the writer emits starts with the row's "YYYY-MM-DD HH:MM:SS " stamp, so the log stays
+// line-oriented: a date filter, a sort, or an awk field split treats a text message or a talker
+// alias exactly like the event it belongs to (#469). The stamp is the one on the rendered line when
+// there is one -- the detail lines describe that line, so they carry its clock rather than a fresh
+// read -- and otherwise the row's own, recovered the way a merge re-render recovers it. A row with
+// no recoverable stamp writes its lines unstamped rather than inventing a time.
+//
 // `event_string` NULL suppresses the rendered line, for a continuation that only has new detail
-// to report. `prefix` marks the entry as a continuation. `selection` limits the detail lines to
-// what the caller just learned; NULL writes every non-empty one.
+// to report. `prefix` marks the entry as a continuation and sits between the stamp and the rest of
+// the rendered line. `selection` limits the detail lines to what the caller just learned; NULL
+// writes every non-empty one.
 static void
 watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrite, const char* prefix,
                                const char* event_string, const Event_History* row,
@@ -202,29 +308,22 @@ watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrit
     if (opts->event_out_file[0] == '\0') {
         return;
     }
+    char stamp[k_watchdog_event_stamp_len + 1];
+    const int stamp_source = watchdog_event_log_entry_stamp(event_string, row, stamp, sizeof stamp);
+    const watchdog_event_merge_added wanted = watchdog_event_log_details_wanted(row, selection);
+
     FILE* event_log_file = dsd_fopen_private(opts->event_out_file, "a");
     if (event_log_file == NULL) {
         return;
     }
     if (event_string != NULL) {
-        DSD_FPRINTF(event_log_file, "%s%s ", prefix != NULL ? prefix : "", event_string);
-        if (swrite == 1) {
-            DSD_FPRINTF(event_log_file, "Slot %d; ", slot + 1);
-        }
-        DSD_FPRINTF(event_log_file, "\n");
+        watchdog_event_write_log_rendered_line(event_log_file, stamp, stamp_source == 2, prefix, event_string, slot,
+                                               swrite);
     }
-    if (selection != NULL ? selection->text_message != 0U : row->text_message[0] != '\0') {
-        DSD_FPRINTF(event_log_file, "%s \n", row->text_message);
-    }
-    if (selection != NULL ? selection->alias != 0U : row->alias[0] != '\0') {
-        DSD_FPRINTF(event_log_file, " Talker Alias: %s \n", row->alias);
-    }
-    if (selection != NULL ? selection->gps != 0U : row->gps_s[0] != '\0') {
-        DSD_FPRINTF(event_log_file, " GPS: %s \n", row->gps_s);
-    }
-    if (selection != NULL ? selection->internal != 0U : row->internal_str[0] != '\0') {
-        DSD_FPRINTF(event_log_file, " DSD-neo: %s \n", row->internal_str);
-    }
+    watchdog_event_write_log_detail(event_log_file, stamp, "Text: ", row->text_message, wanted.text_message);
+    watchdog_event_write_log_detail(event_log_file, stamp, "Talker Alias: ", row->alias, wanted.alias);
+    watchdog_event_write_log_detail(event_log_file, stamp, "GPS: ", row->gps_s, wanted.gps);
+    watchdog_event_write_log_detail(event_log_file, stamp, "DSD-neo: ", row->internal_str, wanted.internal);
     fflush(event_log_file);
     fclose(event_log_file);
 }
@@ -696,7 +795,7 @@ watchdog_event_log_merge_continuation(const dsd_opts* opts, uint8_t slot, uint8_
     // A re-render that produced no string, or one identical to what the row already showed, has
     // nothing new to say; the detail lines below may still.
     const char* rendered = (rendered_changed && retained->event_string[0] != '\0') ? retained->event_string : NULL;
-    watchdog_event_write_log_entry(opts, slot, swrite, " Reacquired: ", rendered, retained, added);
+    watchdog_event_write_log_entry(opts, slot, swrite, "Reacquired: ", rendered, retained, added);
 }
 
 // True when the staged row may be folded into the row already committed for this slot: the
@@ -1648,11 +1747,6 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     ctx->s_name_loaded = item->s_name[0] != '\0' ? 1U : 0U;
 }
 
-static int
-watchdog_event_char_is_digit(char c) {
-    return c >= '0' && c <= '9';
-}
-
 // Recover the "YYYY-MM-DD HH:MM:SS " prefix every builder emits, straight from the string the row
 // is already displaying, and only fall back to item->event_time when that string carries no
 // parseable prefix -- a row a protocol staged directly rather than rendering.
@@ -1667,11 +1761,6 @@ watchdog_event_char_is_digit(char c) {
 static int
 watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t datestr_size, char* timestr,
                             size_t timestr_size) {
-    // "YYYY-MM-DD HH:MM:SS": separators at offsets 4, 7, 10, 13, 16; digits everywhere else.
-    static const char k_watchdog_event_datetime_separators[19] = {0,   0, 0, 0,   '-', 0, 0,   '-', 0, 0,
-                                                                  ' ', 0, 0, ':', 0,   0, ':', 0,   0};
-    const char* s = item->event_string;
-
     // Field widths of the prefix, including the terminator each is written with -- not the caller's
     // buffer capacities. The size parameters below only reject a buffer too small to hold a field;
     // widening one must not copy more of the timestamp than the field itself.
@@ -1680,20 +1769,8 @@ watchdog_event_row_datetime(const Event_History* item, char* datestr, size_t dat
     if (datestr_size < k_datestr_len || timestr_size < k_timestr_len) {
         return 0;
     }
-    if (strnlen(s, sizeof(item->event_string)) >= 19U) {
-        int parsed = 1;
-        for (size_t i = 0; i < 19U; i++) {
-            if (k_watchdog_event_datetime_separators[i] != 0 ? s[i] != k_watchdog_event_datetime_separators[i]
-                                                             : !watchdog_event_char_is_digit(s[i])) {
-                parsed = 0;
-                break;
-            }
-        }
-        if (parsed) {
-            DSD_SNPRINTF(datestr, 11U, "%s", s);
-            DSD_SNPRINTF(timestr, 9U, "%s", s + 11);
-            return 1;
-        }
+    if (watchdog_event_parse_datetime_prefix(item->event_string, sizeof(item->event_string), datestr, timestr)) {
+        return 1;
     }
 
     // No prefix to preserve. A stamp is better than nothing; a zero one would render 1970-01-01,
