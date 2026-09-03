@@ -406,6 +406,8 @@ apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* va
     } else if (strcmp(key_lc, "dmr_mono") == 0) {
         cfg->has_dmr_mono = 1;
         assign_bool_key(&cfg->dmr_mono, val);
+    } else if (strcmp(key_lc, "dmr_lrrp_ports") == 0) {
+        copy_text_value(cfg->dmr_lrrp_ports, sizeof cfg->dmr_lrrp_ports, val);
     } else if (strcmp(key_lc, "edacs_ea") == 0) {
         cfg->has_edacs_variant = 1;
         assign_bool_key(&cfg->edacs_ea, val);

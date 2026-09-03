@@ -4432,6 +4432,51 @@ test_lrrp_extra_port_rejects_ninth_port(void) {
 }
 
 static int
+test_lrrp_extra_port_cli_replaces_config_list(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    // mode.dmr_lrrp_ports is applied before the CLI runs; the CLI list must replace it, not extend it.
+    opts->lrrp_extra_ports[0] = 5000U;
+    opts->lrrp_extra_port_count = 1;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--lrrp-extra-port";
+    char arg2[] = "6000";
+    char arg3[] = "--lrrp-extra-port=6001";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->lrrp_extra_port_count != 2 || opts->lrrp_extra_ports[0] != 6000U || opts->lrrp_extra_ports[1] != 6001U) {
+        DSD_FPRINTF(stderr, "expected CLI list {6000,6001} to replace the config list, got count=%d {%u,%u}\n",
+                    opts->lrrp_extra_port_count, (unsigned)opts->lrrp_extra_ports[0],
+                    (unsigned)opts->lrrp_extra_ports[1]);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
 test_lrrp_extra_port_missing_value_returns_error(void) {
     return test_missing_required_long_option_value_returns_error("--lrrp-extra-port");
 }
@@ -7005,6 +7050,7 @@ main(void) {
     rc |= test_lrrp_extra_port_rejects_invalid_values();
     rc |= test_lrrp_extra_port_rejects_ninth_port();
     rc |= test_lrrp_extra_port_missing_value_returns_error();
+    rc |= test_lrrp_extra_port_cli_replaces_config_list();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key();
     rc |= test_dmr_csi_ee72_long_option_parse();

@@ -231,7 +231,8 @@ DirWatch modes keep the WAV and JSON files because the watcher needs stable file
   The registered location port 4001 is always decoded; this adds ports a system uses
   instead of it, which would otherwise be reported as `Unknown UDP Port`. Ports the decoder
   already recognises (4005 ARS, 4007 TMS, and so on) keep their own service; the mapping
-  only applies to ports that would otherwise be unknown.
+  only applies to ports that would otherwise be unknown. Config key: `mode.dmr_lrrp_ports`
+  (comma-separated); a CLI list replaces the config list.
 - `-Q <file>` Write structured DSP or M17 stream data to `./DSP/<file>`
 - `-q` Reverse mute: mute clear audio, unmute encrypted audio
 

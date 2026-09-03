@@ -1532,6 +1532,58 @@ test_diagnostics_direct_api_and_print_formats(void) {
     return result;
 }
 
+static int
+test_dmr_lrrp_ports_validation(void) {
+    int result = 0;
+
+    // A well-formed list produces no diagnostic for the key.
+    static const char* valid_ini = "[mode]\n"
+                                   "dmr_lrrp_ports = \"5000,5001\"\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(valid_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].key, "dmr_lrrp_ports")) {
+            DSD_FPRINTF(stderr, "FAIL: valid dmr_lrrp_ports produced a diagnostic: %s\n", diags.items[i].message);
+            result = 1;
+        }
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    // Two unusable entries (not a number, out of range) are reported once as a warning, not an error.
+    static const char* bad_ini = "[mode]\n"
+                                 "dmr_lrrp_ports = \"5000,abc,70000\"\n";
+    if (write_temp_config(bad_ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+    int found_warning = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].key, "dmr_lrrp_ports")) {
+            if (diags.items[i].level == DSDCFG_DIAG_WARNING && strstr(diags.items[i].message, "ignores 2 entries")) {
+                found_warning++;
+            } else {
+                DSD_FPRINTF(stderr, "FAIL: unexpected dmr_lrrp_ports diagnostic level=%d: %s\n",
+                            (int)diags.items[i].level, diags.items[i].message);
+                result = 1;
+            }
+        }
+    }
+    if (found_warning != 1) {
+        DSD_FPRINTF(stderr, "FAIL: expected one dmr_lrrp_ports warning, found %d\n", found_warning);
+        result = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1563,6 +1615,7 @@ main(void) {
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
     rc |= test_input_warn_db_double_validation();
+    rc |= test_dmr_lrrp_ports_validation();
     rc |= test_diags_have_line_numbers();
     rc |= test_empty_config();
     rc |= test_nonexistent_file();

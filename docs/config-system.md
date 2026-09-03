@@ -320,6 +320,7 @@ small subset is exposed as config keys for convenience (for example
 |-----|------|-------------|---------|
 | `decode` | ENUM | Decode mode preset | `auto` |
 | `dmr_mono` | BOOL | Enable the single-slot DMR decoder without changing `decode` | `false` |
+| `dmr_lrrp_ports` | STRING | Extra UDP ports decoded as DMR LRRP, comma-separated, at most 8 (same as `--lrrp-extra-port`; a CLI list replaces this one) | (empty) |
 | `edacs_ea` | BOOL | Decode EDACS with extended addressing, without changing `decode` | `false` |
 | `edacs_esk` | BOOL | Apply the EDACS ESK `0xA0` scrambling mask, without changing `decode` | `false` |
 | `demod` | ENUM | Demodulator path | `auto` |
@@ -716,7 +717,9 @@ through selecting input, mode, trunking, and UI options.
 - A no-arg run only loads a config if you enable it via `DSD_NEO_CONFIG`.
 - If config is enabled and loads successfully and no other CLI args are provided:
   skip the wizard, use config settings.
-- If CLI args are provided: config is loaded first, then CLI overrides it.
+- If CLI args are provided: config is loaded first, then CLI overrides it. This holds for
+  list-valued keys too: the first `--lrrp-extra-port` empties the `mode.dmr_lrrp_ports` list
+  before adding its own port.
 - CLI:
   - `--interactive-setup` forces running the wizard even if a config
     exists; the resulting setup is automatically saved to the current

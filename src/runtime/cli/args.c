@@ -7,6 +7,7 @@
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/key_set.h>
+#include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -171,33 +172,36 @@ cli_parse_decimal_u64(const char* in, uint64_t* out) {
 /*
  * Record one extra UDP port to route onto the LRRP decoder. The option repeats, so a site with
  * more than one location port lists them all; the table is small and fixed so a typo cannot grow
- * it without bound. Returns 0 and reports the reason when the value cannot be accepted.
+ * it without bound. The first occurrence on the command line empties the table, so a CLI list
+ * replaces whatever mode.dmr_lrrp_ports put there rather than extending it. Returns 0 and reports
+ * the reason when the value cannot be accepted.
  */
 static int
-cli_add_lrrp_extra_port(dsd_opts* opts, const char* value, int* out_exit_rc) {
+cli_add_lrrp_extra_port(dsd_opts* opts, const char* value, int* seen_on_cli, int* out_exit_rc) {
     unsigned long parsed_port = 0;
     if (!cli_parse_decimal_u32(value, &parsed_port)) {
         LOG_ERROR("Invalid --lrrp-extra-port value \"%s\" (expected decimal port)\n", value);
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
-    if (parsed_port == 0UL || parsed_port > 65535UL) {
-        LOG_ERROR("Invalid --lrrp-extra-port value \"%s\" (expected port 1..65535)\n", value);
-        cli_set_exit_rc(out_exit_rc, 1);
-        return 0;
+    if (seen_on_cli && !*seen_on_cli) {
+        opts->lrrp_extra_port_count = 0;
+        *seen_on_cli = 1;
     }
-    if (opts->lrrp_extra_port_count >= DSD_LRRP_EXTRA_PORT_MAX) {
-        LOG_ERROR("Too many --lrrp-extra-port values (at most %d)\n", DSD_LRRP_EXTRA_PORT_MAX);
-        cli_set_exit_rc(out_exit_rc, 1);
-        return 0;
+    switch (dsd_lrrp_port_list_add(opts->lrrp_extra_ports, &opts->lrrp_extra_port_count, DSD_LRRP_EXTRA_PORT_MAX,
+                                   parsed_port)) {
+        case DSD_LRRP_PORT_RANGE:
+            LOG_ERROR("Invalid --lrrp-extra-port value \"%s\" (expected port 1..65535)\n", value);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+        case DSD_LRRP_PORT_FULL:
+            LOG_ERROR("Too many --lrrp-extra-port values (at most %d)\n", DSD_LRRP_EXTRA_PORT_MAX);
+            cli_set_exit_rc(out_exit_rc, 1);
+            return 0;
+        case DSD_LRRP_PORT_ADDED:
+        case DSD_LRRP_PORT_DUPLICATE:
+        default: return 1;
     }
-    for (int i = 0; i < opts->lrrp_extra_port_count; i++) {
-        if (opts->lrrp_extra_ports[i] == (uint16_t)parsed_port) {
-            return 1;
-        }
-    }
-    opts->lrrp_extra_ports[opts->lrrp_extra_port_count++] = (uint16_t)parsed_port;
-    return 1;
 }
 
 static int
@@ -495,14 +499,14 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             const char* lrrp_extra_port_arg = DSD_PARSE_ARGS_NEXT_ARG();                                               \
-            if (!cli_add_lrrp_extra_port(opts, lrrp_extra_port_arg, out_exit_rc)) {                                    \
+            if (!cli_add_lrrp_extra_port(opts, lrrp_extra_port_arg, &lrrp_extra_ports_cli_seen, out_exit_rc)) {        \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             arg_advance = 2;                                                                                           \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--lrrp-extra-port=", 18) == 0) {                                                         \
-            if (!cli_add_lrrp_extra_port(opts, argv[i] + 18, out_exit_rc)) {                                           \
+            if (!cli_add_lrrp_extra_port(opts, argv[i] + 18, &lrrp_extra_ports_cli_seen, out_exit_rc)) {               \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -1515,6 +1519,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* iq_info_cli = NULL;
     int iq_loop_cli = 0;
     int rtl_udp_control_cli_seen = 0;
+    int lrrp_extra_ports_cli_seen = 0;
     unsigned long rtl_udp_control_cli_port = 0;
     const char* rtl_udp_control_cli_bindaddr = NULL;
     int trunk_scan_cli_seen = 0;

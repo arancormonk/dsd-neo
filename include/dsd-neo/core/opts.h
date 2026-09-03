@@ -30,7 +30,8 @@
 #include <string.h>
 #include <time.h>
 
-/* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-extra-port. */
+/* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-extra-port or the
+   mode.dmr_lrrp_ports config key; see core/lrrp_ports.h for the shared helpers. */
 #define DSD_LRRP_EXTRA_PORT_MAX 8
 
 /**
@@ -273,7 +274,7 @@ struct dsd_opts {
     short int dmr_mono; //select the DMR single-slot decoder and mono audio path
     short int dmr_stereo;
     short int lrrp_file_output;
-    short int lrrp_extra_port_count; //number of entries used in lrrp_extra_ports
+    int lrrp_extra_port_count; //number of entries used in lrrp_extra_ports
     short int dmr_mute_encL;
     short int dmr_mute_encR;
     short int aggressive_framesync;

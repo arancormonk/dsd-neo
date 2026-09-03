@@ -2323,10 +2323,8 @@ test_persistence_gap_schema_rows(void) {
         const char* section;
         const char* key;
     } expected[] = {
-        {"trunking", "scanner"},
-        {"trunking", "p25_prefer_candidates"},
-        {"mode", "edacs_ea"},
-        {"mode", "edacs_esk"},
+        {"trunking", "scanner"},    {"trunking", "p25_prefer_candidates"}, {"mode", "edacs_ea"}, {"mode", "edacs_esk"},
+        {"mode", "dmr_lrrp_ports"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2658,6 +2656,163 @@ test_imports_dir_follows_config_dir(void) {
     return rc;
 }
 
+static int
+test_dmr_lrrp_ports_load_apply_snapshot_roundtrip(void) {
+    // Blanks and a repeated entry are tolerated on the way in; the table holds each port once.
+    static const char* ini = "[mode]\n"
+                             "dmr_lrrp_ports = \"5000, 5001,5000\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    int rc = 0;
+    if (strcmp(cfg.dmr_lrrp_ports, "5000, 5001,5000") != 0) {
+        DSD_FPRINTF(stderr, "dmr_lrrp_ports parse mismatch: \"%s\"\n", cfg.dmr_lrrp_ports);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.lrrp_extra_port_count != 2 || opts.lrrp_extra_ports[0] != 5000U || opts.lrrp_extra_ports[1] != 5001U) {
+        DSD_FPRINTF(stderr, "dmr_lrrp_ports apply mismatch: count=%d ports={%u,%u}\n", opts.lrrp_extra_port_count,
+                    (unsigned)opts.lrrp_extra_ports[0], (unsigned)opts.lrrp_extra_ports[1]);
+        rc |= 1;
+    }
+
+    // Applying the same config again replaces the table rather than growing it.
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.lrrp_extra_port_count != 2) {
+        DSD_FPRINTF(stderr, "dmr_lrrp_ports re-apply accumulated: count=%d\n", opts.lrrp_extra_port_count);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (strcmp(snap.dmr_lrrp_ports, "5000,5001") != 0) {
+        DSD_FPRINTF(stderr, "snapshot dmr_lrrp_ports mismatch: \"%s\"\n", snap.dmr_lrrp_ports);
+        rc |= 1;
+    }
+
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (!strstr(rendered, "dmr_lrrp_ports = \"5000,5001\"")) {
+        DSD_FPRINTF(stderr, "rendered config missing dmr_lrrp_ports:\n%s\n", rendered);
+        rc |= 1;
+    }
+
+    if (write_temp_config(rendered, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg_reload;
+    if (dsd_user_config_load(path, &cfg_reload) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for rendered config %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    static dsd_opts opts_reload;
+    static dsd_state state_reload;
+    reset_opts_and_state(opts_reload, state_reload);
+    dsd_apply_user_config_to_opts(&cfg_reload, &opts_reload, &state_reload);
+    if (opts_reload.lrrp_extra_port_count != 2 || opts_reload.lrrp_extra_ports[0] != 5000U
+        || opts_reload.lrrp_extra_ports[1] != 5001U) {
+        DSD_FPRINTF(stderr, "reloaded dmr_lrrp_ports mismatch: count=%d\n", opts_reload.lrrp_extra_port_count);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_dmr_lrrp_ports_absent_key_keeps_existing_list(void) {
+    // A config that never mentions the key must not wipe a list the CLI already supplied.
+    static const char* ini = "[mode]\n"
+                             "dmr_mono = false\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    opts.lrrp_extra_ports[0] = 6000U;
+    opts.lrrp_extra_port_count = 1;
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+
+    int rc = 0;
+    if (opts.lrrp_extra_port_count != 1 || opts.lrrp_extra_ports[0] != 6000U) {
+        DSD_FPRINTF(stderr, "absent dmr_lrrp_ports changed the list: count=%d port0=%u\n", opts.lrrp_extra_port_count,
+                    (unsigned)opts.lrrp_extra_ports[0]);
+        rc |= 1;
+    }
+
+    // And a snapshot of a session with no ports renders no key at all.
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[4096];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "dmr_lrrp_ports")) {
+        DSD_FPRINTF(stderr, "empty port list rendered a dmr_lrrp_ports key:\n%s\n", rendered);
+        rc |= 1;
+    }
+    return rc;
+}
+
+static int
+test_dmr_lrrp_ports_bad_entries_are_skipped(void) {
+    // Loading is lenient: the validator warns, apply keeps the entries that parse.
+    static const char* ini = "[mode]\n"
+                             "dmr_lrrp_ports = \"5000,abc,70000,5001\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    if (dsd_user_config_load(path, &cfg) != 0) {
+        DSD_FPRINTF(stderr, "dsd_user_config_load failed for %s\n", path);
+        (void)remove(path);
+        return 1;
+    }
+    (void)remove(path);
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.lrrp_extra_port_count != 2 || opts.lrrp_extra_ports[0] != 5000U || opts.lrrp_extra_ports[1] != 5001U) {
+        DSD_FPRINTF(stderr, "bad dmr_lrrp_ports entries not skipped: count=%d\n", opts.lrrp_extra_port_count);
+        return 1;
+    }
+    return 0;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2695,6 +2850,9 @@ main(void) {
     rc |= test_input_warn_db_load_snapshot_render();
     rc |= test_dmr_mono_preset_precedes_false_override();
     rc |= test_persistence_gap_schema_rows();
+    rc |= test_dmr_lrrp_ports_load_apply_snapshot_roundtrip();
+    rc |= test_dmr_lrrp_ports_absent_key_keeps_existing_list();
+    rc |= test_dmr_lrrp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
     rc |= test_edacs_variant_roundtrip();
     rc |= test_edacs_variant_unanswered_is_not_persisted();
