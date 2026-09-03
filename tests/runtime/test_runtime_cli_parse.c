@@ -4237,6 +4237,251 @@ test_iq_info_missing_value_returns_error(void) {
 }
 
 static int
+test_iq_replay_equals_form_keeps_full_path(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    char metadata_path[1024];
+    char data_path[1024];
+    if (test_create_temp_iq_fixture(metadata_path, sizeof metadata_path, data_path, sizeof data_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temporary IQ fixture\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    // The "--iq-replay=<path>" spelling must hand the parser the whole path; a wrong prefix
+    // length here silently drops the first characters of the file name.
+    char arg0[] = "dsd-neo";
+    char arg1[1100];
+    DSD_SNPRINTF(arg1, sizeof arg1, "--iq-replay=%s", metadata_path);
+    char* argv[] = {arg0, arg1, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+
+#ifdef USE_RADIO
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    } else if (!opts->iq_replay_requested || strcmp(opts->iq_replay_path, metadata_path) != 0) {
+        DSD_FPRINTF(stderr, "expected iq_replay_path=%s, got %s\n", metadata_path, opts->iq_replay_path);
+        test_rc = 1;
+    }
+#else
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected no-radio iq replay parse error, got rc=%d exit_rc=%d\n", rc, exit_rc);
+        test_rc = 1;
+    }
+#endif
+
+    (void)remove(metadata_path);
+    (void)remove(data_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_lrrp_extra_port_long_option_parse(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    // Both spellings are accepted, and a repeated port is recorded once.
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--lrrp-extra-port";
+    char arg2[] = "5000";
+    char arg3[] = "--lrrp-extra-port=5001";
+    char arg4[] = "--lrrp-extra-port";
+    char arg5[] = "5000";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(6, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->lrrp_extra_port_count != 2) {
+        DSD_FPRINTF(stderr, "expected lrrp_extra_port_count=2, got %d\n", opts->lrrp_extra_port_count);
+        test_rc = 1;
+    } else if (opts->lrrp_extra_ports[0] != 5000U || opts->lrrp_extra_ports[1] != 5001U) {
+        DSD_FPRINTF(stderr, "expected lrrp_extra_ports={5000,5001}, got {%u,%u}\n", (unsigned)opts->lrrp_extra_ports[0],
+                    (unsigned)opts->lrrp_extra_ports[1]);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_lrrp_extra_port_rejects_invalid_values(void) {
+    static const char* const bad_values[] = {"0", "65536", "70000", "abc", "50a", "-1"};
+    int test_rc = 0;
+
+    for (size_t i = 0; i < sizeof(bad_values) / sizeof(bad_values[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[64];
+        DSD_SNPRINTF(arg1, sizeof arg1, "--lrrp-extra-port=%s", bad_values[i]);
+        char* argv[] = {arg0, arg1, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+            DSD_FPRINTF(stderr, "expected %s to be rejected, got rc=%d exit_rc=%d\n", arg1, rc, exit_rc);
+            test_rc = 1;
+        }
+        if (opts->lrrp_extra_port_count != 0) {
+            DSD_FPRINTF(stderr, "expected %s to leave lrrp_extra_port_count=0, got %d\n", arg1,
+                        opts->lrrp_extra_port_count);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_lrrp_extra_port_rejects_ninth_port(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    // DSD_LRRP_EXTRA_PORT_MAX distinct ports fill the table; one more is an error, not an overflow.
+    enum { kPorts = DSD_LRRP_EXTRA_PORT_MAX + 1 };
+
+    char arg0[] = "dsd-neo";
+    char args[kPorts][32];
+    char* argv[kPorts + 2];
+    argv[0] = arg0;
+    for (int i = 0; i < kPorts; i++) {
+        DSD_SNPRINTF(args[i], sizeof args[i], "--lrrp-extra-port=%d", 5000 + i);
+        argv[1 + i] = args[i];
+    }
+    argv[kPorts + 1] = NULL;
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(kPorts + 1, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_ERROR || exit_rc != 1) {
+        DSD_FPRINTF(stderr, "expected the %dth port to be rejected, got rc=%d exit_rc=%d\n", kPorts, rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->lrrp_extra_port_count != DSD_LRRP_EXTRA_PORT_MAX) {
+        DSD_FPRINTF(stderr, "expected lrrp_extra_port_count=%d, got %d\n", DSD_LRRP_EXTRA_PORT_MAX,
+                    opts->lrrp_extra_port_count);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_lrrp_extra_port_cli_replaces_config_list(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    // mode.dmr_lrrp_ports is applied before the CLI runs; the CLI list must replace it, not extend it.
+    opts->lrrp_extra_ports[0] = 5000U;
+    opts->lrrp_extra_port_count = 1;
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--lrrp-extra-port";
+    char arg2[] = "6000";
+    char arg3[] = "--lrrp-extra-port=6001";
+    char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(4, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = 0;
+    if (rc != DSD_PARSE_CONTINUE) {
+        DSD_FPRINTF(stderr, "expected rc=%d, got %d (exit_rc=%d)\n", DSD_PARSE_CONTINUE, rc, exit_rc);
+        test_rc = 1;
+    }
+    if (opts->lrrp_extra_port_count != 2 || opts->lrrp_extra_ports[0] != 6000U || opts->lrrp_extra_ports[1] != 6001U) {
+        DSD_FPRINTF(stderr, "expected CLI list {6000,6001} to replace the config list, got count=%d {%u,%u}\n",
+                    opts->lrrp_extra_port_count, (unsigned)opts->lrrp_extra_ports[0],
+                    (unsigned)opts->lrrp_extra_ports[1]);
+        test_rc = 1;
+    }
+
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_lrrp_extra_port_missing_value_returns_error(void) {
+    return test_missing_required_long_option_value_returns_error("--lrrp-extra-port");
+}
+
+static int
 test_rtl_udp_control_long_option_parse(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
@@ -6800,6 +7045,12 @@ main(void) {
     rc |= test_rtl_udp_control_rejects_malformed_numeric_binds();
     rc |= test_rtl_udp_control_port_too_large_returns_error();
     rc |= test_rtl_udp_control_bind_missing_value_returns_error();
+    rc |= test_iq_replay_equals_form_keeps_full_path();
+    rc |= test_lrrp_extra_port_long_option_parse();
+    rc |= test_lrrp_extra_port_rejects_invalid_values();
+    rc |= test_lrrp_extra_port_rejects_ninth_port();
+    rc |= test_lrrp_extra_port_missing_value_returns_error();
+    rc |= test_lrrp_extra_port_cli_replaces_config_list();
     rc |= test_dmr_baofeng_pc5_long_option_parse();
     rc |= test_dmr_baofeng_pc5_256_long_option_uses_ascii_hex_key();
     rc |= test_dmr_csi_ee72_long_option_parse();

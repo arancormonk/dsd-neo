@@ -14,6 +14,7 @@
 #include <cmath>
 #include <ctype.h>
 #include <dsd-neo/core/frontend_types.h>
+#include <dsd-neo/core/lrrp_ports.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
@@ -981,6 +982,9 @@ render_mode_section(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->has_dmr_mono) {
         DSD_FPRINTF(out, "dmr_mono = %s\n", ini_bool(cfg->dmr_mono));
     }
+    if (cfg->dmr_lrrp_ports[0]) {
+        DSD_FPRINTF(out, "dmr_lrrp_ports = \"%s\"\n", cfg->dmr_lrrp_ports);
+    }
     if (cfg->has_edacs_variant) {
         DSD_FPRINTF(out, "edacs_ea = %s\n", ini_bool(cfg->edacs_ea));
         DSD_FPRINTF(out, "edacs_esk = %s\n", ini_bool(cfg->edacs_esk));
@@ -1323,6 +1327,12 @@ apply_mode_config(const dsdneoUserConfig* cfg, dsd_opts* opts, dsd_state* state)
     }
     if (cfg->has_dmr_mono && !(cfg->has_mode && cfg->decode_mode == DSDCFG_MODE_DMR_MONO)) {
         opts->dmr_mono = cfg->dmr_mono ? 1 : 0;
+    }
+    /* The parse rebuilds the table, so a runtime reload replaces the list instead of
+       accumulating; entries the validator already warned about are simply left out. */
+    if (cfg->dmr_lrrp_ports[0]) {
+        (void)dsd_lrrp_port_list_parse(cfg->dmr_lrrp_ports, opts->lrrp_extra_ports, DSD_LRRP_EXTRA_PORT_MAX,
+                                       &opts->lrrp_extra_port_count);
     }
     /* Must follow dsd_apply_decode_mode_preset() above: decode_mode_apply_edacs_pv()
        zeroes both fields unconditionally, so applying these first would silently
@@ -1688,6 +1698,12 @@ snapshot_mode_config(const dsd_opts* opts, const dsd_state* state, dsdneoUserCon
     cfg->decode_mode = dsd_infer_decode_mode_preset_exact(opts);
     cfg->has_dmr_mono = 1;
     cfg->dmr_mono = opts->dmr_mono ? 1 : 0;
+    cfg->dmr_lrrp_ports[0] = '\0';
+    for (int i = 0; i < opts->lrrp_extra_port_count && i < DSD_LRRP_EXTRA_PORT_MAX; i++) {
+        size_t used = strlen(cfg->dmr_lrrp_ports);
+        DSD_SNPRINTF(cfg->dmr_lrrp_ports + used, sizeof cfg->dmr_lrrp_ports - used, "%s%u", used ? "," : "",
+                     (unsigned)opts->lrrp_extra_ports[i]);
+    }
     /* The only snapshotter that reads dsd_state. NOT unconditional, unlike
        dmr_mono: ea_mode is TRI-state - dsd_init.c seeds it at -1 ("no EDACS
        addressing mode chosen yet"), which edacs-fme.c, provoice.c, dsd_events.c

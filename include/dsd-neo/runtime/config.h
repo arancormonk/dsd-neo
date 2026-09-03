@@ -590,6 +590,9 @@ typedef struct dsdneoUserConfig {
     dsdneoUserDecodeMode decode_mode;
     int has_dmr_mono;
     int dmr_mono;
+    /* Comma-separated extra UDP ports decoded as DMR LRRP; empty means not set, so a
+       reload leaves a CLI-supplied list alone. Split by core/lrrp_ports.h at apply time. */
+    char dmr_lrrp_ports[64];
     /* The EDACS EA/ESK variant. Applied AFTER the decode preset, which resets
        both: see apply_mode_config(). esk is a boolean over the single 0xA0 mask
        the four CLI variants and the RadioReference apply handler all use. */

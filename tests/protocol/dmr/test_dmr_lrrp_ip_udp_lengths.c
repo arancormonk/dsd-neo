@@ -145,6 +145,15 @@ expect_has_substr(const char* buf, const char* needle, const char* tag) {
 }
 
 static int
+expect_lacks_substr(const char* buf, const char* needle, const char* tag) {
+    if (buf && strstr(buf, needle)) {
+        DSD_FPRINTF(stderr, "%s: unexpected '%s' in '%s'\n", tag, needle, buf);
+        return 1;
+    }
+    return 0;
+}
+
+static int
 expect_nonempty(const char* buf, const char* tag) {
     if (!buf || buf[0] == '\0') {
         DSD_FPRINTF(stderr, "%s: empty output\n", tag);
@@ -794,6 +803,63 @@ main(void) {
         decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Truncated;", "tms malformed address truncation");
         rc |= expect_has_substr(g_datacall_text, "Truncated;", "tms malformed address datacall");
+    }
+
+    // Case 16: a site-mapped UDP port reaches the LRRP decoder, and only that port does (#453).
+    // Some systems carry LRRP on a port outside the registered set; without the mapping the
+    // datagram is dropped as an unknown port before dmr_lrrp() ever sees it.
+    {
+        // A conformant document: type 0D, 12 bytes, timestamp plus a 3D position.
+        static const uint8_t lrrp_doc[] = {0x0D, 0x0C, 0x34, 0x00, 0x00, 0x00, 0x00,
+                                           0x00, 0x51, 0x11, 0x11, 0x11, 0x18, 0x2D};
+        const uint16_t mapped_port = 5000U;
+        const uint16_t other_port = 5001U;
+
+        // Unmapped, it is an unknown port.
+        reset_spies();
+        opts.lrrp_extra_port_count = 0;
+        size_t plen = build_ipv4_udp_payload(pkt, sizeof pkt, mapped_port, lrrp_doc, sizeof lrrp_doc);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Unknown UDP Port;", "extra port unmapped stays unknown");
+
+        // Mapped, the same datagram is decoded as LRRP.
+        reset_spies();
+        opts.lrrp_extra_ports[0] = mapped_port;
+        opts.lrrp_extra_port_count = 1;
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, mapped_port, lrrp_doc, sizeof lrrp_doc);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_lacks_substr(st.dmr_lrrp_gps[0], "Unknown UDP Port;", "extra port mapped is not unknown");
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "LRRP SRC:", "extra port mapped reaches dmr_lrrp");
+        rc |= expect_category(g_datacall_category, DSD_EVENT_CATEGORY_DATA, "extra port mapped category");
+
+        // The mapping does not leak to a neighbouring port.
+        reset_spies();
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, other_port, lrrp_doc, sizeof lrrp_doc);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Unknown UDP Port;", "extra port does not leak");
+
+        // The registered port keeps working while a mapping is in place.
+        reset_spies();
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4001U, lrrp_doc, sizeof lrrp_doc);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "LRRP SRC:", "registered port unaffected");
+
+        // A mapping on a port the dispatch already owns leaves that service in charge.
+        reset_spies();
+        opts.lrrp_extra_ports[0] = 4007U;
+        opts.lrrp_extra_port_count = 1;
+        const uint8_t tms_ack[] = {0x00, 0x05, 0x01, 0x00, 0x00};
+        plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4007U, tms_ack, sizeof tms_ack);
+        st.dmr_lrrp_gps[0][0] = '\0';
+        decode_ip_pdu(&opts, &st, (uint16_t)plen, pkt);
+        rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Acknowledgment;", "registered service keeps its dispatch");
+        rc |= expect_lacks_substr(st.dmr_lrrp_gps[0], "LRRP SRC:", "registered service is not remapped");
+
+        opts.lrrp_extra_port_count = 0;
     }
 
     free(st.event_history_s);

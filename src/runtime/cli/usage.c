@@ -8,6 +8,7 @@
  * @brief CLI usage/help text implementation.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/cli.h>
 
 #include <stdio.h>
@@ -123,6 +124,8 @@ dsd_cli_usage_section_io(void) {
     printf("                 (Warning! Might be annoying.)\n");
     printf("  -J <file>     Specify Filename for Event Log Output.\n");
     printf("  -L <file>     Specify Filename for LRRP Data Output.\n");
+    printf("      --lrrp-extra-port <n>  Also decode UDP port <n> as LRRP (repeatable, max %d).\n",
+           DSD_LRRP_EXTRA_PORT_MAX);
     printf("  -Q <file>     Specify Filename for OK-DMRlib Structured File Output. (placed in DSP folder)\n");
     printf("  -Q <file>     Specify Filename for M17 Float Stream Output. (placed in DSP folder)\n");
     printf("  -c <file>     Output symbol capture to .bin file\n");

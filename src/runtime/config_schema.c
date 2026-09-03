@@ -63,6 +63,8 @@ static const dsdcfg_schema_entry_t s_schema[] = {
      0},
     {"mode", "dmr_mono", "Enable the DMR single-slot mono decoder without changing the decode preset", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
+    {"mode", "dmr_lrrp_ports", "Extra UDP ports decoded as DMR LRRP, comma-separated (at most 8)", "", NULL,
+     DSDCFG_TYPE_STRING, 0, 0},
     {"mode", "edacs_ea", "Decode EDACS with extended addressing, without changing the decode preset", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
     {"mode", "edacs_esk", "Apply the EDACS ESK 0xA0 scrambling mask, without changing the decode preset", "false", NULL,
