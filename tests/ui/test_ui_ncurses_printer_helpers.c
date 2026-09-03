@@ -895,8 +895,10 @@ test_scanner_status_row_rendering(void) {
     ui_render_scanner_and_reverse_status(&opts, &state);
     assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion \n");
 
-    /* Hold and the avoided count explain why the scan stopped moving. They sit between the
-       fixed fields and the name, so the name stays the one field that runs off the edge. */
+    /* HOLD is a state of the channel on air, so it sits with the channel's fixed fields. The
+       avoid count is a property of the list, not of this channel, so it trails the name: a
+       reader must not take "Avoided" beside HOLD as a verdict on the channel they are hearing
+       (PR #463 feedback). */
     state.lcn_scan_hold = 1;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
@@ -904,11 +906,18 @@ test_scanner_status_row_rendering(void) {
     state.lcn_avoid_count = 2;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Avoided: 2 Channel: Marion \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2 \n");
     state.lcn_scan_hold = 0;
     reset_printw_capture();
     ui_render_scanner_and_reverse_status(&opts, &state);
-    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Avoided: 2 Channel: Marion \n");
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Channel: Marion Avoids: 2 \n");
+
+    /* An unnamed row on air: the count still closes the row, after the fixed fields. */
+    reset_lcn_name_stub();
+    reset_printw_capture();
+    ui_render_scanner_and_reverse_status(&opts, &state);
+    assert_capture_equals("| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec Avoids: 2 \n");
+    DSD_SNPRINTF(g_lcn_name_stub[0], sizeof(g_lcn_name_stub[0]), "Marion");
     state.lcn_avoid_count = 0;
 
     /* The last row of the list is on air once roll has caught up with the count: the bound is
@@ -968,7 +977,9 @@ test_trunk_scan_status_row_rendering(void) {
     ui_render_trunk_scan_status(&opts, &state);
     assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6)\n");
 
-    /* Hold, a parked-on-avoided fallback, and the avoided count follow the position. */
+    /* HOLD and the parked-on-avoided fallback describe the target on air and follow its
+       position; the list-wide avoid count comes last and under a different word, so the two
+       meanings of "avoided" never sit side by side. */
     state.trunk_scan_hold = 1;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
@@ -977,15 +988,15 @@ test_trunk_scan_status_row_rendering(void) {
     state.trunk_scan_avoided_count = 2;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) HOLD [avoided] Avoided: 2\n");
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) HOLD [avoided] Avoids: 2\n");
     state.trunk_scan_hold = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) [avoided] Avoided: 2\n");
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) [avoided] Avoids: 2\n");
     state.trunk_scan_active_avoided = 0;
     reset_printw_capture();
     ui_render_trunk_scan_status(&opts, &state);
-    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Avoided: 2\n");
+    assert_capture_equals("| Trunk Scan:  Target: county-p25 (3/6) Avoids: 2\n");
     state.trunk_scan_avoided_count = 0;
 
     /* No position published yet: name the target without inventing an "n of m". */
