@@ -137,6 +137,9 @@ Main Menu
 │   ├── Conventional scanning [Off]              y
 │   ├── Return to control channel                C   (while trunking or scanning)
 │   ├── Next channel                             L   (while trunking or scanning)
+│   ├── Scan hold [Off]                          Y   (while scanning with -Y or --trunk-scan)
+│   ├── Avoid current channel                    b   (while scanning with -Y or --trunk-scan)
+│   ├── Clear avoids [0]                             (while scanning with -Y or --trunk-scan)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -326,6 +329,14 @@ RadioReference import:
   systems row is hidden until the imports directory resolves, and the application-key row is hidden in a
   build with a baked-in key. See `docs/radioreference-import.md`.
 
+### Keys
+
+A `-Y` channel-map row or a `--trunk-scan` target can carry its own key files (`keys_hex_csv`/`keys_dec_csv`
+columns; see `docs/csv-formats.md`). While the row or target is parked its keys replace the global keyring;
+leaving it restores the globals. The Import keys CSV rows edit the globals underneath a parked row, so a
+runtime import survives the next hop. The single-key rows (Basic privacy, Hytera, scrambler, RC4/DES, AES)
+disarm the keyring, so a parked keyed row overrides them again on its next hop.
+
 ## DSP Status
 
 The DSP status panel shows RTL DSP loop state when RTL input support is available. CQPSK mode reports FLL band-edge,
@@ -388,7 +399,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `t` | Toggle trunking |
 | `y` | Toggle conventional scanning |
 | `C` | Return to control channel (when following a voice channel) |
-| `L` | Cycle active trunking channels |
+| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
+| `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
+| `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
 | `u` | Toggle follow private calls |
@@ -474,6 +487,14 @@ The Input Output section names the `-Y` scan list row the receiver is parked on,
 The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
 renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
 frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
+
+While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
+`b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
+out of the list, and says nothing about the channel you are hearing, which under `-Y` is never an avoided one.
+
+```
+| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2
+```
 
 With `--trunk-scan` the same section names the target on air and its place in the rotation:
 

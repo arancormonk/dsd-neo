@@ -1622,6 +1622,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_logging.c
     ${PROJECT_SOURCE_DIR}/src/app_control/symbol_profile.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/runtime/decode_mode.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_scan_hooks.c
 )
@@ -1665,6 +1667,9 @@ add_executable(
     # chan_map_adopt()/svc_clear_channel_map() own the scan-list heap tail and the
     # per-row name store beside it.
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    # Adopt/clear move and release the per-row key store; the swap consults the lockout epoch.
+    ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
 )
 target_include_directories(
     dsd-neo_test_ui_menu_services
@@ -3297,6 +3302,23 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    runtime/test_runtime_trunk_scan_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_TRUNK_SCAN_HOOKS
+    COMMAND dsd-neo_test_runtime_trunk_scan_hooks
+)
+
+add_executable(
     dsd-neo_test_runtime_trunk_cc_candidates
     runtime/test_runtime_trunk_cc_candidates.c
 )
@@ -3672,6 +3694,17 @@ target_link_libraries(
 )
 add_test(NAME CORE_CSV_IMPORT COMMAND dsd-neo_test_core_csv_import)
 
+add_executable(dsd-neo_test_core_key_set core/test_core_key_set.c)
+target_include_directories(
+    dsd-neo_test_core_key_set
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_key_set
+    PRIVATE dsd-neo_core dsd-neo_proto_dmr
+)
+add_test(NAME CORE_KEY_SET COMMAND dsd-neo_test_core_key_set)
+
 add_executable(dsd-neo_test_core_csv_validate core/test_core_csv_validate.c)
 target_include_directories(
     dsd-neo_test_core_csv_validate
@@ -3690,6 +3723,20 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_channel_label PRIVATE dsd-neo_core)
 add_test(NAME CORE_CHANNEL_LABEL COMMAND dsd-neo_test_core_channel_label)
+
+add_executable(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    core/test_core_state_trunk_lcn_avoid.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_include_directories(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_STATE_TRUNK_LCN_AVOID
+    COMMAND dsd-neo_test_core_state_trunk_lcn_avoid
+)
 
 add_executable(
     dsd-neo_test_core_talkgroup_policy
@@ -4376,6 +4423,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
 )
 target_include_directories(

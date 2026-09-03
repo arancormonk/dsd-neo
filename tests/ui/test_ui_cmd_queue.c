@@ -12,6 +12,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -19,9 +20,11 @@
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../src/app_control/commands_internal.h"
@@ -1651,6 +1654,299 @@ test_trunk_set(void) {
     return rc;
 }
 
+static int g_scan_control_calls = 0;
+static int g_scan_control_last_op = -1;
+static int g_scan_control_result = 0;
+
+static int
+fake_scan_control(dsd_opts* opts, dsd_state* state, int op) {
+    (void)opts;
+    (void)state;
+    g_scan_control_calls++;
+    g_scan_control_last_op = op;
+    return g_scan_control_result;
+}
+
+/*
+ * On-the-fly scan controls (#380). Under -Y they act on the scan list in dsd_state; under
+ * --trunk-scan they are handed to the coordinator through the control hook; with neither
+ * scanner running they are accepted and declined with a status message.
+ */
+static int
+test_scan_hold_avoid_commands(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+
+    init_test_context(&opts, &state);
+    opts.scanner_mode = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.lcn_freq_count = 4;
+    state.trunk_lcn_freq[0] = 0L;
+    state.trunk_lcn_freq[1] = 857000000L;
+    state.trunk_lcn_freq[2] = 0L;
+    state.trunk_lcn_freq[3] = 858000000L;
+    state.lcn_freq_roll = 2; /* row 1 (857 MHz) is on air */
+    state.last_cc_sync_time_m = 42.0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+
+    /* Hold: flips the flag, leaves the dwell alone; release restarts the dwell. */
+    rc |= expect_int("scan hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scan hold drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scan hold sets flag", state.lcn_scan_hold, 1);
+    rc |= expect_true("scan hold keeps dwell", state.last_cc_sync_time_m == 42.0);
+    rc |= expect_contains("scan hold toast", state.ui_msg, "hold on");
+    rc |= expect_int("scan hold release queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scan hold release drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scan hold release clears flag", state.lcn_scan_hold, 0);
+    rc |= expect_true("scan hold release restarts dwell", state.last_cc_sync_time_m > 42.0);
+    rc |= expect_contains("scan hold release toast", state.ui_msg, "hold off");
+
+    /* Manual next while held still moves, and the hold stays on. */
+    state.lcn_scan_hold = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("held cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("held cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("held cycle tunes next row", g_io_control_tune_freq == 858000000L);
+    rc |= expect_int("held cycle advances roll", state.lcn_freq_roll, 4);
+    rc |= expect_int("held cycle keeps hold", state.lcn_scan_hold, 1);
+    state.lcn_scan_hold = 0;
+
+    /* Avoid: flags the row on air and steps to the next usable one in the same command. */
+    state.lcn_freq_roll = 2;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |=
+        expect_int("scan avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scan avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scan avoid flags the row on air", dsd_state_trunk_lcn_avoid_get(&state, 1U), 1);
+    rc |= expect_int("scan avoid counts", (int)state.lcn_avoid_count, 1);
+    rc |= expect_int("scan avoid tunes", g_io_control_tune_calls, 1);
+    rc |= expect_true("scan avoid tunes next usable row", g_io_control_tune_freq == 858000000L);
+    rc |= expect_int("scan avoid advances roll", state.lcn_freq_roll, 4);
+    rc |= expect_contains("scan avoid toast", state.ui_msg, "857.0000");
+
+    /* Refused when it would leave no usable row: nothing flagged, nothing tuned. */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("last-row avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("last-row avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("last-row avoid leaves the row", dsd_state_trunk_lcn_avoid_get(&state, 3U), 0);
+    rc |= expect_int("last-row avoid keeps count", (int)state.lcn_avoid_count, 1);
+    rc |= expect_int("last-row avoid does not tune", g_io_control_tune_calls, 0);
+    rc |= expect_int("last-row avoid keeps roll", state.lcn_freq_roll, 4);
+    rc |= expect_contains("last-row avoid toast", state.ui_msg, "last usable");
+
+    /* Manual next skips the avoided row: from the end of the list it wraps past rows 0-2. */
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("cycle past avoided queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("cycle past avoided drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("cycle past avoided lands on the usable row", g_io_control_tune_freq == 858000000L);
+    rc |= expect_int("cycle past avoided roll", state.lcn_freq_roll, 4);
+
+    /* Clear: every flag goes, the count follows, the toast says how many. */
+    rc |= expect_int("scan avoid clear queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scan avoid clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scan avoid clear unflags", dsd_state_trunk_lcn_avoid_get(&state, 1U), 0);
+    rc |= expect_int("scan avoid clear zeroes count", (int)state.lcn_avoid_count, 0);
+    rc |= expect_contains("scan avoid clear toast", state.ui_msg, "1 scan avoid");
+
+    /* Nothing on air yet (roll 0): refused. */
+    state.lcn_freq_roll = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("no-row avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("no-row avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("no-row avoid flags nothing", (int)state.lcn_avoid_count, 0);
+    rc |= expect_int("no-row avoid does not tune", g_io_control_tune_calls, 0);
+    rc |= expect_contains("no-row avoid toast", state.ui_msg, "on air");
+    freeState(&state);
+
+    /* --trunk-scan: every control goes to the coordinator hook and touches no -Y state. */
+    init_test_context(&opts, &state);
+    opts.trunk_scan_enabled = 1;
+    opts.audio_in_type = AUDIO_IN_RTL;
+    dsd_trunk_scan_hooks hooks = {0};
+    hooks.control = fake_scan_control;
+    dsd_trunk_scan_hooks_set(hooks);
+    g_scan_control_calls = 0;
+    g_scan_control_result = 1;
+    rc |= expect_int("trunk-scan hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan hold drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk-scan hold reaches hook", g_scan_control_calls, 1);
+    rc |= expect_int("trunk-scan hold op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE);
+    rc |= expect_int("trunk-scan hold leaves -Y flag", state.lcn_scan_hold, 0);
+    rc |= expect_contains("trunk-scan hold toast", state.ui_msg, "hold on");
+    g_scan_control_result = 0;
+    rc |= expect_int("trunk-scan avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk-scan avoid op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE);
+    rc |= expect_int("trunk-scan avoid leaves -Y count", (int)state.lcn_avoid_count, 0);
+    g_scan_control_result = 2;
+    rc |= expect_int("trunk-scan clear queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk-scan clear op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR);
+    rc |= expect_contains("trunk-scan clear toast", state.ui_msg, "2");
+    g_scan_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    rc |= expect_int("trunk-scan refused avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan refused avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("trunk-scan refused avoid toast", state.ui_msg, "last usable");
+    g_scan_control_result = DSD_TRUNK_SCAN_CONTROL_BUSY;
+    rc |= expect_int("trunk-scan busy hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan busy hold drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("trunk-scan busy toast", state.ui_msg, "busy");
+    rc |= expect_int("trunk-scan controls all reached hook", g_scan_control_calls, 5);
+    /* Next channel means next target here, not a walk of the parked target's LCN list. */
+    state.lcn_freq_count = 2;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    state.lcn_freq_roll = 1;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    g_scan_control_result = 0;
+    rc |= expect_int("trunk-scan cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("trunk-scan cycle op", g_scan_control_last_op, DSD_TRUNK_SCAN_CONTROL_ADVANCE);
+    rc |= expect_int("trunk-scan cycle reached hook", g_scan_control_calls, 6);
+    rc |= expect_int("trunk-scan cycle leaves the LCN roll", state.lcn_freq_roll, 1);
+    rc |= expect_int("trunk-scan cycle does not raw tune", g_io_control_tune_calls, 0);
+    g_scan_control_result = DSD_TRUNK_SCAN_CONTROL_REFUSED;
+    rc |= expect_int("trunk-scan refused cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("trunk-scan refused cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("trunk-scan refused cycle toast", state.ui_msg, "only one target");
+    dsd_trunk_scan_hooks none = {0};
+    dsd_trunk_scan_hooks_set(none);
+    freeState(&state);
+
+    /* Neither scanner running: accepted, declined, nothing changes. */
+    init_test_context(&opts, &state);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    state.lcn_freq_count = 2;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    state.lcn_freq_roll = 1;
+    g_scan_control_calls = 0;
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("idle hold queued", dsd_app_command_action(DSD_APP_CMD_SCAN_HOLD_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("idle hold drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("idle hold leaves flag", state.lcn_scan_hold, 0);
+    rc |= expect_contains("idle hold toast", state.ui_msg, "Not scanning");
+    state.ui_msg[0] = '\0';
+    rc |=
+        expect_int("idle avoid queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("idle avoid drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("idle avoid flags nothing", (int)state.lcn_avoid_count, 0);
+    rc |= expect_int("idle avoid does not tune", g_io_control_tune_calls, 0);
+    rc |= expect_contains("idle avoid toast", state.ui_msg, "Not scanning");
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("idle clear queued", dsd_app_command_action(DSD_APP_CMD_SCAN_AVOID_CLEAR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("idle clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_contains("idle clear toast", state.ui_msg, "Not scanning");
+    rc |= expect_int("idle controls never reach hook", g_scan_control_calls, 0);
+    freeState(&state);
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    return rc;
+}
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Per-row keys through the command queue: a channel cycle onto a keyed row
+ * installs its set, a runtime key import while parked lands in the globals
+ * and survives the next leave, and scanner toggle off restores the baseline.
+ */
+static int
+test_scan_row_keys_commands(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* hex_csv = "ui_cmd_queue_rowkey_hex.csv";
+    static const unsigned char hex_data[] = "key id(hex),key value (hex)\n0007,0000000000001234\n";
+
+    init_test_context(&opts, &state);
+    remove(hex_csv);
+    rc |= expect_int("rowkey hex file written", write_file_bytes(hex_csv, hex_data, sizeof(hex_data) - 1U), 0);
+
+    state.lcn_freq_count = 2;
+    state.lcn_freq_roll = 1;
+    state.trunk_lcn_freq[0] = 857000000L;
+    state.trunk_lcn_freq[1] = 858000000L;
+    state.keyloader = 0;
+    state.K = 0xBEEFULL;
+    {
+        dsd_key_set ks;
+        DSD_MEMSET(&ks, 0, sizeof(ks));
+        ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+        if (ks.entries == NULL) {
+            remove(hex_csv);
+            freeState(&state);
+            return 1;
+        }
+        ks.count = 1U;
+        ks.present = 1;
+        ks.keyloader = 1;
+        ks.entries[0].index = 9U;
+        ks.entries[0].value = 999ULL;
+        ks.entries[0].loaded = 1U;
+        if (dsd_state_trunk_lcn_keys_set(&state, 1U, &ks) != 0) {
+            remove(hex_csv);
+            freeState(&state);
+            return 1;
+        }
+    }
+
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    rc |= expect_int("keyed cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("keyed cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("keyed cycle tunes the keyed row", g_io_control_tune_freq == 858000000L);
+    rc |= expect_u64("keyed cycle installs the row set", state.rkey_array[9], 999ULL);
+    rc |= expect_int("keyed cycle arms keyloader", state.keyloader, 1);
+
+    // A runtime import while parked edits the globals underneath the row set.
+    post_string(DSD_APP_CMD_IMPORT_KEYS_HEX, hex_csv);
+    rc |= expect_int("parked key import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_u64("parked import keeps the row set live", state.rkey_array[9], 999ULL);
+    dsd_scan_keys_leave(&state);
+    rc |= expect_u64("parked import survives the leave", state.rkey_array[7], 0x1234ULL);
+    rc |= expect_int("parked import arms the baseline", state.keyloader, 1);
+    rc |= expect_u64("leave drops the row slot", state.rkey_array[9], 0ULL);
+
+    // Scanner toggle off hands the foreground keyring back to the globals.
+    rc |= expect_int("repark installs again", dsd_scan_keys_enter(&state, dsd_state_trunk_lcn_keys_get(&state, 1U)), 1);
+    opts.scanner_mode = 1;
+    rc |= expect_int("scanner toggle queued", dsd_app_command_action(DSD_APP_CMD_SCANNER_TOGGLE),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("scanner toggle drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("scanner toggle leaves scanner mode", opts.scanner_mode, 0);
+    rc |= expect_int("scanner toggle leaves the swap", (int)state.scan_keys_active_set, 0);
+    rc |= expect_u64("scanner toggle restores the imported slot", state.rkey_array[7], 0x1234ULL);
+    rc |= expect_u64("scanner toggle drops the row slot", state.rkey_array[9], 0ULL);
+
+    remove(hex_csv);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
+    freeState(&state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -1670,6 +1966,8 @@ main(void) {
     rc |= test_manual_tune_trunking_gate_and_reacquisition();
 #endif
     rc |= test_tuner_release();
+    rc |= test_scan_hold_avoid_commands();
+    rc |= test_scan_row_keys_commands();
 #endif
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");

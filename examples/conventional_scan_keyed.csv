@@ -1,0 +1,4 @@
+channel,frequency_hz,name,keys_hex_csv,keys_dec_csv
+1,462562500,System A,multi_key_hex.csv,
+2,462587500,System B,,multi_key.csv
+3,462612500,Shared,,

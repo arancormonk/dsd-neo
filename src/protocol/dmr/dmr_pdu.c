@@ -468,9 +468,12 @@ dmr_udp_comp_pdu(dsd_opts* opts, dsd_state* state, uint16_t len, const uint8_t* 
     if (opcode != 0) {
         // ETSI TS 102 361-3 V1.3.1 table 7.19 defines only 00 (UDP/IPv4 Header Compression). The other
         // three values have no published layout, so nothing after the IP ID is read; the IP ID is kept
-        // so retransmissions of the same datagram can still be correlated. Live Motorola systems do
-        // send these (9 of 573 compressed PDUs in issue #450), and reading them as the 00 layout
-        // produced index labels and a payload offset that meant nothing.
+        // so retransmissions of the same datagram can still be correlated. In practice a reserved
+        // opcode marks a damaged frame rather than vendor traffic: on a live Motorola system every
+        // CRC32-clean compressed PDU carried 00, and the reserved values came from frames that failed
+        // CRC32 and were admitted by the relaxed-CRC options, one of them a healthy ARS registration
+        // with a single bit flipped in the SPID octet (#450). Reading such a frame as the 00 layout
+        // invented index labels and a payload offset from bytes that were not a header.
         DSD_FPRINTF(stderr, "\n IP ID: %04X; Opcode: %d; Reserved Header Compression Opcode; header not decoded; ",
                     ipid, opcode);
         char reserved_string[128];

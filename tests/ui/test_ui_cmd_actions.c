@@ -20,9 +20,39 @@
 #include "command_dispatch.h"
 #include "services.h"
 
+#include "dsd-neo/core/csv_validate.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+
+#include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/runtime/log.h>
+
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    (void)level;
+    (void)format;
+}
+
+/* The scan key swap links here through actions_trunk.c; this suite never loads
+ * per-row key files, so the path wrappers stay refused. */
+int
+csvKeyImportHexPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats) {
+    (void)path;
+    (void)show_keys;
+    (void)state;
+    (void)stats;
+    return -1;
+}
+
+int
+csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats) {
+    (void)path;
+    (void)show_keys;
+    (void)state;
+    (void)stats;
+    return -1;
+}
 
 static int g_open_audio_calls;
 static int g_close_audio_calls;

@@ -70,6 +70,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool tunerControlled READ tunerControlled NOTIFY controlChanged)
     Q_PROPERTY(bool trunkingEnabled READ trunkingEnabled NOTIFY controlChanged)
     Q_PROPERTY(bool scannerMode READ scannerMode NOTIFY controlChanged)
+    Q_PROPERTY(bool scanRotationActive READ scanRotationActive NOTIFY controlChanged)
+    Q_PROPERTY(bool scanHold READ scanHold NOTIFY controlChanged)
+    Q_PROPERTY(int scanAvoidCount READ scanAvoidCount NOTIFY controlChanged)
+    Q_PROPERTY(bool scanTargetAvoided READ scanTargetAvoided NOTIFY controlChanged)
     Q_PROPERTY(bool syncedHere READ syncedHere NOTIFY tunerChanged)
     Q_PROPERTY(QString syncLabel READ syncLabel NOTIFY tunerChanged)
     Q_PROPERTY(bool trunkableSync READ trunkableSync NOTIFY tunerChanged)
@@ -451,6 +455,39 @@ class MetricsModel : public QObject {
     }
 
     /**
+     * @brief Whether a scan rotation is running that hold and avoid can act on.
+     *
+     * The -Y scan list or the --trunk-scan target list. Plain trunking follows one
+     * system and is not a rotation, and tunerControlled() is true for it too, so the
+     * scan controls gate on this rather than on the tuner gate.
+     */
+    bool
+    scanRotationActive() const {
+        return m_view.scan_rotation_active;
+    }
+
+    /** @brief The operator hold on the channel or target on air, read from the engine. */
+    bool
+    scanHold() const {
+        return m_view.scan_hold;
+    }
+
+    /** @brief Channels or targets avoided for the session, whichever rotation is running. */
+    int
+    scanAvoidCount() const {
+        return m_view.scan_avoid_count;
+    }
+
+    /**
+     * @brief The receiver is parked on a --trunk-scan target the operator avoided,
+     * because every alternate failed to retune. Never true under -Y.
+     */
+    bool
+    scanTargetAvoided() const {
+        return m_view.scan_target_avoided;
+    }
+
+    /**
      * @brief The engine's transient command acknowledgement, empty when none.
      *
      * Commands only enqueue a request; this is the engine saying what actually
@@ -552,6 +589,10 @@ class MetricsModel : public QObject {
         bool tuner_controlled = false;
         bool trunking_enabled = false;
         bool scanner_mode = false;
+        bool scan_rotation_active = false;
+        bool scan_hold = false;
+        int scan_avoid_count = 0;
+        bool scan_target_avoided = false;
         QString ui_message;
         /* Sized from the canonical constant rather than a literal 2: leadSlot() ranks the
          * whole array through dsd_app_lead_slot(), so the two must agree or the ranking
@@ -572,12 +613,20 @@ class MetricsModel : public QObject {
                    && trunkable_sync == other.trunkable_sync;
         }
 
+        /* The scan controls (#380) ride controlChanged with the rest; split out only so
+           neither comparison outgrows the complexity ceiling as readings are added. */
+        bool
+        scanControlEquals(const View& other) const {
+            return scan_rotation_active == other.scan_rotation_active && scan_hold == other.scan_hold
+                   && scan_avoid_count == other.scan_avoid_count && scan_target_avoided == other.scan_target_avoided;
+        }
+
         bool
         controlEquals(const View& other) const {
             return audio_muted == other.audio_muted && held_tg == other.held_tg
                    && enc_lockout_count == other.enc_lockout_count && tuner_controlled == other.tuner_controlled
                    && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && decode_mode == other.decode_mode && modulation == other.modulation
+                   && scanControlEquals(other) && decode_mode == other.decode_mode && modulation == other.modulation
                    && tuner_gain_db == other.tuner_gain_db && squelch_db == other.squelch_db
                    && squelch_off == other.squelch_off && ppm == other.ppm;
         }
@@ -591,6 +640,8 @@ class MetricsModel : public QObject {
 
     /** @brief Fill in sync state and the live decoder/front-end settings. */
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
+    /** @brief Scan hold and avoids (#380), read from whichever rotation is running. */
+    static void fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
 
   public:
 #ifdef DSD_NEO_TEST_HOOKS

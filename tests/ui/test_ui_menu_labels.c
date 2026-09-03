@@ -174,6 +174,25 @@ test_predicates(void) {
     opts.trunk_enable = 0;
     opts.scanner_mode = 1;
     rc |= expect_int("trunk predicate scanner", trunk_enabled(&ctx), 1);
+    /* A conventional trunk-scan target parks with trunk_enable off, yet Next channel still
+       has somewhere to go: the next target. */
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_int("trunk predicate trunk scan", trunk_enabled(&ctx), 1);
+    opts.trunk_scan_enabled = 0;
+
+    /* Hold and avoid rows need a rotation to act on: -Y or --trunk-scan, not plain -T. */
+    rc |= expect_int("scan rotation null ctx", scan_rotation_active(NULL), 0);
+    rc |= expect_int("scan rotation off", scan_rotation_active(&ctx), 0);
+    opts.trunk_enable = 1;
+    rc |= expect_int("scan rotation plain trunking", scan_rotation_active(&ctx), 0);
+    opts.trunk_enable = 0;
+    opts.scanner_mode = 1;
+    rc |= expect_int("scan rotation scanner", scan_rotation_active(&ctx), 1);
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_int("scan rotation trunk scan", scan_rotation_active(&ctx), 1);
+    opts.trunk_scan_enabled = 0;
 
     rc |= expect_int("provoice predicate null ctx", provoice_active(NULL), 0);
     rc |= expect_int("provoice predicate off", provoice_active(&ctx), 0);
@@ -285,6 +304,29 @@ test_trunking_labels(void) {
     rc |= expect_str("trunk on", lbl_trunk(&ctx, b, sizeof(b)), "Trunking [On]");
     opts.scanner_mode = 0;
     rc |= expect_str("scanner off", lbl_scan(&ctx, b, sizeof(b)), "Conventional scanning [Off]");
+
+    /* The hold and avoid labels read whichever scanner is running. */
+    rc |= expect_str("scan hold null ctx", lbl_scan_hold(NULL, b, sizeof(b)), "Scan hold [Off]");
+    rc |= expect_str("scan hold off", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [Off]");
+    rc |= expect_str("avoid clear none", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [0]");
+    opts.scanner_mode = 1;
+    state.lcn_scan_hold = 1;
+    state.lcn_avoid_count = 3;
+    state.trunk_scan_hold = 0;
+    state.trunk_scan_avoided_count = 7;
+    rc |= expect_str("scan hold -Y", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [On]");
+    rc |= expect_str("avoid clear -Y", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [3]");
+    opts.scanner_mode = 0;
+    opts.trunk_scan_enabled = 1;
+    rc |= expect_str("scan hold trunk scan", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [Off]");
+    rc |= expect_str("avoid clear trunk scan", lbl_scan_avoid_clear(&ctx, b, sizeof(b)), "Clear avoids [7]");
+    state.trunk_scan_hold = 1;
+    rc |= expect_str("scan hold trunk scan on", lbl_scan_hold(&ctx, b, sizeof(b)), "Scan hold [On]");
+    opts.trunk_scan_enabled = 0;
+    state.lcn_scan_hold = 0;
+    state.lcn_avoid_count = 0;
+    state.trunk_scan_hold = 0;
+    state.trunk_scan_avoided_count = 0;
     opts.p25_lcw_retune = 1;
     rc |= expect_str("lcw on", lbl_lcw(&ctx, b, sizeof(b)), "LCW explicit retune [On]");
     opts.trunk_use_allow_list = 1;

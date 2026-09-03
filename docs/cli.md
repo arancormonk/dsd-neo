@@ -433,14 +433,20 @@ Notes
 - Conventional scan mode: `-Y` (not trunking; scans for sync on enabled decoders). For NXDN the hold is refreshed
   only by frames whose content passed a CRC, so an open squelch on an empty channel no longer parks the scan.
   A channel map with a `name` column (see `docs/csv-formats.md`) names the row being listened to in the Scan Mode
-  row, in Call Info, and on the event history rows recorded while it is tuned.
+  row, in Call Info, and on the event history rows recorded while it is tuned. A map with `keys_hex_csv`/`keys_dec_csv`
+  columns loads a per-row key set instead of the global keyring while that row is tuned; leaving `-Y` (scanner
+  toggle, trunk set, tuner release) hands the foreground keyring back to the global keys.
+  While scanning, the terminal's Trunking menu and hotkeys hold the scan on the channel on air (`Y`), avoid it for the
+  rest of the session (`b`), step to the next channel (`L`, skipping avoided rows) and clear all avoids; see
+  `docs/ui-terminal.md`.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, DMR trunk, DMR conventional, NXDN trunk, NXDN96 conventional
     (`nxdn-conventional`) and NXDN48 conventional (`nxdn48-conventional`) targets. Full guide: `docs/trunk-scan.md`.
   - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
   - Use per-target `chan_csv` entries in the target CSV; global `-C` is rejected in this mode.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
-    active target.
+    active target. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set while the target is
+    parked; leaving the target restores the global keys.
   - Cannot be combined with conventional `-Y` scan mode or IQ replay.
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional DMR/NXDN activity hold (both NXDN rates): `--trunk-scan-activity-hold-ms <250..600000>`
@@ -618,6 +624,10 @@ those values for the current CLI run only.
   one-off manual keystream experiments.
 - Import keys CSV (decimal): `-k <file>`
 - Import keys CSV (hex): `-K <file>`
+- A runtime key import or clear (Keys menu, `IMPORT_KEYS_*` commands) edits the global keys even while a keyed
+  `-Y` row or trunk-scan target is parked, so the change survives the next hop. Scalar key commands (`-b`/`-1`/
+  `-H`/`-R` style entries) are not preserved this way: they disarm the keyloader and a keyed row overwrites them
+  on the next hop.
 - Force key over identifiers: `-4` (DMR BP/NXDN scrambler), `-0` (DMR RC4 when PI/LE missing),
   `--dmr-force-algid <hex>` (DMR ALGID when PI/LE missing; a fallback only — an ALG ID or KEY ID
   received over the air via PI header/LE always takes precedence; `-M` is reserved for M17 in DSD-neo).

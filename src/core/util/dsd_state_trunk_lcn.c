@@ -12,6 +12,7 @@
  * without dragging in the full initState/freeState dependency chain.
  */
 
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
@@ -189,6 +190,214 @@ dsd_state_trunk_lcn_name_get(const dsd_state* state, size_t index) {
     return state->trunk_lcn_name[index];
 }
 
+int
+dsd_state_trunk_lcn_avoid_reserve(dsd_state* state, size_t count) {
+    if (!state) {
+        return -1;
+    }
+    if (count <= state->trunk_lcn_avoid_capacity) {
+        return 0;
+    }
+    size_t capacity = state->trunk_lcn_avoid_capacity > 0 ? state->trunk_lcn_avoid_capacity : 16;
+    while (capacity < count) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = count;
+            break;
+        }
+        capacity *= 2;
+    }
+    uint8_t* flags = (uint8_t*)realloc(state->trunk_lcn_avoid, capacity);
+    if (!flags) {
+        return -1;
+    }
+    DSD_MEMSET(flags + state->trunk_lcn_avoid_capacity, 0, capacity - state->trunk_lcn_avoid_capacity);
+    state->trunk_lcn_avoid = flags;
+    state->trunk_lcn_avoid_capacity = capacity;
+    return 0;
+}
+
+void
+dsd_state_trunk_lcn_avoid_free(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    free(state->trunk_lcn_avoid);
+    state->trunk_lcn_avoid = NULL;
+    state->trunk_lcn_avoid_capacity = 0;
+}
+
+int
+dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count) {
+    if (!state) {
+        return -1;
+    }
+    if (count <= state->trunk_lcn_keys_capacity) {
+        return 0;
+    }
+    size_t capacity = state->trunk_lcn_keys_capacity > 0 ? state->trunk_lcn_keys_capacity : 16;
+    while (capacity < count) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = count;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(dsd_key_set)) {
+        return -1;
+    }
+    dsd_key_set* keys = (dsd_key_set*)realloc(state->trunk_lcn_keys, capacity * sizeof(*keys));
+    if (!keys) {
+        return -1;
+    }
+    DSD_MEMSET(keys + state->trunk_lcn_keys_capacity, 0, (capacity - state->trunk_lcn_keys_capacity) * sizeof(*keys));
+    state->trunk_lcn_keys = keys;
+    state->trunk_lcn_keys_capacity = capacity;
+    return 0;
+}
+
+void
+dsd_state_trunk_lcn_keys_free(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    for (size_t i = 0; i < state->trunk_lcn_keys_capacity; i++) {
+        dsd_key_set_free(&state->trunk_lcn_keys[i]);
+    }
+    free(state->trunk_lcn_keys);
+    state->trunk_lcn_keys = NULL;
+    state->trunk_lcn_keys_capacity = 0;
+}
+
+int
+dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks) {
+    if (!state || !ks || index == SIZE_MAX) {
+        return -1;
+    }
+    if (dsd_state_trunk_lcn_keys_reserve(state, index + 1) != 0) {
+        return -1;
+    }
+    dsd_key_set_free(&state->trunk_lcn_keys[index]);
+    state->trunk_lcn_keys[index] = *ks;
+    DSD_MEMSET(ks, 0, sizeof(*ks));
+    return 0;
+}
+
+const dsd_key_set*
+dsd_state_trunk_lcn_keys_get(const dsd_state* state, size_t index) {
+    if (!state || !state->trunk_lcn_keys || index >= state->trunk_lcn_keys_capacity) {
+        return NULL;
+    }
+    if (state->trunk_lcn_keys[index].present == 0) {
+        return NULL;
+    }
+    return &state->trunk_lcn_keys[index];
+}
+
+int
+dsd_state_trunk_lcn_keys_present(const dsd_state* state) {
+    if (!state || !state->trunk_lcn_keys) {
+        return 0;
+    }
+    for (size_t i = 0; i < state->trunk_lcn_keys_capacity; i++) {
+        if (state->trunk_lcn_keys[i].present != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Rows the list and the store both reach: the count the status line reports and the
+ * clear helper returns. Flags past a shrunk list stay in the store but stop counting. */
+static size_t
+trunk_lcn_avoid_span(const dsd_state* state) {
+    size_t span = state->lcn_freq_count > 0 ? (size_t)state->lcn_freq_count : 0;
+    if (span > state->trunk_lcn_avoid_capacity) {
+        span = state->trunk_lcn_avoid_capacity;
+    }
+    return state->trunk_lcn_avoid ? span : 0;
+}
+
+static void
+trunk_lcn_avoid_recount(dsd_state* state) {
+    const size_t span = trunk_lcn_avoid_span(state);
+    size_t count = 0;
+    for (size_t i = 0; i < span; i++) {
+        count += state->trunk_lcn_avoid[i] ? 1U : 0U;
+    }
+    state->lcn_avoid_count = count > UINT16_MAX ? UINT16_MAX : (uint16_t)count;
+}
+
+int
+dsd_state_trunk_lcn_avoid_set(dsd_state* state, size_t index, int avoided) {
+    if (!state || index == SIZE_MAX) {
+        return -1;
+    }
+    if (!avoided && index >= state->trunk_lcn_avoid_capacity) {
+        // Nothing to clear and no reason to allocate.
+        return 0;
+    }
+    if (dsd_state_trunk_lcn_avoid_reserve(state, index + 1) != 0) {
+        return -1;
+    }
+    state->trunk_lcn_avoid[index] = avoided ? 1U : 0U;
+    trunk_lcn_avoid_recount(state);
+    return 0;
+}
+
+int
+dsd_state_trunk_lcn_avoid_get(const dsd_state* state, size_t index) {
+    if (!state || !state->trunk_lcn_avoid || index >= state->trunk_lcn_avoid_capacity) {
+        return 0;
+    }
+    return state->trunk_lcn_avoid[index] ? 1 : 0;
+}
+
+int
+dsd_state_trunk_lcn_avoid_clear(dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    const int cleared = state->trunk_lcn_avoid ? (int)state->lcn_avoid_count : 0;
+    if (state->trunk_lcn_avoid) {
+        DSD_MEMSET(state->trunk_lcn_avoid, 0, state->trunk_lcn_avoid_capacity);
+    }
+    state->lcn_avoid_count = 0;
+    return cleared;
+}
+
+int
+dsd_state_trunk_lcn_usable_count(const dsd_state* state) {
+    if (!state || state->lcn_freq_count <= 0) {
+        return 0;
+    }
+    int usable = 0;
+    for (int i = 0; i < state->lcn_freq_count; i++) {
+        if (*dsd_state_trunk_lcn_slot_const(state, i) != 0 && !dsd_state_trunk_lcn_avoid_get(state, (size_t)i)) {
+            usable++;
+        }
+    }
+    return usable;
+}
+
+int
+dsd_state_trunk_lcn_next_unavoided(const dsd_state* state, int from) {
+    if (!state || state->lcn_freq_count <= 0) {
+        return -1;
+    }
+    const int count = state->lcn_freq_count;
+    int next = (from < 0 || from >= count) ? 0 : from;
+    for (int examined = 0; examined < count; examined++) {
+        if (!dsd_state_trunk_lcn_avoid_get(state, (size_t)next)) {
+            return next;
+        }
+        next++;
+        if (next >= count) {
+            next = 0;
+        }
+    }
+    return -1;
+}
+
 void
 dsd_state_trunk_lcn_free(dsd_state* state) {
     if (!state) {
@@ -198,6 +407,11 @@ dsd_state_trunk_lcn_free(dsd_state* state) {
     state->trunk_lcn_freq_ext = NULL;
     state->trunk_lcn_freq_ext_capacity = 0;
     dsd_state_trunk_lcn_name_free(state);
+    dsd_state_trunk_lcn_avoid_free(state);
+    dsd_state_trunk_lcn_keys_free(state);
+    dsd_key_set_free(&state->scan_keys_baseline);
+    dsd_key_set_free(&state->scan_keys_active);
+    state->scan_keys_active_set = 0;
 }
 
 int

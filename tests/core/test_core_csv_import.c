@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -1380,6 +1381,305 @@ test_dmr_tg_key_import_missing_file(void) {
     return failed;
 }
 
+/* Per-row key columns opt in by header name, in either order, with or without
+ * `name`: a non-blank cell loads into the row's slot-indexed key set, a blank
+ * cell stores nothing, and a row that took no slot stores nothing. The live
+ * keyring is untouched; the sets install on the `-Y` hop. */
+/* A key cell resolves against the map file's directory, not the working directory:
+ * the map sits in its own directory and names its key file through a subdirectory. */
+static int
+test_channel_import_row_key_relative_subdir(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_state* scratch = (dsd_state*)calloc(1, sizeof(*scratch));
+    char dir_tmpl[] = "dsd-neo-test-rowkey-dir-XXXXXX";
+    char sub_dir[256];
+    char key_path[256];
+    char map_path[256];
+    int fd = -1;
+
+    if (!opts || !state || !scratch) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    /* mkstemp reserves a unique name; reuse it for the directory. */
+    fd = dsd_mkstemp(dir_tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    (void)remove(dir_tmpl);
+    (void)DSD_SNPRINTF(sub_dir, sizeof(sub_dir), "%s/sub", dir_tmpl);
+    (void)DSD_SNPRINTF(key_path, sizeof(key_path), "%s/keys.csv", sub_dir);
+    (void)DSD_SNPRINTF(map_path, sizeof(map_path), "%s/map.csv", dir_tmpl);
+    if (dsd_mkdir(dir_tmpl, 0700) != 0 || dsd_mkdir(sub_dir, 0700) != 0
+        || write_text_file(key_path, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0
+        || write_text_file(map_path, "channel,frequency_hz,keys_hex_csv\n"
+                                     "1,851000000,sub/keys.csv\n")
+               != 0) {
+        (void)remove(key_path);
+        (void)remove(map_path);
+        (void)remove(sub_dir);
+        (void)remove(dir_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", map_path);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "relative-subdir row-key import returned error\n");
+        failed = 1;
+    }
+    const dsd_key_set* row0 = dsd_state_trunk_lcn_keys_get(state, 0);
+    if (!row0 || row0->present == 0) {
+        DSD_FPRINTF(stderr, "relative-subdir row stored no key set\n");
+        failed = 1;
+    } else {
+        dsd_key_set_install(scratch, row0);
+        if (scratch->rkey_array[0x10] != 0xAAAAAAAAAAAAAAAAULL || scratch->rkey_array_loaded[0x10] != 1U) {
+            DSD_FPRINTF(stderr, "relative-subdir row missed its key entry\n");
+            failed = 1;
+        }
+    }
+
+    (void)remove(key_path);
+    (void)remove(map_path);
+    (void)remove(sub_dir);
+    (void)remove(dir_tmpl);
+    free(opts);
+    free_test_state(state);
+    free_test_state(scratch);
+    return failed;
+}
+
+static int
+test_channel_import_row_key_columns(void) {
+    int failed = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    dsd_state* scratch = (dsd_state*)calloc(1, sizeof(*scratch));
+    char hex_tmpl[] = "dsd-neo-test-rowkey-hex-XXXXXX";
+    char dec_tmpl[] = "dsd-neo-test-rowkey-dec-XXXXXX";
+    char map_tmpl[] = "dsd-neo-test-rowkey-map-XXXXXX";
+    char body[4096];
+    int fd = -1;
+
+    if (!opts || !state || !scratch) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    fd = dsd_mkstemp(hex_tmpl);
+    if (fd < 0) {
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    fd = dsd_mkstemp(dec_tmpl);
+    if (fd < 0) {
+        (void)remove(hex_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    fd = dsd_mkstemp(map_tmpl);
+    if (fd < 0) {
+        (void)remove(hex_tmpl);
+        (void)remove(dec_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    if (write_text_file(hex_tmpl,
+                        "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA,0,CCCCCCCCCCCCCCCC,DDDDDDDDDDDDDDDD\n")
+            != 0
+        || write_text_file(dec_tmpl, "key id or tg id (dec),key number or value (dec)\n20,12345\n") != 0) {
+        (void)remove(hex_tmpl);
+        (void)remove(dec_tmpl);
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body),
+                       "channel,frequency_hz,name,keys_hex_csv,keys_dec_csv\n"
+                       "1,851000000,Dispatch,%s,%s\n"
+                       "2,851012500,Ops,,\n"
+                       "bad,851025000,NoSlot,%s,%s\n"
+                       "3,851025000,Fire,,%s\n",
+                       hex_tmpl, dec_tmpl, hex_tmpl, dec_tmpl, dec_tmpl);
+    if (write_text_file(map_tmpl, body) != 0) {
+        (void)remove(hex_tmpl);
+        (void)remove(dec_tmpl);
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->chan_in_file, sizeof(opts->chan_in_file), "%s", map_tmpl);
+    if (csvChanImport(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "row-key channel import returned error\n");
+        failed = 1;
+    }
+    if (state->lcn_freq_count != 3) {
+        DSD_FPRINTF(stderr, "row-key slot count wrong: %d\n", state->lcn_freq_count);
+        failed = 1;
+    }
+    if (!dsd_state_trunk_lcn_keys_present(state)) {
+        DSD_FPRINTF(stderr, "row-key store reports empty after a keyed import\n");
+        failed = 1;
+    }
+    {
+        const dsd_key_set* row0 = dsd_state_trunk_lcn_keys_get(state, 0);
+        if (!row0 || row0->present == 0) {
+            DSD_FPRINTF(stderr, "row 1 stored no key set\n");
+            failed = 1;
+        } else {
+            dsd_key_set_install(scratch, row0);
+            if (scratch->rkey_array[0x10] != 0xAAAAAAAAAAAAAAAAULL || scratch->rkey_array_loaded[0x10] != 1U) {
+                DSD_FPRINTF(stderr, "row 1 missed the hex base segment\n");
+                failed = 1;
+            }
+            if (scratch->rkey_array[0x10 + 0x101] != 0ULL || scratch->rkey_array_loaded[0x10 + 0x101] != 1U) {
+                DSD_FPRINTF(stderr, "row 1 missed the hex zero segment\n");
+                failed = 1;
+            }
+            if (scratch->rkey_array[20] != 12345ULL || scratch->rkey_array_loaded[20] != 1U) {
+                DSD_FPRINTF(stderr, "row 1 missed the dec entry\n");
+                failed = 1;
+            }
+            if (scratch->keyloader != 1) {
+                DSD_FPRINTF(stderr, "row 1 did not arm keyloader\n");
+                failed = 1;
+            }
+        }
+    }
+    if (dsd_state_trunk_lcn_keys_get(state, 1) != NULL) {
+        DSD_FPRINTF(stderr, "blank key cells stored a set on row 2\n");
+        failed = 1;
+    }
+    // 'bad,...' took no slot, so index 1 belongs to row 2 and index 2 to row 3.
+    {
+        const dsd_key_set* row3 = dsd_state_trunk_lcn_keys_get(state, 2);
+        if (!row3 || row3->present == 0) {
+            DSD_FPRINTF(stderr, "row 3 stored no key set\n");
+            failed = 1;
+        } else {
+            DSD_MEMSET(scratch->rkey_array, 0, sizeof(scratch->rkey_array));
+            DSD_MEMSET(scratch->rkey_array_loaded, 0, sizeof(scratch->rkey_array_loaded));
+            dsd_key_set_install(scratch, row3);
+            if (scratch->rkey_array[20] != 12345ULL) {
+                DSD_FPRINTF(stderr, "row 3 missed the dec-only entry\n");
+                failed = 1;
+            }
+            if (scratch->rkey_array[0x10] != 0ULL) {
+                DSD_FPRINTF(stderr, "dec-only row 3 carries hex material\n");
+                failed = 1;
+            }
+        }
+    }
+    if (state->rkey_array[0x10] != 0ULL || state->rkey_array[20] != 0ULL) {
+        DSD_FPRINTF(stderr, "row-key import leaked into the live keyring\n");
+        failed = 1;
+    }
+    if (strcmp(dsd_state_trunk_lcn_name_get(state, 0), "Dispatch") != 0) {
+        DSD_FPRINTF(stderr, "name column broke beside key columns: '%s'\n", dsd_state_trunk_lcn_name_get(state, 0));
+        failed = 1;
+    }
+
+    // Reversed column order without `name` opts in the same way.
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body),
+                       "channel,frequency_hz,keys_dec_csv,keys_hex_csv\n"
+                       "1,851000000,%s,%s\n",
+                       dec_tmpl, hex_tmpl);
+    if (write_text_file(map_tmpl, body) != 0) {
+        (void)remove(hex_tmpl);
+        (void)remove(dec_tmpl);
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    if (csvChanImport(opts, state) != 0 || dsd_state_trunk_lcn_keys_get(state, 0) == NULL) {
+        DSD_FPRINTF(stderr, "reversed key columns did not opt in\n");
+        failed = 1;
+    }
+
+    // An unloadable key path fails the whole import, like a bad `-K`.
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    body[0] = '\0';
+    (void)DSD_SNPRINTF(body + strlen(body), sizeof(body) - strlen(body),
+                       "channel,frequency_hz,keys_hex_csv\n"
+                       "1,851000000,dsd-neo-test-missing-dir/missing.csv\n");
+    if (write_text_file(map_tmpl, body) != 0) {
+        (void)remove(hex_tmpl);
+        (void)remove(dec_tmpl);
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    if (csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "row-key import accepted an unloadable path\n");
+        failed = 1;
+    }
+
+    // A duplicated key header rejects the file.
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_lcn_free(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    if (write_text_file(map_tmpl, "channel,frequency_hz,keys_hex_csv,keys_dec_csv,keys_hex_csv\n"
+                                  "1,851000000,,,\n")
+        != 0) {
+        (void)remove(hex_tmpl);
+        (void)remove(dec_tmpl);
+        (void)remove(map_tmpl);
+        free(opts);
+        free_test_state(state);
+        free_test_state(scratch);
+        return 1;
+    }
+    if (csvChanImport(opts, state) == 0) {
+        DSD_FPRINTF(stderr, "row-key import accepted a duplicated key header\n");
+        failed = 1;
+    }
+
+    (void)remove(hex_tmpl);
+    (void)remove(dec_tmpl);
+    (void)remove(map_tmpl);
+    free(opts);
+    free_test_state(state);
+    free_test_state(scratch);
+    return failed;
+}
+
 int
 main(void) {
     if (test_group_import_missing_file() != 0) {
@@ -1427,6 +1727,12 @@ main(void) {
         return 1;
     }
     if (test_channel_import_name_column_sanitizes_names() != 0) {
+        return 1;
+    }
+    if (test_channel_import_row_key_columns() != 0) {
+        return 1;
+    }
+    if (test_channel_import_row_key_relative_subdir() != 0) {
         return 1;
     }
     if (test_group_import_range_after_many_exact_rows() != 0) {

@@ -94,6 +94,66 @@ Item {
             tryVerify(function () { return !row.visible })
         }
 
+        // On-the-fly scan controls (#380). They act on a rotation, so they appear
+        // only while one is running, read the engine's hold and avoided count back
+        // rather than remembering their own taps, and each button sends the one
+        // command it is labelled with.
+        function test_03c_the_scan_controls_appear_only_while_a_rotation_is_running() {
+            var row = findChild(screenLoader.item, "scanControlsRow")
+            var hold = findChild(screenLoader.item, "scanHoldButton")
+            var avoid = findChild(screenLoader.item, "scanAvoidButton")
+            var next = findChild(screenLoader.item, "scanNextButton")
+            var badge = findChild(screenLoader.item, "scanAvoidRow")
+            var value = findChild(screenLoader.item, "scanAvoidValue")
+            var clear = findChild(screenLoader.item, "scanAvoidClearButton")
+            verify(row !== null, "the scan controls row is missing")
+            verify(hold !== null && avoid !== null && next !== null, "a scan control button is missing")
+            verify(badge !== null && value !== null && clear !== null, "the avoided badge is missing")
+
+            testContext.setMetric("scanRotationActive", false)
+            testContext.setMetric("scanAvoidCount", 0)
+            tryVerify(function () { return !row.visible })
+            tryVerify(function () { return !badge.visible })
+
+            testContext.setMetric("scanRotationActive", true)
+            tryVerify(function () { return row.visible })
+            compare(hold.text, "Hold scan")
+            testContext.setMetric("scanHold", true)
+            tryVerify(function () { return hold.text === "Release scan" })
+            testContext.setMetric("scanHold", false)
+            tryVerify(function () { return hold.text === "Hold scan" })
+
+            testContext.setMetric("scanAvoidCount", 2)
+            tryVerify(function () { return badge.visible })
+            compare(value.text, "2")
+
+            // Clear is clicked while the badge is showing: a hidden button still
+            // emits clicked(), so a click at count 0 would prove nothing.
+            testContext.resetCommands()
+            hold.clicked()
+            avoid.clicked()
+            next.clicked()
+            clear.clicked()
+            compare(testContext.scanHoldCalls(), 1)
+            compare(testContext.scanAvoidCalls(), 1)
+            compare(testContext.nextChannelCalls(), 1)
+            compare(testContext.scanAvoidClearCalls(), 1)
+
+            // Leaving scanner mode does not clear session avoids, so the count
+            // outlives the rotation. The badge must follow the rotation, not the
+            // count, or an idle session shows a Clear for a scan that is not running.
+            testContext.setMetric("scanRotationActive", false)
+            tryVerify(function () { return !row.visible })
+            tryVerify(function () { return !badge.visible })
+            testContext.setMetric("scanRotationActive", true)
+            tryVerify(function () { return badge.visible })
+
+            testContext.setMetric("scanAvoidCount", 0)
+            tryVerify(function () { return !badge.visible })
+            testContext.setMetric("scanRotationActive", false)
+            tryVerify(function () { return !row.visible })
+        }
+
         // The hero's subline says which scan channel the call was heard on, but
         // only when that is not already the name above it: a talkgroup-0 call is
         // headlined by its channel, so repeating it underneath would say nothing.

@@ -7,6 +7,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -712,6 +713,69 @@ main(void) {
     noCarrier(opts, state);
     rc |= expect_true("scanner-ext-tail-wraps-to-head", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 944012500U);
     rc |= expect_true("scanner-ext-tail-wrap-advanced", state->lcn_freq_roll == 1);
+
+    // A scan hold pauses the rotation where it stands: the dwell may have expired, but the
+    // receiver stays put, the roll does not move, and a call still open on the row is not
+    // reported as an explicit release because nothing moved.
+    state->lcn_scan_hold = 1;
+    state->lcn_freq_roll = 5;
+    state->last_cc_sync_time = time(NULL) - 11;
+    const time_t held_dwell_started = state->last_cc_sync_time;
+    g_rtl_tune_calls = 0;
+    dsd_call_observation held_call = {0};
+    held_call.protocol = DSD_SYNC_NXDN_POS;
+    held_call.slot = 0U;
+    held_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    held_call.ota_target_id = 7201U;
+    held_call.policy_target_id = 7201U;
+    held_call.ota_source_id = 8201U;
+    held_call.observed_m = 1.0;
+    rc |=
+        expect_true("scanner-hold-seeds-call", dsd_call_state_observe(state, &held_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    noCarrier(opts, state);
+    dsd_call_snapshot held_snapshot;
+    rc |= expect_true("scanner-hold-no-retune", g_rtl_tune_calls == 0);
+    rc |= expect_true("scanner-hold-keeps-roll", state->lcn_freq_roll == 5);
+    // The dwell timer is left alone under hold: the release command restarts it, so the row gets a
+    // full hangtime then rather than hopping the instant the hold comes off.
+    rc |= expect_true("scanner-hold-leaves-dwell-alone", state->last_cc_sync_time == held_dwell_started);
+    rc |= expect_true("scanner-hold-retains-snapshot", dsd_call_state_get(state, 0U, &held_snapshot) == 1);
+    rc |= expect_true("scanner-hold-ends-call-as-sync-loss",
+                      held_snapshot.phase == DSD_CALL_PHASE_ENDED
+                          && held_snapshot.end_reason != (uint8_t)DSD_CALL_END_EXPLICIT);
+    state->lcn_scan_hold = 0;
+
+    // An avoided row is stepped over in the same pass, so the hop lands on the next row the
+    // operator still wants and the roll moves past the avoided one.
+    rc |= expect_true("scanner-avoid-set", dsd_state_trunk_lcn_avoid_set(state, 6U, 1) == 0);
+    state->lcn_freq_roll = 6;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("scanner-avoid-skips-row", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 944100000U);
+    rc |= expect_true("scanner-avoid-advanced-past", state->lcn_freq_roll == 8);
+
+    // Avoided rows at the end of the heap tail wrap the walk back to the head.
+    rc |= expect_true("scanner-avoid-tail-27", dsd_state_trunk_lcn_avoid_set(state, 27U, 1) == 0);
+    rc |= expect_true("scanner-avoid-tail-28", dsd_state_trunk_lcn_avoid_set(state, 28U, 1) == 0);
+    rc |= expect_true("scanner-avoid-tail-29", dsd_state_trunk_lcn_avoid_set(state, 29U, 1) == 0);
+    state->lcn_freq_roll = 27;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("scanner-avoid-wraps-to-head", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 944012500U);
+    rc |= expect_true("scanner-avoid-wrap-advanced", state->lcn_freq_roll == 1);
+
+    // Every row avoided (the UI refuses this, but the flags can be set directly): no hop.
+    for (int i = 0; i < 30; i++) {
+        rc |= expect_true("scanner-avoid-all-set", dsd_state_trunk_lcn_avoid_set(state, (size_t)i, 1) == 0);
+    }
+    state->lcn_freq_roll = 3;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("scanner-avoid-all-no-retune", g_rtl_tune_calls == 0);
+    rc |= expect_true("scanner-avoid-all-keeps-roll", state->lcn_freq_roll == 3);
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {
@@ -1611,6 +1675,85 @@ main(void) {
 
     rc |= expect_true("rtl-fsk-long-nosync-gap-reacquires-once", g_rtl_fsk_reacquire_requests == 1);
     rc |= expect_true("rtl-fsk-long-nosync-gap-records-request", state->rtl_fsk_reacquire_last_request_m > 0.0);
+#endif
+
+#if defined(DSD_NEO_TEST_RTL_WRAP) && DSD_NEO_TEST_RTL_WRAP
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // Per-row keys under -Y. A hop onto a keyed row installs its set, a hop
+    // back onto an unkeyed row restores the globals, a zero-frequency row
+    // parks in place keeping the previous set, and a failed tune leg swaps
+    // nothing.
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 940012500;
+    state->trunk_lcn_freq[1] = 941012500;
+    state->trunk_lcn_freq[2] = 0;
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->keyloader = 0;
+    state->K = 0xBEEFULL;
+    state->rkey_array[3] = 111ULL;
+    state->rkey_array_loaded[3] = 1U;
+    {
+        dsd_key_set ks;
+        DSD_MEMSET(&ks, 0, sizeof(ks));
+        ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+        if (ks.entries == NULL) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        ks.count = 1U;
+        ks.present = 1;
+        ks.keyloader = 1;
+        ks.entries[0].index = 9U;
+        ks.entries[0].value = 999ULL;
+        ks.entries[0].loaded = 1U;
+        if (dsd_state_trunk_lcn_keys_set(state, 0U, &ks) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_tune_calls = 0;
+
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-hop-installs", state->rkey_array[9] == 999ULL && state->keyloader == 1 && state->K == 0ULL
+                                                 && state->lcn_freq_roll == 1);
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-hop-restores", state->rkey_array[9] == 0ULL && state->keyloader == 0
+                                                 && state->K == 0xBEEFULL && state->rkey_array[3] == 111ULL
+                                                 && state->lcn_freq_roll == 2);
+
+    // Re-park on the keyed row, then step onto the zero-frequency row: it parks
+    // in place, so the installed set stays.
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-rehop-installs", state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    state->lcn_freq_roll = 2;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-zero-row-keeps-set",
+                      state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1 && state->lcn_freq_roll == 3);
+
+    // A failed tune leg leaves the receiver (and the installed set) where it was.
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-failed-tune-keeps-roll", state->lcn_freq_roll == 1);
+    rc |=
+        expect_true("rowkey-failed-tune-keeps-set", state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 #endif
 
     dsd_rtl_stream_metrics_hooks_set(NULL);

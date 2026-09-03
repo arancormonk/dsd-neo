@@ -91,6 +91,10 @@ enum dsd_app_command_id {
     DSD_APP_CMD_TRUNK_ENC_TOGGLE = 213,
     DSD_APP_CMD_WAV_TOGGLE = 214,
     DSD_APP_CMD_ENC_LOCKOUT_CLEAR = 215, // forget all encrypted-target lockouts
+    // On-the-fly scan controls (#380): -Y rows or --trunk-scan targets, whichever is running
+    DSD_APP_CMD_SCAN_HOLD_TOGGLE = 216, // pause/resume rotation on the channel/target on air
+    DSD_APP_CMD_SCAN_AVOID = 217,       // avoid the channel/target on air for the session and step on
+    DSD_APP_CMD_SCAN_AVOID_CLEAR = 218, // put every avoided channel/target back into the rotation
 
     // Additional commands used by terminal hotkeys in async mode
     DSD_APP_CMD_QUIT = 300,

@@ -6,6 +6,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
@@ -32,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "dsd-neo/core/csv_validate.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -220,7 +222,17 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
         if (name_text) {
             *name_text++ = '\0';
         }
-        char* tail = name_text ? name_text : freq_text;
+        /* A fourth column seeds a per-row key set, the way the real importer
+         * loads key cells: enough to prove the store was allocated, which is
+         * what the trunk-scan import then has to release. */
+        char* key_text = NULL;
+        if (name_text) {
+            key_text = strchr(name_text, ',');
+            if (key_text) {
+                *key_text++ = '\0';
+            }
+        }
+        char* tail = key_text ? key_text : (name_text ? name_text : freq_text);
         while (*tail && *tail != '\r' && *tail != '\n') {
             tail++;
         }
@@ -233,10 +245,58 @@ csvChanImport(const dsd_opts* opts, dsd_state* state) {
             if (name_text && name_text[0] != '\0') {
                 (void)dsd_state_trunk_lcn_name_set(state, 0U, name_text);
             }
+            if (key_text && key_text[0] != '\0') {
+                dsd_key_set ks;
+                DSD_MEMSET(&ks, 0, sizeof(ks));
+                ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+                if (ks.entries != NULL) {
+                    ks.count = 1U;
+                    ks.present = 1;
+                    ks.keyloader = 1;
+                    ks.entries[0].index = 9U;
+                    ks.entries[0].value = 777ULL;
+                    ks.entries[0].loaded = 1U;
+                    (void)dsd_state_trunk_lcn_keys_set(state, 0U, &ks);
+                }
+            }
         }
     }
     (void)fclose(fp);
     return g_csv_import_result;
+}
+
+/*
+ * Per-target key stubs: a readable key file seeds one keyring slot, the way the
+ * real importer loads rows, so the coordinator's install/restore is observable.
+ * dsd_key_set_load_csv() runs these against its throwaway state and captures.
+ */
+static int
+seed_scan_key_slot(dsd_state* state, const char* path) {
+    if (!state || !path || path[0] == '\0') {
+        return -1;
+    }
+    FILE* fp = fopen(path, "rb");
+    if (!fp) {
+        return -1;
+    }
+    (void)fclose(fp);
+    state->rkey_array[9] = 999ULL;
+    state->rkey_array_loaded[9] = 1U;
+    return 0;
+}
+
+int
+csvKeyImportHexPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats) {
+    (void)show_keys;
+    (void)stats;
+    return seed_scan_key_slot(state, path);
+}
+
+int
+csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats) {
+    (void)show_keys;
+    (void)stats;
+    return seed_scan_key_slot(state, path);
 }
 
 int
@@ -3404,10 +3464,12 @@ static int g_counting_tune_to_cc_ted_sps = 0;
 static long int g_counting_tune_to_cc_freq = 0;
 static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
 
+static uint64_t g_counting_tune_to_cc_last_request_id = 0U;
+
 static dsd_trunk_tune_result
 counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
-    (void)request_id;
     (void)opts;
+    g_counting_tune_to_cc_last_request_id = request_id;
     g_counting_tune_to_cc_calls++;
     g_counting_tune_to_cc_ted_sps = ted_sps;
     g_counting_tune_to_cc_freq = freq;
@@ -5042,6 +5104,740 @@ test_trunk_scan_rejects_iq_replay_input(void) {
     return test_rc;
 }
 
+/*
+ * On-the-fly scan controls (#380). The coordinator owns the truth for hold and avoid
+ * under --trunk-scan and publishes it beside the target id; app_control reaches it
+ * only through the control hook, so the hook install is checked once here too.
+ */
+static int
+scan_control_init(const char* body, dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* target_path,
+                  size_t path_sz) {
+    if (make_runtime_targets(body, target_path, path_sz, dir, dir_sz) != 0) {
+        return -1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", target_path);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "scan control init failed err=%s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+static int
+expect_scan_control_publication(const dsd_state* state, const char* stage, unsigned hold, unsigned active_avoided,
+                                unsigned avoided_count) {
+    if (state->trunk_scan_hold != hold || state->trunk_scan_active_avoided != active_avoided
+        || state->trunk_scan_avoided_count != avoided_count) {
+        DSD_FPRINTF(stderr, "scan control publication after %s: hold=%u active_avoided=%u avoided=%u, want %u/%u/%u\n",
+                    stage, (unsigned)state->trunk_scan_hold, (unsigned)state->trunk_scan_active_avoided,
+                    (unsigned)state->trunk_scan_avoided_count, hold, active_avoided, avoided_count);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_active_target(const dsd_state* state, const char* stage, size_t want) {
+    const size_t got = dsd_engine_trunk_scan_active_index(state);
+    if (got != want) {
+        DSD_FPRINTF(stderr, "active target after %s: %zu, want %zu\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+expect_control_rc(const char* stage, int got, int want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "scan control %s returned %d, want %d\n", stage, got, want);
+        return 1;
+    }
+    return 0;
+}
+
+static int
+test_scan_control_unavailable_without_coordinator(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    int test_rc = expect_control_rc("without coordinator",
+                                    dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE),
+                                    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    test_rc |= expect_control_rc("hook without coordinator",
+                                 dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                                 DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    return test_rc;
+}
+
+static int
+test_scan_hold_pauses_rotation_and_release_restarts_dwell(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+
+    /* Through the runtime hook once, to prove the coordinator installed it. */
+    test_rc |=
+        expect_control_rc("hold on", dsd_trunk_scan_hook_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_scan_control_publication(&state, "hold on", 1U, 0U, 0U);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "held past the dwell", 0U);
+
+    test_rc |= expect_control_rc("hold off",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 0);
+    test_rc |= expect_scan_control_publication(&state, "hold off", 0U, 0U, 0U);
+    /* The dwell restarts from the release: a full 250 ms before the rotation resumes. */
+    trunk_scan_test_set_now(3.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(3.24);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release before a full dwell", 0U);
+    trunk_scan_test_set_now(3.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "release after a full dwell", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_advance_moves_now_and_keeps_hold(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |=
+        expect_control_rc("advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance", 1U);
+    test_rc |= expect_published_target(&state, "advance", "b", 2U, 3U);
+
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("advance while held",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance while held", 2U);
+    test_rc |= expect_scan_control_publication(&state, "advance while held", 1U, 0U, 0U);
+    trunk_scan_test_set_now(5.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(6.0);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "still held after manual advance", 2U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_avoid_steps_on_and_skips_the_target_thereafter(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("avoid a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid a", 1U);
+    test_rc |= expect_scan_control_publication(&state, "avoid a", 0U, 0U, 1U);
+    test_rc |= expect_published_target(&state, "avoid a", "b", 2U, 3U);
+
+    /* b -> c -> b: a never comes back. The switch arms the dwell, so each expired tick moves. */
+    trunk_scan_test_set_now(0.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation to c", 2U);
+    trunk_scan_test_set_now(0.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation skips a", 1U);
+    test_rc |= expect_scan_control_publication(&state, "rotation skips a", 0U, 0U, 1U);
+
+    /* Clear puts a back: the next rotation from b goes to c, then a. */
+    test_rc |=
+        expect_control_rc("clear", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 1);
+    test_rc |= expect_scan_control_publication(&state, "clear", 0U, 0U, 0U);
+    trunk_scan_test_set_now(0.9);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "after clear, to c", 2U);
+    trunk_scan_test_set_now(1.16);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "after clear, back to a", 0U);
+    test_rc |= expect_control_rc("clear with nothing avoided",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 0);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_avoid_refuses_the_last_usable_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("avoid a",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |= expect_active_target(&state, "avoid a", 1U);
+    test_rc |=
+        expect_control_rc("avoid b", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                          DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_active_target(&state, "refused avoid", 1U);
+    test_rc |= expect_scan_control_publication(&state, "refused avoid", 0U, 0U, 1U);
+    /* With a alone avoided the rotation has nowhere to go and stays on b. */
+    trunk_scan_test_set_now(0.3);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    trunk_scan_test_set_now(0.56);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "rotation with one usable target", 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_avoid_falls_back_on_the_original_when_alternates_fail(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n"
+                          "c,p25-trunk,853000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_counting_tune_to_cc_failures_remaining = 2;
+    test_rc |= expect_control_rc("avoid with failing alternates",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 1);
+    g_counting_tune_to_cc_failures_remaining = 0;
+    test_rc |= expect_active_target(&state, "fallback", 0U);
+    test_rc |= expect_published_target(&state, "fallback", "a", 1U, 3U);
+    /* The row has to say the receiver is parked on a target the operator avoided. */
+    test_rc |= expect_scan_control_publication(&state, "fallback", 0U, 1U, 1U);
+
+    /* Once the alternates cool down the rotation leaves a. */
+    trunk_scan_test_set_now(2.5);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "leaves the avoided fallback", 1U);
+    test_rc |= expect_scan_control_publication(&state, "leaves the avoided fallback", 0U, 0U, 1U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_controls_on_a_single_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n", &opts, &state, dir, sizeof dir, target_path,
+                          sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("single advance",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                                 DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_control_rc("single avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                 DSD_TRUNK_SCAN_CONTROL_REFUSED);
+    test_rc |= expect_control_rc("single hold",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_scan_control_publication(&state, "single hold", 1U, 0U, 0U);
+    test_rc |= expect_active_target(&state, "single target", 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_controls_report_busy_while_p25_guard_held(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    g_p25_tick_guard_available = 0;
+    test_rc |=
+        expect_control_rc("busy advance", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                          DSD_TRUNK_SCAN_CONTROL_BUSY);
+    test_rc |= expect_control_rc("busy avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE),
+                                 DSD_TRUNK_SCAN_CONTROL_BUSY);
+    /* Hold and clear only flip flags, so they never need the guard. */
+    test_rc |= expect_control_rc("hold under guard",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_control_rc("clear under guard",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR), 0);
+    test_rc |= expect_active_target(&state, "busy controls", 0U);
+    test_rc |= expect_scan_control_publication(&state, "busy controls", 1U, 0U, 0U);
+    g_p25_tick_guard_available = 1;
+    if (g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "busy scan controls leaked the P25 guard depth=%d\n", g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+    test_rc |= expect_control_rc("advance after guard",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance after guard", 1U);
+    if (g_p25_tick_guard_depth != 0) {
+        DSD_FPRINTF(stderr, "scan advance left the P25 guard held depth=%d\n", g_p25_tick_guard_depth);
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* A retune that fails asynchronously normally moves the scan on; while held it retries
+ * the held target after the cooldown instead. DMR trunk targets take the asynchronous
+ * request path without the P25 recovery adoption on top of it. */
+static int
+test_scan_hold_retries_the_held_target_after_a_pending_retune_fails(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_trunk_tuning_requests_reset();
+    if (scan_control_init("a,dmr-trunk,461000000,,250,,\n"
+                          "b,dmr-trunk,462000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("hold on",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+
+    /* Advance to b while held, with the retune left pending. */
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    g_counting_tune_to_cc_calls = 0;
+    trunk_scan_test_set_now(1.0);
+    test_rc |= expect_control_rc("advance pending",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
+    test_rc |= expect_active_target(&state, "advance pending", 1U);
+    const uint64_t pending_id = g_counting_tune_to_cc_last_request_id;
+    if (g_counting_tune_to_cc_calls != 1 || pending_id == 0U) {
+        DSD_FPRINTF(stderr, "held advance did not leave a pending retune calls=%d id=%llu\n",
+                    g_counting_tune_to_cc_calls, (unsigned long long)pending_id);
+        test_rc = 1;
+    }
+    g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    dsd_trunk_tuning_request_publish(pending_id, DSD_TRUNK_TUNE_RESULT_FAILED);
+    trunk_scan_test_set_now(1.1);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "pending failure while held", 1U);
+    if (g_counting_tune_to_cc_calls != 1) {
+        DSD_FPRINTF(stderr, "pending failure while held retuned early calls=%d\n", g_counting_tune_to_cc_calls);
+        test_rc = 1;
+    }
+    /* After the cooldown the held target is retried in place. */
+    trunk_scan_test_set_now(3.2);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "retry while held", 1U);
+    if (g_counting_tune_to_cc_calls != 2 || g_counting_tune_to_cc_freq != 462000000L) {
+        DSD_FPRINTF(stderr, "held target was not retried calls=%d freq=%ld\n", g_counting_tune_to_cc_calls,
+                    g_counting_tune_to_cc_freq);
+        test_rc = 1;
+    }
+    test_rc |= expect_scan_control_publication(&state, "retry while held", 1U, 0U, 0U);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    dsd_trunk_tuning_requests_reset();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_scan_shutdown_clears_hold_and_avoid_publication(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    static dsd_state state;
+    if (scan_control_init("a,p25-trunk,851000000,,250,,\n"
+                          "b,p25-trunk,852000000,,250,,\n",
+                          &opts, &state, dir, sizeof dir, target_path, sizeof target_path)
+        != 0) {
+        return 1;
+    }
+    int test_rc = 0;
+    test_rc |= expect_control_rc("avoid",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE), 0);
+    test_rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    test_rc |= expect_scan_control_publication(&state, "before shutdown", 1U, 0U, 1U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    test_rc |= expect_scan_control_publication(&state, "shutdown", 0U, 0U, 0U);
+    test_rc |= expect_control_rc("after shutdown",
+                                 dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE),
+                                 DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_parser_accepts_target_key_columns(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,keys_dec_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,primary,hexkeys.csv,deckeys.csv\n"
+                                       "b,dmr-trunk,452000000,,250,,tier iii,,\n"
+                                       "c,nxdn-conventional,461000000,,250,,conv,hexkeys.csv,\n"
+                                       "d,nxdn-trunk,461037500,,250,,type-c,,deckeys.csv\n"
+                                       "e,dmr-conventional,461112500,,250,,plant,hexkeys.csv,deckeys.csv\n"
+                                       "f,nxdn48-conventional,461556250,,250,,narrow,hexkeys.csv,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+
+    int test_rc = 0;
+    char want_hex[DSD_TEST_PATH_MAX] = {0};
+    char want_dec[DSD_TEST_PATH_MAX] = {0};
+    if (rc != 0 || list.count != 6 || dsd_test_path_join(want_hex, sizeof want_hex, dir, "hexkeys.csv") != 0
+        || dsd_test_path_join(want_dec, sizeof want_dec, dir, "deckeys.csv") != 0) {
+        DSD_FPRINTF(stderr, "target keys parser rc=%d count=%zu err=%s\n", rc, list.count, err);
+        test_rc = 1;
+    }
+    if (test_rc == 0) {
+        if (strcmp(list.targets[0].keys_hex_csv, want_hex) != 0
+            || strcmp(list.targets[0].keys_dec_csv, want_dec) != 0) {
+            DSD_FPRINTF(stderr, "keyed target paths mismatch hex='%s' dec='%s'\n", list.targets[0].keys_hex_csv,
+                        list.targets[0].keys_dec_csv);
+            test_rc = 1;
+        }
+        if (list.targets[1].keys_hex_csv[0] != '\0' || list.targets[1].keys_dec_csv[0] != '\0') {
+            DSD_FPRINTF(stderr, "unkeyed target carries key paths\n");
+            test_rc = 1;
+        }
+        // No type gating: every target type may carry keys, conventional ones included.
+        if (strcmp(list.targets[2].keys_hex_csv, want_hex) != 0 || list.targets[2].keys_dec_csv[0] != '\0') {
+            DSD_FPRINTF(stderr, "conventional target key paths mismatch\n");
+            test_rc = 1;
+        }
+        if (list.targets[3].keys_hex_csv[0] != '\0' || strcmp(list.targets[3].keys_dec_csv, want_dec) != 0) {
+            DSD_FPRINTF(stderr, "nxdn-trunk target key paths mismatch\n");
+            test_rc = 1;
+        }
+        if (strcmp(list.targets[4].keys_hex_csv, want_hex) != 0
+            || strcmp(list.targets[4].keys_dec_csv, want_dec) != 0) {
+            DSD_FPRINTF(stderr, "dmr-conventional target key paths mismatch\n");
+            test_rc = 1;
+        }
+        if (strcmp(list.targets[5].keys_hex_csv, want_hex) != 0 || list.targets[5].keys_dec_csv[0] != '\0') {
+            DSD_FPRINTF(stderr, "nxdn48-conventional target key paths mismatch\n");
+            test_rc = 1;
+        }
+    }
+
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_parser_rejects_duplicate_target_key_columns(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] =
+        "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv,keys_dec_csv,keys_hex_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,dup,hexkeys.csv,deckeys.csv,hexkeys.csv\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.trunk_scan_idle_dwell_ms = 3000;
+    opts.trunk_scan_activity_hold_ms = 1200;
+    dsd_trunk_scan_target_list list;
+    DSD_MEMSET(&list, 0, sizeof list);
+    char err[256] = {0};
+    int rc = dsd_trunk_scan_load_targets_csv(target_path, &opts, &list, err, sizeof err);
+    int test_rc = 0;
+    if (rc == 0) {
+        DSD_FPRINTF(stderr, "duplicate key header accepted\n");
+        test_rc = 1;
+    }
+    if (list.count != 0) {
+        DSD_FPRINTF(stderr, "duplicate key header left %zu targets\n", list.count);
+        test_rc = 1;
+    }
+
+    dsd_trunk_scan_target_list_reset(&list);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_target_keys_install_and_restore_across_switches(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char hex_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(hex_path, sizeof hex_path, dir, "hexkeys.csv") != 0
+        || write_text_file(hex_path, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,keyed,hexkeys.csv\n"
+                                       "b,dmr-conventional,461000000,,250,,plain,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        (void)remove(hex_path);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    state.keyloader = 0;
+    state.K = 0xBEEFULL;
+    state.rkey_array[3] = 111ULL;
+    state.rkey_array_loaded[3] = 1U;
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.rkey_array[9] != 999ULL
+        || state.rkey_array_loaded[9] != 1U || state.keyloader != 1 || state.K != 0ULL) {
+        DSD_FPRINTF(stderr, "keyed target init mismatch rc=%d active=%zu loaded=%u keyloader=%d err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), state.rkey_array_loaded[9], state.keyloader, err);
+        test_rc = 1;
+    }
+    const uint64_t epoch0 = state.enc_lockout_key_epoch;
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rkey_array[9] != 0ULL || state.keyloader != 0
+        || state.K != 0xBEEFULL || state.rkey_array[3] != 111ULL || state.enc_lockout_key_epoch != epoch0) {
+        DSD_FPRINTF(stderr, "unkeyed target did not restore globals active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rkey_array[9] != 999ULL || state.keyloader != 1
+        || state.enc_lockout_key_epoch != epoch0) {
+        DSD_FPRINTF(stderr, "keyed target did not reinstall active=%zu\n", dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.rkey_array[9] != 0ULL || state.keyloader != 0 || state.K != 0xBEEFULL || state.rkey_array[3] != 111ULL) {
+        DSD_FPRINTF(stderr, "shutdown did not restore globals\n");
+        test_rc = 1;
+    }
+
+    trunk_scan_test_clear_now();
+    (void)remove(hex_path);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_target_chan_csv_keys_are_discarded(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char hex_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(hex_path, sizeof hex_path, dir, "hexkeys.csv") != 0
+        || write_text_file(hex_path, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char chan_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(chan_path, sizeof chan_path, dir, "chan.csv") != 0
+        || write_text_file(chan_path, "channel,frequency,name,keys_hex_csv\n1,851012500,Dispatch,hexkeys.csv\n") != 0) {
+        (void)remove(hex_path);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    if (write_targets_file(dir, "a,p25-trunk,851000000,chan.csv,250,,\n", target_path, sizeof target_path) != 0) {
+        (void)remove(hex_path);
+        cleanup_paths(dir, NULL, chan_path);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "chan_csv keys scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    if (state.trunk_lcn_keys != NULL || dsd_state_trunk_lcn_keys_get(&state, 0U) != NULL) {
+        DSD_FPRINTF(stderr, "trunk scan kept a chan_csv key store\n");
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(hex_path);
+    cleanup_paths(dir, target_path, chan_path);
+    return test_rc;
+}
+
+static int
+test_target_keys_survive_failed_alternate_retune(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0) {
+        return 1;
+    }
+    char hex_path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(hex_path, sizeof hex_path, dir, "hexkeys.csv") != 0
+        || write_text_file(hex_path, "key id(hex),key value (hex)\n0010,AAAAAAAAAAAAAAAA\n") != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    char target_path[DSD_TEST_PATH_MAX];
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,keys_hex_csv\n";
+    if (write_targets_file_with_header(dir, header,
+                                       "a,p25-trunk,851000000,,250,,keyed,hexkeys.csv\n"
+                                       "b,p25-trunk,852000000,,250,,plain,\n",
+                                       target_path, sizeof target_path)
+        != 0) {
+        (void)remove(hex_path);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_targets_csv, sizeof opts.trunk_scan_targets_csv, "%s", target_path);
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    int test_rc = 0;
+    if (rc != 0 || dsd_engine_trunk_scan_active_index(&state) != 0 || state.rkey_array[9] != 999ULL) {
+        DSD_FPRINTF(stderr, "keyed fallback scan init failed rc=%d active=%zu err=%s\n", rc,
+                    dsd_engine_trunk_scan_active_index(&state), err);
+        test_rc = 1;
+    }
+    const uint64_t epoch0 = state.enc_lockout_key_epoch;
+
+    dsd_trunk_tuning_hooks hooks = {0};
+    hooks.tune_to_cc_request = failing_tune_to_cc;
+    dsd_trunk_tuning_hooks_set(hooks);
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.rkey_array[9] != 999ULL || state.keyloader != 1
+        || state.enc_lockout_key_epoch != epoch0) {
+        DSD_FPRINTF(stderr, "failed alternate retune did not re-park the original keys active=%zu\n",
+                    dsd_engine_trunk_scan_active_index(&state));
+        test_rc = 1;
+    }
+
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    dsd_trunk_tuning_hooks_set(hooks);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (state.rkey_array[9] != 0ULL || state.keyloader != 0) {
+        DSD_FPRINTF(stderr, "fallback shutdown did not restore globals\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    (void)remove(hex_path);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 static int
 run_with_default_tune_hook(int (*test_fn)(void)) {
     dsd_trunk_tuning_hooks hooks = {0};
@@ -5064,6 +5860,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_parser_accepts_quoted_chan_csv_with_comma);
     rc |= run_with_default_tune_hook(test_parser_accepts_optional_modulation_and_gain_columns);
+    rc |= run_with_default_tune_hook(test_parser_accepts_target_key_columns);
+    rc |= run_with_default_tune_hook(test_parser_rejects_duplicate_target_key_columns);
     rc |= run_with_default_tune_hook(test_parser_accepts_nxdn_targets);
     rc |= run_with_default_tune_hook(test_parser_rejects_invalid_inputs);
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
@@ -5072,6 +5870,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_target_chan_csv_names_are_discarded);
     rc |= run_with_default_tune_hook(test_coordinator_rotation_past_32_targets);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_long_lcn_list_across_rotation);
+    rc |= run_with_default_tune_hook(test_target_keys_install_and_restore_across_switches);
+    rc |= run_with_default_tune_hook(test_target_chan_csv_keys_are_discarded);
+    rc |= run_with_default_tune_hook(test_target_keys_survive_failed_alternate_retune);
     rc |= run_with_default_tune_hook(test_coordinator_preserves_large_chan_map_across_rotation);
     rc |= test_targets_csv_rejects_rows_past_the_memory_budget();
     rc |= run_with_default_tune_hook(test_call_identity_state_isolated_per_target);
@@ -5119,6 +5920,16 @@ main(void) {
     rc |= run_with_default_tune_hook(test_active_p25_cqpsk_request_tracks_target_modulation);
     rc |= run_with_default_tune_hook(test_per_target_rtl_gain_overrides_and_restores_global_default);
     rc |= run_with_default_tune_hook(test_scan_tick_skips_rotation_when_p25_guard_busy);
+    rc |= run_with_default_tune_hook(test_scan_control_unavailable_without_coordinator);
+    rc |= run_with_default_tune_hook(test_scan_hold_pauses_rotation_and_release_restarts_dwell);
+    rc |= run_with_default_tune_hook(test_scan_advance_moves_now_and_keeps_hold);
+    rc |= run_with_default_tune_hook(test_scan_avoid_steps_on_and_skips_the_target_thereafter);
+    rc |= run_with_default_tune_hook(test_scan_avoid_refuses_the_last_usable_target);
+    rc |= run_with_default_tune_hook(test_scan_avoid_falls_back_on_the_original_when_alternates_fail);
+    rc |= run_with_default_tune_hook(test_scan_controls_on_a_single_target);
+    rc |= run_with_default_tune_hook(test_scan_controls_report_busy_while_p25_guard_held);
+    rc |= run_with_default_tune_hook(test_scan_hold_retries_the_held_target_after_a_pending_retune_fails);
+    rc |= run_with_default_tune_hook(test_scan_shutdown_clears_hold_and_avoid_publication);
     rc |= run_with_default_tune_hook(test_single_target_retune_failure_retries_after_cooldown);
     rc |= run_with_default_tune_hook(test_retune_failure_cooldown);
     rc |= run_with_default_tune_hook(test_scan_does_not_retune_active_target_while_alternates_cool_down);

@@ -56,10 +56,14 @@ Column behavior:
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
 | `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. P25 accepts `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
+| `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. |
+| `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
 
 A target's `chan_csv` may carry the optional `name` column described in [csv-formats.md](csv-formats.md), and it
 parses, but trunk scan discards the names. Each target's channel map is parked in a per-target snapshot that carries
 the frequencies positionally and no names, so a name kept from one target would sit beside the next target's list.
+Per-row `keys_hex_csv`/`keys_dec_csv` columns in a `chan_csv` are discarded the same way: keys arrive per
+trunk-scan target, not per channel-map row, and a kept set would install on the wrong target's hop.
 Under `--trunk-scan` the channel being heard is labelled by the target `id` instead.
 
 Target list limits and validation:
@@ -75,6 +79,8 @@ Target list limits and validation:
   values above `LONG_MAX`.
 - Duplicate `id` values are rejected.
 - Duplicate `(type, frequency_hz)` pairs are rejected.
+- A duplicated `keys_hex_csv` or `keys_dec_csv` header is rejected, and an unloadable key path fails the
+  whole import the way a bad `-K`/`-k` does.
 - `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets.
 - `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is valid for DMR and both NXDN
   target rates.
@@ -194,7 +200,18 @@ During scanning:
 - The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
 - Idle targets rotate after their dwell time.
+- The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
+  target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
+  now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
+  trunking state machine keeps following calls, and `L` still moves while held (the hold then applies to the new
+  target). Avoiding the last usable target is refused, as is `L` on a single-target list. Avoids are not written back
+  to the CSV. The Trunk Scan row shows `HOLD`, then `[avoided]` when every alternate failed to retune and the
+  receiver fell back onto a target that was avoided, and last `Avoids: N`, the number of targets currently out of the
+  rotation.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
+- A keyed target installs its key set on park and restores the global keys when the scan leaves it. Runtime
+  key imports and clears edit the globals underneath the parked target, so they survive the next hop; the
+  encrypted-lockout ledger is per target, so switches never invalidate it.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
 - P25, DMR, and NXDN trunk targets stay parked while their trunking state machine is following an active call
@@ -218,6 +235,7 @@ During scanning:
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
+  While held, a failed retune retries the held target after the cooldown instead of moving on.
 
 Expected log messages include:
 
@@ -254,6 +272,16 @@ to keep global/default modulation handling.
 
 Leave the field empty to inherit the global/default gain. Use `0` or `auto` for device automatic gain, or an integer
 from `1` to `49` for manual RTL-family gain in dB.
+
+`row N keys_hex_csv path is too long or invalid` (and `_dec_`)
+
+The key path is resolved relative to the target CSV. Use a path that fits in 1024 bytes and, for a relative
+reference, keep the key file next to (or below) the target CSV.
+
+`failed to import keys for trunk scan target '<id>' from '<file>'`
+
+The key file could not be opened or parsed. Key files use the `-K` (hex) and `-k` (decimal) formats described
+in [csv-formats.md](csv-formats.md); check the header row and the delimiter.
 
 `N trunk scan target(s) have no enabled <NAME> decoder (first: '<id>'); use <flags> to decode them`
 

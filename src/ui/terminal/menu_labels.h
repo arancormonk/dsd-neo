@@ -21,6 +21,7 @@
 // ---- Visibility/predicate functions ----
 bool io_rtl_active(const void* ctx);
 bool trunk_enabled(const void* ctx);
+bool scan_rotation_active(const void* ctx);
 bool provoice_active(const void* ctx);
 bool const_view_active(const void* ctx);
 bool eye_view_active(const void* ctx);
@@ -63,6 +64,8 @@ const char* lbl_m17_user_data(const void* v, char* b, size_t n);
 // Trunking
 const char* lbl_trunk(const void* v, char* b, size_t n);
 const char* lbl_scan(const void* v, char* b, size_t n);
+const char* lbl_scan_hold(const void* v, char* b, size_t n);
+const char* lbl_scan_avoid_clear(const void* v, char* b, size_t n);
 const char* lbl_lcw(const void* v, char* b, size_t n);
 const char* lbl_allow(const void* v, char* b, size_t n);
 const char* lbl_tune_group(const void* v, char* b, size_t n);
