@@ -749,7 +749,9 @@ main(void) {
         rc |= expect_has_substr(st.dmr_lrrp_gps[0], "Acknowledgment;", "tms acknowledgment");
 
         reset_spies();
-        const uint8_t text_payload[] = {0x00, 0x06, 0x00, 0x00, 'O', 0x00, 'K'};
+        // Length, header (extension present), no address, extension 8F 04, then "OK" in UCS-2 LE
+        // as Motorola radios send it (#466).
+        const uint8_t text_payload[] = {0x00, 0x08, 0xA0, 0x00, 0x8F, 0x04, 'O', 0x00, 'K', 0x00};
         plen = build_ipv4_udp_payload(pkt, sizeof pkt, 4007U, text_payload, sizeof(text_payload));
         st.event_history_s[0].Event_History_Items[0].text_message[0] = '\0';
         st.dmr_lrrp_gps[0][0] = '\0';

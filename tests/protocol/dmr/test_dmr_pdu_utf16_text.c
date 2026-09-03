@@ -4,9 +4,11 @@
  */
 
 /*
- * utf16_to_text() renders DMR SMS/TMS text from UTF-16BE octets (issue #358 covers the same
- * %lc hazard for UDT text). Surrogate pairs must combine into one character, an unpaired half
- * must become U+FFFD, and the historical markers for padding and the 0x040D line break stay.
+ * utf16_to_text() renders ETSI text (TS 102 361-3: UTF-16BE) and utf16le_to_text() Motorola TMS
+ * text (UCS-2 LE) to stderr and into the slot's event text (issue #358 covers the same %lc hazard
+ * for UDT text). Surrogate pairs must combine into one character, an unpaired half must become
+ * U+FFFD, the historical markers for padding and control characters stay on stderr, and the event
+ * text keeps every printable character as UTF-8 rather than the ASCII subset (issue #466).
  */
 
 #include <assert.h>
@@ -83,13 +85,30 @@ dsd_format_local_datetime(time_t timestamp, dsd_local_datetime_format format, ch
 #pragma GCC diagnostic pop
 #endif
 
-/* UTF-16BE: U+4739, U+1F600 as a pair, a lone high surrogate, 'A', padding, then 0x040D. */
+/* UTF-16BE: U+4739, U+1F600 as a pair, a lone high surrogate, 'A', padding, then U+040D (Cyrillic
+ * capital I with grave, which an earlier misreading of Motorola framing had special-cased as a
+ * line break). */
 static const uint8_t kText[] = {0x47, 0x39, 0xD8, 0x3D, 0xDE, 0x00, 0xD8, 0x00, 0x00, 0x41, 0x00, 0x00, 0x04, 0x0D};
 
 static const char kExpected[] = "\xE4\x9C\xB9"
                                 "\xF0\x9F\x98\x80"
                                 "\xEF\xBF\xBD"
-                                "A_ / ";
+                                "A_"
+                                "\xD0\x8D";
+
+/* The same characters without the padding: the event text is UTF-8, not the ASCII subset. */
+static const char kExpectedEvent[] = "\xE4\x9C\xB9"
+                                     "\xF0\x9F\x98\x80"
+                                     "\xEF\xBF\xBD"
+                                     "A"
+                                     "\xD0\x8D";
+
+/* UCS-2 LE, as Motorola TMS sends it: CR LF (a blank subject line) then "Zażółć gęślą jaźń". */
+static const uint8_t kTextLe[] = {0x0D, 0x00, 0x0A, 0x00, 0x5A, 0x00, 0x61, 0x00, 0x7C, 0x01, 0xF3, 0x00, 0x42,
+                                  0x01, 0x07, 0x01, 0x20, 0x00, 0x67, 0x00, 0x19, 0x01, 0x5B, 0x01, 0x6C, 0x00,
+                                  0x05, 0x01, 0x20, 0x00, 0x6A, 0x00, 0x61, 0x00, 0x7A, 0x01, 0x44, 0x01};
+
+static const char kPangramUtf8[] = "Za\xC5\xBC\xC3\xB3\xC5\x82\xC4\x87 g\xC4\x99\xC5\x9Bl\xC4\x85 ja\xC5\xBA\xC5\x84";
 
 int
 main(void) {
@@ -110,8 +129,26 @@ main(void) {
         DSD_FPRINTF(stderr, "utf16_to_text printed: %s\n", buf);
         assert(0 && "UTF-16 text was not transcoded as expected");
     }
-    /* The event log keeps only the ASCII characters, as before. */
-    assert(strcmp(st.event_history_s[0].Event_History_Items[0].text_message, "A") == 0);
+    if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, kExpectedEvent) != 0) {
+        DSD_FPRINTF(stderr, "event text: %s\n", st.event_history_s[0].Event_History_Items[0].text_message);
+        assert(0 && "event text was not the UTF-8 of the printable characters");
+    }
+
+    /* Little-endian units: the control characters print as markers and stay out of the event text. */
+    char expected_le[128];
+    DSD_SNPRINTF(expected_le, sizeof expected_le, "--%s", kPangramUtf8);
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_pdu_utf16") == 0);
+    utf16le_to_text(&st, 1, (uint16_t)sizeof kTextLe, kTextLe);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, buf, sizeof buf) == 0);
+    if (strcmp(buf, expected_le) != 0) {
+        DSD_FPRINTF(stderr, "utf16le_to_text printed: %s\n", buf);
+        assert(0 && "UTF-16LE text was not transcoded as expected");
+    }
+    if (strcmp(st.event_history_s[0].Event_History_Items[0].text_message, kPangramUtf8) != 0) {
+        DSD_FPRINTF(stderr, "event text: %s\n", st.event_history_s[0].Event_History_Items[0].text_message);
+        assert(0 && "UTF-16LE event text was not the pangram");
+    }
 
     /* An odd trailing octet is ignored rather than read past. */
     assert(dsd_test_capture_stderr_begin(&cap, "dmr_pdu_utf16") == 0);
