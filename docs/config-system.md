@@ -340,8 +340,10 @@ small subset is exposed as config keys for convenience (for example
 | `tune_data_calls` | BOOL | Follow data calls | `false` |
 | `tune_enc_calls` | BOOL | Follow P25 encrypted grants without key-aware lockout; `false` silently classifies and follows only usable matching keys | `true` |
 | `scanner` | BOOL | Use the channel map as a conventional scanner (`-Y`) instead of following a control channel | `false` |
+| `scan_voice_only` | BOOL | Step `-Y`/conventional scan on unless decoded voice holds the row | `false` |
+| `scan_voice_qualify_ms` | INT (100-600000) | Window after sync in which voice must appear or the scan moves on | `1000` |
+| `scan_voice_hold_ms` | INT (100-600000) | Time to stay after the last voice frame | `2000` |
 | `p25_prefer_candidates` | BOOL | Prefer learned P25 control-channel candidates when hunting (`-^`) | `false` |
-
 **[trunk_scan] section:**
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|

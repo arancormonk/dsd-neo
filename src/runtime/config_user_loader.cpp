@@ -440,8 +440,31 @@ apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const
     return 1;
 }
 
+static int
+apply_trunking_section_voice_gate_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "scan_voice_only") == 0) {
+        assign_bool_key(&cfg->trunk_scan_voice_only, val);
+    } else if (strcmp(key_lc, "scan_voice_qualify_ms") == 0) {
+        int parsed = 0;
+        if (user_config_parse_int_value(val, &parsed) == 0) {
+            cfg->trunk_scan_voice_qualify_ms = parsed;
+        }
+    } else if (strcmp(key_lc, "scan_voice_hold_ms") == 0) {
+        int parsed = 0;
+        if (user_config_parse_int_value(val, &parsed) == 0) {
+            cfg->trunk_scan_voice_hold_ms = parsed;
+        }
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
 static void
 apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (apply_trunking_section_voice_gate_key(cfg, key_lc, val)) {
+        return;
+    }
     if (apply_trunking_section_path_key(cfg, key_lc, val)) {
         return;
     }

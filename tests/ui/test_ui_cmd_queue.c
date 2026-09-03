@@ -2009,6 +2009,97 @@ test_scan_row_keys_commands(void) {
 }
 #endif
 
+/*
+ * Voice-gated scan (#381). The on/off flag is a plain int32 setter applied
+ * through the service; the qualify/hold windows ride the same path with the
+ * service clamping them to 100..600000 ms. Short payloads are ignored at
+ * drain, and the two ms setters coalesce while the flag does not.
+ */
+static int
+test_scan_voice_gate_commands(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+
+    rc |= expect_int("voice-only rejects action shape", dsd_app_command_action(DSD_APP_CMD_SCAN_VOICE_ONLY_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("voice-only rejects u32 shape", dsd_app_command_set_u32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 1U),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("voice qualify rejects double shape",
+                     dsd_app_command_set_double(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, 1.5),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+    rc |= expect_int("voice hold rejects action shape", dsd_app_command_action(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET),
+                     DSD_APP_COMMAND_SUBMIT_REJECTED);
+
+    rc |= expect_int("voice-only queued", post_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-only drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("voice-only applied", opts.scan_voice_only, 1);
+    rc |= expect_contains("voice-only toast", state.ui_msg, "Voice-only scan -> On");
+
+    rc |= expect_int("voice-only off queued", post_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 7),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-only off drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("voice-only nonzero means on", opts.scan_voice_only, 1);
+    rc |= expect_int("voice-only clear queued", post_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-only clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("voice-only cleared", opts.scan_voice_only, 0);
+    rc |= expect_contains("voice-only off toast", state.ui_msg, "Voice-only scan -> Off");
+
+    rc |= expect_int("voice qualify low queued", post_i32(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, 50),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice qualify low drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("voice qualify clamped low", opts.scan_voice_qualify_ms, 100);
+    rc |= expect_contains("voice qualify toast", state.ui_msg, "Voice qualify -> 100 ms");
+
+    rc |= expect_int("voice hold high queued", post_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 9999999),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice hold high drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("voice hold clamped high", opts.scan_voice_hold_ms, 600000);
+    rc |= expect_contains("voice hold toast", state.ui_msg, "Voice hold -> 600000 ms");
+
+    rc |= expect_int("voice qualify in-range queued", post_i32(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, 1500),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice qualify in-range drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("voice qualify kept", opts.scan_voice_qualify_ms, 1500);
+
+    /* Short payloads drain without touching state, like the short key vectors. */
+    {
+        uint8_t short_payload = 0xFFU;
+        int before_only = opts.scan_voice_only;
+        int before_qualify = opts.scan_voice_qualify_ms;
+        dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, &short_payload, sizeof(short_payload));
+        dsd_app_command_submit(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, &short_payload, sizeof(short_payload));
+        rc |= expect_int("short voice payloads drained", dsd_app_drain_cmds(&opts, &state), 2);
+        rc |= expect_int("short voice-only ignored", opts.scan_voice_only, before_only);
+        rc |= expect_int("short voice qualify ignored", opts.scan_voice_qualify_ms, before_qualify);
+    }
+
+    /* The ms windows collapse onto the newest value; the flag lands every time. */
+    rc |= expect_int("voice qualify first queued", post_i32(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, 1000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice qualify coalesces", post_i32(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, 2000),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_int("voice hold first queued", post_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 3000),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice hold coalesces", post_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, 4000),
+                     DSD_APP_COMMAND_SUBMIT_COALESCED);
+    rc |= expect_int("coalesced voice windows drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("voice qualify kept latest", opts.scan_voice_qualify_ms, 2000);
+    rc |= expect_int("voice hold kept latest", opts.scan_voice_hold_ms, 4000);
+
+    rc |= expect_int("voice-only first queued", post_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 1),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-only never coalesces", post_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, 0),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("voice-only pair drained", dsd_app_drain_cmds(&opts, &state), 2);
+    rc |= expect_int("voice-only kept latest", opts.scan_voice_only, 0);
+
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2023,6 +2114,7 @@ main(void) {
     rc |= test_compact_visualizer_toast();
     rc |= test_modulation_and_decode_mode_setters();
     rc |= test_trunk_set();
+    rc |= test_scan_voice_gate_commands();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     rc |= test_manual_tune_commands_commit_only_after_acceptance();
 #ifdef USE_RADIO

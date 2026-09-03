@@ -79,6 +79,9 @@
     X(act_scan_avoid)                                                                                                  \
     X(act_scan_avoid_clear)                                                                                            \
     X(act_scan_hold_toggle)                                                                                            \
+    X(act_scan_voice_hold)                                                                                             \
+    X(act_scan_voice_only)                                                                                             \
+    X(act_scan_voice_qualify)                                                                                          \
     X(act_rt_sched)                                                                                                    \
     X(act_scan_toggle)                                                                                                 \
     X(act_set_audio_lpf)                                                                                               \
@@ -271,6 +274,9 @@
     X(lbl_scan)                                                                                                        \
     X(lbl_scan_avoid_clear)                                                                                            \
     X(lbl_scan_hold)                                                                                                   \
+    X(lbl_scan_voice_hold)                                                                                             \
+    X(lbl_scan_voice_only)                                                                                             \
+    X(lbl_scan_voice_qualify)                                                                                          \
     X(lbl_slot1)                                                                                                       \
     X(lbl_slot2)                                                                                                       \
     X(lbl_slotpref)                                                                                                    \

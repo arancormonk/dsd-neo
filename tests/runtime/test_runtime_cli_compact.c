@@ -161,6 +161,31 @@ test_p25_bandplan_long_opts_are_removed(void) {
 }
 
 static int
+test_scan_voice_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--scan-voice-only";
+    char arg2[] = "--scan-voice-qualify-ms";
+    char arg3[] = "1500";
+    char arg4[] = "--scan-voice-qualify-ms=1500";
+    char arg5[] = "--scan-voice-hold-ms";
+    char arg6[] = "2500";
+    char arg7[] = "--scan-voice-hold-ms=2500";
+    char arg8[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, NULL};
+
+    int new_argc = dsd_cli_compact_args(9, argv);
+    if (new_argc != 2) {
+        DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
+        return 1;
+    }
+    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
+static int
 test_dmr_debug_burst_long_option_is_removed(void) {
     char arg0[] = "dsd-neo";
     char arg1[] = "--dmr-debug-burst";
@@ -530,5 +555,6 @@ main(void) {
     rc |= test_iq_capture_format_and_replay_rate_paired_forms_are_removed();
     rc |= test_iq_missing_value_forms_are_removed_safely();
     rc |= test_p25_bandplan_long_opts_are_removed();
+    rc |= test_scan_voice_long_opts_are_removed();
     return rc;
 }

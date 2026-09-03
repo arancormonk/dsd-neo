@@ -1147,6 +1147,46 @@ test_int_out_of_range_negative_max(void) {
 }
 
 static int
+test_scan_voice_qualify_ms_out_of_range(void) {
+    static const char* ini = "[trunking]\n"
+                             "scan_voice_qualify_ms = 50\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+
+    int rc = dsd_user_config_validate(path, &diags);
+    (void)rc;
+
+    int result = 0;
+    if (diags.warning_count == 0) {
+        DSD_FPRINTF(stderr, "FAIL: no warning for out-of-range scan_voice_qualify_ms=50\n");
+        result = 1;
+    }
+
+    int found_warning = 0;
+    for (int i = 0; i < diags.count; i++) {
+        if (diags.items[i].level == DSDCFG_DIAG_WARNING && strstr(diags.items[i].key, "scan_voice_qualify_ms")
+            && strstr(diags.items[i].message, "out of range")) {
+            found_warning = 1;
+            break;
+        }
+    }
+    if (!found_warning) {
+        DSD_FPRINTF(stderr, "FAIL: missing out-of-range warning for scan_voice_qualify_ms=50\n");
+        result = 1;
+    }
+
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return result;
+}
+
+static int
 test_input_warn_db_double_validation(void) {
     // In-range double: no diagnostics for the key
     static const char* valid_ini = "[input]\n"
@@ -1698,6 +1738,7 @@ main(void) {
     rc |= test_invalid_source_rejected_after_soapy_added();
     rc |= test_int_out_of_range();
     rc |= test_int_out_of_range_negative_max();
+    rc |= test_scan_voice_qualify_ms_out_of_range();
     rc |= test_input_warn_db_double_validation();
     rc |= test_dmr_lrrp_ports_validation();
     rc |= test_diags_have_line_numbers();

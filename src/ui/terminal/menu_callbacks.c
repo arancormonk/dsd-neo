@@ -332,6 +332,38 @@ cb_setmod_bw(void* v, int ok, int bw) {
 }
 
 void
+cb_scan_voice_qualify(void* v, int ok, int ms) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        int adjusted = 0;
+        int32_t vms = (int32_t)clamp_int_with_notice("Voice qualify", ms, 100, 600000, &adjusted);
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_QUALIFY_MS_SET, vms);
+        if (!adjusted) {
+            ui_statusf("Applying voice qualify: %d ms", (int)vms);
+        }
+    }
+}
+
+void
+cb_scan_voice_hold(void* v, int ok, int ms) {
+    const UiCtx* c = mutable_ui_ctx_from_callback(v);
+    if (!c) {
+        return;
+    }
+    if (ok) {
+        int adjusted = 0;
+        int32_t vms = (int32_t)clamp_int_with_notice("Voice hold", ms, 100, 600000, &adjusted);
+        (void)dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_HOLD_MS_SET, vms);
+        if (!adjusted) {
+            ui_statusf("Applying voice hold: %d ms", (int)vms);
+        }
+    }
+}
+
+void
 cb_tg_hold(void* v, int ok, int tg) {
     const UiCtx* c = mutable_ui_ctx_from_callback(v);
     if (!c) {

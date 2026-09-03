@@ -173,6 +173,22 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing input_warn_db range hint\n");
         rc = 1;
     }
+    if (!strstr(content, "# scan_voice_only")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_only key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# scan_voice_qualify_ms")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_qualify_ms key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# scan_voice_hold_ms")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing commented scan_voice_hold_ms key\n");
+        rc = 1;
+    }
+    if (!strstr(content, "# Range: 100 to 600000")) {
+        DSD_FPRINTF(stderr, "FAIL: template missing scan voice millisecond range hint\n");
+        rc = 1;
+    }
     if (strstr(content, "version =") != NULL) {
         DSD_FPRINTF(stderr, "FAIL: template must not emit the persisted version marker\n");
         rc = 1;

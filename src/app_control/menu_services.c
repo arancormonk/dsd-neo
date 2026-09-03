@@ -648,6 +648,44 @@ svc_set_slots_onoff(dsd_opts* opts, int mask) {
     opts->slot2_on = (mask & 2) ? 1 : 0;
 }
 
+void
+svc_set_scan_voice_only(dsd_opts* opts, int on) {
+    if (!opts) {
+        return;
+    }
+    // Turning the gate off leaves phase cleanup to the engine tick, which
+    // notices the flag and resets the gate on its next pass.
+    opts->scan_voice_only = on ? 1 : 0;
+}
+
+void
+svc_set_scan_voice_qualify_ms(dsd_opts* opts, int ms) {
+    if (!opts) {
+        return;
+    }
+    if (ms < 100) {
+        ms = 100;
+    }
+    if (ms > 600000) {
+        ms = 600000;
+    }
+    opts->scan_voice_qualify_ms = ms;
+}
+
+void
+svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms) {
+    if (!opts) {
+        return;
+    }
+    if (ms < 100) {
+        ms = 100;
+    }
+    if (ms > 600000) {
+        ms = 600000;
+    }
+    opts->scan_voice_hold_ms = ms;
+}
+
 // Inversion toggles ---------------------------------------------------------
 void
 svc_toggle_inv_x2(dsd_opts* opts) {

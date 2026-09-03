@@ -386,6 +386,16 @@ typedef struct p25_bandplan_row {
     p25_iden_entry_t entry;
 } p25_bandplan_row_t;
 
+/** Voice-gated scan phase for -Y (issue #381). OFF = gate disabled; QUALIFY = synced
+ * but no policy-allowed voice yet; VOICE = voice media active; TAIL = holding past
+ * the last voice frame. */
+typedef enum {
+    DSD_SCAN_VOICE_GATE_OFF = 0,
+    DSD_SCAN_VOICE_GATE_QUALIFY = 1,
+    DSD_SCAN_VOICE_GATE_VOICE = 2,
+    DSD_SCAN_VOICE_GATE_TAIL = 3,
+} dsd_scan_voice_gate_phase;
+
 // dsd_state is a C aggregate, not a C++ class: it is allocated once and zeroed by
 // initState() before anything reads it, and C code — which is most of its users —
 // has no constructors to write. A C++ TU that includes this header would otherwise
@@ -1659,6 +1669,19 @@ struct dsd_state {
     uint8_t trunk_scan_hold;           /**< 1 = --trunk-scan dwell paused on the active target */
     uint8_t trunk_scan_active_avoided; /**< 1 = the parked target is itself avoided (fallback) */
     uint16_t trunk_scan_avoided_count; /**< Avoided --trunk-scan targets */
+    /* Voice-gated scan (issue #381): per-visit gate memory for -Y. Arrive/sync/voice
+     * anchors are monotonic seconds (-1 = unset this visit); roll_seen restarts the
+     * visit on external lcn_freq_roll changes; hold_seen is lcn_scan_hold as of the
+     * previous tick, so a release can restart the qualify window; phase is a
+     * dsd_scan_voice_gate_phase for the status line, owned by the -Y tick or, under
+     * --trunk-scan, by the coordinator (OFF on trunked targets). Rides the
+     * vertex_ks_count..ui_msg snapshot range (see ui_snapshot.c static assert). */
+    double scan_voice_gate_arrive_m;
+    double scan_voice_gate_sync_m;
+    double scan_voice_gate_voice_m;
+    int scan_voice_gate_roll_seen;
+    uint8_t scan_voice_gate_hold_seen;
+    uint8_t scan_voice_gate_phase;
 
     // Transient UI message (shown briefly in ncurses printer)
     char ui_msg[128];

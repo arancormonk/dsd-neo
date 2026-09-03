@@ -26,6 +26,7 @@
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/p25_bandplan_export.h>
 #include <dsd-neo/engine/protocol_dispatch.h>
+#include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/fec/block_codes.h>
@@ -1357,8 +1358,16 @@ no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, in
 // Returns non-zero when the scanner actually moved to another frequency, so the caller can end any
 // call still open as an explicit release rather than a sync loss.
 static int
+no_carrier_scanner_step_is_due(const dsd_opts* opts, const dsd_state* state, time_t now) {
+    if (opts->scan_voice_only == 1 && state->scan_voice_gate_sync_m >= 0.0) {
+        return dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s());
+    }
+    return (now - state->last_cc_sync_time) > opts->trunk_hangtime;
+}
+
+static int
 no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, time_t now) {
-    if (opts->scanner_mode != 1 || (now - state->last_cc_sync_time) <= opts->trunk_hangtime) {
+    if (opts->scanner_mode != 1 || !no_carrier_scanner_step_is_due(opts, state, now)) {
         return 0;
     }
     // An operator hold pauses the rotation where it stands. The dwell timer is left alone:
@@ -1398,6 +1407,7 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, state->last_cc_sync_time_m);
     // A zero entry parks on the current frequency rather than retuning, so it is not a hop.
     return freq != 0;
 }
@@ -2497,7 +2507,13 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, int* last_m
         }
         p25_sm_tick_guard_leave();
         dsd_trunk_scan_hook_tick(opts, state);
-
+        if (opts->scanner_mode == 1 && opts->scan_voice_only == 1) {
+            dsd_scan_voice_gate_tick(opts, state, frame_dispatchable, dsd_time_now_monotonic_s());
+            if (dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s())) {
+                state->synctype = DSD_SYNC_NONE;
+                break;
+            }
+        }
         dsd_runtime_pump_controls(opts, state);
         if (frame_tune_generation) {
             *frame_tune_generation = dsd_trunk_tuning_generation();
@@ -2517,6 +2533,7 @@ live_scanner_main_loop(dsd_opts* opts, dsd_state* state) {
         dsd_runtime_pump_controls(opts, state);
         p25_sm_try_tick(opts, state);
         dsd_trunk_scan_hook_tick(opts, state);
+        dsd_scan_voice_gate_tick(opts, state, 0, dsd_time_now_monotonic_s());
         dsd_runtime_pump_controls(opts, state);
 
         noCarrier(opts, state);

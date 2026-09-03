@@ -13,6 +13,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -776,6 +777,143 @@ main(void) {
     noCarrier(opts, state);
     rc |= expect_true("scanner-avoid-all-no-retune", g_rtl_tune_calls == 0);
     rc |= expect_true("scanner-avoid-all-keeps-roll", state->lcn_freq_roll == 3);
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // Voice-gated scan (issue #381): a synced row with no decoded voice steps as soon as the
+    // qualify window lapses even while the hangtime would keep parking there; decoded voice
+    // holds the row past qualify; an unsynced visit and a disabled gate keep the hangtime
+    // rule; the operator hold wins over all of it. Anchors ride the real monotonic clock
+    // with second-scale margins, and every hop here uses a frequency no earlier case tunes
+    // so engine.c's tune cache cannot swallow the retune.
+    reset_rtl_profile_fakes();
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scan_voice_only = 1;
+    opts->scan_voice_qualify_ms = 1000;
+    opts->scan_voice_hold_ms = 2000;
+    opts->trunk_hangtime = 10;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 947012500;
+    state->trunk_lcn_freq[1] = 948012500;
+    state->trunk_lcn_freq[2] = 949012500;
+    state->trunk_lcn_freq[3] = 950012500;
+    state->lcn_freq_count = 4;
+    state->lcn_freq_roll = 0;
+
+    // An IDLE row: synced frames, no voice media. The hangtime (10 s, deadline 1 s old)
+    // would keep parking here, but the qualify window (1 s, synced 5 s ago) has lapsed.
+    double gate_now_m = dsd_time_now_monotonic_s();
+    state->last_cc_sync_time = time(NULL) - 1;
+    dsd_scan_voice_gate_note_retune(state, gate_now_m - 5.0);
+    dsd_scan_voice_gate_tick(opts, state, 1, gate_now_m - 5.0);
+    dsd_call_observation gate_idle_call = {0};
+    gate_idle_call.protocol = DSD_SYNC_NXDN_POS;
+    gate_idle_call.slot = 0U;
+    gate_idle_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    gate_idle_call.ota_target_id = 7201U;
+    gate_idle_call.policy_target_id = 7201U;
+    gate_idle_call.ota_source_id = 8201U;
+    gate_idle_call.observed_m = gate_now_m - 5.0;
+    rc |= expect_true("voice-gate-idle-seeds-call",
+                      dsd_call_state_observe(state, &gate_idle_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    rc |= expect_true("voice-gate-idle-due",
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) != 0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    dsd_call_snapshot gate_idle_snapshot;
+    rc |= expect_true("voice-gate-idle-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 947012500U);
+    rc |= expect_true("voice-gate-idle-advanced", state->lcn_freq_roll == 1);
+    rc |= expect_true("voice-gate-idle-retains-snapshot", dsd_call_state_get(state, 0U, &gate_idle_snapshot) == 1);
+    rc |= expect_true("voice-gate-idle-ends-call", gate_idle_snapshot.phase == DSD_CALL_PHASE_ENDED);
+    rc |= expect_true("voice-gate-idle-ends-call-explicitly",
+                      gate_idle_snapshot.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    gate_now_m = dsd_time_now_monotonic_s();
+    rc |= expect_true("voice-gate-idle-resets-sync", state->scan_voice_gate_sync_m < 0.0);
+    rc |= expect_true("voice-gate-idle-resets-voice", state->scan_voice_gate_voice_m < 0.0);
+    rc |= expect_true("voice-gate-idle-restamps-arrive", fabs(state->scan_voice_gate_arrive_m - gate_now_m) < 5.0);
+
+    // Recent voice holds past qualify even though the hangtime (1 s, deadline 11 s old) is due.
+    opts->trunk_hangtime = 1;
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time = time(NULL) - 11;
+    gate_now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, gate_now_m - 0.6);
+    dsd_call_observation gate_voice_call = {0};
+    gate_voice_call.protocol = DSD_SYNC_NXDN_POS;
+    gate_voice_call.slot = 0U;
+    gate_voice_call.kind = DSD_CALL_KIND_GROUP_VOICE;
+    gate_voice_call.ota_target_id = 7202U;
+    gate_voice_call.policy_target_id = 7202U;
+    gate_voice_call.ota_source_id = 8202U;
+    gate_voice_call.observed_m = gate_now_m - 0.5;
+    rc |= expect_true("voice-gate-voice-seeds-call",
+                      dsd_call_state_observe(state, &gate_voice_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    rc |= expect_true("voice-gate-voice-seeds-media",
+                      dsd_call_state_update_media(state, 0U, 1, gate_now_m - 0.5) == 1
+                          && dsd_call_state_update_media(state, 0U, 1, gate_now_m - 0.3) == 1);
+    dsd_scan_voice_gate_tick(opts, state, 1, gate_now_m);
+    rc |= expect_true("voice-gate-voice-phase", state->scan_voice_gate_phase == (uint8_t)DSD_SCAN_VOICE_GATE_VOICE);
+    rc |= expect_true("voice-gate-voice-holds",
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+    const time_t voice_hold_deadline = state->last_cc_sync_time;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("voice-gate-voice-no-retune", g_rtl_tune_calls == 0);
+    rc |= expect_true("voice-gate-voice-keeps-roll", state->lcn_freq_roll == 1);
+    rc |= expect_true("voice-gate-voice-keeps-deadline", state->last_cc_sync_time == voice_hold_deadline);
+
+    // Gate off: the stale gate anchors above are ignored and the hangtime rule decides alone.
+    opts->scan_voice_only = 0;
+    state->last_cc_sync_time = time(NULL);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("voice-gate-off-fresh-no-retune", g_rtl_tune_calls == 0);
+    rc |= expect_true("voice-gate-off-fresh-keeps-roll", state->lcn_freq_roll == 1);
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("voice-gate-off-stale-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 948012500U);
+    rc |= expect_true("voice-gate-off-stale-advanced", state->lcn_freq_roll == 2);
+
+    // Gate on but never synced this visit: the gate abstains and the hangtime rule steps.
+    // The voice epoch above is retired first so its media cannot hold the visit instead.
+    opts->scan_voice_only = 1;
+    gate_now_m = dsd_time_now_monotonic_s();
+    // The voice epoch above is already ended by the earlier noCarrier passes; retiring it
+    // again is a no-op so its media cannot hold the visit instead.
+    (void)dsd_call_state_end_ex(state, 0U, gate_now_m, DSD_CALL_END_EXPLICIT);
+    state->lcn_freq_roll = 2;
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    gate_now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, gate_now_m - 5.0);
+    dsd_scan_voice_gate_tick(opts, state, 0, gate_now_m);
+    rc |= expect_true("voice-gate-unsynced-abstains",
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("voice-gate-unsynced-retuned", g_rtl_tune_calls > 0 && g_rtl_tune_freq == 949012500U);
+    rc |= expect_true("voice-gate-unsynced-advanced", state->lcn_freq_roll == 3);
+
+    // The operator hold wins: qualify lapsed, hangtime due, but the row stays put.
+    state->lcn_freq_roll = 3;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->lcn_scan_hold = 1;
+    gate_now_m = dsd_time_now_monotonic_s();
+    dsd_scan_voice_gate_note_retune(state, gate_now_m - 5.0);
+    dsd_scan_voice_gate_tick(opts, state, 1, gate_now_m - 5.0);
+    rc |= expect_true("voice-gate-hold-due",
+                      dsd_scan_voice_gate_should_step(opts, state, dsd_time_now_monotonic_s()) == 0);
+    const time_t operator_hold_deadline = state->last_cc_sync_time;
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_true("voice-gate-hold-no-retune", g_rtl_tune_calls == 0);
+    rc |= expect_true("voice-gate-hold-keeps-roll", state->lcn_freq_roll == 3);
+    rc |= expect_true("voice-gate-hold-keeps-deadline", state->last_cc_sync_time == operator_hold_deadline);
+    state->lcn_scan_hold = 0;
 
     free_test_runtime(opts, state);
     if (init_test_runtime(&opts, &state) != 0) {

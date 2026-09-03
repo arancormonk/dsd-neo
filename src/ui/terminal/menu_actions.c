@@ -416,6 +416,25 @@ act_hangtime(void* v) {
 }
 
 void
+act_scan_voice_only(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    int32_t on = (c && c->opts && c->opts->scan_voice_only) ? 0 : 1;
+    (void)dsd_app_command_set_i32(DSD_APP_CMD_SCAN_VOICE_ONLY_SET, on);
+}
+
+void
+act_scan_voice_qualify(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("Voice qualify (ms)", c->opts->scan_voice_qualify_ms, cb_scan_voice_qualify, c);
+}
+
+void
+act_scan_voice_hold(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    ui_prompt_open_int_async("Voice hold (ms)", c->opts->scan_voice_hold_ms, cb_scan_voice_hold, c);
+}
+
+void
 act_rr_import(void* v) {
     UiCtx* c = (UiCtx*)v;
     if (!c || !c->opts) {

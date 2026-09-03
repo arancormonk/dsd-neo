@@ -457,6 +457,29 @@ lbl_hangtime(const void* v, char* b, size_t n) {
 }
 
 const char*
+lbl_scan_voice_only(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    DSD_SNPRINTF(b, n, "Voice-only scan [%s]", onoff(c && c->opts && c->opts->scan_voice_only));
+    return b;
+}
+
+const char*
+lbl_scan_voice_qualify(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    const int ms = (c && c->opts) ? c->opts->scan_voice_qualify_ms : 0;
+    DSD_SNPRINTF(b, n, "Voice qualify... [%d ms]", ms);
+    return b;
+}
+
+const char*
+lbl_scan_voice_hold(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    const int ms = (c && c->opts) ? c->opts->scan_voice_hold_ms : 0;
+    DSD_SNPRINTF(b, n, "Voice hold... [%d ms]", ms);
+    return b;
+}
+
+const char*
 lbl_rev_mute(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     DSD_SNPRINTF(b, n, "Reverse mute [%s]", onoff(c->opts->reverse_mute));

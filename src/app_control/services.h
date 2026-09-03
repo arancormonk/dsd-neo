@@ -155,6 +155,12 @@ void svc_toggle_dmr_le(dsd_opts* opts);
 void svc_set_slot_pref(dsd_opts* opts, int pref);
 /** @brief Enable/disable slots using bitmask (bit0=slot1, bit1=slot2). */
 void svc_set_slots_onoff(dsd_opts* opts, int mask);
+/** @brief Gate trunk scan on voice: leave a signal that carries no voice. */
+void svc_set_scan_voice_only(dsd_opts* opts, int on);
+/** @brief Voice qualify window in ms (clamped to 100..600000). */
+void svc_set_scan_voice_qualify_ms(dsd_opts* opts, int ms);
+/** @brief Voice hold time in ms (clamped to 100..600000). */
+void svc_set_scan_voice_hold_ms(dsd_opts* opts, int ms);
 
 // Symbol profile
 /**

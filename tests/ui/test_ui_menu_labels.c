@@ -348,6 +348,16 @@ test_trunking_labels(void) {
     rc |= expect_str("tg hold set", lbl_tg_hold(&ctx, b, sizeof(b)), "Talkgroup hold... [4242]");
     opts.trunk_hangtime = 2.75f;
     rc |= expect_str("hangtime", lbl_hangtime(&ctx, b, sizeof(b)), "Hangtime... [2.8 s]");
+    rc |= expect_str("voice-only null ctx", lbl_scan_voice_only(NULL, b, sizeof(b)), "Voice-only scan [Off]");
+    opts.scan_voice_only = 0;
+    rc |= expect_str("voice-only off", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [Off]");
+    opts.scan_voice_only = 1;
+    rc |= expect_str("voice-only on", lbl_scan_voice_only(&ctx, b, sizeof(b)), "Voice-only scan [On]");
+    opts.scan_voice_only = 0;
+    opts.scan_voice_qualify_ms = 1500;
+    rc |= expect_str("voice qualify", lbl_scan_voice_qualify(&ctx, b, sizeof(b)), "Voice qualify... [1500 ms]");
+    opts.scan_voice_hold_ms = 2500;
+    rc |= expect_str("voice hold", lbl_scan_voice_hold(&ctx, b, sizeof(b)), "Voice hold... [2500 ms]");
 
     opts.use_rigctl = 1;
     opts.rigctl_sockfd = 4;

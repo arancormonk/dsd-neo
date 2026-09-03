@@ -602,6 +602,20 @@ cb_setmod_bw(void* v, int ok, int bw) {
 }
 
 void
+cb_scan_voice_qualify(void* v, int ok, int ms) {
+    (void)v;
+    (void)ok;
+    (void)ms;
+}
+
+void
+cb_scan_voice_hold(void* v, int ok, int ms) {
+    (void)v;
+    (void)ok;
+    (void)ms;
+}
+
+void
 cb_import_chan(void* v, const char* p) {
     (void)v;
     (void)p;
@@ -1813,10 +1827,59 @@ test_config_and_pulse_failure_variants(void) {
     return rc;
 }
 
+/*
+ * Voice-gated scan rows (#381): the on/off row posts the toggled value, and
+ * the qualify/hold rows open async int prompts seeded from the live options.
+ */
+static int
+test_scan_voice_gate_actions(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    static UiCtx ctx;
+    ctx = make_ctx(&opts, &state);
+
+    opts.scan_voice_only = 0;
+    reset_capture();
+    act_scan_voice_only(&ctx);
+    rc |= expect_int("voice-only command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_ONLY_SET);
+    rc |= expect_int("voice-only toggles on", cmd_i32(), 1);
+    rc |= expect_int("voice-only posts once", g_cmd.calls, 1);
+
+    opts.scan_voice_only = 1;
+    reset_capture();
+    act_scan_voice_only(&ctx);
+    rc |= expect_int("voice-only off command", g_cmd.id, DSD_APP_CMD_SCAN_VOICE_ONLY_SET);
+    rc |= expect_int("voice-only toggles off", cmd_i32(), 0);
+
+    opts.scan_voice_qualify_ms = 1500;
+    reset_capture();
+    act_scan_voice_qualify(&ctx);
+    rc |= expect_str("voice qualify prompt", g_prompt.title, "Voice qualify (ms)");
+    rc |= expect_int("voice qualify initial", g_prompt.initial_int, 1500);
+    rc |= expect_int("voice qualify opens int prompt", g_prompt.calls, 1);
+    rc |= expect_int("voice qualify wires callback", g_prompt.int_cb == cb_scan_voice_qualify, 1);
+    rc |= expect_int("voice qualify posts nothing yet", g_cmd.calls, 0);
+
+    opts.scan_voice_hold_ms = 2500;
+    reset_capture();
+    act_scan_voice_hold(&ctx);
+    rc |= expect_str("voice hold prompt", g_prompt.title, "Voice hold (ms)");
+    rc |= expect_int("voice hold initial", g_prompt.initial_int, 2500);
+    rc |= expect_int("voice hold opens int prompt", g_prompt.calls, 1);
+    rc |= expect_int("voice hold wires callback", g_prompt.int_cb == cb_scan_voice_hold, 1);
+    rc |= expect_int("voice hold posts nothing yet", g_cmd.calls, 0);
+
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
     rc |= test_simple_commands_and_prompts();
+    rc |= test_scan_voice_gate_actions();
     rc |= test_p25_bandplan_actions();
     rc |= test_config_profile_and_env_actions();
     rc |= test_io_actions_and_choosers();

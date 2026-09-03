@@ -148,6 +148,9 @@ Main Menu
 │   │   ├── Allow-list mode [Off]                w
 │   │   ├── Talkgroup hold... [none]             k/l
 │   │   ├── Hangtime... [1.0 s]
+│   │   ├── Voice-only scan [Off]
+│   │   ├── Voice qualify... [1000 ms]
+│   │   ├── Voice hold... [2000 ms]
 │   │   ├── Reverse mute [Off]
 │   │   ├── Lock out talkgroup on slot 1         !
 │   │   └── Lock out talkgroup on slot 2         @
@@ -502,6 +505,9 @@ frequency and speed keep their columns, and on a narrow terminal it is the name 
 While `Y` holds the scan, `HOLD` appears ahead of the name with the other facts about the channel on air. While
 `b` has taken rows out of the rotation for the session, `Avoids: N` closes the row: it counts the rows that are
 out of the list, and says nothing about the channel you are hearing, which under `-Y` is never an avoided one.
+With `--scan-voice-only`, `Voice: QUALIFY|VOICE|TAIL` follows the speed (and the trunk-scan `(n/m)`): QUALIFY
+while synced without voice, VOICE while voice media is active, TAIL while holding past the last voice frame. A
+trunked `--trunk-scan` target shows no marker, since the gate leaves trunked targets alone.
 
 ```
 | Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Channel: Marion Avoids: 2

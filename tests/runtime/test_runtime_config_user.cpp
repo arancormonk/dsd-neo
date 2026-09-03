@@ -2323,8 +2323,15 @@ test_persistence_gap_schema_rows(void) {
         const char* section;
         const char* key;
     } expected[] = {
-        {"trunking", "scanner"},    {"trunking", "p25_prefer_candidates"}, {"mode", "edacs_ea"}, {"mode", "edacs_esk"},
-        {"mode", "dmr_lrrp_ports"}, {"trunking", "p25_bandplan_csv"},
+        {"trunking", "scanner"},
+        {"trunking", "p25_prefer_candidates"},
+        {"mode", "edacs_ea"},
+        {"mode", "edacs_esk"},
+        {"mode", "dmr_lrrp_ports"},
+        {"trunking", "p25_bandplan_csv"},
+        {"trunking", "scan_voice_only"},
+        {"trunking", "scan_voice_qualify_ms"},
+        {"trunking", "scan_voice_hold_ms"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2393,6 +2400,72 @@ test_scanner_and_candidates_roundtrip(void) {
     }
     rc |= expect_contains_quiet("trunking scanner off", rendered, "scanner = false\n");
     rc |= expect_contains_quiet("trunking candidates off", rendered, "p25_prefer_candidates = false\n");
+    return rc;
+}
+
+static int
+test_scan_voice_gate_roundtrip(void) {
+    static const char* ini = "[trunking]\n"
+                             "scan_voice_only = true\n"
+                             "scan_voice_qualify_ms = 1500\n"
+                             "scan_voice_hold_ms = 2500\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "scan voice gate config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    if (!cfg.trunk_scan_voice_only || cfg.trunk_scan_voice_qualify_ms != 1500 || cfg.trunk_scan_voice_hold_ms != 2500) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] scan voice gate keys did not load, got only=%d qualify=%d hold=%d\n",
+                    cfg.trunk_scan_voice_only, cfg.trunk_scan_voice_qualify_ms, cfg.trunk_scan_voice_hold_ms);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.scan_voice_only != 1 || opts.scan_voice_qualify_ms != 1500 || opts.scan_voice_hold_ms != 2500) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: [trunking] scan voice gate keys did not reach dsd_opts, got only=%d qualify=%d "
+                    "hold=%d\n",
+                    opts.scan_voice_only, opts.scan_voice_qualify_ms, opts.scan_voice_hold_ms);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (!snap.trunk_scan_voice_only || snap.trunk_scan_voice_qualify_ms != 1500
+        || snap.trunk_scan_voice_hold_ms != 2500) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped the scan voice gate answers\n");
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scan voice only", rendered, "scan_voice_only = true\n");
+    rc |= expect_contains_quiet("trunking voice qualify", rendered, "scan_voice_qualify_ms = 1500\n");
+    rc |= expect_contains_quiet("trunking voice hold", rendered, "scan_voice_hold_ms = 2500\n");
+
+    /* Off must round-trip as explicitly off, not as an omitted key: a missing
+       key would silently inherit whatever the previous session left in opts. */
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig off_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &off_snap);
+    if (render_config_to_buffer(&off_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking scan voice off", rendered, "scan_voice_only = false\n");
     return rc;
 }
 
@@ -2918,6 +2991,7 @@ main(void) {
     rc |= test_dmr_lrrp_ports_absent_key_keeps_existing_list();
     rc |= test_dmr_lrrp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
+    rc |= test_scan_voice_gate_roundtrip();
     rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();
     rc |= test_edacs_variant_unanswered_is_not_persisted();
