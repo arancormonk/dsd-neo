@@ -13,6 +13,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CSV_IMPORT_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_CSV_IMPORT_H_H
 
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
@@ -25,6 +26,8 @@ int csvGroupImportPath(const char* group_file_path, dsd_state* state);
 int csvChanImport(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportDec(const dsd_opts* opts, dsd_state* state);
 int csvKeyImportHex(const dsd_opts* opts, dsd_state* state);
+int csvKeyImportDecPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats);
+int csvKeyImportHexPath(const char* path, int show_keys, dsd_state* state, dsd_csv_validation* stats);
 int csvVertexKsImport(dsd_state* state, const char* path);
 int csvDmrTgKeyImport(dsd_state* state, const char* path);
 

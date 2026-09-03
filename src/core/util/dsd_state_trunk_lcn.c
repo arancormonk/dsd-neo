@@ -12,6 +12,7 @@
  * without dragging in the full initState/freeState dependency chain.
  */
 
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
@@ -225,6 +226,86 @@ dsd_state_trunk_lcn_avoid_free(dsd_state* state) {
     state->trunk_lcn_avoid_capacity = 0;
 }
 
+int
+dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count) {
+    if (!state) {
+        return -1;
+    }
+    if (count <= state->trunk_lcn_keys_capacity) {
+        return 0;
+    }
+    size_t capacity = state->trunk_lcn_keys_capacity > 0 ? state->trunk_lcn_keys_capacity : 16;
+    while (capacity < count) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = count;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(dsd_key_set)) {
+        return -1;
+    }
+    dsd_key_set* keys = (dsd_key_set*)realloc(state->trunk_lcn_keys, capacity * sizeof(*keys));
+    if (!keys) {
+        return -1;
+    }
+    DSD_MEMSET(keys + state->trunk_lcn_keys_capacity, 0, (capacity - state->trunk_lcn_keys_capacity) * sizeof(*keys));
+    state->trunk_lcn_keys = keys;
+    state->trunk_lcn_keys_capacity = capacity;
+    return 0;
+}
+
+void
+dsd_state_trunk_lcn_keys_free(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    for (size_t i = 0; i < state->trunk_lcn_keys_capacity; i++) {
+        dsd_key_set_free(&state->trunk_lcn_keys[i]);
+    }
+    free(state->trunk_lcn_keys);
+    state->trunk_lcn_keys = NULL;
+    state->trunk_lcn_keys_capacity = 0;
+}
+
+int
+dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks) {
+    if (!state || !ks || index == SIZE_MAX) {
+        return -1;
+    }
+    if (dsd_state_trunk_lcn_keys_reserve(state, index + 1) != 0) {
+        return -1;
+    }
+    dsd_key_set_free(&state->trunk_lcn_keys[index]);
+    state->trunk_lcn_keys[index] = *ks;
+    DSD_MEMSET(ks, 0, sizeof(*ks));
+    return 0;
+}
+
+const dsd_key_set*
+dsd_state_trunk_lcn_keys_get(const dsd_state* state, size_t index) {
+    if (!state || !state->trunk_lcn_keys || index >= state->trunk_lcn_keys_capacity) {
+        return NULL;
+    }
+    if (state->trunk_lcn_keys[index].present == 0) {
+        return NULL;
+    }
+    return &state->trunk_lcn_keys[index];
+}
+
+int
+dsd_state_trunk_lcn_keys_present(const dsd_state* state) {
+    if (!state || !state->trunk_lcn_keys) {
+        return 0;
+    }
+    for (size_t i = 0; i < state->trunk_lcn_keys_capacity; i++) {
+        if (state->trunk_lcn_keys[i].present != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Rows the list and the store both reach: the count the status line reports and the
  * clear helper returns. Flags past a shrunk list stay in the store but stop counting. */
 static size_t
@@ -327,6 +408,10 @@ dsd_state_trunk_lcn_free(dsd_state* state) {
     state->trunk_lcn_freq_ext_capacity = 0;
     dsd_state_trunk_lcn_name_free(state);
     dsd_state_trunk_lcn_avoid_free(state);
+    dsd_state_trunk_lcn_keys_free(state);
+    dsd_key_set_free(&state->scan_keys_baseline);
+    dsd_key_set_free(&state->scan_keys_active);
+    state->scan_keys_active_set = 0;
 }
 
 int

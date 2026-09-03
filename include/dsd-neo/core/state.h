@@ -26,6 +26,7 @@
 
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/enc_lockout.h>
+#include <dsd-neo/core/key_set.h>
 
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
@@ -502,6 +503,18 @@ struct dsd_state {
      * UI_SNAPSHOT_COPY_RANGE, for the same reason as the two stores above. */
     uint8_t* trunk_lcn_avoid;
     size_t trunk_lcn_avoid_capacity;
+    /* Sparse per-row key set per scan-list row, indexed like trunk_lcn_name. NULL until a
+     * channel-map CSV opts in with a `keys_hex_csv`/`keys_dec_csv` header column. Read it
+     * through dsd_state_trunk_lcn_keys_get(). Never inside a UI_SNAPSHOT_COPY_RANGE, for the
+     * same reason as the stores above -- and additionally because key material is never
+     * deep-copied into the snapshot. */
+    dsd_key_set* trunk_lcn_keys;
+    size_t trunk_lcn_keys_capacity;
+    /* Scan key swap state: the lazily captured global keys plus the active row set copy.
+     * Sits in the same uncopied gap as the stores above. */
+    dsd_key_set scan_keys_baseline;
+    dsd_key_set scan_keys_active;
+    uint8_t scan_keys_active_set;
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
@@ -1758,9 +1771,9 @@ dsd_state_trunk_lcn_slot_const(const dsd_state* state, int i) {
 int dsd_state_trunk_lcn_reserve(dsd_state* state, size_t count_needed);
 
 /**
- * Free the scan-list heap tail, the per-row name store and the per-row avoid
- * store, and zero their pointers/capacities. The embedded DSD_TRUNK_LCN_EMBEDDED slots are part of
- * dsd_state and need no release.
+ * Free the scan-list heap tail, the per-row name, avoid and key stores, and the
+ * scan key swap state, and zero their pointers/capacities. The embedded
+ * DSD_TRUNK_LCN_EMBEDDED slots are part of dsd_state and need no release.
  */
 void dsd_state_trunk_lcn_free(dsd_state* state);
 
@@ -1785,7 +1798,6 @@ void dsd_state_trunk_lcn_name_free(dsd_state* state);
  * a NULL state.
  */
 int dsd_state_trunk_lcn_name_set(dsd_state* state, size_t index, const char* name);
-
 /**
  * Name of scan-list row @p index, or "" when the row is unnamed, the store is
  * shorter than @p index, or no name column was ever imported. Never NULL.
@@ -1801,6 +1813,29 @@ int dsd_state_trunk_lcn_avoid_reserve(dsd_state* state, size_t count);
 
 /** Free the per-row avoid store and zero its pointer/capacity. lcn_avoid_count is not touched. */
 void dsd_state_trunk_lcn_avoid_free(dsd_state* state);
+
+/**
+ * Ensure key-store indices 0..count-1 are addressable: grows by doubling and
+ * zero-fills the new entries. Returns 0 on success, -1 on allocation failure
+ * (state left valid, existing sets preserved).
+ */
+int dsd_state_trunk_lcn_keys_reserve(dsd_state* state, size_t count);
+
+/** Free the per-row key store and zero its pointer/capacity. */
+void dsd_state_trunk_lcn_keys_free(dsd_state* state);
+
+/**
+ * Move @p ks into the store at @p index, freeing any previous entry there.
+ * Takes ownership of the entries pointer; the caller must not free it after a
+ * successful call. Returns 0 on success, -1 on allocation failure or NULL state.
+ */
+int dsd_state_trunk_lcn_keys_set(dsd_state* state, size_t index, dsd_key_set* ks);
+
+/** Key set of scan-list row @p index, or NULL when the row carries no keys. */
+const dsd_key_set* dsd_state_trunk_lcn_keys_get(const dsd_state* state, size_t index);
+
+/** Non-zero when any row in the store carries a key set. */
+int dsd_state_trunk_lcn_keys_present(const dsd_state* state);
 
 /**
  * Flag scan-list row @p index as avoided (@p avoided != 0) or put it back. Setting a

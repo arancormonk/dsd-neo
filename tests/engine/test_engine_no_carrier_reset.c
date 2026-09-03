@@ -7,6 +7,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/init.h>
+#include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1674,6 +1675,85 @@ main(void) {
 
     rc |= expect_true("rtl-fsk-long-nosync-gap-reacquires-once", g_rtl_fsk_reacquire_requests == 1);
     rc |= expect_true("rtl-fsk-long-nosync-gap-records-request", state->rtl_fsk_reacquire_last_request_m > 0.0);
+#endif
+
+#if defined(DSD_NEO_TEST_RTL_WRAP) && DSD_NEO_TEST_RTL_WRAP
+    free_test_runtime(opts, state);
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+
+    // Per-row keys under -Y. A hop onto a keyed row installs its set, a hop
+    // back onto an unkeyed row restores the globals, a zero-frequency row
+    // parks in place keeping the previous set, and a failed tune leg swaps
+    // nothing.
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->trunk_lcn_freq[0] = 940012500;
+    state->trunk_lcn_freq[1] = 941012500;
+    state->trunk_lcn_freq[2] = 0;
+    state->lcn_freq_count = 3;
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    state->keyloader = 0;
+    state->K = 0xBEEFULL;
+    state->rkey_array[3] = 111ULL;
+    state->rkey_array_loaded[3] = 1U;
+    {
+        dsd_key_set ks;
+        DSD_MEMSET(&ks, 0, sizeof(ks));
+        ks.entries = (dsd_key_set_entry*)calloc(1U, sizeof(*ks.entries));
+        if (ks.entries == NULL) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        ks.count = 1U;
+        ks.present = 1;
+        ks.keyloader = 1;
+        ks.entries[0].index = 9U;
+        ks.entries[0].value = 999ULL;
+        ks.entries[0].loaded = 1U;
+        if (dsd_state_trunk_lcn_keys_set(state, 0U, &ks) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+    }
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    g_rtl_tune_calls = 0;
+
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-hop-installs", state->rkey_array[9] == 999ULL && state->keyloader == 1 && state->K == 0ULL
+                                                 && state->lcn_freq_roll == 1);
+
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-hop-restores", state->rkey_array[9] == 0ULL && state->keyloader == 0
+                                                 && state->K == 0xBEEFULL && state->rkey_array[3] == 111ULL
+                                                 && state->lcn_freq_roll == 2);
+
+    // Re-park on the keyed row, then step onto the zero-frequency row: it parks
+    // in place, so the installed set stays.
+    state->lcn_freq_roll = 0;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-rehop-installs", state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    state->lcn_freq_roll = 2;
+    state->last_cc_sync_time = time(NULL) - 11;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-zero-row-keeps-set",
+                      state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1 && state->lcn_freq_roll == 3);
+
+    // A failed tune leg leaves the receiver (and the installed set) where it was.
+    state->lcn_freq_roll = 1;
+    state->last_cc_sync_time = time(NULL) - 11;
+    g_rtl_tune_result = RTL_STREAM_TUNE_FAILED;
+    noCarrier(opts, state);
+    rc |= expect_true("rowkey-failed-tune-keeps-roll", state->lcn_freq_roll == 1);
+    rc |=
+        expect_true("rowkey-failed-tune-keeps-set", state->rkey_array[9] == 999ULL && state->scan_keys_active_set == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
 #endif
 
     dsd_rtl_stream_metrics_hooks_set(NULL);

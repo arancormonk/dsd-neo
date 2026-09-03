@@ -68,6 +68,7 @@
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/dibit.h"
+#include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
@@ -320,6 +321,7 @@ import_global_channel_map_if_needed(dsd_opts* opts, dsd_state* state) {
             return -1;
         }
         LOG_INFO("NOTICE: Imported channel map from %s\n", opts->chan_in_file);
+        dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);
     }
     return 0;
 }
@@ -1297,6 +1299,36 @@ no_carrier_tune_rtl_if_needed(const dsd_opts* opts, dsd_state* state, uint32_t r
 }
 #endif
 
+// Puts every configured front end on freq for one scan step. moved is set once a leg has physically
+// retuned the receiver, so a later leg failing still reports the move the caller can no longer take
+// back. Returns 0 when every leg is on frequency, -1 when the step was abandoned.
+static int
+no_carrier_step_retune(const dsd_opts* opts, dsd_state* state, long int freq, int* moved) {
+#ifndef USE_RADIO
+    UNUSED(state);
+#endif
+    *moved = 0;
+    if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
+        return -1;
+    }
+    if (opts->use_rigctl == 1) {
+        if (no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+            return -1;
+        }
+        *moved = 1;
+    }
+    if (opts->audio_in_type == AUDIO_IN_RTL) {
+#ifdef USE_RADIO
+        if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq) != DSD_TRUNK_TUNE_RESULT_OK) {
+            return -1;
+        }
+#else
+        return -1;
+#endif
+    }
+    return 0;
+}
+
 // Returns non-zero when the scanner actually moved to another frequency, so the caller can end any
 // call still open as an explicit release rather than a sync loss.
 static int
@@ -1332,27 +1364,13 @@ no_carrier_step_scanner_mode_if_needed(const dsd_opts* opts, dsd_state* state, t
     // still has to report as a hop or the finalizer ends the call as sync loss and leaves it
     // reacquirable by whatever decodes next -- on a different frequency.
     int moved = 0;
-    if (freq != 0) {
-        if (opts->use_rigctl != 1 && opts->audio_in_type != AUDIO_IN_RTL) {
-            return 0;
-        }
-        if (opts->use_rigctl == 1) {
-            if (no_carrier_tune_rigctl_if_needed(opts, freq) != DSD_TRUNK_TUNE_RESULT_OK) {
-                return 0;
-            }
-            moved = 1;
-        }
-        if (opts->audio_in_type == AUDIO_IN_RTL) {
-#ifdef USE_RADIO
-            if (no_carrier_tune_rtl_if_needed(opts, state, (uint32_t)freq) != DSD_TRUNK_TUNE_RESULT_OK) {
-                return moved;
-            }
-#else
-            return moved;
-#endif
-        }
+    if (freq != 0 && no_carrier_step_retune(opts, state, freq, &moved) != 0) {
+        return moved;
     }
     state->lcn_freq_roll++;
+    if (freq != 0) {
+        dsd_scan_row_keys_apply(state, state->lcn_freq_roll - 1);
+    }
     state->last_cc_sync_time = now;
     state->last_cc_sync_time_m = dsd_time_now_monotonic_s();
     // A zero entry parks on the current frequency rather than retuning, so it is not a hop.

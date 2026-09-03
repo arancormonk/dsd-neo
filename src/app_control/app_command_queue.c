@@ -58,6 +58,7 @@
 #include "command_dispatch.h"
 #include "commands_internal.h"
 #include "dsd-neo/core/dibit.h"
+#include "dsd-neo/core/key_set.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1523,7 +1524,11 @@ ui_cmd_handle_import_keys_dec(dsd_opts* opts, dsd_state* state, const struct dsd
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
+            // A parked keyed row holds the foreground keyring: edit the globals
+            // underneath it so the import survives the next hop.
+            dsd_scan_keys_suspend(state);
             int rc = svc_import_keys_dec(opts, state, path);
+            dsd_scan_keys_resume(state);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
                 dsd_enc_lockout_bump_key_epoch(state);
@@ -1542,7 +1547,9 @@ ui_cmd_handle_import_keys_hex(dsd_opts* opts, dsd_state* state, const struct dsd
     if (state && c->n > 0) {
         char path[1024] = {0};
         if (ui_cmd_copy_payload_string(c, path, sizeof path)) {
+            dsd_scan_keys_suspend(state);
             int rc = svc_import_keys_hex(opts, state, path);
+            dsd_scan_keys_resume(state);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
                 dsd_enc_lockout_bump_key_epoch(state);
@@ -1591,7 +1598,9 @@ ui_cmd_handle_import_keys_clear(dsd_opts* opts, dsd_state* state, const struct d
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
+    dsd_scan_keys_suspend(state);
     const int rc = svc_clear_keys(opts, state);
+    dsd_scan_keys_resume(state);
     if (rc == 0) {
         // The lockout ledger is keyed on the key epoch, so targets skipped for
         // want of a key have to be reconsidered against the empty keyring the
@@ -1905,6 +1914,7 @@ apply_manual_lcn_cycle(dsd_opts* opts, dsd_state* state) {
     reset_call_tracking(opts, state, 0);
     LOG_INFO("Channel Cycle: tuning to %.06lf MHz\n", (double)freq / 1000000);
     state->lcn_freq_roll = next + 1;
+    dsd_scan_row_keys_apply(state, next);
     mark_cc_sync(state, 1);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -3008,6 +3018,8 @@ apply_tuner_release(dsd_opts* opts, dsd_state* state) {
     }
     opts->trunk_enable = 0;
     opts->scanner_mode = 0;
+    // Leaving -Y hands the foreground keyring back to the globals.
+    dsd_scan_keys_leave(state);
     reset_call_tracking(opts, state, 1);
     ui_set_toast(state, 3, "Automatic tuning stopped");
     return UI_CMD_APPLY_COMPLETED;
@@ -3249,7 +3261,10 @@ rr_apply_simulcast(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payl
    opts->trunk_cli_seen is CLI provenance and is deliberately not touched -- the
    in-session action handlers do not touch it either. */
 static void
-rr_apply_tuner_owner(dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
+rr_apply_tuner_owner(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
+    if (!p) {
+        return;
+    }
     if (p->trunking) {
         opts->trunk_enable = 1;
         opts->scanner_mode = 0;
@@ -3259,6 +3274,9 @@ rr_apply_tuner_owner(dsd_opts* opts, const dsd_app_rr_apply_payload* p) {
     } else {
         opts->trunk_enable = 0;
         opts->scanner_mode = 0;
+    }
+    if (!p->scanner) {
+        dsd_scan_keys_leave(state);
     }
 }
 
@@ -3364,7 +3382,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     rr_apply_edacs_variants(state, &p, mode);
     rr_apply_simulcast(opts, state, &p);
     opts->p25_prefer_candidates = p.p25_prefer_candidates ? (uint8_t)1 : (uint8_t)0;
-    rr_apply_tuner_owner(opts, &p);
+    rr_apply_tuner_owner(opts, state, &p);
     const int files_rc = rr_apply_files(opts, state, &p);
     /* Unconditional, and after every write to state->rf_mod: svc_publish_symbol_profile()
        reads it, so the simulcast override needs a second publish, and a re-apply
