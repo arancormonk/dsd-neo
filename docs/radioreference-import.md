@@ -244,8 +244,12 @@ Two things the preview will warn about rather than silently paper over:
   so the map's *frequency ordering* is what makes it useful (it is the hunt rotation) while the
   channel numbers themselves are inert. They are purged within seconds of control-channel lock,
   when the site's first `IDEN_UP` invalidates that band's slots.
-- **Custom band plans are out of scope.** When RadioReference publishes one the preview says so;
-  use the wizard's extra CLI args.
+- **Custom band plans are not carried.** When RadioReference publishes one the preview says so.
+  The decoder takes a band plan as a P25 band plan CSV (`--p25-bandplan`, the Imports library's
+  **P25 band plan** kind, or the terminal's **Import P25 band plan CSV...**; format in
+  `docs/csv-formats.md`), which is one row per identifier rather than one per channel. Generating
+  that file from the RadioReference plan is a follow-up: RadioReference publishes base, spacing and
+  offset per entry but no identifier number or channel type.
 
 ## Conventional Networked systems
 

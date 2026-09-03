@@ -241,6 +241,50 @@ main(void) {
         rc |= expect_eq_int("same identity preserves network active valid", st.p25_site_network_active_valid, 1);
         rc |= expect_eq_int("same identity preserves network active", st.p25_site_network_active, 0);
 
+        // A user band plan survives the wipe: after the identity changes to 0x55555/0x666 the
+        // global row (iden 8) and that system's row (iden 10) come back, the row for the old
+        // system (iden 9) does not, and the OTA entry on iden 4 is gone.
+        st.p25_bandplan_row_count = 3;
+        DSD_MEMSET(st.p25_bandplan_rows, 0, sizeof st.p25_bandplan_rows);
+        st.p25_bandplan_rows[0].iden = 8;
+        st.p25_bandplan_rows[0].entry.base_freq = 170201250L;
+        st.p25_bandplan_rows[0].entry.chan_spac = 50;
+        st.p25_bandplan_rows[0].entry.chan_type = 1;
+        st.p25_bandplan_rows[0].entry.populated = 1;
+        st.p25_bandplan_rows[1].iden = 9;
+        st.p25_bandplan_rows[1].entry = st.p25_bandplan_rows[0].entry;
+        st.p25_bandplan_rows[1].entry.wacn = 0xABCDE;
+        st.p25_bandplan_rows[1].entry.sysid = 0x123;
+        st.p25_bandplan_rows[2].iden = 10;
+        st.p25_bandplan_rows[2].is_tdma = 1;
+        st.p25_bandplan_rows[2].entry = st.p25_bandplan_rows[0].entry;
+        st.p25_bandplan_rows[2].entry.chan_type = 3;
+        st.p25_bandplan_rows[2].entry.wacn = 0x55555;
+        st.p25_bandplan_rows[2].entry.sysid = 0x666;
+        st.p25_chan_tdma_explicit[4] = 1;
+        st.p25_iden_fdma[4].populated = 1;
+        rc |= expect_eq_int("bandplan identity change applied", p25_update_system_identity(&st, 0x55555, 0x666), 1);
+        rc |= expect_eq_int("bandplan identity change clears OTA iden", st.p25_iden_fdma[4].populated, 0);
+        rc |= expect_eq_int("bandplan global row re-seeded", st.p25_iden_fdma[8].populated, 1);
+        rc |= expect_eq_int("bandplan global row explicit", st.p25_chan_tdma_explicit[8], 1);
+        rc |= expect_eq_int("bandplan old system row dropped", st.p25_iden_fdma[9].populated, 0);
+        rc |= expect_eq_int("bandplan new system row seeded", st.p25_iden_tdma[10].populated, 1);
+        rc |= expect_eq_int("bandplan new system row trust", st.p25_iden_tdma[10].trust, 1);
+        rc |= expect_eq_int("bandplan new system row explicit", st.p25_chan_tdma_explicit[10], 2);
+        rc |= expect_eq_long("bandplan seeded row resolves", process_channel_to_freq(NULL, &st, 0x8002),
+                             851006250L + 2L * 6250L);
+
+        // First identity learn (from 0/0) resets nothing but still seeds that system's rows.
+        static dsd_state first;
+        DSD_MEMSET(&first, 0, sizeof first);
+        first.p25_bandplan_row_count = 3;
+        DSD_MEMCPY(first.p25_bandplan_rows, st.p25_bandplan_rows, sizeof first.p25_bandplan_rows);
+        rc |= expect_eq_int("bandplan first learn applied", p25_update_system_identity(&first, 0xABCDE, 0x123), 1);
+        rc |= expect_eq_int("bandplan first learn global row", first.p25_iden_fdma[8].populated, 1);
+        rc |= expect_eq_int("bandplan first learn system row", first.p25_iden_fdma[9].populated, 1);
+        rc |= expect_eq_int("bandplan first learn other system row", first.p25_iden_tdma[10].populated, 0);
+        st.p25_bandplan_row_count = 0;
+
         static dsd_opts opts;
         DSD_MEMSET(&opts, 0, sizeof(opts));
         opts.verbose = 2;

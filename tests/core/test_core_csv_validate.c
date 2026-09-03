@@ -412,6 +412,67 @@ test_chan_key_column_bad_path_fails(void) {
     return failed;
 }
 
+static int
+test_p25_bandplan_counts_mixed_rows(void) {
+    char tmpl[] = "dsd-neo-test-validate-bandplan-XXXXXX";
+    if (write_temp_csv(tmpl, "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
+                             "0,851006250,6250,1,-45000000,12500,,\n"
+                             "1,851006251,6250,1,,,,\n"
+                             "\n"
+                             "2,762006250,6250,3,,,BEE00,3A1\n"
+                             "16,851006250,6250,,,,,\n")
+        != 0) {
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_p25_bandplan_file(tmpl, &v) != 0) {
+        DSD_FPRINTF(stderr, "bandplan validate failed on mixed file\n");
+        failed = 1;
+    }
+    if (v.accepted != 2U || v.skipped != 2U || v.total != 4U) {
+        DSD_FPRINTF(stderr, "bandplan mixed counts wrong: accepted=%u skipped=%u total=%u\n", v.accepted, v.skipped,
+                    v.total);
+        failed = 1;
+    }
+    (void)remove(tmpl);
+    return failed;
+}
+
+static int
+test_p25_bandplan_rejects_other_kinds(void) {
+    // The Android library checks the kind the user picked by content: a channel map or a key
+    // list yields zero accepted band-plan rows (too few columns, or a base that is not a
+    // multiple of 5 Hz).
+    char chan[] = "dsd-neo-test-validate-bandplan-chan-XXXXXX";
+    char plan[] = "dsd-neo-test-validate-bandplan-plan-XXXXXX";
+    if (write_temp_csv(chan, "channel,freq\n"
+                             "1,851000000\n"
+                             "2,70\n")
+        != 0) {
+        return 1;
+    }
+    if (write_temp_csv(plan, "iden,base_hz,spacing_hz\n"
+                             "0,851006250,6250\n")
+        != 0) {
+        (void)remove(chan);
+        return 1;
+    }
+    dsd_csv_validation v = {0U, 0U, 0U};
+    int failed = 0;
+    if (dsd_csv_validate_p25_bandplan_file(chan, &v) != 0 || v.accepted != 0U || v.total != 2U) {
+        DSD_FPRINTF(stderr, "bandplan validate accepted a channel map: accepted=%u total=%u\n", v.accepted, v.total);
+        failed = 1;
+    }
+    if (dsd_csv_validate_p25_bandplan_file("dsd-neo-test-validate-missing-dir/missing.csv", &v) == 0) {
+        DSD_FPRINTF(stderr, "bandplan validate accepted a missing file\n");
+        failed = 1;
+    }
+    (void)remove(chan);
+    (void)remove(plan);
+    return failed;
+}
+
 int
 main(void) {
     if (test_missing_file_fails() != 0) {
@@ -454,6 +515,12 @@ main(void) {
         return 1;
     }
     if (test_key_dec_bad_id_is_skipped() != 0) {
+        return 1;
+    }
+    if (test_p25_bandplan_counts_mixed_rows() != 0) {
+        return 1;
+    }
+    if (test_p25_bandplan_rejects_other_kinds() != 0) {
         return 1;
     }
     return 0;

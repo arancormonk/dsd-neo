@@ -160,10 +160,14 @@ test_csv_args(void) {
     sys.insert(QStringLiteral("groupCsvPath"), QStringLiteral("/data/imports/county.csv"));
     sys.insert(QStringLiteral("keyCsvPath"), QStringLiteral("/data/imports/keys.csv"));
     sys.insert(QStringLiteral("keyCsvHex"), false);
+    sys.insert(QStringLiteral("p25BandplanCsvPath"), QStringLiteral("/data/imports/band plan.csv"));
     sys.insert(QStringLiteral("extraArgs"), QStringLiteral("--wav-dir /tmp"));
     const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
     expect("csv build succeeds", error == SessionArgsError::None);
-    qsizetype at = args.indexOf(QStringLiteral("-C"));
+    qsizetype at = args.indexOf(QStringLiteral("--p25-bandplan"));
+    expect("band plan path follows --p25-bandplan intact",
+           at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/band plan.csv"));
+    at = args.indexOf(QStringLiteral("-C"));
     expect("chan path follows -C intact",
            at >= 0 && at + 1 < args.size() && args.at(at + 1) == QStringLiteral("/data/imports/chan map.csv"));
     at = args.indexOf(QStringLiteral("-G"));
@@ -184,7 +188,8 @@ test_csv_args(void) {
     const QStringList bare = session_args_build(usb_system(), SessionArgPrefs(), &error);
     expect("no csv fields emit no csv flags",
            !bare.contains(QStringLiteral("-C")) && !bare.contains(QStringLiteral("-G"))
-               && !bare.contains(QStringLiteral("-k")) && !bare.contains(QStringLiteral("-K")));
+               && !bare.contains(QStringLiteral("-k")) && !bare.contains(QStringLiteral("-K"))
+               && !bare.contains(QStringLiteral("--p25-bandplan")));
 }
 
 void

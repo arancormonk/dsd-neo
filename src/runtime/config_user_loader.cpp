@@ -423,14 +423,30 @@ apply_mode_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* va
     }
 }
 
-static void
-apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (strcmp(key_lc, "enabled") == 0) {
-        assign_bool_key(&cfg->trunk_enabled, val);
-    } else if (strcmp(key_lc, "chan_csv") == 0) {
+/* The [trunking] PATH keys, split out of apply_trunking_section_key() to keep
+   that if-chain under the CCN 15 ceiling (see assign_bool_key above).
+   Returns 1 when key_lc was one of them. */
+static int
+apply_trunking_section_path_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "chan_csv") == 0) {
         copy_path_expanded(cfg->trunk_chan_csv, sizeof cfg->trunk_chan_csv, val);
     } else if (strcmp(key_lc, "group_csv") == 0) {
         copy_path_expanded(cfg->trunk_group_csv, sizeof cfg->trunk_group_csv, val);
+    } else if (strcmp(key_lc, "p25_bandplan_csv") == 0) {
+        copy_path_expanded(cfg->trunk_p25_bandplan_csv, sizeof cfg->trunk_p25_bandplan_csv, val);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
+static void
+apply_trunking_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (apply_trunking_section_path_key(cfg, key_lc, val)) {
+        return;
+    }
+    if (strcmp(key_lc, "enabled") == 0) {
+        assign_bool_key(&cfg->trunk_enabled, val);
     } else if (strcmp(key_lc, "allow_list") == 0) {
         assign_bool_key(&cfg->trunk_use_allow_list, val);
     } else if (strcmp(key_lc, "tune_group_calls") == 0) {

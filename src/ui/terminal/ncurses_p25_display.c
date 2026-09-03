@@ -24,6 +24,7 @@
 #include <dsd-neo/ui/ncurses_internal.h>
 #include <dsd-neo/ui/ncurses_p25_display.h>
 #include <dsd-neo/ui/ui_prims.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"

@@ -216,6 +216,11 @@ enum dsd_app_command_id {
     DSD_APP_CMD_IMPORT_GROUP_LIST_CLEAR = 565,  // no payload
     DSD_APP_CMD_IMPORT_KEYS_CLEAR = 566,        // no payload; dec and hex share one keyring
 
+    // P25 band plan (docs/csv-formats.md, "P25 Band Plan CSV"): load a user plan into the IDEN
+    // tables, or write the learned tables (every trunk-scan target under trunk scan) to a file.
+    DSD_APP_CMD_IMPORT_P25_BANDPLAN = 567, // payload: char path[]
+    DSD_APP_CMD_EXPORT_P25_BANDPLAN = 568, // payload: char path[]
+
     // RadioReference import (docs/radioreference-import.md)
     DSD_APP_CMD_RR_APPLY_IMPORT = 570, // payload: dsd_app_rr_apply_payload
     DSD_APP_CMD_RR_ACCOUNT_SET = 571,  // payload: dsd_app_rr_account_payload

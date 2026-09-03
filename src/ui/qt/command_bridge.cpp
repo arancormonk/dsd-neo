@@ -149,6 +149,14 @@ CommandBridge::importChannelMap(const QString& path) const {
 }
 
 bool
+CommandBridge::importP25Bandplan(const QString& path) const {
+    if (path.isEmpty()) {
+        return false;
+    }
+    return accepted(dsd_app_command_set_string(DSD_APP_CMD_IMPORT_P25_BANDPLAN, path.toUtf8().constData()));
+}
+
+bool
 CommandBridge::importGroupList(const QString& path) const {
     if (path.isEmpty()) {
         return false;

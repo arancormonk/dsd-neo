@@ -342,6 +342,38 @@ act_import_chan(void* v) {
 }
 
 void
+act_import_p25_bandplan(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    // No sidecar kind carries a band plan yet, so the picker falls straight to the path prompt.
+    ui_csv_import_picker_open("iden", "P25 band plan CSV", 1024, cb_import_p25_bandplan, c);
+}
+
+void
+act_export_p25_bandplan(void* v) {
+    UiCtx* c = (UiCtx*)v;
+    // Name the file after the system it was learned on when there is exactly
+    // one: under trunk scan the export merges every target's tables, so the
+    // identity of the one on air would mislabel it.
+    char name[64];
+    const dsd_state* st = c ? c->state : NULL;
+    const int single_system = (c && c->opts && c->opts->trunk_scan_enabled != 1);
+    if (single_system && st && st->p2_wacn != 0ULL && st->p2_sysid != 0ULL) {
+        DSD_SNPRINTF(name, sizeof name, "p25_bandplan_%05llX_%03llX.csv", (unsigned long long)st->p2_wacn,
+                     (unsigned long long)st->p2_sysid);
+    } else {
+        DSD_SNPRINTF(name, sizeof name, "%s", "p25_bandplan.csv");
+    }
+    char def[1024];
+    const char* dir = dsd_user_imports_dir();
+    if (dir && *dir) {
+        DSD_SNPRINTF(def, sizeof def, "%s/%s", dir, name);
+    } else {
+        DSD_SNPRINTF(def, sizeof def, "%s", name);
+    }
+    ui_prompt_open_string_async("Export P25 band plan to path", def, sizeof def, cb_export_p25_bandplan, c);
+}
+
+void
 act_import_group(void* v) {
     UiCtx* c = (UiCtx*)v;
     ui_csv_import_picker_open("group", "Group list CSV", 1024, cb_import_group, c);

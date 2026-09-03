@@ -4,10 +4,10 @@
 import QtQuick
 import QtQuick.Dialogs
 
-// The imported-files library: every channel map, talkgroup list, and key file
-// that has been copied into app storage, with import/update/remove flows. The
-// wizard's pickers reference the same library, so a file imported here serves
-// any saved system.
+// The imported-files library: every channel map, talkgroup list, key file and
+// P25 band plan that has been copied into app storage, with import/update/remove
+// flows. The wizard's pickers reference the same library, so a file imported
+// here serves any saved system.
 Item {
     id: screen
 
@@ -36,6 +36,8 @@ Item {
             return count === 1 ? qsTr("channel") : qsTr("channels")
         if (type === "group")
             return count === 1 ? qsTr("talkgroup") : qsTr("talkgroups")
+        if (type === "p25Bandplan")
+            return count === 1 ? qsTr("identifier") : qsTr("identifiers")
         return count === 1 ? qsTr("key") : qsTr("keys")
     }
 
@@ -307,7 +309,7 @@ Item {
             // second step in from the edge, not the first.
             width: parent.width - 2 * Theme.screenPadding
             visible: importedFiles.count === 0
-            text: qsTr("No imported files yet. Import a channel map, talkgroup list, or key file to use it in your systems.")
+            text: qsTr("No imported files yet. Import a channel map, talkgroup list, key file, or P25 band plan to use it in your systems.")
             font.family: Theme.sans
             font.pixelSize: 14
             color: Theme.textSubdued
@@ -379,10 +381,14 @@ Item {
 
         SegmentedControl {
             width: parent.width
-            model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys")]
-            currentIndex: screen.pendingType === "chan" ? 0 : screen.pendingType === "group" ? 1 : 2
+            model: [qsTr("Channel map"), qsTr("Talkgroups"), qsTr("Keys"), qsTr("P25 band plan")]
+            currentIndex: screen.pendingType === "chan" ? 0
+                          : screen.pendingType === "group" ? 1
+                          : screen.pendingType === "keys" ? 2 : 3
             onSelected: function (index) {
-                screen.pendingType = index === 0 ? "chan" : index === 1 ? "group" : "keys"
+                screen.pendingType = index === 0 ? "chan"
+                                     : index === 1 ? "group"
+                                     : index === 2 ? "keys" : "p25Bandplan"
             }
         }
 
@@ -468,6 +474,7 @@ Item {
                 var entry = importedFiles.get(screen.actionRow)
                 var sent = entry.type === "chan" ? commands.importChannelMap(entry.path)
                            : entry.type === "group" ? commands.importGroupList(entry.path)
+                           : entry.type === "p25Bandplan" ? commands.importP25Bandplan(entry.path)
                            : commands.importKeys(entry.path, entry.type === "keysHex")
                 screen.notice = sent ? qsTr("Sent to decoder") : qsTr("The decoder is not accepting commands")
                 screen.noticeIsProblem = !sent

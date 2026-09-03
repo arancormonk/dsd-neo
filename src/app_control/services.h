@@ -106,6 +106,22 @@ int svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, in
 int svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import a group list CSV into runtime state. */
 int svc_import_group_list(dsd_opts* opts, dsd_state* state, const char* path);
+/**
+ * @brief Import a P25 band plan CSV (IDEN table) into the live state.
+ *
+ * Dry-runs the file first and refuses one that yields no usable row, so a
+ * mispicked CSV cannot replace the stored plan. Refused under trunk scan, where
+ * band plans come per target (p25_bandplan_csv). On success the path is
+ * recorded in opts->p25_bandplan_in_file and pending P25 announcements are
+ * re-resolved against the newly seeded tables.
+ * @return 0 on success, -1 otherwise.
+ */
+int svc_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const char* path);
+/**
+ * @brief Export the learned P25 band plan (live and, under trunk scan, parked IDEN tables) to @p path.
+ * @return The number of rows written (>= 1), or -1 when there was nothing to write or the write failed.
+ */
+int svc_export_p25_bandplan(const dsd_opts* opts, const dsd_state* state, const char* path);
 /** @brief Import keys from a decimal CSV. */
 int svc_import_keys_dec(dsd_opts* opts, dsd_state* state, const char* path);
 /** @brief Import keys from a hexadecimal CSV. */

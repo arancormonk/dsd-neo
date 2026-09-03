@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: ISC
-#include <ctype.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/csv_import.h>
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/talkgroup_policy.h>

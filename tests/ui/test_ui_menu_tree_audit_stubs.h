@@ -41,6 +41,7 @@
     X(act_env_editor)                                                                                                  \
     X(act_event_log_disable)                                                                                           \
     X(act_event_log_set)                                                                                               \
+    X(act_export_p25_bandplan)                                                                                         \
     X(act_force_rc4)                                                                                                   \
     X(act_hangtime)                                                                                                    \
     X(act_history_cycle)                                                                                               \
@@ -48,6 +49,7 @@
     X(act_hpf_toggle)                                                                                                  \
     X(act_import_chan)                                                                                                 \
     X(act_import_group)                                                                                                \
+    X(act_import_p25_bandplan)                                                                                         \
     X(act_iq_dc_k_prompt)                                                                                              \
     X(act_ken_scr)                                                                                                     \
     X(act_keys_dec)                                                                                                    \

@@ -228,7 +228,7 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
 
 static int
 cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, int chan_csv_cli_seen,
-                                     int config_one_shot_cli_seen, int* out_exit_rc) {
+                                     int p25_bandplan_cli_seen, int config_one_shot_cli_seen, int* out_exit_rc) {
     if (!opts || !opts->trunk_scan_enabled || config_one_shot_cli_seen) {
         return DSD_PARSE_CONTINUE;
     }
@@ -242,6 +242,16 @@ cli_validate_trunk_scan_runtime_args(dsd_opts* opts, int trunk_scan_cli_seen, in
     }
     if (opts->chan_in_file[0] != '\0') {
         LOG_ERROR("--trunk-scan cannot be combined with global -C/channel-map config; use per-target chan_csv\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return DSD_PARSE_ERROR;
+    }
+    /* Same rule for a config-file [trunking] p25_bandplan_csv: an explicit CLI --trunk-scan
+       disowns the inherited plan (targets carry their own), an inherited one is a conflict. */
+    if (trunk_scan_cli_seen && !p25_bandplan_cli_seen) {
+        opts->p25_bandplan_in_file[0] = '\0';
+    }
+    if (opts->p25_bandplan_in_file[0] != '\0') {
+        LOG_ERROR("--p25-bandplan cannot be combined with --trunk-scan; use per-target p25_bandplan_csv\n");
         cli_set_exit_rc(out_exit_rc, 1);
         return DSD_PARSE_ERROR;
     }
@@ -978,6 +988,32 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             dmr_tg_key_csv_cli = argv[i] + 17;                                                                         \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--p25-bandplan") == 0) {                                                                  \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--p25-bandplan requires a CSV path\n");                                                     \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            p25_bandplan_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--p25-bandplan=", 15) == 0) {                                                            \
+            p25_bandplan_cli = argv[i] + 15;                                                                           \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--p25-bandplan-export") == 0) {                                                           \
+            if (i + 1 >= argc) {                                                                                       \
+                LOG_ERROR("--p25-bandplan-export requires an output CSV path\n");                                      \
+                cli_set_exit_rc(out_exit_rc, 1);                                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            p25_bandplan_export_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                       \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strncmp(argv[i], "--p25-bandplan-export=", 22) == 0) {                                                     \
+            p25_bandplan_export_cli = argv[i] + 22;                                                                    \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--dmr-force-algid") == 0) {                                                               \
             if (i + 1 >= argc) {                                                                                       \
                 LOG_ERROR("--dmr-force-algid requires a hex ALGID value\n");                                           \
@@ -1450,6 +1486,48 @@ cli_next_arg(char** argv, int i, int* arg_advance) {
             return DSD_PARSE_ERROR;                                                                                    \
         }                                                                                                              \
     }                                                                                                                  \
+    if (p25_bandplan_cli) {                                                                                            \
+        p25_bandplan_cli_seen = 1;                                                                                     \
+        /* Trunk-scan targets carry their own p25_bandplan_csv; a global plan would shadow them. Decided    \
+           here, before the import, so a rejected command line leaves the IDEN tables untouched. */          \
+        if (opts->trunk_scan_enabled) {                                                                                \
+            LOG_ERROR("--p25-bandplan cannot be combined with --trunk-scan; use per-target p25_bandplan_csv\n");       \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        char bandplan_path[DSD_CLI_LOCAL_PATH_MAX];                                                                    \
+        if (!cli_resolve_existing_local_file_option("--p25-bandplan", p25_bandplan_cli, bandplan_path,                 \
+                                                    sizeof bandplan_path, out_exit_rc)) {                              \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        if (strlen(bandplan_path) >= sizeof opts->p25_bandplan_in_file) {                                              \
+            LOG_ERROR("--p25-bandplan path is too long\n");                                                            \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", bandplan_path);              \
+        opts->p25_bandplan_in_file[sizeof opts->p25_bandplan_in_file - 1] = '\0';                                      \
+        if (csvP25BandplanImport(opts, state) != 0) {                                                                  \
+            opts->p25_bandplan_in_file[0] = '\0';                                                                      \
+            LOG_ERROR("Invalid --p25-bandplan value\n");                                                               \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        LOG_INFO("NOTICE: Imported P25 band plan from %s\n", opts->p25_bandplan_in_file);                              \
+    }                                                                                                                  \
+    if (p25_bandplan_export_cli) {                                                                                     \
+        /* Output path, written once at clean shutdown by the engine: only the shape is checked here. */               \
+        if (p25_bandplan_export_cli[0] == '\0'                                                                         \
+            || strlen(p25_bandplan_export_cli) >= sizeof opts->p25_bandplan_export_file) {                             \
+            LOG_ERROR("Invalid --p25-bandplan-export value\n");                                                        \
+            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
+            return DSD_PARSE_ERROR;                                                                                    \
+        }                                                                                                              \
+        DSD_SNPRINTF(opts->p25_bandplan_export_file, sizeof opts->p25_bandplan_export_file, "%s",                      \
+                     p25_bandplan_export_cli);                                                                         \
+        opts->p25_bandplan_export_file[sizeof opts->p25_bandplan_export_file - 1] = '\0';                              \
+        LOG_INFO("NOTICE: P25 band plan export file: %s\n", opts->p25_bandplan_export_file);                           \
+    }                                                                                                                  \
     if (dmr_force_algid_cli) {                                                                                         \
         char hex[3];                                                                                                   \
         size_t nhex = 0;                                                                                               \
@@ -1508,6 +1586,8 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* dmr_csi_ee72_cli = NULL;
     const char* dmr_vertex_ks_csv_cli = NULL;
     const char* dmr_tg_key_csv_cli = NULL;
+    const char* p25_bandplan_cli = NULL;
+    const char* p25_bandplan_export_cli = NULL;
     const char* dmr_force_algid_cli = NULL;
     const char* m17_signature_public_key_cli = NULL;
     const char* iq_capture_cli = NULL;
@@ -1524,6 +1604,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     const char* rtl_udp_control_cli_bindaddr = NULL;
     int trunk_scan_cli_seen = 0;
     int chan_csv_cli_seen = 0;
+    int p25_bandplan_cli_seen = 0;
     int config_one_shot_cli_seen = cli_has_config_one_shot_arg(argc, argv);
 
     DSD_PARSE_ARGS_PRESCAN_BLOCK();
@@ -1557,7 +1638,7 @@ dsd_parse_args(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* out
     int parse_rc = dsd_parse_short_opts(new_argc, argv, opts, state, out_exit_rc, &chan_csv_cli_seen);
     if (parse_rc == DSD_PARSE_CONTINUE) {
         parse_rc = cli_validate_trunk_scan_runtime_args(opts, trunk_scan_cli_seen, chan_csv_cli_seen,
-                                                        config_one_shot_cli_seen, out_exit_rc);
+                                                        p25_bandplan_cli_seen, config_one_shot_cli_seen, out_exit_rc);
     }
     if (parse_rc == DSD_PARSE_CONTINUE && opts->iq_replay_requested && opts->iq_replay_path[0] != '\0') {
         opts->audio_in_type = AUDIO_IN_RTL;

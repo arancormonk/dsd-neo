@@ -3716,6 +3716,24 @@ target_link_libraries(
 )
 add_test(NAME CORE_CSV_VALIDATE COMMAND dsd-neo_test_core_csv_validate)
 
+add_executable(
+    dsd-neo_test_core_p25_bandplan_seed
+    core/test_core_p25_bandplan_seed.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
+)
+target_include_directories(
+    dsd-neo_test_core_p25_bandplan_seed
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_core_p25_bandplan_seed
+    PRIVATE dsd-neo_safe_api
+)
+add_test(
+    NAME CORE_P25_BANDPLAN_SEED
+    COMMAND dsd-neo_test_core_p25_bandplan_seed
+)
+
 add_executable(dsd-neo_test_core_channel_label core/test_core_channel_label.c)
 target_include_directories(
     dsd-neo_test_core_channel_label
@@ -4421,8 +4439,11 @@ add_executable(
     dsd-neo_test_engine_trunk_scan
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/engine/p25_bandplan_export.c
     ${PROJECT_SOURCE_DIR}/src/core/util/enc_lockout.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_p25_bandplan.c
+    ${PROJECT_SOURCE_DIR}/src/core/file/p25_bandplan_csv.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_trunk_diag.c
 )

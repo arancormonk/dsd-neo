@@ -1284,6 +1284,9 @@ test_create_temp_ini(char* out_path, size_t out_path_size) {
                                               out_path, out_path_size);
 }
 
+static const char* k_p25_bandplan_csv_contents = "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
+                                                 "0,851006250,6250,1,-45000000,12500,,\n";
+
 static int
 test_create_temp_csv_with_contents(const char* contents, char* out_path, size_t out_path_size) {
     if (!contents || !out_path || out_path_size == 0) {
@@ -2575,6 +2578,85 @@ test_bootstrap_inherited_trunk_scan_allows_cli_channel_map(void) {
     }
 
     (void)remove(chan_path);
+    (void)remove(cfg_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+
+    initOpts(opts);
+    initState(state);
+
+    (void)dsd_unsetenv("DSD_NEO_CONFIG");
+    (void)dsd_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+
+    static const char* ini = "[trunk_scan]\n"
+                             "enabled = true\n"
+                             "targets_csv = \"targets.csv\"\n"
+                             "idle_dwell_ms = 500\n";
+
+    char cfg_path[1024];
+    if (test_create_temp_ini_with_contents(ini, cfg_path, sizeof cfg_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp trunk scan ini\n");
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char plan_path[1024];
+    if (test_create_temp_csv_with_contents(k_p25_bandplan_csv_contents, plan_path, sizeof plan_path) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp band plan CSV\n");
+        (void)remove(cfg_path);
+        freeState(state);
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--config";
+    char arg2[1024];
+    char arg3[] = "--p25-bandplan";
+    char arg4[1024];
+    DSD_SNPRINTF(arg2, sizeof arg2, "%s", cfg_path);
+    DSD_SNPRINTF(arg4, sizeof arg4, "%s", plan_path);
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_runtime_bootstrap(5, argv, opts, state, &argc_effective, &exit_rc);
+
+    int test_rc = 0;
+    if (rc != DSD_BOOTSTRAP_CONTINUE || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan to allow CLI --p25-bandplan, got rc=%d exit_rc=%d\n", rc,
+                    exit_rc);
+        test_rc = 1;
+    }
+    if (opts->trunk_scan_enabled != 0) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan to be disabled for CLI run, got %d\n",
+                    opts->trunk_scan_enabled);
+        test_rc = 1;
+    }
+    if (strcmp(opts->p25_bandplan_in_file, plan_path) != 0 || state->p25_bandplan_row_count != 1) {
+        DSD_FPRINTF(stderr, "expected CLI band plan import, got file=%s rows=%d\n", opts->p25_bandplan_in_file,
+                    state->p25_bandplan_row_count);
+        test_rc = 1;
+    }
+
+    (void)remove(plan_path);
     (void)remove(cfg_path);
     freeState(state);
     free(opts);
@@ -6436,6 +6518,337 @@ test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations(void) {
 }
 
 static int
+test_p25_bandplan_long_option_parse(void) {
+    int test_rc = 0;
+
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "out of memory\n");
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char csv_path[1024];
+        if (test_create_temp_csv_with_contents(k_p25_bandplan_csv_contents, csv_path, sizeof csv_path) != 0) {
+            freeState(state);
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "failed to create temp band plan csv\n");
+            return 1;
+        }
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--p25-bandplan";
+        char arg_eq[1200];
+        DSD_SNPRINTF(arg_eq, sizeof arg_eq, "--p25-bandplan=%s", csv_path);
+        char* argv_pair[] = {arg0, arg1, csv_path, NULL};
+        char* argv_eq[] = {arg0, arg_eq, NULL};
+        char** argv = (shape == 0) ? argv_pair : argv_eq;
+        int argc = (shape == 0) ? 3 : 2;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE) {
+            DSD_FPRINTF(stderr, "shape %d: expected rc=%d, got %d (exit_rc=%d)\n", shape, DSD_PARSE_CONTINUE, rc,
+                        exit_rc);
+            test_rc = 1;
+        }
+        if (strcmp(opts->p25_bandplan_in_file, csv_path) != 0) {
+            DSD_FPRINTF(stderr, "shape %d: expected p25_bandplan_in_file=%s, got \"%s\"\n", shape, csv_path,
+                        opts->p25_bandplan_in_file);
+            test_rc = 1;
+        }
+        if (state->p25_bandplan_row_count != 1 || state->p25_iden_fdma[0].populated != 1) {
+            DSD_FPRINTF(stderr, "shape %d: expected one imported band plan row seeding IDEN 0, got rows=%d pop=%d\n",
+                        shape, state->p25_bandplan_row_count, (int)state->p25_iden_fdma[0].populated);
+            test_rc = 1;
+        }
+
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_p25_bandplan_missing_file_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--p25-bandplan=dsdneo_missing_bandplan_file.csv";
+    char* argv[] = {arg0, arg1, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_ERROR && exit_rc == 1 && opts->p25_bandplan_in_file[0] == '\0'
+                   && state->p25_bandplan_row_count == 0)
+                      ? 0
+                      : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected missing --p25-bandplan file to fail, rc=%d exit=%d file=%s rows=%d\n", rc,
+                    exit_rc, opts->p25_bandplan_in_file, state->p25_bandplan_row_count);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_p25_bandplan_missing_value_returns_error(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--p25-bandplan";
+    char* argv[] = {arg0, arg1, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_ERROR && exit_rc == 1) ? 0 : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected bare --p25-bandplan to fail, rc=%d exit=%d\n", rc, exit_rc);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_p25_bandplan_rejects_trunk_scan(void) {
+    int test_rc = 0;
+
+    /* Both orderings: the conflict is decided after the prescan, so position must not matter. */
+    for (int order = 0; order < 2; order++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char csv_path[1024];
+        if (test_create_temp_csv_with_contents(k_p25_bandplan_csv_contents, csv_path, sizeof csv_path) != 0) {
+            freeState(state);
+            free(opts);
+            free(state);
+            DSD_FPRINTF(stderr, "failed to create temp band plan csv\n");
+            return 1;
+        }
+
+        char arg0[] = "dsd-neo";
+        char arg_scan[] = "--trunk-scan=targets.csv";
+        char arg_plan[1200];
+        DSD_SNPRINTF(arg_plan, sizeof arg_plan, "--p25-bandplan=%s", csv_path);
+        char* argv_a[] = {arg0, arg_scan, arg_plan, NULL};
+        char* argv_b[] = {arg0, arg_plan, arg_scan, NULL};
+        char** argv = (order == 0) ? argv_a : argv_b;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->p25_bandplan_in_file[0] != '\0'
+            || state->p25_bandplan_row_count != 0) {
+            DSD_FPRINTF(stderr,
+                        "order %d: expected trunk scan/--p25-bandplan conflict before import, rc=%d exit=%d "
+                        "file=%s rows=%d\n",
+                        order, rc, exit_rc, opts->p25_bandplan_in_file, state->p25_bandplan_row_count);
+            test_rc = 1;
+        }
+
+        (void)remove(csv_path);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_trunk_scan_cli_clears_inherited_p25_bandplan(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", "inherited_plan.csv");
+    opts->p25_bandplan_in_file[sizeof opts->p25_bandplan_in_file - 1] = '\0';
+
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--trunk-scan";
+    char arg2[] = "targets.csv";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_CONTINUE && opts->trunk_scan_enabled == 1
+                   && strcmp(opts->trunk_scan_targets_csv, "targets.csv") == 0 && opts->p25_bandplan_in_file[0] == '\0')
+                      ? 0
+                      : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected explicit trunk scan to clear inherited band plan, rc=%d enabled=%d plan=%s\n", rc,
+                    opts->trunk_scan_enabled, opts->p25_bandplan_in_file);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_trunk_scan_inherited_state_rejects_inherited_p25_bandplan(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+
+    /* Both came from the config file: no CLI --trunk-scan to disown the plan, so it is an error. */
+    opts->trunk_scan_enabled = 1;
+    DSD_SNPRINTF(opts->trunk_scan_targets_csv, sizeof opts->trunk_scan_targets_csv, "%s", "targets.csv");
+    DSD_SNPRINTF(opts->p25_bandplan_in_file, sizeof opts->p25_bandplan_in_file, "%s", "inherited_plan.csv");
+
+    char arg0[] = "dsd-neo";
+    char* argv[] = {arg0, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int rc = dsd_parse_args(1, argv, opts, state, &argc_effective, &exit_rc);
+    int test_rc = (rc == DSD_PARSE_ERROR && exit_rc == 1) ? 0 : 1;
+    if (test_rc) {
+        DSD_FPRINTF(stderr, "expected inherited trunk scan + inherited band plan to fail, rc=%d exit=%d\n", rc,
+                    exit_rc);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return test_rc;
+}
+
+static int
+test_p25_bandplan_export_long_option_parse(void) {
+    int test_rc = 0;
+
+    /* Shapes 0/1: pair and = form alone. Shape 2: = form beside --trunk-scan, which must be allowed. */
+    for (int shape = 0; shape < 3; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg1[] = "--p25-bandplan-export";
+        char arg2[] = "learned_plan.csv";
+        char arg_eq[] = "--p25-bandplan-export=learned_plan.csv";
+        char arg_scan[] = "--trunk-scan=targets.csv";
+        char* argv_pair[] = {arg0, arg1, arg2, NULL};
+        char* argv_eq[] = {arg0, arg_eq, NULL};
+        char* argv_scan[] = {arg0, arg_scan, arg_eq, NULL};
+        char** argv = (shape == 0) ? argv_pair : (shape == 1) ? argv_eq : argv_scan;
+        int argc = (shape == 0) ? 3 : (shape == 1) ? 2 : 3;
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_CONTINUE || strcmp(opts->p25_bandplan_export_file, "learned_plan.csv") != 0) {
+            DSD_FPRINTF(stderr, "shape %d: expected export path stored, rc=%d exit=%d file=\"%s\"\n", shape, rc,
+                        exit_rc, opts->p25_bandplan_export_file);
+            test_rc = 1;
+        }
+        if (shape == 2 && opts->trunk_scan_enabled != 1) {
+            DSD_FPRINTF(stderr, "shape 2: expected --trunk-scan to stay enabled beside the export flag\n");
+            test_rc = 1;
+        }
+        /* The export path is an output: nothing is imported at parse time. */
+        if (state->p25_bandplan_row_count != 0 || opts->p25_bandplan_in_file[0] != '\0') {
+            DSD_FPRINTF(stderr, "shape %d: export flag must not touch the input plan\n", shape);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
+test_p25_bandplan_export_rejects_empty_and_missing_value(void) {
+    int test_rc = 0;
+
+    for (int shape = 0; shape < 2; shape++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+
+        char arg0[] = "dsd-neo";
+        char arg_bare[] = "--p25-bandplan-export";
+        char arg_empty[] = "--p25-bandplan-export=";
+        char* argv[] = {arg0, (shape == 0) ? arg_bare : arg_empty, NULL};
+
+        int argc_effective = 0;
+        int exit_rc = -1;
+        int rc = dsd_parse_args(2, argv, opts, state, &argc_effective, &exit_rc);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->p25_bandplan_export_file[0] != '\0') {
+            DSD_FPRINTF(stderr, "shape %d: expected empty/missing export path to fail, rc=%d exit=%d file=\"%s\"\n",
+                        shape, rc, exit_rc, opts->p25_bandplan_export_file);
+            test_rc = 1;
+        }
+
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+static int
 test_trunk_scan_rejects_ms_values_outside_range(void) {
     const char* argv_sets[][3] = {
         {"dsd-neo", "--trunk-scan-dwell-ms", "249"},
@@ -6996,6 +7409,7 @@ main(void) {
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
+    rc |= test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan();
     rc |= test_bootstrap_inherited_trunk_scan_disables_for_positional_input();
     rc |= test_bootstrap_inherited_trunk_scan_disables_for_long_only_runtime_mode();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_timing_overrides();
@@ -7022,6 +7436,14 @@ main(void) {
     rc |= test_trunk_scan_rejects_global_channel_map();
     rc |= test_trunk_scan_cli_clears_inherited_channel_map();
     rc |= test_trunk_scan_inherited_state_rejects_invalid_runtime_combinations();
+    rc |= test_p25_bandplan_long_option_parse();
+    rc |= test_p25_bandplan_missing_file_returns_error();
+    rc |= test_p25_bandplan_missing_value_returns_error();
+    rc |= test_p25_bandplan_rejects_trunk_scan();
+    rc |= test_trunk_scan_cli_clears_inherited_p25_bandplan();
+    rc |= test_trunk_scan_inherited_state_rejects_inherited_p25_bandplan();
+    rc |= test_p25_bandplan_export_long_option_parse();
+    rc |= test_p25_bandplan_export_rejects_empty_and_missing_value();
     rc |= test_trunk_scan_rejects_ms_values_outside_range();
     rc |= test_iq_capture_long_options_parse();
     rc |= test_iq_capture_missing_value_returns_error();

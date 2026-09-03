@@ -510,6 +510,54 @@ test_generated_import_and_refresh(void) {
 }
 
 /*
+ * The P25 band plan kind (#567): a band plan CSV validates and is stored under
+ * "p25Bandplan", and a channel map picked as that kind parses to no usable
+ * rows — it is kept and flagged "empty" like every other zero-row file, so the
+ * screens warn instead of quietly storing a file the decoder will ignore.
+ */
+void
+test_p25_bandplan_kind(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+
+    TestHost host;
+    QTemporaryDir sourceDir;
+    expect("bandplan source dir created", sourceDir.isValid());
+
+    const QString planSrc = sourceDir.filePath(QStringLiteral("bandplan.csv"));
+    expect("bandplan source written",
+           write_file(planSrc, "iden,base_hz,spacing_hz,type,tx_offset_hz,bandwidth_hz,wacn,sysid\n"
+                               "0,851006250,6250,1,-45000000,12500,,\n"));
+    const QString chanSrc = sourceDir.filePath(QStringLiteral("chan.csv"));
+    expect("bandplan chan source written", write_file(chanSrc, "channel,freq\n1,851000000\n"));
+
+    dsd_qt::ImportedFilesModel model(&host);
+    const QVariantMap plan = model.importFile(QUrl::fromLocalFile(planSrc).toString(), QStringLiteral("bandplan.csv"),
+                                              QStringLiteral("p25Bandplan"));
+    expect("bandplan import ok", plan.value(QStringLiteral("ok")).toBool());
+    expect("bandplan import has no error", plan.value(QStringLiteral("error")).toString().isEmpty());
+    expect("bandplan import counts the iden row", plan.value(QStringLiteral("accepted")).toInt() == 1);
+    expect("bandplan import stores its kind",
+           plan.value(QStringLiteral("type")).toString() == QStringLiteral("p25Bandplan"));
+
+    const QVariantList plans = model.entriesForType(QStringLiteral("p25Bandplan"));
+    expect("type filter finds the bandplan row", plans.size() == 1);
+    expect("bandplan is not offered as a channel map", model.entriesForType(QStringLiteral("chan")).isEmpty());
+
+    /* A channel map is `number,number`; the band plan importer wants eight
+     * columns and accepts none of its rows. */
+    const QVariantMap wrong = model.importFile(QUrl::fromLocalFile(chanSrc).toString(), QStringLiteral("chan.csv"),
+                                               QStringLiteral("p25Bandplan"));
+    expect("chan map as bandplan is kept", wrong.value(QStringLiteral("ok")).toBool());
+    expect("chan map as bandplan is flagged empty",
+           wrong.value(QStringLiteral("error")).toString() == QStringLiteral("empty"));
+    expect("chan map as bandplan accepts nothing", wrong.value(QStringLiteral("accepted")).toInt() == 0);
+
+    while (model.rowCount() > 0) {
+        model.remove(0);
+    }
+}
+
+/*
  * Stores written before provenance existed must load unchanged. rowFromMap reads
  * through QVariantMap::value, which default-constructs a missing key, so this
  * holds by construction — but only a test keeps it that way.
@@ -567,6 +615,7 @@ main(int argc, char** argv) {
     test_update_rejects_invalid_pick();
     test_replace_validates_before_touching_the_stored_file();
     test_generated_import_and_refresh();
+    test_p25_bandplan_kind();
     test_legacy_store_without_provenance();
 
     QDir(dataDir).removeRecursively();

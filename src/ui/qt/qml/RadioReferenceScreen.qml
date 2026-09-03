@@ -1418,7 +1418,7 @@ Item {
                     Text {
                         width: parent.width
                         visible: radioReference.systemDetails.hasCustomBandplan === true
-                        text: qsTr("This system publishes a custom band plan, which this import does not carry. Add the matching options as extra CLI args if tuning misses.")
+                        text: qsTr("This system publishes a custom band plan, which this import does not carry. Import a P25 band plan CSV (Imports → P25 band plan) if grants do not tune.")
                         font.family: Theme.sans
                         font.pixelSize: 12
                         color: Theme.textSubdued

@@ -140,6 +140,17 @@ class CommandBridge : public QObject {
     /** @brief Import an encryption key CSV; @p hex picks -K semantics over -k. */
     Q_INVOKABLE bool importKeys(const QString& path, bool hex) const;
 
+    /**
+     * @brief Import a P25 band plan CSV (--p25-bandplan) into the running session.
+     *
+     * Replaces the operator-supplied identifier table the P25 tuner falls back
+     * on when the control channel's own IDEN_UP has not been heard. There is
+     * deliberately no clear counterpart: a band plan learned off the air is not
+     * something a session can be asked to forget, so "None" only takes effect
+     * at the next start.
+     */
+    Q_INVOKABLE bool importP25Bandplan(const QString& path) const;
+
     /*
      * Unloading. A system that clears its CSV selection has to say so: the
      * import calls above all reject an empty path, so re-importing cannot

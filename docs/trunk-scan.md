@@ -58,6 +58,14 @@ Column behavior:
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the global/default gain. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
 | `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
+| `p25_bandplan_csv` | No | P25 band plan CSV for a `p25-trunk` target (format in [csv-formats.md](csv-formats.md)), resolved relative to the target CSV. Its rows are parked in the target's snapshot, so an exported multi-system plan can be named on every P25 row and each target keeps only the rows that carry its WACN/SYS (plus rows that carry none). |
+
+Targets that turn out to be sites of the same P25 system (same WACN/SYS) share what one of them learned over the
+air: when a parked target is missing a band-plan identifier that another target's table holds for the same
+WACN/SYS, the entry is copied in at trust `prov` (unconfirmed) and yields to the site's own `IDEN_UP`. Entries whose
+system is unknown or different are never copied, so the per-target isolation below still holds for everything else.
+**Export learned P25 band plan...** (and `--p25-bandplan-export`) writes every target's identifiers with their
+WACN/SYS into one file.
 
 A target's `chan_csv` may carry the optional `name` column described in [csv-formats.md](csv-formats.md), and it
 parses, but trunk scan discards the names. Each target's channel map is parked in a per-target snapshot that carries
@@ -81,7 +89,10 @@ Target list limits and validation:
 - Duplicate `(type, frequency_hz)` pairs are rejected.
 - A duplicated `keys_hex_csv` or `keys_dec_csv` header is rejected, and an unloadable key path fails the
   whole import the way a bad `-K`/`-k` does.
-- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets.
+- `chan_csv` is only valid for `p25-trunk`, `dmr-trunk`, and `nxdn-trunk` targets; `p25_bandplan_csv` is refused
+  on conventional targets, a duplicated `p25_bandplan_csv` header is rejected, and a band plan that fails to load
+  fails the whole import. A global `--p25-bandplan`/`[trunking] p25_bandplan_csv` is rejected in this mode like
+  `-C`.
 - `modulation` values are target-type specific: `cqpsk`/`c4fm` are P25-only, and `gfsk` is valid for DMR and both NXDN
   target rates.
 - `nxdn-conventional` and `nxdn48-conventional` are distinct types, so the same frequency may appear once as each.

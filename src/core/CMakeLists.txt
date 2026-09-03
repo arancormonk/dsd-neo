@@ -28,6 +28,7 @@ target_sources(
         util/bit_packing.c
         util/dsd_init.c
         util/dsd_state_trunk_lcn.c
+        util/dsd_state_p25_bandplan.c
         util/key_set.c
         util/channel_label.c
         util/enc_lockout.c
@@ -39,6 +40,7 @@ target_sources(
         util/synctype.c
         file/dsd_file.c
         file/dsd_import.c
+        file/p25_bandplan_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
 )

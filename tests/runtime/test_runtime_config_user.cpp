@@ -2324,7 +2324,7 @@ test_persistence_gap_schema_rows(void) {
         const char* key;
     } expected[] = {
         {"trunking", "scanner"},    {"trunking", "p25_prefer_candidates"}, {"mode", "edacs_ea"}, {"mode", "edacs_esk"},
-        {"mode", "dmr_lrrp_ports"},
+        {"mode", "dmr_lrrp_ports"}, {"trunking", "p25_bandplan_csv"},
     };
 
     for (size_t i = 0; i < sizeof expected / sizeof expected[0]; i++) {
@@ -2393,6 +2393,70 @@ test_scanner_and_candidates_roundtrip(void) {
     }
     rc |= expect_contains_quiet("trunking scanner off", rendered, "scanner = false\n");
     rc |= expect_contains_quiet("trunking candidates off", rendered, "p25_prefer_candidates = false\n");
+    return rc;
+}
+
+/*
+ * [trunking] p25_bandplan_csv rides the same rails as chan_csv: INI -> cfg ->
+ * opts->p25_bandplan_in_file -> snapshot -> render, and an empty path renders
+ * no key at all so a saved config does not pin an empty string.
+ */
+static int
+test_p25_bandplan_csv_roundtrip(void) {
+    static const char* ini = "[trunking]\n"
+                             "p25_bandplan_csv = \"/tmp/plan.csv\"\n";
+
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    int load_rc = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (load_rc != 0) {
+        DSD_FPRINTF(stderr, "p25_bandplan_csv config failed to load\n");
+        return 1;
+    }
+
+    int rc = 0;
+    if (strcmp(cfg.trunk_p25_bandplan_csv, "/tmp/plan.csv") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] p25_bandplan_csv did not load, got \"%s\"\n", cfg.trunk_p25_bandplan_csv);
+        rc |= 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (strcmp(opts.p25_bandplan_in_file, "/tmp/plan.csv") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: [trunking] p25_bandplan_csv did not reach opts.p25_bandplan_in_file, got \"%s\"\n",
+                    opts.p25_bandplan_in_file);
+        rc |= 1;
+    }
+
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (strcmp(snap.trunk_p25_bandplan_csv, "/tmp/plan.csv") != 0) {
+        DSD_FPRINTF(stderr, "FAIL: snapshot dropped p25_bandplan_csv, got \"%s\"\n", snap.trunk_p25_bandplan_csv);
+        rc |= 1;
+    }
+
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("trunking p25_bandplan_csv", rendered, "p25_bandplan_csv = \"/tmp/plan.csv\"\n");
+
+    reset_opts_and_state(opts, state);
+    dsdneoUserConfig empty_snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &empty_snap);
+    if (render_config_to_buffer(&empty_snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (strstr(rendered, "p25_bandplan_csv") != NULL) {
+        DSD_FPRINTF(stderr, "FAIL: empty p25_bandplan_csv must not be rendered\n");
+        rc |= 1;
+    }
     return rc;
 }
 
@@ -2854,6 +2918,7 @@ main(void) {
     rc |= test_dmr_lrrp_ports_absent_key_keeps_existing_list();
     rc |= test_dmr_lrrp_ports_bad_entries_are_skipped();
     rc |= test_scanner_and_candidates_roundtrip();
+    rc |= test_p25_bandplan_csv_roundtrip();
     rc |= test_edacs_variant_roundtrip();
     rc |= test_edacs_variant_unanswered_is_not_persisted();
     rc |= test_scanner_and_trunking_are_mutually_exclusive();

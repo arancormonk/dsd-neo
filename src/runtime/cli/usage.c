@@ -387,6 +387,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 (See channel_map.csv for example)\n");
     printf("  -G <file>     Import Group List Allow/Block and Label from csv file.\n");
     printf("                 (See group.csv for example)\n");
+    printf("      --p25-bandplan <file>   P25 band plan CSV (IDEN table) for sites that never send IDEN_UP.\n");
+    printf("                 Cannot be combined with --trunk-scan; use per-target p25_bandplan_csv.\n");
+    printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
     printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
     printf(
