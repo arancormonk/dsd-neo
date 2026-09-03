@@ -864,6 +864,17 @@ ui_render_trunk_scan_status(const dsd_opts* opts, const dsd_state* state) {
         printw(" (%u/%u)", (unsigned int)state->trunk_scan_active_ordinal,
                (unsigned int)state->trunk_scan_target_count);
     }
+    // Why the rotation is not moving: an operator hold, or a receiver parked on a target the
+    // operator avoided because every alternate failed to retune.
+    if (state->trunk_scan_hold) {
+        printw(" HOLD");
+    }
+    if (state->trunk_scan_active_avoided) {
+        printw(" [avoided]");
+    }
+    if (state->trunk_scan_avoided_count != 0) {
+        printw(" Avoided: %u", (unsigned int)state->trunk_scan_avoided_count);
+    }
     printw("\n");
 }
 
@@ -882,6 +893,13 @@ ui_render_scanner_and_reverse_status(const dsd_opts* opts, const dsd_state* stat
         }
         printw(" Speed: %.02lf sec",
                opts->trunk_hangtime); // default aligned to OP25 (2.0s) unless overridden
+        // Why the scan stopped moving, ahead of the name so the fixed fields keep their columns.
+        if (state->lcn_scan_hold) {
+            printw(" HOLD");
+        }
+        if (state->lcn_avoid_count != 0) {
+            printw(" Avoided: %u", (unsigned int)state->lcn_avoid_count);
+        }
         // The row's name goes last: it is the one field of operator-chosen length, so the fixed
         // fields keep their columns and a long name is what runs off a narrow terminal. The
         // resolver applies the placeholder-row rule (a 0 Hz row is stepped over without a retune,

@@ -128,11 +128,17 @@ _Static_assert(offsetof(dsd_state, trunk_lcn_name) >= UI_SNAPSHOT_FIELD_END(trun
                "trunk_lcn_name must sit after the dibit_buf..trunk_lcn_freq copy range");
 _Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_name_capacity) <= offsetof(dsd_state, audio_out_idx),
                "trunk_lcn_name must sit before the audio_out_idx..lastsample copy range");
-/* The trunk-scan publication is plain inline bytes, so unlike the two stores above it wants
- * to be inside a copy range -- left out of one it would silently never reach the UI. */
+/* The per-row avoid store is a third heap allocation with the same hazard. */
+_Static_assert(offsetof(dsd_state, trunk_lcn_avoid) >= UI_SNAPSHOT_FIELD_END(trunk_lcn_freq),
+               "trunk_lcn_avoid must sit after the dibit_buf..trunk_lcn_freq copy range");
+_Static_assert(UI_SNAPSHOT_FIELD_END(trunk_lcn_avoid_capacity) <= offsetof(dsd_state, audio_out_idx),
+               "trunk_lcn_avoid must sit before the audio_out_idx..lastsample copy range");
+/* The trunk-scan publication and the scan hold/avoid scalars are plain inline bytes, so
+ * unlike the stores above they want to be inside a copy range -- left out of one they
+ * would silently never reach the UI. */
 _Static_assert(offsetof(dsd_state, trunk_scan_active_id) >= offsetof(dsd_state, vertex_ks_count)
-                   && UI_SNAPSHOT_FIELD_END(trunk_scan_target_count) <= UI_SNAPSHOT_FIELD_END(ui_msg),
-               "trunk_scan_active_id..trunk_scan_target_count must ride the vertex_ks_count..ui_msg range");
+                   && UI_SNAPSHOT_FIELD_END(trunk_scan_avoided_count) <= UI_SNAPSHOT_FIELD_END(ui_msg),
+               "trunk_scan_active_id..trunk_scan_avoided_count must ride the vertex_ks_count..ui_msg range");
 
 /* The embedded trunk_lcn_freq[] is a plain array copied by the byte ranges
  * above; the scan-list heap tail past it needs an explicit deep copy.
@@ -187,6 +193,26 @@ ui_snapshot_copy_trunk_lcn_name(dsd_state* dst, const dsd_state* src) {
     }
 }
 
+/* The session avoid flags are the third heap store beside the scan list. Same shape as the
+ * name copy: bounded by the clamped count and the source capacity, dropped outright when
+ * the source has none so a cleared map does not keep its old avoids in the snapshot. */
+static void
+ui_snapshot_copy_trunk_lcn_avoid(dsd_state* dst, const dsd_state* src) {
+    const int count = dst->lcn_freq_count > 0 ? dst->lcn_freq_count : 0;
+    size_t copy_count = (size_t)count;
+    if (copy_count > src->trunk_lcn_avoid_capacity) {
+        copy_count = src->trunk_lcn_avoid_capacity;
+    }
+    if (src->trunk_lcn_avoid == NULL || copy_count == 0 || dsd_state_trunk_lcn_avoid_reserve(dst, copy_count) != 0) {
+        dsd_state_trunk_lcn_avoid_free(dst);
+        return;
+    }
+    DSD_MEMCPY(dst->trunk_lcn_avoid, src->trunk_lcn_avoid, copy_count);
+    if (dst->trunk_lcn_avoid_capacity > copy_count) {
+        DSD_MEMSET(dst->trunk_lcn_avoid + copy_count, 0, dst->trunk_lcn_avoid_capacity - copy_count);
+    }
+}
+
 static void
 ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, dibit_buf, trunk_lcn_freq);
@@ -203,6 +229,7 @@ ui_snapshot_copy_render_state(dsd_state* dst, const dsd_state* src) {
     UI_SNAPSHOT_COPY_RANGE(dst, src, p25_p2_audio_ring_count, dstar_gps);
     ui_snapshot_copy_trunk_lcn_freq_ext(dst, src);
     ui_snapshot_copy_trunk_lcn_name(dst, src);
+    ui_snapshot_copy_trunk_lcn_avoid(dst, src);
     UI_SNAPSHOT_COPY_RANGE(dst, src, m17_pbc_ct, straight_frame_step);
     UI_SNAPSHOT_COPY_RANGE(dst, src, vertex_ks_count, ui_msg);
 }

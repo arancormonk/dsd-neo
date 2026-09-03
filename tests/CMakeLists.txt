@@ -3297,6 +3297,23 @@ add_test(
 )
 
 add_executable(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    runtime/test_runtime_trunk_scan_hooks.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_trunk_scan_hooks
+    PRIVATE dsd-neo_runtime
+)
+add_test(
+    NAME RUNTIME_TRUNK_SCAN_HOOKS
+    COMMAND dsd-neo_test_runtime_trunk_scan_hooks
+)
+
+add_executable(
     dsd-neo_test_runtime_trunk_cc_candidates
     runtime/test_runtime_trunk_cc_candidates.c
 )
@@ -3690,6 +3707,20 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_channel_label PRIVATE dsd-neo_core)
 add_test(NAME CORE_CHANNEL_LABEL COMMAND dsd-neo_test_core_channel_label)
+
+add_executable(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    core/test_core_state_trunk_lcn_avoid.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
+)
+target_include_directories(
+    dsd-neo_test_core_state_trunk_lcn_avoid
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+add_test(
+    NAME CORE_STATE_TRUNK_LCN_AVOID
+    COMMAND dsd-neo_test_core_state_trunk_lcn_avoid
+)
 
 add_executable(
     dsd-neo_test_core_talkgroup_policy

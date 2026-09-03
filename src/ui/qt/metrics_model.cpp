@@ -147,6 +147,20 @@ MetricsModel::clear() {
  * last command, because a command can be refused and, on Android, the service
  * that owns them outlives this process.
  */
+/*
+ * Scan hold and avoids read whichever rotation owns the tuner: the coordinator's
+ * publication under --trunk-scan, the scan-list flags under -Y. Plain trunking is not
+ * a rotation, so the controls have nothing to act on and the gate stays false.
+ */
+void
+MetricsModel::fillScanControlView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    const bool trunk_scan = opts_snapshot->trunk_scan_enabled != 0;
+    next.scan_rotation_active = opts_snapshot->scanner_mode != 0 || trunk_scan;
+    next.scan_hold = trunk_scan ? (snapshot->trunk_scan_hold != 0) : (snapshot->lcn_scan_hold != 0);
+    next.scan_avoid_count = trunk_scan ? snapshot->trunk_scan_avoided_count : snapshot->lcn_avoid_count;
+    next.scan_target_avoided = trunk_scan && snapshot->trunk_scan_active_avoided != 0;
+}
+
 void
 MetricsModel::fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m) {
     next.decode_mode = static_cast<int>(dsd_infer_decode_mode_preset(opts_snapshot));
@@ -273,6 +287,7 @@ MetricsModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot) 
     next.audio_muted = opts_snapshot->audio_out == 0;
     next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
     next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
+    fillScanControlView(next, opts_snapshot, snapshot);
 
     /* The engine's command acknowledgement, shown until its own expiry stamp. The
      * timer takes an expired message down without waiting for another publish —

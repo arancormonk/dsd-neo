@@ -194,6 +194,13 @@ During scanning:
 - The terminal names the target on air: a `| Trunk Scan:  Target: county-p25 (3/6)` row in the Input Output section,
   and a `| Target: county-p25` line at the top of Call Info, which is the one that survives compact view.
 - Idle targets rotate after their dwell time.
+- The rotation can be driven from the terminal (Trunking menu, or the hotkeys): `Y` holds the scan on the parked
+  target, `b` avoids the parked target for the rest of the session and moves on, `L` moves to the next eligible target
+  now, and "Clear avoids" puts every avoided target back. A hold only pauses the idle dwell: the parked target's
+  trunking state machine keeps following calls, and `L` still moves while held (the hold then applies to the new
+  target). Avoiding the last usable target is refused, as is `L` on a single-target list. Avoids are not written back
+  to the CSV. The Trunk Scan row shows `HOLD`, `Avoided: N`, and `[avoided]` when every alternate failed to retune and
+  the receiver fell back onto a target that was avoided.
 - A non-empty target `modulation` value overrides global CLI/config modulation locks for that target only.
 - A target `rtl_gain` value is applied at the retune boundary. Manual per-target gain temporarily suspends supervisory
   tuner autogain; `auto` and global-auto targets restore the saved autogain setting.
@@ -218,6 +225,7 @@ During scanning:
   symbol rate and channel filter even under a global `-m` modulation lock; the lock still governs symbol slicing, so
   DMR and NXDN rows under `-mc` or `-mq` need `modulation = gfsk` (or `auto`) to decode.
 - When a retune fails, DSD-neo logs a warning, briefly cools that target down, and tries another eligible target.
+  While held, a failed retune retries the held target after the cooldown instead of moving on.
 
 Expected log messages include:
 

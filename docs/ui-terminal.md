@@ -137,6 +137,9 @@ Main Menu
 │   ├── Conventional scanning [Off]              y
 │   ├── Return to control channel                C   (while trunking or scanning)
 │   ├── Next channel                             L   (while trunking or scanning)
+│   ├── Scan hold [Off]                          Y   (while scanning with -Y or --trunk-scan)
+│   ├── Avoid current channel                    b   (while scanning with -Y or --trunk-scan)
+│   ├── Clear avoids [0]                             (while scanning with -Y or --trunk-scan)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -388,7 +391,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `t` | Toggle trunking |
 | `y` | Toggle conventional scanning |
 | `C` | Return to control channel (when following a voice channel) |
-| `L` | Cycle active trunking channels |
+| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
+| `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
+| `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
 | `u` | Toggle follow private calls |
@@ -474,6 +479,13 @@ The Input Output section names the `-Y` scan list row the receiver is parked on,
 The name comes from the optional `name` column of the channel map (see `docs/csv-formats.md`); a row without one
 renders exactly as it always did. The name goes last because it is the one field whose length you choose: the
 frequency and speed keep their columns, and on a narrow terminal it is the name that reaches the edge.
+
+When the rotation is not moving, the row says why, ahead of the name: `HOLD` while `Y` holds the scan, and
+`Avoided: N` while `b` has taken rows out of it for the session.
+
+```
+| Scan Mode:  Frequency: 462.012500 MHz Speed: 2.00 sec HOLD Avoided: 2 Channel: Marion
+```
 
 With `--trunk-scan` the same section names the target on air and its place in the rotation:
 

@@ -60,6 +60,8 @@
 #define DSD_KEY_CALL_ALERT       'a'
 #define DSD_KEY_RETURN_CC        'C'
 #define DSD_KEY_CHANNEL_CYCLE    'L'
+#define DSD_KEY_SCAN_HOLD        'Y' // hold the scan on the channel/target on air (pairs with 'y')
+#define DSD_KEY_SCAN_AVOID       'b' // avoid ("block") the channel/target on air for the session
 #define DSD_KEY_TRUNK_WLIST      'w'
 #define DSD_KEY_TRUNK_GROUP      'g'
 #define DSD_KEY_TRUNK_PRIV       'u'

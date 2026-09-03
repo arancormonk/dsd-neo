@@ -61,7 +61,20 @@ trunk_enabled(const void* ctx) {
     if (!c || !c->opts) {
         return false;
     }
-    return c->opts->trunk_enable == 1 || c->opts->scanner_mode == 1;
+    /* A conventional --trunk-scan target parks with trunk_enable off, but Next channel still
+       has somewhere to go: the next target. */
+    return c->opts->trunk_enable == 1 || c->opts->scanner_mode == 1 || c->opts->trunk_scan_enabled == 1;
+}
+
+/* Hold and avoid act on a rotation: the -Y scan list or the --trunk-scan target list. Plain
+   -T follows one system and has nothing to hold or avoid at channel scope. */
+bool
+scan_rotation_active(const void* ctx) {
+    const UiCtx* c = (const UiCtx*)ctx;
+    if (!c || !c->opts) {
+        return false;
+    }
+    return c->opts->scanner_mode == 1 || c->opts->trunk_scan_enabled == 1;
 }
 
 bool
@@ -549,6 +562,28 @@ lbl_p25_enc_lockout(const void* v, char* b, size_t n) {
     const UiCtx* c = (const UiCtx*)v;
     int on = (c && c->opts) ? ((c->opts->trunk_tune_enc_calls == 0) ? 1 : 0) : 0;
     DSD_SNPRINTF(b, n, "Lock out encrypted calls [%s]", onoff(on));
+    return b;
+}
+
+const char*
+lbl_scan_hold(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    int on = 0;
+    if (c && c->opts && c->state) {
+        on = (c->opts->trunk_scan_enabled == 1) ? (c->state->trunk_scan_hold != 0) : (c->state->lcn_scan_hold != 0);
+    }
+    DSD_SNPRINTF(b, n, "Scan hold [%s]", onoff(on));
+    return b;
+}
+
+const char*
+lbl_scan_avoid_clear(const void* v, char* b, size_t n) {
+    const UiCtx* c = (const UiCtx*)v;
+    unsigned count = 0;
+    if (c && c->opts && c->state) {
+        count = (c->opts->trunk_scan_enabled == 1) ? c->state->trunk_scan_avoided_count : c->state->lcn_avoid_count;
+    }
+    DSD_SNPRINTF(b, n, "Clear avoids [%u]", count);
     return b;
 }
 

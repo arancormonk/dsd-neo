@@ -113,6 +113,8 @@ static const HotkeyRow k_hotkeys[] = {
     {"trunk.scan", {DSD_KEY_SCANNER_TOGGLE, 0}},
     {"trunk.return_cc", {DSD_KEY_RETURN_CC, 0}},
     {"trunk.cycle", {DSD_KEY_CHANNEL_CYCLE, 0}},
+    {"trunk.hold", {DSD_KEY_SCAN_HOLD, 0}},
+    {"trunk.avoid", {DSD_KEY_SCAN_AVOID, 0}},
     {"trunk.rigctl", {DSD_KEY_RIGCTL_CONN, 0}},
     {"follow.group", {DSD_KEY_TRUNK_GROUP, 0}},
     {"follow.priv", {DSD_KEY_TRUNK_PRIV, 0}},
@@ -170,6 +172,7 @@ static const int k_command_keys[] = {
     DSD_KEY_EH_NEXT,        DSD_KEY_EH_PREV,          DSD_KEY_EH_TOGGLE,        DSD_KEY_TCP_AUDIO,
     DSD_KEY_RIGCTL_CONN,    DSD_KEY_LPF_TOGGLE,       DSD_KEY_HPF_TOGGLE,       DSD_KEY_PBF_TOGGLE,
     DSD_KEY_HPF_DIG_TOGGLE, DSD_KEY_RTL_VOL_CYCLE,    DSD_KEY_PPM_UP,           DSD_KEY_PPM_DOWN,
+    DSD_KEY_SCAN_HOLD,      DSD_KEY_SCAN_AVOID,
 };
 
 typedef struct {

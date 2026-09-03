@@ -22,6 +22,29 @@
 extern "C" {
 #endif
 
+/**
+ * @brief Operator-driven scan controls, routed from app_control to the coordinator.
+ *
+ * One op-coded slot rather than four: the coordinator is the only implementer and the
+ * command queue the only caller, so the op keeps the table small while the return
+ * codes below give the caller enough to choose a status message.
+ */
+typedef enum {
+    DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE = 1,  /**< Pause/resume the dwell on the parked target */
+    DSD_TRUNK_SCAN_CONTROL_AVOID_ACTIVE = 2, /**< Avoid the parked target for the session and move on */
+    DSD_TRUNK_SCAN_CONTROL_AVOID_CLEAR = 3,  /**< Put every avoided target back into the rotation */
+    DSD_TRUNK_SCAN_CONTROL_ADVANCE = 4,      /**< Move to the next eligible target now */
+} dsd_trunk_scan_control_op;
+
+enum {
+    DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE = -3, /**< Trunk scan is not installed */
+    DSD_TRUNK_SCAN_CONTROL_BUSY = -2,        /**< The coordinator's tick guard is held; try again */
+    DSD_TRUNK_SCAN_CONTROL_REFUSED = -1,     /**< Would leave no usable target, or nothing to do */
+    /* >= 0 is op-specific: HOLD_TOGGLE returns the new hold state; AVOID_ACTIVE and ADVANCE
+     * return 0 when the receiver moved and 1 when it stayed; AVOID_CLEAR returns how many
+     * avoids it cleared. */
+};
+
 typedef struct {
     void* (*p25_ctx)(void);
     void* (*dmr_ctx)(void);
@@ -32,6 +55,7 @@ typedef struct {
                                        int is_private, int encrypted, int data_call);
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
+    int (*control)(dsd_opts* opts, dsd_state* state, int op);
 } dsd_trunk_scan_hooks;
 
 void dsd_trunk_scan_hooks_set(dsd_trunk_scan_hooks hooks);
@@ -74,6 +98,15 @@ const char* dsd_trunk_scan_hook_active_chan_csv(const dsd_state* state);
  * not installed.
  */
 void dsd_trunk_scan_hook_enc_lockout_clear_snapshots(const dsd_state* state);
+
+/**
+ * @brief Apply one dsd_trunk_scan_control_op to the parked target list.
+ *
+ * Returns DSD_TRUNK_SCAN_CONTROL_UNAVAILABLE when trunk scan is not installed;
+ * otherwise the coordinator's result (see the enum above). Call it on the decoder
+ * thread, the way the command queue does: it may retune.
+ */
+int dsd_trunk_scan_hook_control(dsd_opts* opts, dsd_state* state, int op);
 
 #ifdef __cplusplus
 }

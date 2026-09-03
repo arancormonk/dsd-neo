@@ -152,6 +152,32 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /* On-the-fly scan controls (#380). Counted, so a case can assert that the
+     * monitor's buttons send the command they are labelled with. */
+    Q_INVOKABLE bool
+    toggleScanHold() {
+        m_scan_hold_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    avoidCurrentChannel() {
+        m_scan_avoid_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    clearScanAvoids() {
+        m_scan_avoid_clear_calls++;
+        return true;
+    }
+
+    Q_INVOKABLE bool
+    nextChannel() {
+        m_next_channel_calls++;
+        return true;
+    }
+
     Q_INVOKABLE bool
     releaseTuner() {
         m_release_tuner_calls++;
@@ -225,6 +251,30 @@ class CommandRecorder : public QObject {
         m_last_modulation = -1;
         m_last_decode_mode = -1;
         m_last_ppm = 9999;
+        m_scan_hold_calls = 0;
+        m_scan_avoid_calls = 0;
+        m_scan_avoid_clear_calls = 0;
+        m_next_channel_calls = 0;
+    }
+
+    int
+    scanHoldCalls() const {
+        return m_scan_hold_calls;
+    }
+
+    int
+    scanAvoidCalls() const {
+        return m_scan_avoid_calls;
+    }
+
+    int
+    scanAvoidClearCalls() const {
+        return m_scan_avoid_clear_calls;
+    }
+
+    int
+    nextChannelCalls() const {
+        return m_next_channel_calls;
     }
 
     int
@@ -296,6 +346,10 @@ class CommandRecorder : public QObject {
     int m_set_trunking_calls = 0;
     bool m_last_set_trunking = false;
     int m_gain_calls = 0;
+    int m_scan_hold_calls = 0;
+    int m_scan_avoid_calls = 0;
+    int m_scan_avoid_clear_calls = 0;
+    int m_next_channel_calls = 0;
     int m_last_gain_db = -1;
     double m_last_squelch_db = 0.0;
     int m_squelch_calls = 0;
@@ -637,6 +691,27 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->lastSetTrunking() : false;
     }
 
+    /** @brief What the monitor's scan controls asked the engine for. */
+    Q_INVOKABLE int
+    scanHoldCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanHoldCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    scanAvoidCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanAvoidCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    scanAvoidClearCalls() const {
+        return (m_commands != nullptr) ? m_commands->scanAvoidClearCalls() : -1;
+    }
+
+    Q_INVOKABLE int
+    nextChannelCalls() const {
+        return (m_commands != nullptr) ? m_commands->nextChannelCalls() : -1;
+    }
+
     /** @brief What the radio panel last asked the engine for. */
     Q_INVOKABLE int
     gainCalls() const {
@@ -824,6 +899,11 @@ class Setup : public QObject {
         metrics[QStringLiteral("leadSlot")] = 0;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        // On-the-fly scan controls (#380): no rotation running at rest.
+        metrics[QStringLiteral("scanRotationActive")] = false;
+        metrics[QStringLiteral("scanHold")] = false;
+        metrics[QStringLiteral("scanAvoidCount")] = 0;
+        metrics[QStringLiteral("scanTargetAvoided")] = false;
         // Whether an automatic controller owns the tuner, which one, and where it
         // points. The two named owners word a message; tunerControlled is the gate.
         metrics[QStringLiteral("tunerControlled")] = false;

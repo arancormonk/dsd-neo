@@ -94,6 +94,16 @@ int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_
 int dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz);
 void dsd_engine_trunk_scan_shutdown(dsd_opts* opts, dsd_state* state);
 void dsd_engine_trunk_scan_tick(dsd_opts* opts, dsd_state* state);
+/**
+ * @brief Apply an operator scan control (a dsd_trunk_scan_control_op from
+ * runtime/trunk_scan_hooks.h) to the parked target list.
+ *
+ * Hold pauses the idle dwell on the active target without stopping its state machine;
+ * avoid flags the active target for the session and moves on; clear puts every avoided
+ * target back; advance moves now. Returns the codes documented beside the op enum.
+ * Decoder thread only: avoid and advance retune.
+ */
+int dsd_engine_trunk_scan_control(dsd_opts* opts, dsd_state* state, int op);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 /**
