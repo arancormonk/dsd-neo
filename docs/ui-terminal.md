@@ -137,6 +137,9 @@ Main Menu
 │   ├── Conventional scanning [Off]              y
 │   ├── Return to control channel                C   (while trunking or scanning)
 │   ├── Next channel                             L   (while trunking or scanning)
+│   ├── Scan hold [Off]                          Y   (while scanning with -Y or --trunk-scan)
+│   ├── Avoid current channel                    b   (while scanning with -Y or --trunk-scan)
+│   ├── Clear avoids [0]                             (while scanning with -Y or --trunk-scan)
 │   ├── ─────
 │   ├── Follow
 │   │   ├── Group calls [On]                     g
@@ -388,7 +391,9 @@ modifiers (`<` `>`, `,` `.`) are named in their row's help text rather than in i
 | `t` | Toggle trunking |
 | `y` | Toggle conventional scanning |
 | `C` | Return to control channel (when following a voice channel) |
-| `L` | Cycle active trunking channels |
+| `L` | Next channel: step the `-Y` scan list (skipping avoided rows), cycle trunking channels, or move to the next `--trunk-scan` target |
+| `Y` | Hold the scan on the channel or target on air; press again to resume (`L` still moves while held) |
+| `b` | Avoid the channel or target on air for the rest of the session and step to the next one |
 | `g` | Toggle follow group calls |
 | `w` | Toggle allow/white-list mode (uses imported group list) |
 | `u` | Toggle follow private calls |
