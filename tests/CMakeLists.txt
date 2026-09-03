@@ -46,6 +46,13 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_arch_toolchain_pull_retry.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        add_test(
+            NAME TOOLS_CI_CHANGED_FILES_HEADER_EXPANSION
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_changed_files_header_expansion.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
     endif()
 endif()
 
